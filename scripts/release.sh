@@ -109,7 +109,9 @@ cp -R "$APP" "$STAGING/Nook.app"
 ln -s /Applications "$STAGING/Applications"
 mkdir -p "$OUT/feed"
 DMG="$OUT/feed/Nook-$VERSION-universal.dmg"
-hdiutil create -volname "Nook $VERSION" -srcfolder "$STAGING" -ov -format UDZO "$DMG"
+# hdiutil sometimes sizes a -srcfolder image too small and fails with "No space left on device".
+IMAGE_KB=$(( $(du -sk "$STAGING" | cut -f1) * 12 / 10 + 20480 ))
+hdiutil create -volname "Nook $VERSION" -srcfolder "$STAGING" -ov -format UDZO -size "${IMAGE_KB}k" "$DMG"
 if [[ "$SIGN_IDENTITY" != "-" ]]; then
   sign "$DMG"
   if [[ -n "$NOTARY_PROFILE" ]]; then
