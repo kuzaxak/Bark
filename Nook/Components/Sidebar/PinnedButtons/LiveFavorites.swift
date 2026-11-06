@@ -139,7 +139,10 @@ final class LiveFavorites {
     }
 
     private func update() {
-        if !isEnabled { clear() }
+        if !isEnabled {
+            clear()
+            if FavoritePreview.shared.live != nil { FavoritePreview.shared.dismiss() }
+        }
         let running = isEnabled && anyWindowOnScreen
         guard running != (ticker != nil) else { return }
         if running {

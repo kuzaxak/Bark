@@ -109,6 +109,8 @@ final class HoverSidebarManager: ObservableObject {
         // The expanded address panel extends beyond the sidebar. Keep its host alive
         // until the editor dismisses through Escape, navigation, or an outside click.
         if isOverlayVisible, addressEditingWindows.contains(activeState.id) { return }
+        // A favorite's hover card reaches past the sidebar's edge.
+        if isOverlayVisible, FavoritePreview.shared.isShowing(in: activeState.id) { return }
 
         // Mouse and window frames are in screen coordinates
         let mouse = NSEvent.mouseLocation

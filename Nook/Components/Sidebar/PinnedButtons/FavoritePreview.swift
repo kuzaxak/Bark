@@ -49,6 +49,8 @@ final class FavoritePreview {
     private static let rowLimit = 8
 
     func tileHover(_ item: Item, hovering: Bool, in window: BrowserWindowState, tabs: TabsController) {
+        // The card lies over other tiles, whose tracking areas still report the pointer.
+        guard !pointerOverCard || item.id == itemID else { return }
         guard hovering else {
             if tileUnderPointer == item.id {
                 tileUnderPointer = nil
@@ -59,8 +61,7 @@ final class FavoritePreview {
         tileUnderPointer = item.id
         let live = LiveFavorites.kind(of: item, in: window, tabs: tabs)
         if let live { LiveFavorites.shared.refresh(item, kind: live) }
-        guard itemID != item.id, live != nil || tabs.settings.favoritePreviews,
-              !NookDragSessionManager.shared.isDragging else { return }
+        guard itemID != item.id, tabs.settings.favoritePreviews, !NookDragSessionManager.shared.isDragging else { return }
         pending?.cancel()
         let delay = itemID != nil ? Self.switchDelay : live == nil ? Self.restDelay : Self.liveRestDelay
         pending = Task {
@@ -78,11 +79,20 @@ final class FavoritePreview {
 
     func cardHover(_ hovering: Bool) {
         pointerOverCard = hovering
-        if hovering { pending?.cancel() } else { closeSoon() }
+        guard hovering else { return closeSoon() }
+        pending?.cancel()
+        tileUnderPointer = nil
+    }
+
+    /// A card is up in the window, or the pointer is on one; the hover-reveal sidebar it hangs
+    /// from stays out meanwhile.
+    func isShowing(in windowID: UUID) -> Bool {
+        pointerOverCard || (itemID != nil && self.windowID == windowID)
     }
 
     func dismiss() {
         pending?.cancel()
+        pointerOverCard = false
         itemID = nil
         windowID = nil
         rows = []
