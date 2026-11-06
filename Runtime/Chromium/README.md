@@ -167,6 +167,16 @@ a GN check or compiled object does not prove them.
 
 ### One candidate build
 
+For the installed signing proof, also apply the bounded packaging correction:
+
+```fish
+git apply --check "$barc_repo/Runtime/Chromium/signing.patch"; and git apply "$barc_repo/Runtime/Chromium/signing.patch"
+```
+
+It retains signature verification before submission and performs Gatekeeper
+assessment after notarization has completed. The normal DMG packaging path is
+used for this proof. Stop if the patch fails to apply.
+
 After the core patches/copies and any selected Swift overlay are complete, set
 the candidate arguments in the existing output. Only do this after the baseline
 has terminated and its artifact/provenance is captured:
@@ -186,8 +196,12 @@ Generate/build the selected candidate once, reusing the existing engine output:
 
 ```fish
 gn gen out/Barc-x64 --fail-on-unused-args
-autoninja -C out/Barc-x64 -j 8 chrome
+autoninja -C out/Barc-x64 -j 8 chrome chrome/installer/mac
 ```
+
+The second target generates `Chromium Packaging/` from the same pinned source
+and build properties. It supplies the upstream signer and per-process
+entitlements; it does not sign or notarize the app during compilation.
 
 For local qualification only, launch with a fresh synthetic store. The mock
 keychain is limited to that fixture, never a shipping setting. Development CDP,
@@ -238,3 +252,33 @@ comes from the actual manager-owned Profile. Browser-bound lookup lives in that
 Browser's unowned-data host and clears at view destruction. Profile deletion,
 reassignment and complete shared-window behavior remain unqualified; this is
 not permission to relax the compatibility matrix.
+
+### Installed signing proof
+
+After the candidate build succeeds, use its generated `Chromium Packaging`
+tools with Python 3.11 or newer. Set `signing_identity` to the existing Developer
+ID Application identity and `notary_profile` to the existing notarytool Keychain
+profile. Keep credentials out of arguments and logs; the profile name is enough.
+From the engine source root:
+
+```fish
+set engine_out "$PWD/out/Barc-x64"
+set signed_out "$PWD/out/Barc-x64-signed"
+python3 "$engine_out/Chromium Packaging/sign_chrome.py" \
+    --identity "$signing_identity" --input "$engine_out" --output "$signed_out" \
+    --notarize staple --notary-arg=--keychain-profile --notary-arg="$notary_profile"
+```
+
+Use normal Developer ID signing for this gate. The upstream `--development`
+option injects `get-task-allow` and skips Gatekeeper assessment, so it cannot
+qualify the installed proof. Preserve the generated helper entitlements and
+complete versioned framework layout. The prototype still has Chromium's
+identity; production Barc provisioning and CloudKit are separate work.
+
+Verify the produced DMG, install its complete app in an isolated location
+outside the build tree, and require strict signature checks, stapler validation
+and Gatekeeper acceptance there. Launch that exact executable with a fresh
+synthetic user-data directory and keep the Chromium sandbox enabled. Inspect
+helper ownership, resources, profile/extension behavior and clean shutdown.
+Repeat with native ARM artifacts on Apple Silicon. These commands are prepared
+inputs; no installed or notarized result is claimed by this document.
