@@ -28,8 +28,10 @@ final class LiveFavorites {
     private(set) var meetings: [Meeting] = []
     /// Join rows the person closed, until their meeting ends.
     private(set) var hiddenJoins: Set<String> = []
-    /// Each Gmail favorite's last read of its feed.
-    private(set) var mail: [UUID: GmailFeed.Outcome] = [:]
+    /// Each Gmail favorite's last read of its feed, and when that read went out.
+    private(set) var mail: [UUID: (outcome: GmailFeed.Outcome, at: Date)] = [:]
+    /// When each Gmail favorite's tab title last changed.
+    private(set) var titleChanges: [UUID: Date] = [:]
 
     @ObservationIgnored private weak var tabs: TabsController?
     @ObservationIgnored private weak var windows: WindowRegistry?
@@ -97,10 +99,20 @@ final class LiveFavorites {
         }
     }
 
-    /// A Gmail favorite's unread count: the feed's, else the one in its loaded tab's `title`.
+    /// The Gmail favorite's tab title changed, as it does when mail arrives or is read.
+    func titleChanged(_ item: Item, kind: GoogleFavorite) {
+        guard isEnabled, case .mail = kind else { return }
+        titleChanges[item.id] = Date()
+        refresh(item, kind: kind)
+    }
+
+    /// A Gmail favorite's unread count, from its feed and its loaded tab's `title`.
     func unread(_ itemID: UUID, title: String?) -> Int {
-        if case .inbox(let inbox)? = mail[itemID] { return inbox.unread }
-        return GmailFeed.unreadCount(title: title) ?? 0
+        let feed: (count: Int, at: Date)? = mail[itemID].flatMap { read in
+            guard case .inbox(let inbox) = read.outcome else { return nil }
+            return (inbox.unread, read.at)
+        }
+        return GmailFeed.unread(feed: feed, title: title, titleChangedAt: titleChanges[itemID])
     }
 
     func connectCalendar() {
@@ -206,8 +218,9 @@ final class LiveFavorites {
         let wait = soon && fetch.failures == 0 ? Self.mailSoon : GmailFeed.retryDelay(afterFailures: fetch.failures)
         // Minute ticks land a few milliseconds either side of the minute.
         guard !fetch.inFlight, Date().timeIntervalSince(fetch.last).rounded() >= wait else { return }
+        let sent = Date()
         fetch.inFlight = true
-        fetch.last = Date()
+        fetch.last = sent
         mailFetches[itemID] = fetch
         Task {
             let outcome = await tabs.gmailInbox(inSpace: spaceID, account: account)
@@ -215,7 +228,7 @@ final class LiveFavorites {
             fetch.inFlight = false
             fetch.failures = outcome == .failed ? fetch.failures + 1 : 0
             mailFetches[itemID] = fetch
-            mail[itemID] = outcome
+            mail[itemID] = (outcome, sent)
         }
     }
 
@@ -224,6 +237,9 @@ final class LiveFavorites {
         mailFetches = mailFetches.filter { ids.contains($0.key) }
         if mail.keys.contains(where: { !ids.contains($0) }) {
             mail = mail.filter { ids.contains($0.key) }
+        }
+        if titleChanges.keys.contains(where: { !ids.contains($0) }) {
+            titleChanges = titleChanges.filter { ids.contains($0.key) }
         }
     }
 

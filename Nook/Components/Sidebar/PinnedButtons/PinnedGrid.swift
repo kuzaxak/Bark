@@ -233,7 +233,7 @@ private struct PinnedTile: View {
                 FavoritePreview.shared.tileHover(item, hovering: hovering, in: windowState, tabs: tabs)
             }
             .onChange(of: session?.title) {
-                if let live, case .mail = live { LiveFavorites.shared.refresh(item, kind: live) }
+                if let live { LiveFavorites.shared.titleChanged(item, kind: live) }
             }
         }
     }

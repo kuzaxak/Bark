@@ -137,6 +137,33 @@ struct GmailTitleTests {
     }
 }
 
+/// The count the dot goes by: the feed's, unless the tab's title changed after the feed was read.
+struct GmailUnreadTests {
+    private let read = utc(13)
+    private let before = utc(12, 59)
+    private let after = utc(13, 1)
+
+    @Test func aLaterTitleWithoutUnreadWinsOverAnOlderFeed() {
+        #expect(GmailFeed.unread(feed: (3, read), title: "Inbox - jane@example.com - Gmail", titleChangedAt: after) == 0)
+        #expect(GmailFeed.unread(feed: (3, read), title: "Inbox (5) - jane@example.com - Gmail", titleChangedAt: after) == 5)
+    }
+
+    @Test func theFeedWinsOverAnOlderTitle() {
+        #expect(GmailFeed.unread(feed: (3, read), title: "Inbox - jane@example.com - Gmail", titleChangedAt: before) == 3)
+        #expect(GmailFeed.unread(feed: (3, read), title: "Inbox - jane@example.com - Gmail", titleChangedAt: nil) == 3)
+    }
+
+    @Test func aTitleWithoutACountNeverWins() {
+        #expect(GmailFeed.unread(feed: (3, read), title: "Lunch & plans - jane@example.com - Gmail", titleChangedAt: after) == 3)
+    }
+
+    @Test func withoutAFeedTheTitleCounts() {
+        #expect(GmailFeed.unread(feed: nil, title: "Inbox (4) - jane@example.com - Gmail", titleChangedAt: nil) == 4)
+        #expect(GmailFeed.unread(feed: nil, title: "Lunch & plans - jane@example.com - Gmail", titleChangedAt: after) == 0)
+        #expect(GmailFeed.unread(feed: nil, title: nil, titleChangedAt: nil) == 0)
+    }
+}
+
 /// "4m" beside the newest message.
 struct GmailAgeTests {
     @Test func saysHowLongAgoInTheLargestWholeUnit() {

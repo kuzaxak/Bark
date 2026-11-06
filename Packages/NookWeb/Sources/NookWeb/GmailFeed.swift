@@ -77,6 +77,15 @@ public enum GmailFeed {
         return Int(String(rest[rest.index(rest.startIndex, offsetBy: 2)..<close].filter(\.isNumber)))
     }
 
+    /// The count a Gmail favorite shows: the feed's, unless the loaded tab's title shows a count
+    /// and changed after the feed was read; the title's count without a feed.
+    public static func unread(feed: (count: Int, at: Date)?, title: String?, titleChangedAt: Date?) -> Int {
+        let fromTitle = unreadCount(title: title)
+        guard let feed else { return fromTitle ?? 0 }
+        if let fromTitle, let titleChangedAt, titleChangedAt > feed.at { return fromTitle }
+        return feed.count
+    }
+
     /// How long ago, in the largest whole unit: "now", "4m", "2h", "3d".
     public static func age(of date: Date, now: Date) -> String {
         let seconds = now.timeIntervalSince(date)
