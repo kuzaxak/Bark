@@ -38,6 +38,14 @@ struct ConferenceLinkTests {
         #expect(find(notes: "https://acme.webex.com/join/jdoe") == "https://acme.webex.com/join/jdoe")
     }
 
+    @Test func findsScheduledWebexAndNewTeamsLinks() {
+        #expect(find(notes: "Join: https://acme.webex.com/acme/j.php?MTID=m0123abcd")
+            == "https://acme.webex.com/acme/j.php?MTID=m0123abcd")
+        #expect(find(notes: "https://teams.microsoft.com/meet/2345678901234?p=AbCdEf")
+            == "https://teams.microsoft.com/meet/2345678901234?p=AbCdEf")
+        #expect(find(notes: "https://acme.webex.com/acme/k.php?MTID=1 https://acme.webex.com/j.php https://teams.microsoft.com/meetings") == nil)
+    }
+
     @Test func ignoresOtherPagesOfTheSameSites() {
         #expect(find(notes: "https://zoom.us/signin https://meet.google.com/ https://teams.microsoft.com/v2/ https://acme.webex.com/webappng/") == nil)
         #expect(find(notes: "https://notzoom.us/j/123 https://example.com/meet.google.com/abc-defg-hij") == nil)

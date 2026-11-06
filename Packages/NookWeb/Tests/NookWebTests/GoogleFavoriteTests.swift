@@ -16,12 +16,19 @@ struct GoogleFavoriteTests {
         #expect(favorite("https://mail.google.com/mail/u/0/") == .mail(account: 0))
         #expect(favorite("https://mail.google.com/mail/") == .mail(account: 0))
         #expect(favorite("https://mail.google.com/mail/u/x/") == .mail(account: 0))
-        #expect(favorite("https://mail.google.com/") == .mail(account: 0))
     }
 
     @Test func calendarTakesTheAccountFromItsPath() {
         #expect(favorite("https://calendar.google.com/calendar/u/1/r/week") == .calendar(account: 1))
         #expect(favorite("https://calendar.google.com/calendar/r") == .calendar(account: 0))
+    }
+
+    @Test func onlyGmailAndCalendarPagesCount() {
+        #expect(favorite("https://mail.google.com/chat/u/0/") == nil)
+        #expect(favorite("https://mail.google.com/") == nil)
+        #expect(favorite("https://mail.google.com/calendar/u/0/") == nil)
+        #expect(favorite("https://calendar.google.com/") == nil)
+        #expect(favorite("https://calendar.google.com/mail/u/0/") == nil)
     }
 
     @Test func otherSitesAreNotGoogleFavorites() {

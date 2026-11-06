@@ -13,15 +13,16 @@ public enum GoogleFavorite: Equatable, Sendable {
     case calendar(account: Int)
     case mail(account: Int)
 
-    /// A favorite on mail.google.com or calendar.google.com. The account is the N of /mail/u/N/
-    /// or /calendar/u/N/, which is how Google tells signed-in accounts apart; 0 without one.
+    /// A favorite on mail.google.com/mail/ or calendar.google.com/calendar/. The account is the N
+    /// of /mail/u/N/ or /calendar/u/N/, which is how Google tells signed-in accounts apart; 0
+    /// without one.
     public init?(url: URL?) {
         guard let url else { return nil }
         let parts = url.path.split(separator: "/")
         let account = parts.count >= 3 && parts[1] == "u" ? Int(parts[2]).map { max(0, $0) } ?? 0 : 0
-        switch url.host?.lowercased() {
-        case "mail.google.com": self = .mail(account: account)
-        case "calendar.google.com": self = .calendar(account: account)
+        switch (url.host?.lowercased(), parts.first) {
+        case ("mail.google.com", "mail"): self = .mail(account: account)
+        case ("calendar.google.com", "calendar"): self = .calendar(account: account)
         default: return nil
         }
     }

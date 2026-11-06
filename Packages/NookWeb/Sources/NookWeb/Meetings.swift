@@ -59,9 +59,11 @@ public enum ConferenceLink {
         switch true {
         case host == "meet.google.com": return path.count > 1
         case on("zoom.us"): return path.hasPrefix("/j/") || path.hasPrefix("/my/")
-        case host == "teams.microsoft.com": return path.hasPrefix("/l/meetup-join/")
+        case host == "teams.microsoft.com": return path.hasPrefix("/l/meetup-join/") || path.hasPrefix("/meet/")
         case host == "teams.live.com": return path.hasPrefix("/meet/")
-        case on("webex.com"): return path.hasPrefix("/meet/") || path.hasPrefix("/join/")
+        case on("webex.com"):
+            let parts = path.split(separator: "/")
+            return path.hasPrefix("/meet/") || path.hasPrefix("/join/") || (parts.count == 2 && parts[1] == "j.php")
         default: return false
         }
     }
