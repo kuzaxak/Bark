@@ -86,16 +86,18 @@ public enum MediaScript {
                 if (found) changed();
             }).observe(document, {childList: true, subtree: true});
 
+            // Sounds of ten seconds or less are notification chimes, not players. An element outside
+            // the document counts only once its length is known.
+            const isPlayer = element => element.isConnected ? !(element.duration <= 10) : element.duration > 10;
             function elements() {
                 for (const element of inDocument) if (!element.isConnected) inDocument.delete(element);
                 const list = [...inDocument];
                 for (const ref of outside) {
                     const element = ref.deref();
                     if (!element) { outside.delete(ref); continue; }
-                    // Shorter sounds played outside the document are notification chimes, not players.
-                    if (!element.isConnected && element.duration > 10) list.push(element);
+                    if (!element.isConnected) list.push(element);
                 }
-                return list;
+                return list.filter(isPlayer);
             }
 
             const youtube = host === 'youtube.com' || host.endsWith('.youtube.com');
@@ -105,52 +107,81 @@ public enum MediaScript {
             }
             const canSkip = forward => handlers.has(forward ? 'nexttrack' : 'previoustrack') || !!youtubeButton(forward);
 
+            const frame = Math.random().toString(36).slice(2) + Date.now().toString(36);
+            // The element that last played with sound, still here: the frame's player.
+            function player(list) {
+                const last = lastAudible?.deref();
+                return list.includes(last) ? last : null;
+            }
+
             function state() {
                 refreshStreamingControl();
                 const list = elements();
                 const video = list.filter(element => element instanceof HTMLVideoElement);
-                let isAudible = list.some(audible);
+                const nowPlaying = list.filter(playing);
+                const sounding = nowPlaying.find(audible);
+                if (sounding) lastAudible = new WeakRef(sounding);
+                let isAudible = !!sounding;
+                let isPlaying = isAudible || nowPlaying.includes(player(list));
                 if (streamingControl) {
                     const label = (streamingControl.getAttribute('aria-label') || '').toLowerCase();
                     const streaming = label.includes('pause') || streamingControl.classList.contains('playing') ||
                         !!streamingControl.querySelector('button[aria-label*="pause"], button[aria-label*="Pause"]');
                     isAudible ||= streaming;
+                    isPlaying ||= streaming;
                 }
                 return {
-                    hasMedia: list.length > 0 || !!streamingControl, isAudible,
+                    frame, hasMedia: list.length > 0 || !!streamingControl, isAudible, isPlaying,
+                    isMuted: !isAudible && nowPlaying.length > 0,
                     hasVideo: video.length > 0, isPlayingVideo: video.some(playing),
                     previousTrack: canSkip(false), nextTrack: canSkip(true),
                 };
             }
 
-            function toggle(play) {
+            // Each control answers with the frame's new state.
+            async function toggle(play) {
                 const list = elements();
                 if (play) {
-                    const last = lastAudible?.deref();
-                    const target = (list.includes(last) ? last : null)
+                    const target = player(list)
                         ?? list.find(element => !element.muted && element.currentTime > 0 && !element.ended)
                         ?? list.find(element => !element.muted) ?? list[0];
-                    if (target) return void target.play().catch(() => {});
-                    return void handlers.get('play')?.({action: 'play'});
+                    if (target) await Promise.race([target.play().catch(() => {}), new Promise(done => setTimeout(done, 300))]);
+                    else handlers.get('play')?.({action: 'play'});
+                    return state();
                 }
-                const sounding = list.filter(audible);
-                if (sounding.length) return sounding.forEach(element => element.pause());
-                handlers.get('pause')?.({action: 'pause'});
+                const current = player(list);
+                const stopping = list.filter(element => element === current ? playing(element) : audible(element));
+                if (stopping.length) stopping.forEach(element => element.pause());
+                else handlers.get('pause')?.({action: 'pause'});
+                return state();
             }
 
             function skip(forward) {
                 const action = forward ? 'nexttrack' : 'previoustrack';
                 const handler = handlers.get(action);
-                if (handler) return void handler({action});
-                youtubeButton(forward)?.click();
+                if (handler) handler({action});
+                else youtubeButton(forward)?.click();
+                return state();
             }
 
-            Object.defineProperty(window, '__nookMedia', {value: Object.freeze({state, toggle, skip})});
+            // Undoes the page's own mute: its player's, else every element playing muted.
+            function unmute() {
+                const list = elements();
+                const current = player(list);
+                for (const element of current ? [current] : list.filter(playing)) {
+                    element.muted = false;
+                    if (element.volume === 0) element.volume = 1;
+                }
+                return state();
+            }
+
+            Object.defineProperty(window, '__nookMedia', {value: Object.freeze({frame, state, toggle, skip, unmute})});
         })();
         """
 
-    /// At document end: posts the frame's state to `handler` whenever it changes, under an id the
-    /// frame makes up, and `gone` when the document goes. A frame that never holds media stays quiet.
+    /// At document end: posts the frame's state to `handler` whenever it changes, under the
+    /// frame's id, and `gone` when the document goes. A frame that never holds media stays quiet.
+    /// Nothing depends on every post arriving: WebKit's own audio signal makes the app ask again.
     public static func reporter(handler: String) -> String {
         """
         // Nook Media Report
@@ -159,16 +190,17 @@ public enum MediaScript {
             if (!media || window.__nookMediaReporting) return;
             window.__nookMediaReporting = true;
             const post = message => window.webkit?.messageHandlers?.['\(handler)']?.postMessage(message);
-            const frame = Math.random().toString(36).slice(2) + Date.now().toString(36);
+            const frame = media.frame;
             let pending = null;
             let last = null;
             function report() {
                 pending = null;
                 const state = media.state();
                 const serialized = JSON.stringify(state);
-                if (serialized === last || (last === null && !Object.values(state).some(Boolean))) return;
+                const quiet = !state.hasMedia && !state.isAudible && !state.previousTrack && !state.nextTrack;
+                if (serialized === last || (last === null && quiet)) return;
                 last = serialized;
-                post(Object.assign({frame}, state));
+                post(state);
             }
             const schedule = () => { if (pending === null) pending = setTimeout(report, 50); };
             document.addEventListener('nookmedia', schedule);

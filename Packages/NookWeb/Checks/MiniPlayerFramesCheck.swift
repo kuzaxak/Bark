@@ -111,7 +111,7 @@ struct MiniPlayerFramesCheck {
                 if condition() { return }
                 try? await Task.sleep(for: .milliseconds(50))
             }
-            fatalError("waited for \(what): \(reports.frames.media)")
+            fatalError("waited for \(what): \(reports.frames.media(audible: nil))")
         }
         func run(_ body: String, in frame: WKFrameInfo?, _ arguments: [String: Any] = [:]) async -> Any? {
             do {
@@ -123,20 +123,20 @@ struct MiniPlayerFramesCheck {
 
         Task { @MainActor in
             web.load(URLRequest(url: URL(string: "nookcheck://article/page.html")!))
-            await until("the iframe's player") { reports.frames.media.isAudible }
+            await until("the iframe's player") { reports.frames.media(audible: nil).isAudible }
             let embed = reports.frames.pauseTargets
             precondition(embed.count == 1 && !embed[0].isMainFrame && embed[0].securityOrigin.host == "player",
                          "sound from the iframe only: \(embed.map(\.securityOrigin.host))")
 
             var miniPlayer = MiniPlayer()
             let page = UUID()
-            let media = reports.frames.media
+            let media = reports.frames.media(audible: nil)
             miniPlayer.update([MiniPlayerPage(id: page, hasMedia: media.hasMedia, isAudible: media.isAudible, isOnScreen: false)])
             precondition(miniPlayer.itemID == page, "the bar shows the page whose iframe plays")
 
             let hasMediaSession = await run("return typeof navigator.mediaSession === 'object';", in: embed[0]) as? Bool == true
             if hasMediaSession {
-                await until("the iframe's Next handler") { reports.frames.media.handlesNextTrack }
+                await until("the iframe's Next handler") { reports.frames.media(audible: nil).handlesNextTrack }
                 let next = reports.frames.trackTarget(forward: true)
                 precondition(next?.securityOrigin.host == "player", "Next acts in the player's frame")
                 _ = await run("window.__nookMedia.skip(true);", in: next)
@@ -145,30 +145,30 @@ struct MiniPlayerFramesCheck {
             }
 
             _ = await run("window.__nookMedia.toggle(false);", in: embed[0])
-            await until("Pause in the iframe") { !reports.frames.media.isAudible }
-            precondition(reports.frames.media.hasMedia, "a paused player is still media")
+            await until("Pause in the iframe") { !reports.frames.media(audible: nil).isAudible }
+            precondition(reports.frames.media(audible: nil).hasMedia, "a paused player is still media")
             let resume = reports.frames.resumeTarget
             precondition(resume?.securityOrigin.host == "player", "Play resumes the frame that last played sound")
             _ = await run("window.__nookMedia.toggle(true);", in: resume)
-            await until("Play in the iframe") { reports.frames.media.isAudible }
+            await until("Play in the iframe") { reports.frames.media(audible: nil).isAudible }
             _ = await run("window.__nookMedia.toggle(false);", in: resume)
-            await until("Pause again") { !reports.frames.media.isAudible }
+            await until("Pause again") { !reports.frames.media(audible: nil).isAudible }
 
             _ = await run("new Audio(window.chime).play(); return null;", in: nil)
             try? await Task.sleep(for: .milliseconds(1000))
-            precondition(!reports.frames.media.isAudible, "a two-second chime outside the document is no player")
+            precondition(!reports.frames.media(audible: nil).isAudible, "a two-second chime outside the document is no player")
 
             _ = await run("window.player = new Audio(window.song); window.player.play(); return null;", in: nil)
             await until("the player outside the document") { reports.frames.pauseTargets.contains { $0.isMainFrame } }
             _ = await run("window.__nookMedia.toggle(false);", in: nil)
-            await until("Pause outside the document") { !reports.frames.media.isAudible }
+            await until("Pause outside the document") { !reports.frames.media(audible: nil).isAudible }
             precondition(reports.frames.resumeTarget?.isMainFrame == true, "Play resumes the main frame's player")
 
             // YouTube without media session handlers: its player's own buttons, when they show.
             reports.frames = MediaFrames()
             web.load(URLRequest(url: URL(string: "nookcheck://www.youtube.com/watch.html")!))
-            await until("YouTube's Next button") { reports.frames.media.handlesNextTrack }
-            precondition(!reports.frames.media.handlesPreviousTrack, "a hidden Previous button is no Previous")
+            await until("YouTube's Next button") { reports.frames.media(audible: nil).handlesNextTrack }
+            precondition(!reports.frames.media(audible: nil).handlesPreviousTrack, "a hidden Previous button is no Previous")
             _ = await run("window.__nookMedia.skip(true);", in: reports.frames.trackTarget(forward: true))
             let clicked = await run("return window.next === true;", in: nil) as? Bool
             precondition(clicked == true, "Next clicks YouTube's button")

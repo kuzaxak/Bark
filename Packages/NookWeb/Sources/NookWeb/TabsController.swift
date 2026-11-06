@@ -660,7 +660,8 @@ public final class TabsController {
         let selected = window.selectedItemID
         let shownSplit = window.split.flatMap { split in selected.map(split.contains) == true ? split : nil }
         return pages.map { page in
-            MiniPlayerPage(id: page.itemID, hasMedia: page.media.hasMedia, isAudible: page.media.isAudible,
+            // Sound from a page with no player is a notification chime, not something to control.
+            MiniPlayerPage(id: page.itemID, hasMedia: page.media.hasMedia, isAudible: page.media.hasMedia && page.media.isAudible,
                            isOnScreen: page.itemID == selected || shownSplit?.contains(page.itemID) == true)
         }
     }

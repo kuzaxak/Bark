@@ -91,20 +91,20 @@ struct MediaControlsView: View {
                 .help("Previous")
                 .disabled(!media.handlesPreviousTrack)
             Spacer(minLength: 0)
-            Button(media.isAudible ? "Pause" : "Play", systemImage: media.isAudible ? "pause.fill" : "play.fill") {
+            Button(media.isPlaying ? "Pause" : "Play", systemImage: media.isPlaying ? "pause.fill" : "play.fill") {
                 page.togglePlayback()
             }
-            .help(media.isAudible ? "Pause" : "Play")
+            .help(media.isPlaying ? "Pause" : "Play")
             Spacer(minLength: 0)
             Button("Next", systemImage: "forward.end.fill") { page.skipTrack(forward: true) }
                 .help("Next")
                 .disabled(!media.handlesNextTrack)
             Spacer(minLength: 0)
-            Button(page.isAudioMuted ? "Unmute" : "Mute",
-                   systemImage: page.isAudioMuted ? "speaker.slash.fill" : "speaker.wave.2.fill") {
-                page.toggleMute()
+            let muted = page.isAudioMuted || media.isMuted
+            Button(muted ? "Unmute" : "Mute", systemImage: muted ? "speaker.slash.fill" : "speaker.wave.2.fill") {
+                page.toggleSound()
             }
-            .help(page.isAudioMuted ? "Unmute" : "Mute")
+            .help(muted ? "Unmute" : "Mute")
             if showsVideoButton {
                 Spacer(minLength: 0)
                 Button("Maximize", systemImage: "arrow.up.left.and.arrow.down.right") { maximize(page) }

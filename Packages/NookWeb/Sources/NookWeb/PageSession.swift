@@ -174,7 +174,14 @@ public final class PageSession: NSObject, Identifiable {
     public var hasPiPActive: Bool = false
     public var hasPlayingAudio: Bool = false
     public internal(set) var media = PageMedia()
-    @ObservationIgnored var mediaFrames = MediaFrames<WKFrameInfo>()
+    @ObservationIgnored var mediaFrames = MediaFrames<WKFrameInfo?>()
+    /// WebKit's own word on whether the page plays sound; nil until the web view reports it.
+    @ObservationIgnored var webKitAudible: Bool?
+    /// WebKit's private, KVO-compliant `_isPlayingAudio`: what Safari's tab speaker follows. It
+    /// covers every frame, Web Audio and elements outside the document, stays on while the tab is
+    /// muted (`_setPageMuted:`), and goes off when the page mutes or pauses its media.
+    static let isPlayingAudioKey = "_isPlayingAudio"
+    static let isPlayingAudioSelector = NSSelectorFromString(isPlayingAudioKey)
     public var isAudioMuted: Bool = false
     public var hasAudioContent: Bool = false {
         didSet {
@@ -498,6 +505,7 @@ public final class PageSession: NSObject, Identifiable {
         hasAudioContent = false
         hasVideoContent = false
         mediaFrames = MediaFrames()
+        webKitAudible = nil
         media = PageMedia()
         // Also covers `tearDown`, which unloads first.
         switcherSnapshot = nil
@@ -750,6 +758,9 @@ public final class PageSession: NSObject, Identifiable {
             webView.addObserver(self, forKeyPath: "canGoForward", options: [.new, .initial], context: nil)
             webView.addObserver(self, forKeyPath: "title", options: [.new], context: nil)
             webView.addObserver(self, forKeyPath: "fullscreenState", options: [.new], context: nil)
+            if webView.responds(to: Self.isPlayingAudioSelector) {
+                webView.addObserver(self, forKeyPath: Self.isPlayingAudioKey, options: [.new, .initial], context: nil)
+            }
             // No URL observer: it fired during setup and overwrote restored URLs.
             // didCommit/didFinish own URL updates.
             navigationStateObservedWebViews.add(webView)
@@ -762,6 +773,9 @@ public final class PageSession: NSObject, Identifiable {
             webView.removeObserver(self, forKeyPath: "canGoForward")
             webView.removeObserver(self, forKeyPath: "title")
             webView.removeObserver(self, forKeyPath: "fullscreenState")
+            if webView.responds(to: Self.isPlayingAudioSelector) {
+                webView.removeObserver(self, forKeyPath: Self.isPlayingAudioKey)
+            }
             navigationStateObservedWebViews.remove(webView)
         }
     }
@@ -779,6 +793,10 @@ public final class PageSession: NSObject, Identifiable {
             }
             pendingThemeColorUpdate = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
+        } else if keyPath == Self.isPlayingAudioKey, let webView = object as? WKWebView {
+            if webView === self.webView, let audible = webView.value(forKey: Self.isPlayingAudioKey) as? Bool {
+                webKitAudioChanged(audible)
+            }
         } else if keyPath == "canGoBack" || keyPath == "canGoForward", object is WKWebView {
             updateNavigationState()
         } else if keyPath == "title", let webView = object as? WKWebView {
