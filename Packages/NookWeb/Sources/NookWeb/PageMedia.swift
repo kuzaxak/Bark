@@ -89,19 +89,24 @@ public struct MediaFrames<Frame> {
         entries[id] = Entry(frame: frame, media: media, reportedAt: clock, audibleAt: audibleAt)
     }
 
-    /// The page's media. `audible` is WebKit's own word on whether the page plays sound, which
-    /// holds even when a frame's report was lost; nil leaves it to the frames.
-    public func media(audible: Bool?) -> PageMedia {
+    /// The page's media as its frames report it: what the bar goes by.
+    public var media: PageMedia {
         let all = entries.values.map(\.media)
-        let framesAudible = all.contains { $0.isAudible }
-        let isAudible = audible ?? framesAudible
+        let isAudible = all.contains { $0.isAudible }
         return PageMedia(
             hasMedia: all.contains { $0.hasMedia }, isAudible: isAudible,
             isPlaying: isAudible || all.contains { $0.isPlaying },
-            isMuted: !framesAudible && all.contains { $0.isMuted },
+            isMuted: !isAudible && all.contains { $0.isMuted },
             hasVideo: all.contains { $0.hasVideo }, isPlayingVideo: all.contains { $0.isPlayingVideo },
             handlesPreviousTrack: all.contains { $0.handlesPreviousTrack },
             handlesNextTrack: all.contains { $0.handlesNextTrack })
+    }
+
+    /// Whether the page plays sound, for the tab row's speaker and the unload rules: WebKit's own
+    /// signal (`webKit`, nil when unknown) or any frame's report. WebKit's false never cancels a
+    /// frame's true, and its true covers sounds no frame counts, such as a notification chime.
+    public func isAudible(webKit: Bool?) -> Bool {
+        webKit == true || media.isAudible
     }
 
     /// Every frame that has reported, to ask again.

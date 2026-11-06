@@ -138,7 +138,7 @@ struct MiniPlayerTrackingTests {
                                                 placement: .newTab, parent: .tabs(spaceID: spaceID)))
         _ = try #require(host.tabs.open(url: URL(string: "https://other.invalid")!, in: host.window,
                                         placement: .newTab, parent: .tabs(spaceID: spaceID)))
-        try #require(host.tabs.session(for: music)).media = PageMedia(hasMedia: true, isAudible: true)
+        try #require(host.tabs.session(for: music)).report(PageMedia(hasMedia: true, isAudible: true, isPlaying: true))
 
         for _ in 0..<100 where host.window.miniPlayer.itemID != music { await Task.yield() }
         #expect(host.window.miniPlayer.itemID == music)
@@ -156,11 +156,49 @@ struct MiniPlayerTrackingTests {
                                                 placement: .newTab, parent: .tabs(spaceID: spaceID)))
         let other = try #require(host.tabs.open(url: URL(string: "https://other.invalid")!, in: host.window,
                                                 placement: .newTab, parent: .tabs(spaceID: spaceID)))
-        try #require(host.tabs.session(for: music)).media = PageMedia(hasMedia: true, isAudible: true)
+        try #require(host.tabs.session(for: music)).report(PageMedia(hasMedia: true, isAudible: true, isPlaying: true))
         for _ in 0..<100 where host.window.miniPlayer.itemID != music { await Task.yield() }
 
         #expect(host.tabs.isInMiniPlayer(music))
         #expect(!host.tabs.isInMiniPlayer(other))
+    }
+
+    /// Music holds the bar; another tab with a paused video plays a notification chime. WebKit
+    /// hears that page, so its row shows the speaker, but its frames report no player playing,
+    /// and the bar stays with the music.
+    @Test func aChimeBesideAPausedVideoNeverTakesTheBar() async throws {
+        let host = try Host()
+        let spaceID = try #require(host.window.spaceID)
+        let tabs = try ["music", "video", "reading"].map { name in
+            try #require(host.tabs.open(url: URL(string: "https://\(name).invalid")!, in: host.window,
+                                        placement: .newTab, parent: .tabs(spaceID: spaceID)))
+        }
+        let music = try #require(host.tabs.session(for: tabs[0]))
+        let video = try #require(host.tabs.session(for: tabs[1]))
+        music.report(PageMedia(hasMedia: true, isAudible: true, isPlaying: true))
+        video.report(PageMedia(hasMedia: true, hasVideo: true))
+        for _ in 0..<100 where host.window.miniPlayer.itemID != music.itemID { await Task.yield() }
+        #expect(host.window.miniPlayer.itemID == music.itemID)
+
+        video.webKitAudible = true
+        video.applyMediaFrames()
+        host.tabs.trackMiniPlayer(of: host.window)
+        for _ in 0..<100 { await Task.yield() }
+
+        #expect(video.hasAudioContent, "the row's speaker")
+        #expect(!video.media.isAudible && !video.media.isPlaying, "the bar's play state")
+        #expect(host.window.miniPlayer.itemID == music.itemID)
+    }
+}
+
+extension PageSession {
+    /// Feeds a report the way the page's media script posts one.
+    func report(_ media: PageMedia, frame: String = "main") {
+        receiveMediaReport([
+            "frame": frame, "hasMedia": media.hasMedia, "isAudible": media.isAudible, "isPlaying": media.isPlaying,
+            "isMuted": media.isMuted, "hasVideo": media.hasVideo, "isPlayingVideo": media.isPlayingVideo,
+            "previousTrack": media.handlesPreviousTrack, "nextTrack": media.handlesNextTrack,
+        ], from: nil)
     }
 }
 
@@ -168,14 +206,14 @@ struct MiniPlayerTrackingTests {
 /// site, never another window's, a private window's, the Agent space's or a Peek's.
 @MainActor
 struct MiniPlayerPagesTests {
-    let playing = PageMedia(hasMedia: true, isAudible: true)
+    let playing = PageMedia(hasMedia: true, isAudible: true, isPlaying: true)
 
     private func openTab(_ address: String, in window: BrowserWindowState, space: UUID, _ host: Host) throws -> UUID {
         try #require(host.tabs.open(url: URL(string: address)!, in: window, placement: .newTab, parent: .tabs(spaceID: space)))
     }
 
     private func play(_ itemID: UUID, _ host: Host) throws {
-        try #require(host.tabs.session(for: itemID)).media = playing
+        try #require(host.tabs.session(for: itemID)).report(playing)
     }
 
     private func ids(_ window: BrowserWindowState, _ host: Host) -> Set<UUID> {
@@ -237,7 +275,7 @@ struct MiniPlayerPagesTests {
         try play(agentTab, host)
         let profile = try #require(host.tabs.profile(forSpace: spaceID))
         let peek = host.tabs.openDetached(url: URL(string: "https://peek.invalid")!, profile: profile, in: host.window)
-        peek.media = playing
+        peek.report(playing)
 
         let listed = ids(host.window, host)
         #expect(!listed.contains(agentTab))

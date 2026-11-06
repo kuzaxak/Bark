@@ -21,16 +21,17 @@ extension PageSession {
         applyMediaFrames()
     }
 
-    /// Sets the page's media from WebKit's signal and its frames' reports, each property only when
-    /// it changes: a set fires observers even with the same value, and views showing video
-    /// re-render on it.
+    /// Sets the page's media from its frames' reports, and the audio state the tab row and the
+    /// unload rules read from those and WebKit's signal. Each property is set only when it changes:
+    /// a set fires observers even with the same value, and views showing video re-render on it.
     func applyMediaFrames() {
-        let combined = mediaFrames.media(audible: webKitAudible)
+        let combined = mediaFrames.media
         if media != combined { media = combined }
         if hasVideoContent != combined.hasVideo { hasVideoContent = combined.hasVideo }
         if hasPlayingVideo != combined.isPlayingVideo { hasPlayingVideo = combined.isPlayingVideo }
-        if hasAudioContent != combined.isAudible { hasAudioContent = combined.isAudible }
-        if hasPlayingAudio != combined.isAudible { hasPlayingAudio = combined.isAudible }
+        let audible = mediaFrames.isAudible(webKit: webKitAudible)
+        if hasAudioContent != audible { hasAudioContent = audible }
+        if hasPlayingAudio != audible { hasPlayingAudio = audible }
     }
 
     /// WebKit says the page started or stopped playing sound. The frames are asked for their state

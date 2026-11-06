@@ -3,8 +3,8 @@ import Testing
 @testable import NookWeb
 
 /// A page's media is what any of its frames holds: a player embedded in an article counts as
-/// much as one in the page itself, and each control acts in the frame it belongs to. Whether the
-/// page plays sound is WebKit's to say when it can, since a frame's report can fail to arrive.
+/// much as one in the page itself, and each control acts in the frame it belongs to. The bar goes
+/// by the frames alone; WebKit's own signal only adds to the tab row's speaker.
 struct MediaFramesTests {
     let silent = PageMedia()
     let mutedClip = PageMedia(hasMedia: true, hasVideo: true, isPlayingVideo: true)
@@ -16,35 +16,38 @@ struct MediaFramesTests {
         var frames = MediaFrames<String>()
         frames.report("main", frame: "main", media: silent)
         frames.report("embed", frame: "embed", media: sounding)
-        let media = frames.media(audible: nil)
-        #expect(media.hasMedia && media.isAudible && media.isPlaying && media.handlesNextTrack)
-        #expect(!media.handlesPreviousTrack)
+        #expect(frames.media.hasMedia && frames.media.isAudible && frames.media.isPlaying && frames.media.handlesNextTrack)
+        #expect(!frames.media.handlesPreviousTrack)
     }
 
-    @Test func webKitSaysWhetherThePagePlaysSound() {
+    /// The tab row's speaker and the unload rules: on when WebKit hears the page or a frame says
+    /// it plays sound. WebKit's "no" never cancels a frame's "yes", since its signal can go quiet.
+    @Test func theSpeakerIsOnWhenWebKitOrAFrameHearsSound() {
         var frames = MediaFrames<String>()
         frames.report("main", frame: "main", media: paused)
-        let heard = frames.media(audible: true)
-        #expect(heard.isAudible && heard.isPlaying, "a report that never came does not silence the page")
+        #expect(frames.isAudible(webKit: true), "a chime, or a frame whose report never came")
+        #expect(!frames.isAudible(webKit: false))
+        #expect(!frames.isAudible(webKit: nil))
+        #expect(!frames.media.isAudible && !frames.media.isPlaying, "the bar goes by the frames alone")
         frames.report("main", frame: "main", media: sounding)
-        #expect(!frames.media(audible: false).isAudible)
-        #expect(frames.media(audible: nil).isAudible, "the frames decide without WebKit's signal")
+        #expect(frames.isAudible(webKit: false))
+        #expect(frames.isAudible(webKit: nil))
     }
 
     @Test func aPageThatMutedItselfIsMuted() {
         var frames = MediaFrames<String>()
         frames.report("main", frame: "main", media: mutedByPage)
-        #expect(frames.media(audible: false).isMuted)
-        #expect(frames.media(audible: false).isPlaying, "still playing, only muted")
+        #expect(frames.media.isMuted)
+        #expect(frames.media.isPlaying, "still playing, only muted")
         frames.report("embed", frame: "embed", media: sounding)
-        #expect(!frames.media(audible: true).isMuted, "something else on the page plays with sound")
+        #expect(!frames.media.isMuted, "something else on the page plays with sound")
     }
 
     @Test func aFrameThatGoesTakesItsMediaWithIt() {
         var frames = MediaFrames<String>()
         frames.report("embed", frame: "embed", media: sounding)
         frames.report("embed", frame: "embed", media: nil)
-        #expect(frames.media(audible: nil) == PageMedia())
+        #expect(frames.media == PageMedia())
     }
 
     @Test func pauseActsWhereThePlayerPlays() {
