@@ -66,6 +66,8 @@ extension PageSession: WKNavigationDelegate {
         // A new page gets its dialogs back.
         jsDialogCount = 0
         jsDialogsSuppressed = false
+        // The new document has no media until its media script reports, and a PDF never does.
+        media = PageMedia()
         resetTranslation()
         #if os(macOS)
         controller?.vault?.pageCommitted(in: webView)

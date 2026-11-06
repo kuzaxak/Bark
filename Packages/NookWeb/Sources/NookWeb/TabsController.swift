@@ -649,6 +649,19 @@ public final class TabsController {
         }
     }
 
+    /// The pages `window`'s mini player looks at: the window's own tabs in every space, on any
+    /// site. A regular window's are those it selected last or opened from a link in the
+    /// background, the Agent space's left out; a private window's are its own.
+    public func miniPlayerPages(for window: BrowserWindowState) -> Set<MiniPlayerPage> {
+        let pages = window.privateTree != nil
+            ? Array(window.privateSessions.values)
+            : liveSessions.values.filter { pageOwners[$0.itemID] == window.id && !isInAgentSpace($0.itemID) }
+        return Set(pages.map { page in
+            MiniPlayerPage(id: page.itemID, hasMedia: page.media.hasMedia, isAudible: page.media.isAudible,
+                           isOnScreen: shows(page.itemID, in: window))
+        })
+    }
+
     // MARK: - Page Reports
 
     /// A committed navigation or SPA URL change. Device items store it as their URL; synced items

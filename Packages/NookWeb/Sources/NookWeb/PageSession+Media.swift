@@ -9,6 +9,28 @@
 import SwiftUI
 import WebKit
 
+/// What the page's audio and video are doing, as its media script reports it.
+public struct PageMedia: Equatable, Sendable {
+    /// Audio or video elements, playing or paused, or a streaming service's player.
+    public var hasMedia: Bool
+    /// Something plays, muted or not.
+    public var isPlaying: Bool
+    /// Something plays with sound.
+    public var isAudible: Bool
+    /// The page set `navigator.mediaSession` handlers for Previous and Next.
+    public var handlesPreviousTrack: Bool
+    public var handlesNextTrack: Bool
+
+    public init(hasMedia: Bool = false, isPlaying: Bool = false, isAudible: Bool = false,
+                handlesPreviousTrack: Bool = false, handlesNextTrack: Bool = false) {
+        self.hasMedia = hasMedia
+        self.isPlaying = isPlaying
+        self.isAudible = isAudible
+        self.handlesPreviousTrack = handlesPreviousTrack
+        self.handlesNextTrack = handlesNextTrack
+    }
+}
+
 extension PageSession {
     // MARK: - Simple Media Detection (mainly for manual checks)
     func checkMediaState() {
@@ -108,6 +130,24 @@ extension PageSession {
 
     public func toggleMute() {
         setMuted(!isAudioMuted)
+    }
+
+    /// Pauses the page's audio and video, or plays what played last. A page with no media
+    /// element, such as a Web Audio player, gets its own `navigator.mediaSession` handler.
+    public func togglePlayback() {
+        webView?.callAsyncJavaScript("""
+            const elements = [...document.querySelectorAll('video, audio')];
+            if (!elements.length) return void window.__nookMediaSession?.run(play ? 'play' : 'pause');
+            if (!play) return elements.forEach(element => element.pause());
+            const target = elements.find(element => element.currentTime > 0 && !element.ended) ?? elements[0];
+            target.play().catch(() => {});
+            """, arguments: ["play": !media.isPlaying], in: nil, in: .page)
+    }
+
+    /// Runs the page's own Previous or Next handler (`media.handlesPreviousTrack`, `handlesNextTrack`).
+    public func skipTrack(forward: Bool) {
+        webView?.callAsyncJavaScript("void window.__nookMediaSession?.run(action);",
+                                     arguments: ["action": forward ? "nexttrack" : "previoustrack"], in: nil, in: .page)
     }
 
     public func setMuted(_ muted: Bool) {

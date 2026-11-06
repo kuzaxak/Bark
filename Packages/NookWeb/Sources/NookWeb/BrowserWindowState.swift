@@ -86,6 +86,9 @@ public class BrowserWindowState {
     /// Whether the Boost panel for the selected page is open in this window
     public var isBoostPanelVisible: Bool = false
 
+    /// Which of this window's pages the sidebar's mini player shows.
+    public var miniPlayer = MiniPlayer()
+
     // MARK: - App-side objects
     //
     // Typed accessors live in the app (`BrowserWindowState+macOS.swift`); the storage is here so

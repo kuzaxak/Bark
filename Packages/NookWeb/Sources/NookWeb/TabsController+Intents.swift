@@ -39,6 +39,8 @@ extension TabsController {
         if placement != .background {
             select(id, in: window)
         } else if opener != nil, let session = ensureSession(for: id) {
+            // This window's page, for its mini player, until another window selects it.
+            takeControl(id, in: window)
             session.loadWebViewIfNeeded()
             onPageLoadedInBackground?(session)
         }

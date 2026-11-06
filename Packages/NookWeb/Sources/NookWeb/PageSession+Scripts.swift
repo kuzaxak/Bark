@@ -64,23 +64,32 @@ extension PageSession {
                     let hasPlayingAudio = false;
                     let hasPlayingVideo = false;
                     let hasVideoContent = false;
+                    let hasMedia = false;
+                    let isPlaying = false;
                     for (const element of media) {
                         if (!element.isConnected) { media.delete(element); continue; }
+                        hasMedia = true;
                         const isVideo = element.tagName === 'VIDEO';
                         hasVideoContent ||= isVideo;
                         const playing = !element.paused && !element.ended && element.readyState >= 2;
+                        isPlaying ||= playing;
                         hasPlayingVideo ||= isVideo && playing;
                         hasPlayingAudio ||= playing && !element.muted && element.volume > 0;
                     }
                     // Some streaming services use Web Audio instead of a DOM media element.
                     if (streamingControl) {
                         const label = streamingControl.getAttribute('aria-label') || '';
-                        hasPlayingAudio ||= label.toLowerCase().includes('pause') ||
+                        const streaming = label.toLowerCase().includes('pause') ||
                             streamingControl.classList.contains('playing') ||
                             !!streamingControl.querySelector('button[aria-label*="pause"], button[aria-label*="Pause"]');
+                        hasMedia = true;
+                        isPlaying ||= streaming;
+                        hasPlayingAudio ||= streaming;
                     }
+                    const session = window.__nookMediaSession;
                     const state = {hasAudioContent: hasPlayingAudio, hasPlayingAudio,
-                        hasVideoContent, hasPlayingVideo};
+                        hasVideoContent, hasPlayingVideo, hasMedia, isPlaying,
+                        previousTrack: !!session?.has('previoustrack'), nextTrack: !!session?.has('nexttrack')};
                     const serialized = JSON.stringify(state);
                     if (serialized !== lastState) {
                         lastState = serialized;
@@ -117,7 +126,9 @@ extension PageSession {
                 });
                 observer.observe(document.documentElement, {childList: true, subtree: true});
                 document.addEventListener('visibilitychange', scheduleCheck);
-                window.addEventListener('pageshow', scheduleCheck);
+                document.addEventListener('nookmediasession', scheduleCheck);
+                // A page back from the back/forward cache reports again: its commit cleared the state.
+                window.addEventListener('pageshow', () => { lastState = null; scheduleCheck(); });
                 checkMediaState();
             })();
             """
@@ -309,6 +320,11 @@ extension PageSession: WKScriptMessageHandler {
                 if self.hasVideoContent != newVideoContent { self.hasVideoContent = newVideoContent }
                 if self.hasAudioContent != newAudioContent { self.hasAudioContent = newAudioContent }
                 if self.hasPlayingAudio != newPlayingAudio { self.hasPlayingAudio = newPlayingAudio }
+                let media = PageMedia(
+                    hasMedia: dict["hasMedia"] ?? false, isPlaying: dict["isPlaying"] ?? false,
+                    isAudible: newPlayingAudio, handlesPreviousTrack: dict["previousTrack"] ?? false,
+                    handlesNextTrack: dict["nextTrack"] ?? false)
+                if self.media != media { self.media = media }
             }
 
         case let name where name.hasPrefix("backgroundColor_"):

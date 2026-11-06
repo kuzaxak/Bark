@@ -57,9 +57,38 @@ public class BrowserConfiguration {
         // Note: webExtensionController will be set by ExtensionManager during initialization
 
         config.userContentController.addUserScript(Self.passkeySuppressionScript)
+        config.userContentController.addUserScript(Self.mediaSessionScript)
 
         return config
     }()
+
+    // MARK: Media session
+    // WebKit gives no way to read the handlers a page sets on navigator.mediaSession, so this
+    // records them as they are set, for the sidebar's mini player to run Previous and Next.
+    // Setting one tells the page's media script (PageSession+Scripts) to report again.
+    private static var mediaSessionScript: WKUserScript {
+        WKUserScript(source: mediaSessionSource, injectionTime: .atDocumentStart, forMainFrameOnly: true)
+    }
+
+    private static let mediaSessionSource = """
+        // Nook Media Session
+        (() => {
+            if (!window.MediaSession || window.__nookMediaSession) return;
+            const handlers = new Map();
+            const setActionHandler = MediaSession.prototype.setActionHandler;
+            MediaSession.prototype.setActionHandler = function (action, handler) {
+                setActionHandler.call(this, action, handler);
+                if (handler) handlers.set(action, handler); else handlers.delete(action);
+                document.dispatchEvent(new Event('nookmediasession'));
+            };
+            Object.defineProperty(window, '__nookMediaSession', {
+                value: Object.freeze({
+                    has: action => handlers.has(action),
+                    run: action => handlers.get(action)?.({ action }),
+                }),
+            });
+        })();
+        """
 
     // MARK: Passkey suppression
     // Pending Apple approval of com.apple.developer.web-browser.public-key-credential,

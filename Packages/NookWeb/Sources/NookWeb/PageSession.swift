@@ -173,6 +173,7 @@ public final class PageSession: NSObject, Identifiable {
     public var hasVideoContent: Bool = false
     public var hasPiPActive: Bool = false
     public var hasPlayingAudio: Bool = false
+    public internal(set) var media = PageMedia()
     public var isAudioMuted: Bool = false
     public var hasAudioContent: Bool = false {
         didSet {
@@ -493,6 +494,7 @@ public final class PageSession: NSObject, Identifiable {
         hasPlayingAudio = false
         hasAudioContent = false
         hasVideoContent = false
+        media = PageMedia()
         // Also covers `tearDown`, which unloads first.
         switcherSnapshot = nil
     }
