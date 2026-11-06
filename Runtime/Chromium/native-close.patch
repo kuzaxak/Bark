@@ -1,0 +1,1080 @@
+diff --git a/chrome/browser/ui/unload_controller.h b/chrome/browser/ui/unload_controller.h
+--- a/chrome/browser/ui/unload_controller.h
++++ b/chrome/browser/ui/unload_controller.h
+@@ -5,11 +5,14 @@
+ #ifndef CHROME_BROWSER_UI_UNLOAD_CONTROLLER_H_
+ #define CHROME_BROWSER_UI_UNLOAD_CONTROLLER_H_
+ 
++#include <cstdint>
+ #include <memory>
++#include <optional>
+ #include <set>
+ #include <vector>
+ 
+ #include "base/callback_list.h"
++#include "base/containers/span.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+@@ -31,6 +34,9 @@
+   // Represents the result of the user being warned before closing the browser.
+   // See WarnBeforeClosingCallback and WarnBeforeClosing() below.
+   enum class WarnBeforeClosingResult { kOkToClose, kDoNotClose };
++  // Local grouped-window cancellation must not broadcast application-quit
++  // cancellation. All existing callers keep application-shutdown semantics.
++  enum class BeforeUnloadPurpose { kApplicationShutdown, kNativeWindowGroup };
+ 
+   // Callback that receives the result of a user being warned about closing a
+   // browser window (for example, if closing the window would interrupt a
+@@ -185,8 +191,13 @@
+   // the close can proceed immediately, and the callback is not called. If the
+   // method returns kDoNotClose, closing should be handled by |warn_callback|
+   // (and then only if the callback receives the kOkToClose value).
++  // closing_browsers optionally describes one planned physical-window close.
++  // They are excluded from last-window download counting, not retained or
++  // closed here. The caller warns once per affected Profile before starting
++  // RunBeforeUnloadForShutdown and revalidates the group before committing.
+   WarnBeforeClosingResult MaybeWarnBeforeClosing(
+-      WarnBeforeClosingCallback warn_callback);
++      WarnBeforeClosingCallback warn_callback,
++      base::span<BrowserWindowInterface* const> closing_browsers = {});
+ 
+   // Called when all warnings have completed when attempting to close the
+   // browser directly (e.g. via hotkey, close button, terminate signal, etc.)
+@@ -210,9 +221,17 @@
+   // this function multiple times without an intervening call to
+   // ResetBeforeUnloadForShutdown() will run only the beforeunload handlers
+   // registered since the previous call.
++  // Reserve only this controller for a local native-window close. Existing
++  // shutdown/unload owners reject admission; ordinary shutdown preempts the
++  // local owner before installing its own beforeunload callback.
++  bool AcquireNativeWindowGroupClose(base::OnceClosure on_preempted);
++  void CancelNativeWindowGroupClose();
++  void CommitNativeWindowGroupClose();
++
+   bool RunBeforeUnloadForShutdown(
+       bool skip_beforeunload,
+-      const base::RepeatingCallback<void(bool)>& on_close_confirmed);
++      const base::RepeatingCallback<void(bool)>& on_close_confirmed,
++      BeforeUnloadPurpose purpose = BeforeUnloadPurpose::kApplicationShutdown);
+ 
+   // Clears the results of any beforeunload confirmation dialogs triggered by a
+   // RunBeforeUnloadForShutdown() call.
+@@ -253,12 +272,14 @@
+   // then |*num_downloads_blocking| is updated with how many downloads
+   // would be canceled if the close continued.
+   DownloadCloseType OkToCloseWithInProgressDownloads(
+-      int* num_downloads_blocking) const;
++      int* num_downloads_blocking,
++      base::span<BrowserWindowInterface* const> closing_browsers = {}) const;
+ 
+   // Called when the window is closing to check if potential in-progress
+   // downloads should prevent it from closing.
+   // Returns true if the window can close, false otherwise.
+-  bool CanCloseWithInProgressDownloads();
++  bool CanCloseWithInProgressDownloads(
++      base::span<BrowserWindowInterface* const> closing_browsers = {});
+ 
+   base::WeakPtr<UnloadController> GetWeakPtr();
+ 
+@@ -277,7 +298,7 @@
+   // closure.  |cancel_downloads| is true if the downloads should be canceled
+   // and the browser closed, false if the browser should stay open and the
+   // downloads running.
+-  void InProgressDownloadResponse(bool cancel_downloads);
++  void InProgressDownloadResponse(uint64_t generation, bool cancel_downloads);
+ 
+  private:
+   void RenderProcessGone(content::WebContents* web_contents,
+@@ -411,6 +432,9 @@
+   UnloadListenerSet tabs_needing_unload_fired_;
+ 
+   State state_ = State::kIdle;
++  // Engaged even when a shutdown preflight has no handlers to await, so a
++  // competing local group cannot claim that already-reserved controller.
++  std::optional<BeforeUnloadPurpose> before_unload_purpose_;
+ 
+   // A callback to call to report whether the user chose to close all tabs of
+   // |browser_| that have beforeunload event handlers. This is set only if we
+@@ -434,6 +458,8 @@
+       CancelDownloadConfirmationState::kNotPrompted;
+ 
+   WarnBeforeClosingCallback warn_before_closing_callback_;
++  uint64_t close_warning_generation_ = 0;
++  base::OnceClosure native_window_group_preempted_;
+ 
+   using BrowserDidCloseCallbackList =
+       base::RepeatingCallbackList<void(BrowserWindowInterface*)>;
+diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_controller.cc
+--- a/chrome/browser/ui/unload_controller.cc
++++ b/chrome/browser/ui/unload_controller.cc
+@@ -66,7 +66,9 @@
+ // Returns a pair [last_window, last_window_for_profile] indicating if `browser`
+ // is the only browser in total and for this profile.
+ // Ignores browsers that are in the process of closing.
+-std::pair<bool, bool> IsLastWindow(const BrowserWindowInterface* browser) {
++std::pair<bool, bool> IsLastWindow(
++    const BrowserWindowInterface* browser,
++    base::span<BrowserWindowInterface* const> closing_browsers) {
+   bool last_window = true;
+   bool last_window_for_profile = true;
+   ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
+@@ -75,6 +77,8 @@
+         // closing. Window closing may be delayed, and windows that are in the
+         // process of closing don't count against our totals.
+         if (other_browser == browser ||
++            std::ranges::find(closing_browsers, other_browser) !=
++                closing_browsers.end() ||
+             other_browser->capabilities()->IsAttemptingToCloseBrowser()) {
+           return true;
+         }
+@@ -496,9 +500,61 @@
+   }
+ }
+ 
++bool UnloadController::AcquireNativeWindowGroupClose(
++    base::OnceClosure on_preempted) {
++  CHECK(on_preempted);
++  if (is_delete_scheduled_ || state_ != State::kIdle ||
++      before_unload_purpose_.has_value() || native_window_group_preempted_ ||
++      !on_close_confirmed_.is_null() || warn_before_closing_callback_ ||
++      cancel_download_confirmation_state_ ==
++          CancelDownloadConfirmationState::kWaitingForResponse) {
++    return false;
++  }
++  cancel_download_confirmation_state_ =
++      CancelDownloadConfirmationState::kNotPrompted;
++  native_window_group_preempted_ = std::move(on_preempted);
++  return true;
++}
++
++void UnloadController::CancelNativeWindowGroupClose() {
++  if (!native_window_group_preempted_) {
++    return;
++  }
++  native_window_group_preempted_.Reset();
++  // An old modal may finish after local cancellation or ownership handoff.
++  // Its response must not alter the replacement owner's download state.
++  ++close_warning_generation_;
++  warn_before_closing_callback_.Reset();
++  ResetBeforeUnloadForShutdown();
++}
++
++void UnloadController::CommitNativeWindowGroupClose() {
++  native_window_group_preempted_.Reset();
++}
++
+ bool UnloadController::RunBeforeUnloadForShutdown(
+     bool skip_beforeunload,
+-    const base::RepeatingCallback<void(bool)>& on_close_confirmed) {
++    const base::RepeatingCallback<void(bool)>& on_close_confirmed,
++    BeforeUnloadPurpose purpose) {
++  if (purpose == BeforeUnloadPurpose::kApplicationShutdown &&
++      native_window_group_preempted_) {
++    auto alive = GetWeakPtr();
++    auto preempted = std::move(native_window_group_preempted_);
++    ++close_warning_generation_;
++    warn_before_closing_callback_.Reset();
++    ResetBeforeUnloadForShutdown();
++    if (!alive) {
++      return false;
++    }
++    std::move(preempted).Run();
++    if (!alive) {
++      return false;
++    }
++  }
++  if (purpose == BeforeUnloadPurpose::kNativeWindowGroup) {
++    CHECK(native_window_group_preempted_);
++  }
++  before_unload_purpose_ = purpose;
+   cancel_download_confirmation_state_ =
+       CancelDownloadConfirmationState::kResponseReceived;
+   // The devtools browser gets its beforeunload events as the results of
+@@ -526,6 +582,7 @@
+       CancelDownloadConfirmationState::kNotPrompted;
+   if (state_ != State::kRunningBeforeUnloadForShutdown &&
+       state_ != State::kBeforeUnloadConfirmed) {
++    before_unload_purpose_.reset();
+     return;
+   }
+   CancelWindowClose();
+@@ -570,6 +627,9 @@
+   }
+   tabs_needing_unload_fired_.clear();
+   const State previous_state = state_;
++  const bool notify_application_shutdown =
++      before_unload_purpose_ != BeforeUnloadPurpose::kNativeWindowGroup;
++  before_unload_purpose_.reset();
+   base::RepeatingCallback<void(bool)> on_close_confirmed =
+       std::move(on_close_confirmed_);
+   TransitionTo(State::kIdle);
+@@ -581,7 +641,9 @@
+     CHECK(on_close_confirmed.is_null());
+   }
+ 
+-  chrome::OnClosingAllBrowsers(false);
++  if (notify_application_shutdown) {
++    chrome::OnClosingAllBrowsers(false);
++  }
+ }
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -954,7 +1016,8 @@
+ 
+ UnloadController::WarnBeforeClosingResult
+ UnloadController::MaybeWarnBeforeClosing(
+-    WarnBeforeClosingCallback warn_callback) {
++    WarnBeforeClosingCallback warn_callback,
++    base::span<BrowserWindowInterface* const> closing_browsers) {
+   // If the browser can close right away (we've indicated that we want to skip
+   // before-unload handlers by setting `force_skip_warning_user_on_close_` to
+   // true or there are no pending downloads we need to prompt about) then
+@@ -964,7 +1027,8 @@
+   }
+ 
+   // `CanCloseWithInProgressDownloads()` may trigger a modal dialog.
+-  bool can_close_with_downloads = CanCloseWithInProgressDownloads();
++  bool can_close_with_downloads =
++      CanCloseWithInProgressDownloads(closing_browsers);
+   if (can_close_with_downloads) {
+     return WarnBeforeClosingResult::kOkToClose;
+   }
+@@ -978,7 +1042,8 @@
+ 
+ UnloadController::DownloadCloseType
+ UnloadController::OkToCloseWithInProgressDownloads(
+-    int* num_downloads_blocking) const {
++    int* num_downloads_blocking,
++    base::span<BrowserWindowInterface* const> closing_browsers) const {
+   DCHECK(num_downloads_blocking);
+   *num_downloads_blocking = 0;
+ 
+@@ -996,7 +1061,8 @@
+ 
+   // Figure out how many windows are open total, and associated with this
+   // profile, that are relevant for the ok-to-close decision.
+-  auto [last_window, last_window_for_profile] = IsLastWindow(browser_);
++  auto [last_window, last_window_for_profile] =
++      IsLastWindow(browser_, closing_browsers);
+ 
+   // If there aren't any other windows, we're at browser shutdown,
+   // which would cancel all current downloads.
+@@ -1026,7 +1092,8 @@
+   return DownloadCloseType::kOk;
+ }
+ 
+-bool UnloadController::CanCloseWithInProgressDownloads() {
++bool UnloadController::CanCloseWithInProgressDownloads(
++    base::span<BrowserWindowInterface* const> closing_browsers) {
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
+   // On Mac and ChromeOS, non-incognito and non-Guest downloads can still
+   // continue after window is closed.
+@@ -1044,8 +1111,8 @@
+   }
+ 
+   int num_downloads_blocking;
+-  DownloadCloseType dialog_type =
+-      OkToCloseWithInProgressDownloads(&num_downloads_blocking);
++  DownloadCloseType dialog_type = OkToCloseWithInProgressDownloads(
++      &num_downloads_blocking, closing_browsers);
+   if (dialog_type == DownloadCloseType::kOk) {
+     return true;
+   }
+@@ -1057,7 +1124,7 @@
+   BrowserWindow::FromBrowser(browser_)->ConfirmBrowserCloseWithPendingDownloads(
+       num_downloads_blocking, dialog_type,
+       base::BindOnce(&UnloadController::InProgressDownloadResponse,
+-                     weak_factory_.GetWeakPtr()));
++                     weak_factory_.GetWeakPtr(), close_warning_generation_));
+ 
+   // Return false so the browser does not close.  We'll close if the user
+   // confirms in the dialog.
+@@ -1068,7 +1135,11 @@
+   return weak_factory_.GetWeakPtr();
+ }
+ 
+-void UnloadController::InProgressDownloadResponse(bool cancel_downloads) {
++void UnloadController::InProgressDownloadResponse(uint64_t generation,
++                                                  bool cancel_downloads) {
++  if (generation != close_warning_generation_) {
++    return;
++  }
+   if (cancel_downloads) {
+     cancel_download_confirmation_state_ =
+         CancelDownloadConfirmationState::kResponseReceived;
+diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -24,6 +24,7 @@
+ class BrowserRootView;
+ enum class BrowserThemeChangeType;
+ class BrowserView;
++class BrowserWindowInterface;
+ class BrowserNativeWidget;
+ class SystemMenuModelBuilder;
+ 
+@@ -78,6 +79,15 @@
+ 
+   // Selection is independent of which logical view uniquely owns this Widget.
+   BrowserView* selected_browser_view() const { return browser_view_; }
++
++  // Grouped physical-close preflight never unloads a participant until all
++  // warning and beforeunload decisions succeed. Ordinary one-client close
++  // remains on its existing path.
++  views::CloseRequestResult PreparePhysicalClose();
++  bool IsPhysicalCloseCommitted() const;
++  bool HasPhysicalClosePending() const;
++  void RequestLogicalClose(BrowserView* view);
++  void RemoveLogicalBrowserView(BrowserView* view);
+ 
+   // Select an attached logical client; does not transfer unique ownership.
+   bool SelectLogicalBrowserView(BrowserView* view);
+@@ -174,6 +184,24 @@
+   // profile.
+   bool IsEnterpriseIsolatedModeBrowser() const;
+ 
++  enum class PhysicalClosePhase { kIdle, kWarnings, kBeforeUnload, kCommitted };
++  bool SelectLogicalBrowserViewInternal(BrowserView* view,
++                                        bool closing_current);
++  void OnClosingAllBrowsers(bool closing);
++  bool RefreshSelectedLogicalBrowserView();
++  void ContinuePhysicalClose();
++  void OnPhysicalWarning(size_t index, bool proceed);
++  void OnPhysicalBeforeUnload(size_t index, bool proceed);
++  bool ValidatePhysicalCloseParticipants() const;
++  void CancelPhysicalClose();
++  void CommitPhysicalClose();
++
++  PhysicalClosePhase physical_close_phase_ = PhysicalClosePhase::kIdle;
++  std::vector<base::WeakPtr<BrowserWindowInterface>>
++      physical_close_participants_;
++  size_t physical_close_index_ = 0;
++  bool physical_close_waiting_ = false;
++
+   raw_ptr<BrowserNativeWidget> browser_native_widget_;
+ 
+   // A weak reference to the root view associated with the window. We save a
+@@ -214,6 +242,8 @@
+ #if BUILDFLAG(IS_LINUX)
+   bool tiled_ = false;
+ #endif
++  base::CallbackListSubscription closing_all_browsers_subscription_;
++  base::WeakPtrFactory<BrowserWidget> physical_close_weak_factory_{this};
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_WIDGET_H_
+diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -11,9 +11,13 @@
+ #include "base/check.h"
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
++#include "base/location.h"
+ #include "base/metrics/user_metrics.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/app_mode/app_mode_utils.h"
++#include "chrome/browser/lifetime/application_lifetime_desktop.h"
++#include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/themes/custom_theme_supplier.h"
+ #include "chrome/browser/themes/theme_service.h"
+@@ -113,9 +117,14 @@
+   // Don't focus anything on creation, selecting a tab will set the focus.
+   set_focus_on_creation(false);
+   views::WidgetStationarityMonitor::GetInstance().TrackWidget(*this);
++  closing_all_browsers_subscription_ =
++      chrome::AddClosingAllBrowsersCallback(base::BindRepeating(
++          &BrowserWidget::OnClosingAllBrowsers, base::Unretained(this)));
+ }
+ 
+ BrowserWidget::~BrowserWidget() {
++  closing_all_browsers_subscription_ = {};
++  physical_close_weak_factory_.InvalidateWeakPtrs();
+   set_widget_closed();
+ 
+   // Synchronously destroy owned Widgets, which are typically owned by the
+@@ -246,16 +255,400 @@
+   }
+ }
+ 
++void BrowserWidget::OnClosingAllBrowsers(bool closing) {
++  if (closing && HasPhysicalClosePending() && !IsPhysicalCloseCommitted()) {
++    // Reset the local-purpose controller callbacks before application shutdown
++    // installs its own. Local cancellation must not broadcast quit
++    // cancellation.
++    CancelPhysicalClose();
++  }
++}
++
++bool BrowserWidget::HasPhysicalClosePending() const {
++  return physical_close_phase_ != PhysicalClosePhase::kIdle;
++}
++
++void BrowserWidget::RequestLogicalClose(BrowserView* view) {
++  CHECK(view);
++  CHECK_EQ(view->browser_widget(), this);
++  if (tab_drag_kind_ != TabDragKind::kNone) {
++    return;
++  }
++  if (HasPhysicalClosePending() && !IsPhysicalCloseCommitted()) {
++    CancelPhysicalClose();
++  }
++  // This real controller handles only this browser's warnings, beforeunload,
++  // session restore and tab shutdown. Never hide/close the shared Widget here.
++  auto alive = GetWeakPtr();
++  auto view_alive = view->weak_ptr_factory_.GetWeakPtr();
++  if (view->OnCloseRequested(views::Widget::ClosedReason::kUnspecified) &&
++      alive && view_alive) {
++    UnloadController::From(view->browser())->OnWindowClosing();
++  }
++}
++
++void BrowserWidget::RemoveLogicalBrowserView(BrowserView* closing) {
++  CHECK(closing);
++  CHECK_EQ(closing->browser_widget(), this);
++  const bool native_gone = !browser_native_widget_;
++  auto clients = GetLogicalBrowserViews();
++  CHECK_GT(clients.size(), 1u);
++  BrowserView* survivor = nullptr;
++  for (BrowserView* candidate : clients) {
++    if (candidate != closing &&
++        (!survivor || candidate == selected_browser_view())) {
++      survivor = candidate;
++    }
++  }
++  CHECK(survivor);
++  auto alive = GetWeakPtr();
++  auto closing_alive = closing->weak_ptr_factory_.GetWeakPtr();
++  auto survivor_alive = survivor->weak_ptr_factory_.GetWeakPtr();
++  if (!native_gone && closing->ShouldSaveWindowPlacement()) {
++    gfx::Rect bounds;
++    ui::mojom::WindowShowState state;
++    GetWindowPlacement(&bounds, &state);
++    closing->SaveWindowPlacement(bounds, state);
++  }
++  if (!alive || !closing_alive || !survivor_alive) {
++    return;
++  }
++  // The accepted close callback runs while this browser's controllers live.
++  if (!native_gone) {
++    NotifyClientWillClose(closing);
++  }
++  if (!alive || !closing_alive || !survivor_alive) {
++    return;
++  }
++  if (closing->owned_browser_widget_) {
++    closing->TransferPhysicalWidgetOwnershipTo(survivor);
++  }
++  const bool was_selected = closing == selected_browser_view();
++  if (was_selected && native_gone) {
++    // Widget::OnNativeWidgetDestroyed already finalized every delegate. Do not
++    // reattach one or touch Cocoa state after the native window is gone.
++    browser_view_ = survivor;
++    browser_frame_view_ = survivor->GetFrameView();
++    root_view_->SelectBrowserView(survivor);
++    const bool selected = non_client_view()->SelectClientFrame(survivor);
++    if (!alive || !closing_alive || !survivor_alive) {
++      return;
++    }
++    CHECK(selected);
++  } else if (was_selected) {
++    const bool selected = SelectLogicalBrowserViewInternal(survivor, true);
++    if (!alive || !closing_alive || !survivor_alive) {
++      return;
++    }
++    CHECK(selected);
++  }
++  // Stop outgoing callbacks before destroying the extension/exclusive-access
++  // controllers they consult. Deactivation already happened during handoff.
++  closing->paint_as_active_subscription_ = {};
++  closing->focus_manager_observation_.Reset();
++  if (closing->widget_observation_.IsObservingSource(this)) {
++    closing->OnWidgetDestroying(this);
++  }
++  closing->browser()->GetFeatures().TearDownPreBrowserWindowDestruction();
++  if (!alive || !closing_alive || !survivor_alive) {
++    return;
++  }
++  auto released = non_client_view()->ReleaseClientFrame(closing);
++  CHECK(released);
++  if (!native_gone) {
++    FinalizeClientDelegate(closing, closing);
++  }
++  released.reset();
++  if (!alive || !survivor_alive) {
++    return;
++  }
++  if (was_selected && !native_gone && !IsPhysicalCloseCommitted()) {
++    // Own prompts/controllers are gone; refresh survivor metadata and only then
++    // restore its logical activation and focus using the normal selected path.
++    RefreshSelectedLogicalBrowserView();
++  }
++}
++
++bool BrowserWidget::IsPhysicalCloseCommitted() const {
++  return physical_close_phase_ == PhysicalClosePhase::kCommitted;
++}
++
++views::CloseRequestResult BrowserWidget::PreparePhysicalClose() {
++  if (physical_close_phase_ == PhysicalClosePhase::kIdle) {
++    if (browser_shutdown::IsTryingToQuit() ||
++        tab_drag_kind_ != TabDragKind::kNone) {
++      return views::CloseRequestResult::kCannotClose;
++    }
++    for (BrowserView* view : GetLogicalBrowserViews()) {
++      auto* controller = UnloadController::From(view->browser());
++      if (!controller->AcquireNativeWindowGroupClose(
++              base::BindOnce(&BrowserWidget::CancelPhysicalClose,
++                             physical_close_weak_factory_.GetWeakPtr()))) {
++        CancelPhysicalClose();
++        return views::CloseRequestResult::kCannotClose;
++      }
++      physical_close_participants_.push_back(view->browser()->GetWeakPtr());
++    }
++    physical_close_phase_ = PhysicalClosePhase::kWarnings;
++    physical_close_index_ = 0;
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(&BrowserWidget::ContinuePhysicalClose,
++                                  physical_close_weak_factory_.GetWeakPtr()));
++  }
++  // Committed closes drain each real Browser through its existing controller;
++  // final owner destruction performs the physical native-window teardown.
++  return views::CloseRequestResult::kCannotClose;
++}
++
++bool BrowserWidget::ValidatePhysicalCloseParticipants() const {
++  const auto current = GetLogicalBrowserViews();
++  if (current.size() != physical_close_participants_.size()) {
++    return false;
++  }
++  for (const auto& browser : physical_close_participants_) {
++    if (!browser || browser->IsDeleteScheduled()) {
++      return false;
++    }
++    auto* view = BrowserView::GetBrowserViewForBrowser(browser.get());
++    if (!view || view->browser_widget() != this ||
++        std::ranges::find(current, view) == current.end() ||
++        UnloadController::From(browser.get())->GetBrowserClosingStatus() ==
++            BrowserWindowInterface::ClosingStatus::kDeniedByPolicy) {
++      return false;
++    }
++  }
++  return true;
++}
++
++void BrowserWidget::CancelPhysicalClose() {
++  physical_close_weak_factory_.InvalidateWeakPtrs();
++  for (const auto& browser : physical_close_participants_) {
++    if (browser && !browser->IsDeleteScheduled()) {
++      UnloadController::From(browser.get())->CancelNativeWindowGroupClose();
++    }
++  }
++  physical_close_participants_.clear();
++  physical_close_index_ = 0;
++  physical_close_waiting_ = false;
++  physical_close_phase_ = PhysicalClosePhase::kIdle;
++}
++
++void BrowserWidget::ContinuePhysicalClose() {
++  if (physical_close_phase_ == PhysicalClosePhase::kIdle ||
++      physical_close_phase_ == PhysicalClosePhase::kCommitted ||
++      physical_close_waiting_) {
++    return;
++  }
++  if (!ValidatePhysicalCloseParticipants()) {
++    CancelPhysicalClose();
++    return;
++  }
++  auto alive = physical_close_weak_factory_.GetWeakPtr();
++  while (physical_close_index_ < physical_close_participants_.size()) {
++    const size_t index = physical_close_index_++;
++    auto browser = physical_close_participants_[index];
++    if (physical_close_phase_ == PhysicalClosePhase::kWarnings) {
++      bool profile_warned = false;
++      for (size_t previous = 0; previous < index; ++previous) {
++        profile_warned |=
++            physical_close_participants_[previous]->GetProfile() ==
++            browser->GetProfile();
++      }
++      if (profile_warned) {
++        continue;
++      }
++      auto* controller = UnloadController::From(browser.get());
++      // Only this synchronous call sees raw participants. Nothing is captured.
++      std::vector<BrowserWindowInterface*> group;
++      for (const auto& participant : physical_close_participants_) {
++        group.push_back(participant.get());
++      }
++      bool warning_possible = !controller->force_skip_warning_user_on_close();
++#if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
++      warning_possible &= browser->GetProfile()->IsOffTheRecord();
++#endif
++      int blocking_downloads = 0;
++      const bool needs_warning =
++          warning_possible && controller->OkToCloseWithInProgressDownloads(
++                                  &blocking_downloads, group) !=
++                                  UnloadController::DownloadCloseType::kOk;
++      if (needs_warning &&
++          !SelectLogicalBrowserView(
++              BrowserView::GetBrowserViewForBrowser(browser.get()))) {
++        if (alive) {
++          CancelPhysicalClose();
++        }
++        return;
++      }
++      if (!alive) {
++        return;
++      }
++      if (!ValidatePhysicalCloseParticipants()) {
++        CancelPhysicalClose();
++        return;
++      }
++      controller = UnloadController::From(browser.get());
++      physical_close_waiting_ = true;
++      auto result = controller->MaybeWarnBeforeClosing(
++          base::BindOnce(
++              [](base::WeakPtr<BrowserWidget> host, size_t index,
++                 UnloadController::WarnBeforeClosingResult result) {
++                if (host) {
++                  host->OnPhysicalWarning(
++                      index, result == UnloadController::
++                                           WarnBeforeClosingResult::kOkToClose);
++                }
++              },
++              physical_close_weak_factory_.GetWeakPtr(), index),
++          group);
++      if (!alive) {
++        return;
++      }
++      if (result == UnloadController::WarnBeforeClosingResult::kDoNotClose) {
++        return;
++      }
++      physical_close_waiting_ = false;
++    } else {
++      auto* controller = UnloadController::From(browser.get());
++      if (controller->TabsNeedBeforeUnloadFired() &&
++          !SelectLogicalBrowserView(
++              BrowserView::GetBrowserViewForBrowser(browser.get()))) {
++        if (alive) {
++          CancelPhysicalClose();
++        }
++        return;
++      }
++      if (!alive) {
++        return;
++      }
++      if (!ValidatePhysicalCloseParticipants()) {
++        CancelPhysicalClose();
++        return;
++      }
++      controller = UnloadController::From(browser.get());
++      physical_close_waiting_ = true;
++      if (controller->RunBeforeUnloadForShutdown(
++              false,
++              base::BindRepeating(&BrowserWidget::OnPhysicalBeforeUnload,
++                                  physical_close_weak_factory_.GetWeakPtr(),
++                                  index),
++              UnloadController::BeforeUnloadPurpose::kNativeWindowGroup)) {
++        return;
++      }
++      if (!alive) {
++        return;
++      }
++      physical_close_waiting_ = false;
++    }
++    if (!alive) {
++      return;
++    }
++    if (!ValidatePhysicalCloseParticipants()) {
++      CancelPhysicalClose();
++      return;
++    }
++  }
++  if (physical_close_phase_ == PhysicalClosePhase::kWarnings) {
++    physical_close_phase_ = PhysicalClosePhase::kBeforeUnload;
++    physical_close_index_ = 0;
++    ContinuePhysicalClose();
++    return;
++  }
++  // New handlers/tabs may have appeared while another profile's dialog was
++  // pending. Re-run the non-destructive phase for those handlers before commit.
++  for (const auto& browser : physical_close_participants_) {
++    if (UnloadController::From(browser.get())->TabsNeedBeforeUnloadFired()) {
++      physical_close_index_ = 0;
++      ContinuePhysicalClose();
++      return;
++    }
++  }
++  CommitPhysicalClose();
++}
++
++void BrowserWidget::OnPhysicalWarning(size_t index, bool proceed) {
++  if (physical_close_phase_ != PhysicalClosePhase::kWarnings ||
++      !physical_close_waiting_ || physical_close_index_ != index + 1) {
++    return;
++  }
++  physical_close_waiting_ = false;
++  if (!proceed || !ValidatePhysicalCloseParticipants()) {
++    CancelPhysicalClose();
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&BrowserWidget::ContinuePhysicalClose,
++                                physical_close_weak_factory_.GetWeakPtr()));
++}
++
++void BrowserWidget::OnPhysicalBeforeUnload(size_t index, bool proceed) {
++  if (physical_close_phase_ != PhysicalClosePhase::kBeforeUnload ||
++      !physical_close_waiting_ || physical_close_index_ != index + 1) {
++    return;
++  }
++  physical_close_waiting_ = false;
++  if (!proceed || !ValidatePhysicalCloseParticipants()) {
++    CancelPhysicalClose();
++    return;
++  }
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE, base::BindOnce(&BrowserWidget::ContinuePhysicalClose,
++                                physical_close_weak_factory_.GetWeakPtr()));
++}
++
++void BrowserWidget::CommitPhysicalClose() {
++  if (!ValidatePhysicalCloseParticipants()) {
++    CancelPhysicalClose();
++    return;
++  }
++  auto alive = physical_close_weak_factory_.GetWeakPtr();
++  const auto participants = physical_close_participants_;
++  for (const auto& browser : participants) {
++    auto* view = BrowserView::GetBrowserViewForBrowser(browser.get());
++    const bool permitted =
++        view->OnCloseRequested(views::Widget::ClosedReason::kUnspecified);
++    if (!alive) {
++      return;
++    }
++    if (!permitted || !ValidatePhysicalCloseParticipants()) {
++      CancelPhysicalClose();
++      return;
++    }
++  }
++  for (const auto& browser : participants) {
++    UnloadController::From(browser.get())->CommitNativeWindowGroupClose();
++  }
++  physical_close_phase_ = PhysicalClosePhase::kCommitted;
++  Hide();
++  if (!alive) {
++    return;
++  }
++  for (const auto& browser : participants) {
++    if (browser) {
++      UnloadController::From(browser.get())->OnWindowClosing();
++      if (!alive) {
++        return;
++      }
++    }
++  }
++}
++
+ bool BrowserWidget::SelectLogicalBrowserView(BrowserView* view) {
++  return SelectLogicalBrowserViewInternal(view, false);
++}
++
++bool BrowserWidget::SelectLogicalBrowserViewInternal(BrowserView* view,
++                                                     bool closing_current) {
+ #if BUILDFLAG(IS_MAC)
+   CHECK(!selecting_logical_view_);
+-  if (!view || IsClosed() || view->browser_widget() != this ||
+-      view->browser()->IsDeleteScheduled()) {
+-    return false;
+-  }
+-  if (browser_view_->browser()->IsDeleteScheduled() ||
+-      browser_view_->suppress_layout_for_teardown_ ||
+-      view->suppress_layout_for_teardown_ ||
++  if (!view || view->browser_widget() != this ||
++      (!closing_current &&
++       (IsClosed() || view->browser()->IsDeleteScheduled()))) {
++    return false;
++  }
++  if ((!closing_current && (browser_view_->browser()->IsDeleteScheduled() ||
++                            browser_view_->suppress_layout_for_teardown_ ||
++                            view->suppress_layout_for_teardown_)) ||
+       browser_view_->browser()->GetType() !=
+           BrowserWindowInterface::Type::TYPE_NORMAL ||
+       view->browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
+@@ -268,12 +661,12 @@
+   // native child prompts/popups needs profile-correct responder/anchor proof.
+   // These are temporary admission gates, not the product's final scope.
+   // Active drag ownership likewise must finish before selecting another client.
+-  if (tab_drag_kind_ != TabDragKind::kNone ||
+-      !browser_native_widget_->CanSelectBrowserView()) {
++  if (!closing_current && (tab_drag_kind_ != TabDragKind::kNone ||
++                           !browser_native_widget_->CanSelectBrowserView())) {
+     return false;
+   }
+   for (views::Widget* child : GetAllOwnedWidgets(GetNativeView())) {
+-    if (child != this && child->IsVisible()) {
++    if (!closing_current && child != this && child->IsVisible()) {
+       return false;
+     }
+   }
+@@ -340,18 +733,32 @@
+     return false;
+   }
+   CHECK(selected);  // Membership was verified before the selection transaction.
+-  view->PaintAsActiveChanged();
+-  if (!intact()) {
+-    return false;
+-  }
+-  view->OnWidgetVisibilityChanged(this, IsVisible());
+-  if (!intact()) {
+-    return false;
+-  }
+-  view->OnWidgetActivationChanged(this, IsActive());
+-  if (!intact()) {
+-    return false;
+-  }
++  if (closing_current) {
++    // Keep the incoming local shortcut state coherent, but defer claiming
++    // native activation/focus until the outgoing profile's prompt anchors are
++    // gone.
++    view->OnWidgetActivationChanged(this, false);
++    if (!intact()) {
++      return false;
++    }
++    selecting_logical_view_ = false;
++    return true;
++  }
++  const bool refreshed = RefreshSelectedLogicalBrowserView();
++  if (alive) {
++    selecting_logical_view_ = false;
++  }
++  return refreshed;
++#else
++  return view == browser_view_;
++#endif
++}
++
++bool BrowserWidget::RefreshSelectedLogicalBrowserView() {
++  BrowserView* view = selected_browser_view();
++  auto alive = GetWeakPtr();
++  auto view_alive = view->weak_ptr_factory_.GetWeakPtr();
++  auto intact = [&] { return alive && view_alive; };
+   glass_frame_subscription_ = {};
+   if (auto* service = GlassFrameService::GetInstance()) {
+     glass_frame_subscription_ =
+@@ -387,17 +794,25 @@
+   if (!intact()) {
+     return false;
+   }
++  view->PaintAsActiveChanged();
++  if (!intact()) {
++    return false;
++  }
++  view->OnWidgetVisibilityChanged(this, IsVisible());
++  if (!intact()) {
++    return false;
++  }
++  view->OnWidgetActivationChanged(this, IsActive());
++  if (!intact()) {
++    return false;
++  }
+   if (IsActive()) {
+     view->RestoreFocus();
+     if (!intact()) {
+       return false;
+     }
+   }
+-  selecting_logical_view_ = false;
+   return true;
+-#else
+-  return view == browser_view_;
+-#endif
+ }
+ 
+ std::vector<BrowserView*> BrowserWidget::GetLogicalBrowserViews() const {
+@@ -572,6 +987,52 @@
+ }
+ 
+ void BrowserWidget::OnNativeWidgetDestroyed() {
++  const auto clients = GetLogicalBrowserViews();
++  if (clients.size() > 1) {
++    // The native window has already gone: never prompt or restart preflight.
++    physical_close_weak_factory_.InvalidateWeakPtrs();
++    physical_close_phase_ = PhysicalClosePhase::kCommitted;
++    browser_native_widget_ = nullptr;
++    std::vector<base::WeakPtr<BrowserWindowInterface>> browsers;
++    base::WeakPtr<BrowserWindowInterface> owner;
++    for (BrowserView* view : clients) {
++      auto browser = view->browser()->GetWeakPtr();
++      if (view->owned_browser_widget_) {
++        CHECK(!owner);
++        owner = browser;
++      } else {
++        browsers.push_back(browser);
++      }
++    }
++    CHECK(owner);
++    browsers.push_back(owner);  // The unique Widget owner must die last.
++    auto alive = GetWeakPtr();
++    for (const auto& browser : browsers) {
++      if (browser) {
++        auto* controller = UnloadController::From(browser.get());
++        controller->CommitNativeWindowGroupClose();
++        controller->set_force_skip_warning_user_on_close(true);
++        controller->OnWindowClosing();
++        if (!alive) {
++          return;
++        }
++      }
++    }
++    Widget::OnNativeWidgetDestroyed();
++    if (!alive) {
++      return;
++    }
++    for (const auto& browser : browsers) {
++      if (browser) {
++        BrowserManagerService::SynchronouslyDestroyBrowser(browser.get());
++        if (!alive) {
++          return;
++        }
++      }
++    }
++    return;
++  }
++
+   browser_native_widget_ = nullptr;
+   BrowserWindowInterface* const browser = browser_view_->browser();
+ 
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1738,6 +1738,11 @@
+ }
+ 
+ void BrowserView::Close() {
++  if (browser_widget_->GetLogicalBrowserViews().size() > 1 ||
++      browser_widget_->HasPhysicalClosePending()) {
++    browser_widget_->RequestLogicalClose(this);
++    return;
++  }
+   browser_widget_->Close();
+ }
+ 
+@@ -4322,6 +4327,14 @@
+ 
+ void BrowserView::DeleteBrowserWindow() {
+   CHECK(browser_widget_);
++  if (browser_widget_->GetLogicalBrowserViews().size() > 1) {
++    browser_widget_->RemoveLogicalBrowserView(this);
++    return;
++  }
++  if (browser_widget_->IsPhysicalCloseCommitted() &&
++      browser_widget_->browser_native_widget()) {
++    browser_widget_->NotifyClientWillClose(this);
++  }
+ 
+   // Window placement is expected to be saved when the window closes.
+   // Determination for whether placement should be saved depends on the
+@@ -4647,6 +4660,10 @@
+ // BrowserView, views::ClientView overrides:
+ 
+ views::CloseRequestResult BrowserView::OnWindowCloseRequested() {
++  if (browser_widget_->GetLogicalBrowserViews().size() > 1 ||
++      browser_widget_->HasPhysicalClosePending()) {
++    return browser_widget_->PreparePhysicalClose();
++  }
+   // You cannot close a frame for which there is an active originating drag
+   // session.
+   if (tab_strip_view() && !tab_strip_view()->IsTabStripCloseable()) {
+diff --git a/ui/views/widget/widget.h b/ui/views/widget/widget.h
+--- a/ui/views/widget/widget.h
++++ b/ui/views/widget/widget.h
+@@ -752,6 +752,11 @@
+   // during the switch.
+   void SelectClientDelegate(WidgetDelegate* delegate);
+ 
++  // Notify an accepted logical close before its controllers are torn down.
++  // Frame attachment lifetime tracks exactly-once delivery through theme
++  // changes.
++  void NotifyClientWillClose(WidgetDelegate* delegate);
++
+   // Finalize an accepted requested logical close, only for an inactive client.
+   // The caller first completes beforeunload/policy gates and releases its
+   // frame. Runs WindowWillClose, ClientView::WidgetClosing, WindowClosing, then
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -1070,7 +1070,7 @@
+ 
+   for (auto delegate : GetClientDelegates()) {
+     if (delegate) {
+-      delegate->WindowWillClose();
++      NotifyClientWillClose(delegate.get());
+     }
+   }
+ 
+@@ -1123,6 +1123,24 @@
+   CHECK(!delegate->widget_initialized_callbacks_);
+   CHECK(!delegate->can_delete_this_);
+   widget_delegate_ = delegate->weak_ptr_factory_.GetWeakPtr();
++}
++
++void Widget::NotifyClientWillClose(WidgetDelegate* delegate) {
++  CHECK(delegate);
++  CHECK_EQ(delegate->widget_, this);
++  if (non_client_view_) {
++    for (View* child : non_client_view_->children()) {
++      auto* frame = AsViewClass<FrameView>(child);
++      if (frame && frame->client_delegate_.get() == delegate) {
++        if (!frame->client_will_close_notified_) {
++          frame->client_will_close_notified_ = true;
++          delegate->WindowWillClose();
++        }
++        return;
++      }
++    }
++  }
++  delegate->WindowWillClose();
+ }
+ 
+ void Widget::FinalizeClientDelegate(ClientView* client,
+@@ -1141,7 +1159,10 @@
+   // The caller has accepted this logical close through its beforeunload/policy
+   // gates. Preserve the requested-close callback sequence without notifying the
+   // physical Widget's other clients or running its owned-child close loop.
+-  delegate->WindowWillClose();
++  if (!frame->client_will_close_notified_) {
++    frame->client_will_close_notified_ = true;
++    delegate->WindowWillClose();
++  }
+   client->WidgetClosing();
+   delegate->WindowClosing();
+   // Clear the physical host before DeleteDelegate so the normal
+diff --git a/ui/views/window/frame_view.h b/ui/views/window/frame_view.h
+--- a/ui/views/window/frame_view.h
++++ b/ui/views/window/frame_view.h
+@@ -146,6 +146,7 @@
+   ViewTracker client_view_;
+   // Weak lifetime handle for this existing frame/client pair, not a registry.
+   base::WeakPtr<WidgetDelegate> client_delegate_;
++  bool client_will_close_notified_ = false;
+ 
+ #if BUILDFLAG(IS_WIN)
+   // Returns the y coordinate, in local coordinates, at which the system menu
+diff --git a/ui/views/window/non_client_view.cc b/ui/views/window/non_client_view.cc
+--- a/ui/views/window/non_client_view.cc
++++ b/ui/views/window/non_client_view.cc
+@@ -63,6 +63,10 @@
+   }
+   frame_view_ = std::move(frame_view);
+   frame_view_->client_delegate_ = std::move(client_delegate);
++  if (old_frame_view) {
++    frame_view_->client_will_close_notified_ =
++        std::exchange(old_frame_view->client_will_close_notified_, false);
++  }
+   frame_view_->BindClientView(client_view_);
+   if (parent()) {
+     views::View* focused_view =

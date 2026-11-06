@@ -1,0 +1,97 @@
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.h b/chrome/browser/ui/tabs/tab_strip_model.h
+--- a/chrome/browser/ui/tabs/tab_strip_model.h
++++ b/chrome/browser/ui/tabs/tab_strip_model.h
+@@ -344,8 +344,12 @@
+       std::unique_ptr<content::WebContents> new_contents);
+ 
+   // Detaches the tab at the specified index for reinsertion into another tab
+-  // strip. Returns the detached tab.
+-  std::unique_ptr<tabs::TabModel> DetachTabAtForInsertion(int index);
++  // strip. Returns the detached tab. When notify_empty is false, the caller
++  // must synchronously call NotifyEmptyAfterDeferredDetach() after insertion
++  // or rollback. This keeps the last-tab source alive until the transfer ends.
++  std::unique_ptr<tabs::TabModel> DetachTabAtForInsertion(
++      int index, bool notify_empty = true);
++  void NotifyEmptyAfterDeferredDetach();
+ 
+   // Detaches the WebContents at the specified index for re-insertion into
+   // another browser of a different type, destroying the owning TabModel in the
+@@ -1038,7 +1042,8 @@
+   std::unique_ptr<DetachedTab> DetachTabWithReasonAt(
+       int index,
+       TabRemovedReason web_contents_remove_reason,
+-      tabs::TabInterface::DetachReason tab_detach_reason);
++      tabs::TabInterface::DetachReason tab_detach_reason,
++      bool notify_empty = true);
+ 
+   // Performs all the work to detach a TabModel instance but avoids sending
+   // most notifications. TabClosingAt() and TabDetachedAt() are sent because
+@@ -1104,7 +1109,8 @@
+   //   wouldn't be necessary because we would enforce that there is no
+   //   re-entrancy in the TabStripModel, but that condition is currently
+   //   violated in tests [and possibly in the wild as well].
+-  void SendDetachWebContentsNotifications(DetachNotifications* notifications);
++  void SendDetachWebContentsNotifications(DetachNotifications* notifications,
++                                         bool notify_empty = true);
+ 
+   bool RunUnloadListenerBeforeClosing(content::WebContents* contents);
+   bool ShouldRunUnloadListenerBeforeClosing(content::WebContents* contents);
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.cc b/chrome/browser/ui/tabs/tab_strip_model.cc
+--- a/chrome/browser/ui/tabs/tab_strip_model.cc
++++ b/chrome/browser/ui/tabs/tab_strip_model.cc
+@@ -419,10 +419,11 @@
+ }
+ 
+ std::unique_ptr<tabs::TabModel> TabStripModel::DetachTabAtForInsertion(
+-    int index) {
++    int index,
++    bool notify_empty) {
+   auto dt = DetachTabWithReasonAt(
+       index, TabRemovedReason::kInsertedIntoOtherTabStrip,
+-      tabs::TabInterface::DetachReason::kInsertIntoOtherWindow);
++      tabs::TabInterface::DetachReason::kInsertIntoOtherWindow, notify_empty);
+   return std::move(dt->tab);
+ }
+ 
+@@ -493,7 +494,8 @@
+ std::unique_ptr<DetachedTab> TabStripModel::DetachTabWithReasonAt(
+     int index,
+     TabRemovedReason web_contents_remove_reason,
+-    tabs::TabInterface::DetachReason tab_detach_reason) {
++    tabs::TabInterface::DetachReason tab_detach_reason,
++    bool notify_empty) {
+   ReentrancyCheck reentrancy_check(&reentrancy_guard_);
+ 
+   CHECK_NE(GetActiveTab(), nullptr) << "Activate the TabStripModel by "
+@@ -515,7 +517,7 @@
+                           /*create_historical_tab=*/false,
+                           web_contents_remove_reason, tab_detach_reason);
+   notifications.detached_tab.push_back(std::move(dt));
+-  SendDetachWebContentsNotifications(&notifications);
++  SendDetachWebContentsNotifications(&notifications, notify_empty);
+   return std::move(notifications.detached_tab[0]);
+ }
+ 
+@@ -953,7 +955,8 @@
+ }
+ 
+ void TabStripModel::SendDetachWebContentsNotifications(
+-    DetachNotifications* notifications) {
++    DetachNotifications* notifications,
++    bool notify_empty) {
+   // Sort the DetachedTab in decreasing order of
+   // `index_before_any_removals`. This is because `index_before_any_removals` is
+   // used by observers to update their own copy of TabStripModel state, and each
+@@ -1005,6 +1008,12 @@
+     }
+   }
+ 
++  if (notify_empty) {
++    NotifyEmptyAfterDeferredDetach();
++  }
++}
++
++void TabStripModel::NotifyEmptyAfterDeferredDetach() {
+   if (empty()) {
+     for (auto& observer : observers_) {
+       observer.TabStripEmpty();

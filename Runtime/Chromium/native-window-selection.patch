@@ -1,0 +1,107 @@
+diff --git a/chrome/browser/ui/browser_window/public/browser_window_interface.h b/chrome/browser/ui/browser_window/public/browser_window_interface.h
+--- a/chrome/browser/ui/browser_window/public/browser_window_interface.h
++++ b/chrome/browser/ui/browser_window/public/browser_window_interface.h
+@@ -79,6 +79,12 @@
+   // state, etc.
+   virtual ui::BaseWindow* GetWindow() = 0;
+   virtual const ui::BaseWindow* GetWindow() const = 0;
++
++  // Whether this logical browser is the selected owner of its native window.
++  // Independent of native visibility/key state: hidden windows still have a
++  // selected owner. Implementations sharing a native window must select at most
++  // one logical browser; the default preserves single-browser window behavior.
++  virtual bool IsSelectedForNativeWindow() const;
+ 
+   // Returns the profile that semantically owns this browser window.
+   // On most desktop platforms, there is only one profile per browser window.
+diff --git a/chrome/browser/ui/browser_window.h b/chrome/browser/ui/browser_window.h
+--- a/chrome/browser/ui/browser_window.h
++++ b/chrome/browser/ui/browser_window.h
+@@ -111,6 +111,11 @@
+ class BrowserWindow : public ui::BaseWindow {
+  public:
+   virtual ~BrowserWindow() = default;
++
++  // Logical selection within a shared native window, independent of native
++  // activity/visibility. Shared implementations override using explicit owner
++  // state; ordinary single-client windows remain selected by default.
++  virtual bool IsSelectedForNativeWindow() const;
+ 
+   //////////////////////////////////////////////////////////////////////////////
+   // ui::BaseWindow interface notes:
+diff --git a/chrome/browser/ui/browser.h b/chrome/browser/ui/browser.h
+--- a/chrome/browser/ui/browser.h
++++ b/chrome/browser/ui/browser.h
+@@ -165,6 +165,7 @@
+   bool CreatedBySessionRestore() const override;
+   ui::BaseWindow* GetWindow() override;
+   const ui::BaseWindow* GetWindow() const override;
++  bool IsSelectedForNativeWindow() const override;
+   DesktopBrowserWindowCapabilities* capabilities() override;
+   const DesktopBrowserWindowCapabilities* capabilities() const override;
+ 
+diff --git a/chrome/browser/ui/browser.cc b/chrome/browser/ui/browser.cc
+--- a/chrome/browser/ui/browser.cc
++++ b/chrome/browser/ui/browser.cc
+@@ -534,6 +534,10 @@
+   return window_.get();
+ }
+ 
++bool Browser::IsSelectedForNativeWindow() const {
++  return window_ && window_->IsSelectedForNativeWindow();
++}
++
+ DesktopBrowserWindowCapabilities* Browser::capabilities() {
+   return DesktopBrowserWindowCapabilities::From(this);
+ }
+diff --git a/chrome/browser/ui/browser_window/internal/browser_collection.cc b/chrome/browser/ui/browser_window/internal/browser_collection.cc
+--- a/chrome/browser/ui/browser_window/internal/browser_collection.cc
++++ b/chrome/browser/ui/browser_window/internal/browser_collection.cc
+@@ -86,7 +86,7 @@
+   }
+   BrowserWindowInterface* found = nullptr;
+   ForEach([&found, &window](BrowserWindowInterface* browser) {
+-    if (browser->GetWindow() &&
++    if (browser->IsSelectedForNativeWindow() && browser->GetWindow() &&
+         browser->GetWindow()->GetNativeWindow() == window) {
+       found = browser;
+       return false;
+diff --git a/chrome/browser/ui/views/frame/browser_window_factory.cc b/chrome/browser/ui/views/frame/browser_window_factory.cc
+--- a/chrome/browser/ui/views/frame/browser_window_factory.cc
++++ b/chrome/browser/ui/views/frame/browser_window_factory.cc
+@@ -26,6 +26,10 @@
+ #include "chrome/browser/ui/window_feature_controller/window_feature_controller.h"
+ #include "chromeos/components/kiosk/kiosk_utils.h"
+ #endif
++
++bool BrowserWindow::IsSelectedForNativeWindow() const {
++  return true;
++}
+ 
+ // static
+ std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
+diff --git a/chrome/browser/ui/browser_window/BUILD.gn b/chrome/browser/ui/browser_window/BUILD.gn
+--- a/chrome/browser/ui/browser_window/BUILD.gn
++++ b/chrome/browser/ui/browser_window/BUILD.gn
+@@ -11,6 +11,7 @@
+   sources = [
+     "public/browser_collection.h",
+     "public/browser_collection_observer.h",
++    "public/browser_window_interface.cc",
+     "public/browser_window_interface.h",
+     "public/browser_window_interface_iterator.h",
+     "public/global_browser_collection.h",
+diff --git a/chrome/browser/ui/browser_window/public/browser_window_interface.cc b/chrome/browser/ui/browser_window/public/browser_window_interface.cc
+new file mode 100644
+--- /dev/null
++++ b/chrome/browser/ui/browser_window/public/browser_window_interface.cc
+@@ -0,0 +1,9 @@
++// Copyright 2026 The Chromium Authors
++// Use of this source code is governed by a BSD-style license that can be
++// found in the LICENSE file.
++
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++
++bool BrowserWindowInterface::IsSelectedForNativeWindow() const {
++  return true;
++}

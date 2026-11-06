@@ -1,0 +1,583 @@
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -747,6 +747,7 @@
+       ui::ElementIdentifier element_id) const override;
+ 
+   // ui::AcceleratorTarget:
++  bool CanHandleAccelerators() const override;
+   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+ 
+   // GlobalErrorObserver:
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1628,6 +1628,10 @@
+ // BrowserView, BrowserWindow implementation:
+ 
+ void BrowserView::Show() {
++  if (!IsSelectedForNativeWindow() &&
++      !browser_widget_->SelectLogicalBrowserView(this)) {
++    return;
++  }
+   // Attempts to show closed windows should no-op.
+   if (browser_widget_->IsClosed()) {
+     return;
+@@ -1693,17 +1697,24 @@
+ }
+ 
+ void BrowserView::ShowInactive() {
++  if (!IsSelectedForNativeWindow() &&
++      !browser_widget_->SelectLogicalBrowserView(this)) {
++    return;
++  }
+   if (!browser_widget_->IsVisible()) {
+     browser_widget_->ShowInactive();
+   }
+ }
+ 
+ void BrowserView::Hide() {
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   browser_widget_->Hide();
+ }
+ 
+ bool BrowserView::IsVisible() const {
+-  return browser_widget_->IsVisible();
++  return IsSelectedForNativeWindow() && browser_widget_->IsVisible();
+ }
+ 
+ void BrowserView::SetBounds(const gfx::Rect& bounds) {
+@@ -1731,6 +1742,10 @@
+ }
+ 
+ void BrowserView::Activate() {
++  if (!IsSelectedForNativeWindow() &&
++      !browser_widget_->SelectLogicalBrowserView(this)) {
++    return;
++  }
+   if (browser_widget_->IsClosed()) {
+     // Since the activation is asynchronous, it's possible that the browser has
+     // been closed before the activation is ready, in this case, we don't have
+@@ -1754,11 +1769,14 @@
+ }
+ 
+ void BrowserView::Deactivate() {
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   browser_widget_->Deactivate();
+ }
+ 
+ bool BrowserView::IsActive() const {
+-  return browser_widget_->IsActive();
++  return IsSelectedForNativeWindow() && browser_widget_->IsActive();
+ }
+ 
+ void BrowserView::FlashFrame(bool flash) {
+@@ -1889,13 +1907,16 @@
+ }
+ 
+ void BrowserView::UpdateTitleBar() {
+-  browser_widget_->UpdateWindowTitle();
++  if (IsSelectedForNativeWindow()) {
++    browser_widget_->UpdateWindowTitle();
++  }
+   if (web_app_window_title_) {
+     DCHECK(GetIsWebAppType());
+     web_app_window_title_->SetText(GetWindowTitle());
+     InvalidateLayout();
+   }
+-  if (!IsLoadingAnimationRunning() && CanChangeWindowIcon()) {
++  if (IsSelectedForNativeWindow() && !IsLoadingAnimationRunning() &&
++      CanChangeWindowIcon()) {
+     browser_widget_->UpdateWindowIcon();
+   }
+ }
+@@ -1919,7 +1940,8 @@
+ void BrowserView::UpdateLoadingAnimations(bool is_visible) {
+   const bool tabs_need_loading_ui =
+       browser_->GetTabStripModel()->TabsNeedLoadingUI();
+-  const bool should_animate = is_visible && tabs_need_loading_ui;
++  const bool should_animate =
++      is_visible && IsSelectedForNativeWindow() && tabs_need_loading_ui;
+ 
+   if (should_animate == IsLoadingAnimationRunning()) {
+     return;
+@@ -2020,6 +2042,7 @@
+       !browser_->GetTabStripModel()->closing_all() && GetWidget()->IsActive() &&
+       GetWidget()->IsVisible() && !tab_change_in_split_view;
+ #endif
++  will_restore_focus &= IsSelectedForNativeWindow();
+   // Update various elements that are interested in knowing the current
+   // WebContents.
+ 
+@@ -2255,6 +2278,9 @@
+ }
+ 
+ void BrowserView::RestoreFocus() {
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   WebContents* selected_web_contents = GetActiveWebContents();
+   if (selected_web_contents) {
+     selected_web_contents->RestoreFocus();
+@@ -2895,6 +2921,7 @@
+ 
+ void BrowserView::OnWidgetVisibilityChanged(views::Widget* widget,
+                                             bool visible) {
++  visible = visible && IsSelectedForNativeWindow();
+   UpdateLoadingAnimations(visible);
+ 
+   if (visible &&
+@@ -4191,6 +4218,9 @@
+ 
+ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+                                             bool active) {
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   if (browser_->GetWindow()) {
+     if (active) {
+       if (restore_focus_on_activation_.has_value() &&
+@@ -5050,12 +5080,14 @@
+ 
+   // Stow a pointer to this object onto the window handle so that we can get at
+   // it later when all we have is a native view.
+-  GetWidget()->SetNativeWindowProperty(kBrowserViewKey, this);
+-
+-  // Stow a pointer to the browser's profile onto the window handle so that we
+-  // can get it later when all we have is a native view.
+-  GetWidget()->SetNativeWindowProperty(Profile::kProfileKey,
+-                                       browser_->GetProfile());
++  if (IsSelectedForNativeWindow()) {
++    GetWidget()->SetNativeWindowProperty(kBrowserViewKey, this);
++
++    // Stow a pointer to the browser's profile onto the window handle so that we
++    // can get it later when all we have is a native view.
++    GetWidget()->SetNativeWindowProperty(Profile::kProfileKey,
++                                         browser_->GetProfile());
++  }
+ 
+ #if defined(USE_AURA)
+   // Stow a pointer to the browser's profile onto the window handle so
+@@ -5285,7 +5317,14 @@
+ ///////////////////////////////////////////////////////////////////////////////
+ // BrowserView, ui::AcceleratorTarget overrides:
+ 
++bool BrowserView::CanHandleAccelerators() const {
++  return IsSelectedForNativeWindow() && View::CanHandleAccelerators();
++}
++
+ bool BrowserView::AcceleratorPressed(const ui::Accelerator& accelerator) {
++  if (!IsSelectedForNativeWindow()) {
++    return false;
++  }
+   NativeWebKeyboardEvent native_event(accelerator.ToKeyEvent());
+   if (ExclusiveAccessManager::From(browser_)->HandleUserKeyEvent(
+           native_event)) {
+@@ -6120,7 +6159,8 @@
+     return;
+   }
+ 
+-  const bool is_active = browser_widget_->ShouldPaintAsActive();
++  const bool is_active =
++      IsSelectedForNativeWindow() && browser_widget_->ShouldPaintAsActive();
+ 
+   // TODO: Unify semantics of "active" between the BrowserList and
+   // BrowserWindowInterface clients. The latter is more accurate definition
+@@ -6146,7 +6186,9 @@
+     web_app_window_title_->SetBackgroundColor(frame_color);
+     web_app_window_title_->SetEnabledColor(caption_color);
+   }
+-  GetWidget()->SetBackgroundColor(kColorToolbar);
++  if (IsSelectedForNativeWindow()) {
++    GetWidget()->SetBackgroundColor(kColorToolbar);
++  }
+ }
+ 
+ void BrowserView::UpdateAccessibleNameForAllTabs() {
+@@ -6176,13 +6218,13 @@
+ }
+ 
+ void BrowserView::UpdateAccessibleNameForRootView() {
+-  if (GetWidget()) {
++  if (GetWidget() && IsSelectedForNativeWindow()) {
+     GetWidget()->UpdateAccessibleNameForRootView();
+   }
+ }
+ 
+ void BrowserView::UpdateAccessibleURLForRootView(const GURL& url) {
+-  if (GetWidget()) {
++  if (GetWidget() && IsSelectedForNativeWindow()) {
+     GetWidget()->UpdateAccessibleURLForRootView(url);
+   }
+ }
+diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -78,6 +78,9 @@
+ 
+   // Selection is independent of which logical view uniquely owns this Widget.
+   BrowserView* selected_browser_view() const { return browser_view_; }
++
++  // Select an attached logical client; does not transfer unique ownership.
++  bool SelectLogicalBrowserView(BrowserView* view);
+ 
+   // Derived from attached frame/client trees, never a second browser registry.
+   std::vector<BrowserView*> GetLogicalBrowserViews() const;
+@@ -183,6 +186,7 @@
+ 
+   // The explicitly selected logical client, independently of unique ownership.
+   raw_ptr<BrowserView> browser_view_;
++  bool selecting_logical_view_ = false;
+ 
+   std::unique_ptr<SystemMenuModelBuilder> menu_model_builder_;
+ 
+diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <utility>
+ 
+@@ -245,6 +246,160 @@
+   }
+ }
+ 
++bool BrowserWidget::SelectLogicalBrowserView(BrowserView* view) {
++#if BUILDFLAG(IS_MAC)
++  CHECK(!selecting_logical_view_);
++  if (!view || IsClosed() || view->browser_widget() != this ||
++      view->browser()->IsDeleteScheduled()) {
++    return false;
++  }
++  if (browser_view_->browser()->IsDeleteScheduled() ||
++      browser_view_->suppress_layout_for_teardown_ ||
++      view->suppress_layout_for_teardown_ ||
++      browser_view_->browser()->GetType() !=
++          BrowserWindowInterface::Type::TYPE_NORMAL ||
++      view->browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
++    return false;
++  }
++  if (view == browser_view_) {
++    return true;
++  }
++  // CURRENTLY UNQUALIFIED: switching with fullscreen/transitions or visible
++  // native child prompts/popups needs profile-correct responder/anchor proof.
++  // These are temporary admission gates, not the product's final scope.
++  // Active drag ownership likewise must finish before selecting another client.
++  if (tab_drag_kind_ != TabDragKind::kNone ||
++      !browser_native_widget_->CanSelectBrowserView()) {
++    return false;
++  }
++  for (views::Widget* child : GetAllOwnedWidgets(GetNativeView())) {
++    if (child != this && child->IsVisible()) {
++      return false;
++    }
++  }
++  const auto clients = GetLogicalBrowserViews();
++  if (std::ranges::find(clients, view) == clients.end()) {
++    return false;
++  }
++  CHECK_EQ(view->GetFrameView()->GetWidget(), this);
++  selecting_logical_view_ = true;
++  auto alive = GetWeakPtr();
++  BrowserView* previous = browser_view_;
++  auto previous_alive = previous->weak_ptr_factory_.GetWeakPtr();
++  auto incoming_alive = view->weak_ptr_factory_.GetWeakPtr();
++  auto intact = [&] {
++    if (alive && previous_alive && incoming_alive) {
++      return true;
++    }
++    if (alive) {
++      selecting_logical_view_ = false;
++    }
++    return false;
++  };
++  if (auto* contents = previous->GetActiveWebContents()) {
++    contents->StoreFocus();
++    if (!intact()) {
++      return false;
++    }
++  }
++  previous->OnWidgetActivationChanged(this, false);
++  if (!intact()) {
++    return false;
++  }
++  previous->OnWidgetVisibilityChanged(this, false);
++  if (!intact()) {
++    return false;
++  }
++  menu_runner_.reset();
++  if (!intact()) {
++    return false;
++  }
++  menu_model_builder_.reset();
++  if (!intact()) {
++    return false;
++  }
++  browser_view_ = view;
++  browser_frame_view_ = view->GetFrameView();
++  SelectClientDelegate(view);
++  SetNativeWindowProperty(BrowserView::kBrowserViewKey, view);
++  SetNativeWindowProperty(Profile::kProfileKey, view->GetProfile());
++  root_view_->SelectBrowserView(view);
++  if (!intact()) {
++    return false;
++  }
++  browser_native_widget_->SelectBrowserView(view);
++  if (!intact()) {
++    return false;
++  }
++  previous->PaintAsActiveChanged();
++  if (!intact()) {
++    return false;
++  }
++  const bool selected = non_client_view()->SelectClientFrame(view);
++  if (!intact()) {
++    return false;
++  }
++  CHECK(selected);  // Membership was verified before the selection transaction.
++  view->PaintAsActiveChanged();
++  if (!intact()) {
++    return false;
++  }
++  view->OnWidgetVisibilityChanged(this, IsVisible());
++  if (!intact()) {
++    return false;
++  }
++  view->OnWidgetActivationChanged(this, IsActive());
++  if (!intact()) {
++    return false;
++  }
++  glass_frame_subscription_ = {};
++  if (auto* service = GlassFrameService::GetInstance()) {
++    glass_frame_subscription_ =
++        service->RegisterGlassFrameEligibilityChangedCallback(
++            view->browser(),
++            base::BindRepeating(&BrowserWidget::OnGlassFrameEligibilityChanged,
++                                base::Unretained(this)));
++  }
++  SelectNativeTheme();
++  ResetLastColorProviderKey();
++  // Widget::ThemeChanged repaints/color-refreshes existing trees. It does not
++  // call UserChangedTheme/RegenerateFrameOnThemeChange or replay
++  // initialization.
++  ThemeChanged();
++  if (!intact()) {
++    return false;
++  }
++  UpdateWindowTitle();
++  if (!intact()) {
++    return false;
++  }
++  UpdateWindowIcon();
++  if (!intact()) {
++    return false;
++  }
++  if (auto* contents = view->GetActiveWebContents()) {
++    view->UpdateAccessibleURLForRootView(contents->GetURL());
++    if (!intact()) {
++      return false;
++    }
++  }
++  view->UpdateAccessibleNameForRootView();
++  if (!intact()) {
++    return false;
++  }
++  if (IsActive()) {
++    view->RestoreFocus();
++    if (!intact()) {
++      return false;
++    }
++  }
++  selecting_logical_view_ = false;
++  return true;
++#else
++  return view == browser_view_;
++#endif
++}
++
+ std::vector<BrowserView*> BrowserWidget::GetLogicalBrowserViews() const {
+   std::vector<BrowserView*> clients;
+   if (!non_client_view()) {
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.h b/chrome/browser/ui/views/frame/browser_root_view.h
+--- a/chrome/browser/ui/views/frame/browser_root_view.h
++++ b/chrome/browser/ui/views/frame/browser_root_view.h
+@@ -30,6 +30,9 @@
+   METADATA_HEADER(BrowserRootView, views::internal::RootView)
+ 
+  public:
++  // Discard drag/filter state belonging to the previous logical profile.
++  void SelectBrowserView(BrowserView* browser_view);
++
+   struct DropIndex {
+     // The index within the tabstrip to drop on/before (see `relative_to_index`
+     // below).
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.cc b/chrome/browser/ui/views/frame/browser_root_view.cc
+--- a/chrome/browser/ui/views/frame/browser_root_view.cc
++++ b/chrome/browser/ui/views/frame/browser_root_view.cc
+@@ -184,6 +184,16 @@
+                                  views::Widget* widget)
+     : views::internal::RootView(widget), browser_view_(browser_view) {}
+ 
++void BrowserRootView::SelectBrowserView(BrowserView* browser_view) {
++  CHECK(browser_view);
++  OnDragExited();
++  weak_ptr_factory_.InvalidateWeakPtrs();
++  on_filtering_complete_closure_.Reset();
++  scroll_remainder_x_ = 0;
++  scroll_remainder_y_ = 0;
++  browser_view_ = browser_view;
++}
++
+ BrowserRootView::~BrowserRootView() {
+   // It's possible to destroy the browser while a drop is active.  In this case,
+   // |drop_info_| will be non-null, but its |target| likely points to an
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget.h b/chrome/browser/ui/views/frame/browser_native_widget.h
+--- a/chrome/browser/ui/views/frame/browser_native_widget.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget.h
+@@ -13,6 +13,7 @@
+ #include "ui/views/widget/widget.h"
+ 
+ class BrowserWidget;
++class BrowserView;
+ enum class TabDragKind;
+ 
+ namespace input {
+@@ -73,6 +74,10 @@
+   virtual void TabDraggingKindChanged(TabDragKind tab_drag_kind) {}
+ 
+ #if BUILDFLAG(IS_MAC)
++  // Rebind native command/UI subscriptions to an attached normal logical view.
++  virtual bool CanSelectBrowserView() = 0;
++  virtual void SelectBrowserView(BrowserView* browser_view) = 0;
++
+   // Causes the screen reader to announce |text| against the remote window. If
+   // the current user is not using a screen reader or if there is no remote
+   // window, has no effect. This enables screen reader announcements for
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_mac.h b/chrome/browser/ui/views/frame/browser_native_widget_mac.h
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.h
+@@ -97,6 +97,8 @@
+   remote_cocoa::ApplicationHost* GetRemoteCocoaApplicationHost() override;
+   void OnWindowInitialized() override;
+   void OnWidgetInitDone() override;
++  bool CanSelectBrowserView() override;
++  void SelectBrowserView(BrowserView* browser_view) override;
+   void OnWidgetThemeChanged(views::Widget* widget) override;
+   void OnWindowDestroying(gfx::NativeWindow window) override;
+   void OnWidgetActivationChanged(views::Widget* widget, bool active) override;
+@@ -105,6 +107,7 @@
+   void EnabledStateChangedForCommand(int id, bool enabled) override;
+ 
+  private:
++  void BindSelectedBrowserSubscriptions();
+   bool IsGlassEligible() const;
+   void UpdateGlassEligibility(bool is_glass_eligible);
+   void UpdateBackgroundGeometry();
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -220,6 +220,10 @@
+     chrome::AddCommandObserver(browser_view_->browser(), IDC_FORWARD, this);
+   }
+ 
++  BindSelectedBrowserSubscriptions();
++}
++
++void BrowserNativeWidgetMac::BindSelectedBrowserSubscriptions() {
+   if (features::IsGlassFrameEnabled()) {
+     if (auto* vertical_tab_strip_state_controller =
+             tabs::VerticalTabStripStateController::From(
+@@ -241,6 +245,53 @@
+                   base::Unretained(this)));
+     }
+   }
++  if (GetWidget()->IsNativeWidgetInitialized()) {
++    // GlassFrameService is only available if glass frame is enabled.
++    if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
++      glass_frame_service_subscription_ =
++          glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
++              browser_view_->browser(),
++              base::BindRepeating(
++                  &BrowserNativeWidgetMac::UpdateGlassEligibility,
++                  base::Unretained(this)));
++      UpdateGlassEligibility(glass_frame_service->IsBrowserWindowEligible(
++          browser_view_->browser()));
++    }
++  }
++}
++
++bool BrowserNativeWidgetMac::CanSelectBrowserView() {
++  auto* host = GetNSWindowHost();
++  return host && !host->target_fullscreen_state() &&
++         !host->in_fullscreen_transition() && !GetRemoteCocoaApplicationHost();
++}
++
++void BrowserNativeWidgetMac::SelectBrowserView(BrowserView* browser_view) {
++  CHECK(browser_view);
++  CHECK_EQ(browser_view->browser()->GetType(),
++           BrowserWindowInterface::Type::TYPE_NORMAL);
++  // Remote PWA application hosts own a different native lifetime. They are not
++  // eligible for the normal-profile shared-window path.
++  CHECK(!GetRemoteCocoaApplicationHost());
++  CHECK_EQ(browser_view->GetWidget(), GetWidget());
++  vertical_tab_subscription_ = {};
++  vertical_tab_collapse_subscription_ = {};
++  vertical_tab_resizing_subscription_ = {};
++  glass_frame_service_subscription_ = {};
++  browser_view_ = browser_view;
++  CHECK(!GetRemoteCocoaApplicationHost());
++  last_theme_color_.reset();
++  last_is_vertical_tabs_.reset();
++  auto* ns_window = base::apple::ObjCCastStrict<NativeWidgetMacNSWindow>(
++      GetWidget()->GetNativeWindow().GetNativeNSWindow());
++  touch_bar_delegate_ = [[BrowserWindowTouchBarViewsDelegate alloc]
++      initWithBrowser:browser_view_->browser()
++               window:ns_window];
++  [ns_window setWindowTouchBarDelegate:touch_bar_delegate_];
++  [ns_window setTouchBar:nil];
++  BindSelectedBrowserSubscriptions();
++  UpdateBackgroundGeometry();
++  UpdateBackgroundColor();
+ }
+ 
+ BrowserNativeWidgetMac::~BrowserNativeWidgetMac() = default;
+@@ -784,18 +835,7 @@
+       GetWidget()->RegisterPaintAsActiveChangedCallback(
+           base::BindRepeating(&BrowserNativeWidgetMac::UpdateBackgroundColor,
+                               base::Unretained(this)));
+-  // GlassFrameService is only available if glass frame is enabled.
+-  if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
+-    glass_frame_service_subscription_ =
+-        glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
+-            browser_view_->browser(),
+-            base::BindRepeating(&BrowserNativeWidgetMac::UpdateGlassEligibility,
+-                                base::Unretained(this)));
+-    if (glass_frame_service->IsBrowserWindowEligible(
+-            browser_view_->browser())) {
+-      UpdateGlassEligibility(true);
+-    }
+-  }
++  BindSelectedBrowserSubscriptions();
+ }
+ 
+ void BrowserNativeWidgetMac::OnWidgetThemeChanged(views::Widget* widget) {
+diff --git a/ui/views/cocoa/native_widget_mac_ns_window_host.h b/ui/views/cocoa/native_widget_mac_ns_window_host.h
+--- a/ui/views/cocoa/native_widget_mac_ns_window_host.h
++++ b/ui/views/cocoa/native_widget_mac_ns_window_host.h
+@@ -191,6 +191,7 @@
+   // The ultimate fullscreen state that is being targeted (irrespective of any
+   // active transitions).
+   bool target_fullscreen_state() const { return target_fullscreen_state_; }
++  bool in_fullscreen_transition() const { return in_fullscreen_transition_; }
+ 
+   // Set the root view (set during initialization and un-set during teardown).
+   void SetRootView(views::View* root_view);
