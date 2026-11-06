@@ -60,8 +60,8 @@ final class SidebarPiPController: PictureInPictureHolder {
     private(set) var videoRect: CGRect = .zero
 
     /// The page the sidebar media surface is about, kept after minimising so the bar describes
-    /// the same video the panel was showing. The bar cannot re-derive this on its own: it finds
-    /// a tab by "is playing", which skips a paused video and leaves the previous one on screen.
+    /// the same video the panel was showing. The bar follows the page that last started playing,
+    /// which by then may be another one, so minimising hands this page the bar (`MiniPlayer.takeOver`).
     private(set) var barSession: PageSession?
 
     var isShowing: Bool { itemID != nil }
