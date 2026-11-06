@@ -652,17 +652,35 @@ public final class TabsController {
     /// The pages `window`'s mini player looks at: the window's own tabs in every space, on any
     /// site. A regular window's are those it selected last or opened from a link in the
     /// background, the Agent space's left out; a private window's are its own.
-    public func miniPlayerPages(for window: BrowserWindowState) -> Set<MiniPlayerPage> {
+    public func miniPlayerPages(for window: BrowserWindowState) -> [MiniPlayerPage] {
         let pages = window.privateTree != nil
             ? Array(window.privateSessions.values)
             : liveSessions.values.filter { pageOwners[$0.itemID] == window.id && !isInAgentSpace($0.itemID) }
         // The window draws its split only while one of the split's panes is selected.
         let selected = window.selectedItemID
         let shownSplit = window.split.flatMap { split in selected.map(split.contains) == true ? split : nil }
-        return Set(pages.map { page in
+        return pages.map { page in
             MiniPlayerPage(id: page.itemID, hasMedia: page.media.hasMedia, isAudible: page.media.isAudible,
                            isOnScreen: page.itemID == selected || shownSplit?.contains(page.itemID) == true)
-        })
+        }
+    }
+
+    /// Keeps `window.miniPlayer` on the window's pages while the window is registered, whether
+    /// or not a sidebar shows it: any change to what `miniPlayerPages` reads updates it again.
+    func trackMiniPlayer(of window: BrowserWindowState) {
+        guard windowRegistry.windows[window.id] === window else { return }
+        let pages = withObservationTracking {
+            miniPlayerPages(for: window)
+        } onChange: { [weak self, weak window] in
+            // Observation calls this before the change is made.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated {
+                    guard let self, let window else { return }
+                    self.trackMiniPlayer(of: window)
+                }
+            }
+        }
+        window.miniPlayer.update(pages)
     }
 
     // MARK: - Page Reports
@@ -789,6 +807,7 @@ public final class TabsController {
                 window.privateTree = privateTree
                 window.spaceID = spaceID
             }
+            trackMiniPlayer(of: window)
             return
         }
         let claimed = Set(regularWindows.map(\.id)).subtracting([window.id])
@@ -811,6 +830,7 @@ public final class TabsController {
             window.selectedItemBySpace[spaceID] = first
         }
         mirror(window)
+        trackMiniPlayer(of: window)
     }
 
     /// A window closed. Private windows end their pages; a regular window's record is dropped

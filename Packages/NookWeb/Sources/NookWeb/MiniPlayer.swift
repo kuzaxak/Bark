@@ -34,6 +34,7 @@ public struct MiniPlayer: Equatable, Sendable {
     /// When each page last started playing; the newest has the highest.
     private var started: [UUID: Int] = [:]
     private var clock = 0
+    private var present: Set<UUID> = []
     private var audible: Set<UUID> = []
     private var onScreen: Set<UUID> = []
     private var dismissed: UUID?
@@ -49,24 +50,27 @@ public struct MiniPlayer: Equatable, Sendable {
         }
     }
 
-    /// The window's pages now; a page missing from them has closed or left the window.
-    public mutating func update(_ pages: Set<MiniPlayerPage>) {
-        let present = pages.filter { $0.hasMedia || $0.isAudible }
-        let ids = Set(present.map(\.id))
-        started = started.filter { ids.contains($0.key) }
-        for page in present where page.isAudible && !audible.contains(page.id) {
+    /// The window's pages now, in any order; a page missing from them has closed or left the
+    /// window. Pages that start playing together take the bar in the order of their ids.
+    public mutating func update(_ pages: [MiniPlayerPage]) {
+        let pages = pages.filter { $0.hasMedia || $0.isAudible }.sorted { $0.id.uuidString < $1.id.uuidString }
+        present = Set(pages.map(\.id))
+        started = started.filter { present.contains($0.key) }
+        for page in pages where page.isAudible && !audible.contains(page.id) {
             clock += 1
             started[page.id] = clock
         }
-        audible = Set(present.filter(\.isAudible).map(\.id))
-        onScreen = Set(present.filter(\.isOnScreen).map(\.id))
+        audible = Set(pages.filter(\.isAudible).map(\.id))
+        onScreen = Set(pages.filter(\.isOnScreen).map(\.id))
         if let dismissed, started[dismissed] == nil || onScreen.contains(dismissed) {
             self.dismissed = nil
         }
     }
 
-    /// The page the sidebar's video was minimised from takes the bar.
+    /// The page the sidebar's video was minimised from takes the bar, when it is one of the
+    /// window's pages with media.
     public mutating func takeOver(_ id: UUID) {
+        guard present.contains(id) else { return }
         clock += 1
         started[id] = clock
         if dismissed == id { dismissed = nil }

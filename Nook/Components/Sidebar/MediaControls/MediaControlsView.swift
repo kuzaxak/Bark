@@ -13,7 +13,7 @@ import NookUI
 
 /// Arc's mini player above the space bar: the page playing in another tab of this window, with
 /// its site's icon, which goes to the tab, then Previous, Play or Pause, Next and Mute.
-/// `MiniPlayer` decides which page it is.
+/// `MiniPlayer` decides which page it is; `TabsController` keeps it up to date.
 struct MediaControlsView: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(TabsController.self) private var tabs
@@ -34,9 +34,6 @@ struct MediaControlsView: View {
         }
         .animation(NookDesign.Motion.standard, value: windowState.miniPlayer.itemID)
         .animation(NookDesign.Motion.standard, value: isVideoShowing)
-        .onChange(of: tabs.miniPlayerPages(for: windowState), initial: true) { _, pages in
-            windowState.miniPlayer.update(pages)
-        }
         // Minimising the sidebar's video hands its page the bar.
         .onChange(of: isVideoShowing) { wasShowing, isShowing in
             guard wasShowing, !isShowing, let itemID = windowState.sidebarPiPController?.barSession?.itemID else { return }
