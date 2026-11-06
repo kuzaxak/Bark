@@ -203,6 +203,21 @@ struct MiniPlayerPagesTests {
         #expect(onScreen == [left, right])
     }
 
+    /// A split shows only while one of its panes is selected; selecting another tab hides it.
+    @Test func aHiddenSplitsPanesAreOffScreen() throws {
+        let host = try Host()
+        let spaceID = try #require(host.window.spaceID)
+        let left = try openTab("https://left.invalid", in: host.window, space: spaceID, host)
+        let right = try openTab("https://right.invalid", in: host.window, space: spaceID, host)
+        let other = try openTab("https://other.invalid", in: host.window, space: spaceID, host)
+        for tab in [left, right, other] { try play(tab, host) }
+        host.window.split = SplitRecord([left, right])
+        host.tabs.select(other, in: host.window)
+
+        let onScreen = Set(host.tabs.miniPlayerPages(for: host.window).filter(\.isOnScreen).map(\.id))
+        #expect(onScreen == [other])
+    }
+
     /// A new document has no media until its own script says so; a PDF never does.
     @Test func navigatingToAnotherPageDropsTheOldPagesMedia() throws {
         let host = try Host()

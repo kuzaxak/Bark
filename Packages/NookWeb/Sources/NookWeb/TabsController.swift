@@ -656,9 +656,12 @@ public final class TabsController {
         let pages = window.privateTree != nil
             ? Array(window.privateSessions.values)
             : liveSessions.values.filter { pageOwners[$0.itemID] == window.id && !isInAgentSpace($0.itemID) }
+        // The window draws its split only while one of the split's panes is selected.
+        let selected = window.selectedItemID
+        let shownSplit = window.split.flatMap { split in selected.map(split.contains) == true ? split : nil }
         return Set(pages.map { page in
             MiniPlayerPage(id: page.itemID, hasMedia: page.media.hasMedia, isAudible: page.media.isAudible,
-                           isOnScreen: shows(page.itemID, in: window))
+                           isOnScreen: page.itemID == selected || shownSplit?.contains(page.itemID) == true)
         })
     }
 
