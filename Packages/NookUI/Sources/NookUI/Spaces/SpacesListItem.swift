@@ -70,6 +70,7 @@ struct SpacesListItem: View {
         .layoutPriority(isActive ? 1 : 0)
         .opacity(isFaded ? 0.3 : 1.0)
         .accessibilityLabel(space.name)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
         .popover(isPresented: $showThemePicker, arrowEdge: .top) {
             SpaceThemeEditor(space: space)
                 .environment(tabs)

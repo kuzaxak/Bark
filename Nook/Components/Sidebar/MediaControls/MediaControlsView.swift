@@ -61,7 +61,15 @@ struct MediaControlsView: View {
         }
         // A tracking area removed under the pointer never reports it leaving.
         .onDisappear { isHovering = false }
+        // The close button shows only under the pointer; VoiceOver reaches it here.
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Mini Player")
+        .accessibilityAction(named: "Close", dismiss)
         .padding(.horizontal, NookDesign.Spacing.sidebarInset)
+    }
+
+    private func dismiss() {
+        withAnimation(NookDesign.Motion.standard) { windowState.miniPlayer.dismiss() }
     }
 
     private func controls(_ page: PageSession, showsVideoButton: Bool) -> some View {
@@ -106,9 +114,7 @@ struct MediaControlsView: View {
     }
 
     private var closeButton: some View {
-        Button("Close", systemImage: "xmark") {
-            withAnimation(NookDesign.Motion.standard) { windowState.miniPlayer.dismiss() }
-        }
+        Button("Close", systemImage: "xmark", action: dismiss)
         .labelStyle(.iconOnly)
         .font(NookDesign.Font.micro)
         .foregroundStyle(.secondary)
