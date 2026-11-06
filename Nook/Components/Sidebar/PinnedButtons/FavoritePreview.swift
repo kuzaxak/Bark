@@ -4,9 +4,11 @@
 //  Nook
 //
 //  The card under a favorite the pointer rests on: on github.com, the person's open pull
-//  requests. Nothing is fetched until the pointer rests.
+//  requests. Nothing is fetched until the pointer rests. Gmail and Google Calendar favorites
+//  get their card beside the tile instead (LiveFavorites).
 //
 
+import AppKit
 import SwiftUI
 import NookDesign
 import NookTabsCore
@@ -28,6 +30,8 @@ final class FavoritePreview {
     private(set) var itemID: UUID?
     private(set) var windowID: UUID?
     private(set) var rows: [Row] = []
+    /// A Gmail or Calendar favorite's card, which shows live data instead of rows.
+    private(set) var live: GoogleFavorite?
 
     @ObservationIgnored private var pending: Task<Void, Never>?
     @ObservationIgnored private var tileUnderPointer: UUID?
@@ -35,6 +39,8 @@ final class FavoritePreview {
     @ObservationIgnored private var cache: [UUID: (at: Date, rows: [Row])] = [:]
 
     private static let restDelay: Duration = .milliseconds(600)
+    /// Gmail and Calendar cards come sooner, as in Arc.
+    private static let liveRestDelay: Duration = .milliseconds(400)
     /// Moving from one favorite to the next while a card is up.
     private static let switchDelay: Duration = .milliseconds(150)
     /// Time to travel from the tile into the card.
@@ -51,16 +57,20 @@ final class FavoritePreview {
             return
         }
         tileUnderPointer = item.id
-        guard itemID != item.id, tabs.settings.favoritePreviews, !NookDragSessionManager.shared.isDragging else { return }
+        let live = LiveFavorites.kind(of: item, in: window, tabs: tabs)
+        if let live { LiveFavorites.shared.hovered(live) }
+        guard itemID != item.id, live != nil || tabs.settings.favoritePreviews,
+              !NookDragSessionManager.shared.isDragging else { return }
         pending?.cancel()
-        let delay = itemID == nil ? Self.restDelay : Self.switchDelay
+        let delay = itemID != nil ? Self.switchDelay : live == nil ? Self.restDelay : Self.liveRestDelay
         pending = Task {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, tileUnderPointer == item.id else { return }
-            let rows = await load(item, tabs: tabs)
+            let rows = live == nil ? await load(item, tabs: tabs) : []
             guard !Task.isCancelled, tileUnderPointer == item.id else { return }
-            guard !rows.isEmpty else { return dismiss() }
+            guard live != nil || !rows.isEmpty else { return dismiss() }
             self.rows = rows
+            self.live = live
             itemID = item.id
             windowID = window.id
         }
@@ -76,6 +86,7 @@ final class FavoritePreview {
         itemID = nil
         windowID = nil
         rows = []
+        live = nil
     }
 
     private func closeSoon() {
@@ -115,43 +126,84 @@ struct FavoritePreviewOverlay: View {
 
     private let preview = FavoritePreview.shared
     private let cardWidth: CGFloat = 280
+    @State private var liveCardHeight: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
             if let anchor, let itemID = preview.itemID, preview.windowID == windowState.id {
                 let tile = proxy[anchor]
-                let edge = NookDesign.Spacing.md
-                VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                    ForEach(preview.rows) { row in
-                        Button {
-                            open(row.url, in: itemID)
-                        } label: {
-                            HStack(spacing: NookDesign.Spacing.md) {
-                                Image(systemName: "arrow.triangle.pull")
-                                    .font(.system(size: NookDesign.Size.rowGlyph, weight: .medium))
-                                    .foregroundStyle(.secondary)
-                                Text(row.title)
-                                    .font(NookDesign.Font.secondary)
-                                    .lineLimit(1)
-                                    .truncationMode(.tail)
-                                Spacer(minLength: 0)
-                            }
-                        }
-                        .buttonStyle(RectNavButtonStyle())
-                    }
+                if let live = preview.live {
+                    liveCard(live, itemID: itemID)
+                        .offset(besideTile(tile, in: proxy.size))
+                        .transition(.opacity)
+                } else {
+                    pullRequests(itemID: itemID)
+                        .offset(underTile(tile, in: proxy.size))
+                        .transition(.opacity)
                 }
-                .padding(NookDesign.Spacing.xs)
-                .frame(width: cardWidth)
-                .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.lg))
-                .onHoverTracking { preview.cardHover($0) }
-                .offset(
-                    x: min(max(edge, tile.minX), max(edge, proxy.size.width - cardWidth - edge)),
-                    y: tile.maxY + NookDesign.Spacing.xs
-                )
-                .transition(.opacity)
             }
         }
         .animation(NookDesign.Motion.quick, value: preview.itemID)
+        // No hover exit arrives while the window is not key, so the card would stay up.
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
+            guard preview.windowID == windowState.id, (note.object as? NSWindow) === windowState.window else { return }
+            preview.dismiss()
+        }
+    }
+
+    private func pullRequests(itemID: UUID) -> some View {
+        VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
+            ForEach(preview.rows) { row in
+                Button {
+                    open(row.url, in: itemID)
+                } label: {
+                    HStack(spacing: NookDesign.Spacing.md) {
+                        Image(systemName: "arrow.triangle.pull")
+                            .font(.system(size: NookDesign.Size.rowGlyph, weight: .medium))
+                            .foregroundStyle(.secondary)
+                        Text(row.title)
+                            .font(NookDesign.Font.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                }
+                .buttonStyle(RectNavButtonStyle())
+            }
+        }
+        .padding(NookDesign.Spacing.xs)
+        .frame(width: cardWidth)
+        .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.lg))
+        .onHoverTracking { preview.cardHover($0) }
+    }
+
+    /// In the favorite's space look: its light or dark theme and its accent.
+    private func liveCard(_ live: GoogleFavorite, itemID: UUID) -> some View {
+        let space = tabs.spaceID(of: itemID).flatMap { tabs.space($0) }
+        let accent = space?.accentColor ?? .accentColor
+        return MeetingCard(account: live.account, accent: accent) { open($0, in: itemID) }
+        .frame(width: NookDesign.Size.favoriteCard)
+        .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.lg))
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { liveCardHeight = $0 }
+        .onHoverTracking { preview.cardHover($0) }
+        .spaceThemeAppearance(space?.theme)
+    }
+
+    private func underTile(_ tile: CGRect, in size: CGSize) -> CGSize {
+        let edge = NookDesign.Spacing.md
+        return CGSize(width: min(max(edge, tile.minX), max(edge, size.width - cardWidth - edge)),
+                      height: tile.maxY + NookDesign.Spacing.xs)
+    }
+
+    /// Hanging from the tile's lower corner, as in Arc: to its right, or its left when the
+    /// sidebar is on the right.
+    private func besideTile(_ tile: CGRect, in size: CGSize) -> CGSize {
+        let edge = NookDesign.Spacing.md
+        let width = NookDesign.Size.favoriteCard
+        let right = tile.maxX + NookDesign.Spacing.xs
+        let x = right + width + edge <= size.width ? right : tile.minX - NookDesign.Spacing.xs - width
+        let y = min(tile.maxY - NookDesign.Spacing.md, size.height - liveCardHeight - edge)
+        return CGSize(width: max(edge, x), height: max(edge, y))
     }
 
     private func open(_ url: URL, in itemID: UUID) {

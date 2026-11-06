@@ -521,7 +521,10 @@ private struct ResizableSpaceFavorites: View {
     let spaceID: UUID
 
     var body: some View {
-        PinnedGrid(width: windowState.sidebarContentWidth, spaceID: spaceID)
+        VStack(spacing: NookDesign.Spacing.sectionGap) {
+            PinnedGrid(width: windowState.sidebarContentWidth, spaceID: spaceID)
+            JoinMeetingRow(spaceID: spaceID)
+        }
     }
 }
 

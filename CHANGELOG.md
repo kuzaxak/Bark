@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Google Calendar favorites show your next meeting from macOS Calendar, as in Arc: "now" under the icon while one runs, and "in 5m" when the next starts within the hour. Resting the pointer on the favorite shows the next six hours, side by side where events overlap, with a + for a new event; clicking an event opens its day in the favorite. Nook never asks for Calendar access on its own: the first card offers Connect Calendar, and says where to allow it in System Settings if it was turned down. Declined and all-day events never count as the next meeting
+- A Join row under the favorites, as in Arc, from ten minutes before a meeting with a Google Meet, Zoom, Teams or Webex link until it ends: Join opens the call in a new tab, and the close button hides it until that meeting ends. Settings → Appearance → Show meetings and mail on favorites turns meetings off; private windows and the Agent space never show them
+
 ## 1.5.4
 
 A page with a certificate that is not valid, such as a device opened by its IP address, says why and can be opened anyway, as in Safari, instead of showing a blank tab.

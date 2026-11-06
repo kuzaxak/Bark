@@ -176,6 +176,12 @@ private struct PinnedTile: View {
         return SpaceTheme.tileColors(chrome: chrome, dark: colorScheme == .dark)
     }
 
+    /// A Calendar favorite's "now" or "in 5m".
+    private var meetingBadge: String? {
+        guard case .calendar? = LiveFavorites.kind(of: item, in: windowState, tabs: tabs) else { return nil }
+        return Meetings.badge(LiveFavorites.shared.meetings, at: LiveFavorites.shared.now)?.text
+    }
+
     var body: some View {
         let session = tabs.session(for: item.id)
         let url = tabs.currentURL(for: item)?.absoluteString ?? ""
@@ -196,6 +202,7 @@ private struct PinnedTile: View {
                 colors: tileColors,
                 glowHost: tileColors == nil ? nil : item.url?.host,
                 isDimmed: windowRegistry.activeWindowId != windowState.id,
+                caption: meetingBadge,
                 action: {
                     RowPress.click {
                         FavoritePreview.shared.dismiss()

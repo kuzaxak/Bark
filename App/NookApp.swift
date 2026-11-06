@@ -194,6 +194,7 @@ struct NookApp: App {
         browserManager.tabs.setDeveloperMode(settingsManager.developerModeEnabled)
         browserManager.installDevPickHandler()
         browserManager.installAgentPageHost()
+        LiveFavorites.shared.start(tabs: browserManager.tabs, windows: windowRegistry)
 
         // A fresh install has no stored version and shows nothing.
         if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {

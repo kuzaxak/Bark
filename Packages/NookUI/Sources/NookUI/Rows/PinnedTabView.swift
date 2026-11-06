@@ -25,6 +25,8 @@ public struct PinnedTabView<Icon: View>: View {
     var glowHost: String?
     /// The window is inactive.
     var isDimmed: Bool = false
+    /// A short line under the icon, such as a Calendar favorite's "in 5m".
+    var caption: String?
     var action: () -> Void
 
     @State private var isHovered: Bool = false
@@ -43,6 +45,7 @@ public struct PinnedTabView<Icon: View>: View {
         colors: SpaceTheme.TileColors? = nil,
         glowHost: String? = nil,
         isDimmed: Bool = false,
+        caption: String? = nil,
         action: @escaping () -> Void
     ) {
         self.tabName = tabName
@@ -55,6 +58,7 @@ public struct PinnedTabView<Icon: View>: View {
         self.colors = colors
         self.glowHost = glowHost
         self.isDimmed = isDimmed
+        self.caption = caption
         self.action = action
     }
 
@@ -83,9 +87,21 @@ public struct PinnedTabView<Icon: View>: View {
                     }
                 }
 
-                tabIcon
-                    .frame(height: NookDesign.Size.essentialsFavicon)
-                    .opacity(isUnloaded ? NookDesign.Surface.unloadedOpacity : 1)
+                VStack(spacing: NookDesign.Spacing.xxs) {
+                    tabIcon
+                        .frame(height: NookDesign.Size.essentialsFavicon)
+                        .opacity(isUnloaded ? NookDesign.Surface.unloadedOpacity : 1)
+                    if let caption {
+                        Text(caption)
+                            .font(NookDesign.Font.captionStrong)
+                            .monospacedDigit()
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.8)
+                            .padding(.horizontal, NookDesign.Spacing.xs)
+                            .padding(.vertical, NookDesign.Spacing.xxs)
+                            .background(Capsule().fill(NookDesign.Surface.favoriteCaptionFill(dark: colorScheme == .dark)))
+                    }
+                }
             }
             .overlay(alignment: .topTrailing) {
                 if hasLeftPinnedURL && isHovered {
@@ -109,6 +125,7 @@ public struct PinnedTabView<Icon: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(tabName)
+        .accessibilityValue(caption ?? "")
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .onHoverTracking { hovering in
             self.isHovered = hovering
