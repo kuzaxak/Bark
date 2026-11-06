@@ -683,6 +683,11 @@ public final class TabsController {
         window.miniPlayer.update(pages)
     }
 
+    /// Whether a window's mini player shows the page.
+    public func isInMiniPlayer(_ itemID: UUID) -> Bool {
+        allWindows.contains { $0.miniPlayer.itemID == itemID }
+    }
+
     // MARK: - Page Reports
 
     /// A committed navigation or SPA URL change. Device items store it as their URL; synced items

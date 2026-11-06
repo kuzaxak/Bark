@@ -147,6 +147,21 @@ struct MiniPlayerTrackingTests {
         for _ in 0..<100 where host.window.miniPlayer.itemID != nil { await Task.yield() }
         #expect(host.window.miniPlayer.itemID == nil, "on screen again")
     }
+
+    /// The unload policy keeps the page a bar shows loaded, so its controls keep working.
+    @Test func tellsWhichPageABarShows() async throws {
+        let host = try Host()
+        let spaceID = try #require(host.window.spaceID)
+        let music = try #require(host.tabs.open(url: URL(string: "https://music.invalid")!, in: host.window,
+                                                placement: .newTab, parent: .tabs(spaceID: spaceID)))
+        let other = try #require(host.tabs.open(url: URL(string: "https://other.invalid")!, in: host.window,
+                                                placement: .newTab, parent: .tabs(spaceID: spaceID)))
+        try #require(host.tabs.session(for: music)).media = PageMedia(hasMedia: true, isAudible: true)
+        for _ in 0..<100 where host.window.miniPlayer.itemID != music { await Task.yield() }
+
+        #expect(host.tabs.isInMiniPlayer(music))
+        #expect(!host.tabs.isInMiniPlayer(other))
+    }
 }
 
 /// Which pages a window's mini player looks at: the window's own tabs in every space, on any

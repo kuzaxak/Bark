@@ -9,8 +9,8 @@ import NookWeb
 // MARK: - Tab Compositor Manager
 
 /// Unloads pages no window shows: idle timeout, loaded-page budget, memory pressure and app
-/// backgrounding, per the tab management mode. Visible panes, audible media, picture-in-picture,
-/// capture, pinned tabs and favorites are exempt. A hidden page gives up its back/forward page
+/// backgrounding, per the tab management mode. Visible panes, audible media, the page in a
+/// sidebar's mini player, picture-in-picture, capture, pinned tabs and favorites are exempt. A hidden page gives up its back/forward page
 /// cache first, pinned or not.
 @MainActor
 class TabCompositorManager: ObservableObject {
@@ -201,6 +201,7 @@ class TabCompositorManager: ObservableObject {
         if session.hasPiPActive || session.hasPlayingAudio || session.hasAudioContent {
             return false
         }
+        if tabs.isInMiniPlayer(session.itemID) { return false }
         var views = browserManager?.webViewCoordinator?.getAllWebViews(for: session.itemID) ?? []
         if let primary = session.webView { views.append(primary) }
         if views.contains(where: { $0.cameraCaptureState != .none || $0.microphoneCaptureState != .none }) {
