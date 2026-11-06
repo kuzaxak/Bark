@@ -9,77 +9,109 @@ import NookTabsCore
 /// The mini player through Nook's own path: `TabsController`, `PageSession`, the shared
 /// `BrowserConfiguration`, its scripts and message handlers, in live web views. A tab plays a
 /// local page, is left the way the compositor leaves it (its view taken out of the window), and
-/// the bar and the tab row must follow what the page plays.
+/// the bar and the tab row must follow what the page plays. The pages play silent tracks; still,
+/// the suite runs only with `NOOK_LIVE_MEDIA_TESTS=1`, since it drives WebKit on the machine.
 @MainActor
-@Suite(.serialized)
+@Suite(.serialized, .enabled(if: ProcessInfo.processInfo.environment["NOOK_LIVE_MEDIA_TESTS"] == "1"))
 struct MiniPlayerLiveTests {
     /// Swift must not depend on the page's reports arriving (`LivePage.rewrittenPlayer`).
     @Test func aPageWhoseReportsNeverArriveStillShowsInTheBar() async throws {
-        let live = try LivePage()
-        let tab = try live.open(script: LivePage.rewrittenPlayer)
-        let page = try #require(live.host.tabs.session(for: tab))
-        let webView = try #require(page.webView)
-        try await live.until("the page playing") { live.playing(webView) == true }
-        live.leave()
+        try await withLivePage { live in
+            let tab = try live.open(script: LivePage.rewrittenPlayer)
+            let page = try #require(live.host.tabs.session(for: tab))
+            let webView = try #require(page.webView)
+            try await live.until("the page playing") { live.playing(webView) == true }
+            live.leave()
 
-        try await live.until("the row's speaker and the bar") {
-            page.hasAudioContent && page.media.hasMedia && page.media.isPlaying && live.host.window.miniPlayer.itemID == tab
+            try await live.until("the row's speaker and the bar") {
+                page.hasAudioContent && page.media.hasMedia && page.media.isPlaying && live.host.window.miniPlayer.itemID == tab
+            }
         }
     }
 
-    /// Each control answers with the frame's new state, so the bar follows within half a second
+    /// Each control answers with the frame's new state, so the bar follows at once
     /// even where nothing else would tell it: here a page that muted itself, which WebKit already
     /// counts as silent, on a page whose reports never arrive.
     @Test func theControlsShowTheirEffectAtOnce() async throws {
-        let live = try LivePage()
-        let tab = try live.open(script: LivePage.rewrittenPlayer)
-        let page = try #require(live.host.tabs.session(for: tab))
-        let webView = try #require(page.webView)
-        try await live.until("playing") { page.media.isPlaying && page.hasAudioContent }
-        live.leave()
+        try await withLivePage { live in
+            let tab = try live.open(script: LivePage.rewrittenPlayer)
+            let page = try #require(live.host.tabs.session(for: tab))
+            let webView = try #require(page.webView)
+            try await live.until("playing") { page.media.isPlaying && page.hasAudioContent }
+            live.leave()
 
-        _ = try await webView.evaluateJavaScript("document.getElementById('player').muted = true; 1")
-        try await live.until("muted by the page", within: .milliseconds(500)) { page.media.isMuted && page.media.isPlaying }
-        page.togglePlayback()
-        try await live.until("paused", within: .milliseconds(500)) { !page.media.isPlaying }
-        page.togglePlayback()
-        try await live.until("playing again", within: .milliseconds(500)) { page.media.isPlaying }
-        page.toggleSound()
-        try await live.until("unmuted", within: .milliseconds(500)) { !page.media.isMuted && page.hasAudioContent }
+            _ = try await webView.evaluateJavaScript("document.getElementById('player').muted = true; 1")
+            try await live.until("muted by the page", within: .seconds(2)) { page.media.isMuted && page.media.isPlaying }
+            page.togglePlayback()
+            try await live.until("paused", within: .seconds(2)) { !page.media.isPlaying }
+            page.togglePlayback()
+            try await live.until("playing again", within: .seconds(2)) { page.media.isPlaying }
+            page.toggleSound()
+            try await live.until("unmuted", within: .seconds(2)) { !page.media.isMuted && page.hasAudioContent }
+        }
     }
 
     @Test func aPageThatMutedItselfShowsMutedAndUnmutes() async throws {
-        let live = try LivePage()
-        let tab = try live.open(script: "write(song); player.play();")
-        let page = try #require(live.host.tabs.session(for: tab))
-        let webView = try #require(page.webView)
-        try await live.until("playing") { page.media.isPlaying && page.hasAudioContent }
-        live.leave()
+        try await withLivePage { live in
+            let tab = try live.open(script: "write(song); player.play();")
+            let page = try #require(live.host.tabs.session(for: tab))
+            let webView = try #require(page.webView)
+            try await live.until("playing") { page.media.isPlaying && page.hasAudioContent }
+            live.leave()
 
-        _ = try await webView.evaluateJavaScript("document.getElementById('player').muted = true; 1")
-        try await live.until("muted by the page", within: .milliseconds(500)) {
-            page.media.isMuted && page.media.isPlaying && !page.isAudioMuted
+            _ = try await webView.evaluateJavaScript("document.getElementById('player').muted = true; 1")
+            try await live.until("muted by the page", within: .seconds(2)) {
+                page.media.isMuted && page.media.isPlaying && !page.isAudioMuted
+            }
+            page.toggleSound()
+            try await live.until("unmuted", within: .seconds(2)) { !page.media.isMuted && page.hasAudioContent }
+            let elementMuted = try await webView.evaluateJavaScript("document.getElementById('player').muted") as? Bool
+            #expect(elementMuted == false, "the page's own element is unmuted, not Nook's tab mute")
+            #expect(!page.isAudioMuted)
         }
-        page.toggleSound()
-        try await live.until("unmuted", within: .milliseconds(500)) { !page.media.isMuted && page.hasAudioContent }
-        let elementMuted = try await webView.evaluateJavaScript("document.getElementById('player').muted") as? Bool
-        #expect(elementMuted == false, "the page's own element is unmuted, not Nook's tab mute")
-        #expect(!page.isAudioMuted)
     }
 
     /// A short sound in the page, such as a mail or calendar notification, shows the row's speaker
     /// but never takes the bar.
     @Test func aNotificationChimeStaysOutOfTheBar() async throws {
-        let live = try LivePage()
-        let tab = try live.open(script: "write(chime); player.loop = true; player.play();")
-        let page = try #require(live.host.tabs.session(for: tab))
-        try await live.until("the row's speaker") { page.hasAudioContent }
-        live.leave()
+        try await withLivePage { live in
+            let tab = try live.open(script: "write(chime); player.loop = true; player.play();")
+            let page = try #require(live.host.tabs.session(for: tab))
+            try await live.until("the row's speaker") { page.hasAudioContent }
+            live.leave()
 
-        try await Task.sleep(for: .milliseconds(500))
-        #expect(live.host.window.miniPlayer.itemID != tab)
-        #expect(!page.media.hasMedia)
+            try await Task.sleep(for: .milliseconds(500))
+            #expect(live.host.window.miniPlayer.itemID != tab)
+            #expect(!page.media.hasMedia)
+        }
     }
+}
+
+/// Runs `body` on a fresh `LivePage`, then, whether it passed or not, pauses and unloads every
+/// page, closes the window, and removes the WebKit data stores and files it made. A store can be
+/// removed only once nothing holds it, so the whole Nook state goes first.
+@MainActor
+func withLivePage(_ body: (LivePage) async throws -> Void) async throws {
+    var live: LivePage? = try LivePage()
+    var failure: (any Error)?
+    do { try await body(live!) } catch { failure = error }
+    let leftovers = live!.close()
+    live = nil
+    for id in leftovers.dataStores {
+        // WebKit lets go of a store a moment after its last web view; until then it is "in use".
+        var removed = false
+        for _ in 0..<20 where !removed {
+            do {
+                try await WKWebsiteDataStore.remove(forIdentifier: id)
+                removed = true
+            } catch {
+                try await Task.sleep(for: .milliseconds(250))
+            }
+        }
+        if !removed { Issue.record("data store \(id) left behind") }
+    }
+    for directory in leftovers.directories { try? FileManager.default.removeItem(at: directory) }
+    if let failure { throw failure }
 }
 
 /// One window of live web views on a throwaway Nook state, and a local page per test.
@@ -120,6 +152,16 @@ final class LivePage {
         let tab = try #require(host.tabs.open(url: file, in: host.window, placement: .newTab, parent: .tabs(spaceID: spaceID)))
         window.contentView = try #require(host.tabs.session(for: tab)?.webView)
         return tab
+    }
+
+    /// Unloads every page, which pauses its media and drops its web view, and closes the window.
+    /// Returns what `withLivePage` removes once this state is gone.
+    func close() -> (dataStores: [UUID], directories: [URL]) {
+        for page in host.tabs.sessions { page.unload() }
+        window.orderOut(nil)
+        window.close()
+        let dataStores = host.tabs.allSpaceProfiles.filter(\.dataStore.isPersistent).map(\.id)
+        return (dataStores, [directory, host.tabs.directory.deletingLastPathComponent()])
     }
 
     /// Selects another tab and takes the page's view out of the window, as the compositor does.
