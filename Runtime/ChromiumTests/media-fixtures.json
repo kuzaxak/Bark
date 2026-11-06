@@ -1,0 +1,270 @@
+{
+  "schema_version": 1,
+  "status": "qualification inputs; execution untested",
+  "source": {
+    "chromium_version": "156.0.8078.80",
+    "commit": "fb096c0011f9d50f0a264a9376420cdea9c421e3",
+    "root": "media/test/data"
+  },
+  "fixtures": [
+    {
+      "id": "h264-aac-mp4",
+      "cases": [
+        "M1",
+        "M3"
+      ],
+      "upstream_path": "media/test/data/bear.mp4",
+      "bytes": 41358,
+      "sha256": "aa2786362e3d61646390ba23cb0639b6ae9c9f48b58a882a7622d94c8afe7fe1",
+      "container": "MP4",
+      "expected_streams": [
+        {
+          "codec": "h264",
+          "profile": "High",
+          "width": 320,
+          "height": 180,
+          "bit_depth": 8
+        },
+        {
+          "codec": "aac",
+          "profile": "LC",
+          "sample_rate_hz": 44100,
+          "channels": 2
+        }
+      ],
+      "expected_duration_seconds": 1.068118,
+      "coverage_limits": [
+        "Approximately one second: initial format/seek smoke input, insufficient alone for prolonged continuity tests."
+      ]
+    },
+    {
+      "id": "vp9-opus-webm",
+      "cases": [
+        "M1",
+        "M3"
+      ],
+      "upstream_path": "media/test/data/bear-vp9-opus.webm",
+      "bytes": 101414,
+      "sha256": "c7fd18fbb644ca6f49c56cf386e679c0290e79cd50234ddfed9945f71bf07deb",
+      "container": "WebM",
+      "expected_streams": [
+        {
+          "codec": "vp9",
+          "profile": "Profile 0",
+          "width": 320,
+          "height": 240,
+          "bit_depth": 8
+        },
+        {
+          "codec": "opus",
+          "sample_rate_hz": 48000,
+          "channels": 2
+        }
+      ],
+      "expected_duration_seconds": 2.736
+    },
+    {
+      "id": "av1-opus-mp4",
+      "cases": [
+        "M1",
+        "M3"
+      ],
+      "upstream_path": "media/test/data/bear-av1-opus.mp4",
+      "bytes": 50253,
+      "sha256": "16a64aad8c613a7a4d193e661674e51f7b4553e4eb86b92893fcfbb32c12b998",
+      "container": "fragmented MP4",
+      "expected_streams": [
+        {
+          "codec": "av1",
+          "profile": "Main",
+          "width": 320,
+          "height": 240,
+          "bit_depth": 8
+        },
+        {
+          "codec": "opus",
+          "sample_rate_hz": 48000,
+          "channels": 2
+        }
+      ],
+      "expected_duration_seconds": 2.741,
+      "coverage_limits": [
+        "AV1 Main with yuv420p (8-bit) and Opus are in MP4, not WebM."
+      ]
+    },
+    {
+      "id": "av1-video-webm",
+      "cases": [
+        "M1"
+      ],
+      "upstream_path": "media/test/data/bear-av1.webm",
+      "bytes": 18898,
+      "sha256": "66e87771e204c6d86ce8ed86ce62c44e70f98325cbbdf8d077150c483e6e8ebb",
+      "container": "WebM",
+      "expected_streams": [
+        {
+          "codec": "av1",
+          "profile": "Main",
+          "width": 320,
+          "height": 240,
+          "bit_depth": 8
+        }
+      ],
+      "expected_duration_seconds": 2.702699,
+      "coverage_limits": [
+        "No audio stream; does not qualify AV1/Opus WebM."
+      ]
+    },
+    {
+      "id": "hevc-aac-mp4",
+      "cases": [
+        "M1"
+      ],
+      "upstream_path": "media/test/data/bear-1280x720-hevc.mp4",
+      "bytes": 354518,
+      "sha256": "7420b22867567661cc1e76223d45453825c3ae787fbda615d85ae69dd3138226",
+      "container": "MP4",
+      "expected_streams": [
+        {
+          "codec": "hevc",
+          "profile": "Main",
+          "width": 1280,
+          "height": 720,
+          "bit_depth": 8
+        },
+        {
+          "codec": "aac",
+          "profile": "LC",
+          "sample_rate_hz": 44100,
+          "channels": 2
+        }
+      ],
+      "expected_duration_seconds": 2.74,
+      "coverage_limits": [
+        "HEVC Main/yuv420p (8-bit); does not cover Main10, HDR, Dolby Vision or all HEVC profiles."
+      ]
+    },
+    {
+      "id": "mse-h264-video",
+      "cases": [
+        "M2"
+      ],
+      "upstream_path": "media/test/data/bear-640x360-v_frag.mp4",
+      "bytes": 273127,
+      "sha256": "12cd9dce00bc0fe14d26d4dc25a8958f5b09bbaf66a6784c1b54236bc012e3ed",
+      "container": "fragmented MP4",
+      "expected_streams": [
+        {
+          "codec": "h264",
+          "profile": "High",
+          "width": 640,
+          "height": 360,
+          "bit_depth": 8
+        }
+      ],
+      "expected_duration_seconds": 2.736067,
+      "initial_prefix_bytes": {
+        "offset": 0,
+        "length": 817
+      },
+      "fragment_ranges": [
+        {
+          "offset": 817,
+          "length": 47640
+        },
+        {
+          "offset": 48457,
+          "length": 46161
+        },
+        {
+          "offset": 94618,
+          "length": 51019
+        },
+        {
+          "offset": 145637,
+          "length": 54789
+        },
+        {
+          "offset": 200426,
+          "length": 49406
+        },
+        {
+          "offset": 249832,
+          "length": 23295
+        }
+      ],
+      "coverage_limits": [
+        "Separate-track input; append order, timestamp alignment and decoded outputs must be established before qualification."
+      ]
+    },
+    {
+      "id": "mse-aac-audio",
+      "cases": [
+        "M2"
+      ],
+      "upstream_path": "media/test/data/bear-640x360-a_frag.mp4",
+      "bytes": 72611,
+      "sha256": "68fdae35e7d5087367d1425eabef3c6101bbbc29aae8f403fec26883137c88f9",
+      "container": "fragmented MP4",
+      "expected_streams": [
+        {
+          "codec": "aac",
+          "profile": "LC",
+          "sample_rate_hz": 44100,
+          "channels": 2
+        }
+      ],
+      "expected_duration_seconds": 2.803991,
+      "initial_prefix_bytes": {
+        "offset": 0,
+        "length": 708
+      },
+      "fragment_ranges": [
+        {
+          "offset": 708,
+          "length": 10830
+        },
+        {
+          "offset": 11538,
+          "length": 10739
+        },
+        {
+          "offset": 22277,
+          "length": 10520
+        },
+        {
+          "offset": 32797,
+          "length": 10922
+        },
+        {
+          "offset": 43719,
+          "length": 10575
+        },
+        {
+          "offset": 54294,
+          "length": 10570
+        },
+        {
+          "offset": 64864,
+          "length": 7747
+        }
+      ],
+      "coverage_limits": [
+        "Separate-track input; append order, timestamp alignment and decoded outputs must be established before qualification."
+      ]
+    }
+  ],
+  "byte_ranges": "Offsets are zero-based; length is a byte count. Initial prefix includes boxes before the first moof.",
+  "coverage_limits": [
+    "These short clips cover initial format, decoding and seek checks; they do not establish prolonged playback/capture continuity.",
+    "Identical inputs are required on native Intel and Apple Silicon. Neither architecture, hardware acceleration nor software fallback is qualified here.",
+    "Codec/CDM build paths and redistribution rights remain separate release gates."
+  ],
+  "unresolved_inputs": [
+    "A paired AV1 Main8/Opus WebM asset was not identified; the combined AV1/Opus asset here is MP4.",
+    "Intended HLS and DASH player version/configuration, master/media manifests, at least two aligned renditions, frozen expected seek/switch output. Fragmented files alone are not an adaptive streaming scenario.",
+    "Long-duration media/loop policy and expected audio/video continuity across native surfaces, PiP, mini-player, system controls and resource actions.",
+    "WebRTC peer/server inputs, negotiated VP8/Opus and H.264/Opus cases, real camera/mic/device changes and silent screen-sharing workflow.",
+    "Named protected service, test account, licensed CDM/version, approved distribution/host verification and playback expectations remain unresolved; no service is waived."
+  ]
+}

@@ -56,7 +56,9 @@ For native one-shot testing, register `native_echo.py` only in an isolated test 
 | D1 | Signed/notarized installed build starts/quits, preserves sandboxed helpers, extensions and updates on native architecture | B | B |
 | Q1 | Matched WebKit baseline: CPU, aggregate memory, energy/restoration and package-size budgets approved before promotion | U | U |
 
-The media candidate must use `proprietary_codecs = true` and `ffmpeg_branding = "Chrome"` while retaining Chromium product branding. This enables additional codec build paths; it does not establish playback, hardware acceleration or distribution readiness. The initial unmodified-source build uses upstream codec defaults and cannot qualify these additional paths. Freeze actual media assets, player/site versions and expected outputs before execution:
+The media candidate must use `proprietary_codecs = true` and `ffmpeg_branding = "Chrome"` while retaining Chromium product branding. This enables additional codec build paths; it does not establish playback, hardware acceleration or distribution readiness. The initial unmodified-source build uses upstream codec defaults and cannot qualify these additional paths.
+
+[Pinned media inputs](../ChromiumTests/media-fixtures.json) identify seven upstream clips by source revision, path and hash, with expected stream formats and separate-track MSE byte ranges. These short clips support initial format and seek checks. Paired AV1/Opus WebM, adaptive player/rendition inputs, prolonged continuity, WebRTC and protected-service inputs remain unresolved. Freeze those inputs and expected outputs before execution:
 
 | Cases | Required candidate inputs and checks |
 |---|---|
