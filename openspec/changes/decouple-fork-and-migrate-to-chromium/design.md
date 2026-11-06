@@ -193,6 +193,8 @@ GitHub's [detachment documentation](https://docs.github.com/en/pull-requests/how
 
 Prefer establishing the chosen standalone destination while retaining the old repository for the transition when metadata or feed continuity cannot be guaranteed. Do not prescribe deleting/recreating the existing repository as a routine step. Rehearse restoration, decide exact source/destination and what metadata can be recreated, then obtain explicit authorization for the irreversible operation during implementation. Never regenerate signing keys merely because the repository moved. Update runner allowlists and release URLs, and verify old-feed-to-new-feed updates before retiring any endpoint. The Barc plan owns naming and link content; this workstream owns detachment, repository metadata and infrastructure changes.
 
+The [repository transition runbook](repository-transition.md) gives the preparation, destination staging and update-feed sequence. Git restore evidence does not complete metadata recovery or authorize the external operation.
+
 ## Limited local spike: 2026-11-06
 
 The user authorized this bounded experiment after the plans were prepared. It ran in `/tmp/barc-chromium-spike`, outside the application checkout, with isolated synthetic profiles. No application source, live user data, cloud configuration or repository hosting was changed. This is integration evidence and a source of optimization hypotheses, not completion of G0/G1 or product release qualification.
