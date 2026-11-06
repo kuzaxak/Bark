@@ -1,0 +1,142 @@
+{
+  "schema_version": 1,
+  "captured_at_utc": "2026-11-06T18:39:09+00:00",
+  "purpose": "Frozen independently authored extension inputs for G1/G3; not installation or compatibility results.",
+  "runtime_candidate": "Chromium 156.0.8078.80",
+  "qualification": {
+    "intel": "untested",
+    "arm": "untested",
+    "ordinary_store_install_update": "untested",
+    "profile_isolation": "untested"
+  },
+  "capture_request": {
+    "endpoint": "https://clients2.google.com/service/update2/crx",
+    "prodversion": "156.0.8078.80",
+    "os": "mac",
+    "arch": "x64",
+    "acceptformat": "crx3",
+    "response": "redirect",
+    "x_template": "id={extension_id}&uc"
+  },
+  "version_provenance": "Each downloaded manifest.json version matches the linked Chrome Web Store listing observed on the capture date; no release tag is used as Store-version evidence.",
+  "retention": "CRX files and inspection evidence are local ignored artifacts. Keep these exact SHA-256 bytes for qualification; the update endpoint returns current versions and blob URLs may expire. A different hash requires an explicit manifest revision.",
+  "package_verification": {
+    "required_checks": [
+      "CRX3 signed-header ID and matching developer-key proof",
+      "All three SHA-256 signatures over signed header and ZIP payload",
+      "Store ECDSA key matches Chromium 156 pinned publisher-key hash",
+      "ZIP CRC and manifest inspection"
+    ],
+    "verifier_reference": "https://chromium.googlesource.com/chromium/src/+/156.0.8078.80/components/crx_file/crx_verifier.cc",
+    "scope": "Package integrity and identity checks do not qualify the Chromium installer, verified_contents policy or ordinary install/update. Keep execution evidence outside source commits."
+  },
+  "extensions": [
+    {
+      "name": "Bitwarden Password Manager",
+      "extension_id": "nngceckbapebfimnlniiiahkandclblb",
+      "version": "2026.10.2",
+      "manifest_version": 3,
+      "minimum_chrome_version": "134.0",
+      "store_url": "https://chromewebstore.google.com/detail/bitwarden-password-manage/nngceckbapebfimnlniiiahkandclblb",
+      "vendor_url": "https://bitwarden.com/download/",
+      "download_url": "https://clients2.googleusercontent.com/crx/blobs/ARGaeZKrZCDk7UJWQXzUQ8_0pOOy6h1s3wvynvj3vqcHsuSvjGAmX2lV7s6ji5YP7A7DtxD42g7KMQK_5GXm_vg2NDXXdpmUbI8KoV-GsJ1nYSJ_koU3RksuUv-S7IUYLaPkAMZSmuXJX4rmXGST-41wO8smk2xEA2h2yA/NNGCECKBAPEBFIMNLNIIIAHKANDCLBLB_2026_10_2_0.crx",
+      "artifact": "build/extension-qualification/bitwarden.crx",
+      "bytes": 26044856,
+      "sha256": "1c995179f75863104c8a6e389e1050568a82c0d2c07d6acf6b62703d249430c9",
+      "required_workflows": [
+        "Toolbar popup, synthetic-vault autofill, persistence after restart",
+        "Native messaging / biometric unlock with the vendor desktop application"
+      ],
+      "prerequisites": [
+        "Disposable vault account/service and desktop application version must be frozen separately; no real credentials",
+        "Biometric/native-host discovery, allowlisting and OS support remain unqualified"
+      ],
+      "workflow_source": "https://bitwarden.com/help/biometrics/"
+    },
+    {
+      "name": "uBlock Origin Lite",
+      "extension_id": "ddkjiahejlhfcafbddmgiahcphecmpfh",
+      "version": "2026.1103.1743",
+      "manifest_version": 3,
+      "minimum_chrome_version": "122.0",
+      "store_url": "https://chromewebstore.google.com/detail/ublock-origin-lite/ddkjiahejlhfcafbddmgiahcphecmpfh",
+      "vendor_url": "https://github.com/uBlockOrigin/uBOL-home",
+      "download_url": "https://clients2.googleusercontent.com/crx/blobs/ARGaeZJQkITxzrVcTdVAijadlhafrQbvDuyuajde9HxAapvNBOGwVPrZ31mtd2KytDg-6tZAHHhcpjxOB3CepxnJbhcEqRZfcUmnHoMCIzNnYVpWOfAllUq6E5GdBNPYIkjGAMZSmuVu6YW24Rnd3CmLq6N0xoS2nAkI4A/DDKJIAHEJLHFCAFBDDMGIAHCPHECMPFH_2026_1103_1743_0.crx",
+      "artifact": "build/extension-qualification/ublock-origin-lite.crx",
+      "bytes": 9092445,
+      "sha256": "b290f77cde930116cf6d15c89427097204ad4a8958281a090619df49cf760e4a",
+      "required_workflows": [
+        "Bundled declarative request blocking",
+        "Toolbar filtering modes, site-access consent and persistent options"
+      ],
+      "prerequisites": [
+        "Freeze the request/DOM fixture and selected filtering mode before execution"
+      ]
+    },
+    {
+      "name": "Dark Reader",
+      "extension_id": "eimadpbcbfnmbkopoojfekhnkhdbieeh",
+      "version": "4.9.135",
+      "manifest_version": 3,
+      "minimum_chrome_version": "106.0.0.0",
+      "store_url": "https://chromewebstore.google.com/detail/dark-reader/eimadpbcbfnmbkopoojfekhnkhdbieeh",
+      "vendor_url": "https://darkreader.org/",
+      "download_url": "https://clients2.googleusercontent.com/crx/blobs/ARGaeZJVvUOKBdgChdbwILO5Y1sy6azqCheQn9t2jyPUvlH_92yx4-sr2sJWbfEFdmgvHH2hvh0q06x7HnR4XSt7ElTB-CxUkq5O7quOfE9YldVC-jfPDZUdZ8KpTdIpKw0AxlKa5VEe-xaONeuuUcICg8WWhReI4iYQ/EIMADPBCBFNMBKOPOOJFEKHNKHDBIEEH_4_9_135_0.crx",
+      "artifact": "build/extension-qualification/dark-reader.crx",
+      "bytes": 858730,
+      "sha256": "0b7857ae92fd3aeab4292bb755aa0f108de6b68bc12f18d0c87fe757cdd40a9d",
+      "required_workflows": [
+        "Dynamic document styling through content scripts",
+        "Toolbar/options changes, per-site configuration and restart persistence"
+      ],
+      "prerequisites": [
+        "Freeze the local page/CSS fixture before execution"
+      ]
+    },
+    {
+      "name": "SponsorBlock for YouTube - Skip Sponsorships",
+      "extension_id": "mnjggcdmjocbbbhaepdhchncahnbgone",
+      "version": "6.1.6",
+      "manifest_version": 3,
+      "minimum_chrome_version": null,
+      "store_url": "https://chromewebstore.google.com/detail/sponsorblock-for-youtube/mnjggcdmjocbbbhaepdhchncahnbgone",
+      "vendor_url": "https://sponsor.ajay.app/",
+      "download_url": "https://clients2.googleusercontent.com/crx/blobs/ARGaeZLHJ8Vz80P2nHzI-KobF2v4XXyh2np5fTc6bGW3IZnulAOTeeh9kyxjhuatucqSWqdXEqUvFtdTV5ilHzmdXUuhlChHDl0QWDLm04op8QjHrmJiIgl0cKrKyUAGdO8AxlKa5d-gx1gn-KHpkTy45j5Mjm7TN7QO/MNJGGCDMJOCBBBHAEPDHCHNCAHNBGONE_6_1_6_0.crx",
+      "artifact": "build/extension-qualification/sponsorblock.crx",
+      "bytes": 1848477,
+      "sha256": "5587fe2b6a9946101ca0dde7c6efe76a755c5ee5b6d6e63dfc48c7f736cdb4ff",
+      "required_workflows": [
+        "YouTube content integration and segment skipping",
+        "Options, optional host access and restart persistence"
+      ],
+      "prerequisites": [
+        "Freeze test video and SponsorBlock API segment response; service availability and YouTube changes remain external dependencies",
+        "Submission/voting is outside this read-only capture and needs a separately scoped test identity"
+      ]
+    },
+    {
+      "name": "React Developer Tools",
+      "extension_id": "fmkadmapgofadopljbjfkapdkoienihi",
+      "version": "8.0.0",
+      "manifest_version": 3,
+      "minimum_chrome_version": "114",
+      "store_url": "https://chromewebstore.google.com/detail/react-developer-tools/fmkadmapgofadopljbjfkapdkoienihi",
+      "vendor_url": "https://react.dev/learn/react-developer-tools",
+      "download_url": "https://clients2.googleusercontent.com/crx/blobs/ARGaeZK5aPF5chhbLN9nHroqDcu4qvWaO9x6BRZMvu_WjuNlB1DMEVtxu7jF6YKOH6SFIvjKpEHdpXfFKkt0l2pQC-94VsG3ol6sO-OaormvrI_MNHRrgwwYA9V9kTVK31IAxlKa5bG30B1dlKpiTdeVgblMlZeyrsEH/FMKADMAPGOFADOPLJBJFKAPDKOIENIHI_8_0_0_0.crx",
+      "artifact": "build/extension-qualification/react-developer-tools.crx",
+      "bytes": 670658,
+      "sha256": "d92e1122a16362cc5510927068a5b1a8d50b43e1f3be25c3117f7c005807b302",
+      "required_workflows": [
+        "Real Components and Profiler DevTools panels",
+        "Component inspection, props/state editing and profiling"
+      ],
+      "prerequisites": [
+        "Freeze the React runtime and application fixture; opening main.html as a tab does not prove DevTools integration"
+      ]
+    }
+  ],
+  "remaining_inputs": [
+    "Prior same-ID signed vendor packages for ordinary update qualification are not captured.",
+    "Workflow prerequisites below must be frozen before a G1/G3 execution; package capture alone does not complete E9/E10."
+  ]
+}
