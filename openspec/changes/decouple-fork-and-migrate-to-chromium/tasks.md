@@ -25,7 +25,7 @@ Unchecked production tasks remain outstanding. The local spikes inform this plan
 - [ ] 2.5 Sign/notarize the prototype and launch from an installed location on both architectures; verify helper signatures, resource discovery and sandbox behavior.
 - [x] 2.6 Record CEF pass/fail against every G1 criterion; if any mandatory criterion fails, select the full Chromium path without reducing launch scope. Native multi-tab hosting failed; the gate table in `design.md` distinguishes partial profile evidence from failed or unqualified extension/lifecycle/distribution requirements. Full Chromium is selected.
 - [ ] 2.7 For the full Chromium path, pin source/toolchain/build arguments and produce native x86_64/arm64 browser-layer bridge artifacts; verify provenance and smoke launch for each. If CEF qualified, record this task as superseded in a reviewed task revision.
-- [ ] 2.8 For the full Chromium path, prove browser-context/extension/WebUI ownership and native surface lifecycle through the bridge; rerun 2.2-2.5 and document the integration boundary before G2. If CEF qualified, record the alternative explicitly.
+- [ ] 2.8 For the full Chromium path, prove browser-context/extension/WebUI ownership and native surface lifecycle through the bridge, including one native product window switching profile spaces with retained live pages and correct native/extension focus; rerun 2.2-2.5 and document the integration boundary before G2. If CEF qualified, record the alternative explicitly.
 
 ## 3. Engine-neutral seams with WebKit (G2)
 

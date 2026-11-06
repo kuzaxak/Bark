@@ -29,7 +29,13 @@ The macOS browser SHALL complete the release qualification suite of website work
 - **AND** the popup preserves the initiating profile and opener relationship
 
 ### Requirement: Native navigation continuity
-The browser SHALL preserve navigation and live page state when a tab is moved between native windows.
+The browser SHALL preserve navigation and live page state when switching spaces or moving a tab between native windows.
+
+#### Scenario: Switch profiles within one window
+- **GIVEN** one browser window has Work and Personal spaces whose live pages contain unsaved drafts
+- **WHEN** the user switches between those spaces and returns
+- **THEN** the same window displays the selected space using its own profile's session and permissions
+- **AND** returning to either page preserves its draft, scroll position and back history without reloading its document
 
 #### Scenario: Transfer a live tab
 - **GIVEN** a page with a filled form, scroll position, and back history
