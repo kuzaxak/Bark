@@ -37,7 +37,8 @@ class TabCompositorManager: ObservableObject {
     weak var browserManager: BrowserManager?
 
     var allowsBackgroundWarming: Bool {
-        !ProcessInfo.processInfo.isLowPowerModeEnabled
+        browserManager?.nookSettings?.startupLoadMode == .favoritesAndSpace
+            && !ProcessInfo.processInfo.isLowPowerModeEnabled
             && (lastMemoryPressureTime.map { Date().timeIntervalSince($0) >= 60 } ?? true)
     }
 
@@ -49,6 +50,8 @@ class TabCompositorManager: ObservableObject {
 
     /// First timer stage: the page cache trim, or the unload when that comes sooner.
     private var firstStageDelay: TimeInterval { min(Self.pageCacheTrimDelay, mode.unloadTimeout) }
+
+    private var idleUnloadingEnabled: Bool { browserManager?.nookSettings?.idleTabUnloadingEnabled != false }
 
     private var tabs: TabsController? { browserManager?.tabs }
 
@@ -166,9 +169,9 @@ class TabCompositorManager: ObservableObject {
             return
         }
         session.clearPageCache()
-        // Pinned tabs and favorites are never unloaded automatically, so re-arming would only
-        // wake the app.
-        if isPinned(itemID) { return }
+        // Keep cache trimming even when timeout unloading is disabled. No second stage is
+        // needed for disabled unloading or pinned residency.
+        if isPinned(itemID) || !idleUnloadingEnabled { return }
 
         let remaining = mode.unloadTimeout - idle
         if remaining > 1 {
@@ -195,19 +198,8 @@ class TabCompositorManager: ObservableObject {
     /// Shared eligibility for automatic eviction and bulk hidden-page unloading. A user
     /// unloading one page deliberately bypasses this policy.
     func canUnloadInactive(_ session: PageSession) -> Bool {
-        guard let tabs, !session.isUnloaded, !tabs.isOnScreen(session.itemID) else { return false }
-        // A silent video nobody can see is not a reason to keep a page: news sites loop muted
-        // clips forever. Audible media and picture-in-picture are.
-        if session.hasPiPActive || session.hasPlayingAudio || session.hasAudioContent {
-            return false
-        }
-        if tabs.isInMiniPlayer(session.itemID) { return false }
-        var views = browserManager?.webViewCoordinator?.getAllWebViews(for: session.itemID) ?? []
-        if let primary = session.webView { views.append(primary) }
-        if views.contains(where: { $0.cameraCaptureState != .none || $0.microphoneCaptureState != .none }) {
-            return false
-        }
-        return !isPinned(session.itemID)
+        guard let tabs, !session.isUnloaded else { return false }
+        return tabs.inactiveUnloadProtectionReason(for: session) == nil
     }
 
     /// Higher keeps the page longer.

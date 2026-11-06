@@ -110,6 +110,13 @@ public struct SettingsGeneralTab: View {
                     }
                 }
 
+                #if os(macOS)
+                Toggle("Unload inactive tabs automatically", isOn: $settings.idleTabUnloadingEnabled)
+                Text("Tab Management sets the inactivity delay. Memory pressure and Power Saving limits still apply.")
+                    .font(NookDesign.Font.caption)
+                    .foregroundStyle(.secondary)
+                #endif
+
                 Button("Unload All Inactive Tabs") {
                     tabs.unloadAllHidden()
                 }

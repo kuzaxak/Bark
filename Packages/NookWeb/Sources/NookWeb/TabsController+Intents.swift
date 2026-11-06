@@ -914,10 +914,29 @@ extension TabsController {
         page.unload()
     }
 
-    /// Unloads every page no window shows, except pages playing audio or in picture-in-picture.
+    /// Current runtime signals shared by automatic and bulk unloading. This does not establish
+    /// whether a document has unsaved work, uploads, or screen sharing: those signals are absent.
+    public func inactiveUnloadProtectionReason(for page: PageSession) -> InactiveUnloadProtection? {
+        if isOnScreen(page.itemID) { return .visible }
+        if page.hasPlayingAudio || page.hasAudioContent { return .audio }
+        if page.hasPiPActive { return .pictureInPicture }
+        if isInMiniPlayer(page.itemID) { return .miniPlayer }
+        switch section(of: page.itemID) {
+        case .pinned, .favorites: return .pinned
+        default: break
+        }
+        var views = webViews?.allWebViews(for: page.itemID) ?? []
+        if let primary = page.webView { views.append(primary) }
+        for view in views {
+            if view.cameraCaptureState != .none { return .camera }
+            if view.microphoneCaptureState != .none { return .microphone }
+        }
+        return nil
+    }
+
+    /// Unloads hidden pages using the same activity and residency protection as automatic actions.
     public func unloadAllHidden() {
-        for page in sessions where !page.isUnloaded && !isOnScreen(page.itemID)
-            && !page.hasPlayingAudio && !page.hasPiPActive {
+        for page in sessions where !page.isUnloaded && inactiveUnloadProtectionReason(for: page) == nil {
             page.unload()
         }
     }
@@ -936,4 +955,9 @@ extension TabsController {
         for window in regularWindows { window.refreshCompositor() }
         save()
     }
+}
+
+/// Retention reasons backed by signals available in the current WebKit runtime.
+public enum InactiveUnloadProtection: String, Hashable {
+    case visible, audio, pictureInPicture, miniPlayer, camera, microphone, pinned
 }

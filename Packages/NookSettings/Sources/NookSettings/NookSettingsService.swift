@@ -14,10 +14,11 @@ import Observation
 @MainActor
 @Observable
 public final class NookSettingsService {
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
     private let searchEngineKey = "settings.searchEngine"
     private let tabUnloadTimeoutKey = "settings.tabUnloadTimeout"
     private let tabManagementModeKey = "settings.tabManagementMode"
+    private let idleTabUnloadingEnabledKey = "settings.idleTabUnloadingEnabled"
     private let startupLoadModeKey = "settings.startupLoadMode"
     private let enhancedFingerprintingProtectionKey = "settings.enhancedFingerprintingProtection"
     private let removeTrackingFromLinksKey = "settings.removeTrackingFromLinks"
@@ -202,6 +203,16 @@ public final class NookSettingsService {
                 object: nil,
                 userInfo: ["mode": tabManagementMode.rawValue]
             )
+        }
+    }
+
+    /// Disabling this stops timeout-based unloading; memory-pressure and mode budgets still apply.
+    public var idleTabUnloadingEnabled: Bool {
+        didSet {
+            userDefaults.set(idleTabUnloadingEnabled, forKey: idleTabUnloadingEnabledKey)
+            NotificationCenter.default.post(
+                name: .tabManagementModeChanged, object: nil,
+                userInfo: ["mode": tabManagementMode.rawValue])
         }
     }
 
@@ -740,12 +751,14 @@ public final class NookSettingsService {
         }
     }
 
-    public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore()) {
+    public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore(), userDefaults: UserDefaults = .standard) {
+        self.userDefaults = userDefaults
         self.kagiTokenStore = kagiTokenStore
         // Register default values
         userDefaults.register(defaults: [
             searchEngineKey: SearchProvider.google.rawValue,
             tabManagementModeKey: TabManagementMode.standard.rawValue,
+            idleTabUnloadingEnabledKey: true,
             adBlockerEnabledKey: false,
             debugToggleUpdateNotificationKey: false,
             askBeforeQuitKey: true,
@@ -834,6 +847,7 @@ public final class NookSettingsService {
                 rawValue: userDefaults.string(forKey: tabManagementModeKey) ?? TabManagementMode.standard.rawValue
             ) ?? .standard
         }
+        self.idleTabUnloadingEnabled = userDefaults.bool(forKey: idleTabUnloadingEnabledKey)
         self.tabManagementMode = resolvedMode
         self.startupLoadMode = StartupLoadMode(
             rawValue: userDefaults.string(forKey: startupLoadModeKey) ?? ""
