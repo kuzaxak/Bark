@@ -13,6 +13,7 @@
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
@@ -25,6 +26,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/embedder_browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
@@ -36,6 +38,8 @@
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/download/public/common/download_item.h"
+#include "components/javascript_dialogs/app_modal_dialog_controller.h"
+#include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
@@ -340,13 +344,17 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
   first->GetProfile()->GetPrefs()->SetFilePath(prefs::kDownloadDefaultDirectory,
                                                downloads.GetPath());
   auto* manager = first->GetProfile()->GetDownloadManager();
-  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting([manager] {
-    content::DownloadManager::DownloadVector items;
-    manager->GetAllDownloads(&items);
-    for (const auto& item : items) {
-      item->Cancel(/*user_cancel=*/true);
-    }
-  }));
+  base::ScopedClosureRunner cleanup(
+      base::BindLambdaForTesting([profile = first->GetProfile()->GetWeakPtr()] {
+        if (!profile) {
+          return;
+        }
+        content::DownloadManager::DownloadVector items;
+        profile->GetDownloadManager()->GetAllDownloads(&items);
+        for (const auto& item : items) {
+          item->Cancel(/*user_cancel=*/true);
+        }
+      }));
   content::DownloadTestObserverInProgress progress(manager, 1);
   ui_test_utils::NavigateToURLWithDisposition(
       first,
@@ -766,4 +774,180 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(0, sessions->closed);
   EXPECT_EQ(browsers_before - 1,
             GlobalBrowserCollection::GetInstance()->GetSize());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       GroupedBeforeUnloadCancellationRetainsEveryDocument) {
+  const int32_t work_id = Open(kSharedWork);
+  const int32_t personal_id = Open(kSharedPersonal, work_id);
+  ASSERT_TRUE(embedded_test_server()->Start());
+  auto* work = SharedWindow(work_id);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(work);
+  ASSERT_TRUE(personal);
+  Navigate(work, embedded_test_server()->GetURL("/title1.html"));
+  Navigate(personal, embedded_test_server()->GetURL("/title2.html"));
+  auto work_alive = work->GetWeakPtr();
+  auto personal_alive = personal->GetWeakPtr();
+  auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  auto host_alive = host->GetWeakPtr();
+  std::array<content::WebContents*, 2> pages{
+      work->GetTabStripModel()->GetActiveWebContents(),
+      personal->GetTabStripModel()->GetActiveWebContents()};
+  for (auto* page : pages) {
+    ASSERT_TRUE(
+        content::ExecJs(page, "document.body.innerHTML = '<input id=draft>';"
+                              "draft.value = 'unsaved'; window.liveMarker = {};"
+                              "onbeforeunload = () => 'keep draft';"));
+    content::PrepContentsForBeforeUnloadTest(page);
+  }
+  bool cancelled_application_quit = false;
+  auto quit_observation = chrome::AddClosingAllBrowsersCallback(
+      base::BindLambdaForTesting([&](bool closing) {
+        cancelled_application_quit |= !closing;
+      }));
+  host->Close();
+  auto* first = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(first->is_before_unload_dialog());
+  auto* first_page = first->web_contents();
+  ASSERT_TRUE(first_page == pages[0] || first_page == pages[1]);
+  EXPECT_TRUE((first_page == pages[0] ? work : personal)
+                  ->IsSelectedForNativeWindow());
+  first->view()->AcceptAppModalDialog();
+  auto* second = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(second->is_before_unload_dialog());
+  ASSERT_TRUE(second->web_contents() == pages[0] ||
+              second->web_contents() == pages[1]);
+  EXPECT_NE(first_page, second->web_contents());
+  EXPECT_TRUE((second->web_contents() == pages[0] ? work : personal)
+                  ->IsSelectedForNativeWindow());
+  second->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return work_alive && personal_alive &&
+           !UnloadController::From(work_alive.get())
+                ->is_attempting_to_close_browser() &&
+           !UnloadController::From(personal_alive.get())
+                ->is_attempting_to_close_browser();
+  }));
+  EXPECT_FALSE(cancelled_application_quit);
+  ASSERT_TRUE(host_alive);
+  EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(work_alive.get())
+                      ->browser_widget());
+  EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(personal_alive.get())
+                      ->browser_widget());
+  EXPECT_EQ(pages[0], work_alive->GetTabStripModel()->GetActiveWebContents());
+  EXPECT_EQ(pages[1],
+            personal_alive->GetTabStripModel()->GetActiveWebContents());
+  for (auto* page : pages) {
+    EXPECT_EQ("unsaved", content::EvalJs(page, "draft.value"));
+    EXPECT_EQ("object", content::EvalJs(page, "typeof liveMarker"));
+    ASSERT_TRUE(content::ExecJs(page, "onbeforeunload = null;"));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       ProfileClosePreemptsPendingLocalDownloadWarning) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      &content::SlowDownloadHttpResponse::HandleSlowDownloadRequest));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  auto work_alive = work->GetWeakPtr();
+  Profile* otr_profile = work->GetProfile()->GetPrimaryOTRProfile(true);
+  BrowserWindowCreateParams params(otr_profile, true);
+  params.native_window_owner = work->GetSessionID();
+  auto* otr = CreateBrowserWindow(std::move(params));
+  ASSERT_TRUE(otr);
+  auto otr_alive = otr->GetWeakPtr();
+  const int32_t otr_id = otr->GetSessionID().id();
+  ASSERT_NE(0, barc_tab_create(otr_id, "about:blank", 1));
+  Navigate(otr, embedded_test_server()->GetURL("/title1.html"));
+  auto* page = otr->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(
+      page,
+      "document.body.innerHTML = '<input id=draft>'; draft.value='unsaved';"
+      "onbeforeunload = () => 'keep draft';"));
+  content::PrepContentsForBeforeUnloadTest(page);
+  base::ScopedTempDir downloads;
+  ASSERT_TRUE(downloads.CreateUniqueTempDir());
+  otr_profile->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  otr_profile->GetPrefs()->SetFilePath(prefs::kDownloadDefaultDirectory,
+                                       downloads.GetPath());
+  const auto otr_path = otr_profile->GetPath();
+  auto otr_profile_alive = otr_profile->GetWeakPtr();
+  auto* manager = otr_profile->GetDownloadManager();
+  base::ScopedClosureRunner cleanup(
+      base::BindLambdaForTesting([otr_profile_alive] {
+        if (!otr_profile_alive) {
+          return;
+        }
+        content::DownloadManager::DownloadVector items;
+        otr_profile_alive->GetDownloadManager()->GetAllDownloads(&items);
+        for (const auto& item : items) {
+          item->Cancel(/*user_cancel=*/true);
+        }
+      }));
+  content::DownloadTestObserverInProgress progress(manager, 1);
+  ASSERT_NE(0,
+            barc_tab_create(
+                otr_id,
+                embedded_test_server()
+                    ->GetURL(content::SlowDownloadHttpResponse::kKnownSizeUrl)
+                    .spec()
+                    .c_str(),
+                0));
+  progress.WaitForFinished();
+  content::DownloadManager::DownloadVector initial_downloads;
+  manager->GetAllDownloads(&initial_downloads);
+  ASSERT_EQ(1u, initial_downloads.size());
+  const std::string download_guid = initial_downloads.front()->GetGuid();
+  auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  ASSERT_EQ(host, BrowserView::GetBrowserViewForBrowser(otr)->browser_widget());
+  auto children_before =
+      views::Widget::GetAllOwnedWidgets(host->GetNativeView());
+  host->Close();
+  base::WeakPtr<views::Widget> warning;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    for (const auto& child :
+         views::Widget::GetAllOwnedWidgets(host->GetNativeView())) {
+      if (!children_before.contains(child) && child->IsVisible()) {
+        warning = child->GetWeakPtr();
+        return true;
+      }
+    }
+    return false;
+  }));
+  base::test::TestFuture<base::FilePath> aborted;
+  chrome::CloseAllBrowsersWithProfile(
+      otr_profile, false, base::NullCallback(),
+      aborted.GetRepeatingCallback<const base::FilePath&>());
+  // The replacement owner must dismiss only its stale download warning, before
+  // its beforeunload prompt can own the same physical modal anchor.
+  EXPECT_TRUE(
+      base::test::RunUntil([&] { return !warning || !warning->IsVisible(); }));
+  // Keep a failing cancellation regression clean enough to finish, rather than
+  // leaving the old modal blocking the profile-close cancellation below.
+  if (warning && warning->IsVisible()) {
+    warning->Close();
+  }
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(dialog->is_before_unload_dialog());
+  dialog->view()->CancelAppModalDialog();
+  EXPECT_EQ(otr_path, aborted.Get());
+  ASSERT_TRUE(work_alive);
+  ASSERT_TRUE(otr_alive);
+  EXPECT_EQ(page, otr_alive->GetTabStripModel()->GetWebContentsAt(0));
+  EXPECT_EQ("unsaved", content::EvalJs(page, "draft.value"));
+  EXPECT_FALSE(UnloadController::From(otr_alive.get())
+                   ->is_attempting_to_close_browser());
+  ASSERT_TRUE(otr_profile_alive);
+  content::DownloadManager::DownloadVector remaining_downloads;
+  otr_profile_alive->GetDownloadManager()->GetAllDownloads(
+      &remaining_downloads);
+  ASSERT_EQ(1u, remaining_downloads.size());
+  EXPECT_EQ(download_guid, remaining_downloads.front()->GetGuid());
+  EXPECT_EQ(download::DownloadItem::IN_PROGRESS,
+            remaining_downloads.front()->GetState());
+  ASSERT_TRUE(content::ExecJs(page, "onbeforeunload = null;"));
 }

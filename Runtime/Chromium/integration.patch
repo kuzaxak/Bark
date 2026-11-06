@@ -261,7 +261,7 @@
 +_barc_window_select
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,55 @@
+@@ -9782,3 +9782,66 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -274,13 +274,24 @@
 +    sources = [
 +      "../browser/ui/views/frame/barc_bridge_browsertest.mm",
 +      "../browser/ui/views/frame/barc_profiles_browsertest.mm",
++      "../browser/ui/views/frame/barc_native_policy_browsertest.mm",
 +    ]
 +    deps = [
++      "//chrome/browser/enterprise",
++      "//chrome/browser/enterprise:impl",
++      "//chrome/browser/ui/browser_active_state_manager:browser_active_state_manager",
++      "//chrome/browser/ui/views/frame:browser_frame_view",
++      "//chrome/browser/ui/views/frame:browser_view_header",
++      "//chrome/browser/ui/views/frame:browser_widget",
++      "//components/enterprise/buildflags",
++      "//components/enterprise/data_controls/core/browser:test_support",
++      "//components/split_tabs",
 +      ":test_support",
 +      ":test_support_ui",
 +      "//base",
 +      "//base/test:test_support",
 +      "//chrome/browser:browser_process",
++      "//chrome/browser/lifetime",
 +      "//chrome/browser/profiles:profile",
 +      "//chrome/browser/profiles:profile_manager",
 +      "//chrome/browser/profiles:profile_util",
@@ -296,13 +307,13 @@
 +      "//chrome/test/base:in_process_browser_test",
 +      "//chrome/test/base:ui_test_utils",
 +      "//components/download/public/common:public",
++      "//components/javascript_dialogs",
 +      "//components/prefs",
 +      "//components/sessions:session_id",
 +      "//components/tabs:public",
 +      "//content/test:test_support",
 +      "//net:test_support",
 +      "//testing/gtest",
-+      "//ui/base",
 +      "//ui/views",
 +      "//url",
 +    ]
@@ -317,18 +328,3 @@
 +    frameworks = [ "AppKit.framework" ]
 +  }
 +}
---- a/chrome/browser/ui/views/frame/browser_window_factory.cc
-+++ b/chrome/browser/ui/views/frame/browser_window_factory.cc
-@@ -92,9 +92,9 @@
-   if (!browser) {
-     return nullptr;
-   }
--  // The two production subclasses (BrowserView, WebUIBrowserWindow) each
--  // register themselves under the BrowserWidget's NativeWindow properties, so
--  // for any given Browser at most one of these lookups will succeed.
-+  // BrowserView resolves through its logical BrowserWindowInterface owner's
-+  // scoped user data. WebUIBrowserWindow still uses the legacy physical-window
-+  // property lookup. Keep the fallback below for teardown and test windows.
-   if (auto* view = BrowserView::GetBrowserViewForBrowser(browser)) {
-     return view;
-   }

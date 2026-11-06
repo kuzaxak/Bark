@@ -96,14 +96,14 @@ From `build/chromium-engine/checkout/src`:
 
 ```fish
 set barc_repo (realpath ../../../..)
-for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-policy-tests
+for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection
     git apply --check "$barc_repo/Runtime/Chromium/$patch.patch"; or break
     git apply "$barc_repo/Runtime/Chromium/$patch.patch"; or break
 end
 ```
 
 Stop on any failed check/application; do not skip patches or continue to GN.
-After all twelve succeed, copy the current bridge/profile implementations and
+After all eleven succeed, copy the current bridge/profile implementations and
 all three regression sources into that same checkout. In particular, include
 the macOS policy regression supplied with the policy patches:
 

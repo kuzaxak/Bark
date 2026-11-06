@@ -128,7 +128,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
              other_browser->capabilities()->IsAttemptingToCloseBrowser()) {
            return true;
          }
-@@ -496,9 +500,61 @@
+@@ -496,9 +500,74 @@
    }
  }
  
@@ -157,7 +157,14 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
 +  // Its response must not alter the replacement owner's download state.
 +  ++close_warning_generation_;
 +  warn_before_closing_callback_.Reset();
++  auto alive = GetWeakPtr();
 +  ResetBeforeUnloadForShutdown();
++  if (!alive) {
++    return;
++  }
++  if (auto* window = BrowserWindow::FromBrowser(browser_)) {
++    window->CancelPendingDownloadWarning();
++  }
 +}
 +
 +void UnloadController::CommitNativeWindowGroupClose() {
@@ -179,6 +186,12 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
 +    if (!alive) {
 +      return false;
 +    }
++    if (auto* window = BrowserWindow::FromBrowser(browser_)) {
++      window->CancelPendingDownloadWarning();
++    }
++    if (!alive) {
++      return false;
++    }
 +    std::move(preempted).Run();
 +    if (!alive) {
 +      return false;
@@ -191,7 +204,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
    cancel_download_confirmation_state_ =
        CancelDownloadConfirmationState::kResponseReceived;
    // The devtools browser gets its beforeunload events as the results of
-@@ -526,6 +582,7 @@
+@@ -526,6 +595,7 @@
        CancelDownloadConfirmationState::kNotPrompted;
    if (state_ != State::kRunningBeforeUnloadForShutdown &&
        state_ != State::kBeforeUnloadConfirmed) {
@@ -199,7 +212,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
      return;
    }
    CancelWindowClose();
-@@ -570,6 +627,9 @@
+@@ -570,6 +640,9 @@
    }
    tabs_needing_unload_fired_.clear();
    const State previous_state = state_;
@@ -209,7 +222,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
    base::RepeatingCallback<void(bool)> on_close_confirmed =
        std::move(on_close_confirmed_);
    TransitionTo(State::kIdle);
-@@ -581,7 +641,9 @@
+@@ -581,7 +654,9 @@
      CHECK(on_close_confirmed.is_null());
    }
  
@@ -220,7 +233,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
  }
  
  ////////////////////////////////////////////////////////////////////////////////
-@@ -954,7 +1016,8 @@
+@@ -954,7 +1029,8 @@
  
  UnloadController::WarnBeforeClosingResult
  UnloadController::MaybeWarnBeforeClosing(
@@ -230,7 +243,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
    // If the browser can close right away (we've indicated that we want to skip
    // before-unload handlers by setting `force_skip_warning_user_on_close_` to
    // true or there are no pending downloads we need to prompt about) then
-@@ -964,7 +1027,8 @@
+@@ -964,7 +1040,8 @@
    }
  
    // `CanCloseWithInProgressDownloads()` may trigger a modal dialog.
@@ -240,7 +253,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
    if (can_close_with_downloads) {
      return WarnBeforeClosingResult::kOkToClose;
    }
-@@ -978,7 +1042,8 @@
+@@ -978,7 +1055,8 @@
  
  UnloadController::DownloadCloseType
  UnloadController::OkToCloseWithInProgressDownloads(
@@ -250,7 +263,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
    DCHECK(num_downloads_blocking);
    *num_downloads_blocking = 0;
  
-@@ -996,7 +1061,8 @@
+@@ -996,7 +1074,8 @@
  
    // Figure out how many windows are open total, and associated with this
    // profile, that are relevant for the ok-to-close decision.
@@ -260,7 +273,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
  
    // If there aren't any other windows, we're at browser shutdown,
    // which would cancel all current downloads.
-@@ -1026,7 +1092,8 @@
+@@ -1026,7 +1105,8 @@
    return DownloadCloseType::kOk;
  }
  
@@ -270,7 +283,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
  #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
    // On Mac and ChromeOS, non-incognito and non-Guest downloads can still
    // continue after window is closed.
-@@ -1044,8 +1111,8 @@
+@@ -1044,8 +1124,8 @@
    }
  
    int num_downloads_blocking;
@@ -281,7 +294,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
    if (dialog_type == DownloadCloseType::kOk) {
      return true;
    }
-@@ -1057,7 +1124,7 @@
+@@ -1057,7 +1137,7 @@
    BrowserWindow::FromBrowser(browser_)->ConfirmBrowserCloseWithPendingDownloads(
        num_downloads_blocking, dialog_type,
        base::BindOnce(&UnloadController::InProgressDownloadResponse,
@@ -290,7 +303,7 @@ diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_c
  
    // Return false so the browser does not close.  We'll close if the user
    // confirms in the dialog.
-@@ -1068,7 +1135,11 @@
+@@ -1068,7 +1148,11 @@
    return weak_factory_.GetWeakPtr();
  }
  
@@ -396,7 +409,7 @@ diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui
    set_widget_closed();
  
    // Synchronously destroy owned Widgets, which are typically owned by the
-@@ -246,16 +255,400 @@
+@@ -246,16 +255,405 @@
    }
  }
  
@@ -567,9 +580,14 @@ diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui
 +
 +void BrowserWidget::CancelPhysicalClose() {
 +  physical_close_weak_factory_.InvalidateWeakPtrs();
-+  for (const auto& browser : physical_close_participants_) {
++  auto cancellation = physical_close_weak_factory_.GetWeakPtr();
++  const auto participants = physical_close_participants_;
++  for (const auto& browser : participants) {
 +    if (browser && !browser->IsDeleteScheduled()) {
 +      UnloadController::From(browser.get())->CancelNativeWindowGroupClose();
++      if (!cancellation) {
++        return;
++      }
 +    }
 +  }
 +  physical_close_participants_.clear();
@@ -804,7 +822,7 @@ diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui
        browser_view_->browser()->GetType() !=
            BrowserWindowInterface::Type::TYPE_NORMAL ||
        view->browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
-@@ -268,12 +661,12 @@
+@@ -268,12 +666,12 @@
    // native child prompts/popups needs profile-correct responder/anchor proof.
    // These are temporary admission gates, not the product's final scope.
    // Active drag ownership likewise must finish before selecting another client.
@@ -820,7 +838,7 @@ diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui
        return false;
      }
    }
-@@ -340,18 +733,32 @@
+@@ -340,18 +738,32 @@
      return false;
    }
    CHECK(selected);  // Membership was verified before the selection transaction.
@@ -865,7 +883,7 @@ diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui
    glass_frame_subscription_ = {};
    if (auto* service = GlassFrameService::GetInstance()) {
      glass_frame_subscription_ =
-@@ -387,17 +794,25 @@
+@@ -387,17 +799,25 @@
    if (!intact()) {
      return false;
    }
@@ -895,7 +913,7 @@ diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui
  }
  
  std::vector<BrowserView*> BrowserWidget::GetLogicalBrowserViews() const {
-@@ -572,6 +987,52 @@
+@@ -572,6 +992,52 @@
  }
  
  void BrowserWidget::OnNativeWidgetDestroyed() {
@@ -963,7 +981,33 @@ diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/v
    browser_widget_->Close();
  }
  
-@@ -4322,6 +4327,14 @@
+@@ -3227,8 +3232,23 @@
+   // getting stuck in the hover state. Reset the window controls to
+   // prevent this.
+   browser_widget()->non_client_view()->ResetWindowControls();
+-  DownloadInProgressDialogView::Show(GetNativeWindow(), download_count,
+-                                     dialog_type, std::move(callback));
++  auto alive = weak_ptr_factory_.GetWeakPtr();
++  auto* widget = DownloadInProgressDialogView::Create(
++      GetNativeWindow(), download_count, dialog_type, std::move(callback));
++  auto warning = widget->GetWeakPtr();
++  if (!alive) {
++    warning->Close();
++    return;
++  }
++  pending_download_warning_ = warning;
++  warning->Show();
++}
++
++void BrowserView::CancelPendingDownloadWarning() {
++  auto warning = std::exchange(pending_download_warning_, {});
++  if (warning) {
++    warning->Close();
++  }
+ }
+ 
+ void BrowserView::UserChangedTheme(BrowserThemeChangeType theme_change_type) {
+@@ -4322,6 +4342,14 @@
  
  void BrowserView::DeleteBrowserWindow() {
    CHECK(browser_widget_);
@@ -978,7 +1022,7 @@ diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/v
  
    // Window placement is expected to be saved when the window closes.
    // Determination for whether placement should be saved depends on the
-@@ -4647,6 +4660,10 @@
+@@ -4647,6 +4675,10 @@
  // BrowserView, views::ClientView overrides:
  
  views::CloseRequestResult BrowserView::OnWindowCloseRequested() {
@@ -1078,3 +1122,95 @@ diff --git a/ui/views/window/non_client_view.cc b/ui/views/window/non_client_vie
    frame_view_->BindClientView(client_view_);
    if (parent()) {
      views::View* focused_view =
+diff --git a/chrome/browser/ui/browser_window.h b/chrome/browser/ui/browser_window.h
+--- a/chrome/browser/ui/browser_window.h
++++ b/chrome/browser/ui/browser_window.h
+@@ -385,6 +385,10 @@
+       int download_count,
+       DownloadCloseType dialog_type,
+       base::OnceCallback<void(bool)> callback) = 0;
++
++  // Dismisses this browser's pending download warning after a local grouped
++  // close is cancelled or preempted. Other close paths retain their behavior.
++  virtual void CancelPendingDownloadWarning() {}
+ 
+   // Shows the app menu (for accessibility).
+   virtual void ShowAppMenu() = 0;
+diff --git a/chrome/browser/ui/views/download/download_in_progress_dialog_view.h b/chrome/browser/ui/views/download/download_in_progress_dialog_view.h
+--- a/chrome/browser/ui/views/download/download_in_progress_dialog_view.h
++++ b/chrome/browser/ui/views/download/download_in_progress_dialog_view.h
+@@ -24,10 +24,12 @@
+   // kLastWindowInIncognitoProfile to indicate the user is
+   // closing the last incognito window. |callback| will be called with true if
+   // the download should be canceled, or false if the download should proceed.
+-  static void Show(gfx::NativeWindow parent,
+-                   int download_count,
+-                   UnloadController::DownloadCloseType dialog_type,
+-                   base::OnceCallback<void(bool)> callback);
++  // Creates an unshown modal. The caller can record its weak handle before Show.
++  static views::Widget* Create(
++      gfx::NativeWindow parent,
++      int download_count,
++      UnloadController::DownloadCloseType dialog_type,
++      base::OnceCallback<void(bool)> callback);
+ 
+  private:
+   DownloadInProgressDialogView(int download_count,
+diff --git a/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc b/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc
+--- a/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc
++++ b/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc
+@@ -16,14 +16,14 @@
+ #include "ui/views/layout/fill_layout.h"
+ 
+ // static
+-void DownloadInProgressDialogView::Show(
++views::Widget* DownloadInProgressDialogView::Create(
+     gfx::NativeWindow parent,
+     int download_count,
+     UnloadController::DownloadCloseType dialog_type,
+     base::OnceCallback<void(bool)> callback) {
+   DownloadInProgressDialogView* window = new DownloadInProgressDialogView(
+       download_count, dialog_type, std::move(callback));
+-  constrained_window::CreateBrowserModalDialogViews(window, parent)->Show();
++  return constrained_window::CreateBrowserModalDialogViews(window, parent);
+ }
+ 
+ DownloadInProgressDialogView::DownloadInProgressDialogView(
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -606,6 +606,7 @@
+       int download_count,
+       DownloadCloseType dialog_type,
+       base::OnceCallback<void(bool)> callback) override;
++  void CancelPendingDownloadWarning() override;
+   void ShowAppMenu() override;
+   content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
+       const input::NativeWebKeyboardEvent& event) override;
+@@ -1442,6 +1443,9 @@
+   base::EnumSet<TabStripAndWebAppViewsReparentedState>
+       tab_strip_web_apps_reparented_state_;
+ 
++  // Only the warning created for this logical browser; never sibling prompts.
++  base::WeakPtr<views::Widget> pending_download_warning_;
++
+   mutable base::WeakPtrFactory<BrowserView> weak_ptr_factory_{this};
+ };
+ 
+diff --git a/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc b/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc
+--- a/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc
++++ b/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc
+@@ -28,10 +28,11 @@
+   std::optional<bool> result;
+   views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey(),
+                                        "DownloadInProgressDialogView");
+-  DownloadInProgressDialogView::Show(
++  DownloadInProgressDialogView::Create(
+       parent->GetNativeWindow(), 1,
+       UnloadController::DownloadCloseType::kBrowserShutdown,
+-      base::BindLambdaForTesting([&](bool b) { result = b; }));
++      base::BindLambdaForTesting([&](bool b) { result = b; }))
++      ->Show();
+   waiter.WaitIfNeededAndGet()->Close();
+ 
+   ASSERT_TRUE(result.has_value());
