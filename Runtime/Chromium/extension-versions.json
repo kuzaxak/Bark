@@ -57,6 +57,7 @@
         "bundle_id": "com.bitwarden.desktop",
         "captured_at_utc": "2026-11-06T23:36:01+00:00",
         "release_url": "https://github.com/bitwarden/clients/releases/tag/desktop-v2026.10.4",
+        "source_revision": "94f753799058775f04190d6083d33692d7e59645",
         "download_url": "https://github.com/bitwarden/clients/releases/download/desktop-v2026.10.4/Bitwarden-2026.10.4-universal-mac.zip",
         "artifact": "build/extension-qualification/desktop/Bitwarden-2026.10.4-universal-mac.zip",
         "bytes": 336898248,
