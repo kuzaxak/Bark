@@ -11,6 +11,7 @@
 ### Fixed
 
 - The space bar at the bottom of the sidebar shows which space is current, as in Arc: that space's icon or emoji is at full strength and the others are faded and grey, hovering one brings it part way back, and a swipe between spaces cross-fades them
+- The sidebar button beside the window's traffic lights no longer touches the green button on macOS 26, whose lights are larger and further apart: it sits a little more than one light's gap past them, as in Arc, in the hidden sidebar's floating panel too
 
 ## 1.5.4
 

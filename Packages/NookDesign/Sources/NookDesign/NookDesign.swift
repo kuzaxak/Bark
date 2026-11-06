@@ -58,7 +58,6 @@ public enum NookDesign {
         public static let folderIndent: CGFloat = 20
         #endif
         public static let sidebarTop: CGFloat = 52     // the unified title band; the lights sit centred in it
-        public static let trafficLights: CGFloat = 88  // leading space the traffic lights take in the title row
         public static let titleFade: CGFloat = 20      // trailing fade on long row titles
     }
 
@@ -148,7 +147,14 @@ public enum NookDesign {
         public static let icon: CGFloat = 15
         public static let button: CGFloat = 30
         public static let gap: CGFloat = 2
-        public static let trafficLightsInset: CGFloat = 76
+        /// Where the title row's sidebar button starts, from the window's edge: its symbol sits a
+        /// light's gap and a little more past the zoom button, as in Arc. macOS 26 draws the window
+        /// buttons larger and further apart (14 pt lights 23 pt apart, the zoom button ending near
+        /// 80 pt) than macOS 15 (12 pt lights 20 pt apart, ending at 72 pt).
+        public static var trafficLightsInset: CGFloat {
+            if #available(macOS 26, *) { return 84 }
+            return 76
+        }
         public static let footerSideReserve: CGFloat = 66
     }
 

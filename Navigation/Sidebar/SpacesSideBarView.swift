@@ -35,6 +35,10 @@ struct SpacesSideBarView: View {
     @State private var animateDownloadsMenu: Bool = false
     @State private var showThemeEditor = false
 
+    /// How far the sidebar sits in from the window's leading edge: the floating one shown over a
+    /// hidden sidebar is inset, the docked one is not.
+    var windowInset: CGFloat = 0
+
     var body: some View {
         sidebarContent
             .environment(\.peekedPage) { [peekManager = browserManager.peekManager, windowID = windowState.id] in
@@ -171,7 +175,7 @@ struct SpacesSideBarView: View {
             if nookSettings.sidebarPosition == .left {
                 titleRow
                     .frame(height: NookDesign.Spacing.sidebarTop)
-                    .padding(.leading, NookDesign.SidebarChrome.trafficLightsInset)
+                    .padding(.leading, NookDesign.SidebarChrome.trafficLightsInset - windowInset)
                     .padding(.trailing, NookDesign.Spacing.sidebarInset)
             }
         }
