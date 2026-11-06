@@ -25,6 +25,7 @@ struct SpacesListItem: View {
 
     @State private var showThemePicker = false
     @State private var showsIconPicker = false
+    @State private var isHovering = false
     @Environment(\.tabActions) private var actions
 
     private let dotSize: CGFloat = NookDesign.Spacing.sm
@@ -55,10 +56,17 @@ struct SpacesListItem: View {
                 tabs.setSpace(space.id, in: windowState)
             }
         } label: {
+            let look = SpaceSwitcher.iconLook(selection: selection, hovered: isHovering)
             spaceDot
+                .saturation(look.saturation)
+                .opacity(look.opacity)
+                .animation(NookDesign.Motion.standard, value: isActive)
         }
         .labelStyle(.iconOnly)
         .buttonStyle(NookIconButtonStyle(size: buttonSize))
+        .onHoverTracking { hovering in
+            withAnimation(NookDesign.Motion.quick) { isHovering = hovering }
+        }
         .layoutPriority(isActive ? 1 : 0)
         .opacity(isFaded ? 0.3 : 1.0)
         .accessibilityLabel(space.name)
@@ -99,20 +107,18 @@ struct SpacesListItem: View {
             Image(systemName: "sparkles")
                 .font(.system(size: NookDesign.Size.spaceIcon, weight: .semibold))
                 .foregroundStyle(NookDesign.Surface.agentGradient)
-                .opacity(NookDesign.Surface.agentIconInactiveOpacity + (1 - NookDesign.Surface.agentIconInactiveOpacity) * selection)
-                .animation(NookDesign.Motion.standard, value: isActive)
         } else if forceDot {
             plainDot
         } else {
             SpaceIcon(space.icon, name: space.name)
-                .foregroundStyle(isActive ? Color.primary : Color.secondary)
+                .foregroundStyle(Color.primary)
         }
     }
 
     private var plainDot: some View {
         let size = dotSize + (activeDotSize - dotSize) * selection
         return Circle()
-            .fill(.tertiary)
+            .fill(.primary)
             .overlay(Circle().fill(space.accentColor).opacity(selection))
             .frame(width: size, height: size)
             .animation(NookDesign.Motion.standard, value: isActive)

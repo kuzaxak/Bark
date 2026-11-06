@@ -114,4 +114,22 @@ public enum SpaceSwitcher {
 
     /// Below this the switcher draws plain dots.
     public static func isCompact(itemSize: CGFloat) -> Bool { itemSize < compactBelow }
+
+    /// Opacity of another space's icon; its color is gone too.
+    public static let dimmedOpacity: Double = 0.4
+    /// How far hover brings another space's icon back toward the current one's look.
+    public static let hoverLift: Double = 0.5
+
+    public struct IconLook: Equatable, Sendable {
+        public let opacity: Double
+        public let saturation: Double
+    }
+
+    /// The current space's icon at full strength, every other one faded and grey, as Arc's dock
+    /// draws them. `selection` is how current the space is, 0 to 1, following a swipe between spaces.
+    public static func iconLook(selection: Double, hovered: Bool) -> IconLook {
+        let selection = Swift.min(Swift.max(selection, 0), 1)
+        let emphasis = selection + (1 - selection) * (hovered ? hoverLift : 0)
+        return IconLook(opacity: dimmedOpacity + (1 - dimmedOpacity) * emphasis, saturation: emphasis)
+    }
 }

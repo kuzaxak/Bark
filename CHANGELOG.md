@@ -8,6 +8,10 @@
 - A Join row under the favorites, as in Arc, from ten minutes before a meeting with a Google Meet, Zoom, Teams or Webex link until it ends: Join opens the call in a new tab, and the close button hides it until that meeting ends
 - Gmail favorites show a red dot while the inbox has unread mail, as in Arc, and resting the pointer on one shows the newest unread email, with a + to compose; clicking the email opens it in the favorite. Nook reads Gmail's unread feed every two minutes with the favorite's own sign-in, sends it only Google's cookies, and keeps what it reads in memory only. Settings → Appearance → Show meetings and mail on favorites turns meetings and mail off and stops all reading; with Show previews when hovering favorites off, the Gmail and Calendar cards don't open, and the countdown, dot and Join row stay. Private windows and the Agent space never show them
 
+### Fixed
+
+- The space bar at the bottom of the sidebar shows which space is current, as in Arc: that space's icon or emoji is at full strength and the others are faded and grey, hovering one brings it part way back, and a swipe between spaces cross-fades them
+
 ## 1.5.4
 
 A page with a certificate that is not valid, such as a device opened by its IP address, says why and can be opened anyway, as in Safari, instead of showing a blank tab.
