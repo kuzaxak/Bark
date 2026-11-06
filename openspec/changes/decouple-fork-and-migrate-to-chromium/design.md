@@ -2,7 +2,7 @@
 
 ## Context
 
-See [proposal.md](proposal.md) for scope and the five capability specs for observable requirements. The user also authorized a limited local integration/performance spike, recorded below. Production implementation, repository detachment and release remain future work.
+See [proposal.md](proposal.md) for scope and the five capability specs for observable requirements. The user authorized implementation after the local integration/performance spikes recorded below. Repository detachment and release remain gated on qualification.
 
 ### Confirmed direction
 
@@ -250,7 +250,28 @@ Correct visibility reduced this host's CPU by about 59% and footprint by about 7
 
 Behavior checks also verified startup hiding, animation resumption when selecting a live page, retained draft input with zero reloads during tab switches, animation stopping again when switching away, and hidden reloads staying hidden. A separate check hid all three prototype pages and observed zero continuing animation callbacks. The selected video continued during the measured intervals. A muted video hidden by switching tabs paused and resumed under Chromium's own media policy; this does not qualify background audible media, PiP, capture or the proposed keep-active behavior. Global window occlusion/session-lock handling still needs installed-product qualification.
 
-The corrected native behavior is the spike default; `BARC_SPIKE_LEGACY_VISIBILITY=1` selects the original host behavior only for comparison. The final CEF patch, Swift control host, benchmark scripts, fixture, manifest and validated results are retained in the ignored local directory `build/chromium-spike/`; binaries and the runnable working tree remain in `/tmp/barc-chromium-spike`. The retained `visibility-validated-results.json` contains only the nine accepted comparison runs. Trial scripts and evidence remain outside commits. Production application code and the outstanding CEF WebUI/extension feasibility decision are unchanged.
+The corrected native behavior is the spike default; `BARC_SPIKE_LEGACY_VISIBILITY=1` selects the original host behavior only for comparison. The final CEF patch, Swift control host, benchmark scripts, fixture, manifest and validated results are retained in the ignored local directory `build/chromium-spike/`; binaries and the runnable working tree remain in `/tmp/barc-chromium-spike`. The retained `visibility-validated-results.json` contains only the nine accepted comparison runs. Trial scripts and evidence remain outside commits. This spike did not change production application code or decide the CEF WebUI/extension feasibility gate; the subsequent decision is recorded below.
+
+## Implementation baseline and CEF gate decision
+
+Implementation starts from `6991c91bcbf066e8483a1a72b75e0d08498e3cce` (`fork/30-segment-autofill`), with the approved plans recorded in `7fe63c60`. The integration branch is `codex/chromium-replacement`; runtime, profile acceptance and tab-policy work use separate worktrees. Existing profile UUIDs, shared-profile spaces, `PageSession` ownership and native tab/space models remain the migration baseline.
+
+On 2026-11-06 the unmodified application built successfully in Release for `arm64 x86_64` with signing disabled. All six Mach-O files in the resulting app, including Sparkle's updater and XPC helpers, contained both slices. This proves compilation and packaged architecture coverage, not ARM execution, signing, media support or release readiness. The current Swift sources and dependency manifests contain no MLX dependency; recheck new dependencies when integrating Chromium. Raw build and architecture results remain ignored under `build/`.
+
+The additional CEF Chrome-style Views/profile prototypes used the same pinned CEF 156 revision and synthetic profiles. The G1 disposition is:
+
+| Gate | Observed result | Disposition |
+| --- | --- | --- |
+| Native multi-tab surfaces and transfer | A single Chrome BrowserView and native SwiftUI view coexist; multiple Chrome BrowserViews are rejected. Swapping distinct views crashes; reattaching one view preserves its draft but emits duplicate-observer errors. Chrome-created tabs escape the owned host window. | Fail; do not build the product on this host |
+| Internal settings and profile isolation | Settings WebUI loads. Two real profiles isolate preferences, cookies, localStorage, extension inventory/storage, content scripts, worker messaging and queried tabs in the synthetic run. | Partial evidence only; native profile shortcuts remain unqualified |
+| Broad extensions | CDP unpacked installation is session-only in this host; ordinary persistent installation/update is unproven. Action triggering disconnects the prototype. | Fail/unqualified; popup-document evaluation is not an action-popup pass |
+| Lifecycle, input and distribution | Prototype shutdown sometimes hangs; visible focus/IME/accessibility, signed installed launch and Apple Silicon execution were not qualified. | Unqualified |
+
+**Decision:** CEF does not pass G1. Proceed with the full Chromium browser layer at `156.0.8078.80` (`fb096c0011f9d50f0a264a9376420cdea9c421e3`) and rerun every mandatory gate through the native bridge. Do not weaken extension, surface or sandbox requirements to reuse the failed host. Small fixes to existing WebKit resource controls/protection can be reviewed independently while the runtime builds; broad feature porting still waits for G1.
+
+The separate hibernation investigation did not establish live renderer checkpoint/restore or controllable anonymous-heap paging on shipping macOS. V8 startup snapshots do not serialize Blink's native page state, and the Intel kernel rejected forced page-out. Chromium's resource parking can offload selected image/source buffers, but does not checkpoint a tab; it remains a separate measured optimization candidate, with no new default or production control introduced by this decision.
+
+An isolated Intel CEF run confirmed file-backed resource readback with live page state and no repeated bootstrap. Comparable physical-footprint and foreground-latency measurements are deferred at the user's request; Apple Silicon remains untested. This mechanical proof does not justify changing defaults. The maintained [compatibility matrix](../../../Runtime/Chromium/compatibility.md) records required profile, extension, media and installed-build cases separately from unqualified fixture checks.
 
 ## Risks / Trade-offs
 

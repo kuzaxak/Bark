@@ -1,6 +1,6 @@
 # Implementation tasks
 
-Production implementation remains unchecked. The separately authorized limited local spike informs this plan and does not complete G1. Complete the Barc identity/reset transition separately; this engine migration preserves the resulting Barc data. Follow the gates in `design.md`; do not begin broad feature porting before runtime feasibility passes.
+Unchecked production tasks remain outstanding. The local spikes inform this plan and do not complete G1. Complete the Barc identity/reset transition separately; this engine migration preserves the resulting Barc data. Follow the gates in `design.md`; do not begin broad feature porting before runtime feasibility passes.
 
 ## 0. Authorized exploratory spike
 
@@ -9,7 +9,7 @@ Production implementation remains unchecked. The separately authorized limited l
 
 ## 1. Baseline and release contract (G0)
 
-- [ ] 1.1 Record the implementation base and release baseline; verify the intended branch contains the profile and tab behavior described in this plan.
+- [x] 1.1 Record the implementation base and release baseline; verify the intended branch contains the profile and tab behavior described in this plan. See the implementation baseline in `design.md`; universal unsigned Release compilation passed, while platform/runtime qualification remains in 1.2/1.4 and later gates.
 - [ ] 1.2 Audit arm64/x86_64 slices for the engine candidates and app dependencies, including MLX; deliver a dual-architecture build matrix with optional feature handling documented.
 - [ ] 1.3 Freeze website workflows and extension versions/capabilities in a maintained acceptance matrix; verify all required spec scenarios have a case and assigned owner.
 - [ ] 1.4 Capture repeatable baseline measurements on real Intel and Apple Silicon Macs using existing performance hooks; record hardware, build, workload and aggregate process metrics outside source commits.
@@ -23,7 +23,7 @@ Production implementation remains unchecked. The separately authorized limited l
 - [ ] 2.3 Run the mandatory extension capability subset in that host; verify install/update, workers, action popup, native messaging and independent per-profile state.
 - [ ] 2.4 Prototype live view transfer, split panes and popup/opener behavior; verify form/history state survives transfer and keyboard/IME/accessibility work.
 - [ ] 2.5 Sign/notarize the prototype and launch from an installed location on both architectures; verify helper signatures, resource discovery and sandbox behavior.
-- [ ] 2.6 Record CEF pass/fail against every G1 criterion; if any mandatory criterion fails, select the full Chromium path without reducing launch scope.
+- [x] 2.6 Record CEF pass/fail against every G1 criterion; if any mandatory criterion fails, select the full Chromium path without reducing launch scope. Native multi-tab hosting failed; the gate table in `design.md` distinguishes partial profile evidence from failed or unqualified extension/lifecycle/distribution requirements. Full Chromium is selected.
 - [ ] 2.7 For the full Chromium path, pin source/toolchain/build arguments and produce native x86_64/arm64 browser-layer bridge artifacts; verify provenance and smoke launch for each. If CEF qualified, record this task as superseded in a reviewed task revision.
 - [ ] 2.8 For the full Chromium path, prove browser-context/extension/WebUI ownership and native surface lifecycle through the bridge; rerun 2.2-2.5 and document the integration boundary before G2. If CEF qualified, record the alternative explicitly.
 
