@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>Barc profile data fixture</title>
+<label>Marker <input id="marker"></label><button id="save">Save site data</button>
+<button id="read">Read site data</button><pre id="result"></pre>
+<script>
+function read() {
+  document.querySelector('#result').textContent = JSON.stringify({
+    localStorage: localStorage.getItem('barcMarker'), cookies: document.cookie,
+    extension: document.documentElement.dataset.barcExtensionProbe ?? null
+  }, null, 2);
+}
+document.querySelector('#save').onclick = () => {
+  const marker = document.querySelector('#marker').value;
+  localStorage.setItem('barcMarker', marker);
+  document.cookie = 'barcMarker=' + encodeURIComponent(marker) + ';Max-Age=3600;Path=/';
+  read();
+};
+document.querySelector('#read').onclick = read;
+read();
+</script>

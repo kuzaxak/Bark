@@ -1,0 +1,54 @@
+# Chromium launch acceptance
+
+Pinned candidate: Chromium **156.0.8078.80**. Every mandatory row must pass in the installed, signed build on both native architectures. `U` = untested; `B` = blocked on native browser-layer integration. Neither is a waiver. CEF exploration does not qualify the full Chromium runtime. Site/service and independently authored extension versions must be frozen before a qualification run; none are qualified here.
+
+Use disposable Work and Personal profile UUIDs in **one runtime process**. Two spaces share Work; a third uses Personal. Before testing, the native bridge must supply verifiable UUID → Chromium Profile → tab/window ownership. Separate processes, separate endpoints, directory names and URL labels do not prove that mapping. Never point fixtures at live profiles. Record app/engine build, architecture, OS, fixture versions and concise results in the ticket, not committed logs.
+
+## Profile and extension matrix
+
+| ID | Mandatory workflow / observable acceptance | Method | Intel | ARM |
+|---|---|---|---|---|
+| P1 | Both Work spaces share login, cookies/localStorage, grants and installed extensions; Personal shares none | Same origin site fixture; inspect host binding and actual state | B | B |
+| P2 | Rename Work without changing UUID/store; reassign a space to Personal with explicit reload; deleted UUID refuses stale actions | Native product integration; no default-profile substitution | B | B |
+| P3 | Selected Work settings opens all five links while Personal is frontmost; also no-window Work case | Native profile form → Settings, Extensions, Privacy, Site Settings, Clear Browsing Data; visible identity and actual ownership | B | B |
+| P4 | Work WebUI preference/site-permission edits and data clearing affect Work only; native form refreshes | Change show-home-button and site grant; clear Work data; read both profiles | B | B |
+| E1 | Ordinary UI install into Work only; both Work spaces see it, Personal does not; survives full quit/restart | Store/package verification and developer unpacked path tested separately; do not use CDP loadUnpacked as persistent install | B | B |
+| E2 | Same extension in both profiles has independent storage, optional grants, enabled state and removal | Fixture options markers Work/Personal; grant only Work; disable/remove Work and inspect Personal | B | B |
+| E3 | Update preserves state, rejects invalid package, requires consent for added permissions; declining in Work cannot borrow Personal approval | Same signing key/extension ID; version 1.0.0 → 1.1.0 with `history` added; ordinary update/distribution flow | B | B |
+| E4 | MV3 worker executes, suspends and wakes; persistent state survives update/restart | Save marker; collect workerInstance; close extension inspectors; wait for worker stop; content message wakes new instance; assertions.js | B | B |
+| E5 | Content scripts and cross-frame messaging execute only in owning profile; actions show real popup, options persist | Site fixture + real toolbar action; opening popup.html as a tab is not action-UI proof; cross-frame case still needs fixture | B | B |
+| E6 | tabs/windows enumeration and created/removed events never cross profiles or private contexts | Reset observations; require positive own tab/window created/removed events, foreign IDs and zero dropped events; create/close Work, Personal and private windows | B | B |
+| E7 | No extension execution/events in private sessions; closing private contexts disposes data/grants | Private fixture page and new private session; do not enable incognito for fixture | B | B |
+| E8 | Allowed native host works; disallowed extension origin fails; long-lived ports stay profile-correct and close on deletion | native_echo.py one-shot fixture; port/deletion/vendor-host checks require further fixture/integration | B | B |
+| E9 | Commands, context menus, downloads, network rules, devtools and optional permissions work through ordinary UI | Independently authored representatives plus targeted fixtures; current fixture does not cover all APIs | U | U |
+| E10 | Store install/update policy and Google-service restrictions are documented and tested | Freeze Bitwarden, uBlock Origin Lite, Dark Reader, SponsorBlock and React DevTools versions/workflows; service-dependent failure blocks relevant mandatory case | U | U |
+
+The fixtures are capability probes, not substitutes for independently authored extension qualification. Current fixture: [`profile-extension`](../ChromiumTests/Fixtures/profile-extension), MV3 1.0.0. Its background listener records bounded tab/window/install events and returns a per-worker instance ID. Options UI stores a profile marker and requests an optional example.com grant. Popup increments profile-local storage. `assertions.js` runs inside the extension page after the native host has established ownership:
+
+```javascript
+await assertProfileFixture({marker: 'Work', requiredURLs: ['http://127.0.0.1:8769/?space=work-2'], forbiddenURLs: ['http://127.0.0.1:8769/?space=personal'], forbiddenTabIds: [], forbiddenWindowIds: [], optionalOriginGranted: true});
+```
+
+For E6, first run `const {observationId} = await chrome.runtime.sendMessage({type: 'reset-observations'})` and wait for its reply. Then create/close known Work, Personal and private tabs/windows. Pass `observationId`, `expectedEvents: [{type: 'tab-created', id: ownTabId}, {type: 'tab-removed', id: ownTabId}, {type: 'window-created', id: ownWindowId}, {type: 'window-removed', id: ownWindowId}]`, and the real foreign tab/window IDs captured by the host, including private IDs, to `assertProfileFixture`. Missing positive events, a mismatched reset or any dropped history fails; reset and repeat a smaller window if the 50-record bound is exceeded. Empty/broken collection cannot qualify E6. Storage-only checks may omit `expectedEvents` and `observationId`. Capture the returned `workerInstance`, verify the worker actually stops, then pass `previousWorkerInstance` after wake. Keeping its inspector open prevents a valid suspension test. No automation install or consent bypass is provided.
+
+Serve the site fixture on the same loopback origin for all profiles and restarts (from the repository root): `python3 -m http.server 8769 --bind 127.0.0.1 --directory Runtime/ChromiumTests/Fixtures/site`. Install the extension through the intended ordinary UI in synthetic Work; set marker Work in options; open that origin in both Work spaces and Personal. Save site marker in Work, read it in the other Work space, verify absence in Personal, quit fully and repeat. Then separately install in Personal, set marker Personal and repeat E2. Retain extension ID/signing key during updates; package generation and host registration stay outside source commits.
+
+For native one-shot testing, register `native_echo.py` only in an isolated test host-discovery root, with an executable absolute path. Create one host manifest allowing this extension's exact `chrome-extension://ID/` origin, and another denying it. From the extension document, call `chrome.runtime.sendMessage({type:'native-probe',host:'HOST_NAME'})`; the allowed response must echo the stored profile marker, the denied result must contain an error. Repeat in both profiles. This does not qualify vendor discovery, signature expectations, ports or deletion cleanup.
+
+## Site, media and native-runtime matrix
+
+| ID | Mandatory installed-build case | Intel | ARM |
+|---|---|---|---|
+| S1 | Frozen authenticated site: OAuth popup retains profile/opener, upload completes, session follows persistence rules after relaunch | U | U |
+| S2 | Form/scroll/back history survives live transfer; one owner; splits/Peek focus independently and promotion preserves profile | B | B |
+| S3 | Denied camera does not capture or borrow another profile's grant; untrusted certificate warns before access | U | U |
+| S4 | Renderer crash exposes recovery while unrelated windows remain usable | B | B |
+| M1 | Claimed codec/container combinations play and seek; record actual codec availability and hardware acceleration | U | U |
+| M2 | MSE adaptive streaming plays, seeks and switches rendition; mandatory services/versions frozen before run | U | U |
+| M3 | Background audio/video survives space/window transfer; mini-player, PiP and system controls target the correct page/profile | B | B |
+| M4 | WebRTC camera/mic, device switching and screen sharing work; allow/deny and OS permissions enforced | U | U |
+| M5 | Protected streaming service playback/seek passes with actual licensed CDM/distribution; no support inferred from Chromium version | U | U |
+| D1 | Signed/notarized installed build starts/quits, preserves sandboxed helpers, extensions and updates on native architecture | B | B |
+| Q1 | Matched WebKit baseline: CPU, aggregate memory, energy/restoration and package-size budgets approved before promotion | U | U |
+
+A hardware/service capability may be explicitly scoped before the published matrix is frozen; already mandatory workflows cannot silently become optional. iOS remains WebKit and is not qualified by these macOS results. Exact runtime version must appear in shipped diagnostics. Qualification is blocked until one-runtime profile binding, native surfaces and ordinary extension lifecycle exist; all outcome columns intentionally remain unqualified.
