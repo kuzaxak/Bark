@@ -1,14 +1,14 @@
 // Run in this fixture's popup/options document after ordinary installation.
 // Native host must first establish UUID -> Chrome Profile -> target ownership.
 // These assertions do not establish that binding or native UI behavior.
-globalThis.assertProfileFixture = async ({marker, requiredURLs = [], forbiddenURLs = [], forbiddenTabIds = [], forbiddenWindowIds = [], previousWorkerInstance, optionalOriginGranted, observationId, expectedEvents, expectedFocusSequence, expectedCurrentWindow, expectedLastFocusedWindow, assertStableTabsAndWindows = false, expectedTabIds, expectedWindowIds, expectedActiveTabs}) => {
+globalThis.assertProfileFixture = async ({marker, requiredURLs = [], forbiddenURLs = [], forbiddenTabIds = [], forbiddenWindowIds = [], previousWorkerInstance, optionalOriginGranted, observationId, expectedEvents, expectedFocusSequence, expectedCurrentWindow, expectedLastFocusedWindow, assertStableTabsAndWindows = false, expectedTabIds, expectedWindowIds, expectedActiveTabs, expectedCommands}) => {
   const result = await chrome.runtime.sendMessage({type: 'profile-probe'});
   function require(condition, label) {
     if (!condition) throw new Error(label);
   }
   require(!result.error, result.error);
   require(result.droppedEvents === 0, 'event history incomplete; reset and repeat a smaller observation window');
-  if (expectedEvents !== undefined || expectedFocusSequence !== undefined) {
+  if (expectedEvents !== undefined || expectedFocusSequence !== undefined || expectedCommands !== undefined) {
     require(typeof observationId === 'string' && observationId.length > 0 && result.observationId === observationId, 'observation reset does not match');
   }
   if (expectedEvents !== undefined) {
@@ -24,6 +24,13 @@ globalThis.assertProfileFixture = async ({marker, requiredURLs = [], forbiddenUR
     const focusIds = result.events.filter(event => event.type === 'window-focus-changed').map(event => event.details.id);
     require(JSON.stringify(focusIds) === JSON.stringify(expectedFocusSequence), 'logical window focus sequence differs');
   }
+  if (expectedCommands !== undefined) {
+    require(Array.isArray(expectedCommands) && expectedCommands.every(command => typeof command === 'string' && command.length > 0), 'exact command-name array required');
+    require(forbiddenTabIds.length > 0 && forbiddenWindowIds.length > 0 && [...forbiddenTabIds, ...forbiddenWindowIds].every(id => Number.isInteger(id) && id > 0), 'real foreign tab and window IDs required for command isolation');
+    const commands = result.events.filter(event => event.type === 'command').map(event => event.details.command);
+    require(JSON.stringify(commands) === JSON.stringify(expectedCommands), 'command routing sequence differs');
+  }
+  require(!result.events.some(event => event.type === 'command' && (forbiddenTabIds.includes(event.details.tabId) || forbiddenWindowIds.includes(event.details.windowId))), 'foreign tab/window in command event');
   function sameIds(actual, expected) {
     return Array.isArray(expected) && expected.length > 0 && expected.every(Number.isInteger) &&
       new Set(expected).size === expected.length && actual.length === expected.length &&

@@ -18,6 +18,7 @@ chrome.tabs.onActivated.addListener(info => enqueue('tab-activated', {id: info.t
 chrome.windows.onCreated.addListener(window => enqueue('window-created', {id: window.id, incognito: window.incognito, focused: window.focused, state: window.state}));
 chrome.windows.onRemoved.addListener(id => enqueue('window-removed', {id}));
 chrome.windows.onFocusChanged.addListener(id => enqueue('window-focus-changed', {id, none: id === chrome.windows.WINDOW_ID_NONE}));
+chrome.commands.onCommand.addListener((command, tab) => enqueue('command', {command, tabId: tab?.id, windowId: tab?.windowId}));
 chrome.runtime.onInstalled.addListener(details => enqueue('installed', details));
 chrome.runtime.onStartup.addListener(() => enqueue('startup', {}));
 function windowState(window) {
