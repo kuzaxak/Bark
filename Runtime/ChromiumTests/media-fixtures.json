@@ -93,6 +93,47 @@
       ]
     },
     {
+      "id": "av1-opus-webm",
+      "cases": [
+        "M1",
+        "M3"
+      ],
+      "derivation": {
+        "source_fixture": "av1-opus-mp4",
+        "tool": "FFmpeg 9.0.2 (Homebrew 9.0.2_1, Intel macOS)",
+        "arguments": [
+          "-nostdin", "-v", "error", "-i", "SOURCE",
+          "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
+          "-map_metadata", "-1", "-fflags", "+bitexact",
+          "-flags", "+bitexact", "-f", "webm", "OUTPUT"
+        ],
+        "output_name": "bear-av1-opus.webm",
+        "instructions": "Verify the source fixture hash, replace SOURCE and OUTPUT with local paths, then verify the output hash. Keep generated media outside source commits. Use these exact output bytes on both architectures; another FFmpeg build may produce different bytes."
+      },
+      "bytes": 49455,
+      "sha256": "332b5feafa5bd14bf25bb649dd14b79d7b2cb8f427af194ade6223d9693279fd",
+      "container": "WebM",
+      "expected_streams": [
+        {
+          "codec": "av1",
+          "profile": "Main",
+          "width": 320,
+          "height": 240,
+          "bit_depth": 8
+        },
+        {
+          "codec": "opus",
+          "sample_rate_hz": 48000,
+          "channels": 2
+        }
+      ],
+      "expected_duration_seconds": 2.748,
+      "coverage_limits": [
+        "Lossless remux: all 82 video and 137 audio packet payloads match the pinned MP4 source; two independent remuxes produced identical bytes.",
+        "WebM timestamps use a 1 ms time base and Opus carries 312 samples of initial padding. Playback, A/V synchronization and seeking remain untested."
+      ]
+    },
+    {
       "id": "av1-video-webm",
       "cases": [
         "M1"
@@ -261,7 +302,6 @@
     "Codec/CDM build paths and redistribution rights remain separate release gates."
   ],
   "unresolved_inputs": [
-    "A paired AV1 Main8/Opus WebM asset was not identified; the combined AV1/Opus asset here is MP4.",
     "Intended HLS and DASH player version/configuration, master/media manifests, at least two aligned renditions, frozen expected seek/switch output. Fragmented files alone are not an adaptive streaming scenario.",
     "Long-duration media/loop policy and expected audio/video continuity across native surfaces, PiP, mini-player, system controls and resource actions.",
     "WebRTC peer/server inputs, negotiated VP8/Opus and H.264/Opus cases, real camera/mic/device changes and silent screen-sharing workflow.",

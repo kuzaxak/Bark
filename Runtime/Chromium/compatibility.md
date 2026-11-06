@@ -62,7 +62,7 @@ D1 requires the complete Chromium app/framework layout, including versioned Help
 
 The media candidate must use `proprietary_codecs = true` and `ffmpeg_branding = "Chrome"` while retaining Chromium product branding. This enables additional codec build paths; it does not establish playback, hardware acceleration or distribution readiness. The initial unmodified-source build uses upstream codec defaults and cannot qualify these additional paths.
 
-[Pinned media inputs](../ChromiumTests/media-fixtures.json) identify seven upstream clips by source revision, path and hash, with expected stream formats and separate-track MSE byte ranges. These short clips support initial format and seek checks. Paired AV1/Opus WebM, adaptive player/rendition inputs, prolonged continuity, WebRTC and protected-service inputs remain unresolved. Freeze those inputs and expected outputs before execution:
+[Pinned media inputs](../ChromiumTests/media-fixtures.json) identify seven upstream clips by source revision, path and hash, plus an AV1/Opus WebM lossless remux with a pinned recipe and output hash. Expected stream formats and separate-track MSE byte ranges are recorded. These short clips support initial format and seek checks; packet preservation does not qualify playback or A/V synchronization. Adaptive player/rendition inputs, prolonged continuity, WebRTC and protected-service inputs remain unresolved. Freeze those inputs and expected outputs before execution:
 
 | Cases | Required candidate inputs and checks |
 |---|---|
