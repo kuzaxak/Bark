@@ -1,0 +1,17 @@
+# Native macOS developer Release build. Security/sandbox defaults stay enabled.
+target_os = "mac"
+target_cpu = "x64"
+is_debug = false
+is_official_build = false
+is_component_build = false
+symbol_level = 1
+blink_symbol_level = 0
+v8_symbol_level = 0
+use_remoteexec = false
+# Keep Chromium's compilation deployment default (13.0); the shipped
+# application and package still require macOS 15.5.
+mac_min_system_version = "15.5"
+# Candidate open-library H.264/AAC support; this does not include a CDM.
+is_chrome_branded = false
+proprietary_codecs = true
+ffmpeg_branding = "Chrome"
