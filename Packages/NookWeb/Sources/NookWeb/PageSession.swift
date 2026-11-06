@@ -175,6 +175,9 @@ public final class PageSession: NSObject, Identifiable {
     public var hasPlayingAudio: Bool = false
     public internal(set) var media = PageMedia()
     @ObservationIgnored var mediaFrames = MediaFrames<WKFrameInfo?>()
+    /// Subframes navigations named, by frame handle, asked again with those that reported.
+    @ObservationIgnored var seenMediaFrames: [AnyHashable: WKFrameInfo] = [:]
+    @ObservationIgnored var mediaReask = ReaskGate()
     /// WebKit's own word on whether the page plays sound; nil until the web view reports it.
     @ObservationIgnored var webKitAudible: Bool?
     /// WebKit's private, KVO-compliant `_isPlayingAudio`: what Safari's tab speaker follows. It
@@ -505,6 +508,7 @@ public final class PageSession: NSObject, Identifiable {
         hasAudioContent = false
         hasVideoContent = false
         mediaFrames = MediaFrames()
+        seenMediaFrames = [:]
         webKitAudible = nil
         media = PageMedia()
         // Also covers `tearDown`, which unloads first.

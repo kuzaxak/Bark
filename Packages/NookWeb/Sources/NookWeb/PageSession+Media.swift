@@ -16,9 +16,28 @@ extension PageSession {
     /// again by `refreshMediaReports`, or returned by a control. `gone` means the frame's document
     /// went away. The page's media is what any frame holds.
     func receiveMediaReport(_ body: [String: Any], from frame: WKFrameInfo?) {
-        guard let id = body["frame"] as? String else { return }
-        mediaFrames.report(id, frame: frame, media: body["gone"] == nil ? PageMedia(report: body) : nil)
+        guard let document = body["frame"] as? String else { return }
+        mediaFrames.report(Self.mediaFrameKey(frame, document: document), document: document, frame: frame,
+                           media: body["gone"] == nil ? PageMedia(report: body) : nil)
         applyMediaFrames()
+    }
+
+    /// Tells frames apart across reports and asks: WebKit's private `_handle`, equal for every
+    /// `WKFrameInfo` of one frame, where there is one; else the reporting document.
+    static func mediaFrameKey(_ frame: WKFrameInfo?, document: String) -> AnyHashable {
+        guard let frame, !frame.isMainFrame else { return "main" }
+        return frameHandle(frame) ?? AnyHashable("document " + document)
+    }
+
+    private static func frameHandle(_ frame: WKFrameInfo) -> AnyHashable? {
+        guard frame.responds(to: NSSelectorFromString("_handle")) else { return nil }
+        return (frame.value(forKey: "_handle") as? NSObject).map(AnyHashable.init)
+    }
+
+    /// A subframe a navigation named, asked again with the others even if it never reported.
+    func noteMediaFrame(_ frame: WKFrameInfo) {
+        guard !frame.isMainFrame, let handle = Self.frameHandle(frame) else { return }
+        seenMediaFrames[handle] = frame
     }
 
     /// Sets the page's media from its frames' reports, and the audio state the tab row and the
@@ -34,36 +53,55 @@ extension PageSession {
         if hasPlayingAudio != audible { hasPlayingAudio = audible }
     }
 
-    /// WebKit says the page started or stopped playing sound. The frames are asked for their state
-    /// again as well, so a report that never arrived cannot leave the page without a player.
+    /// WebKit says the page started or stopped playing sound. The tab row's speaker follows at
+    /// once; the frames are asked for their state again, since the bar goes by them.
     func webKitAudioChanged(_ audible: Bool) {
         webKitAudible = audible
+        applyMediaFrames()
         refreshMediaReports()
     }
 
-    /// Asks the main frame and every frame that has reported for its state again.
-    func refreshMediaReports() {
-        guard let webView else { return applyMediaFrames() }
-        let frames: [WKFrameInfo?] = [nil] + mediaFrames.frames.filter { $0?.isMainFrame == false }
-        Task { @MainActor [weak self, weak webView] in
-            for frame in frames {
-                guard let webView, let state = try? await webView.callAsyncJavaScript(
-                    "return window.__nookMedia?.state() ?? null;", in: frame, contentWorld: .page) as? [String: Any]
-                else { continue }
-                self?.receiveMediaReport(state, from: frame)
-            }
-            self?.applyMediaFrames()
+    /// Asks the main frame and every subframe known from a report or a navigation for its state
+    /// again. Asks made while one runs are folded into one more after it.
+    public func refreshMediaReports() {
+        guard webView != nil, mediaReask.request() else { return }
+        Task { @MainActor [weak self] in await self?.reaskMediaFrames() }
+    }
+
+    private func reaskMediaFrames() async {
+        var subframes = seenMediaFrames
+        for (key, frame) in mediaFrames.frames {
+            if let frame, !frame.isMainFrame { subframes[key] = frame }
+        }
+        await reaskMediaFrame(nil, key: "main")
+        for (key, frame) in subframes { await reaskMediaFrame(frame, key: key) }
+        applyMediaFrames()
+        if mediaReask.finished() { await reaskMediaFrames() }
+    }
+
+    /// A subframe that no longer answers is gone, or no longer runs the media script. The main frame
+    /// fails only mid-navigation, and its commit clears what it had reported.
+    private func reaskMediaFrame(_ frame: WKFrameInfo?, key: AnyHashable) async {
+        guard let webView else { return }
+        let state = try? await webView.callAsyncJavaScript(
+            "return window.__nookMedia?.state() ?? null;", in: frame, contentWorld: .page)
+        if let state = state as? [String: Any] {
+            receiveMediaReport(state, from: frame)
+        } else if frame != nil {
+            mediaFrames.forget(key)
+            seenMediaFrames[key] = nil
         }
     }
 
     /// Runs one of `window.__nookMedia`'s controls in `frame` and takes the state it answers with,
-    /// so the bar follows the change at once.
+    /// so the bar follows the change at once, then asks every frame again.
     private func runMediaControl(_ call: String, _ arguments: [String: Any], in frame: WKFrameInfo?) {
         guard let webView else { return }
         Task { @MainActor [weak self] in
             let state = try? await webView.callAsyncJavaScript(
                 "return (await window.__nookMedia?.\(call)) ?? null;", arguments: arguments, in: frame, contentWorld: .page)
             if let state = state as? [String: Any] { self?.receiveMediaReport(state, from: frame) }
+            self?.refreshMediaReports()
         }
     }
 
@@ -71,10 +109,18 @@ extension PageSession {
         setMuted(!isAudioMuted)
     }
 
-    /// Pauses every frame's player, or resumes what last played with sound.
+    /// Pauses every frame's player, or resumes what last played with sound. With no frame known to
+    /// play, WebKit pauses everything on the page.
     public func togglePlayback() {
         let play = !media.isPlaying
         let frames = play ? [mediaFrames.resumeTarget ?? nil] : mediaFrames.pauseTargets
+        if frames.isEmpty, let webView {
+            Task { @MainActor [weak self] in
+                await webView.pauseAllMediaPlayback()
+                self?.refreshMediaReports()
+            }
+            return
+        }
         for frame in frames { runMediaControl("toggle(play)", ["play": play], in: frame) }
     }
 

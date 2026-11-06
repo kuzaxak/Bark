@@ -68,6 +68,7 @@ extension PageSession: WKNavigationDelegate {
         jsDialogsSuppressed = false
         // The new document's frames have no media until their media scripts report, and a PDF never does.
         mediaFrames = MediaFrames()
+        seenMediaFrames = [:]
         applyMediaFrames()
         resetTranslation()
         #if os(macOS)
@@ -320,6 +321,7 @@ extension PageSession: WKNavigationDelegate {
             applyProtection(to: preferences, for: url)
             mainFrameNavigationType = navigationAction.navigationType
         }
+        if let frame = navigationAction.targetFrame, webView === self.webView { noteMediaFrame(frame) }
         self.webView(webView, decidePolicyFor: navigationAction) { decisionHandler($0, preferences) }
     }
 

@@ -29,6 +29,21 @@ struct MiniPlayerLiveTests {
         }
     }
 
+    /// WebKit's audio signal may never arrive: leaving the tab asks the frames anyway.
+    @Test func leavingTheTabAsksThePageWithoutWebKitsSignal() async throws {
+        try await withLivePage { live in
+            let tab = try live.open(script: LivePage.rewrittenPlayer)
+            let page = try #require(live.host.tabs.session(for: tab))
+            let webView = try #require(page.webView)
+            webView.removeObserver(page, forKeyPath: PageSession.isPlayingAudioKey)
+            defer { webView.addObserver(page, forKeyPath: PageSession.isPlayingAudioKey, options: [.new], context: nil) }
+            try await live.until("the page playing") { live.playing(webView) == true }
+            live.leave()
+
+            try await live.until("the bar") { page.media.isPlaying && live.host.window.miniPlayer.itemID == tab }
+        }
+    }
+
     /// Each control answers with the frame's new state, so the bar follows at once
     /// even where nothing else would tell it: here a page that muted itself, which WebKit already
     /// counts as silent, on a page whose reports never arrive.

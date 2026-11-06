@@ -61,32 +61,41 @@ public enum MuteAction: Equatable, Sendable {
     }
 }
 
-/// The media reports of a page's frames, keyed by the id each frame's script made up, combined
-/// into the page's, and the frame each control acts in. `Frame` is WebKit's `WKFrameInfo?` in the
-/// app, nil being the main frame.
+/// The media reports of a page's frames, one entry per frame, combined into the page's, and the
+/// frame each control acts in. `Frame` is WebKit's `WKFrameInfo?` in the app, nil being the main
+/// frame; `key` tells frames apart, and `document` the documents a frame has shown, by the id each
+/// document's media script made up.
 public struct MediaFrames<Frame> {
     private struct Entry {
         var frame: Frame
+        var document: String
         var media: PageMedia
         var reportedAt: Int
         var audibleAt: Int?
     }
 
-    private var entries: [String: Entry] = [:]
+    private var entries: [AnyHashable: Entry] = [:]
     private var clock = 0
 
     public init() {}
 
-    /// `media` nil: the frame's document went away.
-    public mutating func report(_ id: String, frame: Frame, media: PageMedia?) {
+    /// A frame's report replaces its last one, from whichever document. `media` nil: `document`
+    /// went away, which removes the entry only while it is still that document's.
+    public mutating func report(_ key: AnyHashable, document: String, frame: Frame, media: PageMedia?) {
+        let previous = entries[key]
         guard let media else {
-            entries[id] = nil
+            if previous?.document == document { entries[key] = nil }
             return
         }
         clock += 1
-        let previous = entries[id]
-        let audibleAt = media.isAudible && previous?.media.isAudible != true ? clock : previous?.audibleAt
-        entries[id] = Entry(frame: frame, media: media, reportedAt: clock, audibleAt: audibleAt)
+        let earlier = previous?.document == document ? previous : nil
+        let audibleAt = media.isAudible && earlier?.media.isAudible != true ? clock : earlier?.audibleAt
+        entries[key] = Entry(frame: frame, document: document, media: media, reportedAt: clock, audibleAt: audibleAt)
+    }
+
+    /// The frame is gone, or its document no longer runs the media script.
+    public mutating func forget(_ key: AnyHashable) {
+        entries[key] = nil
     }
 
     /// The page's media as its frames report it: what the bar goes by.
@@ -109,9 +118,9 @@ public struct MediaFrames<Frame> {
         webKit == true || media.isAudible
     }
 
-    /// Every frame that has reported, to ask again.
-    public var frames: [Frame] {
-        entries.values.map(\.frame)
+    /// Every frame that has reported, by key, to ask again.
+    public var frames: [AnyHashable: Frame] {
+        entries.mapValues(\.frame)
     }
 
     /// Where Pause acts: every frame whose player plays.
@@ -132,5 +141,34 @@ public struct MediaFrames<Frame> {
     /// Frames that played sound most recently first, then those that reported most recently.
     private var ranked: [Entry] {
         entries.values.sorted { ($0.audibleAt ?? 0, $0.reportedAt) > ($1.audibleAt ?? 0, $1.reportedAt) }
+    }
+}
+
+/// Asking a page's frames for their state again: one ask at a time, and any number of asks made
+/// meanwhile run once more after it, so the last change is never missed.
+public struct ReaskGate: Sendable {
+    private var inFlight = false
+    private var queued = false
+
+    public init() {}
+
+    /// True: start an ask now.
+    public mutating func request() -> Bool {
+        if inFlight {
+            queued = true
+            return false
+        }
+        inFlight = true
+        return true
+    }
+
+    /// The ask in flight finished. True: start another now.
+    public mutating func finished() -> Bool {
+        if queued {
+            queued = false
+            return true
+        }
+        inFlight = false
+        return false
     }
 }

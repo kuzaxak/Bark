@@ -14,8 +14,8 @@ struct MediaFramesTests {
 
     @Test func thePageHasWhatAnyFrameHas() {
         var frames = MediaFrames<String>()
-        frames.report("main", frame: "main", media: silent)
-        frames.report("embed", frame: "embed", media: sounding)
+        frames.report("main", document: "main", frame: "main", media: silent)
+        frames.report("embed", document: "embed", frame: "embed", media: sounding)
         #expect(frames.media.hasMedia && frames.media.isAudible && frames.media.isPlaying && frames.media.handlesNextTrack)
         #expect(!frames.media.handlesPreviousTrack)
     }
@@ -24,63 +24,96 @@ struct MediaFramesTests {
     /// it plays sound. WebKit's "no" never cancels a frame's "yes", since its signal can go quiet.
     @Test func theSpeakerIsOnWhenWebKitOrAFrameHearsSound() {
         var frames = MediaFrames<String>()
-        frames.report("main", frame: "main", media: paused)
+        frames.report("main", document: "main", frame: "main", media: paused)
         #expect(frames.isAudible(webKit: true), "a chime, or a frame whose report never came")
         #expect(!frames.isAudible(webKit: false))
         #expect(!frames.isAudible(webKit: nil))
         #expect(!frames.media.isAudible && !frames.media.isPlaying, "the bar goes by the frames alone")
-        frames.report("main", frame: "main", media: sounding)
+        frames.report("main", document: "main", frame: "main", media: sounding)
         #expect(frames.isAudible(webKit: false))
         #expect(frames.isAudible(webKit: nil))
     }
 
     @Test func aPageThatMutedItselfIsMuted() {
         var frames = MediaFrames<String>()
-        frames.report("main", frame: "main", media: mutedByPage)
+        frames.report("main", document: "main", frame: "main", media: mutedByPage)
         #expect(frames.media.isMuted)
         #expect(frames.media.isPlaying, "still playing, only muted")
-        frames.report("embed", frame: "embed", media: sounding)
+        frames.report("embed", document: "embed", frame: "embed", media: sounding)
         #expect(!frames.media.isMuted, "something else on the page plays with sound")
     }
 
     @Test func aFrameThatGoesTakesItsMediaWithIt() {
         var frames = MediaFrames<String>()
-        frames.report("embed", frame: "embed", media: sounding)
-        frames.report("embed", frame: "embed", media: nil)
+        frames.report("embed", document: "embed", frame: "embed", media: sounding)
+        frames.report("embed", document: "embed", frame: "embed", media: nil)
         #expect(frames.media == PageMedia())
     }
 
     @Test func pauseActsWhereThePlayerPlays() {
         var frames = MediaFrames<String>()
-        frames.report("ad", frame: "ad", media: mutedClip)
-        frames.report("main", frame: "main", media: mutedByPage)
-        frames.report("embed", frame: "embed", media: sounding)
+        frames.report("ad", document: "ad", frame: "ad", media: mutedClip)
+        frames.report("main", document: "main", frame: "main", media: mutedByPage)
+        frames.report("embed", document: "embed", frame: "embed", media: sounding)
         #expect(Set(frames.pauseTargets) == ["main", "embed"], "a muted clip is left playing")
     }
 
     @Test func playResumesTheFrameThatLastPlayedSound() {
         var frames = MediaFrames<String>()
-        frames.report("embed", frame: "embed", media: sounding)
-        frames.report("embed", frame: "embed", media: paused)
-        frames.report("main", frame: "main", media: mutedClip)
+        frames.report("embed", document: "embed", frame: "embed", media: sounding)
+        frames.report("embed", document: "embed", frame: "embed", media: paused)
+        frames.report("main", document: "main", frame: "main", media: mutedClip)
         #expect(frames.resumeTarget == "embed")
     }
 
     @Test func previousAndNextActInTheFrameWithTheHandler() {
         var frames = MediaFrames<String>()
-        frames.report("first", frame: "first", media: sounding)
-        frames.report("first", frame: "first", media: paused)
-        frames.report("second", frame: "second", media: sounding)
-        frames.report("main", frame: "main", media: silent)
+        frames.report("first", document: "first", frame: "first", media: sounding)
+        frames.report("first", document: "first", frame: "first", media: paused)
+        frames.report("second", document: "second", frame: "second", media: sounding)
+        frames.report("main", document: "main", frame: "main", media: silent)
         #expect(frames.trackTarget(forward: true) == "second", "the frame that played sound last")
         #expect(frames.trackTarget(forward: false) == nil)
     }
 
     @Test func everyKnownFrameCanBeAskedAgain() {
         var frames = MediaFrames<String>()
-        frames.report("main", frame: "main", media: sounding)
-        frames.report("embed", frame: "embed", media: paused)
-        #expect(Set(frames.frames) == ["main", "embed"])
+        frames.report("main", document: "main", frame: "main", media: sounding)
+        frames.report("embed", document: "embed", frame: "embed", media: paused)
+        #expect(Set(frames.frames.values) == ["main", "embed"])
+    }
+
+    /// A frame keeps one entry: its next document's report replaces the last one's, even when the
+    /// last document's goodbye never came.
+    @Test func aFramesNextDocumentReplacesItsReport() {
+        var frames = MediaFrames<String>()
+        frames.report("embed", document: "first", frame: "embed", media: sounding)
+        frames.report("embed", document: "second", frame: "embed", media: silent)
+        #expect(!frames.media.isAudible)
+        #expect(frames.frames.count == 1)
+    }
+
+    @Test func aLateGoodbyeFromAnEarlierDocumentIsIgnored() {
+        var frames = MediaFrames<String>()
+        frames.report("embed", document: "second", frame: "embed", media: sounding)
+        frames.report("embed", document: "first", frame: "embed", media: nil)
+        #expect(frames.media.isAudible)
+    }
+
+    /// A frame that is gone, or no longer runs the media script, when asked again.
+    @Test func aForgottenFrameTakesItsMediaWithIt() {
+        var frames = MediaFrames<String>()
+        frames.report("embed", document: "first", frame: "embed", media: sounding)
+        frames.forget("embed")
+        #expect(frames.media == PageMedia())
+    }
+
+    /// Asking the frames again: one ask at a time, and asks made meanwhile run once more after it.
+    @Test func reasksRunOneAtATimeWithOneMoreQueued() {
+        var gate = ReaskGate()
+        let steps = [gate.request(), gate.request(), gate.request(), gate.finished(), gate.finished(), gate.request()]
+        #expect(steps == [true, false, false, true, false, true],
+                "start; queue while in flight, once; run the queued ask; then idle; start again")
     }
 
     @Test func aFrameReportReadsWhatTheScriptPosts() {

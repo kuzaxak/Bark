@@ -245,6 +245,9 @@ extension TabsController {
             if session !== previous, !session.isPrivate {
                 tabEvents?.tabActivated(new: session, previous: previous)
             }
+            // The mini player goes by the frames' reports; ask again rather than wait for them.
+            if let previous, previous !== session { previous.refreshMediaReports() }
+            session.refreshMediaReports()
         }
         mirror(window)
         window.refreshCompositor()

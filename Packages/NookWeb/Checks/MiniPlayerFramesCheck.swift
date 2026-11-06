@@ -42,10 +42,15 @@ final class Pages: NSObject, WKURLSchemeHandler {
 @MainActor
 final class Reports: NSObject, WKScriptMessageHandler {
     var frames = MediaFrames<WKFrameInfo>()
+    /// WebKit's private frame handle of every subframe report, which the app keys frames by.
+    var subframeHandles: [NSObject] = []
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard let body = message.body as? [String: Any], let id = body["frame"] as? String else { return }
-        frames.report(id, frame: message.frameInfo, media: body["gone"] == nil ? PageMedia(report: body) : nil)
+        let info = message.frameInfo
+        if !info.isMainFrame, let handle = info.value(forKey: "_handle") as? NSObject { subframeHandles.append(handle) }
+        frames.report(info.isMainFrame ? "main" : AnyHashable(id), document: id, frame: info,
+                      media: body["gone"] == nil ? PageMedia(report: body) : nil)
     }
 }
 
@@ -127,6 +132,9 @@ struct MiniPlayerFramesCheck {
             let embed = reports.frames.pauseTargets
             precondition(embed.count == 1 && !embed[0].isMainFrame && embed[0].securityOrigin.host == "player",
                          "sound from the iframe only: \(embed.map(\.securityOrigin.host))")
+            let handles = Set(reports.subframeHandles.map(AnyHashable.init))
+            precondition(reports.subframeHandles.count >= 2 && handles.count == 1,
+                         "one frame, one handle: \(reports.subframeHandles.count) reports, \(handles.count) handles")
 
             var miniPlayer = MiniPlayer()
             let page = UUID()
