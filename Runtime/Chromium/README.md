@@ -104,13 +104,14 @@ end
 
 Stop on any failed check/application; do not skip patches or continue to GN.
 After all eleven succeed, copy the current bridge/profile implementations and
-all three regression sources into that same checkout. In particular, include
+all four regression sources into that same checkout. In particular, include
 the macOS policy regression supplied with the policy patches:
 
 ```fish
 cp "$barc_repo/Runtime/Chromium/barc_bridge.h" "$barc_repo/Runtime/Chromium/barc_bridge.mm" chrome/browser/ui/views/frame/
 cp "$barc_repo/Runtime/Chromium/barc_profiles.h" "$barc_repo/Runtime/Chromium/barc_profiles.mm" chrome/browser/ui/views/frame/
 cp "$barc_repo/Runtime/Chromium/barc_bridge_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_profiles_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_native_policy_browsertest.mm" chrome/browser/ui/views/frame/
+cp "$barc_repo/Runtime/Chromium/barc_extension_focus_browsertest.mm" chrome/browser/ui/views/frame/
 ```
 
 These hooks use Chromium's existing macOS UI target and framework exports; the
@@ -203,18 +204,19 @@ Neither launch command is a qualification result.
 
 ### Regression scope and remaining qualification
 
-The maintained `barc_browser_tests` target has **three sources and four classes**:
+The maintained `barc_browser_tests` target has **four sources and five classes**:
 `BarcBridgeBrowserTest` and `BarcSharedNativeWindowBrowserTest` in
 `barc_bridge_browsertest.mm`, `BarcProfilesBrowserTest` in
-`barc_profiles_browsertest.mm`, and `BarcNativePolicyBrowserTest` in
-`barc_native_policy_browsertest.mm`. It uses Chromium's existing
+`barc_profiles_browsertest.mm`, `BarcNativePolicyBrowserTest` in
+`barc_native_policy_browsertest.mm`, and `BarcExtensionFocusBrowserTest` in
+`barc_extension_focus_browsertest.mm`. It uses Chromium's existing
 `browser_tests_runner`, `test_support` and `test_support_ui`, with no custom
 runner or registration in monolithic `browser_tests`. Inspect the generated
 graph/incremental estimate and compile added objects before committing to its
 separate build. Its ordinary launcher filter is:
 
 ```fish
-out/Barc-x64/barc_browser_tests --gtest_filter='BarcBridgeBrowserTest.*:BarcProfilesBrowserTest.*:BarcSharedNativeWindowBrowserTest.*:BarcNativePolicyBrowserTest.*'
+out/Barc-x64/barc_browser_tests --gtest_filter='BarcBridgeBrowserTest.*:BarcProfilesBrowserTest.*:BarcSharedNativeWindowBrowserTest.*:BarcNativePolicyBrowserTest.*:BarcExtensionFocusBrowserTest.*'
 ```
 
 These regressions encode transfer/draft/scroll/history, profile binding,
@@ -224,6 +226,10 @@ settings/extension component state, ordinary/last-tab transfer, stale IDs,
 hidden-page animation and draft continuity, renderer recovery and clean quit
 on an unlocked console with isolated stores. Keep release qualification separate
 from baseline compilation, candidate compilation and test-object compilation.
+
+The extension focus case loads the same synthetic MV3 extension into both real
+profiles and checks actual focus events while the native window remains key.
+Its unpacked test loader does not qualify store installation or permission UI.
 
 Profile creation validates/canonicalizes UUIDs and resolves the immediate
 user-data child `Barc-<uuid>` through ProfileManager without active/default
