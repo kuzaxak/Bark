@@ -48,9 +48,24 @@
         "Native messaging / biometric unlock with the vendor desktop application"
       ],
       "prerequisites": [
-        "Disposable vault account/service and desktop application version must be frozen separately; no real credentials",
+        "Disposable vault account/service must be frozen separately; no real credentials. The vendor desktop input is pinned below.",
         "Biometric/native-host discovery, allowlisting and OS support remain unqualified"
       ],
+      "desktop_input": {
+        "version": "2026.10.4",
+        "build": "73705",
+        "bundle_id": "com.bitwarden.desktop",
+        "captured_at_utc": "2026-11-06T23:36:01+00:00",
+        "release_url": "https://github.com/bitwarden/clients/releases/tag/desktop-v2026.10.4",
+        "download_url": "https://github.com/bitwarden/clients/releases/download/desktop-v2026.10.4/Bitwarden-2026.10.4-universal-mac.zip",
+        "artifact": "build/extension-qualification/desktop/Bitwarden-2026.10.4-universal-mac.zip",
+        "bytes": 336898248,
+        "sha256": "61ebef7a7cb75ed4e8facbe185ea23f94cc17f8d850177099a693b1578112d0a",
+        "signing_team": "LTZ2PFU5D6",
+        "main_and_desktop_proxy_architectures": ["x86_64", "arm64"],
+        "package_verification": "Published asset size/SHA-256 and deep strict codesign verification pass; bundle version/build and main/native-proxy Mach-O slices inspected on Intel macOS. Architecture-specific bundled modules are recorded in local evidence.",
+        "qualification": "Not installed or executed. Native messaging, biometric unlock and both native architecture workflows remain untested."
+      },
       "workflow_source": "https://bitwarden.com/help/biometrics/"
     },
     {
