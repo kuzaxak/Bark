@@ -174,6 +174,7 @@ public final class PageSession: NSObject, Identifiable {
     public var hasPiPActive: Bool = false
     public var hasPlayingAudio: Bool = false
     public internal(set) var media = PageMedia()
+    @ObservationIgnored var mediaFrames = MediaFrames<WKFrameInfo>()
     public var isAudioMuted: Bool = false
     public var hasAudioContent: Bool = false {
         didSet {
@@ -419,6 +420,8 @@ public final class PageSession: NSObject, Identifiable {
         controller.add(self, contentWorld: Self.pipStateWorld, name: "pipStateChange")
         controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
         controller.add(self, contentWorld: Self.translateWorld, name: Self.translateHandlerName)
+        controller.addUserScript(WKUserScript(source: MediaScript.reporter(handler: "mediaStateChange_\(itemID.uuidString)"),
+                                              injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         #if os(macOS)
         self.controller?.vault?.attach(to: webView, session: self)
         #endif
@@ -494,6 +497,7 @@ public final class PageSession: NSObject, Identifiable {
         hasPlayingAudio = false
         hasAudioContent = false
         hasVideoContent = false
+        mediaFrames = MediaFrames()
         media = PageMedia()
         // Also covers `tearDown`, which unloads first.
         switcherSnapshot = nil

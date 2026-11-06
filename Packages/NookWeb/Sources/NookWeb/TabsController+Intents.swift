@@ -242,7 +242,6 @@ extension TabsController {
                 dropStaleSwitcherSnapshots()
             }
             session.loadWebViewIfNeeded()
-            session.checkMediaState()
             if session !== previous, !session.isPrivate {
                 tabEvents?.tabActivated(new: session, previous: previous)
             }

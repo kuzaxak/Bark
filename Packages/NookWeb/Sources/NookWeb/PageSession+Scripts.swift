@@ -23,121 +23,8 @@ extension PageSession {
     func injectPageObservers(into webView: WKWebView) {
         injectLinkHoverJavaScript(to: webView)
         injectPiPStateListener(to: webView)
-        injectMediaDetection(to: webView)
         injectHistoryStateObserver(into: webView)
         injectShortcutDetection(to: webView)
-    }
-
-    func injectMediaDetection(to webView: WKWebView) {
-        let mediaDetectionScript = """
-            (function() {
-                if (window.__nookMediaDetectionInstalled) return;
-                window.__nookMediaDetectionInstalled = true;
-                const handlerName = 'mediaStateChange_\(itemID.uuidString)';
-                const media = new Set(document.querySelectorAll('audio, video'));
-                let pendingCheck = null;
-                let lastState = null;
-                const host = location.hostname;
-                const streamingSelector = host.endsWith('spotify.com')
-                    ? '[data-testid="control-button-playpause"]'
-                    : host.endsWith('soundcloud.com') ? '.playControl'
-                    : host === 'music.apple.com' ? '.web-chrome-playback-controls' : null;
-                let streamingControl = null;
-                const controlObserver = new MutationObserver(scheduleCheck);
-
-                function refreshStreamingControl() {
-                    if (!streamingSelector || streamingControl?.isConnected) return;
-                    controlObserver.disconnect();
-                    streamingControl = document.querySelector(streamingSelector);
-                    if (streamingControl) controlObserver.observe(streamingControl, {
-                        attributes: true, childList: true, subtree: true,
-                        attributeFilter: ['aria-label', 'class']
-                    });
-                }
-                function scheduleCheck() {
-                    if (pendingCheck !== null) return;
-                    pendingCheck = setTimeout(checkMediaState, 50);
-                }
-                function checkMediaState() {
-                    pendingCheck = null;
-                    refreshStreamingControl();
-                    let hasPlayingAudio = false;
-                    let hasPlayingVideo = false;
-                    let hasVideoContent = false;
-                    let hasMedia = false;
-                    let isPlaying = false;
-                    for (const element of media) {
-                        if (!element.isConnected) { media.delete(element); continue; }
-                        hasMedia = true;
-                        const isVideo = element.tagName === 'VIDEO';
-                        hasVideoContent ||= isVideo;
-                        const playing = !element.paused && !element.ended && element.readyState >= 2;
-                        isPlaying ||= playing;
-                        hasPlayingVideo ||= isVideo && playing;
-                        hasPlayingAudio ||= playing && !element.muted && element.volume > 0;
-                    }
-                    // Some streaming services use Web Audio instead of a DOM media element.
-                    if (streamingControl) {
-                        const label = streamingControl.getAttribute('aria-label') || '';
-                        const streaming = label.toLowerCase().includes('pause') ||
-                            streamingControl.classList.contains('playing') ||
-                            !!streamingControl.querySelector('button[aria-label*="pause"], button[aria-label*="Pause"]');
-                        hasMedia = true;
-                        isPlaying ||= streaming;
-                        hasPlayingAudio ||= streaming;
-                    }
-                    const session = window.__nookMediaSession;
-                    const state = {hasAudioContent: hasPlayingAudio, hasPlayingAudio,
-                        hasVideoContent, hasPlayingVideo, hasMedia, isPlaying,
-                        previousTrack: !!session?.has('previoustrack'), nextTrack: !!session?.has('nexttrack')};
-                    const serialized = JSON.stringify(state);
-                    if (serialized !== lastState) {
-                        lastState = serialized;
-                        window.webkit?.messageHandlers?.[handlerName]?.postMessage(state);
-                    }
-                }
-                // Media events do not bubble, so observe in the capture phase. This also
-                // tracks media created after injection without per-element listeners.
-                ['play', 'playing', 'pause', 'ended', 'emptied', 'loadedmetadata',
-                 'loadeddata', 'canplay', 'volumechange', 'encrypted', 'webkitneedkey'].forEach(type => {
-                    document.addEventListener(type, event => {
-                        if (event.target.matches?.('audio, video')) media.add(event.target);
-                        scheduleCheck();
-                    }, true);
-                });
-                const observer = new MutationObserver(mutations => {
-                    let changed = false;
-                    for (const mutation of mutations) {
-                        for (const node of mutation.addedNodes) {
-                            if (node.nodeType !== 1) continue;
-                            if (node.matches('audio, video')) { media.add(node); changed = true; }
-                            node.querySelectorAll('audio, video').forEach(element => {
-                                media.add(element); changed = true;
-                            });
-                        }
-                        if (mutation.removedNodes.length && media.size) {
-                            for (const element of media) {
-                                if (!element.isConnected) { media.delete(element); changed = true; }
-                            }
-                        }
-                    }
-                    if (streamingSelector && !streamingControl?.isConnected) changed = true;
-                    if (changed) scheduleCheck();
-                });
-                observer.observe(document.documentElement, {childList: true, subtree: true});
-                document.addEventListener('visibilitychange', scheduleCheck);
-                document.addEventListener('nookmediasession', scheduleCheck);
-                // A page back from the back/forward cache reports again: its commit cleared the state.
-                window.addEventListener('pageshow', () => { lastState = null; scheduleCheck(); });
-                checkMediaState();
-            })();
-            """
-
-        webView.evaluateJavaScript(mediaDetectionScript) { result, error in
-            if let error = error {
-            } else {
-            }
-        }
     }
 
     // MARK: - JavaScript Injection
@@ -307,24 +194,8 @@ extension PageSession: WKScriptMessageHandler {
             }
 
         case let name where name.hasPrefix("mediaStateChange_"):
-            if let dict = message.body as? [String: Bool] {
-                // Only set @Published properties when values actually change.
-                // @Published fires objectWillChange on every set (even same value),
-                // which causes cascading SwiftUI re-renders and video black flashes.
-                let newPlayingVideo = dict["hasPlayingVideo"] ?? false
-                let newVideoContent = dict["hasVideoContent"] ?? false
-                let newAudioContent = dict["hasAudioContent"] ?? false
-                let newPlayingAudio = dict["hasPlayingAudio"] ?? false
-
-                if self.hasPlayingVideo != newPlayingVideo { self.hasPlayingVideo = newPlayingVideo }
-                if self.hasVideoContent != newVideoContent { self.hasVideoContent = newVideoContent }
-                if self.hasAudioContent != newAudioContent { self.hasAudioContent = newAudioContent }
-                if self.hasPlayingAudio != newPlayingAudio { self.hasPlayingAudio = newPlayingAudio }
-                let media = PageMedia(
-                    hasMedia: dict["hasMedia"] ?? false, isPlaying: dict["isPlaying"] ?? false,
-                    isAudible: newPlayingAudio, handlesPreviousTrack: dict["previousTrack"] ?? false,
-                    handlesNextTrack: dict["nextTrack"] ?? false)
-                if self.media != media { self.media = media }
+            if let body = message.body as? [String: Any] {
+                receiveMediaReport(body, from: message.frameInfo)
             }
 
         case let name where name.hasPrefix("backgroundColor_"):

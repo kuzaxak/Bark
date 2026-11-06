@@ -86,10 +86,10 @@ struct MediaControlsView: View {
                 .help("Previous")
                 .disabled(!media.handlesPreviousTrack)
             Spacer(minLength: 0)
-            Button(media.isPlaying ? "Pause" : "Play", systemImage: media.isPlaying ? "pause.fill" : "play.fill") {
+            Button(media.isAudible ? "Pause" : "Play", systemImage: media.isAudible ? "pause.fill" : "play.fill") {
                 page.togglePlayback()
             }
-            .help(media.isPlaying ? "Pause" : "Play")
+            .help(media.isAudible ? "Pause" : "Play")
             Spacer(minLength: 0)
             Button("Next", systemImage: "forward.end.fill") { page.skipTrack(forward: true) }
                 .help("Next")

@@ -9,145 +9,48 @@
 import SwiftUI
 import WebKit
 
-/// What the page's audio and video are doing, as its media script reports it.
-public struct PageMedia: Equatable, Sendable {
-    /// Audio or video elements, playing or paused, or a streaming service's player.
-    public var hasMedia: Bool
-    /// Something plays, muted or not.
-    public var isPlaying: Bool
-    /// Something plays with sound.
-    public var isAudible: Bool
-    /// The page set `navigator.mediaSession` handlers for Previous and Next.
-    public var handlesPreviousTrack: Bool
-    public var handlesNextTrack: Bool
-
-    public init(hasMedia: Bool = false, isPlaying: Bool = false, isAudible: Bool = false,
-                handlesPreviousTrack: Bool = false, handlesNextTrack: Bool = false) {
-        self.hasMedia = hasMedia
-        self.isPlaying = isPlaying
-        self.isAudible = isAudible
-        self.handlesPreviousTrack = handlesPreviousTrack
-        self.handlesNextTrack = handlesNextTrack
-    }
-}
-
 extension PageSession {
-    // MARK: - Simple Media Detection (mainly for manual checks)
-    func checkMediaState() {
-        // Get all web views for this tab across all windows
-        let allWebViews: [WKWebView]
-        if let coordinator = controller?.webViews {
-            allWebViews = coordinator.allWebViews(for: itemID)
-        } else if let webView = primaryWebView {
-            // Fallback to original web view for backward compatibility
-            allWebViews = [webView]
-        } else {
-            return
-        }
+    // MARK: - Media Reports
 
-        // Simple state check - optimized single-pass version
-        let mediaCheckScript = """
-            (() => {
-                const audios = document.querySelectorAll('audio');
-                const videos = document.querySelectorAll('video');
+    /// One frame's report from its media script (`MediaScript.reporter`): its state, or that its
+    /// document went away. The page's media is what any frame holds.
+    func receiveMediaReport(_ body: [String: Any], from frame: WKFrameInfo) {
+        guard let id = body["frame"] as? String else { return }
+        mediaFrames.report(id, frame: frame, media: body["gone"] == nil ? PageMedia(report: body) : nil)
+        applyMediaFrames()
+    }
 
-                // Single pass through audios
-                const hasPlayingAudio = Array.from(audios).some(audio =>
-                    !audio.paused && !audio.ended && audio.readyState >= 2
-                );
-
-                // Single pass through videos for all checks
-                let hasPlayingVideoWithAudio = false;
-                let hasPlayingVideo = false;
-
-                Array.from(videos).forEach(video => {
-                    const isPlaying = !video.paused && !video.ended && video.readyState >= 2;
-                    if (isPlaying) {
-                        hasPlayingVideo = true;
-                        if (!video.muted && video.volume > 0) {
-                            hasPlayingVideoWithAudio = true;
-                        }
-                    }
-                });
-
-                const hasAudioContent = hasPlayingAudio || hasPlayingVideoWithAudio;
-
-                return {
-                    hasAudioContent: hasAudioContent,
-                    hasPlayingAudio: hasAudioContent,
-                    hasVideoContent: videos.length > 0,
-                    hasPlayingVideo: hasPlayingVideo
-                };
-            })();
-            """
-
-        // Check media state across all web views and aggregate results
-        var aggregatedResults: [String: Bool] = [
-            "hasAudioContent": false,
-            "hasPlayingAudio": false,
-            "hasVideoContent": false,
-            "hasPlayingVideo": false,
-        ]
-
-        let group = DispatchGroup()
-
-        for webView in allWebViews {
-            group.enter()
-            webView.evaluateJavaScript(mediaCheckScript) { result, error in
-                defer { group.leave() }
-
-                if let error = error {
-                    return
-                }
-
-                if let state = result as? [String: Bool] {
-                    // Aggregate results - if any web view has media, the tab has media
-                    aggregatedResults["hasAudioContent"] =
-                        (aggregatedResults["hasAudioContent"] ?? false)
-                        || (state["hasAudioContent"] ?? false)
-                    aggregatedResults["hasPlayingAudio"] =
-                        (aggregatedResults["hasPlayingAudio"] ?? false)
-                        || (state["hasPlayingAudio"] ?? false)
-                    aggregatedResults["hasVideoContent"] =
-                        (aggregatedResults["hasVideoContent"] ?? false)
-                        || (state["hasVideoContent"] ?? false)
-                    aggregatedResults["hasPlayingVideo"] =
-                        (aggregatedResults["hasPlayingVideo"] ?? false)
-                        || (state["hasPlayingVideo"] ?? false)
-                }
-            }
-        }
-
-        // Update tab state after all web views have been checked
-        group.notify(queue: .main) { [weak self] in
-            guard let self = self else { return }
-            self.hasAudioContent = aggregatedResults["hasAudioContent"] ?? false
-            self.hasPlayingAudio = aggregatedResults["hasPlayingAudio"] ?? false
-            self.hasVideoContent = aggregatedResults["hasVideoContent"] ?? false
-            self.hasPlayingVideo = aggregatedResults["hasPlayingVideo"] ?? false
-        }
+    /// Sets the page's media from its frames' reports, each property only when it changes: a
+    /// set fires observers even with the same value, and views showing video re-render on it.
+    func applyMediaFrames() {
+        let combined = mediaFrames.media
+        if media != combined { media = combined }
+        if hasVideoContent != combined.hasVideo { hasVideoContent = combined.hasVideo }
+        if hasPlayingVideo != combined.isPlayingVideo { hasPlayingVideo = combined.isPlayingVideo }
+        if hasAudioContent != combined.isAudible { hasAudioContent = combined.isAudible }
+        if hasPlayingAudio != combined.isAudible { hasPlayingAudio = combined.isAudible }
     }
 
     public func toggleMute() {
         setMuted(!isAudioMuted)
     }
 
-    /// Pauses the page's audio and video, or plays what played last. A page with no media
-    /// element, such as a Web Audio player, gets its own `navigator.mediaSession` handler.
+    /// Pauses what plays with sound in any frame, or resumes what last played with sound.
     public func togglePlayback() {
-        webView?.callAsyncJavaScript("""
-            const elements = [...document.querySelectorAll('video, audio')];
-            if (!elements.length) return void window.__nookMediaSession?.run(play ? 'play' : 'pause');
-            if (!play) return elements.forEach(element => element.pause());
-            const target = elements.find(element => element.currentTime > 0 && !element.ended) ?? elements[0];
-            target.play().catch(() => {});
-            """, arguments: ["play": !media.isPlaying], in: nil, in: .page)
+        guard let webView else { return }
+        let play = !media.isAudible
+        let frames = play ? mediaFrames.resumeTarget.map { [$0] } ?? [] : mediaFrames.pauseTargets
+        for frame in frames {
+            webView.callAsyncJavaScript("window.__nookMedia?.toggle(play);", arguments: ["play": play],
+                                        in: frame, in: .page)
+        }
     }
 
-    /// Runs the page's own Previous or Next handler (`media.handlesPreviousTrack`, `handlesNextTrack`).
+    /// Previous or Next, in the frame whose player can (`media.handlesPreviousTrack`, `handlesNextTrack`).
     public func skipTrack(forward: Bool) {
-        webView?.callAsyncJavaScript("void window.__nookMediaSession?.run(action);",
-                                     arguments: ["action": forward ? "nexttrack" : "previoustrack"], in: nil, in: .page)
+        guard let webView, let frame = mediaFrames.trackTarget(forward: forward) else { return }
+        webView.callAsyncJavaScript("window.__nookMedia?.skip(forward);", arguments: ["forward": forward],
+                                    in: frame, in: .page)
     }
 
     public func setMuted(_ muted: Bool) {

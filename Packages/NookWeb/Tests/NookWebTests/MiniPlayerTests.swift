@@ -113,7 +113,7 @@ struct MiniPlayerTests {
 /// site, never another window's, a private window's, the Agent space's or a Peek's.
 @MainActor
 struct MiniPlayerPagesTests {
-    let playing = PageMedia(hasMedia: true, isPlaying: true, isAudible: true)
+    let playing = PageMedia(hasMedia: true, isAudible: true)
 
     private func openTab(_ address: String, in window: BrowserWindowState, space: UUID, _ host: Host) throws -> UUID {
         try #require(host.tabs.open(url: URL(string: address)!, in: window, placement: .newTab, parent: .tabs(spaceID: space)))
