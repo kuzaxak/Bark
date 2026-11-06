@@ -50,6 +50,8 @@ public final class TabsController {
     /// The window that last selected or claimed each page. A page has one live view; other
     /// windows showing the same item show a placeholder instead. In memory only.
     private var pageOwners: [UUID: UUID] = [:]
+    /// Each window's mini player as last logged, so it is logged only when it changes.
+    @ObservationIgnored private var miniPlayerLogged: [UUID: String] = [:]
     /// Open folders of private windows, kept apart so their ids never reach device.json.
     private var privateOpenFolders: Set<UUID> = []
     /// Live folders whose last refresh failed, and why. No entry when it worked.
@@ -681,6 +683,26 @@ public final class TabsController {
             }
         }
         window.miniPlayer.update(pages)
+        logMiniPlayer(of: window, pages: pages)
+    }
+
+    /// Which page the bar shows and why each other page with media does not.
+    private func logMiniPlayer(of window: BrowserWindowState, pages: [MiniPlayerPage]) {
+        let player = window.miniPlayer
+        let candidates = pages.filter { ($0.hasMedia || $0.isAudible) && $0.id != player.itemID }
+        let onScreen = candidates.filter(\.isOnScreen).map(\.id.uuidString).sorted().joined(separator: ",")
+        let notAudible = candidates.filter { !$0.isOnScreen && !$0.isAudible }.map(\.id.uuidString).sorted().joined(separator: ",")
+        let noMedia = pages.filter { !$0.hasMedia && !$0.isAudible }.count
+        let started = player.latest?.uuidString ?? "nil"
+        let shows = player.itemID?.uuidString ?? "nil"
+        let summary = [String(pages.count), started, shows, onScreen, notAudible, String(noMedia)].joined(separator: "|")
+        guard miniPlayerLogged[window.id] != summary else { return }
+        miniPlayerLogged[window.id] = summary
+        mediaLog.info("""
+            media mini player window=\(window.id, privacy: .public) pages=\(pages.count, privacy: .public) \
+            started=\(started, privacy: .public) shows=\(shows, privacy: .public) onScreen=\(onScreen, privacy: .public) \
+            notAudible=\(notAudible, privacy: .public) noMedia=\(noMedia, privacy: .public)
+            """)
     }
 
     /// Whether a window's mini player shows the page.

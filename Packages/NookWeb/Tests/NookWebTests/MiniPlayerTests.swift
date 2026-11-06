@@ -61,6 +61,16 @@ struct MiniPlayerTests {
         #expect(player.itemID == a, "closing it hands the bar to the page still playing")
     }
 
+    /// The page that last started playing, shown or not: what the log names.
+    @Test func tellsWhichPageStartedLast() {
+        var player = MiniPlayer()
+        #expect(player.latest == nil)
+        player.update([page(a, audible: true, onScreen: true), page(b)])
+        #expect(player.latest == a && player.itemID == nil)
+        player.update([page(a, audible: true, onScreen: true), page(b, audible: true)])
+        #expect(player.latest == b)
+    }
+
     @Test func aPausedPagePlayingAgainTakesItBack() {
         var player = MiniPlayer()
         player.update([page(a, audible: true), page(b)])

@@ -98,6 +98,11 @@ public struct MediaFrames<Frame> {
         entries[key] = nil
     }
 
+    /// What one frame last reported.
+    public func frameMedia(_ key: AnyHashable) -> PageMedia? {
+        entries[key]?.media
+    }
+
     /// The page's media as its frames report it: what the bar goes by.
     public var media: PageMedia {
         let all = entries.values.map(\.media)

@@ -6,8 +6,19 @@
 //  Media, audio, picture-in-picture and page color state for a PageSession.
 //
 
+import OSLog
 import SwiftUI
 import WebKit
+
+/// Media state and the mini player, item ids and flags only, on changes:
+/// `/usr/bin/log stream --level info --predicate 'subsystem == "ee.qdo.nook" AND category == "Media"'`
+/// (zsh has a `log` builtin; WebKit logs under a "Media" category of its own).
+let mediaLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "Media")
+
+/// How a frame's state reached the app.
+enum MediaReportSource: String {
+    case push, ask, control
+}
 
 extension PageSession {
     // MARK: - Media Reports
@@ -15,10 +26,19 @@ extension PageSession {
     /// One frame's state from its media script (`MediaScript`): pushed by its reporter, asked for
     /// again by `refreshMediaReports`, or returned by a control. `gone` means the frame's document
     /// went away. The page's media is what any frame holds.
-    func receiveMediaReport(_ body: [String: Any], from frame: WKFrameInfo?) {
+    func receiveMediaReport(_ body: [String: Any], from frame: WKFrameInfo?, via source: MediaReportSource = .push) {
         guard let document = body["frame"] as? String else { return }
-        mediaFrames.report(Self.mediaFrameKey(frame, document: document), document: document, frame: frame,
-                           media: body["gone"] == nil ? PageMedia(report: body) : nil)
+        let key = Self.mediaFrameKey(frame, document: document)
+        let report = body["gone"] == nil ? PageMedia(report: body) : nil
+        if mediaFrames.frameMedia(key) != report {
+            mediaLog.info("""
+                media frame item=\(self.itemID, privacy: .public) source=\(source.rawValue, privacy: .public) \
+                main=\(frame?.isMainFrame ?? true, privacy: .public) gone=\(report == nil, privacy: .public) \
+                hasMedia=\(report?.hasMedia ?? false, privacy: .public) isAudible=\(report?.isAudible ?? false, privacy: .public) \
+                isPlaying=\(report?.isPlaying ?? false, privacy: .public) isMuted=\(report?.isMuted ?? false, privacy: .public)
+                """)
+        }
+        mediaFrames.report(key, document: document, frame: frame, media: report)
         applyMediaFrames()
     }
 
@@ -45,10 +65,18 @@ extension PageSession {
     /// a set fires observers even with the same value, and views showing video re-render on it.
     func applyMediaFrames() {
         let combined = mediaFrames.media
+        let audible = mediaFrames.isAudible(webKit: webKitAudible)
+        if media != combined || hasAudioContent != audible {
+            mediaLog.info("""
+                media page item=\(self.itemID, privacy: .public) \
+                webKitAudible=\(self.webKitAudible.map(String.init) ?? "nil", privacy: .public) \
+                framesAudible=\(combined.isAudible, privacy: .public) hasMedia=\(combined.hasMedia, privacy: .public) \
+                isAudible=\(audible, privacy: .public)
+                """)
+        }
         if media != combined { media = combined }
         if hasVideoContent != combined.hasVideo { hasVideoContent = combined.hasVideo }
         if hasPlayingVideo != combined.isPlayingVideo { hasPlayingVideo = combined.isPlayingVideo }
-        let audible = mediaFrames.isAudible(webKit: webKitAudible)
         if hasAudioContent != audible { hasAudioContent = audible }
         if hasPlayingAudio != audible { hasPlayingAudio = audible }
     }
@@ -86,7 +114,7 @@ extension PageSession {
         let state = try? await webView.callAsyncJavaScript(
             "return window.__nookMedia?.state() ?? null;", in: frame, contentWorld: .page)
         if let state = state as? [String: Any] {
-            receiveMediaReport(state, from: frame)
+            receiveMediaReport(state, from: frame, via: .ask)
         } else if frame != nil {
             mediaFrames.forget(key)
             seenMediaFrames[key] = nil
@@ -100,9 +128,16 @@ extension PageSession {
         Task { @MainActor [weak self] in
             let state = try? await webView.callAsyncJavaScript(
                 "return (await window.__nookMedia?.\(call)) ?? null;", arguments: arguments, in: frame, contentWorld: .page)
-            if let state = state as? [String: Any] { self?.receiveMediaReport(state, from: frame) }
+            if let state = state as? [String: Any] { self?.receiveMediaReport(state, from: frame, via: .control) }
             self?.refreshMediaReports()
         }
+    }
+
+    private func logMediaControl(_ control: String, frames: Int, fallback: Bool) {
+        mediaLog.info("""
+            media control item=\(self.itemID, privacy: .public) control=\(control, privacy: .public) \
+            frames=\(frames, privacy: .public) fallback=\(fallback, privacy: .public)
+            """)
     }
 
     public func toggleMute() {
@@ -114,6 +149,7 @@ extension PageSession {
     public func togglePlayback() {
         let play = !media.isPlaying
         let frames = play ? [mediaFrames.resumeTarget ?? nil] : mediaFrames.pauseTargets
+        logMediaControl(play ? "play" : "pause", frames: frames.count, fallback: frames.isEmpty)
         if frames.isEmpty, let webView {
             Task { @MainActor [weak self] in
                 await webView.pauseAllMediaPlayback()
@@ -126,17 +162,22 @@ extension PageSession {
 
     /// Previous or Next, in the frame whose player can (`media.handlesPreviousTrack`, `handlesNextTrack`).
     public func skipTrack(forward: Bool) {
-        guard let frame = mediaFrames.trackTarget(forward: forward) else { return }
+        let frame = mediaFrames.trackTarget(forward: forward)
+        logMediaControl(forward ? "next" : "previous", frames: frame == nil ? 0 : 1, fallback: false)
+        guard let frame else { return }
         runMediaControl("skip(forward)", ["forward": forward], in: frame)
     }
 
     /// The mini player's mute button: undoes Nook's tab mute, else the page's own, else mutes the tab.
     public func toggleSound() {
-        switch MuteAction.next(tabMuted: isAudioMuted, pageMuted: media.isMuted) {
+        let action = MuteAction.next(tabMuted: isAudioMuted, pageMuted: media.isMuted)
+        let frames = action == .unmutePage ? mediaFrames.mutedTargets : []
+        logMediaControl("\(action)", frames: frames.count, fallback: false)
+        switch action {
         case .unmuteTab: setMuted(false)
         case .muteTab: setMuted(true)
         case .unmutePage:
-            for frame in mediaFrames.mutedTargets { runMediaControl("unmute()", [:], in: frame) }
+            for frame in frames { runMediaControl("unmute()", [:], in: frame) }
         }
     }
 

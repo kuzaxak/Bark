@@ -112,6 +112,8 @@ struct MediaFramesTests {
         frames.report("embed", document: "second", frame: "embed", media: silent)
         #expect(!frames.media.isAudible)
         #expect(frames.frames.count == 1)
+        #expect(frames.frameMedia("embed") == silent)
+        #expect(frames.frameMedia("other") == nil)
     }
 
     @Test func aLateGoodbyeFromAnEarlierDocumentIsIgnored() {

@@ -762,8 +762,13 @@ public final class PageSession: NSObject, Identifiable {
             webView.addObserver(self, forKeyPath: "canGoForward", options: [.new, .initial], context: nil)
             webView.addObserver(self, forKeyPath: "title", options: [.new], context: nil)
             webView.addObserver(self, forKeyPath: "fullscreenState", options: [.new], context: nil)
-            if webView.responds(to: Self.isPlayingAudioSelector) {
-                webView.addObserver(self, forKeyPath: Self.isPlayingAudioKey, options: [.new, .initial], context: nil)
+            let observesAudio = webView.responds(to: Self.isPlayingAudioSelector)
+            mediaLog.info("""
+                media audio signal observed item=\(self.itemID, privacy: .public) responds=\(observesAudio, privacy: .public) \
+                primary=\(webView === self.primaryWebView, privacy: .public)
+                """)
+            if observesAudio {
+                webView.addObserver(self, forKeyPath: Self.isPlayingAudioKey, options: [.new, .old, .initial], context: nil)
             }
             // No URL observer: it fired during setup and overwrote restored URLs.
             // didCommit/didFinish own URL updates.
@@ -798,9 +803,14 @@ public final class PageSession: NSObject, Identifiable {
             pendingThemeColorUpdate = item
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
         } else if keyPath == Self.isPlayingAudioKey, let webView = object as? WKWebView {
-            if webView === self.webView, let audible = webView.value(forKey: Self.isPlayingAudioKey) as? Bool {
-                webKitAudioChanged(audible)
-            }
+            let audible = webView.value(forKey: Self.isPlayingAudioKey) as? Bool
+            let applied = webView === self.webView && audible != nil
+            mediaLog.info("""
+                media audio signal item=\(self.itemID, privacy: .public) \
+                value=\(audible.map(String.init) ?? "nil", privacy: .public) \
+                initial=\(change?[.oldKey] == nil, privacy: .public) applied=\(applied, privacy: .public)
+                """)
+            if applied, let audible { webKitAudioChanged(audible) }
         } else if keyPath == "canGoBack" || keyPath == "canGoForward", object is WKWebView {
             updateNavigationState()
         } else if keyPath == "title", let webView = object as? WKWebView {

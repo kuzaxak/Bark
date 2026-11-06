@@ -41,6 +41,11 @@ public struct MiniPlayer: Equatable, Sendable {
 
     public init() {}
 
+    /// The page that last started playing, shown or not.
+    public var latest: UUID? {
+        started.max { $0.value < $1.value }?.key
+    }
+
     /// The page the bar shows; nil while it is hidden.
     public var itemID: UUID? {
         let ranked = started.sorted { $0.value > $1.value }.map(\.key)
