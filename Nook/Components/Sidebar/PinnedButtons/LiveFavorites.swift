@@ -36,7 +36,8 @@ final class LiveFavorites {
     @ObservationIgnored private weak var tabs: TabsController?
     @ObservationIgnored private weak var windows: WindowRegistry?
     @ObservationIgnored private var ticker: Task<Void, Never>?
-    @ObservationIgnored private var eventStore: EKEventStore?
+    /// Made once, off the main thread, and kept for the app's lifetime.
+    @ObservationIgnored private var eventStore: Task<EKEventStore, Never>?
     @ObservationIgnored private var storeObserver: NSObjectProtocol?
     /// Bumped by every load and stop, so only the latest load lands.
     @ObservationIgnored private var calendarGeneration = 0
@@ -116,9 +117,8 @@ final class LiveFavorites {
     }
 
     func connectCalendar() {
-        let store = eventStore ?? EKEventStore()
         Task {
-            _ = try? await store.requestFullAccessToEvents()
+            _ = try? await calendarStore().requestFullAccessToEvents()
             refresh()
         }
     }
@@ -257,10 +257,16 @@ final class LiveFavorites {
         let access = Self.currentCalendarAccess()
         if access != calendarAccess { calendarAccess = access }
         guard access == .granted else { return dropMeetings() }
-        let store = eventStore ?? makeEventStore()
         calendarGeneration += 1
         let generation = calendarGeneration
         Task {
+            let store = await calendarStore()
+            guard generation == calendarGeneration else { return }
+            if storeObserver == nil {
+                storeObserver = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
+                    Task { @MainActor in self?.loadMeetings() }
+                }
+            }
             let found = await Task.detached(priority: .utility) { Self.meetings(in: store, around: Date()) }.value
             guard generation == calendarGeneration else { return }
             meetings = found
@@ -268,13 +274,10 @@ final class LiveFavorites {
         }
     }
 
-    private func makeEventStore() -> EKEventStore {
-        let store = EKEventStore()
-        eventStore = store
-        storeObserver = NotificationCenter.default.addObserver(forName: .EKEventStoreChanged, object: store, queue: .main) { [weak self] _ in
-            Task { @MainActor in self?.loadMeetings() }
-        }
-        return store
+    private func calendarStore() async -> EKEventStore {
+        let making = eventStore ?? Task.detached(priority: .utility) { EKEventStore() }
+        eventStore = making
+        return await making.value
     }
 
     private func dropMeetings() {
@@ -286,7 +289,6 @@ final class LiveFavorites {
         calendarGeneration += 1
         if let storeObserver { NotificationCenter.default.removeObserver(storeObserver) }
         storeObserver = nil
-        eventStore = nil
     }
 
     /// Events from the start of this hour through the timeline's six, from every event calendar.
