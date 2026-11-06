@@ -1,0 +1,6 @@
+<!doctype html><html><meta charset="utf-8"><title>Barc frame identity fixture</title>
+<p>Frame identity is reported by the extension worker, not by postMessage claims.</p>
+<script>
+const kind = new URLSearchParams(location.search).get('kind');
+if (['same-origin', 'cross-origin'].includes(kind)) document.documentElement.dataset.barcFrameRole = kind;
+</script>

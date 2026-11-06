@@ -1,14 +1,14 @@
 // Run in this fixture's popup/options document after ordinary installation.
 // Native host must first establish UUID -> Chrome Profile -> target ownership.
 // These assertions do not establish that binding or native UI behavior.
-globalThis.assertProfileFixture = async ({marker, requiredURLs = [], forbiddenURLs = [], forbiddenTabIds = [], forbiddenWindowIds = [], previousWorkerInstance, optionalOriginGranted, observationId, expectedEvents, expectedFocusSequence, expectedCurrentWindow, expectedLastFocusedWindow, assertStableTabsAndWindows = false, expectedTabIds, expectedWindowIds, expectedActiveTabs, expectedCommands}) => {
+globalThis.assertProfileFixture = async ({marker, requiredURLs = [], forbiddenURLs = [], forbiddenTabIds = [], forbiddenWindowIds = [], previousWorkerInstance, optionalOriginGranted, observationId, expectedEvents, expectedFocusSequence, expectedCurrentWindow, expectedLastFocusedWindow, assertStableTabsAndWindows = false, expectedTabIds, expectedWindowIds, expectedActiveTabs, expectedCommands, expectedFrames, forbiddenDocumentIds = []}) => {
   const result = await chrome.runtime.sendMessage({type: 'profile-probe'});
   function require(condition, label) {
     if (!condition) throw new Error(label);
   }
   require(!result.error, result.error);
   require(result.droppedEvents === 0, 'event history incomplete; reset and repeat a smaller observation window');
-  if (expectedEvents !== undefined || expectedFocusSequence !== undefined || expectedCommands !== undefined) {
+  if (expectedEvents !== undefined || expectedFocusSequence !== undefined || expectedCommands !== undefined || expectedFrames !== undefined) {
     require(typeof observationId === 'string' && observationId.length > 0 && result.observationId === observationId, 'observation reset does not match');
   }
   if (expectedEvents !== undefined) {
@@ -69,6 +69,24 @@ globalThis.assertProfileFixture = async ({marker, requiredURLs = [], forbiddenUR
   require(!result.events.some(event => event.type.startsWith('tab-') && forbiddenTabIds.includes(event.details.id)), 'foreign tab event');
   require(!result.events.some(event => event.type.startsWith('tab-') && forbiddenWindowIds.includes(event.details.windowId)), 'foreign window ID in tab event');
   require(!result.events.some(event => event.type.startsWith('window-') && forbiddenWindowIds.includes(event.details.id)), 'foreign window event');
+  if (expectedFrames !== undefined) {
+    require(typeof marker === 'string' && marker.length > 0, 'nonempty profile marker required for frame isolation');
+    require(Array.isArray(expectedFrames) && expectedFrames.length === 3, 'three positive top/same-origin/cross-origin frame expectations required');
+    const keys = ['tabId', 'windowId', 'frameId', 'documentId', 'origin', 'url', 'role'];
+    require(expectedFrames.every(frame => Number.isInteger(frame.tabId) && frame.tabId > 0 && Number.isInteger(frame.windowId) && frame.windowId > 0 && Number.isInteger(frame.frameId) && frame.frameId >= 0 && typeof frame.documentId === 'string' && frame.documentId.length > 0 && typeof frame.url === 'string' && new URL(frame.url).origin === frame.origin), 'real expected frame identities required');
+    const top = expectedFrames.find(frame => frame.role === 'top');
+    const same = expectedFrames.find(frame => frame.role === 'same-origin');
+    const cross = expectedFrames.find(frame => frame.role === 'cross-origin');
+    require(top && same && cross && top.frameId === 0 && same.frameId > 0 && cross.frameId > 0 && top.origin === same.origin && top.origin !== cross.origin, 'top/same-origin/cross-origin identity relationship differs');
+    require(expectedFrames.every(frame => frame.tabId === top.tabId && frame.windowId === top.windowId) && new Set(expectedFrames.map(frame => frame.frameId)).size === 3 && new Set(expectedFrames.map(frame => frame.documentId)).size === 3, 'one tab with three distinct live frame/documents required');
+    require(forbiddenTabIds.length > 0 && forbiddenWindowIds.length > 0 && [...forbiddenTabIds, ...forbiddenWindowIds].every(id => Number.isInteger(id) && id > 0) && forbiddenDocumentIds.length > 0 && forbiddenDocumentIds.every(id => typeof id === 'string' && id.length > 0), 'foreign profile tab/window/document identities required');
+    const frames = result.events.filter(event => event.type === 'frame-roundtrip').map(event => event.details);
+    require(frames.length === 3, 'three completed frame round-trips required');
+    require(frames.every(frame => frame.extensionId === chrome.runtime.id && frame.marker === marker && frame.observationId === observationId && typeof frame.workerInstance === 'string' && frame.workerInstance.length > 0), 'frame worker/profile/observation differs');
+    require(frames.every(frame => !forbiddenTabIds.includes(frame.tabId) && !forbiddenWindowIds.includes(frame.windowId) && !forbiddenDocumentIds.includes(frame.documentId)), 'foreign frame identity received');
+    require(frames.every(frame => typeof frame.nonce === 'string' && frame.nonce.length > 0) && new Set(frames.map(frame => frame.nonce)).size === 3, 'unique frame round-trip receipts required');
+    require(expectedFrames.every(expected => frames.some(frame => keys.every(key => frame[key] === expected[key]))), 'expected frame/document response absent');
+  }
   if (typeof optionalOriginGranted === 'boolean') {
     const granted = await chrome.permissions.contains({origins: ['https://example.com/*']});
     require(granted === optionalOriginGranted, 'optional host grant differs');

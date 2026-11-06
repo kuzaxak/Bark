@@ -1,4 +1,14 @@
 const workerInstance = crypto.randomUUID();
+// Bounded, one-use receipts. A worker restart invalidates unfinished probes.
+const frameReceipts = new Map();
+function frameIdentity(sender) {
+  if (sender.id !== chrome.runtime.id || !sender.tab || sender.tab.incognito !== false ||
+      !Number.isInteger(sender.tab.id) || sender.tab.id <= 0 || !Number.isInteger(sender.tab.windowId) || sender.tab.windowId <= 0 ||
+      !Number.isInteger(sender.frameId) || sender.frameId < 0 || typeof sender.documentId !== "string" || !sender.documentId ||
+      sender.origin !== new URL(sender.url).origin) throw new Error("real regular-frame sender identity required");
+  return {extensionId: sender.id, tabId: sender.tab.id, windowId: sender.tab.windowId,
+    frameId: sender.frameId, documentId: sender.documentId, origin: sender.origin, url: sender.url};
+}
 
 // Store bounded event records so a restart or worker suspension does not erase
 // the observations. Synthetic profiles only: tabs permission exposes tab URLs.
@@ -32,9 +42,33 @@ async function windowResult(query) {
   }
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
-  if (!['profile-probe', 'native-probe', 'reset-observations'].includes(message.type)) return;
+  if (!['profile-probe', 'native-probe', 'reset-observations', 'frame-probe', 'frame-probe-ack'].includes(message.type)) return;
   (async () => {
+    if (message.type === 'frame-probe') {
+      const identity = frameIdentity(sender);
+      if (typeof message.nonce !== 'string' || !message.nonce || frameReceipts.has(message.nonce) || frameReceipts.size >= 50) throw new Error('invalid or excess pending frame probe');
+      await pending;
+      const {marker = null, observationId = null} = await chrome.storage.local.get(['marker', 'observationId']);
+      if (!observationId) throw new Error('reset observations before loading frame fixtures');
+      const receipt = {...identity, nonce: message.nonce, role: message.role, marker, observationId, workerInstance};
+      if (frameReceipts.has(message.nonce) || frameReceipts.size >= 50) throw new Error("duplicate or excess pending frame probe");
+      frameReceipts.set(message.nonce, receipt);
+      reply(receipt);
+      return;
+    }
+    if (message.type === 'frame-probe-ack') {
+      const identity = frameIdentity(sender);
+      const receipt = frameReceipts.get(message.nonce);
+      if (!receipt || !Object.entries(identity).every(([key, value]) => receipt[key] === value) ||
+          !message.received || !Object.entries(receipt).every(([key, value]) => message.received[key] === value)) throw new Error('frame receipt or sender changed');
+      frameReceipts.delete(message.nonce);
+      enqueue('frame-roundtrip', receipt);
+      await pending;
+      reply({acknowledged: true, nonce: message.nonce});
+      return;
+    }
     if (message.type === 'reset-observations') {
+      frameReceipts.clear();
       const observationId = crypto.randomUUID();
       pending = pending.then(() => chrome.storage.local.set({events: [], droppedEvents: 0, observationId}));
       await pending;
