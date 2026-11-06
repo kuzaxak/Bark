@@ -54,4 +54,16 @@ For native one-shot testing, register `native_echo.py` only in an isolated test 
 | D1 | Signed/notarized installed build starts/quits, preserves sandboxed helpers, extensions and updates on native architecture | B | B |
 | Q1 | Matched WebKit baseline: CPU, aggregate memory, energy/restoration and package-size budgets approved before promotion | U | U |
 
+The media candidate must use `proprietary_codecs = true` and `ffmpeg_branding = "Chrome"` while retaining Chromium product branding. This enables additional codec build paths; it does not establish playback, hardware acceleration or distribution readiness. The initial unmodified-source build uses upstream codec defaults and cannot qualify these additional paths. Freeze actual media assets, player/site versions and expected outputs before execution:
+
+| Cases | Required candidate inputs and checks |
+|---|---|
+| M1–M3 | MP4 H.264 8-bit/AAC-LC, WebM VP9 Profile 0/Opus and AV1 Main 8-bit/Opus: playback, seek, rate changes, fullscreen, PiP, background audio and system controls across space/window switches |
+| M2 | Unencrypted HLS and DASH with H.264/AAC fragmented MP4 through the intended player; rendition switching and seeking. Record native demuxer versus JavaScript/MSE paths separately |
+| M1 | HEVC Main MP4/AAC-LC: record support per hardware/OS. Qualify VideoToolbox acceleration and software fallback separately; compiled support must not be reported as a hardware guarantee |
+| M4 | WebRTC VP8/Opus and H.264/Opus negotiation; camera/microphone, device changes and screen sharing with the microphone muted; preserve capture across unrelated tab resource actions |
+| M5 | Protected-service case remains blocked until the intended service, CDM and distribution path are established. Library-CDM infrastructure alone provides no Widevine qualification |
+
+Run the same cases on native Intel and Apple Silicon. Do not infer ARM acceleration or latency from Intel execution or universal compilation. Preserve decoder attribution and aggregate process measurements outside commits; performance runs remain deferred.
+
 A hardware/service capability may be explicitly scoped before the published matrix is frozen; already mandatory workflows cannot silently become optional. iOS remains WebKit and is not qualified by these macOS results. Exact runtime version must appear in shipped diagnostics. Qualification is blocked until one-runtime profile binding, native surfaces and ordinary extension lifecycle exist; all outcome columns intentionally remain unqualified.
