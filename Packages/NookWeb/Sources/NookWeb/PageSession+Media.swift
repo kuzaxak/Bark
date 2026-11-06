@@ -136,7 +136,7 @@ extension PageSession {
         case .unmuteTab: setMuted(false)
         case .muteTab: setMuted(true)
         case .unmutePage:
-            for frame in mediaFrames.pauseTargets { runMediaControl("unmute()", [:], in: frame) }
+            for frame in mediaFrames.mutedTargets { runMediaControl("unmute()", [:], in: frame) }
         }
     }
 

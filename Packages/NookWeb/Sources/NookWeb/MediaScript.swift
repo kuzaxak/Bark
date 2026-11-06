@@ -26,13 +26,21 @@ public enum MediaScript {
             const watched = new WeakSet();
             const handlers = new Map();
             let lastAudible = null;
+            // Elements that have been the player, and each one's volume before it was last muted.
+            const players = new WeakSet();
+            const volumes = new WeakMap();
             const changed = () => document.dispatchEvent(new Event('nookmedia'));
             const playing = element => !element.paused && !element.ended && element.readyState >= 2;
             const audible = element => playing(element) && !element.muted && element.volume > 0;
+            function heard(element) {
+                lastAudible = new WeakRef(element);
+                players.add(element);
+            }
 
             function seen(element) {
                 if (element.isConnected) inDocument.add(element);
-                if (audible(element)) lastAudible = new WeakRef(element);
+                if (!element.muted && element.volume > 0) volumes.set(element, element.volume);
+                if (audible(element) && isPlayer(element)) heard(element);
                 changed();
             }
             // Media events do not bubble, so the document hears its own elements' in the capture phase.
@@ -87,8 +95,10 @@ public enum MediaScript {
             }).observe(document, {childList: true, subtree: true});
 
             // Sounds of ten seconds or less are notification chimes, not players. An element outside
-            // the document counts only once its length is known.
-            const isPlayer = element => element.isConnected ? !(element.duration <= 10) : element.duration > 10;
+            // the document counts only once its length is known. One that has been the player stays
+            // one on a short source, such as YouTube's six-second bumper ads in its own video.
+            const isPlayer = element => players.has(element)
+                || (element.isConnected ? !(element.duration <= 10) : element.duration > 10);
             function elements() {
                 for (const element of inDocument) if (!element.isConnected) inDocument.delete(element);
                 const list = [...inDocument];
@@ -120,9 +130,10 @@ public enum MediaScript {
                 const video = list.filter(element => element instanceof HTMLVideoElement);
                 const nowPlaying = list.filter(playing);
                 const sounding = nowPlaying.find(audible);
-                if (sounding) lastAudible = new WeakRef(sounding);
+                if (sounding) heard(sounding);
+                const current = player(list);
                 let isAudible = !!sounding;
-                let isPlaying = isAudible || nowPlaying.includes(player(list));
+                let isPlaying = isAudible || nowPlaying.includes(current);
                 if (streamingControl) {
                     const label = (streamingControl.getAttribute('aria-label') || '').toLowerCase();
                     const streaming = label.includes('pause') || streamingControl.classList.contains('playing') ||
@@ -132,7 +143,7 @@ public enum MediaScript {
                 }
                 return {
                     frame, hasMedia: list.length > 0 || !!streamingControl, isAudible, isPlaying,
-                    isMuted: !isAudible && nowPlaying.length > 0,
+                    isMuted: !isAudible && nowPlaying.includes(current) && (current.muted || current.volume === 0),
                     hasVideo: video.length > 0, isPlayingVideo: video.some(playing),
                     previousTrack: canSkip(false), nextTrack: canSkip(true),
                 };
@@ -164,14 +175,18 @@ public enum MediaScript {
                 return state();
             }
 
-            // Undoes the page's own mute: its player's, else every element playing muted.
+            // Undoes the page's mute of its player, at the volume it had before. YouTube's own button
+            // does it on YouTube, so the player's controls agree.
             function unmute() {
-                const list = elements();
-                const current = player(list);
-                for (const element of current ? [current] : list.filter(playing)) {
-                    element.muted = false;
-                    if (element.volume === 0) element.volume = 1;
+                const current = player(elements());
+                if (!current) return state();
+                const button = youtube && document.querySelector('.ytp-mute-button');
+                if (button) {
+                    button.click();
+                    return state();
                 }
+                current.muted = false;
+                if (current.volume === 0) current.volume = volumes.get(current) ?? 1;
                 return state();
             }
 

@@ -128,6 +128,11 @@ public struct MediaFrames<Frame> {
         ranked.filter { $0.media.isPlaying }.map(\.frame)
     }
 
+    /// Where unmuting the page acts: every frame whose player plays muted by the page.
+    public var mutedTargets: [Frame] {
+        ranked.filter { $0.media.isMuted }.map(\.frame)
+    }
+
     /// Where Play acts: the frame that last played sound, else the one that last reported media.
     public var resumeTarget: Frame? {
         ranked.first { $0.media.hasMedia }?.frame

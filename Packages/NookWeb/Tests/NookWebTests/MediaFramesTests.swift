@@ -7,6 +7,8 @@ import Testing
 /// by the frames alone; WebKit's own signal only adds to the tab row's speaker.
 struct MediaFramesTests {
     let silent = PageMedia()
+    /// What the script sends for a frame with a muted clip looping and nothing that ever played with
+    /// sound: media and a playing video, but no player, so neither playing nor muted.
     let mutedClip = PageMedia(hasMedia: true, hasVideo: true, isPlayingVideo: true)
     let sounding = PageMedia(hasMedia: true, isAudible: true, isPlaying: true, handlesNextTrack: true)
     let paused = PageMedia(hasMedia: true, handlesNextTrack: true)
@@ -41,6 +43,25 @@ struct MediaFramesTests {
         #expect(frames.media.isPlaying, "still playing, only muted")
         frames.report("embed", document: "embed", frame: "embed", media: sounding)
         #expect(!frames.media.isMuted, "something else on the page plays with sound")
+    }
+
+    /// A news clip loops muted while the podcast the bar controls is paused: the page has not muted
+    /// itself, and there is nothing to unmute.
+    @Test func aMutedClipBesideAPausedPlayerIsNotAMutedPage() {
+        var frames = MediaFrames<String>()
+        frames.report("news", document: "news", frame: "news", media: mutedClip)
+        frames.report("podcast", document: "podcast", frame: "podcast", media: paused)
+        #expect(!frames.media.isMuted)
+        #expect(frames.mutedTargets.isEmpty)
+        #expect(MuteAction.next(tabMuted: false, pageMuted: frames.media.isMuted) == .muteTab)
+    }
+
+    @Test func unmuteActsWhereThePageMutedItsPlayer() {
+        var frames = MediaFrames<String>()
+        frames.report("news", document: "news", frame: "news", media: mutedClip)
+        frames.report("podcast", document: "podcast", frame: "podcast", media: mutedByPage)
+        frames.report("radio", document: "radio", frame: "radio", media: sounding)
+        #expect(frames.mutedTargets == ["podcast"], "not the frame playing with sound, nor the clip")
     }
 
     @Test func aFrameThatGoesTakesItsMediaWithIt() {

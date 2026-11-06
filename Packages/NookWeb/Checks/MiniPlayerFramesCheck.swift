@@ -95,6 +95,17 @@ struct MiniPlayerFramesCheck {
                 <button class="ytp-next-button" onclick="window.next = true"></button>
                 </body></html>
                 """,
+            "news/page.html": """
+                <!doctype html><html><body><video id="clip" src="\(song)" muted loop></video>
+                <audio id="podcast" src="\(song)"></audio>
+                <script>document.getElementById('clip').play(); window.podcast = document.getElementById('podcast');
+                window.chime = '\(chime)';</script></body></html>
+                """,
+            "www.youtube.com/mute.html": """
+                <!doctype html><html><body><video id="video" src="\(song)" loop></video>
+                <button class="ytp-mute-button" onclick="window.muteClicks = (window.muteClicks || 0) + 1;
+                    video.muted = !video.muted;"></button></body></html>
+                """,
         ])
         let reports = Reports()
         let configuration = WKWebViewConfiguration()
@@ -180,6 +191,37 @@ struct MiniPlayerFramesCheck {
             _ = await run("window.__nookMedia.skip(true);", in: reports.frames.trackTarget(forward: true))
             let clicked = await run("return window.next === true;", in: nil) as? Bool
             precondition(clicked == true, "Next clicks YouTube's button")
+
+            // A news clip loops muted beside the podcast the bar controls.
+            reports.frames = MediaFrames()
+            web.load(URLRequest(url: URL(string: "nookcheck://news/page.html")!))
+            await until("the news page") { reports.frames.media.hasMedia }
+            _ = await run("podcast.volume = 0.4; await podcast.play(); return null;", in: nil)
+            await until("the podcast") { reports.frames.media.isAudible }
+            _ = await run("podcast.pause(); return null;", in: nil)
+            await until("the podcast paused") { !reports.frames.media.isPlaying }
+            precondition(!reports.frames.media.isMuted, "a muted clip is not the page muting its player")
+            _ = await run("podcast.volume = 0; await podcast.play(); return null;", in: nil)
+            await until("the podcast muted by the page") { reports.frames.media.isMuted }
+            _ = await run("return await window.__nookMedia.unmute();", in: nil)
+            let volume = await run("return podcast.volume;", in: nil) as? Double
+            precondition(volume == 0.4, "unmuting restores the volume from before: \(String(describing: volume))")
+            _ = await run("podcast.src = chime; podcast.loop = true; await podcast.play(); return null;", in: nil)
+            let short = await run("return window.__nookMedia.state();", in: nil) as? [String: Any]
+            precondition(short?["isAudible"] as? Bool == true, "the player counts on a short source, as for a bumper ad")
+
+            // YouTube's own mute button keeps its player in step.
+            reports.frames = MediaFrames()
+            web.load(URLRequest(url: URL(string: "nookcheck://www.youtube.com/mute.html")!))
+            await until("YouTube's video") { reports.frames.media.hasMedia }
+            _ = await run("await video.play(); return null;", in: nil)
+            await until("YouTube's video playing") { reports.frames.media.isAudible }
+            _ = await run("video.muted = true; return null;", in: nil)
+            await until("YouTube's video muted") { reports.frames.media.isMuted }
+            _ = await run("return await window.__nookMedia.unmute();", in: nil)
+            let muteClicks = await run("return window.muteClicks ?? 0;", in: nil) as? Int
+            let stillMuted = await run("return video.muted;", in: nil) as? Bool
+            precondition(muteClicks == 1 && stillMuted == false, "unmute clicks YouTube's button: \(String(describing: muteClicks))")
 
             print("MiniPlayerFramesCheck passed\(hasMediaSession ? "" : " (no navigator.mediaSession here: Next not checked)")")
             exit(0)
