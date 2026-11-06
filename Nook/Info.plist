@@ -56,6 +56,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Nook shows your next meetings on Google Calendar favorites and lets you join them from the sidebar.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Nook shows your next meetings on Google Calendar favorites and lets you join them from the sidebar.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Websites you allow can use your camera, for example for video calls.</string>
 	<key>NSMicrophoneUsageDescription</key>

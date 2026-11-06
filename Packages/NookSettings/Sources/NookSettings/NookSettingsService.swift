@@ -48,6 +48,7 @@ public final class NookSettingsService {
     private let webSearchContextSizeKey = "settings.webSearchContextSize"
     private let showLinkStatusBarKey = "settings.showLinkStatusBar"
     private let favoritePreviewsKey = "settings.favoritePreviews"
+    private let favoriteMeetingsAndMailKey = "settings.favoriteMeetingsAndMail"
     private let themeTranslucencyKey = "settings.themeTranslucency"
     private let searchPageTextInHistoryKey = "settings.searchPageTextInHistory"
     private let hideWebContentBorderKey = "settings.hideWebContentBorder"
@@ -440,6 +441,18 @@ public final class NookSettingsService {
         }
     }
 
+    public static let favoriteMeetingsAndMailDidChange = Notification.Name("NookFavoriteMeetingsAndMailDidChange")
+
+    /// Gmail and Google Calendar favorites show unread mail and the next meeting, as in Arc.
+    public var favoriteMeetingsAndMail: Bool {
+        didSet {
+            userDefaults.set(favoriteMeetingsAndMail, forKey: favoriteMeetingsAndMailKey)
+            if favoriteMeetingsAndMail != oldValue {
+                NotificationCenter.default.post(name: Self.favoriteMeetingsAndMailDidChange, object: nil)
+            }
+        }
+    }
+
     /// Keep visited pages' text so the command palette can find them by their words.
     public var searchPageTextInHistory: Bool {
         didSet {
@@ -753,6 +766,7 @@ public final class NookSettingsService {
             webSearchContextSizeKey: "medium",
             showLinkStatusBarKey: true,
             favoritePreviewsKey: true,
+            favoriteMeetingsAndMailKey: true,
             themeTranslucencyKey: false,
             searchPageTextInHistoryKey: true,
             hideWebContentBorderKey: false,
@@ -890,6 +904,7 @@ public final class NookSettingsService {
         self.webSearchContextSize = userDefaults.string(forKey: webSearchContextSizeKey) ?? "medium"
         self.showLinkStatusBar = userDefaults.bool(forKey: showLinkStatusBarKey)
         self.favoritePreviews = userDefaults.bool(forKey: favoritePreviewsKey)
+        self.favoriteMeetingsAndMail = userDefaults.bool(forKey: favoriteMeetingsAndMailKey)
         self.themeTranslucency = userDefaults.bool(forKey: themeTranslucencyKey)
         self.searchPageTextInHistory = userDefaults.bool(forKey: searchPageTextInHistoryKey)
         self.hideWebContentBorder = userDefaults.bool(forKey: hideWebContentBorderKey)
