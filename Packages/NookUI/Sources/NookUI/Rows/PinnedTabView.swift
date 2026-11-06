@@ -27,6 +27,8 @@ public struct PinnedTabView<Icon: View>: View {
     var isDimmed: Bool = false
     /// A short line under the icon, such as a Calendar favorite's "in 5m".
     var caption: String?
+    /// The red dot at the bottom-right, for a Gmail favorite with unread mail.
+    var hasUnread: Bool = false
     var action: () -> Void
 
     @State private var isHovered: Bool = false
@@ -46,6 +48,7 @@ public struct PinnedTabView<Icon: View>: View {
         glowHost: String? = nil,
         isDimmed: Bool = false,
         caption: String? = nil,
+        hasUnread: Bool = false,
         action: @escaping () -> Void
     ) {
         self.tabName = tabName
@@ -59,6 +62,7 @@ public struct PinnedTabView<Icon: View>: View {
         self.glowHost = glowHost
         self.isDimmed = isDimmed
         self.caption = caption
+        self.hasUnread = hasUnread
         self.action = action
     }
 
@@ -117,6 +121,15 @@ public struct PinnedTabView<Icon: View>: View {
                     .padding(NookDesign.Spacing.xxs)
                 }
             }
+            .overlay(alignment: .bottomTrailing) {
+                if hasUnread {
+                    Circle()
+                        .fill(NookDesign.Surface.unreadDot)
+                        .frame(width: NookDesign.Size.unreadDot, height: NookDesign.Size.unreadDot)
+                        .padding(NookDesign.Spacing.md)
+                        .allowsHitTesting(false)
+                }
+            }
             .frame(maxWidth: .infinity)
             .frame(height: NookDesign.Size.favoriteTile)
             .frame(minWidth: NookDesign.Size.favoriteTile)
@@ -125,7 +138,7 @@ public struct PinnedTabView<Icon: View>: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(tabName)
-        .accessibilityValue(caption ?? "")
+        .accessibilityValue(caption ?? (hasUnread ? "Unread mail" : ""))
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .onHoverTracking { hovering in
             self.isHovered = hovering

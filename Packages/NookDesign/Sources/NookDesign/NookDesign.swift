@@ -116,6 +116,7 @@ public enum NookDesign {
         public static let libraryMin: CGFloat = 417    // narrowest the library gets, whatever the window
         public static let libraryEdgeGap: CGFloat = 56 // window width the library leaves uncovered
         public static let accountPicker: CGFloat = 280 // Pawl Vault's account popover under a login field
+        public static let unreadDot: CGFloat = 6       // a Gmail favorite's unread mark
         public static let favoriteCard: CGFloat = 240  // the card beside a Gmail or Calendar favorite
         public static let timelineHour: CGFloat = 40   // one hour on the Calendar favorite's timeline
         public static let timelineLabel: CGFloat = 40  // that timeline's hour labels
@@ -235,6 +236,7 @@ public enum NookDesign {
         public static func favoriteCaptionFill(dark: Bool) -> Color {
             Color.white.opacity(dark ? 0.14 : 0.5)
         }
+        public static let unreadDot = Color.red
         public static let dropBorderIdle = Color.secondary.opacity(0.3)    // dashed empty-state drop target
         public static let dropBorderActive = Color.primary.opacity(0.4)    // dashed drop target while dragging
         /// Destructive action fill. Kept at the value the dialog buttons shipped with.

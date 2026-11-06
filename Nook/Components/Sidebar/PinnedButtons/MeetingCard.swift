@@ -89,20 +89,7 @@ struct MeetingCard: View {
             .clipped()
         }
         .overlay(alignment: .bottomTrailing) {
-            Button {
-                open(GoogleFavorite.newEvent(account: account))
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: NookDesign.Size.rowGlyph, weight: .semibold))
-                    .frame(width: NookDesign.Size.iconButton, height: NookDesign.Size.iconButton)
-                    .background(Circle().fill(NookDesign.Surface.raised))
-                    .overlay(Circle().strokeBorder(NookDesign.Surface.hairline, lineWidth: NookDesign.Size.hairlineWidth))
-                    .nookElevation(.raised)
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .help("New Event")
-            .padding(NookDesign.Spacing.md)
+            FavoriteCardAddButton(help: "New Event") { open(GoogleFavorite.newEvent(account: account)) }
         }
     }
 
@@ -142,5 +129,26 @@ struct MeetingCard: View {
         Rectangle()
             .fill(NookDesign.Surface.hairline)
             .frame(height: NookDesign.Size.hairlineWidth)
+    }
+}
+
+/// The round + in the corner of a Gmail or Calendar card, as in Arc.
+struct FavoriteCardAddButton: View {
+    let help: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "plus")
+                .font(.system(size: NookDesign.Size.rowGlyph, weight: .semibold))
+                .frame(width: NookDesign.Size.iconButton, height: NookDesign.Size.iconButton)
+                .background(Circle().fill(NookDesign.Surface.raised))
+                .overlay(Circle().strokeBorder(NookDesign.Surface.hairline, lineWidth: NookDesign.Size.hairlineWidth))
+                .nookElevation(.raised)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .padding(NookDesign.Spacing.md)
     }
 }

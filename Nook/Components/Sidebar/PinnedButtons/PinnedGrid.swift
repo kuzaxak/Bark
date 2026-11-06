@@ -177,14 +177,21 @@ private struct PinnedTile: View {
     }
 
     /// A Calendar favorite's "now" or "in 5m".
-    private var meetingBadge: String? {
-        guard case .calendar? = LiveFavorites.kind(of: item, in: windowState, tabs: tabs) else { return nil }
+    private func meetingBadge(_ live: GoogleFavorite?) -> String? {
+        guard case .calendar? = live else { return nil }
         return Meetings.badge(LiveFavorites.shared.meetings, at: LiveFavorites.shared.now)?.text
+    }
+
+    /// A Gmail favorite with unread mail, by its feed or else its loaded tab's title.
+    private func hasUnread(_ live: GoogleFavorite?, session: PageSession?) -> Bool {
+        guard case .mail? = live else { return false }
+        return LiveFavorites.shared.unread(item.id, title: session?.isUnloaded == false ? session?.title : nil) > 0
     }
 
     var body: some View {
         let session = tabs.session(for: item.id)
         let url = tabs.currentURL(for: item)?.absoluteString ?? ""
+        let live = LiveFavorites.kind(of: item, in: windowState, tabs: tabs)
         NookDragSourceView(
             item: NookDragItem(tabId: item.id, title: tabs.title(for: item), urlString: url),
             icon: session?.favicon,
@@ -202,7 +209,8 @@ private struct PinnedTile: View {
                 colors: tileColors,
                 glowHost: tileColors == nil ? nil : item.url?.host,
                 isDimmed: windowRegistry.activeWindowId != windowState.id,
-                caption: meetingBadge,
+                caption: meetingBadge(live),
+                hasUnread: hasUnread(live, session: session),
                 action: {
                     RowPress.click {
                         FavoritePreview.shared.dismiss()
@@ -223,6 +231,9 @@ private struct PinnedTile: View {
             .onHoverTracking { hovering in
                 browserManager.hoveredPinnedTabId = hovering ? item.id : nil
                 FavoritePreview.shared.tileHover(item, hovering: hovering, in: windowState, tabs: tabs)
+            }
+            .onChange(of: session?.title) {
+                if let live, case .mail = live { LiveFavorites.shared.refresh(item, kind: live) }
             }
         }
     }

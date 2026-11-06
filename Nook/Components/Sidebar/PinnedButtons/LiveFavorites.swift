@@ -3,9 +3,10 @@
 //  LiveFavorites.swift
 //  Nook
 //
-//  What Gmail and Google Calendar favorites show, as in Arc: the next meeting from macOS
-//  Calendar. It runs only while Settings → Appearance → Show meetings and mail on favorites is
-//  on and a regular window is on screen, and never asks for Calendar access by itself.
+//  What Gmail and Google Calendar favorites show, as in Arc: unread mail from Gmail's feed and
+//  the next meeting from macOS Calendar. It runs only while Settings → Appearance → Show
+//  meetings and mail on favorites is on and a regular window is on screen, keeps mail in memory
+//  only, and never asks for Calendar access by itself.
 //
 
 import AppKit
@@ -27,6 +28,8 @@ final class LiveFavorites {
     private(set) var meetings: [Meeting] = []
     /// Join rows the person closed, until their meeting ends.
     private(set) var hiddenJoins: Set<String> = []
+    /// Each Gmail favorite's last read of its feed.
+    private(set) var mail: [UUID: GmailFeed.Outcome] = [:]
 
     @ObservationIgnored private weak var tabs: TabsController?
     @ObservationIgnored private weak var windows: WindowRegistry?
@@ -35,6 +38,16 @@ final class LiveFavorites {
     @ObservationIgnored private var storeObserver: NSObjectProtocol?
     /// Bumped by every load and stop, so only the latest load lands.
     @ObservationIgnored private var calendarGeneration = 0
+    @ObservationIgnored private var mailFetches: [UUID: MailFetch] = [:]
+
+    private struct MailFetch {
+        var inFlight = false
+        var last = Date.distantPast
+        var failures = 0
+    }
+
+    /// A hover or a title change reads the feed again after this long, unless the last read failed.
+    private static let mailSoon: TimeInterval = 15
 
     private static let privacySettings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!
 
@@ -54,12 +67,11 @@ final class LiveFavorites {
         update()
     }
 
-    /// What `item` shows, or nil: not a Calendar favorite, the setting is off, or the window is
-    /// private or shows the Agent space.
+    /// What `item` shows, or nil: not a Gmail or Calendar favorite, the setting is off, or the
+    /// window is private or shows the Agent space.
     static func kind(of item: Item, in window: BrowserWindowState, tabs: TabsController) -> GoogleFavorite? {
         guard tabs.settings.favoriteMeetingsAndMail, !window.isIncognito,
-              let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false,
-              case .calendar? = GoogleFavorite(url: item.url) else { return nil }
+              let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false else { return nil }
         return GoogleFavorite(url: item.url)
     }
 
@@ -71,11 +83,24 @@ final class LiveFavorites {
         }
     }
 
-    /// The pointer rests on a Gmail or Calendar favorite: its card wants fresh data.
-    func hovered(_ kind: GoogleFavorite) {
+    /// The pointer rests on a Gmail or Calendar favorite, or its tab's title changed: what it
+    /// shows may be out of date.
+    func refresh(_ item: Item, kind: GoogleFavorite) {
         guard isEnabled else { return }
         now = Date()
-        if case .calendar = kind { loadMeetings() }
+        switch kind {
+        case .calendar:
+            loadMeetings()
+        case .mail(let account):
+            guard let spaceID = tabs?.spaceID(of: item.id) else { return }
+            fetchMail(item.id, spaceID: spaceID, account: account, soon: true)
+        }
+    }
+
+    /// A Gmail favorite's unread count: the feed's, else the one in its loaded tab's `title`.
+    func unread(_ itemID: UUID, title: String?) -> Int {
+        if case .inbox(let inbox)? = mail[itemID] { return inbox.unread }
+        return GmailFeed.unreadCount(title: title) ?? 0
     }
 
     func connectCalendar() {
@@ -134,20 +159,69 @@ final class LiveFavorites {
     }
 
     private func refresh() {
-        guard isEnabled, let tabs else { return }
+        guard isEnabled else { return }
         now = Date()
-        let calendarShown = tabs.orderedSpaces.contains { space in
-            !space.isAgent && tabs.favorites(of: space.id).contains {
-                if case .calendar = GoogleFavorite(url: $0.url) { return true }
-                return false
+        var calendarShown = false
+        var gmail: [(id: UUID, spaceID: UUID, account: Int)] = []
+        for favorite in googleFavorites() {
+            switch favorite.kind {
+            case .calendar: calendarShown = true
+            case .mail(let account): gmail.append((favorite.id, favorite.spaceID, account))
             }
         }
         if calendarShown { loadMeetings() } else { dropMeetings() }
+        keepMail(of: Set(gmail.map(\.id)))
+        for favorite in gmail {
+            fetchMail(favorite.id, spaceID: favorite.spaceID, account: favorite.account, soon: false)
+        }
+    }
+
+    /// Gmail and Calendar favorites outside the Agent space, each once, with its own space.
+    private func googleFavorites() -> [(id: UUID, spaceID: UUID, kind: GoogleFavorite)] {
+        guard let tabs else { return [] }
+        var seen: Set<UUID> = []
+        return tabs.orderedSpaces.filter { !$0.isAgent }.flatMap { tabs.favorites(of: $0.id) }.compactMap { item in
+            guard seen.insert(item.id).inserted, let kind = GoogleFavorite(url: item.url),
+                  let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false else { return nil }
+            return (item.id, spaceID, kind)
+        }
     }
 
     private func clear() {
         dropMeetings()
-        hiddenJoins = []
+        if !hiddenJoins.isEmpty { hiddenJoins = [] }
+        keepMail(of: [])
+    }
+
+    // MARK: - Mail
+
+    /// Reads a Gmail favorite's feed when due: every two minutes, waiting longer after failures.
+    /// `soon` shortens a regular wait to `mailSoon`.
+    private func fetchMail(_ itemID: UUID, spaceID: UUID, account: Int, soon: Bool) {
+        guard let tabs else { return }
+        var fetch = mailFetches[itemID] ?? MailFetch()
+        let wait = soon && fetch.failures == 0 ? Self.mailSoon : GmailFeed.retryDelay(afterFailures: fetch.failures)
+        // Minute ticks land a few milliseconds either side of the minute.
+        guard !fetch.inFlight, Date().timeIntervalSince(fetch.last).rounded() >= wait else { return }
+        fetch.inFlight = true
+        fetch.last = Date()
+        mailFetches[itemID] = fetch
+        Task {
+            let outcome = await tabs.gmailInbox(inSpace: spaceID, account: account)
+            guard var fetch = mailFetches[itemID] else { return }
+            fetch.inFlight = false
+            fetch.failures = outcome == .failed ? fetch.failures + 1 : 0
+            mailFetches[itemID] = fetch
+            mail[itemID] = outcome
+        }
+    }
+
+    /// Forgets the mail of every favorite not in `ids`.
+    private func keepMail(of ids: Set<UUID>) {
+        mailFetches = mailFetches.filter { ids.contains($0.key) }
+        if mail.keys.contains(where: { !ids.contains($0) }) {
+            mail = mail.filter { ids.contains($0.key) }
+        }
     }
 
     // MARK: - Calendar
@@ -161,8 +235,9 @@ final class LiveFavorites {
     }
 
     private func loadMeetings() {
-        calendarAccess = Self.currentCalendarAccess()
-        guard calendarAccess == .granted else { return dropMeetings() }
+        let access = Self.currentCalendarAccess()
+        if access != calendarAccess { calendarAccess = access }
+        guard access == .granted else { return dropMeetings() }
         let store = eventStore ?? makeEventStore()
         calendarGeneration += 1
         let generation = calendarGeneration
@@ -185,7 +260,7 @@ final class LiveFavorites {
 
     private func dropMeetings() {
         stopCalendar()
-        meetings = []
+        if !meetings.isEmpty { meetings = [] }
     }
 
     private func stopCalendar() {

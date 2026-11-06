@@ -58,7 +58,7 @@ final class FavoritePreview {
         }
         tileUnderPointer = item.id
         let live = LiveFavorites.kind(of: item, in: window, tabs: tabs)
-        if let live { LiveFavorites.shared.hovered(live) }
+        if let live { LiveFavorites.shared.refresh(item, kind: live) }
         guard itemID != item.id, live != nil || tabs.settings.favoritePreviews,
               !NookDragSessionManager.shared.isDragging else { return }
         pending?.cancel()
@@ -181,7 +181,14 @@ struct FavoritePreviewOverlay: View {
     private func liveCard(_ live: GoogleFavorite, itemID: UUID) -> some View {
         let space = tabs.spaceID(of: itemID).flatMap { tabs.space($0) }
         let accent = space?.accentColor ?? .accentColor
-        return MeetingCard(account: live.account, accent: accent) { open($0, in: itemID) }
+        return Group {
+            switch live {
+            case .calendar(let account):
+                MeetingCard(account: account, accent: accent) { open($0, in: itemID) }
+            case .mail(let account):
+                MailCard(itemID: itemID, account: account) { open($0, in: itemID) }
+            }
+        }
         .frame(width: NookDesign.Size.favoriteCard)
         .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.lg))
         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { liveCardHeight = $0 }
