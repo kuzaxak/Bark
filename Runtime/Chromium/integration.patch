@@ -288,7 +288,7 @@
  _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,74 @@
+@@ -9782,3 +9782,77 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -310,6 +310,7 @@
 +      "//chrome/browser/enterprise",
 +      "//chrome/browser/enterprise:impl",
 +      "//chrome/browser/extensions:test_support",
++      "//chrome/browser/extensions/api/messaging:test_support",
 +      "//chrome/browser/ui/browser_active_state_manager:browser_active_state_manager",
 +      "//chrome/browser/ui/views/frame:browser_frame_view",
 +      "//chrome/browser/ui/views/frame:browser_view_header",
@@ -345,6 +346,7 @@
 +      "//content/test:test_support",
 +      "//extensions:test_support",
 +      "//extensions/browser:test_support",
++      "//extensions/browser/api/messaging",
 +      "//extensions/common",
 +      "//net:test_support",
 +      "//testing/gtest",
@@ -357,6 +359,7 @@
 +      "//chrome:chrome_framework",
 +    ]
 +    data = [
++      "data/native_messaging/native_hosts/echo.py",
 +      "data/title1.html",
 +      "data/title2.html",
 +    ]

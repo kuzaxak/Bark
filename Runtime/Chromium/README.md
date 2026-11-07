@@ -258,6 +258,10 @@ checks owned dialog presentation, stale-owner cancellation and profile-local
 grants using upstream test installation/gesture helpers and programmatic dialog
 buttons after the normal button delay. These are mechanical routing checks;
 native input and ordinary store installation/update remain separate cases.
+The native-messaging case uses upstream's echo subprocess and isolated user/system
+host directories to check per-profile ports, origin rejection and channel cleanup
+after disconnect/disable. It does not establish host-process exit, profile
+deletion, vendor discovery or installed distribution behavior.
 
 The changed Views ownership/close paths also require the existing
 `views_unittests` target. After the candidate build exits, build that target in

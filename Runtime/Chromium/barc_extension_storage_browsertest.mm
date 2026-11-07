@@ -4,14 +4,20 @@
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
 
 #include <array>
+#include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #include "base/command_line.h"
+#include "base/json/json_file_value_serializer.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
+#include "base/test/scoped_path_override.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "base/values.h"
+#include "chrome/browser/extensions/api/messaging/native_messaging_test_util.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/extension_install_prompt_show_params.h"
@@ -21,20 +27,26 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/api/management/management_api_constants.h"
+#include "extensions/browser/api/messaging/message_service.h"
+#include "extensions/browser/api/messaging/native_message_host.h"
 #include "extensions/browser/background_script_executor.h"
 #include "extensions/browser/browsertest_util.h"
 #include "extensions/browser/crx_installer.h"
+#include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_prefs.h"
+#include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/browser/process_manager.h"
+#include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/error_utils.h"
 #include "extensions/common/extension.h"
 #include "extensions/common/mojom/api_permission_id.mojom.h"
@@ -179,6 +191,10 @@ class BarcExtensionStorageBrowserTest : public InProcessBrowserTest {
     personal_ready.set_extension_id(extension_id);
     ASSERT_TRUE(personal_ready.WaitUntilSatisfied());
   }
+  // Match upstream native-messaging fixture lifetime. The helper scopes its
+  // own filesystem cleanup; path overrides stay installed through teardown.
+  extensions::ScopedTestNativeMessagingHost native_host_;
+  std::unique_ptr<base::ScopedPathOverride> native_system_path_;
 };
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
@@ -764,4 +780,204 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
       ExpectMarks(ReadState(work, extension_id), "work-local", "work-session"));
   ASSERT_NO_FATAL_FAILURE(ExpectMarks(ReadState(personal, extension_id),
                                       "personal-local", "personal-session"));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
+                       NativePortsAndOriginChecksRemainInstallationScoped) {
+  int32_t work_id = 0;
+  int32_t personal_id = 0;
+  ASSERT_NO_FATAL_FAILURE(OpenProfiles(work_id, personal_id));
+  auto* work_window = Window(work_id);
+  auto* personal_window = Window(personal_id);
+  auto* work = work_window->GetProfile();
+  auto* personal = personal_window->GetProfile();
+  extensions::TestExtensionDir dir;
+  dir.WriteManifest(R"({"manifest_version":3,"name":"Barc native ports",
+    "version":"1.0","permissions":["storage","nativeMessaging"],
+    "background":{"service_worker":"worker.js"}})");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+    globalThis.workerInstance = crypto.randomUUID();
+    globalThis.nativePort = null;
+    globalThis.nativePending = null;
+    globalThis.openNative = () => {
+      const port = chrome.runtime.connectNative('com.barc.g1.echo');
+      nativePort = port;
+      port.onMessage.addListener(message => {
+        if (nativePort !== port || !nativePending)
+          throw new Error('Unexpected native response');
+        const pending = nativePending;
+        nativePending = null;
+        pending.resolve(message);
+      });
+      port.onDisconnect.addListener(() => {
+        const error = chrome.runtime.lastError?.message ?? 'Native port closed';
+        if (nativePort === port && nativePending) {
+          const pending = nativePending;
+          nativePending = null;
+          pending.reject(new Error(error));
+        }
+      });
+      return true;
+    };
+    globalThis.echoNative = value => new Promise((resolve, reject) => {
+      if (nativePending)
+        throw new Error('Overlapping fixture request');
+      nativePending = {resolve, reject};
+      try { nativePort.postMessage(value); }
+      catch (error) { nativePending = null; reject(error); }
+    });
+    globalThis.denyNative = () => new Promise(resolve => {
+      const denied = chrome.runtime.connectNative('com.barc.g1.denied');
+      denied.onDisconnect.addListener(() => {
+        resolve(chrome.runtime.lastError?.message ?? 'Missing denied-origin error');
+      });
+      denied.onMessage.addListener(() => {
+        denied.disconnect();
+        resolve('Unexpected response from forbidden host');
+      });
+      denied.postMessage({profile: 'forbidden-origin-probe'});
+    });
+    chrome.test.sendMessage('native-worker-ready');
+  )");
+  ExtensionTestMessageListener work_ready("native-worker-ready");
+  work_ready.set_browser_context(work);
+  ExtensionTestMessageListener personal_ready("native-worker-ready");
+  personal_ready.set_browser_context(personal);
+  extensions::ChromeTestExtensionLoader work_loader(work);
+  auto extension = work_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  const std::string extension_id = extension->id();
+  work_ready.set_extension_id(extension_id);
+  ASSERT_TRUE(work_ready.WaitUntilSatisfied());
+  extensions::ChromeTestExtensionLoader personal_loader(personal);
+  auto other = personal_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(other);
+  ASSERT_EQ(extension_id, other->id());
+  personal_ready.set_extension_id(extension_id);
+  ASSERT_TRUE(personal_ready.WaitUntilSatisfied());
+
+  ASSERT_NO_FATAL_FAILURE(native_host_.RegisterTestHost(/*user_level=*/true));
+  {
+    base::ScopedAllowBlockingForTesting allow_io;
+    // No real user/system NativeMessagingHosts directory is searched.
+    native_system_path_ = std::make_unique<base::ScopedPathOverride>(
+        chrome::DIR_NATIVE_MESSAGING, native_host_.temp_dir());
+    const std::string forbidden_origin =
+        "chrome-extension://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/";
+    ASSERT_NE(forbidden_origin, extension->url().spec());
+    const std::array<std::pair<const char*, std::string>, 2> hosts{{
+        {"com.barc.g1.echo", extension->url().spec()},
+        {"com.barc.g1.denied", forbidden_origin},
+    }};
+    for (const auto& [name, origin] : hosts) {
+      auto manifest =
+          base::DictValue()
+              .Set("name", name)
+              .Set("description", "Isolated Barc native-port regression")
+              .Set("type", "stdio")
+              .Set("path", native_host_.temp_dir()
+                               .AppendASCII("echo.py")
+                               .AsUTF8Unsafe())
+              .Set("allowed_origins", base::ListValue().Append(origin));
+      JSONFileValueSerializer serializer(
+          native_host_.temp_dir().AppendASCII(std::string(name) + ".json"));
+      ASSERT_TRUE(serializer.Serialize(manifest));
+    }
+  }
+  auto* work_messages = extensions::MessageService::Get(work);
+  auto* personal_messages = extensions::MessageService::Get(personal);
+  ASSERT_TRUE(work_messages);
+  ASSERT_TRUE(personal_messages);
+  ASSERT_NE(work_messages, personal_messages);
+  const size_t work_baseline = work_messages->GetChannelCountForTest();
+  const size_t personal_baseline = personal_messages->GetChannelCountForTest();
+  const auto expect_channels = [&](size_t work_native, size_t personal_native) {
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return work_messages->GetChannelCountForTest() ==
+                 work_baseline + work_native &&
+             personal_messages->GetChannelCountForTest() ==
+                 personal_baseline + personal_native;
+    }));
+  };
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  EXPECT_EQ(base::Value(true), Worker(work, extension_id,
+      "chrome.test.sendScriptResult(openNative());"));
+  EXPECT_EQ(base::Value(true), Worker(personal, extension_id,
+      "chrome.test.sendScriptResult(openNative());"));
+  const auto echo = [&](Profile* profile, const char* marker, int round,
+                        int expected_process_sequence) {
+    auto response = Worker(profile, extension_id, content::JsReplace(R"(
+      echoNative({profile: $1, round: $2}).then(
+        message => chrome.test.sendScriptResult(message),
+        error => chrome.test.sendScriptResult({error: String(error)}));
+    )", marker, round));
+    ASSERT_TRUE(response.is_dict()) << response;
+    const auto& object = response.GetDict();
+    EXPECT_EQ(expected_process_sequence, object.FindInt("id")) << response;
+    const auto* payload = object.FindDict("echo");
+    ASSERT_TRUE(payload) << response;
+    ASSERT_NE(nullptr, payload->FindString("profile")) << response;
+    EXPECT_EQ(marker, *payload->FindString("profile"));
+    EXPECT_EQ(round, payload->FindInt("round"));
+    ASSERT_NE(nullptr, object.FindString("caller_url")) << response;
+    EXPECT_EQ(extension->url().spec(), *object.FindString("caller_url"));
+  };
+  // Independent subprocess counters both begin at one; later traffic must keep
+  // Personal's same long-lived port/counter after Work disconnects/unloads.
+  ASSERT_NO_FATAL_FAILURE(echo(work, kWork, 1, 1));
+  ASSERT_NO_FATAL_FAILURE(echo(personal, kPersonal, 1, 1));
+  ASSERT_NO_FATAL_FAILURE(expect_channels(1, 1));
+  const std::string denied = R"(
+    denyNative().then(error => chrome.test.sendScriptResult(error),
+      error => chrome.test.sendScriptResult({error: String(error)}));
+  )";
+  EXPECT_EQ(base::Value(extensions::NativeMessageHost::kForbiddenError),
+            Worker(work, extension_id, denied));
+  EXPECT_EQ(base::Value(extensions::NativeMessageHost::kForbiddenError),
+            Worker(personal, extension_id, denied));
+  ASSERT_NO_FATAL_FAILURE(echo(work, kWork, 2, 2));
+  ASSERT_NO_FATAL_FAILURE(echo(personal, kPersonal, 2, 2));
+  ASSERT_NO_FATAL_FAILURE(expect_channels(1, 1));
+
+  const std::string disconnect = R"(
+    nativePort.disconnect();
+    try {
+      nativePort.postMessage({unexpected: true});
+      chrome.test.sendScriptResult('Disconnected port accepted a message');
+    } catch (error) {
+      chrome.test.sendScriptResult(String(error).includes('disconnected port'));
+    }
+  )";
+  EXPECT_EQ(base::Value(true), Worker(work, extension_id, disconnect));
+  ASSERT_NO_FATAL_FAILURE(expect_channels(0, 1));
+  ASSERT_NO_FATAL_FAILURE(echo(personal, kPersonal, 3, 3));
+  EXPECT_EQ(base::Value(true), Worker(work, extension_id,
+      "chrome.test.sendScriptResult(openNative());"));
+  ASSERT_NO_FATAL_FAILURE(echo(work, kWork, 3, 1));
+  ASSERT_NO_FATAL_FAILURE(expect_channels(1, 1));
+  auto* work_registry = extensions::ExtensionRegistry::Get(work);
+  auto* personal_registry = extensions::ExtensionRegistry::Get(personal);
+  extensions::TestExtensionRegistryObserver unloaded(work_registry, extension_id);
+  extensions::ExtensionRegistrar::Get(work)->DisableExtension(
+      extension_id, {extensions::disable_reason::DISABLE_USER_ACTION});
+  ASSERT_TRUE(unloaded.WaitForExtensionUnloaded());
+  ASSERT_NO_FATAL_FAILURE(expect_channels(0, 1));
+  EXPECT_TRUE(work_registry->disabled_extensions().Contains(extension_id));
+  EXPECT_TRUE(personal_registry->enabled_extensions().Contains(extension_id));
+  ASSERT_NO_FATAL_FAILURE(echo(personal, kPersonal, 4, 4));
+
+  ExtensionTestMessageListener work_restarted("native-worker-ready");
+  work_restarted.set_browser_context(work);
+  work_restarted.set_extension_id(extension_id);
+  extensions::ExtensionRegistrar::Get(work)->EnableExtension(extension_id);
+  ASSERT_TRUE(work_restarted.WaitUntilSatisfied());
+  EXPECT_EQ(base::Value(true), Worker(work, extension_id,
+      "chrome.test.sendScriptResult(openNative());"));
+  ASSERT_NO_FATAL_FAILURE(echo(work, kWork, 4, 1));
+  ASSERT_NO_FATAL_FAILURE(echo(personal, kPersonal, 5, 5));
+  ASSERT_NO_FATAL_FAILURE(expect_channels(1, 1));
+  EXPECT_TRUE(personal_window->IsSelectedForNativeWindow());
+  EXPECT_EQ(base::Value(true), Worker(work, extension_id, disconnect));
+  EXPECT_EQ(base::Value(true), Worker(personal, extension_id, disconnect));
+  ASSERT_NO_FATAL_FAILURE(expect_channels(0, 0));
 }
