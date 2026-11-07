@@ -6,7 +6,12 @@ import SwiftUI
 
 struct ChromiumProfilePageAPI {
     typealias Open = @convention(c) (UnsafePointer<CChar>?, Int32, ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?) -> Void
+    typealias CopyTitle = @convention(c) (Int32, Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
+    typealias DetachOwned = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Int32
     let open: Open
+    let copyTitle: CopyTitle
+    let detachOwned: DetachOwned
+    let ownsHeader: DetachOwned
     let tabAt: ChromiumPageHostAPI.TabAt
     let attach: ChromiumPageHostAPI.Attach
     let select: ChromiumPageHostAPI.WindowCommand
@@ -19,6 +24,11 @@ struct ChromiumProfilePageAPI {
             return unsafeBitCast(address, to: T.self)
         }
         open = try load("barc_profile_open_window", Open.self)
+        copyTitle = try load("barc_tab_copy_title", CopyTitle.self)
+        // Additive runtime prerequisite: compare the actual NativeViewHost view
+        // before detaching. Never substitute unconditional attach(nil).
+        detachOwned = try load("barc_window_detach_native_shell_if_owned", DetachOwned.self)
+        ownsHeader = try load("barc_window_native_shell_is_owned", DetachOwned.self)
         tabAt = try load("barc_window_tab_at", ChromiumPageHostAPI.TabAt.self)
         attach = try load("barc_window_attach_native_shell", ChromiumPageHostAPI.Attach.self)
         select = try load("barc_window_select", ChromiumPageHostAPI.WindowCommand.self)
@@ -26,10 +36,11 @@ struct ChromiumProfilePageAPI {
         close = try load("barc_window_close", ChromiumPageHostAPI.WindowCommand.self)
     }
 
-    init(open: @escaping Open, tabAt: @escaping ChromiumPageHostAPI.TabAt,
+    init(open: @escaping Open, copyTitle: @escaping CopyTitle, detachOwned: @escaping DetachOwned, ownsHeader: @escaping DetachOwned, tabAt: @escaping ChromiumPageHostAPI.TabAt,
          attach: @escaping ChromiumPageHostAPI.Attach, select: @escaping ChromiumPageHostAPI.WindowCommand,
          show: @escaping ChromiumPageHostAPI.WindowCommand, close: @escaping ChromiumPageHostAPI.WindowCommand) {
-        self.open = open; self.tabAt = tabAt; self.attach = attach
+        self.open = open; self.copyTitle = copyTitle; self.detachOwned = detachOwned; self.ownsHeader = ownsHeader
+        self.tabAt = tabAt; self.attach = attach
         self.select = select; self.show = show; self.close = close
     }
 }
@@ -51,9 +62,11 @@ final class ChromiumProfilePagePresenter {
             self.canPresent = canPresent; self.completion = completion
         }
     }
-    private struct Page {
+    private final class Page {
         let navigation: ChromiumPageNavigation
-        let view: NSView
+        var view: NSView?
+        var attemptedAttach = false
+        init(navigation: ChromiumPageNavigation) { self.navigation = navigation }
     }
     private let api: ChromiumProfilePageAPI
     private let navigationAPI: ChromiumNavigationAPI
@@ -87,47 +100,90 @@ final class ChromiumProfilePagePresenter {
         guard status == 0, window > 0, profileID(window) == request.profile.id else {
             finish(request, .failure(.presentationFailed)); return
         }
+        let tab = api.tabAt(window, 0)
+        guard tab > 0 else { finish(request, .failure(.presentationFailed)); return }
         guard request.canPresent() else {
-            _ = api.close(window)
+            if api.copyTitle(window, tab, nil, 0) > 0 { _ = api.close(window) }
             finish(request, .failure(.profileUnavailable)); return
         }
-        let tab = api.tabAt(window, 0)
-        guard tab > 0 else { refuse(request, window: window); return }
         do {
             let navigation = try ChromiumPageNavigation(profileID: request.profile.id, window: window, tab: tab, api: navigationAPI)
+            let page = Page(navigation: navigation)
+            let canUse: () -> Bool = { [weak self, weak page] in
+                guard let self, let page else { return false }
+                return self.ownsControls(page, window: window)
+            }
             let view = NSHostingView(rootView: ChromiumProfilePageView(profile: request.profile,
-                navigation: navigation, close: { [weak self] in _ = self?.api.close(window) }))
-            pages[window] = Page(navigation: navigation, view: view)
-            let expectedProfile = request.profile.id
-            navigation.onNativeCloseOutcome = { [weak self, weak request] outcome in
-                guard outcome != .cancelled, let self else { return }
-                let ended = self.pages.removeValue(forKey: window)
-                if outcome == .closed, ended != nil, self.profileID(window) == expectedProfile {
-                    _ = self.api.attach(window, nil)
-                }
+                navigation: navigation, canUse: canUse, close: { [weak self, weak page] in
+                    guard let self, let page, self.ownsControls(page, window: window) else { return }
+                    _ = self.api.close(window)
+                }))
+            page.view = view
+            pages[window] = page
+            navigation.onNativeOwnerChanged = { [weak self, weak page, weak request] owner in
+                guard owner != window, let self, let page else { return }
+                self.release(page, window: window)
                 if let request { self.finish(request, .failure(.presentationFailed)) }
             }
-            guard api.attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1,
-                  pages[window] != nil, request.canPresent(), api.select(window) == 1,
-                  pages[window] != nil, request.canPresent() else {
-                refuse(request, window: window); return
+            navigation.onNativeCloseOutcome = { [weak self, weak page, weak request] outcome in
+                guard outcome != .cancelled, let self, let page else { return }
+                self.release(page, window: window, detachHeader: outcome != .ownerEnded)
+                if let request { self.finish(request, .failure(.presentationFailed)) }
+            }
+            guard request.canPresent(), ownsPage(page, window: window) else {
+                refuse(request, window: window, page: page); return
+            }
+            page.attemptedAttach = true
+            let attached = api.attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1
+            guard attached, request.canPresent(), ownsControls(page, window: window),
+                  api.select(window) == 1, request.canPresent(), ownsControls(page, window: window) else {
+                refuse(request, window: window, page: page); return
             }
             let accepted = request.destination.nativeURL.withCString { navigationAPI.navigate(window, tab, $0) }
-            guard accepted == 1, pages[window] != nil, request.canPresent(),
-                  api.show(window) == 1, pages[window] != nil, request.canPresent() else {
-                refuse(request, window: window); return
+            guard accepted == 1, request.canPresent(), ownsControls(page, window: window),
+                  api.show(window) == 1, request.canPresent(), ownsControls(page, window: window) else {
+                refuse(request, window: window, page: page); return
             }
             finish(request, .success(()))
         } catch {
-            refuse(request, window: window)
+            refuse(request, window: window, tab: tab)
         }
     }
 
-    private func refuse(_ request: Request, window: Int32) {
-        // A C dispatch is not proof of deletion. Keep the observed view alive
-        // until its actual terminal event if native close is asynchronous.
-        _ = api.close(window)
-        if profileID(window) == nil { pages.removeValue(forKey: window)?.navigation.invalidate() }
+    private func ownsPage(_ page: Page, window: Int32) -> Bool {
+        pages[window] === page && !page.navigation.isClosed &&
+        page.navigation.nativeWindowID == window &&
+        profileID(window) == page.navigation.profileID &&
+        api.copyTitle(window, page.navigation.nativeTabID, nil, 0) > 0
+    }
+
+    private func ownsControls(_ page: Page, window: Int32) -> Bool {
+        guard ownsPage(page, window: window), let view = page.view else { return false }
+        return api.ownsHeader(window, Unmanaged.passUnretained(view).toOpaque()) == 1
+    }
+
+    private func release(_ page: Page, window: Int32, detachHeader: Bool = true) {
+        if pages[window] === page { pages.removeValue(forKey: window) }
+        // Revoke controls before AppKit/native detachment callbacks can reenter.
+        page.navigation.invalidate()
+        if detachHeader, page.navigation.nativeCloseOutcome != .ownerEnded, let view = page.view {
+            _ = api.detachOwned(window, Unmanaged.passUnretained(view).toOpaque())
+        }
+    }
+
+    private func refuse(_ request: Request, window: Int32, page: Page? = nil, tab: Int32? = nil) {
+        // Never close the old window after its page has moved or another header
+        // replaced this one. Reentrant attach may finish after transfer cleanup;
+        // compare-and-detach again to release only our own late attachment.
+        if let page {
+            if ownsPage(page, window: window),
+               !page.attemptedAttach || ownsControls(page, window: window) || api.ownsHeader(window, nil) == 1 {
+                _ = api.close(window)
+            }
+            else { release(page, window: window) }
+        } else if let tab, profileID(window) == request.profile.id, api.copyTitle(window, tab, nil, 0) > 0 {
+            _ = api.close(window)
+        }
         finish(request, .failure(request.canPresent() ? .presentationFailed : .profileUnavailable))
     }
 
@@ -157,9 +213,10 @@ private extension ProfilePageDestination {
     }
 }
 
-private struct ChromiumProfilePageView: View {
+struct ChromiumProfilePageView: View {
     let profile: ProfileSummary
     let navigation: ChromiumPageNavigation
+    let canUse: () -> Bool
     let close: () -> Void
     @State private var state = PageNavigationState(canGoBack: false, canGoForward: false)
 
@@ -168,11 +225,11 @@ private struct ChromiumProfilePageView: View {
             Label(profile.name, systemImage: "person.crop.circle")
                 .font(.headline)
             HStack {
-                Button { _ = navigation.goBack() } label: { Image(systemName: "chevron.left") }
+                Button(action: goBack) { Image(systemName: "chevron.left") }
                     .disabled(!state.canGoBack).accessibilityLabel("Back")
-                Button { _ = navigation.goForward() } label: { Image(systemName: "chevron.right") }
+                Button(action: goForward) { Image(systemName: "chevron.right") }
                     .disabled(!state.canGoForward).accessibilityLabel("Forward")
-                Button { _ = navigation.reload() } label: { Image(systemName: "arrow.clockwise") }
+                Button(action: reload) { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Reload")
             }
             Text(state.title ?? "Profile Settings").lineLimit(3)
@@ -181,9 +238,15 @@ private struct ChromiumProfilePageView: View {
         }
         .padding(12)
         .onAppear {
+            guard canUse() else { return }
             state = navigation.state
             let binding = $state
-            navigation.onStateChanged = { binding.wrappedValue = $0 }
+            navigation.onStateChanged = { if canUse() { binding.wrappedValue = $0 } }
         }
     }
+
+    func goBack() { if canUse() { _ = navigation.goBack() } }
+    func goForward() { if canUse() { _ = navigation.goForward() } }
+    func reload() { if canUse() { _ = navigation.reload() } }
+
 }

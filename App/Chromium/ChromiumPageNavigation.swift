@@ -75,6 +75,7 @@ final class ChromiumPageNavigation: PageNavigation {
     var nativeTabID: Int32 { tab }
     // Host-only lifecycle channel. PageSession retains its event/state channels.
     var onNativeCloseOutcome: ((PageCloseOutcome) -> Void)?
+    var onNativeOwnerChanged: ((Int32) -> Void)?
     private let context = CallbackContext()
 
     private final class CallbackContext {
@@ -147,6 +148,7 @@ final class ChromiumPageNavigation: PageNavigation {
         onStateChanged = nil
         onEvent = nil
         onNativeCloseOutcome = nil
+        onNativeOwnerChanged = nil
         if token != 0 { api.unobserve(token) }
     }
 
@@ -155,7 +157,10 @@ final class ChromiumPageNavigation: PageNavigation {
         guard !invalidated, tab == self.tab, token != 0,
               observation == 0 || observation == token else { return }
         observation = token  // INITIAL can call out before observe() returns.
+        let ownerChanged = self.window != window
         self.window = window  // A live transfer changes the owner, never the page.
+        if ownerChanged { onNativeOwnerChanged?(window) }
+        guard !invalidated else { return }
         if event == 8 { // CLOSE_CANCELLED is not navigation cancellation.
             onNativeCloseOutcome?(.cancelled)
             return

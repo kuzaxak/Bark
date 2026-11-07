@@ -1,4 +1,5 @@
 import AppKit
+import SwiftUI
 import NookTabsCore
 import NookWeb
 
@@ -14,14 +15,32 @@ private enum Native {
     static var showAccepted = true
     static var onAttach: (() -> Void)?
     static var onShow: (() -> Void)?
+    static var headers: [Int32: NSView] = [:]
+    static var members: [Int32: Set<Int32>] = [:]
+    static var detachAttempts = 0
 
     static var api: ChromiumProfilePageAPI {
         ChromiumProfilePageAPI(open: { uuid, destination, callback, context in MainActor.assumeIsolated {
             precondition(destination == 5, "Utility construction must remain hidden")
             Native.calls.append("open:" + String(cString: uuid!))
             Native.callback = callback; Native.context = context
-        } }, tabAt: { _, _ in 100 }, attach: { _, pointer in MainActor.assumeIsolated {
-            if pointer == nil { Native.calls.append("detach"); return 1 }
+        } }, copyTitle: { window, tab, _, _ in MainActor.assumeIsolated {
+            Native.members[window]?.contains(tab) == true ? 1 : 0
+        } }, detachOwned: { window, expected in MainActor.assumeIsolated {
+            Native.detachAttempts += 1
+            guard let current = Native.headers[window],
+                  Unmanaged.passUnretained(current).toOpaque() == expected else { return 0 }
+            Native.headers[window] = nil
+            Native.calls.append("detach")
+            return 1
+        } }, ownsHeader: { window, expected in MainActor.assumeIsolated {
+            guard Native.members[window] != nil else { return 0 }
+            guard let current = Native.headers[window] else { return expected == nil ? 1 : 0 }
+            return Unmanaged.passUnretained(current).toOpaque() == expected ? 1 : 0
+        } }, tabAt: { window, _ in MainActor.assumeIsolated { Native.members[window]?.first ?? 0 } },
+        attach: { window, pointer in MainActor.assumeIsolated {
+            guard let pointer else { preconditionFailure("Unconditional header detach is forbidden") }
+            if Native.attachAccepted { Native.headers[window] = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue() }
             Native.calls.append("attach"); Native.onAttach?()
             return Native.attachAccepted ? 1 : 0
         } }, select: { _ in MainActor.assumeIsolated { Native.calls.append("select"); return 1 } },
@@ -39,7 +58,10 @@ private enum Native {
         } }, unobserve: { token in MainActor.assumeIsolated { Native.observers[token] = nil } },
         navigate: { _, _, url in MainActor.assumeIsolated {
             Native.calls.append("navigate:" + String(cString: url!)); return 1
-        } }, back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in 1 }, stop: { _, _ in 1 },
+        } }, back: { window, tab in MainActor.assumeIsolated { Native.calls.append("back:\(window):\(tab)"); return 1 } },
+        forward: { window, tab in MainActor.assumeIsolated { Native.calls.append("forward:\(window):\(tab)"); return 1 } },
+        reload: { window, tab in MainActor.assumeIsolated { Native.calls.append("reload:\(window):\(tab)"); return 1 } },
+        stop: { _, _ in 1 },
         select: { _, _ in 1 }, close: { _, _ in 1 },
         profileUUID: { _, pointer, capacity in MainActor.assumeIsolated {
             let bytes = Array(Native.profile.uuidString.utf8CString)
@@ -53,7 +75,17 @@ private enum Native {
     static func opened(_ window: Int32) {
         let callback = self.callback, context = self.context
         self.callback = nil; self.context = nil
+        members[window] = [window * 10]
         callback?(0, window, context)
+    }
+
+    static func transfer(_ window: Int32, to destination: Int32) {
+        for (token, observer) in observers.filter({ $0.value.2 == window }) {
+            members[window]?.remove(observer.3)
+            members[destination, default: []].insert(observer.3)
+            // Owner changes even when the navigation snapshot remains identical.
+            observer.0?(observer.1, token, 0, destination, observer.3, nil, nil, 0, 0)
+        }
     }
 
     static func close(_ window: Int32, flags: UInt32 = 128) {
@@ -61,6 +93,7 @@ private enum Native {
             observer.0?(observer.1, token, 7, window, observer.3, nil, nil, 0, flags)
             observers[token] = nil // Native CLOSED already ended observation.
         }
+        if flags & 128 != 0 { headers[window] = nil }
     }
 }
 
@@ -127,12 +160,14 @@ private enum ProfileChecks {
         Native.close(22); Native.attachAccepted = true
 
         // An owner ending reentrantly during attachment cannot be shown/admitted.
+        let beforeOwnerEndDetaches = Native.detachAttempts
         Native.calls = []; Native.onAttach = { Native.close(23) }
         presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
         Native.opened(23); Native.onAttach = nil
         precondition(outcomes.count == 1)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(!Native.calls.contains("show"))
+        precondition(Native.detachAttempts == beforeOwnerEndDetaches)
 
         Native.calls = []; available = true
         Native.onAttach = { available = false }
@@ -161,8 +196,93 @@ private enum ProfileChecks {
         Native.opened(24)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.last == "close")
-        Native.close(24)
+        Native.close(24); Native.showAccepted = true
         precondition(Native.observers.isEmpty)
+
+        // A displayed header does not follow transferred contents. Retained old
+        // controls and queued callbacks cannot target either window afterwards.
+        Native.calls = []
+        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(40)
+        guard case .success = outcomes.removeLast() else { preconditionFailure() }
+        let header = Native.headers[40] as! NSHostingView<ChromiumProfilePageView>
+        let controls = header.rootView
+        let late = Native.observers.first!.value
+        let lateToken = Native.observers.first!.key
+        controls.goBack()
+        precondition(Native.calls.last == "back:40:400")
+        Native.calls = []
+        Native.transfer(40, to: 41)
+        precondition(Native.calls == ["detach"] && Native.observers.isEmpty && Native.headers[40] == nil)
+        precondition(Native.members[41]?.contains(400) == true)
+        Native.calls = []
+        controls.goBack(); controls.goForward(); controls.reload(); controls.close()
+        withExtendedLifetime(controls) {
+            late.0?(late.1, lateToken, 3, 41, 400, nil, nil, 0, 0)
+        }
+        precondition(Native.calls.isEmpty && outcomes.isEmpty)
+
+        // Membership admission also protects actions before the queued owner
+        // notification reaches this observer.
+        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(48)
+        guard case .success = outcomes.removeLast() else { preconditionFailure() }
+        let queuedHeader = Native.headers[48] as! NSHostingView<ChromiumProfilePageView>
+        Native.members[48]?.remove(480)
+        Native.members[49, default: []].insert(480)
+        Native.calls = []
+        queuedHeader.rootView.close(); queuedHeader.rootView.reload()
+        precondition(Native.calls.isEmpty)
+        Native.transfer(48, to: 49)
+        precondition(Native.calls == ["detach"] && Native.members[49]?.contains(480) == true)
+
+        // Exact expected-view comparison preserves a replacement product header.
+        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(42)
+        guard case .success = outcomes.removeLast() else { preconditionFailure() }
+        let replacedHeader = Native.headers[42] as! NSHostingView<ChromiumProfilePageView>
+        let replacementControls = replacedHeader.rootView
+        let productHeader = NSView()
+        Native.headers[42] = productHeader
+        Native.calls = []
+        replacementControls.close(); replacementControls.reload()
+        replacementControls.goBack(); replacementControls.goForward()
+        precondition(Native.calls.isEmpty && Native.headers[42] === productHeader)
+        Native.transfer(42, to: 43)
+        precondition(Native.headers[42] === productHeader && Native.calls.isEmpty)
+        withExtendedLifetime(replacedHeader) {}
+
+        // A reentrant replacement can win even when attachment returns zero.
+        // Attempting attachment is enough to require exact header ownership
+        // before any refusal cleanup may close a window.
+        let rejectedReplacement = NSView()
+        Native.calls = []
+        Native.onAttach = {
+            Native.headers[50] = rejectedReplacement
+            Native.attachAccepted = false
+        }
+        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(50); Native.onAttach = nil; Native.attachAccepted = true
+        guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
+        precondition(Native.headers[50] === rejectedReplacement)
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "attach"] && Native.observers.isEmpty)
+
+        // Transfers inside pending native callbacks fail exactly once without
+        // closing/showing/navigating the old owner or following the live tab.
+        Native.calls = []
+        Native.onAttach = { Native.transfer(44, to: 45) }
+        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(44); Native.onAttach = nil
+        guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "attach", "detach"])
+        precondition(Native.members[45]?.contains(440) == true && Native.observers.isEmpty)
+        Native.calls = []
+        Native.onShow = { Native.transfer(46, to: 47) }
+        presenter.open(profile, destination: .privacy, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(46); Native.onShow = nil
+        guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
+        precondition(Native.calls.suffix(2) == ["show", "detach"] && !Native.calls.contains("close"))
+        precondition(Native.members[47]?.contains(460) == true && outcomes.isEmpty && Native.observers.isEmpty)
         print("Chromium profile page checks passed")
     }
 }
