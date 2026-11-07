@@ -258,12 +258,13 @@ destruction, reentrant close, veto and frame-layout regressions:
 autoninja -C out/Barc-x64 -j 8 views_unittests
 set views_filter 'ClientOwnsWidgetTest.*:WidgetObserverTest.CloseReentrancy:DesktopWidgetTest.CloseRequested_*:DesktopWidgetTest.SingleWindowClosing:WidgetTest.ReplaceClientContentsView:DialogClientViewTest.LayoutAfterCloseWithDetachedDelegate:DefaultFrameViewTest.GetNonDecoratedClientAreaBoundsInScreen:WidgetTest.RetainedClient*:WidgetTest.PhysicalCloseFinalizesRetainedDelegates'
 out/Barc-x64/views_unittests --gtest_filter="$views_filter" --gtest_list_tests
-out/Barc-x64/views_unittests --test-launcher-jobs=1 --gtest_filter="$views_filter"
+out/Barc-x64/views_unittests --test-launcher-jobs=1 --test-launcher-batch-limit=1 --test-launcher-retry-limit=0 --gtest_filter="$views_filter"
 ```
 
 The pinned source supplies 16 selected cases, including all four
 `ClientOwnsWidgetTest` cases. Check their names against the actual binary's list;
-an empty or partial selection is not a pass. These tests do not establish
+an empty or partial selection is not a pass. Run each case in a separate child
+without retries so one crash does not skip later cases. These tests do not establish
 Browser/Profile ownership, grouped beforeunload or real native focus, which
 remain separate browser-test and installed-build requirements.
 

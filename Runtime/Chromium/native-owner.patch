@@ -410,13 +410,23 @@ diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
 diff --git a/ui/views/widget/widget_unittest.cc b/ui/views/widget/widget_unittest.cc
 --- a/ui/views/widget/widget_unittest.cc
 +++ b/ui/views/widget/widget_unittest.cc
-@@ -441,6 +441,96 @@
+@@ -441,6 +441,107 @@
    EXPECT_TRUE(widget->IsClosed());
  }
  
 +TEST_F(WidgetTest, RetainedClientDelegateLifetime) {
-+  auto widget = base::WrapUnique(
-+      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
++  int primary_initialized = 0;
++  auto primary_delegate_owner = std::make_unique<WidgetDelegate>();
++  primary_delegate_owner->RegisterWidgetInitializedCallback(
++      base::BindLambdaForTesting([&] { ++primary_initialized; }));
++  auto widget = std::make_unique<Widget>();
++  auto params = CreateParams(Widget::InitParams::CLIENT_OWNS_WIDGET,
++                             Widget::InitParams::TYPE_WINDOW);
++  params.delegate = primary_delegate_owner.get();
++  params.native_widget =
++      CreatePlatformNativeWidgetImpl(widget.get(), kStubCapture, nullptr);
++  widget->Init(std::move(params));
++  ASSERT_EQ(1, primary_initialized);
 +  auto* owner = widget->non_client_view();
 +  auto* primary_client = owner->client_view();
 +  auto* primary_delegate = widget->widget_delegate();
@@ -459,6 +469,7 @@ diff --git a/ui/views/widget/widget_unittest.cc b/ui/views/widget/widget_unittes
 +    ASSERT_TRUE(owner->SelectClientFrame(primary_client));
 +  }
 +  EXPECT_EQ(1, initialized);
++  EXPECT_EQ(1, primary_initialized);
 +  EXPECT_EQ(0, closing);
 +  auto released = owner->ReleaseClientFrame(secondary_client);
 +  ASSERT_TRUE(released);
