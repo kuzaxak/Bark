@@ -685,6 +685,13 @@ public final class TabsController {
         }
     }
 
+    func cancelNativeSelection(for page: PageSession) {
+        for window in allWindows where window.nativeSelectionSession === page {
+            window.nativeSelectionGeneration = nil
+            window.nativeSelectionSession = nil
+        }
+    }
+
     func prepareNativeSelection(_ itemID: UUID, in window: BrowserWindowState,
                                 admitted: @escaping @MainActor () -> Void) {
         let previous = window.nativeSelectionSession
@@ -737,8 +744,8 @@ public final class TabsController {
         var remaining = pages.count
         var allAdmitted = true
         for page in pages {
-            page.requestNativeRelease { [weak self] admitted in
-                allAdmitted = allAdmitted && admitted
+            page.requestNativeRelease { [weak self] outcome in
+                allAdmitted = allAdmitted && outcome == .closed
                 remaining -= 1
                 guard remaining == 0, allAdmitted, let self else { return }
                 guard zip(pages, profiles).allSatisfy({ page, id in

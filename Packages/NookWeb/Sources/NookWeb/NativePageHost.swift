@@ -16,10 +16,10 @@ public protocol NativePageHost: AnyObject {
     /// Actual selection admission, including transfer when necessary. False
     /// leaves the existing owner intact; it is not a completed focus claim.
     func selectPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool
-    /// True only after actual CLOSED; false for explicit cancellation/refusal.
+    /// Report actual tab deletion, explicit cancellation, or logical owner teardown.
     /// Dispatching a close request must not complete this operation.
     func closePage(_ page: any PageNavigation,
-                   completion: @escaping @MainActor (Bool) -> Void)
+                   completion: @escaping @MainActor (PageCloseOutcome) -> Void)
 }
 
 struct NativePageCreation {
@@ -31,7 +31,7 @@ struct NativePageCreation {
 
 struct NativePageRelease {
     let id: UUID
-    var completions: [@MainActor (Bool) -> Void]
+    var completions: [@MainActor (PageCloseOutcome) -> Void]
 }
 
 extension PageSession {
@@ -153,38 +153,44 @@ extension PageSession {
     }
 
     private static func releaseUnaccepted(_ page: any PageNavigation, through host: any NativePageHost) {
-        host.closePage(page) { admitted in
-            if admitted { page.invalidate() }
+        host.closePage(page) { outcome in
+            if outcome != .cancelled { page.invalidate() }
         }
     }
 
-    func requestNativeRelease(completion: @escaping @MainActor (Bool) -> Void) {
+    func requestNativeRelease(completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         if nativeCreation != nil {
             cancelNativeCreation()
         }
-        guard let page = navigation else { completion(true); return }
+        // Refuse reentrant release while terminal cleanup is completing.
+        guard !nativeIsEnding || navigation != nil || nativeRelease != nil else {
+            completion(.cancelled)
+            return
+        }
+        guard let page = navigation else { completion(.closed); return }
         if nativeRelease != nil {
             nativeRelease?.completions.append(completion)
             return
         }
         guard let host = nativeResourceHost ?? controller?.nativePageHost else {
-            completion(false)
+            completion(.cancelled)
             return
         }
         let id = UUID()
         nativeRelease = NativePageRelease(id: id, completions: [completion])
         nativeIsEnding = true
-        host.closePage(page) { [weak self, weak page] admitted in
+        host.closePage(page) { [weak self, weak page] outcome in
             guard let self, let page, self.nativeRelease?.id == id,
                   self.navigation === page else { return }
-            self.completeNativeRelease(admitted)
+            self.completeNativeRelease(outcome)
         }
     }
 
-    func completeNativeRelease(_ admitted: Bool) {
+    func completeNativeRelease(_ outcome: PageCloseOutcome) {
+        if outcome == .ownerEnded { nativeOwnerEnded(); return }
         guard let release = nativeRelease else { return }
         nativeRelease = nil
-        if admitted {
+        if outcome == .closed {
             let page = navigation
             navigation = nil
             nativeResourceHost = nil
@@ -194,7 +200,7 @@ extension PageSession {
         } else {
             nativeIsEnding = false
         }
-        for completion in release.completions { completion(admitted) }
+        for completion in release.completions { completion(outcome) }
         // Refusal callbacks may synchronously start a retry. Do not clear the
         // new release's guard or resume a selection into its pending close.
         guard nativeRelease == nil else { return }

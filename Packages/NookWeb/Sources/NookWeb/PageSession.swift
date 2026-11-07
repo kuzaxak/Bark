@@ -429,9 +429,11 @@ public final class PageSession: NSObject, Identifiable {
             controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
         case .titleChanged(let title):
             if !title.isEmpty { updateTitle(title) }
+        case .ownerEnded:
+            nativeOwnerEnded()
         case .closed:
             if nativeRelease != nil {
-                completeNativeRelease(true)
+                completeNativeRelease(.closed)
                 return
             }
             nativeIsEnding = true
@@ -699,10 +701,10 @@ public final class PageSession: NSObject, Identifiable {
         if requiresNativeResourceRelease {
             guard !nativeUnloadPending else { return }
             nativeUnloadPending = true
-            requestNativeRelease { [weak self] admitted in
+            requestNativeRelease { [weak self] outcome in
                 guard let self else { return }
                 self.nativeUnloadPending = false
-                if admitted { self.finishUnloading() }
+                if outcome == .closed { self.finishUnloading() }
             }
             return
         }
@@ -1235,5 +1237,29 @@ private extension WKWebView {
         guard responds(to: selector) else { return }
         typealias Call = @convention(c) (AnyObject, Selector) -> Void
         unsafeBitCast(method(for: selector), to: Call.self)(self, selector)
+    }
+}
+
+extension PageSession {
+    /// Owner termination never earns metadata deletion or resumes queued selection.
+    func nativeOwnerEnded() {
+        nativeIsEnding = true
+        let release = nativeRelease
+        nativeRelease = nil
+        controller?.cancelNativeSelection(for: self)
+        nativePreparationWindow = nil
+        cancelNativeCreation()
+        let ended = navigation
+        navigation = nil
+        nativeResourceHost = nil
+        ended?.invalidate()
+        navigationHasCommittedPage = false
+        loadingState = .idle
+        for completion in release?.completions ?? [] { completion(.ownerEnded) }
+        // Reentrant completion callbacks cannot revive a request into the ending owner.
+        controller?.cancelNativeSelection(for: self)
+        nativePreparationWindow = nil
+        cancelNativeCreation()
+        nativeIsEnding = false
     }
 }

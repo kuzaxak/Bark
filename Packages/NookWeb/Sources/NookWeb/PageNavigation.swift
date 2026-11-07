@@ -20,6 +20,14 @@ public struct PageNavigationState: Equatable {
     }
 }
 
+/// A resource close completes only with an observed terminal outcome.
+public enum PageCloseOutcome: Equatable, Sendable {
+    case closed
+    case cancelled
+    /// The logical native owner ended; saved tab metadata must survive.
+    case ownerEnded
+}
+
 /// Lifecycle from the engine's document, independent of its native surface.
 public enum PageNavigationEvent {
     case started(URL?)
@@ -32,6 +40,8 @@ public enum PageNavigationEvent {
     case titleChanged(String)
     /// Actual engine-admitted deletion, never a close request.
     case closed
+    /// Owner teardown, distinct from an individual tab deletion.
+    case ownerEnded
 }
 
 /// Commands for one existing live page. The profile identity is captured when

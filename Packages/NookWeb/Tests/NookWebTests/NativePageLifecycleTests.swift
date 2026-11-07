@@ -10,6 +10,75 @@ import NookTweaks
 #if os(macOS)
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func ownerEndDuringPendingClosePreservesSavedTabAndCancelsSelection() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let id = try #require(fixture.window.selectedItemID)
+        let page = try #require(fixture.tabs.session(for: id))
+        let native = fixture.host.finishCreate(0)
+        let original = fixture.tabs.tree.item(id)
+        let history = fixture.tabs.device.closed
+        fixture.tabs.close(id)
+        fixture.tabs.select(id, in: fixture.window)
+        #expect(fixture.window.nativeSelectionGeneration != nil)
+        fixture.host.finishOwnerEnd(0, eventFirst: false)
+        #expect(page.isUnloaded && native.invalidated && native.stops == 0)
+        #expect(fixture.tabs.tree.item(id) == original)
+        #expect(fixture.tabs.device.closed == history)
+        #expect(fixture.window.nativeSelectionGeneration == nil)
+        #expect(fixture.host.creates.count == 1 && fixture.host.closes.count == 1)
+        #expect(fixture.tabs.windowRegistry.windows[fixture.window.id] === fixture.window)
+    }
+
+    @Test func ownerEndDuringUnloadDoesNotResumeQueuedReturn() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let id = try #require(fixture.window.selectedItemID)
+        let page = try #require(fixture.tabs.session(for: id))
+        let native = fixture.host.finishCreate(0)
+        page.unload()
+        fixture.tabs.select(id, in: fixture.window)
+        fixture.host.finishOwnerEnd(0, eventFirst: true)
+        #expect(page.isUnloaded && !page.nativeUnloadPending && !page.nativeIsEnding)
+        #expect(native.invalidated && native.stops == 0)
+        #expect(fixture.tabs.tree.item(id) != nil)
+        #expect(fixture.host.creates.count == 1 && fixture.host.closes.count == 1)
+    }
+
+    @Test func unsolicitedOwnerEndPreservesMetadataAndIgnoresLateEvents() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let id = try #require(fixture.window.selectedItemID)
+        let page = try #require(fixture.tabs.session(for: id))
+        let native = fixture.host.finishCreate(0)
+        let original = fixture.tabs.tree.item(id)
+        let late = native.onEvent
+        var modelClosed = false
+        page.onClose = { modelClosed = true }
+        native.onEvent?(.ownerEnded)
+        late?(.closed)
+        late?(.started(URL(string: "https://late.invalid")!))
+        #expect(page.isUnloaded && !modelClosed)
+        #expect(fixture.tabs.tree.item(id) == original)
+        #expect(fixture.host.closes.isEmpty && fixture.host.creates.count == 1)
+        #expect(native.invalidated && native.stops == 0)
+    }
+
+    @Test func ownerEndCancelsPendingCreationWithoutRemovingItem() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let id = try #require(fixture.window.selectedItemID)
+        let page = try #require(fixture.tabs.session(for: id))
+        page.nativeOwnerEnded()
+        #expect(fixture.host.creates[0].cancelled)
+        #expect(fixture.window.nativeSelectionGeneration == nil)
+        let late = fixture.host.finishCreate(0)
+        #expect(late.loaded.isEmpty && page.isUnloaded)
+        fixture.host.finishOwnerEnd(0, eventFirst: false)
+        #expect(late.invalidated && fixture.tabs.tree.item(id) != nil)
+        #expect(fixture.host.creates.count == 1 && fixture.host.closes.count == 1)
+    }
+
     @Test func metadataEditsDoNotVisitNativeOwnership() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -281,8 +350,8 @@ struct NativePageLifecycleTests {
         _ = fixture.host.finishCreate(0)
         var secondAdmitted = false
         page.requestNativeRelease { admitted in
-            if !admitted {
-                page.requestNativeRelease { secondAdmitted = $0 }
+            if admitted == .cancelled {
+                page.requestNativeRelease { secondAdmitted = $0 == .closed }
             }
         }
         fixture.host.finishClose(0, admitted: false)
@@ -354,8 +423,8 @@ private final class ControlledNativeHost: NativePageHost {
     }
     final class Closing {
         let page: NativeTestPage
-        var completion: (@MainActor (Bool) -> Void)?
-        init(page: NativeTestPage, completion: @escaping @MainActor (Bool) -> Void) {
+        var completion: (@MainActor (PageCloseOutcome) -> Void)?
+        init(page: NativeTestPage, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
             self.page = page
             self.completion = completion
         }
@@ -387,7 +456,7 @@ private final class ControlledNativeHost: NativePageHost {
         callback?(page, window)
         return admitted
     }
-    func closePage(_ page: any PageNavigation, completion: @escaping @MainActor (Bool) -> Void) {
+    func closePage(_ page: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         closes.append(Closing(page: page as! NativeTestPage, completion: completion))
     }
     @discardableResult func finishCreate(_ index: Int) -> NativeTestPage {
@@ -404,12 +473,21 @@ private final class ControlledNativeHost: NativePageHost {
         request.completion = nil
         done?(.failure(URLError(.cancelled)))
     }
+    func finishOwnerEnd(_ index: Int, eventFirst: Bool) {
+        let request = closes[index]
+        let done = request.completion
+        request.completion = nil
+        let event = request.page.onEvent
+        if eventFirst { event?(.ownerEnded) }
+        done?(.ownerEnded)
+        if !eventFirst { event?(.ownerEnded) }
+    }
     func finishClose(_ index: Int, admitted: Bool) {
         let request = closes[index]
         let done = request.completion
         request.completion = nil
         if admitted { request.page.onEvent?(.closed) }
-        done?(admitted)
+        done?(admitted ? .closed : .cancelled)
     }
 }
 
