@@ -2,6 +2,8 @@
 
 Pinned candidate: Chromium **156.0.8078.80**. Every mandatory row must pass in the installed, signed build on both native architectures. `U` = untested; `B` = blocked on native browser-layer integration. Neither is a waiver. CEF exploration does not qualify the full Chromium runtime. Site/service and independently authored extension versions must be frozen before a qualification run; none are qualified here.
 
+Implementation order is Intel first: complete the application replacement and its functional regressions before resuming ARM compilation. ARM, installed distribution and performance qualification remain end-stage release work. Untested rows stay unqualified while independent implementation proceeds; Intel results do not fill the ARM column.
+
 Use disposable Work and Personal profile UUIDs in **one runtime process**. Two spaces share Work; a third uses Personal. Before testing, the native bridge must supply verifiable UUID → Chromium Profile → tab/window ownership. Separate processes, separate endpoints, directory names and URL labels do not prove that mapping. Never point fixtures at live profiles. Record app/engine build, architecture, OS, fixture versions and concise results in the ticket, not committed logs.
 
 ## Profile and extension matrix

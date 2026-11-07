@@ -1,6 +1,6 @@
 # Implementation tasks
 
-Unchecked production tasks remain outstanding. The local spikes inform this plan and do not complete G1. Complete the Barc identity/reset transition separately; this engine migration preserves the resulting Barc data. Follow the gates in `design.md`; do not begin broad feature porting before runtime feasibility passes.
+Unchecked production tasks remain outstanding. Complete the replacement and its functional tests on Intel first, using the executable bridge evidence to advance application integration. Defer ARM compilation and native qualification until the integrated replacement is ready; keep its current cache. Interactive native, signing and performance qualifications remain required before release and do not block independent implementation. A failing feature must be fixed before dependent code relies on it. Complete the Barc identity/reset transition separately; this engine migration preserves the resulting Barc data.
 
 ## 0. Authorized exploratory spike
 
@@ -22,10 +22,10 @@ Unchecked production tasks remain outstanding. The local spikes inform this plan
 - [ ] 2.2 Prototype profile-specific settings/extension WebUI and Work/Personal isolation; verify each shortcut operates in the selected profile even with another front window.
 - [ ] 2.3 Run the mandatory extension capability subset in that host; verify install/update, workers, action popup, native messaging and independent per-profile state.
 - [ ] 2.4 Prototype live view transfer, split panes and popup/opener behavior; verify form/history state survives transfer and keyboard/IME/accessibility work.
-- [ ] 2.5 Sign/notarize the prototype and launch from an installed location on both architectures; verify helper signatures, resource discovery and sandbox behavior.
+- [ ] 2.5 At final distribution qualification (G5), sign/notarize the integrated build and launch from an installed location on both architectures; verify helper signatures, resource discovery and sandbox behavior.
 - [x] 2.6 Record CEF pass/fail against every G1 criterion; if any mandatory criterion fails, select the full Chromium path without reducing launch scope. Native multi-tab hosting failed; the gate table in `design.md` distinguishes partial profile evidence from failed or unqualified extension/lifecycle/distribution requirements. Full Chromium is selected.
-- [ ] 2.7 For the full Chromium path, pin source/toolchain/build arguments and produce native x86_64/arm64 browser-layer bridge artifacts; verify provenance and smoke launch for each. If CEF qualified, record this task as superseded in a reviewed task revision.
-- [ ] 2.8 For the full Chromium path, prove browser-context/extension/WebUI ownership and native surface lifecycle through the bridge, including one native product window switching profile spaces with retained live pages and correct native/extension focus, independent private sessions, private data disposal and installed-extension denial despite regular-profile incognito opt-ins; rerun 2.2-2.5 and document the integration boundary before G2. If CEF qualified, record the alternative explicitly.
+- [ ] 2.7 For the full Chromium path, pin source/toolchain/build arguments and produce the x86_64 browser-layer bridge first; verify provenance and Intel smoke launch. Produce and qualify arm64 after the integrated Intel replacement is ready. If CEF qualified, record this task as superseded in a reviewed task revision.
+- [ ] 2.8 For the full Chromium path, prove browser-context/extension/WebUI ownership and native surface lifecycle through the Intel bridge, including one native product window switching profile spaces with retained live pages and correct native/extension focus, independent private sessions, private data disposal and installed-extension denial despite regular-profile incognito opt-ins. Use mechanical evidence to document the G2 integration boundary; complete remaining interactive, ARM and installed-distribution checks before release. If CEF qualified, record the alternative explicitly.
 
 ## 3. Engine-neutral seams with WebKit (G2)
 
@@ -63,7 +63,7 @@ Unchecked production tasks remain outstanding. The local spikes inform this plan
 - [ ] 5.4 Adapt native host discovery and ports; test allowed/disallowed origins, vendor host behavior and port shutdown on profile deletion.
 - [ ] 5.5 Add typed profile-bound internal-page actions to `ProfileDetailForm`; test every quick link, inactive/no-window profiles, changed selection and deleted-profile races.
 - [ ] 5.6 Map overlapping native/Chromium preferences through one authority and refresh the native form on return; verify data deletion and preference edits affect only the selected profile.
-- [ ] 5.7 Document supported extension APIs/service limitations and run the full frozen suite on Intel and Apple Silicon; verify every mandatory entry passes before exiting G3.
+- [ ] 5.7 Document supported extension APIs/service limitations and run the full frozen suite on Intel before exiting G3; repeat every mandatory entry on Apple Silicon at final qualification.
 
 ## 6. Feature parity (G4)
 

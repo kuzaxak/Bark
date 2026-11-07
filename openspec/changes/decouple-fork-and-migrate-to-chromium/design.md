@@ -10,6 +10,7 @@ See [proposal.md](proposal.md) for scope and the five capability specs for obser
 - Broad Chrome extension support is required in the first stable Chromium release.
 - Extensions belong to profiles. The profile settings page provides quick links to that profile's Chromium settings.
 - Intel (x86_64) and Apple Silicon (arm64) are both mandatory macOS baselines. The README will be rewritten and does not override this requirement.
+- Implement and validate the replacement on Intel first. Defer ARM compilation and native validation until the integrated replacement is ready; retain the existing ARM build cache. Cross-compile then or use an available native Apple Silicon build machine. Intel success is implementation evidence, not ARM qualification.
 - Barc name and logo are covered by the companion change.
 - Performance, smart tab management, and broad media capabilities are product priorities. Chromium adoption alone is not evidence of lower memory, CPU or energy use.
 
@@ -52,7 +53,7 @@ Run a bounded CEF Chrome-runtime prototype before committing to the larger integ
 
 CEF's [architecture documentation](https://raw.githubusercontent.com/chromiumembedded/cef/master/docs/architecture.md) distinguishes Chrome and Alloy styles. Its [programmatic extension-management issue](https://github.com/chromiumembedded/cef/issues/3450) remains open, and the [Alloy-style extension discussion](https://github.com/chromiumembedded/cef/issues/3859) identifies UI limitations. These are reasons to test the selected revision, not proof that any particular release can or cannot meet the full plan.
 
-**G1 must prove on Intel and Apple Silicon:** browser startup/quit without run-loop deadlock; an embedded live tab moved between windows without reload; profile-bound `chrome://settings` and `chrome://extensions`; representative MV3 extensions with real popups and native messaging; separate profile stores; sandboxed helpers; and a signed/notarized prototype launched outside the build tree. Never substitute an external installed Chrome window for an integrated settings page.
+**Runtime acceptance, developed on Intel first:** browser startup/quit without run-loop deadlock; an embedded live tab moved between windows without reload; profile-bound `chrome://settings` and `chrome://extensions`; representative MV3 extensions with real popups and native messaging; separate profile stores; sandboxed helpers; and a signed/notarized build launched outside the build tree. Use Intel compilation and mechanical bridge regressions to advance application integration. Complete interactive native checks, signed distribution and the corresponding ARM checks before release; these unfinished qualifications do not block independent implementation work. Never substitute an external installed Chrome window for an integrated settings page.
 
 For full Chromium, build the integration within its supported build system and export a versioned bridge artifact to Xcode. Do not treat `WebContents` as a stable public embedding ABI or assume Chromium's default Cocoa window can simply be dropped into SwiftUI. Prototype native surface ownership, accessibility, event routing, command dispatch, and process startup first. A CEF success changes the bridge internals, not the contracts or launch requirements.
 
@@ -289,7 +290,7 @@ The additional CEF Chrome-style Views/profile prototypes used the same pinned CE
 | Broad extensions | CDP unpacked installation is session-only in this host; ordinary persistent installation/update is unproven. Action triggering disconnects the prototype. | Fail/unqualified; popup-document evaluation is not an action-popup pass |
 | Lifecycle, input and distribution | Prototype shutdown sometimes hangs; visible focus/IME/accessibility, signed installed launch and Apple Silicon execution were not qualified. | Unqualified |
 
-**Decision:** CEF does not pass G1. Proceed with the full Chromium browser layer at `156.0.8078.80` (`fb096c0011f9d50f0a264a9376420cdea9c421e3`) and rerun every mandatory gate through the native bridge. Do not weaken extension, surface or sandbox requirements to reuse the failed host. Small fixes to existing WebKit resource controls/protection can be reviewed independently while the runtime builds; broad feature porting still waits for G1.
+**Decision:** CEF does not pass G1. Proceed with the full Chromium browser layer at `156.0.8078.80` (`fb096c0011f9d50f0a264a9376420cdea9c421e3`) and rerun every mandatory acceptance case through the native bridge. Do not weaken extension, surface or sandbox requirements to reuse the failed host. Follow the Intel-first implementation order above: advance engine seams and application replacement using the Intel bridge, fix behavioral failures before relying on the affected feature, and finish ARM/distribution/performance qualification at the end.
 
 The [browser-layer inputs and build instructions](../../../Runtime/Chromium/README.md) now contain the pinned bridge, retained per-profile native clients, transfer/close lifecycle hooks, regression sources and optional SwiftUI hosting probe. They are feasibility inputs: source compilation and GN checks do not complete native execution, signed distribution or either architecture's G1 qualification.
 
@@ -299,7 +300,7 @@ An isolated Intel CEF run confirmed file-backed resource readback with live page
 
 ## Risks / Trade-offs
 
-- Native embedding may not satisfy Chrome-style UI requirements -> G1 proves it before broad refactoring; full Chromium baseline is budgeted.
+- Native embedding may not satisfy Chrome-style UI requirements -> use Intel bridge regressions to guide integration and finish native acceptance before release; full Chromium is selected.
 - Broad extensions can expose profile-boundary bugs -> isolation tests include workers, native ports, settings WebUI and extension tab enumeration.
 - Chromium can use more memory or power despite better compatibility -> matched multi-process measurements gate promotion; no assumed performance win.
 - Runtime integration increases maintenance -> narrow bridge, patch inventory, scheduled version bumps and a named security owner.
@@ -312,13 +313,13 @@ An isolated Intel CEF run confirmed file-backed resource readback with live page
 
 | Gate / phase | Deliverable | Exit condition |
 | --- | --- | --- |
-| G0: Baseline and release decisions | Fixed compatibility/extension matrix, per-architecture performance budgets, Intel/Apple Silicon dependency audit, build/security ownership, data inventory | Mandatory workflows and comparison setup recorded before candidate testing |
-| G1: Runtime feasibility | Signed native prototype; CEF evaluated against the same full Chromium requirements | All profile settings, extension, isolation, native surface and sandbox checks pass; otherwise use full Chromium path |
+| G0: Baseline and release decisions | Fixed compatibility/extension matrix, per-architecture performance budgets, Intel/Apple Silicon dependency audit, build/security ownership, data inventory | Mandatory workflows recorded before functional testing; comparison setup approved before performance qualification |
+| G1: Runtime feasibility | Intel browser-layer build and executable bridge regressions; CEF evaluated and full Chromium selected | Intel evidence establishes the integration boundary; failures block dependent features. ARM, interactive native checks and installed signing remain release gates |
 | G2: Engine seams | WebKit running behind new contracts, no engine types in shared product interfaces | Existing package and UI checks pass on macOS; iOS still builds |
-| G3: Chromium vertical slice | Profiles, page lifetime, navigation, internal pages, extension install/update | Profile suite and extension core matrix pass |
+| G3: Chromium vertical slice | Intel profiles, page lifetime, navigation, internal pages, extension install/update | Intel profile suite and extension core matrix pass; carry the same cases to final ARM qualification |
 | G4: Feature and migration parity | Remaining browsing integrations, journaled conversion and recovery | End-to-end feature matrix plus interruption/failure tests pass |
-| G5: Distribution readiness | Barc identity, standalone repository path, signed/notarized package, update rehearsal | Old-to-new-to-next update succeeds and recoverability verified |
-| G6: Release qualification | Opt-in internal/canary use, then beta, then stable | Compatibility/performance gates pass; engine update process exercised |
+| G5: Distribution readiness | ARM build after the integrated Intel replacement, Barc identity, standalone repository path, signed/notarized packages, update rehearsal | Both architecture slices verified; old-to-new-to-next update succeeds and recoverability verified |
+| G6: Release qualification | Native Intel/Apple Silicon execution, opt-in internal/canary use, then beta, then stable | Compatibility/performance gates pass on both architectures; engine update process exercised |
 
 Keep WebKit as the default through seam extraction. Use separate test profiles and an explicit restart-time engine choice in development/canary builds; never dynamically switch a live profile or silently mix engine stores. Freeze application schema churn around cutover. After a stable qualification period, remove transitional macOS WebKit code and flags while preserving iOS and necessary legacy import support.
 
