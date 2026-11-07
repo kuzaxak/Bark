@@ -3,10 +3,10 @@
 //  Profile.swift
 //  Nook
 //
-//  One space's login context: the persistent, isolated WKWebsiteDataStore keyed by the space's
-//  id, plus its stats and cleanup. There is no profile as a user-facing concept; spaces own
-//  their data. `TabsController.profile(forSpace:)` vends these, one per space, and a private
-//  window holds an ephemeral one that is destroyed when the window closes.
+//  The login-context identity shared by spaces using the same profile UUID.
+//  WebKit profiles own their website data store; Chromium resolves the identity
+//  through its native ProfileManager. Private metadata does not create a runtime
+//  session: the owning browser must open and dispose that engine's private session.
 //
 
 import Foundation
@@ -20,7 +20,23 @@ public final class Profile: NSObject, Identifiable {
     public let id: UUID
     public var name: String
     public var icon: String
-    public let dataStore: WKWebsiteDataStore
+    public enum Engine: Sendable {
+        case webKit
+        case chromium
+    }
+
+    public let engine: Engine
+    @ObservationIgnored private let storedWebKitDataStore: WKWebsiteDataStore?
+    /// Capability access for WebKit-only services. Chromium owns its website
+    /// data through the native ProfileManager and never creates a WK store.
+    public var webKitDataStore: WKWebsiteDataStore? { storedWebKitDataStore }
+    /// Legacy WebKit features must explicitly check the capability before use.
+    public var dataStore: WKWebsiteDataStore {
+        guard let store = storedWebKitDataStore else {
+            preconditionFailure("WebKit storage is unavailable for a Chromium profile")
+        }
+        return store
+    }
     // Metadata (not yet persisted)
     public var createdDate: Date = Date()
     public var lastUsed: Date = Date()
@@ -42,16 +58,24 @@ public final class Profile: NSObject, Identifiable {
     public init(
         id: UUID = UUID(),
         name: String = "Default Profile",
-        icon: String = "person.crop.circle"
+        icon: String = "person.crop.circle",
+        engine: Engine = .webKit
     ) {
         self.id = id
         self.name = name
         self.icon = icon
-        // A persistent store identified by the space's UUID, so it is stable across launches.
-        self.dataStore = WKWebsiteDataStore(forIdentifier: id)
+        #if !os(macOS)
+        precondition(engine == .webKit, "Chromium profiles are supported only on macOS")
+        #endif
+        self.engine = engine
+        // Only WebKit opens a data store or reads the saved session cookies.
+        self.storedWebKitDataStore = engine == .webKit
+            ? WKWebsiteDataStore(forIdentifier: id) : nil
         super.init()
-        restoreSessionCookies()
-        dataStore.httpCookieStore.add(self)
+        if let dataStore = storedWebKitDataStore {
+            restoreSessionCookies()
+            dataStore.httpCookieStore.add(self)
+        }
     }
 
     /// Initialize with a custom data store (used for ephemeral profiles)
@@ -64,19 +88,23 @@ public final class Profile: NSObject, Identifiable {
         self.id = id
         self.name = name
         self.icon = icon
-        self.dataStore = dataStore
+        self.engine = .webKit
+        self.storedWebKitDataStore = dataStore
         super.init()
     }
 
     // MARK: - Ephemeral Profile Factory
     /// Create a new ephemeral/incognito profile with non-persistent data store
-    public static func createEphemeral() -> Profile {
-        let profile = Profile(
-            id: UUID(),
-            name: "Incognito",
-            icon: "eye.slash",
-            dataStore: .nonPersistent()
-        )
+    public static func createEphemeral(engine: Engine = .webKit) -> Profile {
+        let profile: Profile
+        switch engine {
+        case .webKit:
+            profile = Profile(name: "Incognito", icon: "eye.slash", dataStore: .nonPersistent())
+        case .chromium:
+            // Identity only. The caller must open/close the real native private
+            // session; metadata creation never simulates runtime isolation.
+            profile = Profile(name: "Incognito", icon: "eye.slash", engine: .chromium)
+        }
         profile.isEphemeral = true
         return profile
     }
@@ -84,7 +112,7 @@ public final class Profile: NSObject, Identifiable {
     // MARK: - Validation & Stats
     public func validateDataStore() async -> Bool {
         // Basic check: store exists and is persistent
-        if dataStore.isPersistent == false { return false }
+        guard let dataStore = webKitDataStore, dataStore.isPersistent else { return false }
         await refreshDataStoreStats()
         return true
     }
@@ -171,6 +199,7 @@ extension Profile: WKHTTPCookieStoreObserver {
 
     /// Queued on the store's connection ahead of any load, so the first page already sends them.
     fileprivate func restoreSessionCookies() {
+        guard let dataStore = webKitDataStore else { return }
         guard let data = try? Data(contentsOf: sessionCookiesURL),
               let list = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Any]]
         else { return }
@@ -184,6 +213,7 @@ extension Profile: WKHTTPCookieStoreObserver {
     }
 
     public func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+        guard webKitDataStore != nil else { return }
         sessionCookieSave?.cancel()
         sessionCookieSave = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))

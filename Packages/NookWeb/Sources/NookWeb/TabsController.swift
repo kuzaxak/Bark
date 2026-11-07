@@ -76,6 +76,7 @@ public final class TabsController {
 
     // MARK: - Injected
 
+    @ObservationIgnored public let profileEngine: Profile.Engine
     @ObservationIgnored public let settings: NookSettingsService
     @ObservationIgnored public let windowRegistry: WindowRegistry
     @ObservationIgnored public let blocker: ContentBlockerManager
@@ -139,8 +140,10 @@ public final class TabsController {
         legacyProfiles: [(id: UUID, name: String)] = [],
         /// A tree built from a pre-1.1 store; asked for only on a first launch.
         legacyTree: () -> TabTree? = { nil },
+        profileEngine: Profile.Engine = .webKit,
         directory: URL = TabsController.defaultDirectory
     ) {
+        self.profileEngine = profileEngine
         self.settings = settings
         self.windowRegistry = windowRegistry
         self.blocker = blocker
@@ -529,7 +532,7 @@ public final class TabsController {
             }
             return existing
         }
-        let profile = Profile(id: storeID, name: space.name, icon: space.icon)
+        let profile = Profile(id: storeID, name: space.name, icon: space.icon, engine: profileEngine)
         spaceProfiles[storeID] = profile
         return profile
     }
@@ -547,7 +550,7 @@ public final class TabsController {
         }
         guard let kept = device.keptProfiles?.first(where: { $0.id == storeID }) else { return nil }
         if let existing = spaceProfiles[storeID] { return existing }
-        let profile = Profile(id: storeID, name: kept.name, icon: "")
+        let profile = Profile(id: storeID, name: kept.name, icon: "", engine: profileEngine)
         spaceProfiles[storeID] = profile
         return profile
     }
@@ -561,9 +564,14 @@ public final class TabsController {
     }
 
     /// Clears a profile's website data, and with it the translations made on its pages.
-    public func clearData(of profile: Profile) async {
+    @discardableResult
+    public func clearData(of profile: Profile) async -> Bool {
+        // Native data management must use that profile's Chromium settings.
+        // False is explicit unavailability, not a successful empty clear.
+        guard profile.webKitDataStore != nil else { return false }
         await profile.clearAllData()
         await translationCaches.erase(profile: profile.id)
+        return true
     }
 
     /// Keeps a data store no space uses any more, with its history, for a space to use again.

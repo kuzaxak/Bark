@@ -524,6 +524,11 @@ public final class PageSession: NSObject, Identifiable {
         let interval = BrowserPerformance.signposter.beginInterval("WebViewCreation")
         defer { BrowserPerformance.signposter.endInterval("WebViewCreation", interval) }
         let resolvedProfile = profile
+        guard (resolvedProfile?.engine ?? controller?.profileEngine ?? .webKit) == .webKit else {
+            // The native host installs its page explicitly. Never satisfy a
+            // legacy lazy-load request with a fallback WK page/store.
+            return
+        }
         let configuration: WKWebViewConfiguration
         if let resolvedProfile {
             configuration = BrowserConfiguration.shared.webViewConfiguration(for: resolvedProfile)
@@ -1019,8 +1024,16 @@ public final class PageSession: NSObject, Identifiable {
 
     // MARK: - Favicon
 
+    /// Chromium supplies its own icon; its pages must never use WebKit's
+    /// process-wide URLSession/cache path, including during model construction.
+    private var usesWebKitFavicon: Bool {
+        if let navigation { return navigation is WebKitPageNavigation }
+        return (detachedProfile?.engine ?? controller?.profileEngine ?? .webKit) == .webKit
+    }
+
     /// Starts a favicon fetch when none has loaded yet, up to `maxFaviconRetries` failures.
     public func ensureFaviconLoaded() {
+        guard usesWebKitFavicon else { return }
         guard !hasFavicon, !faviconFetchInFlight else { return }
         guard faviconFetchAttempts < Self.maxFaviconRetries else { return }
         faviconFetchInFlight = true
@@ -1032,6 +1045,7 @@ public final class PageSession: NSObject, Identifiable {
 
     /// Memory then disk cache, synchronously. Gives restored rows their favicon at once.
     func restoreFaviconFromCache() {
+        guard usesWebKitFavicon else { return }
         guard url.scheme == "http" || url.scheme == "https", let host = url.host else { return }
         if let cached = FaviconCache.shared.image(for: host) ?? FaviconCache.shared.imageFromDiskSync(for: host) {
             favicon = SwiftUI.Image(platformImage: cached)
@@ -1040,6 +1054,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     func fetchAndSetFavicon(for url: URL) async {
+        guard usesWebKitFavicon else { return }
         let defaultFavicon = SwiftUI.Image(systemName: "globe")
         guard url.scheme == "http" || url.scheme == "https", url.host != nil else {
             favicon = defaultFavicon

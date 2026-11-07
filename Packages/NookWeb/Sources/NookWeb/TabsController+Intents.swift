@@ -805,6 +805,9 @@ extension TabsController {
     /// reload on the new store. The profile it leaves, once no space uses it, is kept with its
     /// website data and history when `keepingLeftProfile`, else deleted with them.
     public func setProfile(_ spaceID: UUID, to storeID: UUID?, name: String? = nil, keepingLeftProfile: Bool = false) {
+        // Native live-page reassignment must recreate pages in the new native
+        // Profile before changing ownership. Preserve metadata until wired.
+        guard profileEngine == .webKit else { return }
         let kept = device.keptProfiles ?? []
         guard case .main? = owner(ofSpace: spaceID), let old = profile(forSpace: spaceID),
               let left = tree.profile(ofSpace: spaceID),
@@ -825,6 +828,8 @@ extension TabsController {
 
     /// Deletes a kept profile with its logins, cookies and history.
     public func deleteKeptProfile(_ storeID: UUID) {
+        // Do not remove the identity/history while native website data remains.
+        guard profileEngine == .webKit else { return }
         guard device.keptProfiles?.contains(where: { $0.id == storeID }) == true,
               let store = profile(forStore: storeID) else { return }
         forgetProfile(storeID)
@@ -856,6 +861,16 @@ extension TabsController {
     /// Windows showing it move to another space.
     public func deleteSpace(_ spaceID: UUID, keepingLeftProfile: Bool = false) {
         guard let owner = owner(ofSpace: spaceID) else { return }
+        if case .main = owner, profileEngine == .chromium, !keepingLeftProfile,
+           tree.space(spaceID)?.isAgent != true,
+           let storeID = tree.dataStoreID(for: spaceID) {
+            let stillOwned = tree.orderedSpaces.contains {
+                $0.id != spaceID && !$0.isAgent && tree.dataStoreID(for: $0.id) == storeID
+            }
+            // Native profile deletion is unavailable; keep both the space and
+            // its profile instead of claiming that its cookies were erased.
+            guard stillOwned else { return }
+        }
         // Favorites other spaces still show move to one of them instead of closing.
         if let heir = tree(owner).favoriteSpaces(sharedWith: spaceID).first(where: { $0 != spaceID }) {
             for favorite in tree(owner).children(of: .favorites(spaceID: spaceID)) {
