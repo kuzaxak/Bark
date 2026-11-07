@@ -27,6 +27,104 @@ struct ProfileEngineTests {
         #expect(privateProfile.id != id)
     }
 
+    @Test func profileControlsRouteEveryDestinationToRequestedInactiveProfileWithoutTreeEdits() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs(engine: .chromium)
+        let work = try #require(tabs.createSpace(name: "Work", icon: "person", accentHex: "#123456", after: nil))
+        let personal = try #require(tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: work))
+        let profileID = try #require(tabs.tree.dataStoreID(for: work))
+        let window = BrowserWindowState()
+        tabs.windowRegistry.register(window)
+        tabs.windowRegistry.setActive(window)
+        window.spaceID = personal
+        let original = tabs.tree
+        var observed: [ProfilePageDestination] = []
+        var successes = 0
+        tabs.onOpenProfilePage = { profile, destination, canPresent, completion in
+            #expect(profile.id == profileID && profile.name == "Work")
+            #expect(canPresent())
+            observed.append(destination)
+            completion(.success(()))
+        }
+        for destination in ProfilePageDestination.allCases {
+            tabs.openProfilePage(profileID: profileID, destination: destination) {
+                if case .success = $0 { successes += 1 }
+            }
+        }
+        #expect(observed == [.settings, .extensions, .privacy, .siteSettings, .clearData])
+        #expect(successes == 5 && tabs.tree == original)
+        #expect(window.spaceID == personal && window.selectedItemID == nil)
+    }
+
+    @Test func keptProfileControlsNeedNoWindowOrSpaceAssignment() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs(engine: .chromium)
+        let work = try #require(tabs.createSpace(name: "Work", icon: "person", accentHex: "#123456", after: nil))
+        let profileID = try #require(tabs.tree.dataStoreID(for: work))
+        tabs.deleteSpace(work, keepingLeftProfile: true)
+        let original = tabs.tree
+        let kept = tabs.device.keptProfiles
+        var invoked = false
+        tabs.onOpenProfilePage = { profile, destination, canPresent, completion in
+            #expect(profile.id == profileID && profile.spaceIDs.isEmpty)
+            #expect(destination == .extensions && canPresent())
+            invoked = true
+            completion(.success(()))
+        }
+        tabs.openProfilePage(profileID: profileID, destination: .extensions) { result in
+            if case .failure = result { Issue.record("Kept profile routing unexpectedly failed") }
+        }
+        #expect(invoked && tabs.windowRegistry.windows.isEmpty)
+        #expect(tabs.tree == original && tabs.device.keptProfiles == kept)
+    }
+
+    @Test func staleProfileAdmissionFailsOnceWithoutFallback() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs(engine: .chromium)
+        let work = try #require(tabs.createSpace(name: "Work", icon: "person", accentHex: "#123456", after: nil))
+        let profileID = try #require(tabs.tree.dataStoreID(for: work))
+        var canPresent: (@MainActor () -> Bool)?
+        var finish: (@MainActor (Result<Void, ProfilePageOpenError>) -> Void)?
+        tabs.onOpenProfilePage = { profile, _, valid, completion in
+            #expect(profile.id == profileID)
+            canPresent = valid
+            finish = completion
+        }
+        var errors: [ProfilePageOpenError] = []
+        tabs.openProfilePage(profileID: profileID, destination: .clearData) {
+            if case .failure(let error) = $0 { errors.append(error) }
+        }
+        #expect(canPresent?() == true)
+        // A received tree edit can remove the target while native presentation is queued.
+        _ = tabs.perform(.main, "incoming profile removal") { try $0.deleteSpace(work).change }
+        #expect(canPresent?() == false)
+        finish?(.success(()))
+        finish?(.success(()))
+        #expect(errors == [.profileUnavailable])
+        tabs.onOpenProfilePage = { _, _, _, _ in Issue.record("Deleted profile reached presenter") }
+        tabs.openProfilePage(profileID: profileID, destination: .settings) {
+            if case .failure(let error) = $0 { errors.append(error) }
+        }
+        #expect(errors == [.profileUnavailable, .profileUnavailable])
+    }
+
+    @Test func absentProfilePresenterReportsUnavailableWithoutOpeningOrMutating() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs(engine: .chromium)
+        let profile = try #require(tabs.profiles.first)
+        let original = tabs.tree
+        var error: ProfilePageOpenError?
+        tabs.openProfilePage(profileID: profile.id, destination: .siteSettings) {
+            if case .failure(let failure) = $0 { error = failure }
+        }
+        #expect(error == .presentationUnavailable && tabs.tree == original)
+        #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
+    }
+
     @Test func nativeFactoriesReuseStoreUUIDAndKeepNativeMetadataAfterRestart() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }

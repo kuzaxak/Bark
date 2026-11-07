@@ -20,6 +20,7 @@ public struct ProfilesSettingsView: View {
     @Environment(TabsController.self) private var tabs
     @State private var selection: UUID?
     @State private var pendingDelete: ProfileSummary?
+    @State private var profilePageError: ProfilePageOpenError?
 
     public init() {}
 
@@ -29,6 +30,14 @@ public struct ProfilesSettingsView: View {
 
     public var body: some View {
         content
+            .alert("Couldn’t Open Profile Controls", isPresented: Binding(
+                get: { profilePageError != nil },
+                set: { if !$0 { profilePageError = nil } }
+            )) {
+                Button("OK") { profilePageError = nil }
+            } message: {
+                Text(profilePageError?.localizedDescription ?? "")
+            }
             .alert(
                 "Delete the \u{201C}\(pendingDelete?.name ?? "")\u{201D} profile?",
                 isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } })
@@ -59,7 +68,7 @@ public struct ProfilesSettingsView: View {
                     .padding(.leading, NookDesign.Spacing.xxl)
                     .padding(.vertical, NookDesign.Spacing.xxl)
                 if let profile = selected {
-                    ProfileDetailForm(profile: profile)
+                    ProfileDetailForm(profile: profile, profilePageError: $profilePageError)
                         .id(profile.id)
                         .scrollContentBackground(.hidden)
                 }
@@ -127,7 +136,7 @@ public struct ProfilesSettingsView: View {
             Section {
                 ForEach(tabs.profiles) { profile in
                     NavigationLink {
-                        ProfileDetailForm(profile: profile)
+                        ProfileDetailForm(profile: profile, profilePageError: $profilePageError)
                             .navigationTitle(profile.name)
                     } label: {
                         LabeledContent(profile.name, value: spaceCount(profile))
@@ -186,6 +195,7 @@ struct ProfileDetailForm: View {
     @Environment(NookSettingsService.self) private var nookSettings
     @State private var dataSize: String?
     @State private var confirmingClear = false
+    @Binding var profilePageError: ProfilePageOpenError?
 
     var body: some View {
         Form {
@@ -216,6 +226,22 @@ struct ProfileDetailForm: View {
                 downloadLocationPicker
             }
             #endif
+
+            if tabs.profileEngine == .chromium {
+                Section {
+                    ForEach(ProfilePageDestination.allCases, id: \.self) { destination in
+                        Button(destination.profileSettingsLabel) {
+                            tabs.openProfilePage(profileID: profile.id, destination: destination) { result in
+                                if case .failure(let error) = result { profilePageError = error }
+                            }
+                        }
+                    }
+                } header: {
+                    Text("Chromium Controls")
+                } footer: {
+                    Text("Opens controls for “\(profile.name)”.")
+                }
+            }
 
             Section("Website Data") {
                 if supportsWebsiteData {
@@ -320,5 +346,17 @@ struct ProfileDetailForm: View {
         guard let store = tabs.profile(forStore: profile.id), store.webKitDataStore != nil else { return }
         await tabs.clearData(of: store)
         dataSize = store.estimatedDataSize
+    }
+}
+
+private extension ProfilePageDestination {
+    var profileSettingsLabel: String {
+        switch self {
+        case .settings: "Chromium Settings"
+        case .extensions: "Extensions"
+        case .privacy: "Privacy and Security"
+        case .siteSettings: "Site Settings"
+        case .clearData: "Clear Browsing Data"
+        }
     }
 }

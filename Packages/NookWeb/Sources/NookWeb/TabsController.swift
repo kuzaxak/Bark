@@ -120,6 +120,8 @@ public final class TabsController {
     @ObservationIgnored public var onPageLoadedInBackground: ((PageSession) -> Void)?
     /// The main tree changed; space sync reads it to find what to send.
     @ObservationIgnored public var onTreeChanged: (() -> Void)?
+    /// App-owned profile presentation; absent presenters report unavailability.
+    @ObservationIgnored public var onOpenProfilePage: ProfilePageAction?
 
     /// Launch argument that redirects tab state, e.g. `-NookStateDir /tmp/bench`.
     /// Read from the argument domain only, never from persisted defaults, so a stray written
