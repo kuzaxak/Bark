@@ -2,7 +2,7 @@ import CryptoKit
 import Foundation
 import NookSettings
 
-/// Existing app stores with explicit verification destinations. Construct only
+/// App-owned native stores with explicit isolated verification destinations. Construct only
 /// after Chromium readiness; this does not construct BrowserManager or pages.
 @MainActor
 final class ChromiumAppStorage {
@@ -19,11 +19,15 @@ final class ChromiumAppStorage {
         // installed app's domain. The root/profile select verification inputs.
         let digest = SHA256.hash(data: Data(configuration.root.path.utf8))
             .map { String(format: "%02x", $0) }.joined()
-        guard let isolated = UserDefaults(suiteName: "ee.qdo.nook.chromium-verification." + digest) else {
+        let domain = configuration.isVerification
+            ? "ee.qdo.nook.chromium-verification." + digest : "ee.qdo.nook.chromium"
+        guard let isolated = UserDefaults(suiteName: domain) else {
             throw StorageError.preferencesUnavailable
         }
         defaults = isolated
-        settings = NookSettingsService(kagiTokenStore: VerificationKagiTokenStore(), userDefaults: isolated)
+        let tokens: any KagiTokenStore = configuration.isVerification
+            ? VerificationKagiTokenStore() : KeychainKagiTokenStore(service: "NookChromium Kagi Session Link")
+        settings = NookSettingsService(kagiTokenStore: tokens, userDefaults: isolated)
         downloads = DownloadManager(historyFileURL: app.appendingPathComponent("Downloads.json"))
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)
     }

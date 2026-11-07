@@ -1,24 +1,45 @@
 import Foundation
 
-/// Verification startup never reads the installed application's stores.
+/// Native stores are separate from legacy Nook. Explicit verification inputs
+/// stay synthetic; normal startup never infers an import or migration.
 struct ChromiumStartupConfiguration {
     let root: URL
-    let profileID: UUID
+    let profileID: UUID?
+    let isVerification: Bool
+    var minimumBridgeVersion: UInt32 { isVerification ? 2 : 3 }
 
-    init(arguments: [String]) throws {
-        func value(_ name: String) -> String? {
-            arguments.first { $0.hasPrefix(name + "=") }.map { String($0.dropFirst(name.count + 1)) }
+    init(arguments: [String], applicationSupportDirectory: URL? = nil) throws {
+        func value(_ name: String) throws -> String? {
+            let supplied = arguments.filter { $0 == name || $0.hasPrefix(name + "=") }
+            guard supplied.count <= 1 else { throw StartupError.invalidConfiguration }
+            guard let argument = supplied.first else { return nil }
+            guard argument.hasPrefix(name + "="), argument.count > name.count + 1 else {
+                throw StartupError.invalidConfiguration
+            }
+            return String(argument.dropFirst(name.count + 1))
         }
-        guard let path = value("--barc-app-data-dir"), path.hasPrefix("/private/tmp/"),
-              let id = value("--barc-app-profile").flatMap(UUID.init(uuidString:)) else {
-            throw StartupError.invalidConfiguration
+        let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
+        if path != nil || hint != nil {
+            guard let path, path.hasPrefix("/private/tmp/"), let id = hint.flatMap(UUID.init(uuidString:)) else {
+                throw StartupError.invalidConfiguration
+            }
+            let canonical = Self.canonicalURL(URL(fileURLWithPath: path, isDirectory: true))
+            guard canonical.path.hasPrefix("/private/tmp/"), canonical.path != "/private/tmp" else {
+                throw StartupError.invalidConfiguration
+            }
+            root = canonical; profileID = id; isVerification = true
+        } else {
+            guard let support = applicationSupportDirectory ?? FileManager.default.urls(
+                for: .applicationSupportDirectory, in: .userDomainMask).first else {
+                throw StartupError.invalidConfiguration
+            }
+            let expected = Self.canonicalURL(support).appendingPathComponent("NookChromium", isDirectory: true)
+            let canonical = Self.canonicalURL(expected)
+            // A preexisting root symlink must not quietly redirect normal
+            // startup into an installed browser's store.
+            guard canonical.path == expected.standardizedFileURL.path else { throw StartupError.invalidConfiguration }
+            root = canonical; profileID = nil; isVerification = false
         }
-        let canonical = Self.canonicalURL(URL(fileURLWithPath: path, isDirectory: true))
-        guard canonical.path.hasPrefix("/private/tmp/"), canonical.path != "/private/tmp" else {
-            throw StartupError.invalidConfiguration
-        }
-        root = canonical
-        profileID = id
         try validateChildDirectories()
     }
 
@@ -47,10 +68,11 @@ struct ChromiumStartupConfiguration {
     }
 
     func engineArguments(executable: String) -> [String] {
-        [executable, "--no-startup-window", "--no-first-run", "--no-default-browser-check",
-         "--disable-sync", "--use-mock-keychain", "--barc-shared-native-window",
-         "--barc-native-shell",
-         "--user-data-dir=" + root.appendingPathComponent("Engine").path]
+        var result = [executable, "--no-startup-window", "--no-first-run", "--no-default-browser-check",
+                      "--disable-sync", "--barc-shared-native-window", "--barc-native-shell",
+                      "--user-data-dir=" + root.appendingPathComponent("Engine").path]
+        if isVerification { result.append("--use-mock-keychain") }
+        return result
     }
 
     enum StartupError: Error { case invalidConfiguration }
@@ -60,7 +82,7 @@ struct ChromiumStartupConfiguration {
 @MainActor
 protocol ChromiumStartupBridge: AnyObject {
     func registerReady(_ callback: @escaping @MainActor () -> Void)
-    func openProfile(_ id: UUID, completion: @escaping @MainActor (Int32?) -> Void)
+    func openProfile(_ id: UUID?, completion: @escaping @MainActor (Int32?) -> Void)
     func attachShell(to window: Int32) -> Bool
     func completeStartup(_ window: Int32)
 }
@@ -68,7 +90,7 @@ protocol ChromiumStartupBridge: AnyObject {
 @MainActor
 final class ChromiumStartup {
     private unowned let bridge: any ChromiumStartupBridge
-    private let profile: UUID
+    private let profile: UUID?
     private let failure: (String) -> Void
     private var started = false
     private var ready = false
@@ -77,7 +99,7 @@ final class ChromiumStartup {
     private(set) var window: Int32?
     private(set) var failed = false
 
-    init(bridge: any ChromiumStartupBridge, profile: UUID, failure: @escaping (String) -> Void) {
+    init(bridge: any ChromiumStartupBridge, profile: UUID?, failure: @escaping (String) -> Void) {
         self.bridge = bridge
         self.profile = profile
         self.failure = failure

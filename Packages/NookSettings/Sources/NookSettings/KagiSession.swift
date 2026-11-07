@@ -16,9 +16,12 @@ public protocol KagiTokenStore: Sendable {
 }
 
 public struct KeychainKagiTokenStore: KagiTokenStore {
-    public init() {}
-    public func load() -> String? { KagiSession.loadToken() }
-    public func save(_ token: String?) { KagiSession.saveToken(token) }
+    private let service: String?
+    /// Nil preserves the existing WebKit app namespace. Native startup supplies
+    /// its own service and never probes or falls back to the legacy item.
+    public init(service: String? = nil) { self.service = service }
+    public func load() -> String? { KagiSession.loadToken(service: service) }
+    public func save(_ token: String?) { KagiSession.saveToken(token, service: service) }
 }
 
 public enum KagiSession {
@@ -54,8 +57,8 @@ public enum KagiSession {
 
     // MARK: - Keychain
 
-    public static func loadToken() -> String? {
-        var query = baseQuery
+    public static func loadToken(service: String? = nil) -> String? {
+        var query = baseQuery(service: service)
         query[kSecReturnData as String] = true
         query[kSecMatchLimit as String] = kSecMatchLimitOne
         var result: AnyObject?
@@ -65,16 +68,16 @@ public enum KagiSession {
     }
 
     /// Stores `token`, or removes it when nil.
-    public static func saveToken(_ token: String?) {
-        SecItemDelete(baseQuery as CFDictionary)
+    public static func saveToken(_ token: String?, service: String? = nil) {
+        SecItemDelete(baseQuery(service: service) as CFDictionary)
         guard let token, let data = token.data(using: .utf8) else { return }
-        var item = baseQuery
+        var item = baseQuery(service: service)
         item[kSecValueData as String] = data
         item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
         SecItemAdd(item as CFDictionary, nil)
     }
 
-    private static var baseQuery: [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service, kSecAttrAccount as String: account]
+    static func baseQuery(service override: String? = nil) -> [String: Any] {
+        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: override ?? service, kSecAttrAccount as String: account]
     }
 }

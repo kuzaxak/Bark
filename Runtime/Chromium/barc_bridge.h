@@ -11,6 +11,9 @@
 extern "C" {
 #endif
 #define BARC_API __attribute__((visibility("default")))
+// Version 3 guarantees that native startup registration selects the dedicated
+// NookChromium Safe Storage/account namespace before ChromeMain/provider init.
+// Version 2 is accepted only for explicit mock-keychain verification startup.
 BARC_API uint32_t barc_bridge_version(void);
 // Static NUL-terminated engine version, valid for the process lifetime.
 BARC_API const char* barc_chromium_version(void);

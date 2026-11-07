@@ -53,7 +53,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
             return unsafeBitCast(pointer, to: T.self)
         }
         let version = try symbol("barc_bridge_version", (@convention(c) () -> UInt32).self)
-        guard version() >= 2 else { throw LoaderError.ownerEndedProtocolRequired }
+        guard version() >= configuration.minimumBridgeVersion else {
+            throw configuration.isVerification ? LoaderError.ownerEndedProtocolRequired : LoaderError.isolatedKeychainProtocolRequired
+        }
         registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
         open = try symbol("barc_profile_open_window", Open.self)
         privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
@@ -103,7 +105,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }, Unmanaged.passUnretained(self).toOpaque())
     }
 
-    func openProfile(_ id: UUID, completion: @escaping @MainActor (Int32?) -> Void) {
+    func openProfile(_ id: UUID?, completion: @escaping @MainActor (Int32?) -> Void) {
         // This runs only after runtime-ready. The persisted model UUID owns
         // the native profile; the CLI hint must never relabel a model profile.
         do {
@@ -255,7 +257,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         window.makeKeyAndOrderFront(nil)
     }
 
-    enum LoaderError: Error { case missingSymbol(String), ownerEndedProtocolRequired }
+    enum LoaderError: Error { case missingSymbol(String), ownerEndedProtocolRequired, isolatedKeychainProtocolRequired }
 }
 
 #if NOOK_CHROMIUM_LIBRARY

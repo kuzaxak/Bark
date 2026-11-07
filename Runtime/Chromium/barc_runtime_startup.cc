@@ -14,6 +14,7 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "components/os_crypt/common/keychain_password_mac.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
 #include "ui/base/base_window.h"
@@ -43,6 +44,10 @@ void barc_set_runtime_ready_callback(void (*callback)(void*), void* user_data) {
   CHECK(pthread_main_np());
   CHECK_EQ(state.phase, Phase::kEmpty);
   CHECK(callback);
+  // Registration precedes ChromeMain/provider initialization and worker reads.
+  // The stock, non-embedded browser never changes its default namespace.
+  KeychainPassword::GetServiceName() = "NookChromium Safe Storage";
+  KeychainPassword::GetAccountName() = "NookChromium";
   state.callback = callback;
   state.user_data = user_data;
   state.phase = Phase::kRegistered;

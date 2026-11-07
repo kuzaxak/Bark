@@ -93,7 +93,7 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 26 ordered patches and 14 copied
+procedure. The complete reviewed candidate has 27 ordered patches and 14 copied
 sources. Copies precede `lifecycle-close.patch`; the Swift overlay follows those
 copies. Do not recopy sources or reapply an overlay afterward. Start from the
 pinned unmodified source, not a partially patched checkout.
@@ -102,7 +102,7 @@ pinned unmodified source, not a partially patched checkout.
 set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup runtime-native-bootstrap native-shell-signing native-discovery private-entrypoints
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain runtime-native-bootstrap native-shell-signing native-discovery private-entrypoints
         if test "$patch" = lifecycle-close
             for source in barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -252,6 +252,22 @@ comes from the actual manager-owned Profile. Browser-bound lookup lives in that
 Browser's unowned-data host and clears at view destruction. Profile deletion,
 reassignment and complete shared-window behavior remain unqualified; this is
 not permission to relax the compatibility matrix.
+
+### Native startup storage
+
+Normal native startup uses `~/Library/Application Support/NookChromium/App` and
+`Engine`, with a separate `ee.qdo.nook.chromium` preferences domain. It does not
+import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
+`--barc-app-profile` remains temporary-root verification with mock keychain and
+isolated preferences; neither mode enables cloud sync.
+
+Normal startup requires bridge version 3 before ChromeMain. Native registration
+sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
+configurable key-storage seam before providers start. Encryption and denial
+handling remain upstream; there is no lookup fallback to Chromium's default
+item. Kagi uses a separate `NookChromium Kagi Session Link` service. Verification
+credentials stay in memory. Additional saved-window/accepted-Quit lifecycle
+qualification is tracked separately from this storage foundation.
 
 ### Installed signing proof
 

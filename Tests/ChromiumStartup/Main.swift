@@ -5,7 +5,7 @@ private final class MockBridge: ChromiumStartupBridge {
     var callback: (@MainActor () -> Void)?
     var completion: (@MainActor (Int32?) -> Void)?
     var registrations = 0
-    var profiles: [UUID] = []
+    var profiles: [UUID?] = []
     var attachments: [Int32] = []
     var attachResult = true
     var completed: [Int32] = []
@@ -14,7 +14,7 @@ private final class MockBridge: ChromiumStartupBridge {
         registrations += 1
         self.callback = callback
     }
-    func openProfile(_ id: UUID, completion: @escaping @MainActor (Int32?) -> Void) {
+    func openProfile(_ id: UUID?, completion: @escaping @MainActor (Int32?) -> Void) {
         profiles.append(id)
         self.completion = completion
     }
@@ -32,6 +32,37 @@ struct StartupTests {
             "Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test",
             "--barc-app-profile=\(id.uuidString)"])
         precondition(config.profileID == id)
+        precondition(config.isVerification && config.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
+        let normalRoot = URL(fileURLWithPath: "/private/tmp/NookNormalConfig-\(UUID())", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: normalRoot) }
+        let normal = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: normalRoot)
+        precondition(!normal.isVerification && normal.profileID == nil)
+        precondition(normal.minimumBridgeVersion == 3 && config.minimumBridgeVersion == 2)
+        precondition(normal.root == normalRoot.appendingPathComponent("NookChromium", isDirectory: true))
+        precondition(!normal.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
+        precondition(normal.engineArguments(executable: "Nook").contains("--disable-sync"))
+        try normal.prepare()
+        precondition(FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("Engine").path))
+        let redirected = normalRoot.appendingPathComponent("RedirectedSupport")
+        try FileManager.default.createDirectory(at: redirected, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: redirected.appendingPathComponent("NookChromium"),
+                                                  withDestinationURL: normal.root)
+        do {
+            _ = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: redirected)
+            preconditionFailure("Accepted redirected normal native store")
+        } catch { }
+        for partial in [
+            ["--barc-app-profile=\(id)"], ["--barc-app-data-dir=/private/tmp/incomplete"],
+            ["--barc-app-data-dir"], ["--barc-app-profile"],
+            ["--barc-app-data-dir="], ["--barc-app-profile="],
+            ["--barc-app-data-dir", "/private/tmp/owned", "--barc-app-profile=\(id)"],
+            ["--barc-app-data-dir=/private/tmp/owned", "--barc-app-profile", "\(id)"],
+            ["--barc-app-data-dir=/private/tmp/owned", "--barc-app-data-dir=/private/tmp/owned", "--barc-app-profile=\(id)"],
+            ["--barc-app-data-dir=/private/tmp/owned", "--barc-app-profile=\(id)", "--barc-app-profile=\(id)"]
+        ] {
+            do { _ = try ChromiumStartupConfiguration(arguments: partial, applicationSupportDirectory: normalRoot); preconditionFailure("Accepted malformed verification mode") } catch { }
+        }
+
         precondition(!config.engineArguments(executable: "Nook").contains { $0.hasPrefix("--profile-directory=") })
         precondition(config.engineArguments(executable: "Nook").contains("--disable-sync"))
         precondition(config.engineArguments(executable: "Nook").contains("--no-startup-window"))
