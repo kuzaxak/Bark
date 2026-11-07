@@ -33,7 +33,7 @@
          self.verify_options = verify_options
 --- a/chrome/installer/mac/signing/parts.py
 +++ b/chrome/installer/mac/signing/parts.py
-@@ -201,6 +201,33 @@
+@@ -201,6 +201,32 @@
              library_basename.replace('.dylib', ''),
              verify_options=verify_options,
          )
@@ -52,22 +52,21 @@
 +         'Autoupdate-5555494459251b2ebc0232c783a3e31c4a4e4056', True),
 +        ('native-sparkle-framework', native_root + '/Sparkle.framework',
 +         'org.sparkle-project.Sparkle', False),
-+        ('native-shell', native_root + '/NookNativeShell.dylib',
-+         'NookNativeShell', False),
++        ('native-shell', native_root + '/NookNativeShell.framework',
++         'ee.qdo.nook.NativeShell', False),
 +    ):
 +        parts[name] = CodeSignedProduct(
 +            path, identifier,
 +            options=(CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS
 +                     if executable else None),
-+            sign_with_identifier=(name in ('native-shell',
-+                                          'native-sparkle-autoupdate')),
++            sign_with_identifier=(name == 'native-sparkle-autoupdate'),
 +            replace_existing_signature=name.startswith('native-sparkle-'),
 +            preserve_entitlements=name.startswith('native-sparkle-'),
 +            verify_options=verify_options)
  
      return parts
  
-@@ -257,6 +284,12 @@
+@@ -257,6 +283,12 @@
  
      _sanity_check_version_keys(paths, parts)
  
@@ -80,7 +79,7 @@
      if sign_framework:
          # To sign an .app bundle that contains nested code, the nested
          # components themselves must be signed. Each of these components is
-@@ -265,7 +298,7 @@
+@@ -265,7 +297,7 @@
          # signing the Current version.
          # https://developer.apple.com/library/content/technotes/tn2206/_index.html#//apple_ref/doc/uid/DTS40007919-CH1-TNTAG13
          for name, part in parts.items():
@@ -104,7 +103,7 @@
                  'App Product.app/Contents/Library/LaunchServices/test.signing.bundle_id.UpdaterPrivilegedHelper',
                  'App Product.app',
              ],
-@@ -512,3 +514,62 @@
+@@ -512,3 +514,68 @@
                  parts.sign_chrome(self.paths, config, sign_framework=True)
              ),
          )
@@ -125,7 +124,13 @@
 +            if name not in ('native-shell', 'native-sparkle-framework'):
 +                self.assertEqual(model.CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS,
 +                                 products[name].options)
-+        self.assertTrue(products['native-shell'].sign_with_identifier)
++        self.assertFalse(products['native-shell'].sign_with_identifier)
++        self.assertEqual('ee.qdo.nook.NativeShell',
++                         products['native-shell'].identifier)
++        self.assertEqual('App Product.app/Contents/Frameworks/NookNativeShell.framework',
++                         products['native-shell'].path)
++        self.assertEqual('App Product.app/Contents/Frameworks/Product Framework.framework',
++                         products['framework'].path)
 +        self.assertEqual('org.sparkle-project.DownloaderService',
 +                         products['native-sparkle-downloader'].identifier)
 +
@@ -153,7 +158,7 @@
 +        expected = [root + 'Sparkle.framework/Versions/B/' + suffix for suffix in (
 +            'XPCServices/Downloader.xpc', 'XPCServices/Installer.xpc',
 +            'Updater.app', 'Autoupdate')]
-+        expected += [root + 'Sparkle.framework', root + 'NookNativeShell.dylib']
++        expected += [root + 'Sparkle.framework', root + 'NookNativeShell.framework']
 +        for sign_framework in (False, True):
 +            with self.subTest(sign_framework=sign_framework):
 +                sign.reset_mock()

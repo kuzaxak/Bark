@@ -79,7 +79,7 @@ class DialogManager {
                 },
                 content: {
                     VStack(alignment: .leading, spacing: 20) {
-                        Image("nook-logo-1024")
+                        Image(.nookLogo1024)
                             .resizable()
                             .scaledToFit()
                             .frame(width: 50, height: 50)
@@ -286,7 +286,7 @@ struct DialogFooter: View {
                         )
                     )
                     .tint(
-                        Color("plainBackgroundColor").opacity(
+                        Color(.plainBackground).opacity(
                             colorScheme == .light ? 0.8 : 0.4
                         )
                     )

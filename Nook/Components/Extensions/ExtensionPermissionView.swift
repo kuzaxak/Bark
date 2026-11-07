@@ -27,7 +27,7 @@ struct ExtensionPermissionView: View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(spacing: 8) {
                 HStack(spacing: 24) {
-                    Image("nook-logo-1024")
+                    Image(.nookLogo1024)
                         .resizable()
                         .scaledToFit()
                         .frame(width: 64, height: 64)
@@ -154,6 +154,6 @@ struct ExtensionPermissionView: View {
         optionalHostPermissions: ["https://github.com/*"],
         onGrant: { },
         onDeny: { },
-        extensionLogo: NSImage(imageLiteralResourceName: "nook-logo-1024")
+        extensionLogo: NSImage(resource: .nookLogo1024)
     )
 }

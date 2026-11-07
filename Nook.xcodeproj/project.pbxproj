@@ -38,7 +38,7 @@
 /* Begin PBXFileReference section */
 		7F8340FC2E37F39400674A5D /* Nook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Nook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		105000000000000000000009 /* NookiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NookiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		C1A000000000000000000002 /* NookNativeShell.dylib */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.dylib"; path = NookNativeShell.dylib; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1A000000000000000000002 /* NookNativeShell.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = NookNativeShell.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -268,7 +268,7 @@
 			children = (
 				105000000000000000000009 /* NookiOS.app */,
 				7F8340FC2E37F39400674A5D /* Nook.app */,
-				C1A000000000000000000002 /* NookNativeShell.dylib */,
+				C1A000000000000000000002 /* NookNativeShell.framework */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -374,8 +374,8 @@
 				C0DE7AB50000000000000062 /* NookUI */,
 			);
 			productName = NookNativeShell;
-			productReference = C1A000000000000000000002 /* NookNativeShell.dylib */;
-			productType = "com.apple.product-type.library.dynamic";
+			productReference = C1A000000000000000000002 /* NookNativeShell.framework */;
+			productType = "com.apple.product-type.framework";
 		};
 /* End PBXNativeTarget section */
 
@@ -757,9 +757,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
                 MACH_O_TYPE = mh_dylib;
-                EXECUTABLE_PREFIX = "";
-                GENERATE_INFOPLIST_FILE = NO;
-                LD_DYLIB_INSTALL_NAME = "@rpath/NookNativeShell.dylib";
+                DEFINES_MODULE = YES;
+                FRAMEWORK_VERSION = A;
+                GENERATE_INFOPLIST_FILE = YES;
+                INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+                LD_DYLIB_INSTALL_NAME = "@rpath/NookNativeShell.framework/Versions/A/NookNativeShell";
                 SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) NOOK_CHROMIUM_LIBRARY";
                 SKIP_INSTALL = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -784,7 +786,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.5.4;
-				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.nook;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.nook.NativeShell;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
@@ -802,9 +804,11 @@
 			isa = XCBuildConfiguration;
 			buildSettings = {
                 MACH_O_TYPE = mh_dylib;
-                EXECUTABLE_PREFIX = "";
-                GENERATE_INFOPLIST_FILE = NO;
-                LD_DYLIB_INSTALL_NAME = "@rpath/NookNativeShell.dylib";
+                DEFINES_MODULE = YES;
+                FRAMEWORK_VERSION = A;
+                GENERATE_INFOPLIST_FILE = YES;
+                INSTALL_PATH = "$(LOCAL_LIBRARY_DIR)/Frameworks";
+                LD_DYLIB_INSTALL_NAME = "@rpath/NookNativeShell.framework/Versions/A/NookNativeShell";
                 SWIFT_ACTIVE_COMPILATION_CONDITIONS = "$(inherited) NOOK_CHROMIUM_LIBRARY";
                 SKIP_INSTALL = YES;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
@@ -829,7 +833,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MARKETING_VERSION = 1.5.4;
-				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.nook;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.nook.NativeShell;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				PROVISIONING_PROFILE_SPECIFIER = "";
 				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;

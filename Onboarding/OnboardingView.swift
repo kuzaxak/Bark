@@ -24,7 +24,7 @@ struct OnboardingView: View {
             // the window was key and plain white once it was not.
             NookDesign.Surface.onboardingBackdrop
                 .overlay {
-                    Image("noise_texture")
+                    Image(.noiseTexture)
                         .resizable(resizingMode: .tile)
                         .opacity(NookDesign.Surface.grainOpacity)
                         .blendMode(.overlay)

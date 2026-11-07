@@ -9,7 +9,7 @@
 +  // and Chromium's allocator initialization in the framework. Keep the stock
 +  // executable and helper bootstrap; no Swift/AppKit link dependency here.
 +  static constexpr char native_relative_path[] =
-+      "../Frameworks/NookNativeShell.dylib";
++      "../Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell";
 +  const size_t native_path_size =
 +      parent_dir_len + sizeof(native_relative_path) + 1;
 +  std::unique_ptr<char[]> native_path(new char[native_path_size]);

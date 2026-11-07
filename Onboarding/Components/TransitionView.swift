@@ -9,6 +9,9 @@
 import AppKit
 import SwiftUI
 
+private final class TransitionShaderResources {}
+private let transitionShaderLibrary = ShaderLibrary.bundle(Bundle(for: TransitionShaderResources.self))
+
 private struct WindowReader: NSViewRepresentable {
     let onChange: (NSWindow) -> Void
 
@@ -60,7 +63,7 @@ struct TransitionView<A: View, B: View>: View {
                         .scaledToFill()
                         .allowsHitTesting(false)
                         .colorEffect(
-                            ShaderLibrary.transitionReveal(
+                            transitionShaderLibrary.transitionReveal(
                                 .float(progress),
                                 .float2(
                                     Float(geo.size.width),

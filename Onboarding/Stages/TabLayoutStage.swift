@@ -10,6 +10,8 @@ import NookSettings
 import NookDesign
 import SwiftUI
 
+private final class TabLayoutResources {}
+
 struct TabLayoutStage: View {
     @Binding var selectedLayout: TabLayout
 
@@ -31,7 +33,7 @@ struct TabLayoutStage: View {
             Button {
                 selectedLayout = layout
             } label: {
-                Image(image)
+                Image(image, bundle: Bundle(for: TabLayoutResources.self))
                     .resizable()
                     .scaledToFit()
                     .frame(width: 180, height: 140)

@@ -15,7 +15,7 @@ struct HelloStage: View {
             Text("Say Hi to Nook")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
-            Image("nook-logo-1024")
+            Image(.nookLogo1024)
                 .resizable()
                 .scaledToFit()
                 .frame(width: 128 ,height: 128)

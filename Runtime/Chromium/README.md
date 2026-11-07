@@ -295,6 +295,14 @@ not permission to relax the compatibility matrix.
 
 ### Installed signing proof
 
+The native product is a standard versioned
+`Contents/Frameworks/NookNativeShell.framework` bundle. The stock loader opens
+`Versions/A/NookNativeShell` after Chromium's allocator initialization. Keep its
+Info.plist and native resources (including Assets.car) inside that framework's
+Resources, separate from Chromium's resources. The explicit native signing part
+signs the framework container and infers `ee.qdo.nook.NativeShell` from its
+Info.plist; it supplies no bare-library identifier override.
+
 After the candidate build succeeds, use its generated `Chromium Packaging`
 tools with Python 3.11 or newer. Set `signing_identity` to the existing Developer
 ID Application identity and `notary_profile` to the existing notarytool Keychain
