@@ -262,6 +262,9 @@ The native-messaging case uses upstream's echo subprocess and isolated user/syst
 host directories to check per-profile ports, origin rejection and channel cleanup
 after disconnect/disable. It does not establish host-process exit, profile
 deletion, vendor discovery or installed distribution behavior.
+The renderer-failure regression kills Work's renderer, checks Personal's live
+state, then recovers Work through same-URL bridge navigation. It does not test
+a dedicated Reload command or measure memory reclamation.
 
 The changed Views ownership/close paths also require the existing
 `views_unittests` target. After the candidate build exits, build that target in

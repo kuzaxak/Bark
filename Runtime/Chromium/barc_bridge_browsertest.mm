@@ -52,10 +52,13 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/download_test_observer.h"
+#include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/slow_download_http_response.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
@@ -1010,4 +1013,90 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(download::DownloadItem::IN_PROGRESS,
             remaining_downloads.front()->GetState());
   ASSERT_TRUE(content::ExecJs(page, "onbeforeunload = null;"));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       RendererFailurePreservesOtherProfileDocument) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  const int32_t personal_id = Open(kSharedPersonal, work_id);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  const GURL work_url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_NO_FATAL_FAILURE(Navigate(work, work_url));
+  ASSERT_NO_FATAL_FAILURE(
+      Navigate(personal, embedded_test_server()->GetURL("/title2.html")));
+  auto* work_contents = work->GetTabStripModel()->GetActiveWebContents();
+  auto* personal_contents = personal->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(work_contents);
+  ASSERT_TRUE(personal_contents);
+  auto* personal_process = personal_contents->GetPrimaryMainFrame()->GetProcess();
+  auto* work_process = work_contents->GetPrimaryMainFrame()->GetProcess();
+  ASSERT_NE(work_process, personal_process);
+  ASSERT_NE(work_process->GetProcess().Pid(),
+            personal_process->GetProcess().Pid());
+  const auto personal_pid = personal_process->GetProcess().Pid();
+  auto* work_view = BrowserView::GetBrowserViewForBrowser(work);
+  auto* personal_view = BrowserView::GetBrowserViewForBrowser(personal);
+  ASSERT_TRUE(work_view);
+  ASSERT_TRUE(personal_view);
+  auto* host = work_view->GetWidget();
+  ASSERT_EQ(host, personal_view->GetWidget());
+  const auto native_window = host->GetNativeWindow();
+  ASSERT_NE(work->GetProfile(), personal->GetProfile());
+  ASSERT_TRUE(personal->IsSelectedForNativeWindow());
+  ASSERT_FALSE(work->IsSelectedForNativeWindow());
+  ASSERT_TRUE(content::ExecJs(personal_contents, R"JS(
+    document.body.innerHTML = '<input id="draft">';
+    document.getElementById('draft').value = 'unsaved-personal';
+    window.personalProbe = (() => {
+      const state = {count: 7};
+      const originalBody = document.body;
+      return () => [++state.count, originalBody === document.body,
+                    document.getElementById('draft').value];
+    })();
+  )JS"));
+  {
+    content::ScopedAllowRendererCrashes allow_expected_crash(work_process);
+    // Upstream helper targets only this process, waits for its exit, asserts
+    // abnormal termination, and verifies WebContents::IsCrashed().
+    content::CrashTab(work_contents);
+  }
+  ASSERT_TRUE(work_contents->IsCrashed());
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  EXPECT_FALSE(work->IsSelectedForNativeWindow());
+  EXPECT_FALSE(work_contents->GetPrimaryMainFrame()->IsRenderFrameLive());
+  EXPECT_FALSE(personal_contents->IsCrashed());
+  EXPECT_EQ("[8,true,\"unsaved-personal\"]",
+            content::EvalJs(personal_contents, "JSON.stringify(personalProbe())"));
+  EXPECT_EQ(personal_process,
+            personal_contents->GetPrimaryMainFrame()->GetProcess());
+  EXPECT_EQ(personal_pid, personal_process->GetProcess().Pid());
+  EXPECT_EQ(work_view, BrowserView::GetBrowserViewForBrowser(work));
+  EXPECT_EQ(personal_view, BrowserView::GetBrowserViewForBrowser(personal));
+  EXPECT_EQ(host, work_view->GetWidget());
+  EXPECT_EQ(host, personal_view->GetWidget());
+  EXPECT_EQ(native_window, personal->GetWindow()->GetNativeWindow());
+  EXPECT_EQ(personal, GlobalBrowserCollection::GetInstance()
+                          ->FindBrowserWithWindow(native_window));
+  // The existing bridge has navigation, not a dedicated Reload entry point.
+  // Recover the crashed tab by loading its same committed URL through it.
+  ASSERT_NO_FATAL_FAILURE(Navigate(work, work_url));
+  EXPECT_FALSE(work_contents->IsCrashed());
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  EXPECT_FALSE(work->IsSelectedForNativeWindow());
+  EXPECT_TRUE(work_contents->GetPrimaryMainFrame()->IsRenderFrameLive());
+  EXPECT_EQ("This page has no title.",
+            content::EvalJs(work_contents, "document.body.textContent.trim()"));
+  EXPECT_EQ("[9,true,\"unsaved-personal\"]",
+            content::EvalJs(personal_contents, "JSON.stringify(personalProbe())"));
+  EXPECT_EQ(personal_process,
+            personal_contents->GetPrimaryMainFrame()->GetProcess());
+  EXPECT_EQ(personal_pid, personal_process->GetProcess().Pid());
+  EXPECT_EQ(personal->GetProfile(), personal_contents->GetBrowserContext());
+  EXPECT_EQ(work->GetProfile(), work_contents->GetBrowserContext());
+  EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(work)->GetWidget());
+  EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(personal)->GetWidget());
 }
