@@ -9,8 +9,10 @@
 import SwiftUI
 import NookDesign
 import NookUI
+import NookWeb
 
 struct SidebarMenuHoverDownloads: View {
+    @Environment(BrowserWindowState.self) private var windowState
     @EnvironmentObject var browserManager: BrowserManager
     @State private var itemsVisible: [Bool] = []
     let isVisible: Bool
@@ -18,7 +20,7 @@ struct SidebarMenuHoverDownloads: View {
     /// Shown only while there is something to list; the sidebar leaves it out otherwise.
     var body: some View {
         // Once per render: it sorts, and the rows used to ask per row.
-        let downloads = browserManager.downloadManager.recentDownloads
+        let downloads = browserManager.downloadManager.recentDownloads(in: windowState)
         VStack(spacing: NookDesign.Spacing.rowGap) {
             ForEach(Array(downloads.enumerated()), id: \.element.id) { index, download in
                 let shown = index < itemsVisible.count && itemsVisible[index]
@@ -88,6 +90,7 @@ struct SidebarMenuHoverDownloads: View {
 }
 
 struct SidebarMenuHoverDownloadItem: View {
+    @Environment(BrowserWindowState.self) private var windowState
     @EnvironmentObject var browserManager: BrowserManager
     @State private var isHovering: Bool = false
     let download: Download
@@ -148,7 +151,9 @@ struct SidebarMenuHoverDownloadItem: View {
 
                 // Bytes while they are moving; otherwise the state in a word.
                 Group {
-                    if download.state == .downloading {
+                    if download.nativeUnsafe {
+                        Text(download.statusDescription)
+                    } else if download.state == .downloading {
                         Text(
                             "\(download.formattedDownloadedSize)/\(download.formattedFileSize) • \(download.formattedTimeRemaining)"
                         )
@@ -174,7 +179,7 @@ struct SidebarMenuHoverDownloadItem: View {
         }
         // Opens in place, as Arc does, rather than in Finder.
         .onTapGesture {
-            if download.completedFile != nil { browserManager.downloadManager.previewing = download }
+            if download.completedFile != nil { browserManager.downloadManager.preview(download, in: windowState) }
         }
         .onDrag {
             download.dragItemProvider()

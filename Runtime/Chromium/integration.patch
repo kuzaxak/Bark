@@ -240,7 +240,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,38 @@
+@@ -19,3 +19,42 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -257,6 +257,10 @@
 +_barc_tab_transfer
 +_barc_tab_execute_command
 +_barc_tab_set_muted
++_barc_downloads_observe
++_barc_downloads_unobserve
++_barc_download_action
++_barc_download_copy_safe_target
 +_barc_tab_copy_title
 +_barc_window_show
 +_barc_window_native_shell_is_owned
@@ -281,7 +285,7 @@
 +_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,42 @@
+@@ -29,5 +29,46 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -299,6 +303,10 @@
 +_barc_tab_transfer
 +_barc_tab_execute_command
 +_barc_tab_set_muted
++_barc_downloads_observe
++_barc_downloads_unobserve
++_barc_download_action
++_barc_download_copy_safe_target
 +_barc_tab_copy_title
 +_barc_window_show
 +_barc_window_native_shell_is_owned

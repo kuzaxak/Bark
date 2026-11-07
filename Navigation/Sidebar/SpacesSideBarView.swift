@@ -124,7 +124,7 @@ struct SpacesSideBarView: View {
             }
 
             // Downloads menu hover overlay
-            if showDownloadsMenu, !browserManager.downloadManager.recentDownloads.isEmpty {
+            if showDownloadsMenu, !browserManager.downloadManager.recentDownloads(in: windowState).isEmpty {
                 downloadsMenuOverlay
             }
 

@@ -35,6 +35,18 @@ struct ChromiumSidebarShell: View {
             .environment(organizer)
             .defaultAppStorage(storage.defaults)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .popover(isPresented: Binding(
+                get: { browserManager.downloadManager.previewing != nil && browserManager.downloadManager.previewWindowID == window.id },
+                set: { if !$0 { browserManager.downloadManager.dismissPreview(in: window) } }
+            )) {
+                if let download = browserManager.downloadManager.previewing,
+                   browserManager.downloadManager.previewWindowID == window.id {
+                    DownloadPreviewOverlay(downloads: browserManager.downloadManager, download: download, window: window)
+                        .frame(width: min(900, max(1, window.window?.contentView?.bounds.width ?? 780)),
+                               height: min(650, max(1, window.window?.contentView?.bounds.height ?? 540)))
+                }
+            }
+            .onDisappear { browserManager.downloadManager.dismissPreview(in: window) }
             .onChange(of: window.spaceID) { _, _ in browserManager.windowSpaceChanged(window) }
     }
 }

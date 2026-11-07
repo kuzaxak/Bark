@@ -11,15 +11,17 @@ import SwiftUI
 import UniformTypeIdentifiers
 import NookDesign
 import NookUI
+import NookWeb
 
 struct SidebarMenuDownloadsTab: View {
     @EnvironmentObject var browserManager: BrowserManager
+    @Environment(BrowserWindowState.self) private var windowState
     @State private var text: String = ""
     @State private var profileID: UUID?
 
     private var filteredDownloads: [Download] {
-        browserManager.downloadManager.allDownloads.filter { download in
-            (profileID == nil || download.origin.profileID == profileID)
+        browserManager.downloadManager.visibleDownloads(in: windowState).filter { download in
+            (windowState.isIncognito || profileID == nil || download.origin.profileID == profileID)
                 && (text.isEmpty
                     || download.displayName.localizedCaseInsensitiveContains(text)
                     || download.originalURL.absoluteString.localizedCaseInsensitiveContains(text))
@@ -74,7 +76,7 @@ struct SidebarMenuDownloadsTab: View {
     @ViewBuilder
     private var filterMenu: some View {
         let profiles = browserManager.tabs.profiles
-        if profiles.count > 1 {
+        if !windowState.isIncognito, profiles.count > 1 {
             Menu {
                 Picker("Show", selection: $profileID) {
                     Text("All Downloads").tag(UUID?.none)
@@ -159,6 +161,7 @@ enum DownloadKind: Hashable {
 }
 
 struct DownloadItem: View {
+    @Environment(BrowserWindowState.self) private var windowState
     @EnvironmentObject var browserManager: BrowserManager
     @State private var isHovering: Bool = false
     var download: Download
@@ -199,7 +202,7 @@ struct DownloadItem: View {
                     }
                 }
 
-                Text(subtitle)
+                Text(download.nativeIdentity == nil ? subtitle : "\(download.statusDescription) • \(subtitle)")
                     .font(NookDesign.Font.body)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -213,13 +216,25 @@ struct DownloadItem: View {
                     Button(action: openFile) {
                         Label("Open", systemImage: "doc")
                     }
+                    .disabled(download.nativeIdentity != nil && download.completedFile == nil)
                     Button(action: copyFile) {
                         Label("Copy", systemImage: "doc.on.doc")
                     }
+                    .disabled(download.nativeIdentity != nil && download.completedFile == nil)
                     Button(action: showInFinder) {
                         Label("Show in Finder", systemImage: "folder")
                     }
                     Divider()
+                    if download.nativeIdentity != nil {
+                        if download.state == .downloading || download.state == .pending {
+                            Button("Cancel Download", systemImage: "xmark") {
+                                browserManager.downloadManager.cancelDownload(download.id)
+                            }
+                        }
+                        Button("Remove from List", systemImage: "minus.circle") {
+                            browserManager.downloadManager.removeDownload(download.id)
+                        }
+                    }
                     if download.renamedFrom != nil {
                         Button {
                             browserManager.downloadManager.undoTidy(download)
@@ -230,6 +245,7 @@ struct DownloadItem: View {
                     Button(action: moveToTrash) {
                         Label("Move to Trash", systemImage: "trash")
                     }
+                    .disabled(download.nativeIdentity != nil && download.completedFile == nil)
                 } label: {
                     Image(systemName: "ellipsis")
                 }
@@ -249,7 +265,7 @@ struct DownloadItem: View {
             }
         }
         .onTapGesture {
-            if download.completedFile != nil { browserManager.downloadManager.previewing = download }
+            if download.completedFile != nil { browserManager.downloadManager.preview(download, in: windowState) }
         }
         .onDrag {
             download.dragItemProvider()
@@ -261,12 +277,12 @@ struct DownloadItem: View {
     }
 
     private func openFile() {
-        guard let file = download.completedFile else { return }
+        guard let file = download.validatedCompletedFile() else { return }
         NSWorkspace.shared.open(file)
     }
 
     private func copyFile() {
-        guard let file = download.completedFile else { return }
+        guard let file = download.validatedCompletedFile() else { return }
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.writeObjects([file as NSURL])
@@ -274,7 +290,7 @@ struct DownloadItem: View {
 
     /// Any file on disk, finished or not, the way Finder's own downloads stack behaves.
     private func showInFinder() {
-        guard let destinationURL = download.destinationURL,
+        guard let destinationURL = download.nativeIdentity != nil ? download.validatedCompletedFile() : download.destinationURL,
               FileManager.default.fileExists(atPath: destinationURL.path) else { return }
         NSWorkspace.shared.activateFileViewerSelecting([destinationURL])
     }

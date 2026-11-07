@@ -26,6 +26,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let pageHost: ChromiumNativePageHost
     private let discoveryAPI: ChromiumDiscoveryAPI
     private let catalog: ChromiumWindowCatalog
+    private let downloads: ChromiumDownloads
     private var admission: ChromiumCreatedPageAdmission?
     private let profilePages: ChromiumProfilePagePresenter
     private var settingsWindow: NSWindow?
@@ -45,6 +46,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         navigationAPI = try ChromiumNavigationAPI(library: handle)
         discoveryAPI = try ChromiumDiscoveryAPI(library: handle)
         catalog = ChromiumWindowCatalog(api: discoveryAPI)
+        downloads = ChromiumDownloads(api: try ChromiumDownloadAPI(library: handle))
         pageHost = try ChromiumNativePageHost(api: ChromiumPageHostAPI(library: handle),
             navigationAPI: navigationAPI, discoveryAPI: discoveryAPI)
         profilePages = try ChromiumProfilePagePresenter(api: ChromiumProfilePageAPI(library: handle), navigationAPI: navigationAPI)
@@ -84,6 +86,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 let code = app.chromeMain(Int32(engineArguments.count), &argv)
                 app.acceptsWindows = false
                 app.catalog.stop()
+                app.downloads.stop()
                 return startup.runtimeReturned(code)
             }
         } catch {
@@ -114,6 +117,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
+            guard downloads.start(manager: storage.downloads) else { completion(nil); return }
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
@@ -138,7 +142,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
             browserManager = manager
             registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
             registry.onWindowClose = { [weak manager, weak registry = self.registry] id in
-                guard let tabs = manager?.tabs, let state = registry?.windows[id] else { return }
+                guard let manager, let state = registry?.windows[id] else { return }
+                let tabs = manager.tabs
+                manager.downloadManager.dismissPreview(in: state)
                 if state.isIncognito || tabs.device.windows.contains(where: { $0.id == id }) {
                     tabs.detach(window: state)
                 }

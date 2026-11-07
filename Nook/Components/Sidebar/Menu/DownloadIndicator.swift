@@ -8,14 +8,18 @@
 
 import SwiftUI
 import NookDesign
+import NookWeb
 
 struct DownloadIndicator: View {
+    @Environment(BrowserWindowState.self) private var windowState
     @EnvironmentObject var browserManager: BrowserManager
 
     /// The newest active download. `.first` was whichever the dictionary yielded, so with two
     /// running the ring could jump between them.
     var currentDownload: Download? {
-        browserManager.downloadManager.activeDownloads.max { $0.startDate < $1.startDate }
+        let manager = browserManager.downloadManager
+        return manager.activeDownloads.filter { manager.isVisible($0, in: windowState) }
+            .max { $0.startDate < $1.startDate }
     }
 
     var body: some View {

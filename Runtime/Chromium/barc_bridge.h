@@ -63,6 +63,47 @@ BARC_API size_t barc_tab_copy_title(int32_t window,
                                     int32_t tab,
                                     char* buffer,
                                     size_t capacity);
+// One browser-UI subscription to loaded Barc profiles' existing download
+// managers. Strings/snapshot are borrowed only during callbacks, delivered in
+// posted non-nestable UI tasks. Initial/history items may repeat; identity is
+// actual profile/session UUID + private flag + GUID. manager is a process-local
+// source lifetime token, not a Profile pointer. Unknown profiles are excluded.
+enum BarcDownloadEvent { BARC_DOWNLOAD_ITEM = 0, BARC_DOWNLOAD_REMOVED = 1,
+                         BARC_DOWNLOAD_MANAGER_ENDED = 2 };
+enum BarcDownloadState { BARC_DOWNLOAD_PROGRESS = 0, BARC_DOWNLOAD_COMPLETE = 1,
+                         BARC_DOWNLOAD_CANCELLED = 2, BARC_DOWNLOAD_INTERRUPTED = 3 };
+enum BarcDownloadFlags { BARC_DOWNLOAD_PRIVATE = 1, BARC_DOWNLOAD_UNSAFE = 2,
+                         BARC_DOWNLOAD_SAFE_FILE = 4 };
+struct BarcDownloadSnapshot {
+  uint64_t manager;
+  const char* profile_uuid;
+  const char* guid;
+  const char* url;
+  const char* target_path;
+  const char* filename;
+  int32_t state;
+  int32_t error;
+  uint32_t flags;
+  int64_t received_bytes;
+  int64_t total_bytes;
+  double started_unix;
+};
+typedef void (*BarcDownloadCallback)(void* context, uint64_t observation,
+                                    int32_t event,
+                                    const struct BarcDownloadSnapshot* snapshot);
+BARC_API uint64_t barc_downloads_observe(BarcDownloadCallback callback, void* context);
+BARC_API void barc_downloads_unobserve(uint64_t observation);
+enum BarcDownloadAction { BARC_DOWNLOAD_CANCEL = 0, BARC_DOWNLOAD_REMOVE = 1 };
+// Resolve GUID only in the exact still-live subscribed manager. CANCEL accepts
+// in-progress items; REMOVE accepts terminal history items and never trashes a
+// file. Returns dispatch/queue acceptance; events confirm state/removal.
+BARC_API int barc_download_action(uint64_t observation, uint64_t manager,
+                                  const char* guid, int32_t action);
+// Pure current safe-complete target, required bytes including NUL; 0 means
+// unavailable/stale/unsafe. Same short-buffer contract as tab_copy_title.
+BARC_API size_t barc_download_copy_safe_target(uint64_t observation,
+    uint64_t manager, const char* guid, char* buffer, size_t capacity);
+
 // Navigation observation is UI-thread-only. One observer per live tab; duplicate
 // binding fails. Strings are UTF-8, borrowed only during the callback. INITIAL
 // is synchronous; return is 0 if that callback unobserves. A queued close request

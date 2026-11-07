@@ -13,7 +13,11 @@
 #include "base/command_line.h"
 #include "base/auto_reset.h"
 #include "base/no_destructor.h"
+#include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
+#include "base/scoped_multi_source_observation.h"
+#include "components/download/public/common/download_item.h"
+#include "content/public/browser/download_manager.h"
 #include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_discard_reason.h"
@@ -222,6 +226,230 @@ int32_t DiscoveryOpener(tabs::TabInterface* tab) {
   auto* current = tab->GetBrowserWindowInterface();
   return owner && current && owner->GetProfile() == current->GetProfile()
              ? opener->GetHandle().raw_value() : 0;
+}
+
+// Subscriptions contain no Profile/download ownership and no history store.
+class NativeDownloadManager;
+struct NativeDownloadData {
+  std::weak_ptr<NativeDownloadManager> source;
+  uint64_t manager = 0;
+  int32_t event = BARC_DOWNLOAD_ITEM;
+  std::string profile, guid, url, target, filename;
+  int32_t state = BARC_DOWNLOAD_PROGRESS;
+  int32_t error = 0;
+  uint32_t flags = 0;
+  int64_t received = 0, total = -1;
+  double started = 0;
+};
+class NativeDownloadManager final
+    : public content::DownloadManager::Observer,
+      public download::DownloadItem::Observer,
+      public std::enable_shared_from_this<NativeDownloadManager> {
+ public:
+  NativeDownloadManager(content::DownloadManager* manager, uint64_t id,
+      std::string profile, bool is_private,
+      base::RepeatingCallback<void(NativeDownloadData)> publish,
+      base::RepeatingCallback<void(uint64_t)> ended)
+      : manager_(manager), id_(id), profile_(std::move(profile)),
+        private_(is_private), publish_(std::move(publish)), ended_(std::move(ended)) {}
+  ~NativeDownloadManager() override { Cancel(); }
+  uint64_t id() const { return id_; }
+  bool active() const { return manager_ != nullptr; }
+  bool owns(content::DownloadManager* manager) const { return manager_ == manager; }
+  void Start() {
+    manager_->AddObserver(this);
+    content::DownloadManager::DownloadVector items;
+    manager_->GetAllDownloads(&items);
+    for (const auto& item : items) Add(item.get());
+  }
+  void Cancel() {
+    items_.RemoveAllObservations();
+    if (manager_) manager_->RemoveObserver(this);
+    manager_ = nullptr;
+  }
+  bool CanAction(const std::string& guid, int32_t action) const {
+    auto* item = manager_ ? manager_->GetDownloadByGuid(guid) : nullptr;
+    if (!item) return false;
+    if (action == BARC_DOWNLOAD_CANCEL) return item->GetState() == download::DownloadItem::IN_PROGRESS;
+    if (action == BARC_DOWNLOAD_REMOVE) return item->IsDone();
+    return false;
+  }
+  std::string SafeTarget(const std::string& guid) const {
+    auto* item = manager_ ? manager_->GetDownloadByGuid(guid) : nullptr;
+    return item && SafeFile(item) ? item->GetTargetFilePath().AsUTF8Unsafe() : std::string();
+  }
+  bool Action(const std::string& guid, int32_t action) {
+    if (!CanAction(guid, action)) return false;
+    auto* item = manager_->GetDownloadByGuid(guid);
+    if (action == BARC_DOWNLOAD_CANCEL && item->GetState() == download::DownloadItem::IN_PROGRESS) {
+      item->Cancel(true);
+      return true;
+    }
+    if (action == BARC_DOWNLOAD_REMOVE && item->IsDone()) {
+      item->Remove();
+      return true;
+    }
+    return false;
+  }
+  void OnDownloadCreated(content::DownloadManager*, download::DownloadItem* item) override { Add(item); }
+  void OnManagerInitialized() override {
+    content::DownloadManager::DownloadVector items;
+    manager_->GetAllDownloads(&items);
+    for (const auto& item : items) Add(item.get());
+  }
+  void ManagerGoingDown(content::DownloadManager*) override {
+    auto keep_alive = shared_from_this();
+    Cancel();
+    auto data = Data(nullptr); data.event = BARC_DOWNLOAD_MANAGER_ENDED;
+    publish_.Run(std::move(data));
+    ended_.Run(id_);
+  }
+  void OnDownloadUpdated(download::DownloadItem* item) override { publish_.Run(Data(item)); }
+  void OnDownloadRemoved(download::DownloadItem* item) override {
+    auto data = Data(item); data.event = BARC_DOWNLOAD_REMOVED;
+    publish_.Run(std::move(data));
+  }
+  void OnDownloadDestroyed(download::DownloadItem* item) override {
+    OnDownloadRemoved(item);
+    items_.RemoveObservation(item);
+  }
+ private:
+  static bool SafeFile(download::DownloadItem* item) {
+    return item->GetState() == download::DownloadItem::COMPLETE &&
+        !item->IsDangerous() && !item->IsInsecure() &&
+        !item->GetFileExternallyRemoved() && !item->GetTargetFilePath().empty();
+  }
+  void Add(download::DownloadItem* item) {
+    if (!items_.IsObservingSource(item)) items_.AddObservation(item);
+    publish_.Run(Data(item));
+  }
+  NativeDownloadData Data(download::DownloadItem* item) {
+    NativeDownloadData data;
+    data.source = weak_from_this(); data.manager = id_; data.profile = profile_;
+    if (private_) data.flags |= BARC_DOWNLOAD_PRIVATE;
+    if (!item) return data;
+    data.guid = item->GetGuid(); data.url = item->GetURL().spec();
+    data.target = item->GetTargetFilePath().AsUTF8Unsafe();
+    data.filename = item->GetFileNameToReportUser().AsUTF8Unsafe();
+    switch (item->GetState()) {
+      case download::DownloadItem::IN_PROGRESS: data.state = BARC_DOWNLOAD_PROGRESS; break;
+      case download::DownloadItem::COMPLETE: data.state = BARC_DOWNLOAD_COMPLETE; break;
+      case download::DownloadItem::CANCELLED: data.state = BARC_DOWNLOAD_CANCELLED; break;
+      case download::DownloadItem::INTERRUPTED: data.state = BARC_DOWNLOAD_INTERRUPTED; break;
+      case download::DownloadItem::MAX_DOWNLOAD_STATE: NOTREACHED();
+    }
+    if (item->IsDangerous() || item->IsInsecure()) data.flags |= BARC_DOWNLOAD_UNSAFE;
+    if (SafeFile(item)) data.flags |= BARC_DOWNLOAD_SAFE_FILE;
+    data.error = static_cast<int32_t>(item->GetLastReason());
+    data.received = item->GetReceivedBytes(); data.total = item->GetTotalBytes();
+    data.started = item->GetStartTime().InSecondsFSinceUnixEpoch();
+    return data;
+  }
+  raw_ptr<content::DownloadManager> manager_;
+  const uint64_t id_;
+  const std::string profile_;
+  const bool private_;
+  base::RepeatingCallback<void(NativeDownloadData)> publish_;
+  base::RepeatingCallback<void(uint64_t)> ended_;
+  base::ScopedMultiSourceObservation<download::DownloadItem, download::DownloadItem::Observer> items_{this};
+};
+class NativeDownloads final : public BrowserCollectionObserver,
+                             public std::enable_shared_from_this<NativeDownloads> {
+ public:
+  NativeDownloads(uint64_t token, BarcDownloadCallback callback, void* context)
+      : token_(token), callback_(callback), context_(context) {}
+  ~NativeDownloads() override { Cancel(); }
+  uint64_t token() const { return token_; }
+  void Start() {
+    auto* collection = GlobalBrowserCollection::GetInstance();
+    collection_.Observe(collection);
+    collection->ForEach([&](BrowserWindowInterface* browser) { AddBrowser(browser); return true; });
+  }
+  void Cancel() {
+    weak_.InvalidateWeakPtrs(); callback_ = nullptr; context_ = nullptr;
+    collection_.Reset(); pending_.clear();
+    auto managers = std::move(managers_);
+    for (auto& [manager, observer] : managers) observer->Cancel();
+  }
+  void OnBrowserCreated(BrowserWindowInterface* browser) override { AddBrowser(browser); }
+  bool CanAction(uint64_t id, const std::string& guid, int32_t action) const {
+    auto found = managers_.find(id);
+    return found != managers_.end() && found->second->CanAction(guid, action);
+  }
+  std::string SafeTarget(uint64_t id, const std::string& guid) const {
+    auto found = managers_.find(id);
+    return found == managers_.end() ? std::string() : found->second->SafeTarget(guid);
+  }
+  int Action(uint64_t id, const std::string& guid, int32_t action) {
+    auto found = managers_.find(id);
+    if (found == managers_.end()) return 0;
+    auto observer = found->second;
+    return observer->Action(guid, action);
+  }
+ private:
+  void AddBrowser(BrowserWindowInterface* browser) {
+    if (!callback_) return;
+    std::array<char, 37> identity{};
+    const int32_t window = browser->GetSessionID().id();
+    bool is_private = false;
+    if (barc_window_profile_uuid(window, identity.data(), identity.size()) != identity.size()) {
+      if (barc_window_private_session_uuid(window, identity.data(), identity.size()) != identity.size()) return;
+      is_private = true;
+    }
+    auto* profile = browser->GetProfile();
+    auto* manager = profile->GetDownloadManager();
+    if (!manager || manager->GetBrowserContext() != profile ||
+        std::ranges::any_of(managers_, [manager](const auto& entry) { return entry.second->owns(manager); })) return;
+    CHECK_NE(next_manager_, UINT64_MAX);
+    auto observer = std::make_shared<NativeDownloadManager>(manager, ++next_manager_, identity.data(), is_private,
+        base::BindRepeating(&NativeDownloads::Queue, weak_.GetWeakPtr()),
+        base::BindRepeating(&NativeDownloads::Ended, weak_.GetWeakPtr()));
+    managers_.emplace(observer->id(), observer);
+    observer->Start();
+  }
+  void Ended(uint64_t manager) { managers_.erase(manager); }
+  void Queue(NativeDownloadData data) {
+    if (!callback_) return;
+    if (data.event == BARC_DOWNLOAD_MANAGER_ENDED) {
+      for (auto it = pending_.begin(); it != pending_.end();) {
+        if (it->first.first == data.manager) it = pending_.erase(it); else ++it;
+      }
+    }
+    pending_[{data.manager, data.guid}] = std::move(data);
+    if (queued_) return;
+    queued_ = true;
+    content::GetUIThreadTaskRunner({})->PostNonNestableTask(FROM_HERE,
+        base::BindOnce(&NativeDownloads::Deliver, weak_.GetWeakPtr()));
+  }
+  void Deliver() {
+    auto keep_alive = shared_from_this(); queued_ = false;
+    auto pending = std::move(pending_); pending_.clear();
+    for (auto& [key, data] : pending) {
+      if (!callback_) break;
+      if (data.event != BARC_DOWNLOAD_MANAGER_ENDED) {
+        auto source = data.source.lock();
+        if (!source || !source->active()) continue;
+      }
+      BarcDownloadSnapshot row{data.manager, data.profile.c_str(), data.guid.c_str(),
+          data.url.c_str(), data.target.c_str(), data.filename.c_str(), data.state,
+          data.error, data.flags, data.received, data.total, data.started};
+      base::AutoReset<int> callback_scope(&navigation_callback_depth, navigation_callback_depth + 1);
+      callback_(context_.get(), token_, data.event, &row);
+    }
+  }
+  const uint64_t token_;
+  BarcDownloadCallback callback_;
+  raw_ptr<void> context_;
+  uint64_t next_manager_ = 0;
+  bool queued_ = false;
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver> collection_{this};
+  std::map<uint64_t, std::shared_ptr<NativeDownloadManager>> managers_;
+  std::map<std::pair<uint64_t, std::string>, NativeDownloadData> pending_;
+  base::WeakPtrFactory<NativeDownloads> weak_{this};
+};
+std::shared_ptr<NativeDownloads>& DownloadOwner() {
+  static base::NoDestructor<std::shared_ptr<NativeDownloads>> owner;
+  return *owner;
 }
 
 // Tokens own observers, never tabs or profiles. Each callback holds only its
@@ -594,6 +822,58 @@ void barc_tab_unobserve(uint64_t token) {
   if (!observer->closing())
     ObservationTable().erase(found);
   observer->Cancel();
+}
+uint64_t barc_downloads_observe(BarcDownloadCallback callback, void* context) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      !callback || DownloadOwner() || discovery_stopped ||
+      !GlobalBrowserCollection::GetInstance()) return 0;
+  static uint64_t next_token = 0;
+  CHECK_NE(next_token, UINT64_MAX);
+  auto observer = std::make_shared<NativeDownloads>(++next_token, callback, context);
+  DownloadOwner() = observer;
+  observer->Start();
+  return observer->token();
+}
+void barc_downloads_unobserve(uint64_t token) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      !DownloadOwner() || DownloadOwner()->token() != token) return;
+  auto observer = std::move(DownloadOwner());
+  observer->Cancel();
+}
+int barc_download_action(uint64_t token, uint64_t manager, const char* guid, int32_t action) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      !DownloadOwner() || DownloadOwner()->token() != token || !guid ||
+      (action != BARC_DOWNLOAD_CANCEL && action != BARC_DOWNLOAD_REMOVE)) return 0;
+  auto observer = DownloadOwner();
+  if (!observer->CanAction(manager, guid, action)) return 0;
+  if (navigation_callback_depth) {
+    content::GetUIThreadTaskRunner({})->PostNonNestableTask(FROM_HERE,
+        base::BindOnce([](std::weak_ptr<NativeDownloads> weak, uint64_t manager,
+                          std::string guid, int32_t action) {
+          if (auto live = weak.lock()) live->Action(manager, guid, action);
+        }, std::weak_ptr<NativeDownloads>(observer), manager, std::string(guid), action));
+    return 1;
+  }
+  return observer->Action(manager, guid, action);
+}
+size_t barc_download_copy_safe_target(uint64_t token, uint64_t manager,
+                                       const char* guid, char* buffer, size_t capacity) {
+  base::span<char> output;
+  if (buffer && capacity) {
+    // SAFETY: The C caller supplies capacity writable chars, as documented.
+    output = UNSAFE_BUFFERS(base::span<char>(buffer, capacity));
+    output[0] = '\0';
+  }
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      !DownloadOwner() || DownloadOwner()->token() != token || !guid) return 0;
+  const std::string path = DownloadOwner()->SafeTarget(manager, guid);
+  if (path.empty()) return 0;
+  if (!output.empty()) {
+    const size_t count = std::min(output.size() - 1, path.size());
+    output.first(count).copy_from(base::span(path).first(count));
+    output[count] = '\0';
+  }
+  return path.size() + 1;
 }
 int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
                              int32_t command) {
@@ -1093,6 +1373,7 @@ void BrowserDiscoveryChanged() {
 }
 void StopBrowserDiscovery() {
   discovery_stopped = true;
+  if (auto downloads = std::move(DownloadOwner())) downloads->Cancel();
   auto observer = std::move(DiscoveryOwner());
   if (observer) observer->Cancel();
 }

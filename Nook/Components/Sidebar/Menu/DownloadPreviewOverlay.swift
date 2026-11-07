@@ -13,6 +13,7 @@ import UniformTypeIdentifiers
 import SwiftUI
 import NookDesign
 import NookUI
+import NookWeb
 
 extension DownloadManager {
     /// Finished downloads still on disk, newest first: what the preview steps through.
@@ -24,6 +25,7 @@ extension DownloadManager {
 struct DownloadPreviewOverlay: View {
     let downloads: DownloadManager
     let download: Download
+    var window: BrowserWindowState? = nil
 
     @State private var appeared = false
 
@@ -43,7 +45,7 @@ struct DownloadPreviewOverlay: View {
                         .background(Color(white: 0.55).opacity(0.92))
                         .environment(\.colorScheme, .dark)
                     // Quick Look parses the file out of process; PDFKit would do it in Nook.
-                    QuickLookView(url: download.completedFile)
+                    QuickLookView(url: downloads.previewTarget(for: download, in: window))
                     .padding(.vertical, NookDesign.Spacing.lg)
                 }
                 .background(RadialGradient(colors: [Color(white: 0.97), Color(white: 0.84)],
@@ -65,7 +67,7 @@ struct DownloadPreviewOverlay: View {
     }
 
     private var header: some View {
-        let list = downloads.previewable
+        let list = window.map { downloads.visibleDownloads(in: $0).filter { $0.completedFile != nil } } ?? downloads.previewable
         let index = list.firstIndex { $0 === download }
         return HStack(spacing: NookDesign.Spacing.sm) {
             Button("Close", systemImage: "xmark", action: close)
@@ -92,10 +94,10 @@ struct DownloadPreviewOverlay: View {
 
             Menu {
                 Button("Show in Finder", systemImage: "folder") {
-                    if let file = download.completedFile { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+                    if let file = download.validatedCompletedFile() { NSWorkspace.shared.activateFileViewerSelecting([file]) }
                 }
                 Button("Copy", systemImage: "doc.on.doc") {
-                    if let file = download.completedFile {
+                    if let file = download.validatedCompletedFile() {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.writeObjects([file as NSURL])
                     }
@@ -148,7 +150,7 @@ struct DownloadPreviewOverlay: View {
     }
 
     private func openExternally() {
-        guard let file = download.completedFile else { return }
+        guard let file = download.validatedCompletedFile() else { return }
         if opensInPreview {
             NSWorkspace.shared.open([file], withApplicationAt: Self.previewApp, configuration: NSWorkspace.OpenConfiguration())
         } else {
@@ -158,13 +160,16 @@ struct DownloadPreviewOverlay: View {
 
     private func step(_ by: Int, in list: [Download], from index: Int?) {
         guard let index, list.indices.contains(index + by) else { return }
-        downloads.previewing = list[index + by]
+        if let window { downloads.preview(list[index + by], in: window) }
+        else { downloads.previewing = list[index + by] }
     }
 
     private func close() {
         withAnimation(.interpolatingSpring(Spring(response: 0.25, dampingRatio: 1))) { appeared = false }
+        let expectedOwner = downloads.previewWindowID
         Task {
             try? await Task.sleep(for: .milliseconds(180))
+            guard downloads.previewing === download, downloads.previewWindowID == expectedOwner else { return }
             downloads.previewing = nil
         }
     }

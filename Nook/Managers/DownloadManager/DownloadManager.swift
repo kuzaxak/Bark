@@ -8,6 +8,7 @@
 
 import AppKit
 import Foundation
+import CryptoKit
 import QuickLook
 import QuickLookThumbnailing
 import SwiftUI
@@ -43,6 +44,35 @@ extension DownloadOrigin {
     }
 }
 
+/// Native identity scopes an engine GUID to its actual profile/session.
+struct NativeDownloadIdentity: Equatable {
+    let profileID: UUID
+    let isPrivate: Bool
+    let guid: String
+    var rowID: UUID {
+        let key = "native-download\n\(profileID.uuidString.lowercased())\n\(isPrivate)\n\(guid)"
+        let bytes = Array(SHA256.hash(data: Data(key.utf8)).prefix(16))
+        return UUID(uuid: (bytes[0],bytes[1],bytes[2],bytes[3],bytes[4],bytes[5],bytes[6],bytes[7],
+                           bytes[8],bytes[9],bytes[10],bytes[11],bytes[12],bytes[13],bytes[14],bytes[15]))
+    }
+}
+
+struct NativeDownloadUpdate {
+    let identity: NativeDownloadIdentity
+    let manager: UInt64
+    let observation: UInt64
+    let url: URL
+    let filename: String
+    let target: URL?
+    let state: Download.DownloadState
+    let unsafe: Bool
+    let safeFile: Bool
+    let received: Int64
+    let total: Int64?
+    let started: Date
+    let error: Int32
+}
+
 // MARK: - Download Model
 
 @Observable
@@ -51,12 +81,20 @@ public class Download: Identifiable {
     /// Nil for a file Nook wrote itself, such as a PDF saved from the viewer.
     let download: WKDownload?
     let originalURL: URL
-    let suggestedFilename: String
+    var suggestedFilename: String
     let destinationPreference: DestinationPreference
     let allowedContentTypes: [UTType]?
     /// Save Image and the media download button: the page chose the URL, so only an image or video is kept.
     let mediaOnly: Bool
     var destinationURL: URL?
+    var nativeIdentity: NativeDownloadIdentity?
+    var nativeManager: UInt64 = 0
+    var nativeObservation: UInt64 = 0
+    var nativeUnsafe = false
+    var nativeSafeFile = false
+    var nativeRemoveAfterCancel = false
+    @ObservationIgnored var nativeAction: ((Bool) -> Bool)?
+    @ObservationIgnored var nativeSafeTarget: (() -> URL?)?
     /// The name Tidy Downloads replaced, while it can still be undone.
     var renamedFrom: String?
     /// Which page started it: private or not, which profile, and the title Tidy Downloads names it by.
@@ -128,6 +166,7 @@ public class Download: Identifiable {
     }
 
     init(
+        id: UUID = UUID(),
         download: WKDownload?,
         originalURL: URL,
         suggestedFilename: String,
@@ -137,7 +176,7 @@ public class Download: Identifiable {
         origin: DownloadOrigin,
         state: DownloadState = .pending
     ) {
-        id = UUID()
+        self.id = id
         self.download = download
         self.originalURL = originalURL
         self.suggestedFilename = suggestedFilename
@@ -156,8 +195,7 @@ public class Download: Identifiable {
 
     @MainActor
     func loadThumbnail(size: CGSize = CGSize(width: 80, height: 80)) async {
-        guard let destinationURL = destinationURL,
-              FileManager.default.fileExists(atPath: destinationURL.path),
+        guard let destinationURL = validatedCompletedFile(),
               downloadThumbnail == nil
         else {
             return
@@ -169,6 +207,7 @@ public class Download: Identifiable {
 
         if shouldGenerateThumbnail(for: destinationURL) {
             if let thumbnail = await getQuickLookThumbnail(for: destinationURL, size: size) {
+                guard validatedCompletedFile() == destinationURL else { return }
                 downloadThumbnail = thumbnail
                 #if DEBUG
                 print("QuickLook thumbnail loaded for: \(destinationURL.lastPathComponent)")
@@ -180,6 +219,7 @@ public class Download: Identifiable {
             #endif
         }
 
+        guard validatedCompletedFile() == destinationURL else { return }
         let finderIcon = NSWorkspace.shared.icon(forFile: destinationURL.path)
 
         let targetSize = NSSize(width: size.width, height: size.height)
@@ -265,15 +305,28 @@ public class Download: Identifiable {
     var displayName: String { destinationURL?.lastPathComponent ?? suggestedFilename }
 
     var completedFile: URL? {
-        guard state == .completed, let destinationURL,
+        guard state == .completed, nativeIdentity == nil || (nativeSafeFile && !nativeUnsafe), let destinationURL,
               FileManager.default.fileExists(atPath: destinationURL.path) else { return nil }
         return destinationURL
     }
 
+    /// Validate native authority only on file/thumbnail/preview actions, not on
+    /// row rendering. The returned path is the current engine-owned target.
+    func validatedCompletedFile() -> URL? {
+        if nativeIdentity != nil {
+            guard state == .completed, nativeSafeFile, !nativeUnsafe,
+                  let target = nativeSafeTarget?(), FileManager.default.fileExists(atPath: target.path) else { return nil }
+            return target
+        }
+        return completedFile
+    }
+
+    var statusDescription: String { nativeUnsafe ? "Blocked by browser" : state.description }
+
     /// Drags the file itself. The old provider also read the whole file into memory on the main
     /// thread as the drag began, which hung the app on a large download.
     func dragItemProvider() -> NSItemProvider {
-        completedFile.flatMap { NSItemProvider(contentsOf: $0) } ?? NSItemProvider()
+        validatedCompletedFile().flatMap { NSItemProvider(contentsOf: $0) } ?? NSItemProvider()
     }
 
     private static let remainingFormatter: DateComponentsFormatter = {
@@ -301,6 +354,7 @@ extension Notification.Name {
 public class DownloadManager: NSObject {
     public static let shared = DownloadManager()
     private let historyFileURL: URL?
+    private let usesNativeDownloads: Bool
 
     private var downloads: [UUID: Download] = [:]
     private var downloadDelegates: [UUID: DownloadDelegate] = [:]
@@ -313,7 +367,15 @@ public class DownloadManager: NSObject {
     /// Each profile's download location; set by the app.
     @ObservationIgnored weak var settings: NookSettingsService?
     /// The download open in the in-window preview, if any.
-    var previewing: Download?
+    private(set) var previewFileURL: URL?
+    private(set) var previewWindowID: UUID?
+    var previewing: Download? {
+        didSet {
+            previewFileURL = previewing?.validatedCompletedFile()
+            if previewing != nil && previewFileURL == nil { previewing = nil }
+            if previewing == nil { previewWindowID = nil }
+        }
+    }
 
     /// The download Tidy Downloads just renamed, for the toast that offers to undo it.
     private(set) var lastTidied: Download?
@@ -327,6 +389,41 @@ public class DownloadManager: NSObject {
         return Array(downloads.values).sorted { $0.startDate > $1.startDate }
     }
 
+    func isVisible(_ item: Download, in window: BrowserWindowState) -> Bool {
+        guard usesNativeDownloads else { return true }
+        if window.isIncognito {
+            guard let profile = window.ephemeralProfile, profile.engine == .chromium, profile.isEphemeral else { return false }
+            return item.origin.isPrivate && item.origin.profileID == profile.id
+        }
+        return !item.origin.isPrivate
+    }
+
+    func visibleDownloads(in window: BrowserWindowState) -> [Download] {
+        allDownloads.filter { isVisible($0, in: window) }
+    }
+
+    func recentDownloads(in window: BrowserWindowState) -> [Download] {
+        let newest = visibleDownloads(in: window)
+        return Array((newest.filter { $0.state == .pending || $0.state == .downloading } +
+            newest.filter { $0.state == .completed } + newest.filter { $0.state == .failed }).prefix(4))
+    }
+
+    func preview(_ item: Download, in window: BrowserWindowState) {
+        guard isVisible(item, in: window) else { return }
+        previewWindowID = usesNativeDownloads ? window.id : nil
+        previewing = item
+    }
+
+    func previewTarget(for item: Download, in window: BrowserWindowState?) -> URL? {
+        guard previewing === item, (!usesNativeDownloads || previewWindowID == window?.id),
+              window.map({ isVisible(item, in: $0) }) ?? true else { return nil }
+        return previewFileURL
+    }
+
+    func dismissPreview(in window: BrowserWindowState) {
+        if previewWindowID == window.id { previewing = nil }
+    }
+
     // MARK: - Kept across launches
 
     @ObservationIgnored private var restoreStarted = false
@@ -336,6 +433,9 @@ public class DownloadManager: NSObject {
     /// Earlier launches' finished downloads, read the first time the list is wanted rather than
     /// at launch. The file checks run off the main thread; rows appear when they are done.
     private func restoreIfNeeded() {
+        // Chromium owns native download history. Leave any legacy file intact;
+        // migration is separate from live observation.
+        if usesNativeDownloads { return }
         guard !restoreStarted else { return }
         restoreStarted = true
         DownloadHistoryStore.load(from: historyFileURL) { [weak self] records in
@@ -359,6 +459,7 @@ public class DownloadManager: NSObject {
     }
 
     private func persist() {
+        if usesNativeDownloads { return }
         restoreIfNeeded()
         // Saving before the old history is in would overwrite it with this launch's downloads alone.
         guard restoreFinished else { persistAfterRestore = true; return }
@@ -381,12 +482,73 @@ public class DownloadManager: NSObject {
 
     override private init() {
         historyFileURL = nil
+        usesNativeDownloads = false
         super.init()
     }
 
-    init(historyFileURL: URL) {
+    init(historyFileURL: URL, usesNativeDownloads: Bool = false) {
         self.historyFileURL = historyFileURL
+        self.usesNativeDownloads = usesNativeDownloads
         super.init()
+    }
+
+    /// Update the existing dictionary directly; no native history/index mirror.
+    func applyNativeDownload(_ update: NativeDownloadUpdate,
+                             action: @escaping (Bool) -> Bool,
+                             safeTarget: @escaping () -> URL?) {
+        guard usesNativeDownloads else { return }
+        let id = update.identity.rowID
+        if let existing = downloads[id], existing.nativeIdentity != update.identity { return }
+        let existed = downloads[id] != nil
+        let item = downloads[id] ?? Download(id: id, download: nil, originalURL: update.url,
+            suggestedFilename: update.filename, origin: DownloadOrigin(isPrivate: update.identity.isPrivate,
+                profileID: update.identity.profileID, pageTitle: nil), state: update.state)
+        let previous = item.state
+        item.nativeIdentity = update.identity; item.nativeManager = update.manager
+        item.nativeObservation = update.observation
+        item.nativeAction = action; item.nativeSafeTarget = safeTarget
+        item.nativeUnsafe = update.unsafe; item.nativeSafeFile = update.safeFile
+        if update.unsafe || !update.safeFile || item.destinationURL != update.target { item.downloadThumbnail = nil }
+        item.destinationURL = update.target; item.suggestedFilename = update.filename
+        item.startDate = update.started; item.downloadedBytes = update.received; item.fileSize = update.total
+        item.progress = update.total.flatMap { $0 > 0 ? min(1, Double(update.received) / Double($0)) : nil } ?? 0
+        item.error = update.error == 0 ? nil : NSError(domain: "ChromiumDownload", code: Int(update.error),
+            userInfo: [NSLocalizedDescriptionKey: "The download was interrupted."])
+        if !existed { downloads[id] = item }
+        guard downloads[id] === item else { return }
+        item.state = update.state
+        guard downloads[id] === item else { return }
+        if update.state == .completed { item.progress = 1 }
+        if existed, previous != .completed, update.state == .completed, !update.identity.isPrivate { completedCount += 1 }
+        if item.nativeRemoveAfterCancel, update.state != .pending, update.state != .downloading {
+            item.nativeRemoveAfterCancel = false
+            _ = item.nativeAction?(true)
+        }
+        if previewing === item, (!update.safeFile || update.unsafe || previewFileURL != update.target) { previewing = nil }
+    }
+
+    func removeNativeDownload(_ identity: NativeDownloadIdentity, manager: UInt64, observation: UInt64) {
+        let id = identity.rowID
+        guard let item = downloads[id], item.nativeIdentity == identity, item.nativeManager == manager, item.nativeObservation == observation else { return }
+        if previewing === item { previewing = nil }
+        item.nativeAction = nil; item.nativeSafeTarget = nil; item.nativeSafeFile = false
+        item.downloadThumbnail = nil
+        downloads.removeValue(forKey: id)
+    }
+
+    func nativeManagerEnded(_ manager: UInt64, observation: UInt64) {
+        // Source teardown is rare; progress uses direct dictionary lookup.
+        for item in downloads.values.filter({ $0.nativeManager == manager && $0.nativeObservation == observation }) {
+            if previewing === item { previewing = nil }
+            item.nativeAction = nil; item.nativeSafeTarget = nil; item.nativeSafeFile = false
+            item.downloadThumbnail = nil
+            downloads.removeValue(forKey: item.id)
+        }
+    }
+
+    func stopNativeDownloads(observation: UInt64) {
+        let managers = Set(downloads.values.filter { $0.nativeIdentity != nil && $0.nativeObservation == observation }.map(\.nativeManager))
+        for manager in managers { nativeManagerEnded(manager, observation: observation) }
     }
 
     // MARK: - Download Management
@@ -433,19 +595,31 @@ public class DownloadManager: NSObject {
 
     /// Moves a finished file to the Trash and takes its row out of the list.
     func moveToTrash(_ download: Download) {
-        guard let file = download.completedFile else {
+        guard let file = download.validatedCompletedFile() else {
+            if download.nativeIdentity != nil { return }
             removeDownload(download.id)
             return
         }
+        let id = download.id
         NSWorkspace.shared.recycle([file]) { [weak self] _, error in
             guard error == nil else { return }
             Task { @MainActor in
-                withAnimation(NookDesign.Motion.standard) { self?.removeDownload(download.id) }
+                withAnimation(NookDesign.Motion.standard) { self?.removeDownload(id) }
             }
         }
     }
 
     func removeDownload(_ id: UUID) {
+        if let item = downloads[id], item.nativeIdentity != nil {
+            if item.state == .pending || item.state == .downloading {
+                item.nativeRemoveAfterCancel = true
+                if item.nativeAction?(false) != true {
+                    item.nativeRemoveAfterCancel = false
+                    _ = item.nativeAction?(true) // The engine may already be terminal.
+                }
+            } else { _ = item.nativeAction?(true) }
+            return
+        }
         if let download = downloads[id], download.state == .pending || download.state == .downloading {
             cancelDownload(id)
         }
@@ -457,6 +631,7 @@ public class DownloadManager: NSObject {
 
     func cancelDownload(_ id: UUID) {
         guard let download = downloads[id] else { return }
+        if download.nativeIdentity != nil { _ = download.nativeAction?(false); return }
         updateDownloadState(id, state: .cancelled)
         download.download?.cancel()
         #if DEBUG

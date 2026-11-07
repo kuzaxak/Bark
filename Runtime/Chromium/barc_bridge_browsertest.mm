@@ -9,16 +9,21 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <vector>
 
 #include "base/command_line.h"
+#include "base/files/scoped_temp_dir.h"
+#include "base/files/file_util.h"
+#include "content/public/browser/download_manager.h"
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "base/threading/thread_restrictions.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_prefs.h"
@@ -192,6 +197,35 @@ class NavigationEvents {
   bool retry_cancelled = false;
   bool unsubscribe_cancelled = false;
   std::vector<NavigationEvent> events;
+};
+
+struct NativeDownloadEvent {
+  int32_t kind;
+  uint64_t manager;
+  std::string profile, guid, target;
+  int32_t state;
+  uint32_t flags;
+};
+class NativeDownloadEvents {
+ public:
+  ~NativeDownloadEvents() { barc_downloads_unobserve(token); }
+  static void Receive(void* context, uint64_t token, int32_t event,
+                      const BarcDownloadSnapshot* row) {
+    auto* self = static_cast<NativeDownloadEvents*>(context);
+    self->token = token;
+    self->events.push_back({event, row->manager, row->profile_uuid, row->guid,
+                           row->target_path, row->state, row->flags});
+    if (self->stop_first) { self->stop_first = false; barc_downloads_unobserve(token); }
+  }
+  std::optional<NativeDownloadEvent> Last(const std::string& profile, int32_t kind,
+                                        int32_t state = -1) const {
+    for (auto it = events.rbegin(); it != events.rend(); ++it)
+      if (it->profile == profile && it->kind == kind && (state == -1 || it->state == state)) return *it;
+    return std::nullopt;
+  }
+  uint64_t token = 0;
+  bool stop_first = false;
+  std::vector<NativeDownloadEvent> events;
 };
 
 // Preempt only after acceptance has started dismissing this exact warning.
@@ -849,6 +883,149 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(active, barc_window_tab_at(work_id, 0));
   EXPECT_EQ(0, barc_tab_set_muted(work_id, background, 0));
   EXPECT_EQ(0, barc_tab_execute_command(work_id, background, BARC_PAGE_FIND));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       NativeDownloadsScopePrivateManagersAndConfirmCancellation) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      &content::SlowDownloadHttpResponse::HandleSlowDownloadRequest));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  base::ScopedTempDir targets;
+  base::ScopedClosureRunner remove_targets(base::BindLambdaForTesting([&] {
+    base::ScopedAllowBlockingForTesting allow_fixture_cleanup;
+    if (targets.IsValid()) EXPECT_TRUE(targets.Delete());
+  }));
+  {
+    base::ScopedAllowBlockingForTesting allow_fixture_setup;
+    ASSERT_TRUE(targets.CreateUniqueTempDir());
+  }
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  SharedProfileResult private_result;
+  barc_private_session_open_window(SharedProfileCompleted, &private_result);
+  ASSERT_EQ(BARC_PROFILE_OK, private_result.Get<0>());
+  const int32_t private_id = private_result.Get<1>();
+  std::array<char, 37> private_uuid{};
+  ASSERT_EQ(37u, barc_window_private_session_uuid(private_id, private_uuid.data(), private_uuid.size()));
+  const std::string private_identity(private_uuid.data());
+  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting(
+      [work = SharedWindow(work_id)->GetProfile()->GetWeakPtr(),
+       private_profile = SharedWindow(private_id)->GetProfile()->GetWeakPtr()] {
+        for (const auto& profile : {work, private_profile}) {
+          if (!profile) continue;
+          content::DownloadManager::DownloadVector items;
+          profile->GetDownloadManager()->GetAllDownloads(&items);
+          for (const auto& item : items) item->Cancel(true);
+        }
+      }));
+  NativeDownloadEvents events;
+  events.token = barc_downloads_observe(NativeDownloadEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  EXPECT_EQ(0u, barc_downloads_observe(NativeDownloadEvents::Receive, &events));
+  for (const int32_t id : {work_id, private_id}) {
+    auto* profile = SharedWindow(id)->GetProfile();
+    auto* manager = profile->GetDownloadManager();
+    DownloadPrefs::FromDownloadManager(manager)->SetDownloadPath(targets.GetPath());
+    profile->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+    content::DownloadTestObserverInProgress progressing(manager, 1);
+    ASSERT_EQ(1, barc_tab_navigate(id, barc_window_tab_at(id, 0),
+        embedded_test_server()->GetURL(content::SlowDownloadHttpResponse::kKnownSizeUrl).spec().c_str()));
+    progressing.WaitForFinished();
+  }
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return events.Last(kSharedWork, BARC_DOWNLOAD_ITEM).has_value() &&
+           events.Last(private_identity, BARC_DOWNLOAD_ITEM).has_value();
+  }));
+  const auto work = *events.Last(kSharedWork, BARC_DOWNLOAD_ITEM);
+  const auto private_item = *events.Last(private_identity, BARC_DOWNLOAD_ITEM);
+  EXPECT_EQ(0u, work.flags & BARC_DOWNLOAD_PRIVATE);
+  EXPECT_NE(0u, private_item.flags & BARC_DOWNLOAD_PRIVATE);
+  EXPECT_NE(work.manager, private_item.manager);
+  EXPECT_EQ(0, barc_download_action(events.token, private_item.manager, work.guid.c_str(), BARC_DOWNLOAD_CANCEL));
+  EXPECT_EQ(0u, barc_download_copy_safe_target(events.token, work.manager, work.guid.c_str(), nullptr, 0));
+  EXPECT_EQ(1, barc_download_action(events.token, work.manager, work.guid.c_str(), BARC_DOWNLOAD_CANCEL));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.Last(kSharedWork, BARC_DOWNLOAD_ITEM, BARC_DOWNLOAD_CANCELLED).has_value(); }));
+  EXPECT_EQ(BARC_DOWNLOAD_PROGRESS, events.Last(private_identity, BARC_DOWNLOAD_ITEM)->state);
+  EXPECT_EQ(1, barc_download_action(events.token, private_item.manager, private_item.guid.c_str(), BARC_DOWNLOAD_CANCEL));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.Last(private_identity, BARC_DOWNLOAD_ITEM, BARC_DOWNLOAD_CANCELLED).has_value(); }));
+  auto* private_window = SharedWindow(private_id);
+  ui_test_utils::BrowserDestroyedObserver closed(private_window);
+  ASSERT_EQ(1, barc_window_close(private_id));
+  closed.Wait();
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.Last(private_identity, BARC_DOWNLOAD_MANAGER_ENDED).has_value(); }));
+  EXPECT_EQ(0, barc_download_action(events.token, private_item.manager, private_item.guid.c_str(), BARC_DOWNLOAD_REMOVE));
+  EXPECT_EQ(1, barc_download_action(events.token, work.manager, work.guid.c_str(), BARC_DOWNLOAD_REMOVE));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       NativeDownloadSafeTargetRemovalAndUnsubscribeLifetime) {
+  net::test_server::ControllableHttpResponse response(embedded_test_server(), "/native-download");
+  ASSERT_TRUE(embedded_test_server()->Start());
+  base::ScopedTempDir target;
+  base::ScopedClosureRunner remove_target(base::BindLambdaForTesting([&] {
+    base::ScopedAllowBlockingForTesting allow_fixture_cleanup;
+    if (target.IsValid()) EXPECT_TRUE(target.Delete());
+  }));
+  {
+    base::ScopedAllowBlockingForTesting allow_fixture_setup;
+    ASSERT_TRUE(target.CreateUniqueTempDir());
+  }
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* profile = SharedWindow(work_id)->GetProfile();
+  auto* manager = profile->GetDownloadManager();
+  DownloadPrefs::FromDownloadManager(manager)->SetDownloadPath(target.GetPath());
+  profile->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting([profile = profile->GetWeakPtr()] {
+    if (!profile) return;
+    content::DownloadManager::DownloadVector items;
+    profile->GetDownloadManager()->GetAllDownloads(&items);
+    for (const auto& item : items) item->Cancel(true);
+  }));
+  NativeDownloadEvents events;
+  events.token = barc_downloads_observe(NativeDownloadEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  content::DownloadTestObserverTerminal finished(manager, 1,
+      content::DownloadTestObserver::ON_DANGEROUS_DOWNLOAD_FAIL);
+  ASSERT_EQ(1, barc_tab_navigate(work_id, barc_window_tab_at(work_id, 0),
+      embedded_test_server()->GetURL("/native-download").spec().c_str()));
+  response.WaitForRequest();
+  response.Send("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Disposition: attachment; filename=fixture.txt\r\nContent-Length: 3\r\n\r\nabc");
+  response.Done(); finished.WaitForFinished();
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.Last(kSharedWork, BARC_DOWNLOAD_ITEM, BARC_DOWNLOAD_COMPLETE).has_value(); }));
+  const auto item = *events.Last(kSharedWork, BARC_DOWNLOAD_ITEM, BARC_DOWNLOAD_COMPLETE);
+  EXPECT_NE(0u, item.flags & BARC_DOWNLOAD_SAFE_FILE);
+  const auto size = barc_download_copy_safe_target(events.token, item.manager, item.guid.c_str(), nullptr, 0);
+  ASSERT_GT(size, 1u);
+  std::vector<char> path(size);
+  ASSERT_EQ(size, barc_download_copy_safe_target(events.token, item.manager, item.guid.c_str(), path.data(), path.size()));
+  EXPECT_EQ(item.target, path.data());
+  EXPECT_EQ(0u, barc_download_copy_safe_target(events.token, item.manager, "foreign-guid", nullptr, 0));
+  EXPECT_EQ(0, barc_download_action(events.token, item.manager, item.guid.c_str(), BARC_DOWNLOAD_CANCEL));
+  const uint64_t stale_token = events.token;
+  barc_downloads_unobserve(events.token);
+  NativeDownloadEvents stopped;
+  stopped.stop_first = true;
+  stopped.token = barc_downloads_observe(NativeDownloadEvents::Receive, &stopped);
+  ASSERT_NE(0u, stopped.token);
+  ASSERT_TRUE(base::test::RunUntil([&] { return stopped.events.size() == 1; }));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1u, stopped.events.size()); // Unsubscribe inside delivery is final.
+  EXPECT_EQ(0, barc_download_action(stale_token, item.manager, item.guid.c_str(), BARC_DOWNLOAD_REMOVE));
+  NativeDownloadEvents final;
+  final.token = barc_downloads_observe(NativeDownloadEvents::Receive, &final);
+  ASSERT_NE(0u, final.token);
+  ASSERT_TRUE(base::test::RunUntil([&] { return final.Last(kSharedWork, BARC_DOWNLOAD_ITEM, BARC_DOWNLOAD_COMPLETE).has_value(); }));
+  const auto replayed = *final.Last(kSharedWork, BARC_DOWNLOAD_ITEM, BARC_DOWNLOAD_COMPLETE);
+  EXPECT_EQ(item.guid, replayed.guid);
+  EXPECT_EQ(1, barc_download_action(final.token, replayed.manager, replayed.guid.c_str(), BARC_DOWNLOAD_REMOVE));
+  ASSERT_TRUE(base::test::RunUntil([&] { return final.Last(kSharedWork, BARC_DOWNLOAD_REMOVED).has_value(); }));
+  {
+    base::ScopedAllowBlockingForTesting allow_fixture_check;
+    EXPECT_TRUE(base::PathExists(base::FilePath(item.target))); // History removal never trashes a file.
+  }
+  EXPECT_EQ(0u, barc_download_copy_safe_target(final.token, replayed.manager, replayed.guid.c_str(), nullptr, 0));
+  barc_downloads_unobserve(final.token);
+  barc::StopBrowserDiscovery();
+  EXPECT_EQ(0u, barc_downloads_observe(NativeDownloadEvents::Receive, &stopped));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,

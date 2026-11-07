@@ -77,7 +77,7 @@ struct SidebarBottomBar: View {
                 onMenuTap()
             }
             // A finished download bounces the button its icon flew into.
-            .symbolEffect(.bounce, value: browserManager.downloadManager.completedCount)
+            .symbolEffect(.bounce, value: windowState.isIncognito && browserManager.engine == .chromium ? 0 : browserManager.downloadManager.completedCount)
             .nookSidebarIconButtons()
             .anchorPreference(key: DownloadsButtonAnchorKey.self, value: .bounds) { $0 }
             .onHoverTracking { isHovered in
