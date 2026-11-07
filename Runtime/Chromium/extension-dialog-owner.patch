@@ -847,3 +847,558 @@ diff --git a/chrome/browser/extensions/api/management/chrome_management_api_dele
  };
 
  SupervisedUserExtensionsDelegate*
+diff --git a/chrome/browser/extensions/chrome_extensions_browser_client.cc b/chrome/browser/extensions/chrome_extensions_browser_client.cc
+--- a/chrome/browser/extensions/chrome_extensions_browser_client.cc
++++ b/chrome/browser/extensions/chrome_extensions_browser_client.cc
+@@ -81,6 +81,7 @@
+ #include "chrome/browser/safe_browsing/safe_browsing_service.h"
+ #include "chrome/browser/search_engines/template_url_service_factory.h"
+ #include "chrome/browser/task_manager/web_contents_tags.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "ui/base/page_transition_types.h"
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -1326,13 +1327,24 @@
+ }
+
+ std::unique_ptr<ExtensionInstallPromptClient>
+-ChromeExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
+-    gfx::NativeWindow native_window,
+-    content::BrowserContext& browser_context,
++ChromeExtensionsBrowserClient::CreateInstallPromptForFunction(
++    ExtensionFunction& function,
+     std::unique_ptr<InstallPromptData> prompt) {
++  auto* sender = function.GetSenderWebContents();
++  if (sender && tabs::TabInterface::MaybeGetFromContents(sender)) {
++    // ShowParams retains the identified tab even when currently detached; it
++    // must not fall back to another logical browser of the native window.
++    return std::make_unique<ExtensionInstallPrompt>(sender, std::move(prompt));
++  }
++  BrowserWindowInterface* owner = nullptr;
++  const auto native_window =
++      ChromeExtensionFunctionDetails(&function).GetNativeWindowForUI(&owner);
++  std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner;
++  if (owner)
++    browser_owner = owner->GetWeakPtr();
+   return std::make_unique<ExtensionInstallPrompt>(
+-      Profile::FromBrowserContext(&browser_context), native_window,
+-      std::move(prompt));
++      Profile::FromBrowserContext(function.browser_context()), native_window,
++      std::move(prompt), browser_owner);
+ }
+
+ gfx::NativeWindow ChromeExtensionsBrowserClient::GetNativeWindowForFunction(
+diff --git a/chrome/browser/extensions/chrome_extensions_browser_client.h b/chrome/browser/extensions/chrome_extensions_browser_client.h
+--- a/chrome/browser/extensions/chrome_extensions_browser_client.h
++++ b/chrome/browser/extensions/chrome_extensions_browser_client.h
+@@ -336,10 +336,8 @@
+   std::unique_ptr<ExtensionInstallPromptClient> CreateInstallPrompt(
+       content::WebContents* web_contents,
+       std::unique_ptr<InstallPromptData> prompt) override;
+-  std::unique_ptr<ExtensionInstallPromptClient>
+-  CreateInstallPromptForNativeWindow(
+-      gfx::NativeWindow native_window,
+-      content::BrowserContext& browser_context,
++  std::unique_ptr<ExtensionInstallPromptClient> CreateInstallPromptForFunction(
++      ExtensionFunction& function,
+       std::unique_ptr<InstallPromptData> prompt) override;
+   gfx::NativeWindow GetNativeWindowForFunction(
+       ExtensionFunction& function) override;
+diff --git a/chrome/browser/extensions/extension_install_prompt.cc b/chrome/browser/extensions/extension_install_prompt.cc
+--- a/chrome/browser/extensions/extension_install_prompt.cc
++++ b/chrome/browser/extensions/extension_install_prompt.cc
+@@ -91,12 +91,14 @@
+ ExtensionInstallPrompt::ExtensionInstallPrompt(
+     Profile* profile,
+     gfx::NativeWindow native_window,
+-    std::unique_ptr<InstallPromptData> prompt)
++    std::unique_ptr<InstallPromptData> prompt,
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner)
+     : profile_(profile),
+       extension_(nullptr),
+       install_ui_(ExtensionInstallUI::Create(profile_)),
+-      show_params_(
+-          new ExtensionInstallPromptShowParams(profile, native_window)),
++      show_params_(new ExtensionInstallPromptShowParams(profile,
++                                                        native_window,
++                                                        browser_owner)),
+       prompt_(std::move(prompt)),
+       did_call_show_dialog_(false) {}
+
+@@ -138,6 +140,14 @@
+     return;
+   }
+
++  // WebContents-owned tab prompts must not touch ImageLoader/profile state
++  // after their captured logical owner has become invalid or inactive.
++  if (!show_params_->CanShowForBrowserOwner()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(std::move(done_callback_),
++                                  DoneCallbackPayload(Result::ABORTED)));
++    return;
++  }
+   LoadImageIfNeeded();
+ }
+
+@@ -259,6 +269,13 @@
+ }
+
+ void ExtensionInstallPrompt::ShowConfirmation() {
++  if (show_params_->WasParentDestroyed() ||
++      !show_params_->CanShowForBrowserOwner()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(std::move(done_callback_),
++                                  DoneCallbackPayload(Result::ABORTED)));
++    return;
++  }
+   std::unique_ptr<const PermissionSet> permissions_to_display;
+
+   if (custom_permissions_.get()) {
+@@ -275,11 +292,6 @@
+   }
+
+   prompt_->set_icon(gfx::Image::CreateFrom1xBitmap(icon_));
+-
+-  if (show_params_->WasParentDestroyed()) {
+-    std::move(done_callback_).Run(DoneCallbackPayload(Result::ABORTED));
+-    return;
+-  }
+
+   g_last_prompt_type_for_tests = prompt_->type();
+   did_call_show_dialog_ = true;
+diff --git a/chrome/browser/extensions/extension_install_prompt.h b/chrome/browser/extensions/extension_install_prompt.h
+--- a/chrome/browser/extensions/extension_install_prompt.h
++++ b/chrome/browser/extensions/extension_install_prompt.h
+@@ -8,6 +8,7 @@
+ #include <stddef.h>
+
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <vector>
+
+@@ -27,13 +28,14 @@
+
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
++class BrowserWindowInterface;
+ class ExtensionInstallPromptShowParams;
+ class Profile;
+
+ namespace content {
+ class BrowserContext;
+ class WebContents;
+-}
++}  // namespace content
+
+ namespace extensions {
+ class CrxInstallError;
+@@ -77,7 +79,9 @@
+   // windows) is used if a new tab needs to be opened.
+   ExtensionInstallPrompt(Profile* profile,
+                          gfx::NativeWindow native_window,
+-                         std::unique_ptr<extensions::InstallPromptData> prompt);
++                         std::unique_ptr<extensions::InstallPromptData> prompt,
++                         std::optional<base::WeakPtr<BrowserWindowInterface>>
++                             browser_owner = std::nullopt);
+
+   ExtensionInstallPrompt(const ExtensionInstallPrompt&) = delete;
+   ExtensionInstallPrompt& operator=(const ExtensionInstallPrompt&) = delete;
+diff --git a/chrome/browser/extensions/extension_install_prompt_show_params.cc b/chrome/browser/extensions/extension_install_prompt_show_params.cc
+--- a/chrome/browser/extensions/extension_install_prompt_show_params.cc
++++ b/chrome/browser/extensions/extension_install_prompt_show_params.cc
+@@ -9,8 +9,10 @@
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "chrome/browser/profiles/profile.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "content/public/browser/web_contents.h"
+ #include "extensions/buildflags/buildflags.h"
++#include "ui/base/base_window.h"
+ #include "ui/native_window_tracker/native_window_tracker.h"
+
+ #if defined(USE_AURA)
+@@ -39,12 +41,18 @@
+
+ ExtensionInstallPromptShowParams::ExtensionInstallPromptShowParams(
+     content::WebContents* contents)
+-    : profile_(Profile::FromBrowserContext(contents->GetBrowserContext())),
++    : profile_(Profile::FromBrowserContext(contents->GetBrowserContext())
++                   ->GetWeakPtr()),
+       parent_web_contents_(contents->GetWeakPtr()) {
+   DCHECK(profile_);
+   DCHECK(parent_web_contents_);
+
+-  if (!parent_web_contents_->GetTopLevelNativeWindow()) {
++  if (auto* tab = tabs::TabInterface::MaybeGetFromContents(contents)) {
++    parent_tab_ = tab->GetHandle();
++    auto* owner = tab->GetBrowserWindowInterface();
++    browser_owner_ =
++        owner ? owner->GetWeakPtr() : base::WeakPtr<BrowserWindowInterface>();
++  } else if (!parent_web_contents_->GetTopLevelNativeWindow()) {
+     // WebContents were created without a top-level window. This can happen when
+     // the callers pass a dummy WebContents, or in some tests. There is no
+     // window to track in this case. Reset the WebContents pointer and just keep
+@@ -56,8 +64,10 @@
+
+ ExtensionInstallPromptShowParams::ExtensionInstallPromptShowParams(
+     Profile* profile,
+-    gfx::NativeWindow parent_window)
+-    : profile_(profile),
++    gfx::NativeWindow parent_window,
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner)
++    : profile_(profile->GetWeakPtr()),
++      browser_owner_(browser_owner),
+       parent_web_contents_(nullptr),
+       parent_window_(parent_window) {
+   DCHECK(profile);
+@@ -73,9 +83,11 @@
+ }
+
+ gfx::NativeWindow ExtensionInstallPromptShowParams::GetParentWindow() {
+-  if (WasParentDestroyed()) {
++  if (WasParentDestroyed() || !CanShowForBrowserOwner()) {
+     return gfx::NativeWindow();
+   }
++  if (auto* owner = GetBrowserOwner())
++    return owner->GetWindow()->GetNativeWindow();
+
+   if (WasConfiguredForWebContents()) {
+     return parent_web_contents_->GetTopLevelNativeWindow();
+@@ -85,8 +97,24 @@
+ }
+
+ bool ExtensionInstallPromptShowParams::WasParentDestroyed() {
+-  if (profile_->ShutdownStarted()) {
++  if (!profile_ || profile_->ShutdownStarted()) {
+     return true;
++  }
++
++  if (browser_owner_) {
++    auto* owner = GetBrowserOwner();
++    if (!owner || owner->IsDeleteScheduled() || !owner->GetWindow() ||
++        !owner->GetWindow()->GetNativeWindow() ||
++        !RootCheck(owner->GetWindow()->GetNativeWindow()))
++      return true;
++    if (parent_tab_) {
++      auto* tab = parent_tab_->Get();
++      return !tab || !parent_web_contents_ ||
++             parent_web_contents_->IsBeingDestroyed() ||
++             tab->GetContents() != parent_web_contents_.get() ||
++             tab->GetBrowserWindowInterface() != owner;
++    }
++    return false;
+   }
+
+   if (WasConfiguredForWebContents()) {
+@@ -101,6 +129,22 @@
+   }
+
+   return false;
++}
++
++BrowserWindowInterface* ExtensionInstallPromptShowParams::GetBrowserOwner() {
++  return browser_owner_ ? browser_owner_->get() : nullptr;
++}
++
++bool ExtensionInstallPromptShowParams::CanShowForBrowserOwner() {
++  if (!browser_owner_)
++    return true;
++  if (WasParentDestroyed())
++    return false;
++  auto* owner = GetBrowserOwner();
++  return owner->IsSelectedForNativeWindow() &&
++         (owner->GetProfile() == profile_.get() ||
++          (!parent_tab_ &&
++           owner->GetProfile()->GetOriginalProfile() == profile_.get()));
+ }
+
+ bool ExtensionInstallPromptShowParams::WasConfiguredForWebContents() {
+diff --git a/chrome/browser/extensions/extension_install_prompt_show_params.h b/chrome/browser/extensions/extension_install_prompt_show_params.h
+--- a/chrome/browser/extensions/extension_install_prompt_show_params.h
++++ b/chrome/browser/extensions/extension_install_prompt_show_params.h
+@@ -6,14 +6,16 @@
+ #define CHROME_BROWSER_EXTENSIONS_EXTENSION_INSTALL_PROMPT_SHOW_PARAMS_H_
+
+ #include <memory>
++#include <optional>
+
+-#include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "ui/gfx/native_ui_types.h"
+
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
++class BrowserWindowInterface;
+ class Profile;
+
+ namespace content {
+@@ -38,7 +40,11 @@
+
+   // The most recently active browser window (or a new browser window if there
+   // are no browser windows) is used if a new tab needs to be opened.
+-  ExtensionInstallPromptShowParams(Profile* profile, gfx::NativeWindow window);
++  ExtensionInstallPromptShowParams(
++      Profile* profile,
++      gfx::NativeWindow window,
++      std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner =
++          std::nullopt);
+
+   ExtensionInstallPromptShowParams(const ExtensionInstallPromptShowParams&) =
+       delete;
+@@ -47,9 +53,7 @@
+
+   virtual ~ExtensionInstallPromptShowParams();
+
+-  Profile* profile() {
+-    return profile_;
+-  }
++  Profile* profile() { return profile_.get(); }
+
+   // The parent web contents for the dialog. Returns NULL if the web contents
+   // have been destroyed.
+@@ -63,11 +67,21 @@
+   // destroyed.
+   bool WasParentDestroyed();
+
++  // Unspecified for native/non-tab callers. An identified tab keeps its
++  // original logical owner; expired/detached/reparented owners cannot fall back
++  // to the currently selected browser of a shared native window.
++  bool CanShowForBrowserOwner();
++  BrowserWindowInterface* GetBrowserOwner();
++
+  private:
+   // Returns trues if the current object was configured for WebContents.
+   bool WasConfiguredForWebContents();
+
+-  raw_ptr<Profile, DanglingUntriaged> profile_;
++  base::WeakPtr<Profile> profile_;
++  std::optional<tabs::TabHandle> parent_tab_;
++  // Optional distinguishes a true native/non-browser prompt from a known
++  // browser whose weak pointer subsequently expired, including worker callers.
++  std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner_;
+
+   // Only one of these will be non-null.
+   base::WeakPtr<content::WebContents> parent_web_contents_;
+diff --git a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
+--- a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
++++ b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
+@@ -12,6 +12,7 @@
+ #include "base/i18n/message_formatter.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "chrome/browser/extensions/extension_install_prompt.h"
+ #include "chrome/browser/extensions/extension_install_prompt_show_params.h"
+ #include "chrome/browser/picture_in_picture/picture_in_picture_input_protector.h"
+@@ -24,6 +25,7 @@
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+ #include "chrome/browser/ui/views/chrome_typography.h"
+ #include "chrome/browser/ui/views/extensions/extension_permissions_view.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "chrome/grit/theme_resources.h"
+ #include "components/constrained_window/constrained_window_views.h"
+@@ -56,6 +58,7 @@
+ #include "ui/views/layout/table_layout.h"
+ #include "ui/views/layout/table_layout_view.h"
+ #include "ui/views/metadata/view_factory.h"
++#include "ui/views/view_tracker.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/widget/widget_delegate.h"
+ #include "ui/views/window/dialog_delegate.h"
+@@ -88,6 +91,25 @@
+     std::unique_ptr<InstallPromptData> prompt) {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+
++  if (show_params->WasParentDestroyed() ||
++      !show_params->CanShowForBrowserOwner()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(done_callback),
++                       ExtensionInstallPrompt::DoneCallbackPayload(
++                           ExtensionInstallPrompt::Result::ABORTED)));
++    return;
++  }
++  auto* owner = show_params->GetBrowserOwner();
++  if (owner && !BrowserView::GetBrowserViewForBrowser(owner)) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(done_callback),
++                       ExtensionInstallPrompt::DoneCallbackPayload(
++                           ExtensionInstallPrompt::Result::ABORTED)));
++    return;
++  }
++
+   // If the dialog has to be parented to WebContents, force activate the
+   // contents. See crbug.com/40059470.
+   content::WebContents* web_contents = show_params->GetParentWebContents();
+@@ -101,6 +123,18 @@
+     BrowserWebContentsDelegate::From(browser)->ActivateContents(web_contents);
+   }
+
++  // Activation may invoke observers that close/reparent the tab. Never use a
++  // native parent left behind by that outgoing logical owner.
++  if (show_params->WasParentDestroyed() ||
++      !show_params->CanShowForBrowserOwner() ||
++      (owner && !BrowserView::GetBrowserViewForBrowser(owner))) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(done_callback),
++                       ExtensionInstallPrompt::DoneCallbackPayload(
++                           ExtensionInstallPrompt::Result::ABORTED)));
++    return;
++  }
+   gfx::NativeWindow parent_window = show_params->GetParentWindow();
+   auto dialog = std::make_unique<ExtensionInstallDialogView>(
+       std::move(show_params), std::move(done_callback), std::move(prompt));
+@@ -372,6 +406,11 @@
+ }
+
+ void ExtensionInstallDialogView::AddedToWidget() {
++  if (auto* owner = show_params_->GetBrowserOwner()) {
++    browser_close_subscription_ = owner->RegisterBrowserDidClose(
++        base::BindRepeating(&ExtensionInstallDialogView::OnBrowserOwnerClosed,
++                            base::Unretained(this)));
++  }
+   auto title_container = CreateTitleContainer();
+   GetBubbleFrameView()->SetTitleView(std::move(title_container));
+
+@@ -382,6 +421,7 @@
+
+ void ExtensionInstallDialogView::OnDialogCanceled() {
+   DCHECK(done_callback_);
++  browser_close_subscription_ = {};
+
+   // The dialog will be closed, so stop observing for any extension changes
+   // that could potentially crop up during that process (like the extension
+@@ -396,6 +436,12 @@
+
+ void ExtensionInstallDialogView::OnDialogAccepted() {
+   DCHECK(done_callback_);
++  if (show_params_->WasParentDestroyed() ||
++      !show_params_->CanShowForBrowserOwner()) {
++    OnDialogCanceled();
++    return;
++  }
++  browser_close_subscription_ = {};
+
+   // The dialog will be closed, so stop observing for any extension changes
+   // that could potentially crop up during that process (like the extension
+@@ -406,7 +452,19 @@
+       prompt_->type() == InstallPromptData::EXTENSION_REQUEST_PROMPT;
+   DCHECK(expect_justification == !!justification_view_);
+
++  views::ViewTracker alive(this);
+   prompt_->OnDialogAccepted();
++  if (!alive.view() || !done_callback_)
++    return;
++  // Prompt observers can close the owner or move its source tab. Never grant
++  // permissions after such a callback invalidated the original admission.
++  if (show_params_->WasParentDestroyed() ||
++      !show_params_->CanShowForBrowserOwner()) {
++    std::move(done_callback_)
++        .Run(ExtensionInstallPrompt::DoneCallbackPayload(
++            ExtensionInstallPrompt::Result::ABORTED));
++    return;
++  }
+
+   // Permissions are withheld at installation when the prompt specifies it and
+   // `grant_permissions_checkbox_` wasn't selected.
+@@ -449,6 +507,11 @@
+ bool ExtensionInstallDialogView::ShouldAllowKeyEventsDuringInputProtection()
+     const {
+   return false;
++}
++
++void ExtensionInstallDialogView::OnBrowserOwnerClosed(
++    BrowserWindowInterface* browser) {
++  CloseDialog();
+ }
+
+ void ExtensionInstallDialogView::CloseDialog() {
+diff --git a/chrome/browser/ui/views/extensions/extension_install_dialog_view.h b/chrome/browser/ui/views/extensions/extension_install_dialog_view.h
+--- a/chrome/browser/ui/views/extensions/extension_install_dialog_view.h
++++ b/chrome/browser/ui/views/extensions/extension_install_dialog_view.h
+@@ -8,6 +8,7 @@
+ #include <optional>
+ #include <vector>
+
++#include "base/callback_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/scoped_observation.h"
+ #include "base/timer/elapsed_timer.h"
+@@ -26,6 +27,7 @@
+ #include "ui/views/view.h"
+
+ class PictureInPictureInputProtector;
++class BrowserWindowInterface;
+ class Profile;
+ class ExtensionJustificationView;
+
+@@ -82,6 +84,8 @@
+
+  private:
+   void CloseDialog();
++  void OnBrowserOwnerClosed(BrowserWindowInterface* browser);
++  base::CallbackListSubscription browser_close_subscription_;
+
+   // extensions::ExtensionRegistryObserver:
+   void OnExtensionUninstalled(content::BrowserContext* browser_context,
+diff --git a/extensions/browser/api/permissions/permissions_api.cc b/extensions/browser/api/permissions/permissions_api.cc
+--- a/extensions/browser/api/permissions/permissions_api.cc
++++ b/extensions/browser/api/permissions/permissions_api.cc
+@@ -469,11 +469,9 @@
+     return did_respond() ? AlreadyResponded() : RespondLater();
+   }
+
+-  install_ui_ =
+-      ExtensionsBrowserClient::Get()->CreateInstallPromptForNativeWindow(
+-          native_window, *browser_context(),
+-          std::make_unique<InstallPromptData>(
+-              InstallPromptData::PERMISSIONS_PROMPT));
++  install_ui_ = ExtensionsBrowserClient::Get()->CreateInstallPromptForFunction(
++      *this, std::make_unique<InstallPromptData>(
++                 InstallPromptData::PERMISSIONS_PROMPT));
+   install_ui_->ConfirmPermissions(
+       base::BindOnce(&PermissionsRequestFunction::OnInstallPromptDone, this),
+       extension(), std::move(total_new_permissions));
+diff --git a/extensions/browser/extensions_browser_client.cc b/extensions/browser/extensions_browser_client.cc
+--- a/extensions/browser/extensions_browser_client.cc
++++ b/extensions/browser/extensions_browser_client.cc
+@@ -404,9 +404,8 @@
+ }
+
+ std::unique_ptr<ExtensionInstallPromptClient>
+-ExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
+-    gfx::NativeWindow native_window,
+-    content::BrowserContext& browser_context,
++ExtensionsBrowserClient::CreateInstallPromptForFunction(
++    ExtensionFunction& function,
+     std::unique_ptr<InstallPromptData> prompt) {
+   return nullptr;
+ }
+diff --git a/extensions/browser/extensions_browser_client.h b/extensions/browser/extensions_browser_client.h
+--- a/extensions/browser/extensions_browser_client.h
++++ b/extensions/browser/extensions_browser_client.h
+@@ -710,13 +710,12 @@
+       content::WebContents* web_contents,
+       std::unique_ptr<InstallPromptData> prompt);
+
+-  // Creates install prompt UI anchored to `native_window` rather than a
+-  // WebContents, for use when `function`'s caller has no directly associated
+-  // WebContents (e.g. an extension service worker).
++  // Creates permission prompt UI for the originating function. Embedders can
++  // preserve logical browser/tab identity rather than infer it from a native
++  // window shared by several logical browsers.
+   virtual std::unique_ptr<ExtensionInstallPromptClient>
+-  CreateInstallPromptForNativeWindow(gfx::NativeWindow native_window,
+-                                     content::BrowserContext& browser_context,
+-                                     std::unique_ptr<InstallPromptData> prompt);
++  CreateInstallPromptForFunction(ExtensionFunction& function,
++                                 std::unique_ptr<InstallPromptData> prompt);
+
+   // Returns a native window suitable for anchoring UI (e.g. a
+   // permission-request prompt) triggered by `function`. Returns null if none

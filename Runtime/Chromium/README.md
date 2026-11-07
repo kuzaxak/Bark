@@ -252,6 +252,13 @@ launcher, which isolates each test in its own child, with one job to avoid
 competing native windows; do not use `--single-process-tests` for this suite.
 Its unpacked test loader does not qualify store installation or permission UI.
 
+The storage suite also exercises a synthetic signed permission-increasing update
+and actual `permissions.request()` calls from workers and extension tabs. It
+checks owned dialog presentation, stale-owner cancellation and profile-local
+grants using upstream test installation/gesture helpers and programmatic dialog
+buttons after the normal button delay. These are mechanical routing checks;
+native input and ordinary store installation/update remain separate cases.
+
 The changed Views ownership/close paths also require the existing
 `views_unittests` target. After the candidate build exits, build that target in
 the same output and run the retained-client cases plus nearby upstream
