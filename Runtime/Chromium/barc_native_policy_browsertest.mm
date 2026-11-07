@@ -189,9 +189,13 @@ IN_PROC_BROWSER_TEST_F(BarcNativePolicyBrowserTest,
   widget->Hide();
   ASSERT_TRUE(base::test::RunUntil([&] { return !widget->IsActive(); }));
   auto* focus = widget->GetFocusManager();
-  focus->ClearFocus();
+  // Clear only the Views focus. ClearFocus() also makes the native content
+  // view first responder on macOS, which can restore the focused view.
+  focus->SetFocusedView(nullptr);
   auto* stored = work_view_->GetActiveContentsWebView();
   focus->SetStoredFocusView(stored);
+  ASSERT_EQ(nullptr, focus->GetFocusedView());
+  ASSERT_EQ(stored, focus->GetStoredFocusView());
   auto* strip = personal_->GetTabStripModel();
   ASSERT_EQ(2, strip->count());
   const auto split = strip->AddToNewSplit(

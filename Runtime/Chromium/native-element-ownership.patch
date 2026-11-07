@@ -1,0 +1,112 @@
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -115,6 +115,7 @@
+
+ namespace ui {
+ class NativeTheme;
++class TrackedElement;
+ }  // namespace ui
+
+ namespace version_info {
+@@ -414,6 +415,9 @@
+   // This returns BrowserWidget except on fullscreen macOS where the toolbar is
+   // hosted in an OverlayWidget.
+   views::Widget* GetWidgetForAnchoring();
++
++  // Owner-local fallback for popups when their toolbar button is hidden.
++  ui::TrackedElement* GetFallbackPopupAnchor();
+
+   // Returns true if the view has been initialized.
+   bool initialized() const { return initialized_; }
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1583,6 +1583,10 @@
+   return 1.f;
+ }
+
++ui::TrackedElement* BrowserView::GetFallbackPopupAnchor() {
++  return fallback_popup_anchor_.get();
++}
++
+ views::Widget* BrowserView::GetWidgetForAnchoring() {
+ #if BUILDFLAG(IS_MAC)
+   if (WindowFeatureController::From(browser())->UsesImmersiveFullscreenMode()) {
+@@ -4408,9 +4412,11 @@
+         combo_button->end_button(), browser_.get());
+     combo_button->SetTabSearchBubbleHost(tab_search_bubble_host_.get());
+   } else {
+-    auto* combo_button =
+-        BrowserElementsViews::From(browser_.get())
+-            ->GetViewAs<TabStripComboButton>(kTabStripComboButtonElementId);
++    // The physical Widget may contain several logical BrowserViews. Keep the
++    // bubble host and its anchor in this BrowserView's ownership tree.
++    auto* combo_button = views::AsViewClass<TabStripComboButton>(
++        horizontal_tab_strip_region_view_->GetViewByElementId(
++            kTabStripComboButtonElementId));
+     tab_search_bubble_host_ = std::make_unique<TabSearchBubbleHost>(
+         combo_button->end_button(), browser_.get());
+     combo_button->SetTabSearchBubbleHost(tab_search_bubble_host_.get());
+--- a/chrome/browser/ui/views/side_panel/side_panel_coordinator.cc
++++ b/chrome/browser/ui/views/side_panel/side_panel_coordinator.cc
+@@ -27,6 +27,7 @@
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
+ #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel.h"
+ #include "chrome/browser/ui/views/side_panel/side_panel_header.h"
+@@ -51,7 +52,9 @@
+       scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this) {
+   // SidePanelCoordinator should only be created for the Views implementation of
+   // the BrowserWindow.
+-  SidePanel* side_panel = GetSidePanel();
++  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
++  CHECK(browser_view);
++  SidePanel* side_panel = browser_view->side_panel();
+   CHECK(side_panel);
+
+   // TODO(pbos): Investigate whether the side panels should be creatable when
+@@ -215,7 +218,7 @@
+ void SidePanelCoordinator::Close(SidePanelEntryHideReason reason,
+                                  bool suppress_animations) {
+   SidePanel* const side_panel = GetSidePanel();
+-  if (!IsSidePanelShowing() ||
++  if (!side_panel || !IsSidePanelShowing() ||
+       (!suppress_animations && side_panel->IsClosing())) {
+     return;
+   }
+@@ -478,6 +481,5 @@
+ }
+
+ SidePanel* SidePanelCoordinator::GetSidePanel() {
+-  return views::AsViewClass<SidePanel>(
+-      BrowserElementsViews::From(&*browser_)->GetView(kSidePanelElementId));
+-}
++  return views::AsViewClass<SidePanel>(side_panel_observation_.GetSource());
++}
+--- a/chrome/browser/ui/views/frame/app_menu_button.cc
++++ b/chrome/browser/ui/views/frame/app_menu_button.cc
+@@ -19,6 +19,7 @@
+ #include "chrome/browser/ui/views/app_menu/action_app_menu.h"
+ #include "chrome/browser/ui/views/chrome_typography.h"
+ #include "chrome/browser/ui/views/frame/app_menu_button_observer.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
+ #include "chrome/browser/ui/views/toolbar/app_menu.h"
+ #include "chrome/browser/ui/views/toolbar/toolbar_ink_drop_util.h"
+@@ -54,6 +55,14 @@
+   // The app menu button is always present but might be non-visible or offscreen
+   // in certain cases (e.g. content-fullscreen). In this case, use the fallback
+   // anchor instead.
++  // Shared native Widgets do not uniquely identify a logical browser.
++  for (auto* ancestor = parent(); ancestor; ancestor = ancestor->parent()) {
++    if (auto* browser_view = views::AsViewClass<BrowserView>(ancestor)) {
++      auto* anchor = browser_view->GetFallbackPopupAnchor();
++      CHECK(anchor);
++      return views::BubbleAnchor(anchor);
++    }
++  }
+   auto* const elements = BrowserElementsViews::From(this);
+   CHECK(elements);
+   auto* const element = elements->GetElement(kFallbackPopupAnchorElementId);

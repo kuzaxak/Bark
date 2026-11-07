@@ -6,12 +6,12 @@
 #include <array>
 
 #include "base/command_line.h"
-#include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
@@ -21,6 +21,7 @@
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
@@ -32,8 +33,14 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/views/frame/app_menu_button.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
+#include "chrome/browser/ui/views/side_panel/side_panel.h"
+#include "chrome/browser/ui/views/tab_search_bubble_host.h"
+#include "chrome/browser/ui/views/tabs/shared/tab_strip_combo_button.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -54,6 +61,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/view_observer.h"
 #include "url/gurl.h"
 
@@ -121,9 +129,11 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NativeShellRetainedUntilDetach) {
     ASSERT_EQ(1, barc_window_attach_native_shell(window,
                                                  (__bridge void*)replacement));
   }
-  EXPECT_NE(nil, attached);
-  EXPECT_EQ(barc::kNativeShellWidth, barc::NativeShellWidth(view));
-  ASSERT_EQ(1, barc_window_attach_native_shell(window, nullptr));
+  @autoreleasepool {
+    EXPECT_NE(nil, attached);
+    EXPECT_EQ(barc::kNativeShellWidth, barc::NativeShellWidth(view));
+    ASSERT_EQ(1, barc_window_attach_native_shell(window, nullptr));
+  }
   EXPECT_EQ(nil, attached);
   EXPECT_EQ(0, barc::NativeShellWidth(view));
   EXPECT_EQ(0, barc_window_attach_native_shell(-1, nullptr));
@@ -338,12 +348,14 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
   auto* first = CreateIncognitoBrowser();
   auto* second = CreateIncognitoBrowser();
   ASSERT_EQ(first->GetProfile(), second->GetProfile());
-  base::ScopedTempDir downloads;
-  ASSERT_TRUE(downloads.CreateUniqueTempDir());
-  first->GetProfile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
-  first->GetProfile()->GetPrefs()->SetFilePath(prefs::kDownloadDefaultDirectory,
-                                               downloads.GetPath());
   auto* manager = first->GetProfile()->GetDownloadManager();
+  // Lazy OTR download UI initialization resets the prompting preference.
+  auto* download_prefs = DownloadPrefs::FromDownloadManager(manager);
+  first->GetProfile()->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  ASSERT_EQ(first->GetProfile(), manager->GetBrowserContext());
+  ASSERT_FALSE(first->GetProfile()->GetPrefs()->GetBoolean(
+      prefs::kPromptForDownload));
+  ASSERT_FALSE(download_prefs->PromptForDownload());
   base::ScopedClosureRunner cleanup(
       base::BindLambdaForTesting([profile = first->GetProfile()->GetWeakPtr()] {
         if (!profile) {
@@ -574,6 +586,40 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   const int32_t personal_id = Open(kSharedPersonal, work_id);
   auto* personal = SharedWindow(personal_id);
   ASSERT_TRUE(personal);
+  auto* work_view = BrowserView::GetBrowserViewForBrowser(work);
+  auto* personal_view = BrowserView::GetBrowserViewForBrowser(personal);
+  ASSERT_TRUE(work_view);
+  ASSERT_TRUE(personal_view);
+  EXPECT_EQ(work_view->GetWidget(), personal_view->GetWidget());
+  for (auto* view : {work_view, personal_view}) {
+    auto* combo = views::AsViewClass<TabStripComboButton>(
+        view->tab_strip_view()->GetViewByElementId(
+            kTabStripComboButtonElementId));
+    ASSERT_TRUE(combo);
+    auto* bubble_host = view->GetTabSearchBubbleHost();
+    ASSERT_TRUE(bubble_host);
+    EXPECT_EQ(view->browser(), bubble_host->GetBrowser());
+    ASSERT_TRUE(view->side_panel());
+    EXPECT_TRUE(view->Contains(view->side_panel()));
+    auto* anchor = view->GetFallbackPopupAnchor();
+    ASSERT_TRUE(anchor);
+    auto* subregion = anchor->AsA<views::ViewSubregionAnchor>();
+    ASSERT_TRUE(subregion);
+    EXPECT_EQ(view, &subregion->view());
+    auto* menu_button = views::AsViewClass<AppMenuButton>(
+        view->toolbar()->GetViewByElementId(kToolbarAppMenuButtonElementId));
+    ASSERT_TRUE(menu_button);
+    const bool was_visible = menu_button->GetVisible();
+    menu_button->SetVisible(false);
+    EXPECT_FALSE(menu_button->IsDrawn());
+    EXPECT_EQ(anchor, menu_button->GetAnchor().GetIfElement());
+    menu_button->SetVisible(was_visible);
+    EXPECT_TRUE(combo->Contains(bubble_host->button()));
+    EXPECT_TRUE(view->Contains(bubble_host->button()));
+    auto* other_view = view == work_view ? personal_view : work_view;
+    EXPECT_FALSE(other_view->Contains(bubble_host->button()));
+    EXPECT_NE(bubble_host, other_view->GetTabSearchBubbleHost());
+  }
   auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
   auto host_alive = host->GetWeakPtr();
   const auto native_window = host->GetNativeWindow();
@@ -869,14 +915,15 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
       "document.body.innerHTML = '<input id=draft>'; draft.value='unsaved';"
       "onbeforeunload = () => 'keep draft';"));
   content::PrepContentsForBeforeUnloadTest(page);
-  base::ScopedTempDir downloads;
-  ASSERT_TRUE(downloads.CreateUniqueTempDir());
-  otr_profile->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
-  otr_profile->GetPrefs()->SetFilePath(prefs::kDownloadDefaultDirectory,
-                                       downloads.GetPath());
   const auto otr_path = otr_profile->GetPath();
   auto otr_profile_alive = otr_profile->GetWeakPtr();
   auto* manager = otr_profile->GetDownloadManager();
+  // Initialize the OTR default before overriding it for this warning fixture.
+  auto* download_prefs = DownloadPrefs::FromDownloadManager(manager);
+  otr_profile->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  ASSERT_EQ(otr_profile, manager->GetBrowserContext());
+  ASSERT_FALSE(otr_profile->GetPrefs()->GetBoolean(prefs::kPromptForDownload));
+  ASSERT_FALSE(download_prefs->PromptForDownload());
   base::ScopedClosureRunner cleanup(
       base::BindLambdaForTesting([otr_profile_alive] {
         if (!otr_profile_alive) {
