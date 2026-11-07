@@ -38,6 +38,7 @@ public final class TabsController {
     @ObservationIgnored private var mainRows: [UUID: (openFolders: Set<UUID>, rows: [Row])] = [:]
     /// How many times the main tree's items were grouped by parent for sidebar rows; tests read it.
     @ObservationIgnored private(set) var treeWalks = 0
+    @ObservationIgnored private(set) var nativeOwnershipVisits = 0
     public let loadOutcome: LoadOutcome
     public let directory: URL
     var isReadOnly: Bool {
@@ -85,6 +86,14 @@ public final class TabsController {
     /// Set once the SwiftData context has produced it; nil in a host without history.
     @ObservationIgnored public var history: HistoryManager?
     @ObservationIgnored public weak var webViews: WebViewProvider?
+    @ObservationIgnored public weak var nativePageHost: (any NativePageHost)? {
+        didSet {
+            guard nativePageHost != nil else { return }
+            for window in allWindows {
+                if let itemID = window.selectedItemID { select(itemID, in: window) }
+            }
+        }
+    }
     /// The app takes the screenshot, writes the clipboard and shows the toast.
     @ObservationIgnored public var onDevPick: ((PageSession, DevPickedElement) -> Void)?
     @ObservationIgnored public weak var sessionDelegate: PageSessionDelegate?
@@ -281,7 +290,10 @@ public final class TabsController {
             case .main:
                 var copy = tree
                 let change = try body(&copy)
+                let ownershipChanged = nativeOwnershipChanged(by: change, in: copy)
+                guard !ownershipChanged || nativeEditIsAdmissible(copy, owner: owner) else { return nil }
                 tree = copy
+                if ownershipChanged { cancelInvalidNativeCreations() }
                 if undoable { pushUndo(change) }
                 device.prune(against: tree)
                 save()
@@ -290,7 +302,10 @@ public final class TabsController {
             case .privateWindow(let window):
                 var copy = window.privateTree ?? TabTree()
                 let change = try body(&copy)
+                let ownershipChanged = nativeOwnershipChanged(by: change, in: copy)
+                guard !ownershipChanged || nativeEditIsAdmissible(copy, owner: owner) else { return nil }
                 window.privateTree = copy
+                if ownershipChanged { cancelInvalidNativeCreations() }
                 return change
             }
         } catch {
@@ -614,6 +629,127 @@ public final class TabsController {
         return active?.privateTree == nil ? active : regularWindows.first
     }
 
+    /// Change stores the previous touched records; additions and metadata edits cannot
+    /// invalidate an existing page's owner. Moving a folder can affect its descendants.
+    func nativeOwnershipChanged(by change: Change, in proposed: TabTree) -> Bool {
+        guard profileEngine == .chromium else { return false }
+        for (id, previous) in change.items {
+            guard let previous, previous.deletedAt == nil else { continue }
+            guard let current = proposed.item(id), current.parent == previous.parent else { return true }
+        }
+        for (id, previous) in change.spaces {
+            guard let previous, previous.deletedAt == nil else { continue }
+            guard let current = proposed.spaces[id], current.deletedAt == nil,
+                  current.dataStoreID == previous.dataStoreID else { return true }
+        }
+        return false
+    }
+
+    /// Synchronous tree/undo edits cannot bypass actual native close admission.
+    /// Explicit close/remove release first; unsupported destructive replacements
+    /// leave the current tree intact. Pending creations can still be canceled.
+    func nativeEditIsAdmissible(_ proposed: TabTree, owner: Owner) -> Bool {
+        guard profileEngine == .chromium else { return true }
+        for page in sessions {
+            nativeOwnershipVisits += 1
+            guard page.navigation != nil else { continue }
+            guard let currentOwner = self.owner(ofItem: page.itemID) else { continue }
+            let sameOwner: Bool
+            switch (owner, currentOwner) {
+            case (.main, .main): sameOwner = true
+            case (.privateWindow(let a), .privateWindow(let b)): sameOwner = a === b
+            default: sameOwner = false
+            }
+            guard sameOwner else { continue }
+            guard proposed.item(page.itemID) != nil else { return false }
+            let expectedProfile: UUID?
+            switch owner {
+            case .main:
+                expectedProfile = proposed.spaceID(of: page.itemID).flatMap { proposed.dataStoreID(for: $0) }
+            case .privateWindow(let window):
+                expectedProfile = window.ephemeralProfile?.id
+            }
+            if page.navigation?.profileID != expectedProfile { return false }
+        }
+        return true
+    }
+
+    private func cancelInvalidNativeCreations() {
+        guard profileEngine == .chromium else { return }
+        for page in sessions {
+            nativeOwnershipVisits += 1
+            guard let pending = page.nativeCreation else { continue }
+            if owner(ofItem: page.itemID) == nil || page.profile?.id != pending.profileID {
+                page.cancelNativeCreation()
+            }
+        }
+    }
+
+    func prepareNativeSelection(_ itemID: UUID, in window: BrowserWindowState,
+                                admitted: @escaping @MainActor () -> Void) {
+        let previous = window.nativeSelectionSession
+        let generation = UUID()
+        window.nativeSelectionGeneration = generation
+        window.nativeSelectionSession = nil
+        if previous?.itemID != itemID { previous?.cancelNativePreparation(in: window) }
+        guard window.nativeSelectionGeneration == generation else { return }
+        guard let page = ensureSession(for: itemID), let profileID = page.profile?.id else {
+            window.nativeSelectionGeneration = nil
+            return
+        }
+        window.nativeSelectionSession = page
+        page.ensureNativePage(in: window) { [weak self, weak page, weak window] prepared in
+            guard let self, let page, let window,
+                  window.nativeSelectionGeneration == generation else { return }
+            guard prepared, self.windowRegistry.windows[window.id] === window,
+                  self.session(for: itemID) === page, page.profile?.id == profileID,
+                  let navigation = page.navigation,
+                  let host = page.nativeResourceHost ?? self.nativePageHost,
+                  host.selectPage(navigation, in: window),
+                  window.nativeSelectionGeneration == generation,
+                  self.windowRegistry.windows[window.id] === window,
+                  self.session(for: itemID) === page, page.profile?.id == profileID else {
+                if window.nativeSelectionGeneration == generation {
+                    window.nativeSelectionGeneration = nil
+                    window.nativeSelectionSession = nil
+                }
+                return
+            }
+            window.nativeSelectionGeneration = nil
+            window.nativeSelectionSession = nil
+            admitted()
+        }
+    }
+
+    func nativePageWindow(for page: PageSession) -> BrowserWindowState? {
+        if let window = page.detachedWindow { return window }
+        if let id = pageOwners[page.itemID], let window = windowRegistry.windows[id] { return window }
+        return window(for: page)
+    }
+
+    /// Delay destructive model mutation until all affected native owners have
+    /// actually closed. Cancellation preserves the items; already-closed pages
+    /// may be recreated later. No native handles or second item registry live here.
+    func releaseNativePagesBeforeMutation(_ ids: [UUID], then action: @escaping @MainActor () -> Void) -> Bool {
+        let pages = ids.compactMap { session(for: $0) }.filter(\.requiresNativeResourceRelease)
+        guard !pages.isEmpty else { return false }
+        let profiles = pages.map { $0.profile?.id }
+        var remaining = pages.count
+        var allAdmitted = true
+        for page in pages {
+            page.requestNativeRelease { [weak self] admitted in
+                allAdmitted = allAdmitted && admitted
+                remaining -= 1
+                guard remaining == 0, allAdmitted, let self else { return }
+                guard zip(pages, profiles).allSatisfy({ page, id in
+                    self.session(for: page.itemID) === page && page.profile?.id == id
+                }) else { return }
+                action()
+            }
+        }
+        return true
+    }
+
     func canShow(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
         let source = tree(owner(of: window))
         guard source.item(itemID) != nil else { return false }
@@ -643,6 +779,17 @@ public final class TabsController {
 
     /// Moves the item's live page to `window`.
     public func takeControl(_ itemID: UUID, in window: BrowserWindowState) {
+        if profileEngine == .chromium {
+            prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.recordPageOwner(itemID, in: window)
+            }
+        } else {
+            recordPageOwner(itemID, in: window)
+        }
+    }
+
+    func recordPageOwner(_ itemID: UUID, in window: BrowserWindowState) {
         pageOwners[itemID] = window.id
         refreshWindows(showing: itemID)
     }

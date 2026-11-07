@@ -26,6 +26,11 @@ public protocol WindowHandle: AnyObject {
 public class BrowserWindowState {
     /// Unique identifier for this window instance
     public let id: UUID
+    /// Latest native selection intent; selected item/space changes only after
+    /// actual native admission. Scoped here, never in a parallel item registry.
+    @ObservationIgnored var nativeSelectionGeneration: UUID?
+    @ObservationIgnored weak var nativeSelectionSession: PageSession?
+
 
     /// Sidebar width for this window
     public var sidebarWidth: CGFloat = SidebarWidth.standard

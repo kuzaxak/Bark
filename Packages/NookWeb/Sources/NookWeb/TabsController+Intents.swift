@@ -40,7 +40,8 @@ extension TabsController {
             select(id, in: window)
         } else if opener != nil, let session = ensureSession(for: id) {
             // This window's page, for its mini player, until another window selects it.
-            takeControl(id, in: window)
+            if profileEngine == .chromium { recordPageOwner(id, in: window) }
+            else { takeControl(id, in: window) }
             session.loadWebViewIfNeeded()
             onPageLoadedInBackground?(session)
         }
@@ -200,12 +201,20 @@ extension TabsController {
     }
 
     /// `previous` is what the window showed before; a space switch has already moved on from it.
-    private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?) {
+    private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?,
+                        nativeAdmitted: Bool = false) {
         let owner = owner(of: window)
         let source = tree(owner)
         guard let item = source.item(itemID) else { return }
         if item.isFolder {
             toggleFolder(itemID)
+            return
+        }
+        if profileEngine == .chromium && !nativeAdmitted {
+            prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
+                guard let self, let window else { return }
+                self.select(itemID, in: window, leaving: self.selectedSession(in: window), nativeAdmitted: true)
+            }
             return
         }
         // An agent tab never pulls a window into the Agent space; the person opens it to watch.
@@ -229,7 +238,8 @@ extension TabsController {
         window.emptiedSpaces.remove(spaceID)
         if case .main = owner { markSeen([itemID] + (previous.map { [$0.itemID] } ?? [])) }
         // The latest window to select a page takes its live view; others show a placeholder.
-        takeControl(itemID, in: window)
+        if profileEngine == .chromium { recordPageOwner(itemID, in: window) }
+        else { takeControl(itemID, in: window) }
         var recent = window.recentItemsBySpace[spaceID, default: []]
         recent.removeAll { $0 == itemID }
         recent.append(itemID)
@@ -301,6 +311,21 @@ extension TabsController {
     public func setSpace(_ spaceID: UUID, in window: BrowserWindowState) {
         let source = tree(owner(of: window))
         guard source.space(spaceID) != nil else { return }
+        if profileEngine == .chromium {
+            let order = displayOrder(inSpace: spaceID)
+            if let remembered = window.selectedItemBySpace[spaceID], order.contains(remembered) {
+                select(remembered, in: window)
+            } else if !window.emptiedSpaces.contains(spaceID), let first = order.first {
+                select(first, in: window)
+            } else {
+                // Empty-space native presentation is not this ordinary-page
+                // slice. Keep the prior admitted document/profile truthful.
+                window.nativeSelectionGeneration = nil
+                window.nativeSelectionSession?.cancelNativePreparation(in: window)
+                window.nativeSelectionSession = nil
+            }
+            return
+        }
         let previous = selectedSession(in: window)
         let changed = window.spaceID != spaceID
         window.spaceID = spaceID
@@ -357,6 +382,12 @@ extension TabsController {
         guard let owner = owner(ofItem: itemID) else { return }
         let source = tree(owner)
         guard let item = source.item(itemID) else { return }
+        let expectedSubtree = Set(source.subtree(of: itemID))
+        let closingIDs = item.isFolder ? Array(expectedSubtree) : [itemID]
+        if releaseNativePagesBeforeMutation(closingIDs, then: { [weak self] in
+            guard let self, Set(self.tree(owner).subtree(of: itemID)) == expectedSubtree else { return }
+            self.close(itemID)
+        }) { return }
         if source.keepsItemOnClose(itemID) {
             // The page it showed, so Reopen Closed Tab can bring it back in place.
             var page = session(for: itemID).map { OpenPage(url: $0.storableURL, title: $0.title) }
@@ -390,6 +421,12 @@ extension TabsController {
     func remove(_ itemID: UUID, promotingChildren: Bool, archiving: Bool = false) {
         guard let owner = owner(ofItem: itemID) else { return }
         let ids = promotingChildren ? [itemID] : tree(owner).subtree(of: itemID)
+        if releaseNativePagesBeforeMutation(ids, then: { [weak self] in
+            guard let self else { return }
+            let current = promotingChildren ? [itemID] : self.tree(owner).subtree(of: itemID)
+            guard Set(current) == Set(ids) else { return }
+            self.remove(itemID, promotingChildren: promotingChildren, archiving: archiving)
+        }) { return }
         if let item = tree(owner).item(itemID) { dismissFromLiveFolder(item) }
         moveSelectionOff(Set(ids))
         var closedEntry: ClosedEntry?
@@ -871,6 +908,16 @@ extension TabsController {
             // its profile instead of claiming that its cookies were erased.
             guard stillOwned else { return }
         }
+        if profileEngine == .chromium {
+            let source = tree(owner)
+            let ids = (source.children(of: .favorites(spaceID: spaceID))
+                       + source.children(of: .pinned(spaceID: spaceID))
+                       + source.children(of: .tabs(spaceID: spaceID)))
+                .flatMap { source.subtree(of: $0.id) }
+            // Bulk space deletion has no native admission phase in this slice.
+            // Refuse before moving favorites or altering selection/metadata.
+            guard !ids.contains(where: { session(for: $0)?.requiresNativeResourceRelease == true }) else { return }
+        }
         // Favorites other spaces still show move to one of them instead of closing.
         if let heir = tree(owner).favoriteSpaces(sharedWith: spaceID).first(where: { $0 != spaceID }) {
             for favorite in tree(owner).children(of: .favorites(spaceID: spaceID)) {
@@ -933,6 +980,7 @@ extension TabsController {
     /// whether a document has unsaved work, uploads, or screen sharing: those signals are absent.
     public func inactiveUnloadProtectionReason(for page: PageSession) -> InactiveUnloadProtection? {
         if isOnScreen(page.itemID) { return .visible }
+        if profileEngine == .chromium { return .unknownNativeActivity }
         if page.hasPlayingAudio || page.hasAudioContent { return .audio }
         if page.hasPiPActive { return .pictureInPicture }
         if isInMiniPlayer(page.itemID) { return .miniPlayer }
@@ -960,9 +1008,14 @@ extension TabsController {
 
     /// Applies a change built elsewhere (the tab organizer's undo) to the main tree.
     public func apply(_ change: Change) {
+        if profileEngine == .chromium {
+            var proposed = tree
+            let touched = proposed.apply(change)
+            guard !nativeOwnershipChanged(by: touched, in: proposed) || nativeEditIsAdmissible(proposed, owner: .main) else { return }
+        }
         let before = Set(tree.items.keys.filter { tree.item($0) != nil })
         moveSelectionOff(Set(change.items.compactMap { id, value in value == nil || value?.deletedAt != nil ? id : nil }))
-        perform(.main, "apply", undoable: false) { tree in tree.apply(change) }
+        guard perform(.main, "apply", undoable: false, { tree in tree.apply(change) }) != nil else { return }
         for id in before where tree.item(id) == nil { endSession(id) }
         // Items the change brought back must not also reopen from the history.
         let restored = Set(change.items.keys.filter { !before.contains($0) && tree.item($0) != nil })
@@ -972,7 +1025,7 @@ extension TabsController {
     }
 }
 
-/// Retention reasons backed by signals available in the current WebKit runtime.
+/// Retention reasons, including an explicit boundary for engines without activity reporting.
 public enum InactiveUnloadProtection: String, Hashable {
-    case visible, audio, pictureInPicture, miniPlayer, camera, microphone, pinned
+    case visible, audio, pictureInPicture, miniPlayer, camera, microphone, pinned, unknownNativeActivity
 }

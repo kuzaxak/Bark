@@ -265,6 +265,14 @@ public final class PageSession: NSObject, Identifiable {
     private var navigationVisitRecorded = false
     private var navigationFinishedReported = false
     private var navigationCancelled = false
+    @ObservationIgnored var nativeCreation: NativePageCreation?
+    @ObservationIgnored var nativeRelease: NativePageRelease?
+    @ObservationIgnored weak var nativeResourceHost: (any NativePageHost)?
+    @ObservationIgnored var nativeRequestedURL: URL?
+    @ObservationIgnored weak var nativePreparationWindow: BrowserWindowState?
+    @ObservationIgnored var nativePreparationCompletions: [@MainActor (Bool) -> Void] = []
+    @ObservationIgnored var nativeIsEnding = false
+    @ObservationIgnored var nativeUnloadPending = false
     var navigation: (any PageNavigation)?
     var primaryWebView: WKWebView? {
         didSet {
@@ -422,6 +430,12 @@ public final class PageSession: NSObject, Identifiable {
         case .titleChanged(let title):
             if !title.isEmpty { updateTitle(title) }
         case .closed:
+            if nativeRelease != nil {
+                completeNativeRelease(true)
+                return
+            }
+            nativeIsEnding = true
+            nativeResourceHost = nil
             // Engine deletion already happened. Detach before callbacks and
             // never call stop/close back into the deleted native page.
             let ended = navigation
@@ -507,6 +521,16 @@ public final class PageSession: NSObject, Identifiable {
     // MARK: - Web View Lifecycle
 
     public func loadWebViewIfNeeded() {
+        if usesNativePageHost {
+            guard let controller, let window = controller.nativePageWindow(for: self) else { return }
+            if (navigation == nil || nativeIsEnding), window.selectedItemID == itemID,
+               window.nativeSelectionGeneration == nil {
+                controller.select(itemID, in: window)
+            } else {
+                ensureNativePage(in: window)
+            }
+            return
+        }
         if navigation == nil {
             setupWebView()
         }
@@ -672,6 +696,21 @@ public final class PageSession: NSObject, Identifiable {
     /// Releases every web view for this page (primary and window clones) and resets
     /// live state. The item and its URL stay; selecting it again loads a fresh view.
     public func unload() {
+        if requiresNativeResourceRelease {
+            guard !nativeUnloadPending else { return }
+            nativeUnloadPending = true
+            requestNativeRelease { [weak self] admitted in
+                guard let self else { return }
+                self.nativeUnloadPending = false
+                if admitted { self.finishUnloading() }
+            }
+            return
+        }
+        cancelNativeCreation()
+        finishUnloading()
+    }
+
+    private func finishUnloading() {
         controller?.onPageUnloaded?(itemID)
         let interval = BrowserPerformance.signposter.beginInterval("TabEviction")
         defer { BrowserPerformance.signposter.endInterval("TabEviction", interval) }
@@ -790,8 +829,17 @@ public final class PageSession: NSObject, Identifiable {
         hasFavicon = false
         faviconFetchAttempts = 0
 
-        if navigation == nil { setupWebView(initialLoad: false) }
-        navigation?.load(newURL)
+        if usesNativePageHost {
+            if let navigation, navigation.profileID == profile?.id {
+                navigation.load(newURL)
+            } else {
+                nativeRequestedURL = newURL
+                ensureNativePage()
+            }
+        } else {
+            if navigation == nil { setupWebView(initialLoad: false) }
+            navigation?.load(newURL)
+        }
 
         // Keep other windows displaying this page on the same URL.
         controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
