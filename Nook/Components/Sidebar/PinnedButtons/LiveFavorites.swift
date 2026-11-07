@@ -74,7 +74,8 @@ final class LiveFavorites {
     /// window is private or shows the Agent space.
     static func kind(of item: Item, in window: BrowserWindowState, tabs: TabsController) -> GoogleFavorite? {
         guard tabs.settings.favoriteMeetingsAndMail, !window.isIncognito,
-              let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false else { return nil }
+              let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false,
+              tabs.profileEngine == .webKit else { return nil }
         return GoogleFavorite(url: item.url)
     }
 

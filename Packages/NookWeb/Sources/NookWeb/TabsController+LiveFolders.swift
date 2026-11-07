@@ -12,7 +12,7 @@ import NookTabsCore
 
 extension TabsController {
     /// Why a live folder's last refresh brought nothing.
-    public enum LiveFolderStatus: Sendable { case signedOut, failed }
+    public enum LiveFolderStatus: Sendable { case signedOut, failed, unavailable }
 
     /// Refreshes run on events (app active, folder opened, a page the source owns), never on a
     /// timer; this is the least time between two for one folder.
@@ -101,10 +101,15 @@ extension TabsController {
         guard let source = tree.item(folderID)?.live, Self.isKnown(source), !liveRefreshing.contains(folderID),
               force || Date().timeIntervalSince(liveRefreshed[folderID] ?? .distantPast) >= Self.liveRefreshInterval,
               let spaceID = tree.spaceID(of: folderID), let profile = profile(forSpace: spaceID) else { return }
+        let store = profile.webKitDataStore
+        guard source.feedURL != nil || store != nil else {
+            liveStatus[folderID] = .unavailable
+            return
+        }
         liveRefreshing.insert(folderID)
         liveRefreshed[folderID] = Date()
         Task {
-            let cookies = source.feedURL == nil ? await profile.dataStore.httpCookieStore.allCookies() : []
+            let cookies = source.feedURL == nil ? await store?.httpCookieStore.allCookies() ?? [] : []
             let result = await Result { try await Self.fetch(source, cookies: cookies) }
             liveRefreshing.remove(folderID)
             guard tree.item(folderID)?.live == source else { return }
@@ -137,8 +142,8 @@ extension TabsController {
     /// The open pull requests of a space's github.com login, for a favorite's hover card. Empty
     /// when signed out or when the list could not be read.
     public func pullRequests(inSpace spaceID: UUID) async -> [LivePage] {
-        guard let profile = profile(forSpace: spaceID) else { return [] }
-        let cookies = await profile.dataStore.httpCookieStore.allCookies()
+        guard let store = profile(forSpace: spaceID)?.webKitDataStore else { return [] }
+        let cookies = await store.httpCookieStore.allCookies()
         return (try? await GitHubPulls.fetch(cookies: cookies)) ?? []
     }
 

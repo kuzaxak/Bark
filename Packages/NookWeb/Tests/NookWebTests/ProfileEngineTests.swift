@@ -125,6 +125,31 @@ struct ProfileEngineTests {
         #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
     }
 
+    @Test func nativeLiveSourcesReportUnavailableWithoutStartingLegacyFetches() async throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs(engine: .chromium)
+        let space = try #require(tabs.tree.orderedSpaces.first?.id)
+        let profile = try #require(tabs.profile(forSpace: space))
+        let sources: [LiveSource] = [.githubPulls, .githubIssues, .githubNotifications, .asanaTasks]
+        var folders: [UUID] = []
+        for source in sources {
+            let folder = try #require(tabs.createLiveFolder(source, in: space))
+            folders.append(folder)
+            tabs.refreshLiveFolder(folder, force: true)
+            #expect(tabs.liveStatus[folder] == .unavailable)
+        }
+        let item = try #require(tabs.children(of: .tabs(spaceID: space)).first?.id)
+        tabs.pageCommitted(itemID: item, url: URL(string: "https://github.com/synthetic/repo/pull/1")!)
+        tabs.refreshLiveFolders(inSpace: space)
+        #expect(await tabs.pullRequests(inSpace: space) == [])
+        #expect(await tabs.gmailInbox(inSpace: space, account: 0) == .unavailable)
+        await Task.yield()
+        #expect(profile.webKitDataStore == nil)
+        #expect(tabs.liveRefreshing.isEmpty && tabs.liveRefreshed.isEmpty)
+        #expect(folders.allSatisfy { tabs.liveStatus[$0] == .unavailable })
+    }
+
     @Test func nativeFactoriesReuseStoreUUIDAndKeepNativeMetadataAfterRestart() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }

@@ -41,6 +41,8 @@ struct MailCard: View {
             } else {
                 note("No unread mail")
             }
+        case .unavailable?:
+            note("Mail previews aren’t available for this profile")
         case .signedOut?:
             note("Sign in to Gmail in this favorite to see new mail")
         case .failed?:

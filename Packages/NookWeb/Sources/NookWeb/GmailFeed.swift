@@ -30,6 +30,8 @@ public enum GmailFeed {
         case inbox(Inbox)
         /// No one is signed in to that account in the favorite's profile.
         case signedOut
+        /// This profile has no supported cookie-reading capability.
+        case unavailable
         case failed
     }
 
@@ -155,7 +157,8 @@ extension TabsController {
     /// A Gmail favorite's unread mail, read with the cookies of its space's profile.
     public func gmailInbox(inSpace spaceID: UUID, account: Int) async -> GmailFeed.Outcome {
         guard let profile = profile(forSpace: spaceID) else { return .failed }
-        let cookies = await profile.dataStore.httpCookieStore.allCookies()
+        guard let store = profile.webKitDataStore else { return .unavailable }
+        let cookies = await store.httpCookieStore.allCookies()
         return await GmailFeed.fetch(account: account, cookies: cookies)
     }
 }

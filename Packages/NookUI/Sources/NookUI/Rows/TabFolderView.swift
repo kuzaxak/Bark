@@ -158,6 +158,7 @@ public struct TabFolderView: View {
     }
 
     private func liveStatusHelp(_ status: TabsController.LiveFolderStatus) -> String {
+        if status == .unavailable { return "Live updates aren’t available for this profile" }
         let signedOut = status == .signedOut
         switch item.live {
         case .githubIssues?: return signedOut ? "Sign in to GitHub" : "Couldn't load issues"
