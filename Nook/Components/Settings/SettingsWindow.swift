@@ -231,8 +231,14 @@ enum SettingsSubPane: Hashable {
     @MainActor @ViewBuilder
     func view(_ browserManager: BrowserManager) -> some View {
         switch self {
-        case .cookies: CookieManagementView(cookieManager: browserManager.cookieManager)
-        case .cache: CacheManagementView(cacheManager: browserManager.cacheManager)
+        case .cookies:
+            if let manager = browserManager.cookieManager {
+                CookieManagementView(cookieManager: manager)
+            } else { Text("Cookie controls are unavailable in this build.") }
+        case .cache:
+            if let manager = browserManager.cacheManager {
+                CacheManagementView(cacheManager: manager)
+            } else { Text("Cache controls are unavailable in this build.") }
         }
     }
 }
@@ -274,10 +280,9 @@ private struct SettingsDetailPane: View {
         case .ai:
             SettingsAITab()
         case .privacy:
-            PrivacySettingsView(
-                cookieManager: browserManager.cookieManager,
-                cacheManager: browserManager.cacheManager
-            )
+            if let cookies = browserManager.cookieManager, let cache = browserManager.cacheManager {
+                PrivacySettingsView(cookieManager: cookies, cacheManager: cache)
+            } else { Text("Privacy controls are unavailable in this build.") }
         case .adBlocker:
             SettingsAdBlockerTab()
         case .tweaks:

@@ -169,9 +169,11 @@ public struct SpacesSettingsView: View {
         }
         .labelsHidden()
         .fixedSize()
+        .disabled(tabs.profileEngine != .webKit)
     }
 
     private func move(_ spaceID: UUID, to storeID: UUID?, from current: ProfileSummary?) {
+        guard tabs.profileEngine == .webKit else { return }
         guard storeID != current?.id else { return }
         if let left = tabs.profileLeftEmpty(byMoving: spaceID, to: storeID) {
             pendingMove = (spaceID, storeID, left.name)
@@ -241,6 +243,7 @@ public struct SpacesSettingsView: View {
                         Button("Delete Space…", systemImage: "trash", role: .destructive) {
                             showDeleteDialog(space)
                         }
+                        .disabled(!canDeleteSpace(space))
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -533,6 +536,7 @@ public struct SpacesSettingsView: View {
 
     private static func describe(_ availability: SpaceSyncAvailability) -> String {
         switch availability {
+        case .disabled: return "Sync is disabled in this runtime"
         case .needsSignedBuild: return "Sync needs a signed build"
         case .readOnlyTabs: return "Sync is paused: Nook could not read its tabs"
         case .checking: return "Checking iCloud…"
@@ -557,7 +561,14 @@ public struct SpacesSettingsView: View {
         }
     }
 
+    private func canDeleteSpace(_ space: SpaceRecord) -> Bool {
+        tabs.profileEngine == .webKit ||
+            tabs.profiles.first(where: { $0.spaceIDs.contains(space.id) })
+                .map { $0.spaceIDs.count > 1 } == true
+    }
+
     private func showDeleteDialog(_ space: SpaceRecord) {
+        guard canDeleteSpace(space) else { return }
         actions?.confirmSpaceDeletion(
             spaceName: space.name,
             tabCount: tabs.tabCount(inSpace: space.id),

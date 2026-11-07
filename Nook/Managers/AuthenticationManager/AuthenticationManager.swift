@@ -16,6 +16,12 @@ import NookWeb
 final class AuthenticationManager: NSObject {
     private weak var browserManager: BrowserManager?
     private let credentialStore = BasicAuthCredentialStore()
+    private let userDefaults: UserDefaults
+
+    init(userDefaults: UserDefaults) {
+        self.userDefaults = userDefaults
+        super.init()
+    }
 
     /// UserDefaults dictionary of accepted untrusted certificates: "host:port" to the leaf's SHA-256.
     private static let certificateExceptionsKey = "security.acceptedCertificateExceptions"
@@ -111,7 +117,7 @@ final class AuthenticationManager: NSObject {
     /// Certificates the person chose to visit sites with although they failed the check.
     var certificateExceptions: CertificateExceptions {
         CertificateExceptions(
-            saved: UserDefaults.standard.dictionary(forKey: Self.certificateExceptionsKey) as? [String: String] ?? [:],
+            saved: userDefaults.dictionary(forKey: Self.certificateExceptionsKey) as? [String: String] ?? [:],
             privateOnly: privateCertificateExceptions)
     }
 
@@ -139,7 +145,7 @@ final class AuthenticationManager: NSObject {
             exceptions.accept(warning.fingerprint, host: warning.host, port: warning.port, isPrivate: isPrivate)
             self.privateCertificateExceptions = exceptions.privateOnly
             if exceptions.saved != saved {
-                UserDefaults.standard.set(exceptions.saved, forKey: Self.certificateExceptionsKey)
+                userDefaults.set(exceptions.saved, forKey: Self.certificateExceptionsKey)
             }
             session.retryLoad(of: warning)
         }

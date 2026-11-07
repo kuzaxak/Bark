@@ -51,7 +51,7 @@ extension BrowserManager {
         case .hardReload:
             guard let host = page.url.host else { return }
             Task { @MainActor in
-                await cacheManager.clearCacheForDomainExcludingCookies(host)
+                await cacheManager?.clearCacheForDomainExcludingCookies(host)
                 webView?.reloadFromOrigin()
             }
         case .reloadWithStandardProtection:
@@ -99,7 +99,7 @@ extension BrowserManager {
             clearCookies(of: page)
         case .clearSiteCache:
             guard let host = page.url.host else { return }
-            Task { await cacheManager.clearCacheForDomain(host) }
+            Task { await cacheManager?.clearCacheForDomain(host) }
         case .boost:
             openBoostPanel(in: window)
         }
@@ -107,7 +107,7 @@ extension BrowserManager {
 
     private func clearCookies(of page: PageSession) {
         guard let host = page.url.host else { return }
-        Task { await cookieManager.deleteCookiesForDomain(host) }
+        Task { await cookieManager?.deleteCookiesForDomain(host) }
     }
 
     func copyURL(of page: PageSession, in window: BrowserWindowState) {
@@ -146,13 +146,13 @@ extension BrowserManager {
 
     func clearAllCookies() {
         Task {
-            await cookieManager.deleteAllCookies()
+            await cookieManager?.deleteAllCookies()
         }
     }
 
     func clearExpiredCookies() {
         Task {
-            await cookieManager.deleteExpiredCookies()
+            await cookieManager?.deleteExpiredCookies()
         }
     }
 
@@ -160,25 +160,25 @@ extension BrowserManager {
 
     func clearStaleCache() {
         Task {
-            await cacheManager.clearStaleCache()
+            await cacheManager?.clearStaleCache()
         }
     }
 
     func clearDiskCache() {
         Task {
-            await cacheManager.clearDiskCache()
+            await cacheManager?.clearDiskCache()
         }
     }
 
     func clearMemoryCache() {
         Task {
-            await cacheManager.clearMemoryCache()
+            await cacheManager?.clearMemoryCache()
         }
     }
 
     func clearAllCache() {
         Task {
-            await cacheManager.clearAllCache()
+            await cacheManager?.clearAllCache()
         }
     }
 

@@ -566,7 +566,7 @@ struct TabCompositorWrapper: NSViewRepresentable {
         
         // Mark the selected page as accessed (resets its unload timer)
         if let session = browserManager.tabs.selectedSession(in: windowState) {
-            browserManager.compositorManager.markTabAccessed(session.itemID)
+            browserManager.compositorManager?.markTabAccessed(session.itemID)
             setupHoverCallbacks(for: session)
         }
     }

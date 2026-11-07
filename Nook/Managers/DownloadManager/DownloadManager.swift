@@ -300,6 +300,7 @@ extension Notification.Name {
 @Observable
 public class DownloadManager: NSObject {
     public static let shared = DownloadManager()
+    private let historyFileURL: URL?
 
     private var downloads: [UUID: Download] = [:]
     private var downloadDelegates: [UUID: DownloadDelegate] = [:]
@@ -337,7 +338,7 @@ public class DownloadManager: NSObject {
     private func restoreIfNeeded() {
         guard !restoreStarted else { return }
         restoreStarted = true
-        DownloadHistoryStore.load { [weak self] records in
+        DownloadHistoryStore.load(from: historyFileURL) { [weak self] records in
             guard let self else { return }
             for record in records {
                 let url = URL(fileURLWithPath: record.path)
@@ -366,7 +367,7 @@ public class DownloadManager: NSObject {
             return DownloadSnapshot(originalURL: item.originalURL, path: url.path, date: item.startDate,
                                     size: item.fileSize ?? item.downloadedBytes, renamedFrom: item.renamedFrom,
                                     profileID: item.origin.profileID, isCompleted: true, isPrivate: item.origin.isPrivate)
-        })
+        }, to: historyFileURL)
     }
 
     /// The hover card's peek: running first, then finished, then failed, newest first, four at most.
@@ -379,6 +380,12 @@ public class DownloadManager: NSObject {
     }
 
     override private init() {
+        historyFileURL = nil
+        super.init()
+    }
+
+    init(historyFileURL: URL) {
+        self.historyFileURL = historyFileURL
         super.init()
     }
 

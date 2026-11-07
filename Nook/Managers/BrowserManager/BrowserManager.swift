@@ -74,6 +74,14 @@ final class Persistence {
     }
 
     // MARK: - Init
+    /// Explicit isolated store; failure never resets the installed store.
+    init(directory: URL) throws {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let configuration = ModelConfiguration(
+            url: directory.appendingPathComponent(Self.storeFileName), cloudKitDatabase: .none)
+        container = try ModelContainer(for: Self.schema, configurations: [configuration])
+    }
+
     private init() {
         do {
             let config = ModelConfiguration(url: Self.storeURL, cloudKitDatabase: .none)
@@ -403,12 +411,12 @@ class BrowserManager: ObservableObject {
     var downloadManager: DownloadManager
     var authenticationManager: AuthenticationManager
     var historyManager: HistoryManager
-    var cookieManager: CookieManager
-    var cacheManager: CacheManager
+    var cookieManager: CookieManager?
+    var cacheManager: CacheManager?
     var extensionManager: ExtensionManager?
     /// Store ids an import found, installed once a browser window can show their permission sheets.
     var pendingExtensionImports: [String] = []
-    var compositorManager: TabCompositorManager
+    var compositorManager: TabCompositorManager?
     var splitManager: SplitViewManager
     var gradientColorManager: GradientColorManager
     var contentBlockerManager: ContentBlockerManager
@@ -434,7 +442,7 @@ class BrowserManager: ObservableObject {
     weak var windowRegistry: WindowRegistry?
 
     private var savedSidebarWidth: CGFloat = SidebarWidth.standard
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
     private var cancellables: Set<AnyCancellable> = []
 
     /// Profiles from before spaces owned their data, read only to seed a first launch that has no
@@ -445,12 +453,31 @@ class BrowserManager: ObservableObject {
         return entities.map { ($0.id, $0.name) }
     }
 
-    init(settings: NookSettingsService, windowRegistry: WindowRegistry) {
+    private let engine: Profile.Engine
+
+    init(
+        settings: NookSettingsService,
+        windowRegistry: WindowRegistry,
+        persistence: Persistence? = nil,
+        userDefaults: UserDefaults? = nil,
+        downloadManager: DownloadManager? = nil,
+        tabsDirectory: URL? = nil,
+        cloudSyncEnabled: Bool = true,
+        engine: Profile.Engine = .webKit
+    ) {
+        self.engine = engine
+        // Chromium must supply every app store before any legacy singleton can
+        // be evaluated. The WebKit path preserves its existing defaults.
+        precondition(engine == .webKit || (persistence != nil && userDefaults != nil &&
+            downloadManager != nil && tabsDirectory != nil))
+        let tabsDirectory = tabsDirectory ?? TabsController.defaultDirectory
         // Phase 1: initialize all stored properties
         self.nookSettings = settings
-        self.modelContext = Persistence.shared.container.mainContext
-        self.extensionManager = ExtensionManager.shared
-        let blocker = ContentBlockerManager(settings: settings)
+        self.modelContext = (persistence ?? .shared).container.mainContext
+        self.userDefaults = userDefaults ?? .standard
+        self.extensionManager = engine == .webKit ? ExtensionManager.shared : nil
+        let blocker = ContentBlockerManager(settings: settings, storageDirectory: engine == .chromium
+            ? tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists") : nil)
         let sponsorBlock = SponsorBlockManager(settings: settings)
         let siteRouting = SiteRoutingManager(settings: settings)
         self.contentBlockerManager = blocker
@@ -460,36 +487,38 @@ class BrowserManager: ObservableObject {
             settings: settings, windowRegistry: windowRegistry, blocker: blocker,
             sponsorBlock: sponsorBlock, siteRouting: siteRouting,
             legacyProfiles: Self.legacyProfileRecords(in: modelContext),
-            legacyTree: { [modelContext] in LegacyTabImport.tree(from: modelContext) })
+            legacyTree: { [modelContext] in LegacyTabImport.tree(from: modelContext) },
+            profileEngine: engine,
+            directory: tabsDirectory)
         self.tabs = tabs
-        self.spaceSyncManager = SpaceSyncManager(tabs: tabs)
+        self.spaceSyncManager = SpaceSyncManager(tabs: tabs, enabled: cloudSyncEnabled && engine == .webKit)
         // The first space's data store is the one the app starts on.
         let initialProfile = tabs.orderedSpaces.first.flatMap { tabs.profile(forSpace: $0.id) }
         self.currentProfileSubject = CurrentValueSubject(initialProfile)
 
         // settingsManager will be injected from NookApp
         self.dialogManager = DialogManager()
-        self.downloadManager = DownloadManager.shared
-        self.authenticationManager = AuthenticationManager()
+        self.downloadManager = downloadManager ?? .shared
+        self.authenticationManager = AuthenticationManager(userDefaults: self.userDefaults)
         // Initialize managers with the current space's data store for isolation
         self.historyManager = HistoryManager(
             context: modelContext, profileId: initialProfile?.id,
-            pageTextURL: TabsController.defaultDirectory.deletingLastPathComponent()
+            pageTextURL: tabsDirectory.deletingLastPathComponent()
                 .appendingPathComponent("History/page-text.sqlite"),
-            indexURL: TabsController.defaultDirectory.deletingLastPathComponent()
+            indexURL: tabsDirectory.deletingLastPathComponent()
                 .appendingPathComponent("History/history-index.sqlite"),
             halfLifeDays: settings.historyHalfLifeDays,
             wordStops: PaletteText.stops(from: settings.paletteWordStops))
-        self.cookieManager = CookieManager(dataStore: initialProfile?.dataStore)
-        self.cacheManager = CacheManager(dataStore: initialProfile?.dataStore)
-        self.compositorManager = TabCompositorManager()
+        self.cookieManager = engine == .webKit ? CookieManager(dataStore: initialProfile?.dataStore) : nil
+        self.cacheManager = engine == .webKit ? CacheManager(dataStore: initialProfile?.dataStore) : nil
+        self.compositorManager = engine == .webKit ? TabCompositorManager() : nil
         self.splitManager = SplitViewManager()
         self.gradientColorManager = GradientColorManager()
         self.findManager = FindManager()
         self.importManager = ImportManager()
 
         // Phase 2: wire dependencies and perform side effects (safe to use self)
-        self.compositorManager.browserManager = self
+        self.compositorManager?.browserManager = self
         self.splitManager.browserManager = self
         self.windowRegistry = windowRegistry
         // Note: settingsManager will be injected later, so we skip initialization here
@@ -501,7 +530,7 @@ class BrowserManager: ObservableObject {
         self.tabs.sessionDelegate = self
         self.tabs.tabEvents = self
         self.tabs.alerts = self
-        self.tabs.onPageLoadedInBackground = { [weak self] in self?.compositorManager.load($0) }
+        self.tabs.onPageLoadedInBackground = { [weak self] in self?.compositorManager?.load($0) }
         NotificationCenter.default.addObserver(
             forName: NookSettingsService.paletteWordStopsDidChange, object: nil, queue: .main
         ) { [weak self, settings] _ in
@@ -509,10 +538,12 @@ class BrowserManager: ObservableObject {
                 self?.historyManager.setWordStops(PaletteText.stops(from: settings.paletteWordStops))
             }
         }
-        let vault = VaultService(settings: settings)
-        vault.presenter = autofillManager
-        vault.securityKeyPresenter = securityKeySheets
-        self.tabs.vault = vault
+        if engine == .webKit {
+            let vault = VaultService(settings: settings)
+            vault.presenter = autofillManager
+            vault.securityKeyPresenter = securityKeySheets
+            self.tabs.vault = vault
+        }
         if case .readOnly(let reason) = tabs.loadOutcome {
             TabsController.presentReadOnlyAlert(reason: reason, directory: tabs.directory)
         }
@@ -526,18 +557,22 @@ class BrowserManager: ObservableObject {
                 .assign(to: &$isExtensionPopupActive)
         }
         self.gradientColorManager.setImmediate(.default)
-        self.contentBlockerManager.attach(host: self)
-        // Launch waits on the blocker, so it starts here and not when the first window appears,
-        // about 190 ms later. NookApp's own call then finds it already under way.
-        self.contentBlockerManager.setEnabled(settings.adBlockerEnabled)
-        self.contentBlockerManager.prepareLinkCleaning()
-        self.siteRoutingManager.host = self
-        SocialImageTweaks.downloader = self
+        if engine == .webKit {
+            self.contentBlockerManager.attach(host: self)
+            // Launch waits on the blocker, so it starts here and not when the first window appears,
+            // about 190 ms later. NookApp's own call then finds it already under way.
+            self.contentBlockerManager.setEnabled(settings.adBlockerEnabled)
+            self.contentBlockerManager.prepareLinkCleaning()
+            self.siteRoutingManager.host = self
+            SocialImageTweaks.downloader = self
+        }
         // Note: tracking protection will be configured after settingsManager injection
 
-        self.externalMiniWindowManager.attach(browserManager: self)
-        self.peekManager.attach(browserManager: self)
-        self.authenticationManager.attach(browserManager: self)
+        if engine == .webKit {
+            self.externalMiniWindowManager.attach(browserManager: self)
+            self.peekManager.attach(browserManager: self)
+            self.authenticationManager.attach(browserManager: self)
+        }
         // Migrate legacy history entries (with nil profile) to default profile to avoid cross-profile leakage
         self.migrateUnassignedDataToDefaultProfile()
         loadSidebarSettings()
@@ -548,14 +583,16 @@ class BrowserManager: ObservableObject {
             object: nil
         )
 
-        NotificationCenter.default.addObserver(
-            forName: .adBlockerEnabledChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] note in
-            guard let enabled = note.userInfo?["enabled"] as? Bool else { return }
-            Task { @MainActor [weak self] in
-                self?.contentBlockerManager.setEnabled(enabled)
+        if engine == .webKit {
+            NotificationCenter.default.addObserver(
+                forName: .adBlockerEnabledChanged,
+                object: nil,
+                queue: .main
+            ) { [weak self] note in
+                guard let enabled = note.userInfo?["enabled"] as? Bool else { return }
+                Task { @MainActor [weak self] in
+                    self?.contentBlockerManager.setEnabled(enabled)
+                }
             }
         }
 
@@ -619,11 +656,11 @@ class BrowserManager: ObservableObject {
                 do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
                 guard !Task.isCancelled, let self, let windowState,
                       self.windowRegistry?.windows[windowState.id] != nil,
-                      self.compositorManager.allowsBackgroundWarming,
+                      self.compositorManager?.allowsBackgroundWarming == true,
                       self.tabs.item(id) != nil,
                       let session = self.tabs.ensureSession(for: id) else { return }
                 guard session.isUnloaded else { continue }
-                self.compositorManager.load(session)
+                self.compositorManager?.load(session)
                 if let view = session.webView,
                    !(await Self.waitForStartupNavigation(view)) { return }
             }
@@ -656,8 +693,8 @@ class BrowserManager: ObservableObject {
         currentProfile = profile
         // No animation transaction: one here made the window render mid-switch. Settings loads
         // the cookie and data lists when it opens; reading them here stalled the switch.
-        cookieManager.switchDataStore(profile.dataStore, profileId: profile.id, eagerLoad: false)
-        cacheManager.switchDataStore(profile.dataStore, profileId: profile.id, eagerLoad: false)
+        cookieManager?.switchDataStore(profile.dataStore, profileId: profile.id, eagerLoad: false)
+        cacheManager?.switchDataStore(profile.dataStore, profileId: profile.id, eagerLoad: false)
         historyManager.switchProfile(profile.id)
         transitionEndTask?.cancel()
         transitionEndTask = Task { [weak self] in
@@ -901,7 +938,7 @@ class BrowserManager: ObservableObject {
     @objc private func handleTabManagementModeChange(_ notification: Notification) {
         if let modeRaw = notification.userInfo?["mode"] as? String,
            let mode = TabManagementMode(rawValue: modeRaw) {
-            compositorManager.setMode(mode)
+            compositorManager?.setMode(mode)
         }
     }
 
@@ -913,20 +950,20 @@ class BrowserManager: ObservableObject {
 
     func clearThirdPartyCookies() {
         Task {
-            await cookieManager.deleteThirdPartyCookies()
+            await cookieManager?.deleteThirdPartyCookies()
         }
     }
 
     func clearHighRiskCookies() {
         Task {
-            await cookieManager.deleteHighRiskCookies()
+            await cookieManager?.deleteHighRiskCookies()
         }
     }
 
     func performPrivacyCleanup() {
         Task {
-            await cookieManager.performPrivacyCleanup()
-            await cacheManager.performPrivacyCompliantCleanup()
+            await cookieManager?.performPrivacyCleanup()
+            await cacheManager?.performPrivacyCompliantCleanup()
         }
     }
 
@@ -960,12 +997,12 @@ class BrowserManager: ObservableObject {
 
     func clearPersonalDataCache() {
         Task {
-            await cacheManager.clearPersonalDataCache()
+            await cacheManager?.clearPersonalDataCache()
         }
     }
 
     func clearFaviconCache() {
-        cacheManager.clearFaviconCache()
+        cacheManager?.clearFaviconCache()
     }
 
     // MARK: - Extension Management
@@ -1039,6 +1076,7 @@ class BrowserManager: ObservableObject {
     /// split from TabsController (an unclaimed saved window record when there is one), then its
     /// selected page. The first regular window also reopens the other saved windows.
     func setupWindowState(_ windowState: BrowserWindowState) {
+        guard engine == .webKit else { return }
         windowState.sidebarWidth = sidebarWidth
         windowState.sidebarContentWidth = max(sidebarWidth - 16, 0)
         windowState.isSidebarVisible = isSidebarVisible
@@ -1097,6 +1135,7 @@ class BrowserManager: ObservableObject {
     /// Opens a regular window. `frame` places a window restored from DeviceState.windows;
     /// `setup` runs once the window is registered and set up.
     func createNewWindow(frame: NSRect? = nil, then setup: ((BrowserWindowState) -> Void)? = nil) {
+        guard engine == .webKit else { return }
         guard let windowRegistry = windowRegistry,
               let webViewCoordinator = webViewCoordinator else {
             #if DEBUG
@@ -1171,6 +1210,7 @@ class BrowserManager: ObservableObject {
 
     /// Create a new incognito/private browsing window
     func createIncognitoWindow() {
+        guard engine == .webKit else { return }
         guard let windowRegistry = windowRegistry,
               let webViewCoordinator = webViewCoordinator else {
             #if DEBUG

@@ -100,13 +100,19 @@ public final class FilterListManager {
     private let etagDir: URL
     private let session: URLSession
 
-    init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let base = appSupport.appendingPathComponent("\(Bundle.main.bundleIdentifier ?? "Nook")/ContentBlocker/FilterLists", isDirectory: true)
+    init(directory: URL? = nil) {
+        let base: URL
+        if let directory {
+            base = directory
+        } else {
+            let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            base = appSupport.appendingPathComponent("\(Bundle.main.bundleIdentifier ?? "Nook")/ContentBlocker/FilterLists", isDirectory: true)
+        }
         self.cacheDir = base
         self.etagDir = base.appendingPathComponent(".etags", isDirectory: true)
 
-        let config = URLSessionConfiguration.default
+        // Explicit storage isolation also excludes the shared HTTP cache/cookies.
+        let config = directory == nil ? URLSessionConfiguration.default : .ephemeral
         config.timeoutIntervalForRequest = 30
         config.timeoutIntervalForResource = 120
         self.session = URLSession(configuration: config)

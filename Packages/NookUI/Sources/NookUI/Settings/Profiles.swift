@@ -112,7 +112,7 @@ public struct ProfilesSettingsView: View {
                         .frame(width: NookDesign.Size.rowButton + NookDesign.Spacing.xs, height: NookDesign.Size.rowButton)
                 }
                 .help("Delete Profile…")
-                .disabled(tabs.profiles.count < 2)
+                .disabled(tabs.profiles.count < 2 || tabs.profileEngine != .webKit)
                 Spacer()
             }
             .buttonStyle(.borderless)
@@ -133,7 +133,7 @@ public struct ProfilesSettingsView: View {
                         LabeledContent(profile.name, value: spaceCount(profile))
                     }
                     .swipeActions {
-                        if tabs.profiles.count > 1 {
+                        if tabs.profiles.count > 1 && tabs.profileEngine == .webKit {
                             Button("Delete", role: .destructive) { pendingDelete = profile }
                         }
                     }
@@ -168,6 +168,7 @@ public struct ProfilesSettingsView: View {
     }
 
     private func delete(_ profile: ProfileSummary) {
+        guard tabs.profileEngine == .webKit else { return }
         guard let heir = heir(of: profile) else { return }
         if profile.spaceIDs.isEmpty {
             tabs.deleteKeptProfile(profile.id)
@@ -217,8 +218,13 @@ struct ProfileDetailForm: View {
             #endif
 
             Section("Website Data") {
-                LabeledContent(dataSize ?? "Checking…") {
-                    Button("Clear Website Data…") { confirmingClear = true }
+                if supportsWebsiteData {
+                    LabeledContent(dataSize ?? "Checking…") {
+                        Button("Clear Website Data…") { confirmingClear = true }
+                    }
+                } else {
+                    Text("Website data controls are unavailable in this build.")
+                        .foregroundStyle(.secondary)
                 }
             }
         }
@@ -300,14 +306,18 @@ struct ProfileDetailForm: View {
     }
     #endif
 
+    private var supportsWebsiteData: Bool {
+        tabs.profile(forStore: profile.id)?.webKitDataStore != nil
+    }
+
     private func refreshDataSize() async {
-        guard let store = tabs.profile(forStore: profile.id) else { return }
+        guard let store = tabs.profile(forStore: profile.id), store.webKitDataStore != nil else { return }
         await store.refreshDataStoreStats()
         dataSize = store.estimatedDataSize
     }
 
     private func clearData() async {
-        guard let store = tabs.profile(forStore: profile.id) else { return }
+        guard let store = tabs.profile(forStore: profile.id), store.webKitDataStore != nil else { return }
         await tabs.clearData(of: store)
         dataSize = store.estimatedDataSize
     }

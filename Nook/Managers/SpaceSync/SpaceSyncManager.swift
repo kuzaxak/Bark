@@ -48,11 +48,15 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// This Mac's kind, such as "iMac" or "MacBook Pro", which every save carries.
     @ObservationIgnored private let deviceName = SpaceSyncDevice.name(productName: SpaceSyncManager.productName, model: SpaceSyncManager.model)
 
-    init(tabs: TabsController) {
+    init(tabs: TabsController, enabled: Bool = true) {
         self.tabs = tabs
         fileURL = tabs.directory.deletingLastPathComponent()
             .appendingPathComponent("Sync", isDirectory: true)
             .appendingPathComponent("spaces.json")
+        guard enabled else {
+            status = SpaceSyncStatus(availability: .disabled)
+            return
+        }
         guard Self.isEntitled else {
             status = SpaceSyncStatus(availability: .needsSignedBuild)
             return

@@ -196,7 +196,7 @@ final class SplitViewManager: ObservableObject {
             bm.exitSidebarPiP(showing: id)
             if let session = bm.tabs.ensureSession(for: id) {
                 PiPManager.shared.leaveAutomatic(session)
-                bm.compositorManager.load(session)
+                bm.compositorManager?.load(session)
             }
         }
     }

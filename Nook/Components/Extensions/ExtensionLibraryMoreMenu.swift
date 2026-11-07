@@ -170,12 +170,12 @@ struct MoreMenuView: View {
         Task {
             switch target {
             case .cookies:
-                await browserManager.cookieManager.deleteCookiesForDomain(host)
+                await browserManager.cookieManager?.deleteCookiesForDomain(host)
             case .siteData:
-                await browserManager.cacheManager.clearCacheForDomain(host)
+                await browserManager.cacheManager?.clearCacheForDomain(host)
             case .everything:
-                await browserManager.cacheManager.clearCacheForDomain(host)
-                await browserManager.cookieManager.deleteCookiesForDomain(host)
+                await browserManager.cacheManager?.clearCacheForDomain(host)
+                await browserManager.cookieManager?.deleteCookiesForDomain(host)
             }
             loadSiteInfo()
         }

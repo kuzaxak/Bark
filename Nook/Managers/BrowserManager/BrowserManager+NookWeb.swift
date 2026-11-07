@@ -143,7 +143,7 @@ extension BrowserManager: TabEventObserver {
         ExtensionManager.shared.notifyTabActivated(new: session, previous: previous)
         // The loaded-page budget was only ever reached from startup warming and split view, so
         // opening tabs by hand never checked it and no cap could bind.
-        compositorManager.pageActivated(session.itemID)
+        compositorManager?.pageActivated(session.itemID)
         updateSidebarPiP(new: session, previous: previous)
     }
 

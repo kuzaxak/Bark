@@ -160,7 +160,7 @@ struct NookApp: App {
         browserManager.aiConfigService = aiConfigService
 
         // Configure managers that depend on settings
-        browserManager.compositorManager.setMode(
+        browserManager.compositorManager?.setMode(
             settingsManager.tabManagementMode
         )
         browserManager.contentBlockerManager.setEnabled(settingsManager.adBlockerEnabled)

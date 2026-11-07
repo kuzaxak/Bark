@@ -274,9 +274,9 @@ struct ExtensionLibraryView: View {
         guard let host = currentHost else { return }
         Task {
             if cache {
-                await browserManager.cacheManager.clearCacheForDomain(host)
+                await browserManager.cacheManager?.clearCacheForDomain(host)
             } else {
-                await browserManager.cookieManager.deleteCookiesForDomain(host)
+                await browserManager.cookieManager?.deleteCookiesForDomain(host)
             }
         }
         onDismiss()

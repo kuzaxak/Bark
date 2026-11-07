@@ -67,8 +67,8 @@ enum DownloadHistoryStore {
     }
 
     /// Reads the file and checks each path on the store's queue, then calls back on the main queue.
-    static func load(completion: @escaping ([DownloadRecord]) -> Void) {
-        let url = fileURL
+    static func load(from location: URL? = nil, completion: @escaping ([DownloadRecord]) -> Void) {
+        let url = location ?? fileURL
         queue.async {
             var kept: [DownloadRecord] = []
             if let data = try? Data(contentsOf: url),
@@ -82,9 +82,9 @@ enum DownloadHistoryStore {
     }
 
     /// Off the main thread; the newest write wins.
-    static func save(_ snapshots: [DownloadSnapshot]) {
+    static func save(_ snapshots: [DownloadSnapshot], to location: URL? = nil) {
         let newest = records(from: snapshots)
-        let url = fileURL
+        let url = location ?? fileURL
         queue.async {
             guard let data = try? JSONEncoder().encode(newest) else { return }
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)

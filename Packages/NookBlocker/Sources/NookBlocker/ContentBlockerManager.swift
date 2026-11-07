@@ -28,12 +28,13 @@ public final class ContentBlockerManager: NSObject {
     public private(set) var isEnabled = false
     public private(set) var isCompiling = false
 
-    public init(settings: NookSettingsService) {
+    public init(settings: NookSettingsService, storageDirectory: URL? = nil) {
         self.settings = settings
+        self.filterListManager = FilterListManager(directory: storageDirectory)
         super.init()
     }
 
-    public let filterListManager = FilterListManager()
+    public let filterListManager: FilterListManager
     public let advancedRulesEngine = AdvancedRulesEngine()
     public private(set) var trackingParamStripper = TrackingParamStripper()
     private var linkCleaningTask: Task<Void, Never>?
