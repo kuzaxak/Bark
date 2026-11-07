@@ -846,8 +846,10 @@ public final class PageSession: NSObject, Identifiable {
         // Keep other windows displaying this page on the same URL.
         controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
 
-        Task { @MainActor in
-            await fetchAndSetFavicon(for: newURL)
+        if usesWebKitFavicon {
+            Task { @MainActor in
+                await fetchAndSetFavicon(for: newURL)
+            }
         }
     }
 
