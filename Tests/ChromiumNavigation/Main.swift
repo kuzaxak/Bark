@@ -14,10 +14,12 @@ private enum Native {
     static var commands: [(String, Int32, Int32)] = []
     static var acceptsCommands = true
     static var acceptsObserver = true
+    static var pageCommands: [(Int32, Int32, Int32)] = []
+    static var muteRequests: [(Int32, Int32, Int32)] = []
 
     static func reset() {
         callback = nil; context = nil; observed = 0; cancelled = []; commands = []
-        acceptsCommands = true; acceptsObserver = true
+        acceptsCommands = true; acceptsObserver = true; pageCommands = []; muteRequests = []
     }
 
     static func emit(_ event: Int32, window: Int32 = 10, tab: Int32 = 20,
@@ -64,7 +66,11 @@ private enum Native {
                     }
                     return bytes.count
                 }
-            })
+            }, executePageCommand: { window, tab, command in MainActor.assumeIsolated {
+                Native.pageCommands.append((window, tab, command)); return Native.acceptsCommands ? 1 : 0
+            } }, setMuted: { window, tab, muted in MainActor.assumeIsolated {
+                Native.muteRequests.append((window, tab, muted)); return Native.acceptsCommands ? 1 : 0
+            } })
     }
 
     static func page() throws -> ChromiumPageNavigation {
@@ -85,10 +91,24 @@ private enum NavigationChecks {
         var page: ChromiumPageNavigation? = try Native.page()
         precondition(page?.state.title == "Fixture" && page?.state.canGoBack == true)
         precondition(page?.state.url?.path == "/committed" && page?.state.isLoading == false)
+        precondition(page!.performNativePageCommand(.find))
+        precondition(Native.pageCommands.last?.2 == 0 && Native.pageCommands.count == 1)
+        Native.acceptsCommands = false
+        precondition(!page!.performNativePageCommand(.print))
+        precondition(!page!.setAudioMuted(true) && page!.state.isAudioMuted == false)
+        Native.acceptsCommands = true
+        precondition(page!.setAudioMuted(true) && page!.state.isAudioMuted == false,
+                     "Dispatch acceptance is not mute state")
+        Native.emit(6, flags: 256 | 512)
+        precondition(page!.state.isAudioMuted == true && page!.state.isAudible == true)
+        precondition(!page!.performNativePageCommand(.hardReload))
         var events: [PageNavigationEvent] = []
         page?.onEvent = { events.append($0) }
         Native.emit(6, window: 11, flags: 6)
         precondition(events.isEmpty, "A binding/state snapshot invented a visit")
+        precondition(page!.performNativePageCommand(.zoomIn))
+        precondition(Native.pageCommands.last?.0 == 11 && Native.pageCommands.last?.1 == 20)
+        precondition(page!.setAudioMuted(false) && Native.muteRequests.last?.0 == 11)
         precondition(page!.goBack() && page!.goForward() && page!.reload())
         page?.load(URL(string: "https://fixture.test/new")!)
         page?.stop()
@@ -123,6 +143,9 @@ private enum NavigationChecks {
         precondition(events.count == 4)
         guard case .closed = events.last else { preconditionFailure("Missing close notification") }
         precondition(!page!.goBack())
+        let commandsAfterClose = Native.pageCommands.count, muteAfterClose = Native.muteRequests.count
+        precondition(!page!.performNativePageCommand(.webInspector) && !page!.setAudioMuted(true))
+        precondition(Native.pageCommands.count == commandsAfterClose && Native.muteRequests.count == muteAfterClose)
         Native.emit(3, window: 11)
         precondition(events.count == 4, "A closed page was revived")
         page = nil

@@ -102,15 +102,15 @@ extension BrowserManager: PageSessionDelegate {
     }
 
     func configureShortcutDetection(in webView: WKWebView) {
-        keyboardShortcutManager?.websiteShortcutDetector.configure(webView: webView)
+        keyboardShortcutManager?.websiteShortcutDetector?.configure(webView: webView)
     }
 
     func shortcutDetectorDidNavigate(to url: URL) {
-        keyboardShortcutManager?.websiteShortcutDetector.updateCurrentURL(url)
+        keyboardShortcutManager?.websiteShortcutDetector?.updateCurrentURL(url)
     }
 
     func updateDetectedShortcuts(for url: String, shortcuts: Set<String>) {
-        keyboardShortcutManager?.websiteShortcutDetector.updateJSDetectedShortcuts(
+        keyboardShortcutManager?.websiteShortcutDetector?.updateJSDetectedShortcuts(
             for: url, shortcuts: shortcuts)
     }
 

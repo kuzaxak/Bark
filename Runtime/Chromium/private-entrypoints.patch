@@ -1,0 +1,244 @@
+diff --git a/chrome/browser/profiles/profile_window.cc b/chrome/browser/profiles/profile_window.cc
+--- a/chrome/browser/profiles/profile_window.cc
++++ b/chrome/browser/profiles/profile_window.cc
+@@ -19,6 +19,10 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
++
+ #include "build/chromeos_buildflags.h"
+ #include "chrome/browser/about_flags.h"
+ #include "chrome/browser/browser_process.h"
+@@ -234,6 +238,18 @@
+ 
+ void SwitchToGuestProfile(
+     base::OnceCallback<void(BrowserWindowInterface*)> callback) {
++#if BUILDFLAG(IS_MAC)
++  // The product's private sessions have explicit asynchronous admission.
++  // Stock Guest/ProfilePicker windows have no Barc model/header owner.
++  if (barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    if (callback) {
++      std::move(callback).Run(nullptr);
++    }
++    return;
++  }
++#endif
+   SwitchToProfile(ProfileManager::GetGuestProfilePath(),
+                   /*always_create=*/false, std::move(callback));
+ }
+diff --git a/chrome/browser/renderer_context_menu/render_view_context_menu.cc b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+--- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
++++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+@@ -37,6 +37,10 @@
+ #include "base/system/sys_info.h"
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
++
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/vector_icons/vector_icons.h"
+ #include "chrome/browser/app_mode/app_mode_utils.h"
+@@ -242,6 +246,7 @@
+ #include "content/public/browser/spare_render_process_host_manager.h"
+ #include "content/public/browser/ssl_status.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/weak_document_ptr.h"
+ #include "content/public/common/buildflags.h"
+ #include "content/public/common/referrer.h"
+ #include "content/public/common/url_constants.h"
+@@ -3812,6 +3817,76 @@
+     bool started_from_context_menu,
+     base::OnceCallback<void(content::NavigationHandle&)>
+         navigation_handle_callback) {
++#if BUILDFLAG(IS_MAC)
++  if (disposition == WindowOpenDisposition::OFF_THE_RECORD &&
++      barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    Profile* source_profile = GetProfile();
++    auto* frame = source_document_at_menu_open_.AsRenderFrameHostIfValid();
++    if (!frame || !frame->IsActive() || !g_browser_process ||
++        g_browser_process->IsShuttingDown() ||
++        !g_browser_process->profile_manager() ||
++        !IsOpenLinkOTREnabled(source_profile, url) ||
++        enterprise_isolated_mode::IsolatedModeReplacesIncognito(
++            source_profile)) {
++      return;
++    }
++    // Capture the stock sanitized metadata before the menu is dismissed. The
++    // originating document, not this short-lived menu, owns cancellation.
++    auto params = GetOpenURLParamsWithExtraHeaders(
++        url, referring_url, initiator, disposition, transition, extra_headers,
++        started_from_context_menu);
++    g_browser_process->profile_manager()->CreatePrivateSessionAsync(
++        base::BindOnce(
++            [](base::WeakPtr<content::WebContents> source,
++               content::WeakDocumentPtr document,
++               base::WeakPtr<Profile> source_profile,
++               content::OpenURLParams params,
++               base::OnceCallback<void(content::NavigationHandle&)> callback,
++               Profile* session) {
++              auto* frame = document.AsRenderFrameHostIfValid();
++              if (!source || !source_profile || !frame || !frame->IsActive() ||
++                  content::WebContents::FromRenderFrameHost(frame) !=
++                      source.get() ||
++                  frame->GetBrowserContext() != source_profile.get() ||
++                  source_profile->ShutdownStarted() || !session ||
++                  !g_browser_process || g_browser_process->IsShuttingDown() ||
++                  !barc::IsNativeApplicationRegistered() ||
++                  !IsOpenLinkOTREnabled(source_profile.get(), params.url) ||
++                  enterprise_isolated_mode::IsolatedModeReplacesIncognito(
++                      source_profile.get())) {
++                return;
++              }
++              auto* manager = g_browser_process->profile_manager();
++              auto* parent = session->GetOriginalProfile();
++              if (!manager || !session->IsGuestSession() ||
++                  !session->IsPrimaryOTRProfile() ||
++                  !ProfileManager::IsPrivateSessionProfilePath(
++                      parent->GetPath()) ||
++                  manager->GetProfileByPath(parent->GetPath()) != parent ||
++                  parent->GetPrimaryOTRProfile(false) != session) {
++                return;
++              }
++              NavigateParams navigation(session, params.url, params.transition);
++              navigation.FillNavigateParamsFromOpenURLParams(params);
++              navigation.source_contents = source.get();
++              navigation.tabstrip_add_types = AddTabTypes::ADD_NONE;
++              // Fill retains the source context for stock security sanitation;
++              // select the independently resolved destination explicitly.
++              navigation.initiating_profile = session;
++              navigation.disposition = WindowOpenDisposition::NEW_WINDOW;
++              auto handle = Navigate(&navigation);
++              if (handle && callback) {
++                std::move(callback).Run(*handle);
++              }
++            },
++            source_web_contents_->GetWeakPtr(), source_document_at_menu_open_,
++            source_profile->GetWeakPtr(), std::move(params),
++            std::move(navigation_handle_callback)));
++    return;
++  }
++#endif
+   RenderViewContextMenuBase::OpenURLWithExtraHeaders(
+       url, referring_url, initiator, disposition, transition, extra_headers,
+       started_from_context_menu, std::move(navigation_handle_callback));
+diff --git a/chrome/browser/ui/BUILD.gn b/chrome/browser/ui/BUILD.gn
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -246,6 +246,9 @@
+   # be circular for the many targets that :ui itself depends on.
+   source_set("browser_window_header") {
+     public = [ "browser_window.h" ]
++    if (is_mac) {
++      public += [ "views/frame/barc_runtime_startup.h" ]
++    }
+     public_deps = [
+       ":browser_window_deleter",
+       ":download_close_type",
+diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -1012,6 +1012,13 @@
+ }
+ 
+ void OpenURLOffTheRecord(Profile* profile, const GURL& url) {
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    return;
++  }
++#endif
+   ScopedTabbedBrowserDisplayer displayer(
+       profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
+   AddSelectedTabWithURL(displayer.browser_window_interface(), url,
+diff --git a/chrome/browser/ui/navigator/browser_navigator.cc b/chrome/browser/ui/navigator/browser_navigator.cc
+--- a/chrome/browser/ui/navigator/browser_navigator.cc
++++ b/chrome/browser/ui/navigator/browser_navigator.cc
+@@ -11,6 +11,7 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/notimplemented.h"
+@@ -19,6 +20,10 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
++
+ #include "chrome/browser/apps/app_service/web_contents_app_id_utils.h"
+ #include "chrome/browser/apps/link_capturing/link_capturing_tab_data.h"
+ #include "chrome/browser/browser_about_handler.h"
+@@ -597,6 +602,17 @@
+   TRACE_EVENT1("navigation", "chrome::Navigate", "disposition",
+                params->disposition);
+   CHECK(params);
++#if BUILDFLAG(IS_MAC)
++  // Supported Barc entrypoints resolve private sessions asynchronously first.
++  // Refuse residual OTR requests before URL adjustment can fall back to a
++  // regular profile or create Chromium's shared primary OTR.
++  if (params->disposition == WindowOpenDisposition::OFF_THE_RECORD &&
++      barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    return nullptr;
++  }
++#endif
+   BrowserWindowInterface* source_browser = params->browser;
+   if (source_browser) {
+     params->initiating_profile = source_browser->GetProfile();
+diff --git a/chrome/browser/ui/views/profiles/profile_picker_view.cc b/chrome/browser/ui/views/profiles/profile_picker_view.cc
+--- a/chrome/browser/ui/views/profiles/profile_picker_view.cc
++++ b/chrome/browser/ui/views/profiles/profile_picker_view.cc
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ 
+ #include "base/check_deref.h"
++#include "base/command_line.h"
+ #include "base/debug/dump_without_crashing.h"
+ #include "base/feature_list.h"
+ #include "base/files/file_path.h"
+@@ -20,6 +21,10 @@
+ #include "base/time/time.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
++
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/feature_engagement/tracker_factory.h"
+@@ -161,6 +166,19 @@
+ 
+ // static
+ void ProfilePicker::Show(Params&& params) {
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    if (params.entry_point() == EntryPoint::kGlicManager ||
++        params.entry_point() == EntryPoint::kOmniboxEverywhere) {
++      params.NotifyProfilePicked(nullptr);
++    } else {
++      params.NotifyFirstRunExited(FirstRunExitStatus::kAbandonedFlow);
++    }
++    return;
++  }
++#endif
+   // Re-open with new params if necessary.
+   if (g_profile_picker_view && g_profile_picker_view->MaybeReopen(params)) {
+     return;

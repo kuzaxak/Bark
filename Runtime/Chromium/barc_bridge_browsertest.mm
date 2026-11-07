@@ -19,9 +19,11 @@
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/profiles/profile.h"
@@ -29,6 +31,7 @@
 #include "chrome/browser/sessions/session_service.h"
 #include "chrome/browser/sessions/session_service_factory.h"
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
+#include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -38,6 +41,9 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/embedder_browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/find_bar/find_bar.h"
+#include "chrome/browser/ui/find_bar/find_bar_controller.h"
+#include "chrome/browser/ui/tabs/tab_muted_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
@@ -59,6 +65,7 @@
 #include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/zoom/zoom_controller.h"
 #include "content/public/browser/download_manager.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
@@ -142,6 +149,15 @@ class NavigationEvents {
       EXPECT_EQ(1, self->close_window_started ? barc_window_close(window)
                                             : barc_tab_close(window, tab));
     }
+    if (kind == BARC_TAB_STATE && self->commands_on_audio_state &&
+        (flags & BARC_TAB_MUTED)) {
+      self->commands_on_audio_state = false;
+      EXPECT_EQ(0, barc_tab_execute_command(window, tab, BARC_PAGE_ZOOM_IN));
+      EXPECT_EQ(0, barc_tab_set_muted(window, tab, 0));
+      self->audio_commands_refused = true;
+      if (self->close_on_audio_state)
+        EXPECT_EQ(1, barc_tab_close(window, tab));
+    }
     if (kind == BARC_TAB_CLOSE_CANCELLED) {
       if (self->retry_cancelled) {
         self->retry_cancelled = false;
@@ -170,6 +186,9 @@ class NavigationEvents {
   bool unsubscribe_before_close = false;
   int32_t transfer_destination = 0;
   bool transfer_refused = false;
+  bool commands_on_audio_state = false;
+  bool audio_commands_refused = false;
+  bool close_on_audio_state = false;
   bool retry_cancelled = false;
   bool unsubscribe_cancelled = false;
   std::vector<NavigationEvent> events;
@@ -712,6 +731,125 @@ class BarcSharedNativeWindowBrowserTest : public BarcBridgeBrowserTest {
     ASSERT_TRUE(content::WaitForLoadStop(contents));
   }
 };
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       PageCommandsRequireExactActiveOwnerAndRespectPolicy) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  Navigate(work, embedded_test_server()->GetURL("/title1.html"));
+  const int32_t work_tab = barc_window_tab_at(work_id, 0);
+  const int32_t background = barc_tab_create(work_id, "about:blank", 0);
+  ASSERT_GT(background, 0);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  ASSERT_GT(personal_id, 0);
+  ASSERT_EQ(1, barc_tab_select(personal_id, barc_window_tab_at(personal_id, 0)));
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_IN));
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  EXPECT_EQ(0, barc_tab_execute_command(personal_id, work_tab, BARC_PAGE_ZOOM_IN));
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, background, BARC_PAGE_ZOOM_IN));
+  EXPECT_EQ(0, barc_tab_execute_command(-1, work_tab, BARC_PAGE_FIND));
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, -1));
+  auto* contents = work->GetTabStripModel()->GetActiveWebContents();
+  auto* zoom = zoom::ZoomController::FromWebContents(contents);
+  ASSERT_TRUE(zoom);
+  const double initial_zoom = zoom->GetZoomLevel();
+  ASSERT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_IN));
+  EXPECT_GT(zoom->GetZoomLevel(), initial_zoom);
+  EXPECT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_OUT));
+  EXPECT_DOUBLE_EQ(initial_zoom, zoom->GetZoomLevel());
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_RESET));
+  ASSERT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_IN));
+  EXPECT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_RESET));
+  EXPECT_DOUBLE_EQ(initial_zoom, zoom->GetZoomLevel());
+  ASSERT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_FIND));
+  EXPECT_TRUE(FindBarController::From(work)->find_bar()->IsFindBarVisible());
+  EXPECT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_FIND_NEXT));
+  EXPECT_EQ(1, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_FIND_PREVIOUS));
+  auto* commands = chrome::BrowserCommandController::From(work);
+  commands->UpdateCommandEnabled(IDC_FIND, false);
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_FIND));
+  commands->UpdateCommandEnabled(IDC_FIND, true);
+  work->GetProfile()->GetPrefs()->SetBoolean(prefs::kPrintingEnabled, false);
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_PRINT));
+  work->GetProfile()->GetPrefs()->SetInteger(
+      prefs::kDevToolsAvailability,
+      static_cast<int>(policy::DeveloperToolsAvailability::kDisallowed));
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_DEVTOOLS));
+  // The old window/tab pair cannot act on a same-profile transferred document.
+  const int32_t peer = barc_window_new_peer(work_id);
+  ASSERT_GT(peer, 0);
+  ASSERT_EQ(1, barc_tab_transfer(work_id, work_tab, peer));
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, work_tab, BARC_PAGE_ZOOM_IN));
+  EXPECT_EQ(1, barc_tab_execute_command(peer, work_tab, BARC_PAGE_ZOOM_IN));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       BackgroundTabMuteReportsActualStateWithoutSelection) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  const int32_t active_tab = barc_window_tab_at(work_id, 0);
+  const int32_t background = barc_tab_create(work_id, "about:blank", 0);
+  ASSERT_GT(background, 0);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
+  ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+  auto* contents = tabs::TabHandle(background).Get()->GetContents();
+  NavigationEvents events;
+  events.token = barc_tab_observe(work_id, background, NavigationEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  ASSERT_FALSE(events.events.empty());
+  EXPECT_EQ(contents->IsAudioMuted(), (events.events.back().flags & BARC_TAB_MUTED) != 0);
+  EXPECT_EQ(contents->IsCurrentlyAudible(), (events.events.back().flags & BARC_TAB_AUDIBLE) != 0);
+  const auto count = events.Count(BARC_TAB_STATE);
+  EXPECT_EQ(0, barc_tab_set_muted(personal_id, background, 1));
+  EXPECT_EQ(0, barc_tab_set_muted(work_id, background, 2));
+  EXPECT_EQ(0, barc_tab_set_muted(-1, background, 1));
+  ASSERT_EQ(1, barc_tab_set_muted(work_id, background, 1));
+  EXPECT_TRUE(contents->IsAudioMuted());
+  EXPECT_EQ(TabMutedReason::kAudioIndicator, GetTabAudioMutedReason(contents));
+  EXPECT_GT(events.Count(BARC_TAB_STATE), count);
+  EXPECT_NE(0u, events.events.back().flags & BARC_TAB_MUTED);
+  ASSERT_EQ(1, barc_tab_set_muted(work_id, background, 0));
+  EXPECT_FALSE(contents->IsAudioMuted());
+  EXPECT_EQ(0u, events.events.back().flags & BARC_TAB_MUTED);
+  EXPECT_EQ(active_tab, work->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
+  EXPECT_EQ(personal_tab, SharedWindow(personal_id)->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
+  EXPECT_TRUE(SharedWindow(personal_id)->IsSelectedForNativeWindow());
+  EXPECT_FALSE(work->IsSelectedForNativeWindow());
+  // A transferred background tab retains its observer and explicit identity.
+  const int32_t peer = barc_window_new_peer(work_id);
+  ASSERT_GT(peer, 0);
+  ASSERT_EQ(1, barc_tab_transfer(work_id, background, peer));
+  EXPECT_EQ(0, barc_tab_set_muted(work_id, background, 1));
+  EXPECT_EQ(1, barc_tab_set_muted(peer, background, 1));
+  EXPECT_EQ(peer, events.events.back().window);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       AudioCallbackCannotRetargetCommandsDuringClose) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  const int32_t active = barc_window_tab_at(work_id, 0);
+  const int32_t background = barc_tab_create(work_id, "about:blank", 0);
+  ASSERT_GT(background, 0);
+  ASSERT_EQ(1, barc_tab_select(work_id, active));
+  auto* contents = tabs::TabHandle(background).Get()->GetContents();
+  auto weak_contents = contents->GetWeakPtr();
+  NavigationEvents events;
+  events.token = barc_tab_observe(work_id, background, NavigationEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  events.commands_on_audio_state = true;
+  events.close_on_audio_state = true;
+  EXPECT_EQ(1, barc_tab_set_muted(work_id, background, 1));
+  EXPECT_TRUE(events.audio_commands_refused);
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.Count(BARC_TAB_CLOSED) == 1; }));
+  ASSERT_TRUE(base::test::RunUntil([&] { return !weak_contents; }));
+  EXPECT_EQ(active, barc_window_tab_at(work_id, 0));
+  EXPECT_EQ(0, barc_tab_set_muted(work_id, background, 0));
+  EXPECT_EQ(0, barc_tab_execute_command(work_id, background, BARC_PAGE_FIND));
+}
 
 IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                        ProfilesShareNativeWindowAndRetainLivePage) {

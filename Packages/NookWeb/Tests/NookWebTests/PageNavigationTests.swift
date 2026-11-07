@@ -6,6 +6,26 @@ import WebKit
 
 @MainActor
 struct PageNavigationTests {
+    @Test func muteUsesObservedStateAndRefusalNeverChangesTheModel() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Audio", isPrivate: false, controller: nil)
+        let page = RecordingNavigation(profileID: UUID())
+        session.installNavigation(page)
+        session.setMuted(true)
+        #expect(page.muteRequests == [true] && !session.isAudioMuted)
+        page.acceptsMute = true
+        session.setMuted(true)
+        #expect(page.muteRequests == [true, true] && !session.isAudioMuted)
+        page.state.isAudioMuted = true; page.state.isAudible = true
+        page.onStateChanged?(page.state)
+        #expect(session.isAudioMuted && session.hasPlayingAudio && session.hasAudioContent)
+        session.toggleMute()
+        #expect(page.muteRequests.last == false && session.isAudioMuted)
+        page.state.isAudioMuted = false; page.state.isAudible = false
+        page.onStateChanged?(page.state)
+        #expect(!session.isAudioMuted && !session.hasPlayingAudio && !session.hasAudioContent)
+        #expect(session.webView == nil && !page.invalidated)
+    }
+
     @Test func sessionCommandsUseInstalledEngineWithoutCreatingWebKit() {
         let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
                                   title: "Test", isPrivate: true, controller: nil)
@@ -272,6 +292,9 @@ private final class RecordingNavigation: PageNavigation {
     var reloads = 0
     var stops = 0
     var invalidated = false
+    var acceptsMute = false
+    var muteRequests: [Bool] = []
+    func setAudioMuted(_ muted: Bool) -> Bool { muteRequests.append(muted); return acceptsMute }
     init(profileID: UUID) { self.profileID = profileID }
     func publish(back: Bool, forward: Bool) {
         state = PageNavigationState(canGoBack: back, canGoForward: forward)

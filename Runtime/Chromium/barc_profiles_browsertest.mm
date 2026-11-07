@@ -2,6 +2,8 @@
 
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
 
+#include <atomic>
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
@@ -15,6 +17,7 @@
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
+#include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
@@ -26,14 +29,21 @@
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/profiles/profile_manager_observer.h"
+#include "chrome/browser/profiles/profile_window.h"
+#include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/navigator/browser_navigator.h"
+#include "chrome/browser/ui/navigator/browser_navigator_params.h"
+#include "chrome/browser/ui/profiles/profile_picker.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
@@ -41,6 +51,9 @@
 #include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
@@ -56,9 +69,13 @@
 #include "extensions/test/extension_test_message_listener.h"
 #include "extensions/test/test_extension_dir.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_request.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
+#include "ui/base/page_transition_types.h"
+#include "ui/base/window_open_disposition.h"
 #include "url/gurl.h"
+#include "url/origin.h"
 
 namespace {
 constexpr char kWork[] = "b482ffdf-5bb1-4f77-b176-12f17ae8f1af";
@@ -779,4 +796,190 @@ IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
                                                    identity, sizeof(identity)));
         return true;
       });
+}
+
+
+namespace {
+class OnPrivateProfileAdded : public ProfileManagerObserver {
+ public:
+  explicit OnPrivateProfileAdded(base::OnceClosure action)
+      : action_(std::move(action)) {
+    observation_.Observe(g_browser_process->profile_manager());
+  }
+  void OnProfileAdded(Profile* profile) override {
+    if (action_ &&
+        ProfileManager::IsPrivateSessionProfilePath(profile->GetPath())) {
+      called_ = true;
+      std::move(action_).Run();
+    }
+  }
+  bool called() const { return called_; }
+ private:
+  bool called_ = false;
+  base::OnceClosure action_;
+  base::ScopedObservation<ProfileManager, ProfileManagerObserver>
+      observation_{this};
+};
+std::vector<int32_t> PrivateWindows() {
+  std::vector<int32_t> windows;
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* window) {
+        if (barc_window_private_session_uuid(window->GetSessionID().id(),
+                                             nullptr, 0)) {
+          windows.push_back(window->GetSessionID().id());
+        }
+        return true;
+      });
+  return windows;
+}
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
+                       ContextLinksUseIndependentPrivateSessions) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL source_url = embedded_test_server()->GetURL("/title1.html");
+  const GURL target = embedded_test_server()->GetURL("/echoheader?Referer");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), source_url));
+  auto* source = browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(source,
+      "document.body.innerHTML='<input id=draft value=retained>'"));
+  for (size_t expected = 1; expected <= 2; ++expected) {
+    content::ContextMenuParams params;
+    params.page_url = source_url;
+    params.frame_url = source_url;
+    params.frame_origin = url::Origin::Create(source_url);
+    params.link_url = target;
+    auto menu = std::make_unique<TestRenderViewContextMenu>(
+        *source->GetPrimaryMainFrame(), params);
+    menu->Init();
+    ASSERT_TRUE(menu->IsCommandIdEnabled(
+        IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD));
+    menu->ExecuteCommand(IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD, 0);
+    menu.reset();  // Normal menu dismissal must not cancel admitted intent.
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return PrivateWindows().size() == expected;
+    }));
+  }
+  const auto windows = PrivateWindows();
+  ASSERT_EQ(2u, windows.size());
+  char first_identity[37], second_identity[37];
+  ASSERT_EQ(37u, barc_window_private_session_uuid(
+                     windows[0], first_identity, sizeof(first_identity)));
+  ASSERT_EQ(37u, barc_window_private_session_uuid(
+                     windows[1], second_identity, sizeof(second_identity)));
+  EXPECT_STRNE(first_identity, second_identity);
+  EXPECT_NE(Window(windows[0])->GetProfile(), Window(windows[1])->GetProfile());
+  for (int32_t id : windows) {
+    auto* contents = Window(id)->GetTabStripModel()->GetActiveWebContents();
+    ASSERT_TRUE(content::WaitForLoadStop(contents));
+    EXPECT_EQ(target, contents->GetLastCommittedURL());
+    EXPECT_EQ("None", content::EvalJs(contents, "document.body.textContent"));
+    EXPECT_EQ("", content::EvalJs(contents, "document.referrer"));
+    EXPECT_TRUE(ui::PageTransitionCoreTypeIs(
+        contents->GetController().GetLastCommittedEntry()->GetTransitionType(),
+        ui::PAGE_TRANSITION_LINK));
+    BarcDiscoveryWindow row{};
+    ASSERT_EQ(1, barc_window_discovery_state(id, &row));
+    EXPECT_TRUE(row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+    EXPECT_FALSE(row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
+    EXPECT_FALSE(Window(id)->GetWindow()->IsVisible());
+  }
+  EXPECT_EQ(source_url, source->GetLastCommittedURL());
+  EXPECT_EQ("retained", content::EvalJs(source, "draft.value"));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
+                       ContextLinkCancelsWithSourceOrPolicy) {
+  auto requests = std::make_shared<std::atomic<int>>(0);
+  embedded_test_server()->RegisterRequestMonitor(base::BindRepeating(
+      [](std::shared_ptr<std::atomic<int>> requests,
+         const net::test_server::HttpRequest& request) {
+        if (request.relative_url == "/echoheader?Referer") {
+          ++*requests;
+        }
+      }, requests));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  auto* manager = g_browser_process->profile_manager();
+  for (int reason = 0; reason < 3; ++reason) {
+    SCOPED_TRACE(reason);
+    const int32_t owner = browser()->GetSessionID().id();
+    const int32_t tab = barc_tab_create(owner, "about:blank", 1);
+    ASSERT_GT(tab, 0);
+    auto* source = tabs::TabHandle(tab).Get()->GetContents();
+    const GURL original = embedded_test_server()->GetURL("/title1.html");
+    ASSERT_TRUE(content::NavigateToURL(source, original));
+    auto alive = source->GetWeakPtr();
+    const GURL replacement("data:text/html,replaced-source-document");
+    const size_t profiles_before =
+        manager->GetProfileAttributesStorage().GetNumberOfProfiles();
+    OnPrivateProfileAdded changed(base::BindLambdaForTesting([&] {
+      if (reason == 0) {
+        ASSERT_EQ(1, barc_tab_close(owner, tab));
+      } else if (reason == 1) {
+        ASSERT_TRUE(content::NavigateToURL(source, replacement));
+      } else {
+        IncognitoModePrefs::SetAvailability(browser()->GetProfile()->GetPrefs(),
+            policy::IncognitoModeAvailability::kDisabled);
+      }
+    }));
+    auto menu = TestRenderViewContextMenu::Create(source, original,
+        embedded_test_server()->GetURL("/echoheader?Referer"));
+    ASSERT_TRUE(menu->IsCommandIdEnabled(
+        IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD));
+    menu->ExecuteCommand(IDC_CONTENT_CONTEXT_OPENLINKOFFTHERECORD, 0);
+    menu.reset();
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return changed.called() && PrivateWindows().empty() &&
+          manager->GetProfileAttributesStorage().GetNumberOfProfiles() ==
+              profiles_before;
+    }));
+    EXPECT_EQ(0, requests->load());
+    if (reason == 0) {
+      EXPECT_FALSE(alive);
+    } else {
+      ASSERT_TRUE(alive);
+      EXPECT_EQ(reason == 1 ? replacement : original,
+                alive->GetLastCommittedURL());
+      ASSERT_EQ(1, barc_tab_close(owner, tab));
+    }
+    IncognitoModePrefs::SetAvailability(browser()->GetProfile()->GetPrefs(),
+        policy::IncognitoModeAvailability::kEnabled);
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
+                       StockPrivateGuestAndPickerCannotBypassAdmission) {
+  auto* manager = g_browser_process->profile_manager();
+  const size_t windows = GlobalBrowserCollection::GetInstance()->GetSize();
+  const size_t profiles =
+      manager->GetProfileAttributesStorage().GetNumberOfProfiles();
+  chrome::OpenURLOffTheRecord(browser()->GetProfile(), GURL("about:blank"));
+  for (const GURL& url : {GURL("about:blank"), GURL("chrome://history")}) {
+    NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
+    params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+    EXPECT_FALSE(Navigate(&params));
+  }
+  EXPECT_FALSE(browser()->GetProfile()->HasPrimaryOTRProfile());
+  base::test::TestFuture<BrowserWindowInterface*> guest;
+  profiles::SwitchToGuestProfile(guest.GetCallback());
+  EXPECT_EQ(nullptr, guest.Get());
+  EXPECT_FALSE(ProfilePicker::IsOpen());
+  ProfilePicker::Show(ProfilePicker::Params::FromEntryPoint(
+      ProfilePicker::EntryPoint::kAppMenuProfileSubMenuManageProfiles));
+  EXPECT_FALSE(ProfilePicker::IsOpen());
+  base::test::TestFuture<Profile*> picked;
+  ProfilePicker::Show(
+      ProfilePicker::Params::ForGlicManager(picked.GetCallback()));
+  EXPECT_EQ(nullptr, picked.Get());
+  base::test::TestFuture<ProfilePicker::FirstRunExitStatus,
+                         ProfilePicker::FirstRunFinishReason> first_run;
+  ProfilePicker::Show(ProfilePicker::Params::ForFirstRun(
+      browser()->GetProfile()->GetPath(), first_run.GetCallback()));
+  EXPECT_EQ(ProfilePicker::FirstRunExitStatus::kAbandonedFlow,
+            first_run.Get<0>());
+  EXPECT_FALSE(ProfilePicker::IsOpen());
+  EXPECT_EQ(windows, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_EQ(profiles,
+            manager->GetProfileAttributesStorage().GetNumberOfProfiles());
+  EXPECT_TRUE(PrivateWindows().empty());
 }

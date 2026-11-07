@@ -182,6 +182,12 @@ extension PageSession {
     }
 
     public func setMuted(_ muted: Bool) {
+        if let navigation, !(navigation is WebKitPageNavigation) {
+            _ = navigation.setAudioMuted(muted)
+            return
+        }
+        // A native page without a live resource has no mute command to apply.
+        if usesNativePageHost { return }
         if let webView = primaryWebView {
             // Set the mute state using MuteableWKWebView's muted property
             webView.isMuted = muted

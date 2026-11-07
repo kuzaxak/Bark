@@ -188,6 +188,9 @@ public final class PageSession: NSObject, Identifiable {
     public var isAudioMuted: Bool = false
     public var hasAudioContent: Bool = false {
         didSet {
+            // Native engine snapshots are authoritative; legacy device-output
+            // monitoring cannot identify a Chromium tab's activity.
+            if usesNativePageHost || (navigation != nil && !(navigation is WebKitPageNavigation)) { return }
             if oldValue != hasAudioContent {
                 if hasAudioContent {
                     startNativeAudioMonitoring()
@@ -328,6 +331,11 @@ public final class PageSession: NSObject, Identifiable {
     private func applyNavigationState(_ state: PageNavigationState) {
         canGoBack = state.canGoBack
         canGoForward = state.canGoForward
+        if let muted = state.isAudioMuted { isAudioMuted = muted }
+        if let audible = state.isAudible {
+            hasAudioContent = audible
+            hasPlayingAudio = audible
+        }
         if let title = state.title, !title.isEmpty { updateTitle(title) }
         // A displayed pending URL is not a committed URL to persist. Only
         // lifecycle events notify the tree or append a history visit.

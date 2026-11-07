@@ -93,7 +93,7 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 25 ordered patches and 14 copied
+procedure. The complete reviewed candidate has 26 ordered patches and 14 copied
 sources. Copies precede `lifecycle-close.patch`; the Swift overlay follows those
 copies. Do not recopy sources or reapply an overlay afterward. Start from the
 pinned unmodified source, not a partially patched checkout.
@@ -102,7 +102,7 @@ pinned unmodified source, not a partially patched checkout.
 set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup runtime-native-bootstrap native-shell-signing native-discovery
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup runtime-native-bootstrap native-shell-signing native-discovery private-entrypoints
         if test "$patch" = lifecycle-close
             for source in barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -291,11 +291,25 @@ Repeat with native ARM artifacts on Apple Silicon. These commands are prepared
 inputs; no installed or notarized result is claimed by this document.
 
 The private-session bridge creates a separate Guest parent and primary OTR for
-each independent session. Its tests cover session cookies/site grants, popup
+each independent session. The native app admits only that actual session identity,
+keeps private tabs out of persistent app state, and retains live pages during
+same-session window transfers. Factory windows stay hidden until their model,
+selected page and native header are attached. Native New Incognito and private
+context links use independent sessions; unsupported stock Guest, profile-picker
+and synchronous OTR paths cannot bypass admission. Its tests cover session
+cookies/site grants, popup
 inheritance, final object/metadata disposal, rejected installed extensions even
 with regular-profile incognito permission, and unused/failed creation cleanup.
-Disk/crash cleanup, PDF rendering, detached private surfaces and native
-Guest/Incognito menu routing remain unqualified; PDF registration alone is not
+Disk/crash cleanup, PDF rendering, detached private surfaces and actual native
+input/menu delivery remain unqualified; PDF registration alone is not
 rendering evidence. The popup regression separately checks JavaScript opener
 messaging and live state through same-profile transfer, plus `noopener`; its
 separate native popup window does not qualify Peek integration.
+
+The page-command bridge dispatches find, zoom, print and DevTools only to the
+exact selected native owner and tab, with Chromium's command/policy checks.
+Background-tab mute preserves selection and reports actual state through the
+existing observer. App shortcuts use the existing shortcut manager and reject
+stale targets; they do not create WebKit pages or use its extension dispatcher.
+Audibility and mute do not establish capture or discard eligibility. Full native
+shortcut delivery, printing and DevTools presentation still need qualification.

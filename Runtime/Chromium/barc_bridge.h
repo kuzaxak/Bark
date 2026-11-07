@@ -34,6 +34,21 @@ BARC_API int barc_tab_close(int32_t window, int32_t tab);
 BARC_API int barc_tab_transfer(int32_t source_window,
                                int32_t tab,
                                int32_t destination_window);
+// UI commands target only this exact selected logical owner and active tab.
+// No selection/focus or fallback retargeting is performed. Return dispatch
+// acceptance, not completion of a dialog, find result, print job or DevTools.
+// Refused during bridge callbacks; callers may post a browser UI task.
+enum BarcPageCommand {
+  BARC_PAGE_FIND = 0, BARC_PAGE_FIND_NEXT = 1, BARC_PAGE_FIND_PREVIOUS = 2,
+  BARC_PAGE_ZOOM_IN = 3, BARC_PAGE_ZOOM_OUT = 4, BARC_PAGE_ZOOM_RESET = 5,
+  BARC_PAGE_PRINT = 6, BARC_PAGE_DEVTOOLS = 7
+};
+BARC_API int barc_tab_execute_command(int32_t window, int32_t tab,
+                                     int32_t command);
+// Explicit tab mute, including background tabs; never changes selection or
+// site sound settings. muted must be 0 or 1. Return actual helper acceptance
+// for the still-live exact owner; actual state is reported by observation.
+BARC_API int barc_tab_set_muted(int32_t window, int32_t tab, int muted);
 // Select this logical browser within its physical native window. Returns 0
 // for stale/refused admission; does not claim completed native
 // focus/activation.
@@ -76,7 +91,9 @@ enum BarcTabFlags {
   BARC_TAB_RELOAD = 8, BARC_TAB_SAME_DOCUMENT = 16,
   BARC_TAB_PROVISIONAL = 32, BARC_TAB_ABORTED = 64,
   // CLOSED reflects owner shutdown; retain saved app tab metadata.
-  BARC_TAB_OWNER_ENDED = 128
+  BARC_TAB_OWNER_ENDED = 128,
+  // Actual WebContents output mute/audibility, not capture or work eligibility.
+  BARC_TAB_MUTED = 256, BARC_TAB_AUDIBLE = 512
 };
 typedef void (*BarcTabCallback)(void* context, uint64_t observation,
                                int32_t event, int32_t window, int32_t tab,

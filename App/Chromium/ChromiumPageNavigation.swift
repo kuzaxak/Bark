@@ -14,6 +14,7 @@ struct ChromiumNavigationAPI {
     typealias Unobserve = @convention(c) (UInt64) -> Void
     typealias Command = @convention(c) (Int32, Int32) -> Int32
     typealias Navigate = @convention(c) (Int32, Int32, UnsafePointer<CChar>?) -> Int32
+    typealias PageCommand = @convention(c) (Int32, Int32, Int32) -> Int32
     typealias ProfileUUID = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
 
     let observe: Observe
@@ -26,6 +27,8 @@ struct ChromiumNavigationAPI {
     let select: Command
     let close: Command
     let profileUUID: ProfileUUID
+    var executePageCommand: PageCommand? = nil
+    var setMuted: PageCommand? = nil
     var privateSessionUUID: ProfileUUID = { _, _, _ in 0 }
 }
 
@@ -47,6 +50,8 @@ extension ChromiumNavigationAPI {
         select = try resolve("barc_tab_select", Command.self)
         close = try resolve("barc_tab_close", Command.self)
         profileUUID = try resolve("barc_window_profile_uuid", ProfileUUID.self)
+        executePageCommand = try resolve("barc_tab_execute_command", PageCommand.self)
+        setMuted = try resolve("barc_tab_set_muted", PageCommand.self)
         privateSessionUUID = try resolve("barc_window_private_session_uuid", ProfileUUID.self)
     }
 }
@@ -145,6 +150,18 @@ final class ChromiumPageNavigation: PageNavigation {
         !invalidated && window > 0 && action(window, tab) == 1
     }
 
+    @discardableResult
+    func executeNativePageCommand(_ command: Int32) -> Bool {
+        guard !invalidated, !isClosed, window > 0, let execute = api.executePageCommand else { return false }
+        return execute(window, tab, command) == 1
+    }
+
+    @discardableResult
+    func setAudioMuted(_ muted: Bool) -> Bool {
+        guard !invalidated, !isClosed, window > 0, let setMuted = api.setMuted else { return false }
+        return setMuted(window, tab, muted ? 1 : 0) == 1
+    }
+
     func invalidate() {
         guard !invalidated else { return }
         invalidated = true
@@ -198,7 +215,8 @@ final class ChromiumPageNavigation: PageNavigation {
         }
         let snapshot = PageNavigationState(
             url: url, title: title, isLoading: flags & 1 != 0,
-            canGoBack: flags & 2 != 0, canGoForward: flags & 4 != 0)
+            canGoBack: flags & 2 != 0, canGoForward: flags & 4 != 0,
+            isAudioMuted: flags & 256 != 0, isAudible: flags & 512 != 0)
         if state != snapshot {
             state = snapshot
             onStateChanged?(snapshot)

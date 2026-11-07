@@ -112,6 +112,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
+            let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
+            shortcuts.setBrowserManager(manager)
+            manager.keyboardShortcutManager = shortcuts
             manager.tabs.nativePageHost = pageHost
             manager.tabs.onOpenProfilePage = { [weak profilePages] profile, destination, canPresent, completion in
                 guard let profilePages else { completion(.failure(.presentationUnavailable)); return }

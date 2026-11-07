@@ -213,7 +213,7 @@
    return BrowserLayoutParams();
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -3405,7 +3405,14 @@
+@@ -3405,8 +3405,16 @@
        "//components/remote_cocoa/browser",
      ]
      include_dirs = [ "$target_gen_dir" ]
@@ -228,7 +228,9 @@
        "Carbon.framework",
        "Quartz.framework",
      ]
-@@ -4715,6 +4722,7 @@
++    deps += [ "//chrome/browser/ui/tabs:utils" ]
+   }
+@@ -4715,6 +4723,7 @@
      "//content/public/browser",
      "//mojo/public/cpp/bindings",
      "//services/webnn/public/cpp",
@@ -238,7 +240,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,36 @@
+@@ -19,3 +19,38 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -253,6 +255,8 @@
 +_barc_tab_navigate
 +_barc_tab_close
 +_barc_tab_transfer
++_barc_tab_execute_command
++_barc_tab_set_muted
 +_barc_tab_copy_title
 +_barc_window_show
 +_barc_window_native_shell_is_owned
@@ -277,7 +281,7 @@
 +_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,40 @@
+@@ -29,5 +29,42 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -293,6 +297,8 @@
 +_barc_tab_navigate
 +_barc_tab_close
 +_barc_tab_transfer
++_barc_tab_execute_command
++_barc_tab_set_muted
 +_barc_tab_copy_title
 +_barc_window_show
 +_barc_window_native_shell_is_owned
@@ -320,7 +326,7 @@
  _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,87 @@
+@@ -9782,3 +9782,95 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -339,6 +345,14 @@
 +      "../browser/ui/views/frame/barc_native_policy_browsertest.mm",
 +    ]
 +    deps = [
++      "//chrome/app:command_ids",
++      "//chrome/browser/policy:policy",
++      "//chrome/browser/ui/find_bar",
++      "//chrome/browser/ui/tabs:utils",
++      "//components/zoom",
++      "//chrome/browser/renderer_context_menu:test_support",
++      "//chrome/browser/ui/navigator",
++      "//chrome/browser/ui/profiles",
 +      "//chrome/browser/content_settings:content_settings_factory",
 +      "//chrome/browser/enterprise",
 +      "//chrome/browser/enterprise:impl",

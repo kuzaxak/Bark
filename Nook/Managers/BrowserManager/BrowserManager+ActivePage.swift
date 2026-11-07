@@ -37,6 +37,10 @@ extension BrowserManager {
     /// Runs `command` on the active window's page in front.
     func perform(_ command: PageCommand) {
         guard let window = windowRegistry?.activeWindow, let page = frontPage(in: window) else { return }
+        if tabs.profileEngine == .chromium {
+            _ = performNativePageCommand(command, in: window, page: page)
+            return
+        }
         let webView = frontWebView(in: window)
         switch command {
         case .goBack:
@@ -103,6 +107,24 @@ extension BrowserManager {
         case .boost:
             openBoostPanel(in: window)
         }
+    }
+
+    /// Product page commands never fall through to a lazy WebKit surface.
+    @discardableResult
+    func performNativePageCommand(_ command: PageCommand, in window: BrowserWindowState,
+                                  page: PageSession) -> Bool {
+        guard tabs.profileEngine == .chromium, windowRegistry?.windows[window.id] === window,
+              windowRegistry?.activeWindow === window, let keyWindow = NSApp.keyWindow,
+              window.window === keyWindow,
+              frontPage(in: window) === page,
+              let native = page.navigation as? ChromiumPageNavigation,
+              tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return false }
+        guard command.supportsNativePage else {
+            showWindowToast("This action is not available yet", in: window)
+            return false
+        }
+        if command == .copyURL { copyURL(of: page, in: window); return true }
+        return native.performNativePageCommand(command)
     }
 
     private func clearCookies(of page: PageSession) {

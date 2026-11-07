@@ -9,14 +9,19 @@ public struct PageNavigationState: Equatable {
     public var isLoading: Bool
     public var canGoBack: Bool
     public var canGoForward: Bool
+    /// nil means this engine has not supplied authoritative audio state.
+    public var isAudioMuted: Bool?
+    public var isAudible: Bool?
 
     public init(url: URL? = nil, title: String? = nil, isLoading: Bool = false,
-                canGoBack: Bool, canGoForward: Bool) {
+                canGoBack: Bool, canGoForward: Bool, isAudioMuted: Bool? = nil, isAudible: Bool? = nil) {
         self.url = url
         self.title = title
         self.isLoading = isLoading
         self.canGoBack = canGoBack
         self.canGoForward = canGoForward
+        self.isAudioMuted = isAudioMuted
+        self.isAudible = isAudible
     }
 }
 
@@ -59,6 +64,13 @@ public protocol PageNavigation: AnyObject {
     @discardableResult func goForward() -> Bool
     @discardableResult func reload() -> Bool
     func stop()
+    /// Return command acceptance. Actual mute state arrives through snapshots;
+    /// an unsupported engine refuses without optimistic model changes.
+    @discardableResult func setAudioMuted(_ muted: Bool) -> Bool
     /// Ends commands and observations. The owning session releases the surface.
     func invalidate()
+}
+
+extension PageNavigation {
+    public func setAudioMuted(_ muted: Bool) -> Bool { false }
 }

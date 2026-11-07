@@ -16,7 +16,7 @@ import NookUI
 @MainActor
 @Observable
 class KeyboardShortcutManager {
-    private let userDefaults = UserDefaults.standard
+    private let userDefaults: UserDefaults
     private let shortcutsKey = "keyboard.shortcuts"
     private let shortcutsVersionKey = "keyboard.shortcuts.version"
     private let currentVersion = 16 // 16 matched Add Split View by key position as Ctrl+Shift+=; 15 added Add Split View (Ctrl+Shift+=); 14 added the Developer Mode bar's tools; Increment when adding new shortcuts; 10 added Go to Space 1-9 (Ctrl+1-9) and moved Next/Previous Space to Cmd+Opt+arrows; 11 added Bookmark Tab (Cmd+D); 12 listed the command bar actions unbound; 13 moved the top bar to Cmd+Shift+D and bound Developer Mode to Ctrl+D
@@ -45,7 +45,7 @@ class KeyboardShortcutManager {
     weak var windowRegistry: WindowRegistry?
     
     /// Detector for website keyboard shortcut conflicts
-    let websiteShortcutDetector = WebsiteShortcutDetector()
+    let websiteShortcutDetector: WebsiteShortcutDetector?
 
     /// Actions a page's self-reported shortcuts never take the first press of. The report
     /// comes from the page, so a site could otherwise swallow the keys that leave it.
@@ -56,7 +56,9 @@ class KeyboardShortcutManager {
         .focusAddressBar, .openCommandPalette, .toggleFullScreen,
     ]
 
-    init() {
+    init(userDefaults: UserDefaults = .standard, usesWebKitShortcuts: Bool = true) {
+        self.userDefaults = userDefaults
+        websiteShortcutDetector = usesWebKitShortcuts ? WebsiteShortcutDetector() : nil
         loadShortcuts()
         setupGlobalMonitor()
     }
@@ -64,7 +66,7 @@ class KeyboardShortcutManager {
     func setBrowserManager(_ manager: BrowserManager) {
         self.browserManager = manager
         self.windowRegistry = manager.windowRegistry
-        self.websiteShortcutDetector.browserManager = manager
+        self.websiteShortcutDetector?.browserManager = manager
     }
 
     // MARK: - Persistence
@@ -214,6 +216,11 @@ class KeyboardShortcutManager {
             return false
         }
 
+        if browserManager?.tabs.profileEngine == .chromium {
+            guard let key = NSApp.keyWindow,
+                  windowRegistry?.activeWindow?.window === key else { return false }
+        }
+
         // A window that is not a browser window (Settings, a mini window) keeps its own keys.
         if let keyWindow = NSApp.keyWindow,
            !(windowRegistry?.windows.values.contains(where: { $0.window === keyWindow }) ?? false) {
@@ -269,9 +276,20 @@ class KeyboardShortcutManager {
         }
         
 
+        if browserManager?.tabs.profileEngine == .chromium {
+            if let command = shortcut.action.pageCommand {
+                guard command.supportsNativePage else { return false }
+            } else {
+                switch shortcut.action {
+                case .newTab, .focusAddressBar, .openCommandPalette: break
+                default: return false
+                }
+            }
+        }
+
         // MARK: - Website Shortcut Conflict Resolution
         // Check if this shortcut conflicts with a website shortcut
-        if let windowId = windowRegistry?.activeWindow?.id {
+        if let websiteShortcutDetector, let windowId = windowRegistry?.activeWindow?.id {
             let shouldPass = websiteShortcutDetector.shouldPassToWebsite(
                 keyCombination,
                 windowId: windowId,
@@ -507,6 +525,40 @@ class KeyboardShortcutManager {
     private func executeAction(_ action: ShortcutAction) {
         guard let browserManager = browserManager else { return }
         let isRepeat = lastShortcutWasRepeat
+        if browserManager.tabs.profileEngine == .chromium, let command = action.pageCommand {
+            guard let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow, window.window === keyWindow,
+                  let page = browserManager.frontPage(in: window),
+                  let native = page.navigation as? ChromiumPageNavigation else { return }
+            let owner = native.nativeWindowID, tab = native.nativeTabID
+            DispatchQueue.main.async { [weak browserManager, weak window, weak page, weak native] in
+                guard let browserManager, let window, let page, let native,
+                      page.navigation === native, native.nativeWindowID == owner, native.nativeTabID == tab else { return }
+                _ = browserManager.performNativePageCommand(command, in: window, page: page)
+            }
+            return
+        }
+        if browserManager.tabs.profileEngine == .chromium,
+           action == .newTab || action == .focusAddressBar || action == .openCommandPalette {
+            guard let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow,
+                  window.window === keyWindow else { return }
+            let selected = window.selectedItemID
+            let address = action == .focusAddressBar ? browserManager.frontPage(in: window)?.url.absoluteString : nil
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.windowRegistry?.activeWindow === window,
+                      self.windowRegistry?.windows[window.id] === window, window.selectedItemID == selected,
+                      let keyWindow = NSApp.keyWindow, window.window === keyWindow else { return }
+                if let address { window.commandPalette?.open(prefill: address, navigateCurrentTab: true) }
+                else { window.commandPalette?.open() }
+            }
+            return
+        }
+        // Other native keyboard actions remain Chromium's existing accelerators.
+        if browserManager.tabs.profileEngine == .chromium {
+            if let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow, window.window === keyWindow {
+                browserManager.showWindowToast("This action is not available yet", in: window)
+            }
+            return
+        }
 
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
@@ -645,7 +697,8 @@ class KeyboardShortcutManager {
 
             // Forward unhandled key events to extension commands (chrome.commands API).
             // This enables extension keyboard shortcuts like Bitwarden's Ctrl+Shift+L.
-            if ExtensionManager.shared.tryPerformExtensionCommand(for: event) {
+            if self.websiteShortcutDetector != nil,
+               ExtensionManager.shared.tryPerformExtensionCommand(for: event) {
                 return nil
             }
 

@@ -24,13 +24,17 @@
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/tabs/tab_muted_utils.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
@@ -272,6 +276,10 @@ class TabObservation : public content::WebContentsObserver,
       auto& controller = web_contents()->GetController();
       if (web_contents()->IsLoading())
         flags |= BARC_TAB_LOADING;
+      if (web_contents()->IsAudioMuted())
+        flags |= BARC_TAB_MUTED;
+      if (web_contents()->IsCurrentlyAudible())
+        flags |= BARC_TAB_AUDIBLE;
       if (controller.CanGoBack())
         flags |= BARC_TAB_BACK;
       if (controller.CanGoForward())
@@ -286,6 +294,8 @@ class TabObservation : public content::WebContentsObserver,
     callback_(context_.get(), token_, event, window, tab_id(), url.c_str(),
               title.c_str(), error, flags);
   }
+  void OnAudioStateChanged(bool) override { Emit(BARC_TAB_STATE); }
+  void DidUpdateAudioMutingState(bool) override { Emit(BARC_TAB_STATE); }
   void DidStartNavigation(content::NavigationHandle* handle) override {
     auto keep_alive = shared_from_this();
     if (!handle->IsInPrimaryMainFrame() || handle->IsSameDocument())
@@ -584,6 +594,53 @@ void barc_tab_unobserve(uint64_t token) {
   if (!observer->closing())
     ObservationTable().erase(found);
   observer->Cancel();
+}
+int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
+                             int32_t command) {
+  if (navigation_callback_depth)
+    return 0;
+  auto* window = Window(window_id);
+  auto* tab = LookupTab(window, tab_id);
+  if (!tab || tab->GetContents()->GetBrowserContext() != window->GetProfile() ||
+      !window->IsSelectedForNativeWindow() ||
+      window->GetTabStripModel()->GetActiveWebContents() != tab->GetContents())
+    return 0;
+  int chrome_command;
+  switch (command) {
+    case BARC_PAGE_FIND: chrome_command = IDC_FIND; break;
+    case BARC_PAGE_FIND_NEXT: chrome_command = IDC_FIND_NEXT; break;
+    case BARC_PAGE_FIND_PREVIOUS: chrome_command = IDC_FIND_PREVIOUS; break;
+    case BARC_PAGE_ZOOM_IN: chrome_command = IDC_ZOOM_PLUS; break;
+    case BARC_PAGE_ZOOM_OUT: chrome_command = IDC_ZOOM_MINUS; break;
+    case BARC_PAGE_ZOOM_RESET: chrome_command = IDC_ZOOM_NORMAL; break;
+    case BARC_PAGE_PRINT: chrome_command = IDC_PRINT; break;
+    case BARC_PAGE_DEVTOOLS: chrome_command = IDC_DEV_TOOLS; break;
+    default: return 0;
+  }
+  if (!chrome::IsCommandEnabled(window, chrome_command) ||
+      (command == BARC_PAGE_PRINT && !chrome::CanPrint(window)) ||
+      (command == BARC_PAGE_DEVTOOLS &&
+       !DevToolsWindow::AllowDevToolsFor(window->GetProfile(), tab->GetContents())))
+    return 0;
+  // No callback occurs between exact admission and controller dispatch. The
+  // command itself may enter a modal loop: never dereference borrowed owners
+  // or contents after this call, and do not reinterpret its result as UI completion.
+  return chrome::ExecuteCommand(window, chrome_command);
+}
+int barc_tab_set_muted(int32_t window_id, int32_t tab_id, int muted) {
+  if (navigation_callback_depth || (muted != 0 && muted != 1))
+    return 0;
+  auto* window = Window(window_id);
+  auto* tab = LookupTab(window, tab_id);
+  if (!tab || tab->GetContents()->GetBrowserContext() != window->GetProfile())
+    return 0;
+  auto contents = tab->GetContents()->GetWeakPtr();
+  const bool accepted = SetTabAudioMuted(contents.get(), muted != 0,
+                                        TabMutedReason::kAudioIndicator, {});
+  // Audio observers can close or transfer the bound page. Never retain/use a
+  // borrowed TabInterface across that callout or silently address its replacement.
+  auto* current = LookupTab(Window(window_id), tab_id);
+  return accepted && contents && current && current->GetContents() == contents.get();
 }
 int barc_tab_go_back(int32_t window, int32_t tab_id) {
   auto* tab = LookupTab(Window(window), tab_id);
