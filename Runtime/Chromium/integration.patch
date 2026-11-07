@@ -238,7 +238,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,35 @@
+@@ -19,3 +19,36 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -262,6 +262,7 @@
 +_barc_profile_open_in_native_window
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
++_barc_window_private_session_uuid
 +_barc_window_select
 +_barc_discovery_snapshot
 +_barc_discovery_observe
@@ -276,7 +277,7 @@
 +_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,39 @@
+@@ -29,5 +29,40 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -301,6 +302,7 @@
 +_barc_profile_open_in_native_window
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
++_barc_window_private_session_uuid
 +_barc_window_select
 +_barc_discovery_snapshot
 +_barc_discovery_observe
@@ -318,7 +320,7 @@
  _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,85 @@
+@@ -9782,3 +9782,87 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -362,6 +364,7 @@
 +      "//base/test:test_support",
 +      "//chrome/browser:browser_process",
 +      "//chrome/browser/lifetime",
++      "//chrome/browser/prefs",
 +      "//chrome/browser/profiles:profile",
 +      "//chrome/browser/profiles:profile_manager",
 +      "//chrome/browser/profiles:profile_util",
@@ -378,6 +381,7 @@
 +      "//chrome/test/base:ui_test_utils",
 +      "//components/download/public/common:public",
 +      "//components/javascript_dialogs",
++      "//components/policy/core/common:common_constants",
 +      "//components/prefs",
 +      "//components/sessions:session_id",
 +      "//components/tabs:public",

@@ -37,7 +37,77 @@ final class ChromiumCreatedPageAdmission {
         return true
     }
 
-    func apply(_ snapshot: ChromiumDiscoverySnapshot) {
+    /// A factory callback explicitly hands off its exact blank; ordinary
+    /// discovery continues excluding all still-unclaimed factory pages.
+    func admitPrivateFactory(_ window: Int32, canPresent: () -> Bool) -> Bool {
+        guard let row = api.windowState(window), api.privateSessionID(row) != nil,
+              let snapshot = api.readSnapshot(), row.active_tab > 0 else { return false }
+        apply(snapshot, privateFactoryTab: row.active_tab)
+        guard let product = products[row.physical_group], canPresent(),
+              let current = api.windowState(window), current.physical_group == row.physical_group,
+              current.selected_client == window, current.active_tab == row.active_tab,
+              api.privateSessionID(current) == product.state.ephemeralProfile?.id,
+              let session = tabs.selectedSession(in: product.state),
+              let page = session.navigation as? ChromiumPageNavigation,
+              page.nativeWindowID == window, page.nativeTabID == row.active_tab,
+              tabs.isNativePageOwner(session, in: product.state), host.isNativeSelection(page, in: product.state) else { return false }
+        // The C private blank stays hidden. Showing is the final action after
+        // actual model/header/selected-owner admission, never a guessed focus.
+        return api.show(window) == 1
+    }
+
+    typealias PrivateOpen = @convention(c) (@convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void, UnsafeMutableRawPointer?) -> Void
+    @MainActor private final class PrivateRequest {
+        weak var admission: ChromiumCreatedPageAdmission?
+        var cancelled = false
+        let canPresent: () -> Bool
+        let close: (Int32) -> Int32
+        let api: ChromiumDiscoveryAPI
+        let host: ChromiumNativePageHost
+        init(_ admission: ChromiumCreatedPageAdmission, canPresent: @escaping () -> Bool,
+             close: @escaping (Int32) -> Int32) {
+            self.admission = admission; self.canPresent = canPresent; self.close = close; self.api = admission.api; self.host = admission.host
+        }
+        func complete(_ status: Int32, _ window: Int32) {
+            guard status == 0, window > 0 else { return }
+            if !cancelled, canPresent(), !cancelled, let admission, admission.admitPrivateFactory(window, canPresent: { !self.cancelled && self.canPresent() && !self.cancelled }) { return }
+            // Only this verified late factory result can be closed. No selected
+            // owner/default UUID lookup is allowed on refusal or cancellation.
+            if let row = api.windowState(window), api.privateSessionID(row) != nil,
+               host.canCloseUnadmittedWindow(window) { _ = close(window) }
+        }
+    }
+
+    @discardableResult
+    func openPrivateWindow(open: PrivateOpen, close: @escaping (Int32) -> Int32,
+                           canPresent: @escaping () -> Bool) -> () -> Void {
+        let request = PrivateRequest(self, canPresent: canPresent, close: close)
+        // Retain this pending operation until its single callback, including
+        // synchronous completion before cancellation is returned. If shutdown
+        // stops UI task delivery, process teardown releases the retained state.
+        open({ status, window, pointer in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                Unmanaged<PrivateRequest>.fromOpaque(pointer).takeRetainedValue().complete(status, window)
+            }
+        }, Unmanaged.passRetained(request).toOpaque())
+        return { request.cancelled = true }
+    }
+
+    func apply(_ snapshot: ChromiumDiscoverySnapshot, privateFactoryTab: Int32? = nil) {
+        // Identity is immutable for a native logical Browser. Resolve private
+        // UUIDs once per snapshot row, never once per tab/rendered sidebar row.
+        let identities = Dictionary(uniqueKeysWithValues: snapshot.windows.compactMap { row in
+            api.identity(row).map { (row.window, $0) }
+        })
+        func identity(_ row: BarcDiscoveryWindow) -> UUID? {
+            if row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue { return ChromiumDiscoveryAPI.profileID(row) }
+            return row.profile_kind == BARC_DISCOVERY_GUEST.rawValue ? identities[row.window] : nil
+        }
+        func eligible(_ row: BarcDiscoveryWindow) -> Bool {
+            row.physical_group != 0 && row.kind == BARC_DISCOVERY_NORMAL.rawValue &&
+            row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 && identity(row) != nil
+        }
         let liveGroups = Set(snapshot.windows.map(\.physical_group))
         let utilityGroups = Set(snapshot.windows.filter { isUtility($0.window) }.map(\.physical_group))
         let rows = Dictionary(uniqueKeysWithValues: snapshot.windows.map { ($0.window, $0) })
@@ -47,7 +117,7 @@ final class ChromiumCreatedPageAdmission {
             return (page.nativeTabID, session)
         })
         let candidates = snapshot.tabs.filter { tab in
-            guard tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0 || sessions[tab.tab] != nil,
+            guard tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0 || sessions[tab.tab] != nil || tab.tab == privateFactoryTab,
                   let row = rows[tab.window] else { return false }
             return eligible(row) && !utilityGroups.contains(row.physical_group)
         }
@@ -56,12 +126,18 @@ final class ChromiumCreatedPageAdmission {
             products[row.physical_group] == nil {
             guard eligible(row), !utilityGroups.contains(row.physical_group),
                   candidates.contains(where: { $0.window == row.window && $0.tab == row.active_tab }),
-                  let profileID = ChromiumDiscoveryAPI.profileID(row),
-                  let space = space(for: profileID, opener: nil),
+                  let profileID = identity(row),
                   let current = api.windowState(row.window), current.physical_group == row.physical_group,
                   current.selected_client == row.window, eligible(current) else { continue }
             let state = BrowserWindowState()
-            state.spaceID = space
+            if row.profile_kind == BARC_DISCOVERY_GUEST.rawValue {
+                state.isIncognito = true
+                state.ephemeralProfile = tabs.privateWindows.compactMap(\.ephemeralProfile)
+                    .first(where: { $0.id == profileID }) ?? Profile.createEphemeral(id: profileID, engine: .chromium)
+            } else {
+                guard let space = space(for: profileID, opener: nil, in: state) else { continue }
+                state.spaceID = space
+            }
             registry.register(state)
             tabs.attach(window: state, restoringSavedState: false)
             let shell = makeShell(state)
@@ -80,8 +156,9 @@ final class ChromiumCreatedPageAdmission {
             guard let session = sessions[tab.tab], let page = session.navigation as? ChromiumPageNavigation,
                   page.nativeWindowID == tab.window, let row = rows[tab.window],
                   let product = products[row.physical_group], let profile = session.profile,
-                  let space = tabs.spaceID(of: session.itemID),
-                  ChromiumDiscoveryAPI.profileID(row) == profile.id else { continue }
+                  let space = session.isPrivate ? product.state.spaceID : tabs.spaceID(of: session.itemID),
+                  identity(row) == profile.id,
+                  (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == session.isPrivate else { continue }
             if tabs.isNativePageOwner(session, in: product.state) && host.isBoundPage(page, in: product.state) { continue }
             let nativeAdmitted = host.canAdoptPage(page, in: product.state)
             var binding: ChromiumExistingPageBinding?
@@ -105,18 +182,20 @@ final class ChromiumCreatedPageAdmission {
             var progressed = false
             for tab in pending {
                 guard let row = rows[tab.window], let product = products[row.physical_group],
-                      let profileID = ChromiumDiscoveryAPI.profileID(row),
+                      let profileID = identity(row),
                       let current = api.windowState(tab.window), current.physical_group == row.physical_group,
-                      eligible(current), ChromiumDiscoveryAPI.profileID(current) == profileID else { continue }
+                      eligible(current), identity(current) == profileID else { continue }
                 if deferBatchOpeners, tab.opener_tab != 0, sessions[tab.opener_tab] == nil,
                    candidateIDs.contains(tab.opener_tab) { next.append(tab); continue }
-                let opener = sessions[tab.opener_tab].flatMap { $0.profile?.id == profileID ? $0 : nil }
-                guard let space = space(for: profileID, opener: opener),
-                      let profile = tabs.profile(forSpace: space),
+                let opener = sessions[tab.opener_tab].flatMap {
+                    $0.profile?.id == profileID && $0.isPrivate == product.state.isIncognito ? $0 : nil
+                }
+                guard let space = space(for: profileID, opener: opener, in: product.state),
+                      let profile = product.state.isIncognito ? product.state.ephemeralProfile : tabs.profile(forSpace: space),
                       case .success(let binding) = host.bindExistingPage(nativeWindow: tab.window,
                           tab: tab.tab, profile: profile, in: product.state) else { continue }
                 let item = tabs.adoptNativePage(binding.navigation, through: host, in: product.state,
-                    spaceID: space, from: opener?.itemID, select: false)
+                    spaceID: space, from: opener.flatMap { product.state.isIncognito && !tabs.isNativePageOwner($0, in: product.state) ? nil : $0.itemID }, select: false)
                 binding.finish(adopted: item != nil)
                 if let item, let session = tabs.session(for: item) {
                     sessions[tab.tab] = session
@@ -172,13 +251,13 @@ final class ChromiumCreatedPageAdmission {
         }
     }
 
-    private func eligible(_ row: BarcDiscoveryWindow) -> Bool {
-        row.physical_group != 0 && row.kind == BARC_DISCOVERY_NORMAL.rawValue &&
-        row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue &&
-        row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 && ChromiumDiscoveryAPI.profileID(row) != nil
-    }
-
-    private func space(for profile: UUID, opener: PageSession?) -> UUID? {
+    private func space(for profile: UUID, opener: PageSession?, in window: BrowserWindowState) -> UUID? {
+        if window.isIncognito {
+            guard window.ephemeralProfile?.id == profile else { return nil }
+            // An opener in another private window retains its native relation;
+            // only an opener in this window participates in the local tree.
+            return window.spaceID
+        }
         if let opener {
             guard opener.profile?.id == profile else { return nil }
             return tabs.spaceID(of: opener.itemID)

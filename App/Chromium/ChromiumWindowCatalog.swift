@@ -16,12 +16,15 @@ struct ChromiumDiscoveryAPI {
     typealias State = @convention(c) (Int32, UnsafeMutablePointer<BarcDiscoveryWindow>?) -> Int32
     typealias Observe = @convention(c) (BarcDiscoveryCallback?, UnsafeMutableRawPointer?) -> UInt64
     typealias Unobserve = @convention(c) (UInt64) -> Void
+    typealias PrivateUUID = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
     typealias Admit = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Int32
     let read: Read
     let state: State
     let observe: Observe
     let unobserve: Unobserve
     let admit: Admit
+    let privateUUID: PrivateUUID
+    let show: @convention(c) (Int32) -> Int32
 
     init(library: UnsafeMutableRawPointer) throws {
         func load<T>(_ name: String, _: T.Type) throws -> T {
@@ -33,12 +36,16 @@ struct ChromiumDiscoveryAPI {
         observe = try load("barc_discovery_observe", Observe.self)
         unobserve = try load("barc_discovery_unobserve", Unobserve.self)
         admit = try load("barc_window_admit_discovered", Admit.self)
+        privateUUID = try load("barc_window_private_session_uuid", PrivateUUID.self)
+        show = try load("barc_window_show", (@convention(c) (Int32) -> Int32).self)
     }
 
     init(read: @escaping Read, state: @escaping State, observe: @escaping Observe,
-         unobserve: @escaping Unobserve, admit: @escaping Admit) {
+         unobserve: @escaping Unobserve, admit: @escaping Admit,
+         privateUUID: @escaping PrivateUUID = { _, _, _ in 0 },
+         show: @escaping @convention(c) (Int32) -> Int32 = { _ in 0 }) {
         self.read = read; self.state = state; self.observe = observe
-        self.unobserve = unobserve; self.admit = admit
+        self.unobserve = unobserve; self.admit = admit; self.privateUUID = privateUUID; self.show = show
     }
 
     func readSnapshot() -> ChromiumDiscoverySnapshot? {
@@ -62,6 +69,20 @@ struct ChromiumDiscoveryAPI {
     func windowState(_ window: Int32) -> BarcDiscoveryWindow? {
         var row = BarcDiscoveryWindow()
         return state(window, &row) == 1 ? row : nil
+    }
+
+    /// Guest kind alone is insufficient: only the native query admits an exact
+    /// manager-owned Barc session. Stock Guest/incognito never becomes regular.
+    func privateSessionID(_ row: BarcDiscoveryWindow) -> UUID? {
+        guard row.profile_kind == BARC_DISCOVERY_GUEST.rawValue else { return nil }
+        var bytes = [CChar](repeating: 0, count: 37)
+        guard privateUUID(row.window, &bytes, bytes.count) == 37, bytes[36] == 0,
+              !bytes[..<36].contains(0) else { return nil }
+        return UUID(uuidString: String(cString: bytes))
+    }
+
+    func identity(_ row: BarcDiscoveryWindow) -> UUID? {
+        Self.profileID(row) ?? privateSessionID(row)
     }
 
     static func profileID(_ row: BarcDiscoveryWindow) -> UUID? {

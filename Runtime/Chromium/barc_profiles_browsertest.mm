@@ -1,9 +1,13 @@
+#import <AppKit/AppKit.h>
+
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
 
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "base/check.h"
+#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/run_loop.h"
 #include "base/scoped_observation.h"
@@ -16,20 +20,24 @@
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/extension_util.h"
+#include "chrome/browser/prefs/incognito_mode_prefs.h"
 #include "chrome/browser/profiles/nuke_profile_directory_utils.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/profiles/profile_attributes_entry.h"
 #include "chrome/browser/profiles/profile_attributes_storage.h"
 #include "chrome/browser/profiles/profile_manager.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
+#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
 #include "components/content_settings/core/common/content_settings.h"
 #include "components/content_settings/core/common/content_settings_types.h"
+#include "components/policy/core/common/policy_pref_names.h"
 #include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
@@ -250,6 +258,26 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
   ASSERT_NE(first_profile->GetOriginalProfile(),
             second_profile->GetOriginalProfile());
   ASSERT_NE(browser()->GetProfile(), first_profile->GetOriginalProfile());
+  char first_session[37];
+  char second_session[37];
+  ASSERT_EQ(37u, barc_window_private_session_uuid(first_id, first_session,
+                                                  sizeof(first_session)));
+  ASSERT_EQ(37u, barc_window_private_session_uuid(second_id, second_session,
+                                                  sizeof(second_session)));
+  EXPECT_STRNE(first_session, second_session);
+  EXPECT_EQ(37u, barc_window_private_session_uuid(first_id, nullptr, 0));
+  char short_session[5];
+  EXPECT_EQ(37u, barc_window_private_session_uuid(first_id, short_session,
+                                                  sizeof(short_session)));
+  EXPECT_EQ(std::string(first_session).substr(0, 4), short_session);
+  char rejected[37] = "unchanged";
+  EXPECT_EQ(0u, barc_window_private_session_uuid(-1, rejected, sizeof(rejected)));
+  EXPECT_STREQ("", rejected);
+  EXPECT_EQ(0u, barc_window_profile_uuid(first_id, rejected, sizeof(rejected)));
+  EXPECT_STREQ("", rejected);
+  EXPECT_EQ(0u, barc_window_private_session_uuid(browser()->GetSessionID().id(),
+                                                 rejected, sizeof(rejected)));
+  EXPECT_STREQ("", rejected);
   const auto first_path = first_profile->GetPath();
   ASSERT_TRUE(ProfileManager::IsPrivateSessionProfilePath(first_path));
   ASSERT_EQ(manager->user_data_dir(), first_path.DirName());
@@ -304,6 +332,10 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
   ASSERT_TRUE(child);
   ASSERT_NE(first_window, child);
   const int32_t child_id = child->GetSessionID().id();
+  char child_session[37];
+  EXPECT_EQ(37u, barc_window_private_session_uuid(child_id, child_session,
+                                                  sizeof(child_session)));
+  EXPECT_STREQ(first_session, child_session);
   EXPECT_EQ("session=first", content::EvalJs(child_page, "document.cookie"));
   ASSERT_EQ(1, barc_window_close(first_id));
   ASSERT_TRUE(base::test::RunUntil([&] { return !Window(first_id); }));
@@ -318,6 +350,9 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
                 .GetProfileAttributesWithPath(first_path);
   }));
   EXPECT_TRUE(IsProfileDirectoryMarkedForDeletion(first_path));
+  EXPECT_EQ(0u, barc_window_private_session_uuid(first_id, rejected,
+                                                 sizeof(rejected)));
+  EXPECT_STREQ("", rejected);
   EXPECT_EQ("session=second", content::EvalJs(second_page, "document.cookie"));
 
   Result fresh;
@@ -567,4 +602,181 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
                    .GetProfileAttributesWithPath(obstruction.observed_path));
   EXPECT_TRUE(IsProfileDirectoryMarkedForDeletion(obstruction.observed_path));
   EXPECT_EQ(windows_before, GlobalBrowserCollection::GetInstance()->GetSize());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
+                       StockOffRecordIdentitiesAreNotBarcSessions) {
+  auto* incognito = CreateBrowser(
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true));
+  ASSERT_TRUE(incognito);
+  char identity[37] = "unchanged";
+  EXPECT_EQ(0u, barc_window_private_session_uuid(incognito->GetSessionID().id(),
+                                                 identity, sizeof(identity)));
+  EXPECT_STREQ("", identity);
+  base::test::TestFuture<Profile*> guest_ready;
+  g_browser_process->profile_manager()->CreateProfileAsync(
+      ProfileManager::GetGuestProfilePath(), guest_ready.GetCallback());
+  auto* guest = guest_ready.Get();
+  ASSERT_TRUE(guest);
+  ASSERT_TRUE(guest->IsGuestSession());
+  auto* guest_window = CreateBrowser(guest);
+  ASSERT_TRUE(guest_window);
+  EXPECT_EQ(0u,
+            barc_window_private_session_uuid(guest_window->GetSessionID().id(),
+                                             identity, sizeof(identity)));
+  EXPECT_STREQ("", identity);
+}
+
+class BarcPrivateCommandBrowserTest : public BarcProfilesBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    BarcProfilesBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitch("barc-shared-native-window");
+    command_line->AppendSwitch("barc-native-shell");
+  }
+  void SetUp() override {
+    barc_set_runtime_ready_callback(
+        [](void*) {
+          int32_t initial = 0;
+          GlobalBrowserCollection::GetInstance()->ForEach(
+              [&](BrowserWindowInterface* window) {
+                initial = window->GetSessionID().id();
+                return false;
+              });
+          CHECK_GT(initial, 0);
+          NSView* header =
+              [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+          CHECK(
+              barc_window_attach_native_shell(initial, (__bridge void*)header));
+          CHECK(barc_window_admit_discovered(initial, (__bridge void*)header));
+          barc_runtime_complete_startup(initial);
+        },
+        nullptr);
+    BarcProfilesBrowserTest::SetUp();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
+                       NativeIncognitoHasIndependentDiscoverableSession) {
+  chrome::NewIncognitoWindow(browser()->GetProfile());
+  int32_t native_id = 0;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    GlobalBrowserCollection::GetInstance()->ForEach(
+        [&](BrowserWindowInterface* window) {
+          char identity[37];
+          if (barc_window_private_session_uuid(window->GetSessionID().id(),
+                                               identity, sizeof(identity))) {
+            native_id = window->GetSessionID().id();
+            return false;
+          }
+          return true;
+        });
+    return native_id != 0;
+  }));
+  auto* native = Window(native_id);
+  ASSERT_TRUE(native);
+  auto* session = native->GetProfile();
+  BarcDiscoveryWindow native_row;
+  ASSERT_EQ(1, barc_window_discovery_state(native_id, &native_row));
+  EXPECT_EQ(0u, native_row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
+  EXPECT_NE(0u, native_row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+  char native_identity[37];
+  ASSERT_EQ(37u, barc_window_private_session_uuid(native_id, native_identity,
+                                                  sizeof(native_identity)));
+  NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+  ASSERT_EQ(1,
+            barc_window_attach_native_shell(native_id, (__bridge void*)header));
+  ASSERT_EQ(1, barc_window_admit_discovered(native_id, (__bridge void*)header));
+  Result factory;
+  barc_private_session_open_window(Completed, &factory);
+  ASSERT_EQ(BARC_PROFILE_OK, factory.Get<0>());
+  ASSERT_TRUE(Window(factory.Get<1>()));
+  EXPECT_FALSE(Window(factory.Get<1>())->GetWindow()->IsVisible());
+  BarcDiscoveryWindow factory_row;
+  ASSERT_EQ(1, barc_window_discovery_state(factory.Get<1>(), &factory_row));
+  EXPECT_NE(0u, factory_row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
+  ASSERT_NE(session, Window(factory.Get<1>())->GetProfile());
+  BarcDiscoverySnapshot snapshot;
+  ASSERT_EQ(BARC_DISCOVERY_READ_CAPACITY,
+            barc_discovery_snapshot(nullptr, 0, nullptr, 0, &snapshot));
+  std::vector<BarcDiscoveryWindow> windows(snapshot.window_count);
+  std::vector<BarcDiscoveryTab> tabs(snapshot.tab_count);
+  ASSERT_EQ(BARC_DISCOVERY_READ_OK,
+            barc_discovery_snapshot(windows.data(), windows.size(), tabs.data(),
+                                    tabs.size(), &snapshot));
+  bool saw_native_tab = false;
+  bool saw_factory_tab = false;
+  for (const auto& tab : tabs) {
+    if (tab.window == native_id) {
+      saw_native_tab = true;
+      EXPECT_EQ(0u, tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY);
+    } else if (tab.window == factory.Get<1>()) {
+      saw_factory_tab = true;
+      EXPECT_NE(0u, tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY);
+    }
+  }
+  EXPECT_TRUE(saw_native_tab);
+  EXPECT_TRUE(saw_factory_tab);
+  // Ordinary New Window inherits this session, unlike explicit New Incognito.
+  chrome::NewWindow(native);
+  int same_session_windows = 0;
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* window) {
+        if (window->GetProfile() == session) {
+          ++same_session_windows;
+          char identity[37];
+          EXPECT_EQ(37u, barc_window_private_session_uuid(
+                             window->GetSessionID().id(), identity,
+                             sizeof(identity)));
+          EXPECT_STREQ(native_identity, identity);
+        }
+        return true;
+      });
+  EXPECT_EQ(2, same_session_windows);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
+                       NativeIncognitoPreservesDisabledPolicy) {
+  auto* manager = g_browser_process->profile_manager();
+  const size_t profiles_before =
+      manager->GetProfileAttributesStorage().GetNumberOfProfiles();
+  IncognitoModePrefs::SetAvailability(
+      browser()->GetProfile()->GetPrefs(),
+      policy::IncognitoModeAvailability::kDisabled);
+  chrome::NewIncognitoWindow(browser()->GetProfile());
+  EXPECT_EQ(profiles_before,
+            manager->GetProfileAttributesStorage().GetNumberOfProfiles());
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* window) {
+        char identity[37];
+        EXPECT_EQ(0u,
+                  barc_window_private_session_uuid(window->GetSessionID().id(),
+                                                   identity, sizeof(identity)));
+        return true;
+      });
+}
+
+IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
+                       NativeIncognitoRechecksPolicyAfterCreation) {
+  auto* manager = g_browser_process->profile_manager();
+  const size_t profiles_before =
+      manager->GetProfileAttributesStorage().GetNumberOfProfiles();
+  chrome::NewIncognitoWindow(browser()->GetProfile());
+  ASSERT_GT(manager->GetProfileAttributesStorage().GetNumberOfProfiles(),
+            profiles_before);
+  IncognitoModePrefs::SetAvailability(
+      browser()->GetProfile()->GetPrefs(),
+      policy::IncognitoModeAvailability::kDisabled);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return manager->GetProfileAttributesStorage().GetNumberOfProfiles() ==
+           profiles_before;
+  }));
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* window) {
+        char identity[37];
+        EXPECT_EQ(0u,
+                  barc_window_private_session_uuid(window->GetSessionID().id(),
+                                                   identity, sizeof(identity)));
+        return true;
+      });
 }

@@ -17,6 +17,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private typealias Complete = @convention(c) (Int32) -> Void
     private let registerCallback: Register
     private let open: Open
+    private let privateOpen: ChromiumCreatedPageAdmission.PrivateOpen
+    private let closeWindow: @convention(c) (Int32) -> Int32
+    private var acceptsWindows = true
     private let tabAt: TabAt
     private let navigationAPI: ChromiumNavigationAPI
     private let configuration: ChromiumStartupConfiguration
@@ -53,6 +56,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
         guard version() >= 2 else { throw LoaderError.ownerEndedProtocolRequired }
         registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
         open = try symbol("barc_profile_open_window", Open.self)
+        privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
+        closeWindow = try symbol("barc_window_close", (@convention(c) (Int32) -> Int32).self)
         tabAt = try symbol("barc_window_tab_at", TabAt.self)
         attach = try symbol("barc_window_attach_native_shell", Attach.self)
         chromeMain = try symbol("ChromeMain", Main.self)
@@ -75,6 +80,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             var argv: [UnsafePointer<CChar>?] = strings.map { UnsafePointer($0) } + [nil]
             return withExtendedLifetime((app, startup)) {
                 let code = app.chromeMain(Int32(engineArguments.count), &argv)
+                app.acceptsWindows = false
                 app.catalog.stop()
                 return startup.runtimeReturned(code)
             }
@@ -127,9 +133,10 @@ final class ChromiumApplication: ChromiumStartupBridge {
             browserManager = manager
             registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
             registry.onWindowClose = { [weak manager, weak registry = self.registry] id in
-                guard let tabs = manager?.tabs, let state = registry?.windows[id],
-                      tabs.device.windows.contains(where: { $0.id == id }) else { return }
-                tabs.detach(window: state)
+                guard let tabs = manager?.tabs, let state = registry?.windows[id] else { return }
+                if state.isIncognito || tabs.device.windows.contains(where: { $0.id == id }) {
+                    tabs.detach(window: state)
+                }
             }
             let admission = ChromiumCreatedPageAdmission(api: discoveryAPI, host: pageHost,
                 tabs: manager.tabs, registry: registry,
@@ -138,6 +145,17 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     self.makeShell(for: state, manager: manager, storage: storage)
                 })
             self.admission = admission
+            manager.nativeCreateIncognitoWindow = { [weak self, weak admission] in
+                guard let self, let admission, self.acceptsWindows else { return }
+                let origin = self.registry.activeWindow, originID = origin?.id
+                _ = admission.openPrivateWindow(open: self.privateOpen, close: self.closeWindow,
+                    canPresent: { [weak self, weak origin] in
+                        guard let self, self.acceptsWindows else { return false }
+                        guard let originID else { return true } // App menu with no product window.
+                        guard let origin else { return false }
+                        return self.registry.windows[originID] === origin
+                    })
+            }
             catalog.onSnapshot = { [weak admission] in admission?.apply($0) }
             opened = completion
             profile.id.uuidString.withCString { uuid in

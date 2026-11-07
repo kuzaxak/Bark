@@ -22,6 +22,24 @@ import NookWeb
     static var attachments = 0
     static var membershipChecks = 0
     static var admitted: [Int32] = []
+    static var shown: [Int32] = []
+    static var privateIDs: [Int32: UUID] = [:]
+    static var privateIdentityReads = 0
+    static var allowPrivateCreate = false
+    static var rejectNextObservation = false
+    static var onRejectedObserve: ((Int32, Int32) -> Void)?
+    static var allowFailedPrivateClose = false
+    static var failedPrivateCloses: [(Int32, Int32)] = []
+    static var privateCreatedClients: [Int32] = []
+    static var privateCallback: (@convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void)?
+    static var privateContext: UnsafeMutableRawPointer?
+    static func copyPrivateID(_ window: Int32, _ output: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> Int {
+        privateIdentityReads += 1
+        guard windows[window]?.profile_kind == BARC_DISCOVERY_GUEST.rawValue, let id = privateIDs[window] else { return 0 }
+        let bytes = id.uuidString.utf8CString
+        if let output, capacity >= bytes.count { for (i, byte) in bytes.enumerated() { output[i] = byte } }
+        return bytes.count
+    }
 
     static func window(_ id: Int32, group: UInt64, profile: UUID?, kind: UInt32 = 0,
                        profileKind: UInt32 = 0, flags: UInt32 = 4, active: Int32) -> BarcDiscoveryWindow {
@@ -64,11 +82,21 @@ import NookWeb
             Native.admitted.append(window)
             Native.windows[window]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
             return 1 // Preserve the caller's inactive/active intent.
+        } }, privateUUID: { window, output, capacity in MainActor.assumeIsolated {
+            Native.copyPrivateID(window, output, capacity)
+        } }, show: { window in MainActor.assumeIsolated {
+            precondition(Native.shells[window] != nil && Native.windows[window]?.selected_client == window)
+            Native.shown.append(window); return 1
         } })
     }
     static var host: ChromiumPageHostAPI {
         ChromiumPageHostAPI(open: { _, _, _, _, _ in preconditionFailure("Discovery created a browser") },
-            create: { _, _, _ in preconditionFailure("Discovery created a tab") },
+            create: { client, _, foreground in MainActor.assumeIsolated {
+                precondition(Native.allowPrivateCreate && Native.privateIDs[client] != nil && foreground == 0)
+                let tab = Int32(9000 + Native.privateCreatedClients.count)
+                Native.privateCreatedClients.append(client); Native.tabs.append(Native.tab(tab, window: client))
+                return tab
+            } },
             tabAt: { window, index in MainActor.assumeIsolated {
                 let rows = Native.tabs.filter { $0.window == window }
                 return rows.indices.contains(index) ? rows[index].tab : 0
@@ -89,6 +117,11 @@ import NookWeb
     }
     static var navigation: ChromiumNavigationAPI {
         ChromiumNavigationAPI(observe: { window, tab, callback, context in MainActor.assumeIsolated {
+            if Native.rejectNextObservation {
+                Native.rejectNextObservation = false
+                Native.onRejectedObserve?(window, tab); Native.onRejectedObserve = nil
+                return 0
+            }
             let token = Native.nextToken; Native.nextToken += 1
             Native.observers[token] = (callback, context, window, tab)
             "https://fixture.invalid/live-\(tab)".withCString {
@@ -100,7 +133,10 @@ import NookWeb
             back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in preconditionFailure("Existing page was reloaded") },
             stop: { _, _ in preconditionFailure("Existing page was stopped") },
             select: { _, _ in preconditionFailure("Discovery selected/focused a native tab") },
-            close: { _, _ in preconditionFailure("Discovery closed native contents") },
+            close: { window, tab in MainActor.assumeIsolated {
+                precondition(Native.allowFailedPrivateClose && Native.privateIDs[window] != nil && Native.tabs.contains { $0.window == window && $0.tab == tab })
+                Native.failedPrivateCloses.append((window, tab)); Native.tabs.removeAll { $0.window == window && $0.tab == tab }; return 1
+            } },
             profileUUID: { window, output, capacity in MainActor.assumeIsolated {
                 guard let row = Native.windows[window], let profile = ChromiumDiscoveryAPI.profileID(row) else { return 0 }
                 let bytes = profile.uuidString.utf8CString
@@ -108,6 +144,8 @@ import NookWeb
                     for (index, byte) in bytes.enumerated() { output[index] = byte }
                 }
                 return bytes.count
+            } }, privateSessionUUID: { window, output, capacity in MainActor.assumeIsolated {
+                Native.copyPrivateID(window, output, capacity)
             } })
     }
     static var onAttach: ((Int32) -> Int32)?
@@ -291,6 +329,7 @@ private struct NoTokens: KagiTokenStore {
         for window in Array(Native.windows.keys) { Native.end(window) }
         tabs.saveNow()
         try checkOnlySourceTransfer()
+        try checkPrivateSessions()
         print("Chromium catalog admission checks passed")
     }
 }
@@ -331,4 +370,150 @@ private struct NoTokens: KagiTokenStore {
     precondition(tabs.selectedSession(in: registry.allWindows.first!) === session && session.navigation === page)
     precondition(tabs.tree.item(item) != nil && !page.isClosed)
     Native.end(502); tabs.saveNow()
+}
+
+/// Private identity/admission uses the same real host/model, never regular
+/// metadata or persistent factories. Native calls remain deterministic stubs.
+@MainActor private func checkPrivateSessions() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcPrivateCatalog-\(UUID())")
+    let suite = "BarcPrivateCatalog-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree(); tree.createSpace(id: Native.work, name: "Work", icon: "house", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    tabs.nativePageHost = host
+    registry.onWindowClose = { id in if let window = registry.windows[id] { tabs.detach(window: window) } }
+    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    let a = UUID(), b = UUID()
+    func add(_ window: Int32, session: UUID?, factory: Bool = false) {
+        Native.windows[window] = Native.window(window, group: UInt64(window), profile: nil,
+            profileKind: BARC_DISCOVERY_GUEST.rawValue, flags: 4 | (factory ? 8 : 16), active: window * 10)
+        Native.tabs.append(Native.tab(window * 10, window: window, flags: factory ? 2 : 0))
+        Native.privateIDs[window] = session
+    }
+    add(701, session: a); add(702, session: b); add(703, session: nil) // Stock Guest is not a Barc session.
+    Native.windows[704] = Native.window(704, group: 704, profile: nil, profileKind: BARC_DISCOVERY_INCOGNITO.rawValue, active: 7040)
+    Native.tabs.append(Native.tab(7040, window: 704))
+    let originalTree = tabs.tree, originalDevice = tabs.device
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows.count == 2 && tabs.privateWindows.count == 2)
+    let source = tabs.privateWindows.first { $0.ephemeralProfile?.id == a }!
+    let originalSession = tabs.selectedSession(in: source)!, page = originalSession.navigation as! ChromiumPageNavigation
+    precondition(page.isPrivateSession && originalSession.isPrivate && originalSession.profile?.webKitDataStore == nil)
+    add(711, session: a)
+    Native.tabs[Native.tabs.firstIndex { $0.tab == 7110 }!].opener_tab = 7010
+    admission.apply(Native.discovery.readSnapshot()!)
+    let child = tabs.privateWindows.first { $0 !== source && $0.ephemeralProfile?.id == a }!
+    precondition(child.ephemeralProfile === source.ephemeralProfile && registry.windows.count == 3)
+    let item = originalSession.itemID
+    Native.move(7010, to: 711); Native.end(701)
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows[source.id] == nil && tabs.session(for: item) === originalSession)
+    precondition(tabs.selectedSession(in: child) === originalSession && originalSession.navigation === page && !page.isClosed)
+    precondition(tabs.tree == originalTree && tabs.device == originalDevice)
+    // A user-created tab reuses this exact private client; any persistent
+    // profile factory, native focus or navigation replay remains a hard trap.
+    Native.allowPrivateCreate = true
+    let pendingPage = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Private", isPrivate: true, controller: nil)
+    var created: ChromiumPageNavigation?
+    _ = host.createPage(for: pendingPage, profile: child.ephemeralProfile!, in: child) {
+        guard case .success(let page) = $0 else { preconditionFailure("Private tab creation refused") }
+        created = page as? ChromiumPageNavigation
+    }
+    precondition(created?.isPrivateSession == true && created?.profileID == a && Native.privateCreatedClients == [711])
+    // Rejected observation releases only the just-created, still-owned private
+    // blank. A tab moved to a foreign owner during rejection is untouched.
+    Native.allowFailedPrivateClose = true
+    Native.rejectNextObservation = true
+    let expectedFailed = Int32(9000 + Native.privateCreatedClients.count)
+    var failed = false
+    _ = host.createPage(for: pendingPage, profile: child.ephemeralProfile!, in: child) {
+        if case .failure = $0 { failed = true }
+    }
+    precondition(failed && Native.failedPrivateCloses.count == 1 &&
+        Native.failedPrivateCloses[0].0 == 711 && Native.failedPrivateCloses[0].1 == expectedFailed)
+    Native.rejectNextObservation = true
+    var foreignTab: Int32 = 0
+    Native.onRejectedObserve = { _, tab in
+        foreignTab = tab
+        let index = Native.tabs.firstIndex { $0.tab == tab }!
+        Native.tabs[index].window = 702
+    }
+    failed = false
+    _ = host.createPage(for: pendingPage, profile: child.ephemeralProfile!, in: child) {
+        if case .failure = $0 { failed = true }
+    }
+    precondition(failed && Native.failedPrivateCloses.count == 1 &&
+        Native.tabs.contains { $0.window == 702 && $0.tab == foreignTab })
+    Native.allowFailedPrivateClose = false
+    Native.allowPrivateCreate = false
+    // Unchanged-owner state/commands do not repeat UUID lookup. A changed
+    // owner must retain both the session UUID and private/regular identity kind.
+    let reads = Native.privateIdentityReads
+    for (token, entry) in Native.observers where entry.3 == page.nativeTabID {
+        for _ in 0..<20 { entry.0?(entry.1, token, 6, 711, entry.3, nil, nil, 0, 0) }
+    }
+    precondition(page.goBack() && Native.privateIdentityReads == reads)
+    Native.windows[713] = Native.window(713, group: 713, profile: a, active: 0)
+    Native.privateIDs[713] = a // Matching text, wrong kind.
+    Native.windows[714] = Native.window(714, group: 714, profile: nil, profileKind: BARC_DISCOVERY_GUEST.rawValue, active: 0)
+    Native.privateIDs[714] = b // Correct kind, foreign session.
+    for (token, entry) in Native.observers where entry.3 == page.nativeTabID {
+        "https://foreign.invalid/".withCString {
+            entry.0?(entry.1, token, 1, 713, entry.3, $0, nil, 0, 0)
+            entry.0?(entry.1, token, 1, 714, entry.3, $0, nil, 0, 0)
+        }
+        precondition(page.nativeWindowID == 711 && page.state.url?.host != "foreign.invalid")
+        entry.0?(entry.1, token, 6, 0, entry.3, nil, nil, 0, 0)
+        precondition(page.nativeWindowID == 0 && !page.selectNativePage())
+        let detachedReads = Native.privateIdentityReads
+        entry.0?(entry.1, token, 6, 711, entry.3, nil, nil, 0, 0)
+        precondition(page.nativeWindowID == 711 && Native.privateIdentityReads == detachedReads + 1)
+    }
+
+    // A cancelled async factory cannot publish its late blank/private product.
+    let count = registry.windows.count
+    var closed: [Int32] = []
+    let cancel = admission.openPrivateWindow(open: { callback, pointer in MainActor.assumeIsolated {
+        Native.privateCallback = callback; Native.privateContext = pointer
+    } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: { true })
+    cancel(); add(721, session: UUID(), factory: true)
+    Native.privateCallback?(0, 721, Native.privateContext); Native.privateCallback = nil; Native.privateContext = nil
+    precondition(closed == [721] && registry.windows.count == count)
+    var cancelDuringAdmission: (() -> Void)?
+    cancelDuringAdmission = admission.openPrivateWindow(open: { callback, pointer in MainActor.assumeIsolated {
+        Native.privateCallback = callback; Native.privateContext = pointer
+    } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: {
+        cancelDuringAdmission?(); return true
+    })
+    add(723, session: UUID(), factory: true)
+    Native.privateCallback?(0, 723, Native.privateContext); Native.privateCallback = nil; Native.privateContext = nil
+    precondition(closed == [721, 723] && registry.windows.count == count)
+    cancelDuringAdmission = nil
+    // Synchronous completion is also valid; the exact factory blank is adopted
+    // once rather than stolen by the ordinary catalog drain.
+    add(722, session: UUID(), factory: true)
+    _ = admission.openPrivateWindow(open: { callback, pointer in callback(0, 722, pointer) },
+        close: { _ in preconditionFailure("Valid private factory was rejected") }, canPresent: { true })
+    precondition(registry.windows.count == count + 1 && Native.shown == [722])
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows.count == count + 1 && tabs.tree == originalTree && tabs.device == originalDevice)
+    let childItem = originalSession.itemID
+    Native.end(711)
+    precondition(originalSession.navigation == nil && page.isClosed)
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows[child.id] == nil && tabs.session(for: childItem) == nil)
+    for id in Array(Native.windows.keys) { Native.end(id) }
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows.isEmpty && tabs.tree == originalTree && tabs.device == originalDevice && Native.observers.isEmpty)
+    tabs.saveNow()
+    let saved = TabStore(directory: root).load()
+    precondition(saved.tree == originalTree && saved.device == originalDevice)
 }

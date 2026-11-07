@@ -808,7 +808,8 @@ public final class TabsController {
     /// Pure model ownership for catalog reconciliation; unlike presentation
     /// lookup this also identifies a background page without scanning sessions.
     public func isNativePageOwner(_ session: PageSession, in window: BrowserWindowState) -> Bool {
-        profileEngine == .chromium && liveSessions[session.itemID] === session &&
+        profileEngine == .chromium &&
+        (session.isPrivate ? window.privateSessions[session.itemID] === session : liveSessions[session.itemID] === session) &&
         pageOwners[session.itemID] == window.id && windowRegistry.windows[window.id] === window
     }
 
@@ -995,6 +996,13 @@ public final class TabsController {
     public func adoptNativePage(_ page: any PageNavigation, through host: any NativePageHost,
                                 in window: BrowserWindowState, spaceID: UUID,
                                 from opener: UUID? = nil, select: Bool) -> UUID? {
+        if window.isIncognito {
+            return adoptPrivateNativePage(page, through: host, in: window,
+                spaceID: spaceID, from: opener, select: select)
+        }
+        guard !privateWindows.contains(where: { window in
+            window.privateSessions.values.contains(where: { $0.navigation === page })
+        }) else { return nil }
         func isCurrent() -> Bool {
             profileEngine == .chromium && !isTerminating && nativePageHost === host &&
             windowRegistry.windows[window.id] === window && !window.isIncognito && window.privateTree == nil &&
@@ -1110,16 +1118,177 @@ public final class TabsController {
         return id
     }
 
+    private func nativeProfileMatches(_ page: any PageNavigation, in window: BrowserWindowState,
+                                      spaceID: UUID) -> Bool {
+        if window.isIncognito {
+            return window.privateTree?.space(spaceID) != nil && window.ephemeralProfile?.isEphemeral == true &&
+                window.ephemeralProfile?.engine == .chromium && window.ephemeralProfile?.id == page.profileID
+        }
+        return window.privateTree == nil && tree.dataStoreID(for: spaceID) == page.profileID
+    }
+
+    /// Private contents stay in their existing window-owned tree/session map.
+    /// Same-session transfers retain the live item/page; other sessions reject.
+    private func adoptPrivateNativePage(_ page: any PageNavigation, through host: any NativePageHost,
+                                       in window: BrowserWindowState, spaceID: UUID,
+                                       from opener: UUID?, select shouldSelect: Bool) -> UUID? {
+        func current() -> Bool {
+            profileEngine == .chromium && !isTerminating && nativePageHost === host &&
+            windowRegistry.windows[window.id] === window && window.isIncognito &&
+            nativeProfileMatches(page, in: window, spaceID: spaceID) && host.canAdoptPage(page, in: window)
+        }
+        let generation = shouldSelect ? UUID() : nil
+        if let generation { window.nativeSelectionGeneration = generation }
+        defer {
+            if let generation, window.nativeSelectionGeneration == generation {
+                window.nativeSelectionGeneration = nil
+                window.nativeSelectionSession = nil
+            }
+        }
+        func intentIsCurrent() -> Bool { generation == nil || window.nativeSelectionGeneration == generation }
+        guard intentIsCurrent(), current(), let original = window.privateTree, let profile = window.ephemeralProfile else { return nil }
+        if let opener { guard original.spaceID(of: opener) == spaceID, original.item(opener)?.url != nil else { return nil } }
+        guard !shouldSelect || host.selectPage(page, in: window), intentIsCurrent(), current(),
+              window.privateTree == original else { return nil }
+        if let existing = sessions.first(where: { $0.navigation === page }) {
+            guard existing.isPrivate, !existing.nativeIsEnding, existing.nativeRelease == nil,
+                  let source = privateWindows.first(where: { $0.privateSessions[existing.itemID] === existing }),
+                  source.ephemeralProfile === profile,
+                  let sourceTree = source.privateTree, sourceTree.item(existing.itemID) != nil else { return nil }
+            if source === window {
+                guard shouldSelect else { return existing.itemID }
+                window.nativeSelectionSession = existing
+                finishNativeAdoption(existing, in: window, opener: nil, parent: nil,
+                                     select: true, generation: generation)
+                return intentIsCurrent() && current() && window.selectedItemID == existing.itemID ? existing.itemID : nil
+            }
+            guard source.split == nil, window.split == nil else { return nil }
+            cancelNativeSelection(for: existing)
+            existing.cancelNativePreparation(in: source)
+            func transferCurrent() -> Bool {
+                intentIsCurrent() && current() && source.privateSessions[existing.itemID] === existing &&
+                source.privateTree == sourceTree && window.privateTree == original &&
+                windowRegistry.windows[source.id] === source && existing.navigation === page &&
+                !existing.nativeIsEnding && existing.nativeRelease == nil
+            }
+            guard transferCurrent() else { return nil }
+            var sourceAfter = sourceTree, destinationAfter = original
+            do {
+                let closed = try sourceAfter.close(existing.itemID, promotingChildren: true).closed
+                let parent = original.newTabPosition(in: spaceID, after: window.selectedItemID,
+                                                    climbingFolders: settings.newTabsAtTopLevel).0
+                _ = try destinationAfter.reopen(closed, fallback: parent)
+            } catch { return nil }
+            // Clear the stale source selection before tree publication; native
+            // selection is mirrored separately, without focus or reload.
+            for (space, selected) in source.selectedItemBySpace where selected == existing.itemID {
+                source.selectedItemBySpace[space] = nil
+                guard transferCurrent() else { return nil }
+            }
+            let transferToken = UUID()
+            existing.nativeTransfer = (transferToken, window.id)
+            defer {
+                if existing.nativeTransfer?.token == transferToken { existing.nativeTransfer = nil }
+            }
+            // Runtime maps precede observable tree publication. An observer
+            // retiring the source now cannot tear down the transferred page.
+            window.privateSessions[existing.itemID] = existing
+            source.privateSessions.removeValue(forKey: existing.itemID)
+            source.privateTree = sourceAfter
+            guard existing.nativeTransfer?.token == transferToken, intentIsCurrent(), current(), window.privateTree == original,
+                  window.privateSessions[existing.itemID] === existing,
+                  existing.navigation === page, !existing.nativeIsEnding, existing.nativeRelease == nil else {
+                // Restore only our still-unpublished move, never a newer owner.
+                if existing.nativeTransfer?.token == transferToken,
+                   (window.privateSessions[existing.itemID] === existing ||
+                    (windowRegistry.windows[window.id] == nil && !sessions.contains(where: { $0.navigation === page }))),
+                   source.privateSessions[existing.itemID] == nil,
+                   (window.privateTree == original || (windowRegistry.windows[window.id] == nil && window.privateTree == nil)),
+                   windowRegistry.windows[source.id] === source,
+                   source.privateTree == sourceAfter {
+                    window.privateSessions.removeValue(forKey: existing.itemID)
+                    source.privateSessions[existing.itemID] = existing
+                    source.privateTree = sourceTree
+                }
+                return nil
+            }
+            window.privateTree = destinationAfter
+            guard existing.nativeTransfer?.token == transferToken, intentIsCurrent(), current(), window.privateSessions[existing.itemID] === existing,
+                  existing.navigation === page, !existing.nativeIsEnding, existing.nativeRelease == nil else { return nil }
+            // Native opener survives. Remove only model-local relationships
+            // that refer to the source's tree; no private records reach device.
+            source.privateOpeners = source.privateOpeners.filter { $0.key != existing.itemID && $0.value != existing.itemID }
+            guard existing.nativeTransfer?.token == transferToken, intentIsCurrent(), current(),
+                  window.privateSessions[existing.itemID] === existing, existing.navigation === page else { return nil }
+            recordPageOwner(existing.itemID, in: window)
+            guard existing.nativeTransfer?.token == transferToken, intentIsCurrent(), current(),
+                  window.privateSessions[existing.itemID] === existing, existing.navigation === page else { return nil }
+            if generation != nil { window.nativeSelectionSession = existing }
+            finishNativeAdoption(existing, in: window, opener: nil, parent: nil,
+                                 select: shouldSelect, generation: generation)
+            return intentIsCurrent() && current() && window.privateSessions[existing.itemID] === existing &&
+                existing.navigation === page && (!shouldSelect || window.selectedItemID == existing.itemID) ? existing.itemID : nil
+        }
+        // Private selection is reflected after native admission; never focus a
+        // background popup just because it has an active tab.
+        let state = page.state
+        guard intentIsCurrent(), current(), window.privateTree == original else { return nil }
+        let position = opener.flatMap {
+            original.linkTabPosition(in: spaceID, opener: $0, nest: settings.nestLinkTabsUnderOpener,
+                                     openers: window.privateOpeners)
+        } ?? original.newTabPosition(in: spaceID, after: window.selectedItemID, climbingFolders: settings.newTabsAtTopLevel)
+        let id = UUID(), url = state.url ?? URL(string: "about:blank")!
+        let title = state.title ?? url.host ?? url.absoluteString
+        var proposed = original
+        guard (try? proposed.createTab(id: id, url: url, title: title, in: position.0, after: position.1)) != nil else { return nil }
+        let session = PageSession(itemID: id, url: url, title: title, isPrivate: true, controller: nil)
+        session.detachedProfile = profile
+        session.installNavigation(page)
+        session.nativeResourceHost = host
+        guard intentIsCurrent(), current(), window.privateTree == original,
+              !sessions.contains(where: { $0.navigation === page }) else {
+            if !sessions.contains(where: { $0.navigation === page }) { page.onEvent = nil; page.onStateChanged = nil }
+            return nil
+        }
+        session.controller = self
+        session.detachedProfile = nil
+        window.privateSessions[id] = session
+        func discardUnadmittedItem() {
+            // Remove only this rejected publication. Preserve newer tree edits,
+            // another owner of this live page, and all native contents.
+            guard window.privateSessions[id] === session, session.navigation === page else { return }
+            window.privateSessions.removeValue(forKey: id)
+            pageOwners.removeValue(forKey: id)
+            window.privateOpeners = window.privateOpeners.filter { $0.key != id && $0.value != id }
+            if var latest = window.privateTree, latest.item(id) != nil,
+               (try? latest.close(id, promotingChildren: true)) != nil { window.privateTree = latest }
+            if !sessions.contains(where: { $0.navigation === page }) { page.onEvent = nil; page.onStateChanged = nil }
+        }
+        window.privateTree = proposed
+        guard intentIsCurrent(), current(), window.privateSessions[id] === session,
+              session.navigation === page, !session.nativeIsEnding, session.nativeRelease == nil else {
+            discardUnadmittedItem(); return nil
+        }
+        if generation != nil { window.nativeSelectionSession = session }
+        finishNativeAdoption(session, in: window, opener: opener, parent: position.0,
+                             select: shouldSelect, generation: generation)
+        guard intentIsCurrent(), current(), window.privateSessions[id] === session,
+              session.navigation === page, !session.nativeIsEnding, session.nativeRelease == nil,
+              !shouldSelect || window.selectedItemID == id else { discardUnadmittedItem(); return nil }
+        return id
+    }
+
     /// Reflect an already selected engine page without activating its native
     /// window or bootstrapping another page. Adoption must have bound it first.
     @discardableResult
     public func reflectNativeSelection(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
         guard profileEngine == .chromium, !isTerminating,
-              windowRegistry.windows[window.id] === window, !window.isIncognito, window.privateTree == nil,
+              windowRegistry.windows[window.id] === window,
               let session = session(for: itemID), let page = session.navigation,
               let host = nativePageHost, session.nativeResourceHost === host,
-              let spaceID = tree.spaceID(of: itemID), tree.item(itemID)?.url != nil,
-              page.profileID != nil, tree.dataStoreID(for: spaceID) == page.profileID,
+              let spaceID = tree(owner(of: window)).spaceID(of: itemID),
+              tree(owner(of: window)).item(itemID)?.url != nil,
+              page.profileID != nil, nativeProfileMatches(page, in: window, spaceID: spaceID),
               !session.nativeIsEnding, session.nativeRelease == nil,
               host.canAdoptPage(page, in: window) else { return false }
         let generation = UUID()
@@ -1135,10 +1304,11 @@ public final class TabsController {
         }
         func modelIsCurrent() -> Bool {
             !isTerminating && nativePageHost === host && windowRegistry.windows[window.id] === window &&
-            window.nativeSelectionGeneration == generation && !window.isIncognito && window.privateTree == nil &&
+            window.nativeSelectionGeneration == generation &&
             self.session(for: itemID) === session && session.nativeResourceHost === host && session.navigation === page && !session.nativeIsEnding && session.nativeRelease == nil &&
-            tree.item(itemID)?.url != nil && tree.spaceID(of: itemID) == spaceID &&
-            tree.dataStoreID(for: spaceID) == page.profileID
+            tree(owner(of: window)).item(itemID)?.url != nil &&
+            tree(owner(of: window)).spaceID(of: itemID) == spaceID &&
+            nativeProfileMatches(page, in: window, spaceID: spaceID)
         }
         guard modelIsCurrent(), host.acceptNativeSelection(page, in: window), modelIsCurrent() else { return false }
         let validate = { modelIsCurrent() && host.isNativeSelection(page, in: window) }
@@ -1204,7 +1374,18 @@ public final class TabsController {
     /// unless it is the last one, so the last window reopens as it was.
     public func detach(window: BrowserWindowState) {
         if window.privateTree != nil {
-            for itemID in Array(window.privateSessions.keys) { endSession(itemID) }
+            for itemID in Array(window.privateSessions.keys) {
+                // During a native move the session map is handed off before
+                // observable tree publication. A window retired in that gap
+                // must not close contents its tree does not own.
+                if profileEngine == .chromium,
+                   window.privateSessions[itemID]?.nativeTransfer?.destination == window.id,
+                   window.privateTree?.item(itemID) == nil, window.privateSessions[itemID]?.navigation != nil {
+                    window.privateSessions.removeValue(forKey: itemID)
+                    continue
+                }
+                endSession(itemID)
+            }
             window.privateTree = nil
             return
         }

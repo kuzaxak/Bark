@@ -352,6 +352,7 @@ void barc_private_session_open_window(barc_profile_window_callback callback,
   auto request = std::make_unique<OpenRequest>(
       std::string(), "about:blank", callback, user_data);
   request->private_session = true;
+  request->show_after_creation = false;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&BeginPrivateSession, std::move(request)));
 }
@@ -392,6 +393,51 @@ size_t barc_window_profile_uuid(int32_t id, char* buffer, size_t capacity) {
     return 0;
   if (buffer && capacity) {
     const size_t count = std::min(capacity - 1, uuid.size());
+    output.first(count).copy_from(base::span(uuid).first(count));
+    output[count] = '\0';
+  }
+  return uuid.size() + 1;
+}
+
+size_t barc_window_private_session_uuid(int32_t id,
+                                        char* buffer,
+                                        size_t capacity) {
+  base::span<char> output;
+  if (buffer && capacity) {
+    // SAFETY: The C caller supplies capacity writable bytes.
+    output = UNSAFE_BUFFERS(base::span<char>(buffer, capacity));
+    output[0] = '\0';
+  }
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      id <= 0) {
+    return 0;
+  }
+  auto* manager = Manager();
+  auto* collection = GlobalBrowserCollection::GetInstance();
+  auto* window =
+      manager && collection
+          ? collection->FindBrowserWithID(SessionID::FromSerializedValue(id))
+          : nullptr;
+  if (!window || window->IsDeleteScheduled()) {
+    return 0;
+  }
+  auto* profile = window->GetProfile();
+  auto* parent = profile->GetOriginalProfile();
+  if (!profile->IsGuestSession() || !profile->IsPrimaryOTRProfile() ||
+      !ProfileManager::IsPrivateSessionProfilePath(parent->GetPath()) ||
+      manager->GetProfileByPath(parent->GetPath()) != parent ||
+      parent->GetPrimaryOTRProfile(/*create_if_needed=*/false) != profile) {
+    return 0;
+  }
+  constexpr std::string_view prefix = "BarcPrivate-";
+  const auto basename = parent->GetPath().BaseName().AsUTF8Unsafe();
+  const auto uuid =
+      CanonicalUUID(std::string_view(basename).substr(prefix.size()));
+  if (uuid.empty() || basename != std::string(prefix) + uuid) {
+    return 0;
+  }
+  if (!output.empty()) {
+    const size_t count = std::min(output.size() - 1, uuid.size());
     output.first(count).copy_from(base::span(uuid).first(count));
     output[count] = '\0';
   }

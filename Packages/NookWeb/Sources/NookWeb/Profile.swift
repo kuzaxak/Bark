@@ -95,15 +95,15 @@ public final class Profile: NSObject, Identifiable {
 
     // MARK: - Ephemeral Profile Factory
     /// Create a new ephemeral/incognito profile with non-persistent data store
-    public static func createEphemeral(engine: Engine = .webKit) -> Profile {
+    public static func createEphemeral(id: UUID = UUID(), engine: Engine = .webKit) -> Profile {
         let profile: Profile
         switch engine {
         case .webKit:
-            profile = Profile(name: "Incognito", icon: "eye.slash", dataStore: .nonPersistent())
+            profile = Profile(id: id, name: "Incognito", icon: "eye.slash", dataStore: .nonPersistent())
         case .chromium:
             // Identity only. The caller must open/close the real native private
             // session; metadata creation never simulates runtime isolation.
-            profile = Profile(name: "Incognito", icon: "eye.slash", engine: .chromium)
+            profile = Profile(id: id, name: "Incognito", icon: "eye.slash", engine: .chromium)
         }
         profile.isEphemeral = true
         return profile

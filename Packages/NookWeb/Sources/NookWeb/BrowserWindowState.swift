@@ -209,8 +209,10 @@ public class BrowserWindowState {
     /// A private window's in-memory tree: one temporary space. Never saved. nil for regular windows.
     public var privateTree: TabTree?
 
-    /// Live pages of a private window, by item id.
-    var privateSessions: [UUID: PageSession] = [:]
+    /// Runtime ownership only. Private-tree/selection publication exposes map
+    /// changes; each PageSession publishes its own live state. Keeping the map
+    /// unobserved lets a native handoff bind both owners before tree callbacks.
+    @ObservationIgnored var privateSessions: [UUID: PageSession] = [:]
 
     /// A private window's reopen-closed history, newest last. Memory only.
     var privateClosed: [ClosedEntry] = []

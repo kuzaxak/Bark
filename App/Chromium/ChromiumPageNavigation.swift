@@ -26,6 +26,7 @@ struct ChromiumNavigationAPI {
     let select: Command
     let close: Command
     let profileUUID: ProfileUUID
+    var privateSessionUUID: ProfileUUID = { _, _, _ in 0 }
 }
 
 extension ChromiumNavigationAPI {
@@ -46,6 +47,7 @@ extension ChromiumNavigationAPI {
         select = try resolve("barc_tab_select", Command.self)
         close = try resolve("barc_tab_close", Command.self)
         profileUUID = try resolve("barc_window_profile_uuid", ProfileUUID.self)
+        privateSessionUUID = try resolve("barc_window_private_session_uuid", ProfileUUID.self)
     }
 }
 
@@ -60,6 +62,7 @@ enum ChromiumNavigationError: Error {
 @MainActor
 final class ChromiumPageNavigation: PageNavigation {
     let profileID: UUID?
+    let isPrivateSession: Bool
     private(set) var state = PageNavigationState(canGoBack: false, canGoForward: false)
     var onStateChanged: ((PageNavigationState) -> Void)?
     var onEvent: ((PageNavigationEvent) -> Void)?
@@ -82,15 +85,17 @@ final class ChromiumPageNavigation: PageNavigation {
         weak var owner: ChromiumPageNavigation?
     }
 
-    init(profileID: UUID, window: Int32, tab: Int32, api: ChromiumNavigationAPI) throws {
+    init(profileID: UUID, window: Int32, tab: Int32, api: ChromiumNavigationAPI, privateSession: Bool = false) throws {
         // Verify the native owner, rather than trusting a caller's profile label.
         var uuid = [CChar](repeating: 0, count: 37)
-        let required = api.profileUUID(window, &uuid, uuid.count)
+        let query = privateSession ? api.privateSessionUUID : api.profileUUID
+        let required = query(window, &uuid, uuid.count)
         guard required == uuid.count,
               UUID(uuidString: String(decoding: uuid.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)) == profileID else {
             throw ChromiumNavigationError.profileMismatch
         }
         self.profileID = profileID
+        self.isPrivateSession = privateSession
         self.window = window
         self.tab = tab
         self.api = api
@@ -152,10 +157,22 @@ final class ChromiumPageNavigation: PageNavigation {
         if token != 0 { api.unobserve(token) }
     }
 
+    private func matchesProfile(_ window: Int32) -> Bool {
+        var bytes = [CChar](repeating: 0, count: 37)
+        let query = isPrivateSession ? api.privateSessionUUID : api.profileUUID
+        guard query(window, &bytes, 37) == 37, bytes[36] == 0, !bytes[..<36].contains(0) else { return false }
+        return UUID(uuidString: String(cString: bytes)) == profileID
+    }
+
     private func receive(token: UInt64, event: Int32, window: Int32, tab: Int32,
                          url: URL?, title: String?, error: Int32, flags: UInt32) {
         guard !invalidated, tab == self.tab, token != 0,
               observation == 0 || observation == token else { return }
+        // A Browser's Profile/SessionID are immutable. Validate only a new
+        // nonzero owner, never allocate/parse UUIDs for unchanged state/title.
+        // Owner zero is detached/non-commandable; terminal delivery remains
+        // valid after the old native owner has already disappeared.
+        guard event == 7 || window == self.window || window == 0 || matchesProfile(window) else { return }
         observation = token  // INITIAL can call out before observe() returns.
         let ownerChanged = self.window != window
         self.window = window  // A live transfer changes the owner, never the page.

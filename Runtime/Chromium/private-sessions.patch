@@ -366,3 +366,75 @@ diff --git a/extensions/browser/extension_registrar.h b/extensions/browser/exten
      // Returns true if the extension is allowed to be enabled or disabled,
      // respectively.
      virtual bool CanEnableExtension(const Extension* extension) = 0;
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -18,4 +18,5 @@
+ #include "base/containers/adapters.h"
+ #include "base/feature_list.h"
++#include "base/functional/bind.h"
+ #include "base/i18n/rtl.h"
+ #include "base/memory/scoped_refptr.h"
+@@ -253,4 +254,6 @@
+
+ #if BUILDFLAG(IS_MAC)
++#include "chrome/browser/profiles/profile_manager.h"
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+ #include "chrome/browser/web_applications/extensions/launch.h"
+ #endif
+@@ -1344,4 +1347,46 @@
+
+ void NewIncognitoWindow(Profile* profile) {
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    if (!g_browser_process || g_browser_process->IsShuttingDown() ||
++        !g_browser_process->profile_manager() ||
++        !IncognitoModePrefs::IsIncognitoTypeAllowed(
++            profile, IncognitoModePrefs::IncognitoModeType::kStandard)) {
++      return;
++    }
++    // Native-command creation is not an app-factory reservation: the catalog
++    // must be able to admit the resulting real window. The manager disposes an
++    // unused session when this synchronous handoff creates no Browser.
++    g_browser_process->profile_manager()->CreatePrivateSessionAsync(
++        base::BindOnce(
++            [](base::WeakPtr<Profile> source, Profile* session) {
++              if (!source || !session || !g_browser_process ||
++                  g_browser_process->IsShuttingDown() ||
++                  !barc::IsNativeApplicationRegistered() ||
++                  !IncognitoModePrefs::IsIncognitoTypeAllowed(
++                      source.get(),
++                      IncognitoModePrefs::IncognitoModeType::kStandard)) {
++                return;
++              }
++              auto* manager = g_browser_process->profile_manager();
++              auto* parent = session->GetOriginalProfile();
++              if (!manager || !session->IsGuestSession() ||
++                  !session->IsPrimaryOTRProfile() ||
++                  !ProfileManager::IsPrivateSessionProfilePath(
++                      parent->GetPath()) ||
++                  manager->GetProfileByPath(parent->GetPath()) != parent ||
++                  parent->GetPrimaryOTRProfile(/*create_if_needed=*/false) !=
++                      session) {
++                return;
++              }
++              OpenEmptyWindow(session,
++                              /*should_trigger_session_restore=*/false);
++            },
++            profile->GetWeakPtr()));
++    return;
++  }
++#endif
+   NewEmptyWindow(profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
+ }
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -797,4 +797,7 @@
+   source_set("browser_commands") {
+     public = [ "browser_commands.h" ]
++    if (is_mac) {
++      public += [ "views/frame/barc_runtime_startup.h" ]
++    }
+     public_deps = [
+       ":chrome_pages",

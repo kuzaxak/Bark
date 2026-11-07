@@ -11,6 +11,202 @@ import NookTweaks
 #if os(macOS)
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func privateNativeAdoptionIsEphemeralAndOwnerEndNeverDeletesSavedState() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let a = f.privateWindow(), b = f.privateWindow()
+        let page = NativeTestPage(profileID: try #require(a.ephemeralProfile?.id))
+        let tree = f.tabs.tree, device = f.tabs.device, creates = f.host.creates.count
+        var published = false
+        withObservationTracking { _ = f.tabs.sessions; _ = f.tabs.miniPlayerPages(for: a) } onChange: {
+            MainActor.assumeIsolated { published = true }
+        }
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: a,
+            spaceID: a.spaceID!, select: false))
+        let session = try #require(f.tabs.session(for: id))
+        #expect(published && session.isPrivate && session.profile === a.ephemeralProfile && session.navigation === page)
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: b,
+            spaceID: b.spaceID!, select: false) == nil)
+        f.host.nativeSelectedPage = page; f.host.nativeSelectedWindow = a.id
+        #expect(f.tabs.reflectNativeSelection(id, in: a))
+        #expect(a.selectedItemID == id && page.loaded.isEmpty && f.host.creates.count == creates)
+        page.onEvent?(.ownerEnded)
+        #expect(a.privateTree?.item(id) != nil && session.navigation == nil && page.invalidated)
+        #expect(f.tabs.tree == tree && f.tabs.device == device && f.host.closes.isEmpty)
+        f.tabs.detach(window: a); f.registry.unregister(a.id)
+        #expect(a.privateTree == nil && a.privateSessions.isEmpty && f.tabs.device == device)
+    }
+
+    @Test func privateExistingAndTransferredSelectHonorsHostAdmission() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let source = f.privateWindow(), target = f.privateWindow(sharing: source.ephemeralProfile)
+        let page = NativeTestPage(profileID: source.ephemeralProfile!.id)
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: false))
+        f.host.admitSelection = false
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: true) == nil)
+        #expect(source.selectedItemID == nil && f.host.selectionCount == 1)
+        f.host.admitSelection = true
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: true) == id)
+        #expect(source.selectedItemID == id && f.host.selectionCount == 2)
+        f.host.admitSelection = false
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: true) == nil)
+        #expect(source.privateSessions[id] != nil && target.privateSessions[id] == nil && source.selectedItemID == id)
+        f.host.admitSelection = true
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: true) == id)
+        #expect(target.selectedItemID == id && source.selectedItemID == nil && f.host.selectionCount == 4)
+        #expect(f.host.closes.isEmpty && page.loaded.isEmpty && !page.invalidated)
+    }
+
+    @Test func privateNewPagePublicationCannotOverwriteNewerSelection() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let window = f.privateWindow(), profile = window.ephemeralProfile!.id
+        let first = NativeTestPage(profileID: profile), rejected = NativeTestPage(profileID: profile)
+        let id = try #require(f.tabs.adoptNativePage(first, through: f.host, in: window,
+            spaceID: window.spaceID!, select: false))
+        let tree = try #require(window.privateTree)
+        var observed = false
+        withObservationTracking { _ = window.privateTree } onChange: {
+            MainActor.assumeIsolated {
+                guard !observed else { return }; observed = true
+                f.tabs.select(id, in: window)
+            }
+        }
+        #expect(f.tabs.adoptNativePage(rejected, through: f.host, in: window,
+            spaceID: window.spaceID!, select: true) == nil)
+        #expect(observed && window.selectedItemID == id && window.privateTree == tree)
+        #expect(window.privateSessions.count == 1 && window.privateSessions[id]?.navigation === first)
+        #expect(rejected.onEvent == nil && rejected.onStateChanged == nil && !rejected.invalidated)
+        #expect(f.host.closes.isEmpty && first.loaded.isEmpty && rejected.loaded.isEmpty)
+    }
+
+    @Test func backgroundPrivateTransferPreservesUnrelatedPendingDestinationSelection() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let source = f.privateWindow(), target = f.privateWindow(sharing: source.ephemeralProfile)
+        let page = NativeTestPage(profileID: source.ephemeralProfile!.id)
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: false))
+        let request = f.host.creates.count
+        let pending = f.tabs.open(url: URL(string: "https://fixture.invalid/pending")!, in: target, placement: .newTab)
+        let generation = target.nativeSelectionGeneration, preparing = target.nativeSelectionSession
+        #expect(generation != nil && preparing?.itemID == pending)
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: false) == id)
+        #expect(target.nativeSelectionGeneration == generation && target.nativeSelectionSession === preparing)
+        #expect(!f.host.creates[request].cancelled && target.privateSessions[id]?.navigation === page)
+        _ = f.host.finishCreate(request)
+        #expect(target.selectedItemID == pending && target.privateSessions[id]?.navigation === page)
+        #expect(f.host.closes.isEmpty && !page.invalidated)
+    }
+
+    @Test func privateDetachDoesNotTreatArbitraryMissingItemAsTransfer() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let window = f.privateWindow()
+        let ownPage = NativeTestPage(profileID: window.ephemeralProfile!.id)
+        let id = try #require(f.tabs.adoptNativePage(ownPage, through: f.host, in: window,
+            spaceID: window.spaceID!, select: false))
+        _ = try window.privateTree?.close(id)
+        f.tabs.detach(window: window)
+        #expect(f.host.closes.count == 1 && f.host.closes[0].page === ownPage)
+    }
+
+    @Test func privateTransferRetainsLivePageWhenSourceRetiresDuringPublication() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let source = f.privateWindow(), target = f.privateWindow(sharing: source.ephemeralProfile)
+        let page = NativeTestPage(profileID: try #require(source.ephemeralProfile?.id))
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: false))
+        let session = try #require(f.tabs.session(for: id)), tree = f.tabs.tree, device = f.tabs.device
+        f.registry.onWindowClose = { id in if let window = f.registry.windows[id] { f.tabs.detach(window: window) } }
+        var observed = false
+        withObservationTracking { _ = source.privateTree } onChange: {
+            MainActor.assumeIsolated { guard !observed else { return }; observed = true; f.registry.unregister(source.id) }
+        }
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: false) == id)
+        #expect(observed && f.registry.windows[source.id] == nil)
+        #expect(target.privateSessions[id] === session && target.privateTree?.item(id) != nil)
+        #expect(session.navigation === page && !page.invalidated && page.loaded.isEmpty)
+        #expect(f.tabs.tree == tree && f.tabs.device == device && f.host.closes.isEmpty)
+    }
+
+    @Test func privateTransferAbortedDestinationRestoresSourceWithoutClosingPage() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let source = f.privateWindow(), target = f.privateWindow(sharing: source.ephemeralProfile)
+        let page = NativeTestPage(profileID: try #require(source.ephemeralProfile?.id))
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: false))
+        let session = try #require(f.tabs.session(for: id)), tree = f.tabs.tree, device = f.tabs.device
+        f.registry.onWindowClose = { id in if let window = f.registry.windows[id] { f.tabs.detach(window: window) } }
+        var observed = false
+        withObservationTracking { _ = source.privateTree } onChange: {
+            MainActor.assumeIsolated { guard !observed else { return }; observed = true; f.registry.unregister(target.id) }
+        }
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: false) == nil)
+        #expect(source.privateSessions[id] === session && source.privateTree?.item(id) != nil)
+        #expect(session.navigation === page && !page.invalidated && f.host.closes.isEmpty)
+        #expect(f.tabs.tree == tree && f.tabs.device == device)
+    }
+
+    @Test func privateOpenerPublicationCannotReclaimNewerTransferredPage() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.nestLinkTabsUnderOpener = false
+        let source = f.privateWindow(), target = f.privateWindow(sharing: source.ephemeralProfile)
+        let newer = f.privateWindow(sharing: source.ephemeralProfile)
+        let parentPage = NativeTestPage(profileID: source.ephemeralProfile!.id)
+        let parent = try #require(f.tabs.adoptNativePage(parentPage, through: f.host, in: source,
+            spaceID: source.spaceID!, select: false))
+        let page = NativeTestPage(profileID: source.ephemeralProfile!.id)
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, from: parent, select: false))
+        let session = try #require(f.tabs.session(for: id)), space = newer.spaceID!
+        #expect(source.privateOpeners[id] == parent)
+        var nested: UUID?, observed = false
+        withObservationTracking { _ = source.privateOpeners } onChange: {
+            MainActor.assumeIsolated {
+                guard !observed else { return }; observed = true
+                f.host.nativeOwnerWindow = newer.id
+                nested = f.tabs.adoptNativePage(page, through: f.host, in: newer, spaceID: space, select: false)
+            }
+        }
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: false) == nil)
+        #expect(observed && nested == id && newer.privateSessions[id] === session)
+        #expect(f.tabs.isNativePageOwner(session, in: newer) && !f.tabs.isNativePageOwner(session, in: target))
+        #expect(source.privateSessions[id] == nil && target.privateSessions[id] == nil)
+        #expect(session.navigation === page && !page.invalidated && f.host.closes.isEmpty)
+    }
+
+    @Test func privateTransferPublicationCannotOverwriteNewerSameSessionOwner() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let source = f.privateWindow(), target = f.privateWindow(sharing: source.ephemeralProfile)
+        let newer = f.privateWindow(sharing: source.ephemeralProfile)
+        let page = NativeTestPage(profileID: try #require(source.ephemeralProfile?.id))
+        let id = try #require(f.tabs.adoptNativePage(page, through: f.host, in: source,
+            spaceID: source.spaceID!, select: false))
+        let session = try #require(f.tabs.session(for: id)), newerSpace = try #require(newer.spaceID)
+        #expect(f.tabs.adoptNativePage(page, through: f.host, in: target,
+            spaceID: target.spaceID!, select: false) == id)
+        f.host.nativeSelectedPage = page; f.host.nativeSelectedWindow = target.id
+        var nested: UUID?, observed = false
+        withObservationTracking { _ = target.selectedItemBySpace } onChange: {
+            MainActor.assumeIsolated {
+                guard !observed else { return }; observed = true
+                f.host.nativeOwnerWindow = newer.id
+                f.host.nativeSelectedWindow = newer.id
+                nested = f.tabs.adoptNativePage(page, through: f.host, in: newer, spaceID: newerSpace, select: false)
+            }
+        }
+        #expect(!f.tabs.reflectNativeSelection(id, in: target))
+        #expect(nested == id && newer.privateSessions[id] === session && newer.privateTree?.item(id) != nil)
+        #expect(target.privateSessions[id] == nil && source.privateSessions[id] == nil)
+        #expect(session.navigation === page && !page.invalidated && f.host.closes.isEmpty)
+    }
+
     @Test func nativeTransferReusesSessionAndRepairsOnlySourceSelection() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -781,6 +977,12 @@ private final class NativeModelFixture {
         tabs.attach(window: window)
         host.synchronous = synchronous
         tabs.nativePageHost = host
+    }
+    func privateWindow(sharing profile: Profile? = nil) -> BrowserWindowState {
+        let window = BrowserWindowState(); window.isIncognito = true
+        window.ephemeralProfile = profile ?? Profile.createEphemeral(id: UUID(), engine: .chromium)
+        registry.register(window); tabs.attach(window: window, restoringSavedState: false)
+        return window
     }
     func cleanup() {
         for index in host.creates.indices where host.creates[index].completion != nil { host.failCreate(index) }

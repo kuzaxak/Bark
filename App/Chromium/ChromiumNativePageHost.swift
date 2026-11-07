@@ -162,7 +162,7 @@ final class ChromiumNativePageHost: NativePageHost {
                     completion: @escaping @MainActor (Result<any PageNavigation, Error>) -> Void)
         -> (@MainActor () -> Void) {
         let request = Request(completion)
-        guard profile.engine == .chromium, !profile.isEphemeral, !window.isIncognito else {
+        guard supports(profile, in: window) else {
             request.finish(.failure(HostError.unsupportedProfile))
             return {}
         }
@@ -176,6 +176,11 @@ final class ChromiumNativePageHost: NativePageHost {
         } else if let client = liveClient(in: window.id, profile: profile.id) {
             request.finish(makePage(key: key, client: client))
         } else {
+            // Private pages may only reuse this session's exact live client;
+            // a regular UUID factory must never recreate a private identity.
+            guard !profile.isEphemeral else {
+                request.finish(.failure(HostError.unsupportedProfile)); return {}
+            }
             guard let owner = liveClient(in: window.id) else {
                 request.finish(.failure(HostError.missingWindow)); return {}
             }
@@ -198,12 +203,14 @@ final class ChromiumNativePageHost: NativePageHost {
         guard opening[batch.key] === batch else { return }
         opening.removeValue(forKey: batch.key)
         guard status == 0, let row = liveState(native),
-              ChromiumDiscoveryAPI.profileID(row) == batch.key.profile,
+              row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
+              discoveryAPI.identity(row) == batch.key.profile,
               row.physical_group == batch.group,
               let mount = mounts[batch.key.window], mount.group == batch.group,
               mount.model != nil, mount.shell != nil else {
             if status == 0, let row = discoveryAPI.windowState(native),
-               ChromiumDiscoveryAPI.profileID(row) == batch.key.profile { _ = api.closeWindow(native) }
+               row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
+               discoveryAPI.identity(row) == batch.key.profile { _ = api.closeWindow(native) }
             batch.requests.forEach { $0.finish(.failure(HostError.creationRefused)) }
             return
         }
@@ -232,15 +239,27 @@ final class ChromiumNativePageHost: NativePageHost {
     }
 
     private func makePage(key: CreationKey, client: Int32) -> Result<any PageNavigation, Error> {
+        guard let mount = mounts[key.window], let model = mount.model,
+              let current = liveState(client), current.physical_group == mount.group,
+              discoveryAPI.identity(current) == key.profile,
+              (current.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == model.isIncognito else {
+            return .failure(HostError.creationRefused)
+        }
+        let privateSession = model.isIncognito
         let tab = blankTabs.removeValue(forKey: client)?.tab ??
             "about:blank".withCString { api.create(client, $0, 0) }
         guard tab > 0 else { return .failure(HostError.creationRefused) }
         do {
-            let page = try ChromiumPageNavigation(profileID: key.profile, window: client, tab: tab, api: navigationAPI)
+            let page = try ChromiumPageNavigation(profileID: key.profile, window: client, tab: tab, api: navigationAPI, privateSession: privateSession)
             record(page, in: key.window)
             return .success(page)
         } catch {
-            if profileID(client) == key.profile { _ = navigationAPI.close(client, tab) }
+            if let current = liveState(client), current.physical_group == mount.group,
+               discoveryAPI.identity(current) == key.profile,
+               (current.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == privateSession,
+               api.tabTitle(client, tab, nil, 0) > 0 {
+                _ = navigationAPI.close(client, tab)
+            }
             return .failure(error)
         }
     }
@@ -264,17 +283,19 @@ final class ChromiumNativePageHost: NativePageHost {
     /// for this model window/profile qualify; global discovery is separate.
     func bindExistingPage(nativeWindow: Int32, tab: Int32, profile: Profile,
                           in window: BrowserWindowState) -> Result<ChromiumExistingPageBinding, Error> {
-        guard profile.engine == .chromium, !profile.isEphemeral, !window.isIncognito else {
+        guard supports(profile, in: window) else {
             return .failure(HostError.unsupportedProfile)
         }
         guard let mount = mounts[window.id], mount.model === window, mount.shell != nil,
               let row = liveState(nativeWindow), row.physical_group == mount.group,
-              ChromiumDiscoveryAPI.profileID(row) == profile.id,
+              discoveryAPI.identity(row) == profile.id,
+              (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == profile.isEphemeral,
               tab > 0, api.tabTitle(nativeWindow, tab, nil, 0) > 0 else {
             return .failure(HostError.existingPageRefused)
         }
         if let binding = pages.values.first(where: { $0.page.nativeTabID == tab }) {
             guard binding.page.nativeWindowID == nativeWindow, !binding.page.isClosed,
+                  binding.page.isPrivateSession == profile.isEphemeral,
                   binding.page.profileID == profile.id, closing[ObjectIdentifier(binding.page)] == nil else {
                 return .failure(HostError.existingPageRefused)
             }
@@ -290,10 +311,10 @@ final class ChromiumNativePageHost: NativePageHost {
         // it yet. Never steal its observer or make a second model page for it.
         guard blankTabs[nativeWindow]?.tab != tab else { return .failure(HostError.existingPageRefused) }
         do {
-            let page = try ChromiumPageNavigation(profileID: profile.id, window: nativeWindow, tab: tab, api: navigationAPI)
+            let page = try ChromiumPageNavigation(profileID: profile.id, window: nativeWindow, tab: tab, api: navigationAPI, privateSession: profile.isEphemeral)
             guard !page.isClosed, let current = liveState(page.nativeWindowID),
                   current.physical_group == mount.group,
-                  ChromiumDiscoveryAPI.profileID(current) == profile.id,
+                  discoveryAPI.identity(current) == profile.id,
                   api.tabTitle(page.nativeWindowID, tab, nil, 0) > 0 else {
                 page.invalidate()
                 return .failure(HostError.existingPageRefused)
@@ -354,7 +375,7 @@ final class ChromiumNativePageHost: NativePageHost {
 
     /// Background admission uses the current native owner, never a client cache.
     func canAdoptPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
-        guard let page = navigation as? ChromiumPageNavigation else { return false }
+        guard let page = navigation as? ChromiumPageNavigation, page.isPrivateSession == window.isIncognito else { return false }
         return admission(page, in: window) != nil
     }
 
@@ -364,7 +385,9 @@ final class ChromiumNativePageHost: NativePageHost {
               binding.window == window.id, closing[ObjectIdentifier(page)] == nil,
               let mount = mounts[window.id], mount.model === window, mount.shell != nil,
               let row = liveState(page.nativeWindowID), row.physical_group == mount.group,
-              ChromiumDiscoveryAPI.profileID(row) == profile,
+              discoveryAPI.identity(row) == profile,
+              (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == window.isIncognito,
+              (!window.isIncognito || window.ephemeralProfile?.id == profile),
               api.tabTitle(page.nativeWindowID, page.nativeTabID, nil, 0) > 0 else { return nil }
         return (mount, row)
     }
@@ -451,6 +474,16 @@ final class ChromiumNativePageHost: NativePageHost {
         return false
     }
 
+    /// Refusal cleanup may dispose only an empty fresh host or our own header,
+    /// never a replacement installed by a reentrant product admission.
+    func canCloseUnadmittedWindow(_ native: Int32) -> Bool {
+        guard let row = liveState(native) else { return false }
+        if api.shellIsOwned(native, nil) == 1 { return true }
+        guard let mount = mounts.values.first(where: { $0.group == row.physical_group }),
+              let shell = mount.shell else { return false }
+        return api.shellIsOwned(native, Unmanaged.passUnretained(shell).toOpaque()) == 1
+    }
+
     func closePage(_ navigation: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         guard let page = navigation as? ChromiumPageNavigation else { completion(.cancelled); return }
         if page.isClosed { completion(page.nativeCloseOutcome ?? .closed); return }
@@ -465,14 +498,17 @@ final class ChromiumNativePageHost: NativePageHost {
         }
     }
 
-    private func profileID(_ native: Int32) -> UUID? {
-        discoveryAPI.windowState(native).flatMap(ChromiumDiscoveryAPI.profileID)
+    private func supports(_ profile: Profile, in window: BrowserWindowState) -> Bool {
+        guard profile.engine == .chromium else { return false }
+        return profile.isEphemeral
+            ? window.isIncognito && window.ephemeralProfile === profile && window.privateTree != nil
+            : !window.isIncognito && window.privateTree == nil
     }
 
     private func liveState(_ native: Int32) -> BarcDiscoveryWindow? {
         guard native > 0, let row = discoveryAPI.windowState(native), row.window == native,
               row.physical_group != 0, row.flags & 32 == 0,
-              ChromiumDiscoveryAPI.profileID(row) != nil else { return nil }
+              discoveryAPI.identity(row) != nil else { return nil }
         return row
     }
 
@@ -481,8 +517,9 @@ final class ChromiumNativePageHost: NativePageHost {
               let snapshot = discoveryAPI.readSnapshot() else { return nil }
         let candidates = snapshot.windows.filter {
             $0.physical_group == mount.group && $0.flags & 32 == 0 &&
-            ChromiumDiscoveryAPI.profileID($0) != nil &&
-            (profile == nil || ChromiumDiscoveryAPI.profileID($0) == profile) && $0.active_tab > 0
+            ($0.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == (mount.model?.isIncognito == true) &&
+            discoveryAPI.identity($0) != nil &&
+            (profile == nil || discoveryAPI.identity($0) == profile) && $0.active_tab > 0
         }
         return (candidates.first(where: { $0.selected_client == $0.window }) ?? candidates.first)?.window
     }

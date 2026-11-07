@@ -66,10 +66,13 @@ BARC_PROFILES_API void barc_profile_open_in_native_window(
 // Explicit fresh-private-session entrypoint. Browser UI thread only;
 // same async callback/user-data lifetime as open_window. Creates a fresh private
 // session with a manager-owned Guest parent and primary OTR, initially blank.
+// The callback result stays hidden; the caller must admit its model/native
+// header before explicitly showing the returned window.
 // No path/regular UUID is accepted, no persistent-profile fallback. Child
 // windows/popups must reuse the returned window's exact Profile. Closing all
 // session windows destroys OTR before releasing/deleting its ephemeral parent.
-// Native New Guest/Incognito menu entrypoints are not integrated by this draft.
+// Native New Incognito uses independent sessions in registered Barc mode.
+// Native New Guest and other profile-picker entrypoints remain unintegrated.
 BARC_PROFILES_API void barc_private_session_open_window(
     barc_profile_window_callback callback,
     void* user_data);
@@ -82,6 +85,14 @@ BARC_PROFILES_API void barc_private_session_open_window(
 BARC_PROFILES_API size_t barc_window_profile_uuid(int32_t window,
                                                   char* buffer,
                                                   size_t capacity);
+// Same UI-thread/buffer contract as the regular query, but accepts only a live
+// manager-owned Barc private Guest primary OTR. Returns its canonical session
+// UUID (37 bytes including NUL), never a regular-profile UUID or filesystem
+// path. Children sharing the exact private Profile return the same session
+// identity.
+BARC_PROFILES_API size_t barc_window_private_session_uuid(int32_t window,
+                                                        char* buffer,
+                                                        size_t capacity);
 #ifdef __cplusplus
 }
 #endif

@@ -98,7 +98,7 @@ extension TabsController {
     func finishNativeAdoption(_ session: PageSession, in window: BrowserWindowState,
                               opener: UUID?, parent: Parent?, select shouldSelect: Bool, generation: UUID?,
                               validateNative: (() -> Bool)? = nil) {
-        if let opener, let parent { linked(session.itemID, from: opener, at: parent, owner: .main) }
+        if let opener, let parent { linked(session.itemID, from: opener, at: parent, owner: owner(of: window)) }
         if shouldSelect {
             select(session.itemID, in: window, leaving: selectedSession(in: window), nativeAdmitted: true, adoptionGeneration: generation, validateNative: validateNative)
         } else {
@@ -256,6 +256,16 @@ extension TabsController {
         if movedSpace { sessionDelegate?.windowSpaceChanged(window) }
         guard admissionIsCurrent() else { return }
         window.selectedItemBySpace[spaceID] = itemID
+        guard admissionIsCurrent() else {
+            // An observation callback can move a private page before this
+            // setter returns. Never reclaim its newer owner or retain a stale
+            // selection in a tree that no longer contains it.
+            if window.isIncognito, window.privateTree?.item(itemID) == nil,
+               window.selectedItemBySpace[spaceID] == itemID {
+                window.selectedItemBySpace[spaceID] = nil
+            }
+            return
+        }
         window.emptiedSpaces.remove(spaceID)
         if case .main = owner { markSeen([itemID] + (previous.map { [$0.itemID] } ?? [])) }
         // The latest window to select a page takes its live view; others show a placeholder.

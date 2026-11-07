@@ -402,6 +402,7 @@ class BrowserManager: ObservableObject {
     /// `showSettingsWindow:` selector no longer opens a SwiftUI Settings scene.
     var openSettingsAction: OpenSettingsAction?
     var nativeOpenSettings: ((SettingsTabs) -> Void)?
+    var nativeCreateIncognitoWindow: (() -> Void)?
 
     var modelContext: ModelContext
     /// The tab model: tree, device state, window selection and live pages.
@@ -1212,7 +1213,7 @@ class BrowserManager: ObservableObject {
 
     /// Create a new incognito/private browsing window
     func createIncognitoWindow() {
-        guard engine == .webKit else { return }
+        if engine == .chromium { nativeCreateIncognitoWindow?(); return }
         guard let windowRegistry = windowRegistry,
               let webViewCoordinator = webViewCoordinator else {
             #if DEBUG

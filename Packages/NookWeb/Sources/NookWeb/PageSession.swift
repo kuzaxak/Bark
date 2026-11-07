@@ -271,6 +271,8 @@ public final class PageSession: NSObject, Identifiable {
     @ObservationIgnored var nativeRequestedURL: URL?
     @ObservationIgnored weak var nativePreparationWindow: BrowserWindowState?
     @ObservationIgnored var nativePreparationCompletions: [@MainActor (Bool) -> Void] = []
+    /// Only the synchronous private-tree ownership handoff owns this token.
+    @ObservationIgnored var nativeTransfer: (token: UUID, destination: UUID)?
     @ObservationIgnored var nativeIsEnding = false
     @ObservationIgnored var nativeUnloadPending = false
     /// Reading the bound engine page never creates or loads a resource.
