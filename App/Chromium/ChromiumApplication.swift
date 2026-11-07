@@ -102,6 +102,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             modelWindow.sidebarWidth = manager.sidebarWidth
             modelWindow.sidebarContentWidth = max(manager.sidebarWidth - 16, 0)
             modelWindow.isSidebarVisible = true
+            modelWindow.commandPalette = commandPalette
             registry.register(modelWindow)
             manager.tabs.attach(window: modelWindow)
             guard modelWindow.split == nil, let space = modelWindow.spaceID,

@@ -23,7 +23,19 @@ public class SearchManager {
     
     public init() {}
 
-    private let session = URLSession.shared
+    // Native suggestions need no credentials, cookies or persistent cache.
+    // Select from the real model engine, keeping WebKit's session unchanged.
+    private static let nativeSuggestionSession: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.httpCookieStorage = nil
+        configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
+        configuration.urlCache = nil
+        return URLSession(configuration: configuration)
+    }()
+    private var session: URLSession {
+        tabs?.profileEngine == .chromium ? Self.nativeSuggestionSession : .shared
+    }
     private var searchTask: Task<Void, Never>?
     private var historyTask: Task<Void, Never>?
     private var autofillTask: Task<Void, Never>?

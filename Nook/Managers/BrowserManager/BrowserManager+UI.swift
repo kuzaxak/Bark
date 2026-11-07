@@ -16,6 +16,7 @@ import NookUI
 import NookWeb
 
 extension BrowserManager: TabActions {
+    var supportsMultipleWindows: Bool { engine == .webKit }
     var spaceSync: (any SpaceSyncControls)? { spaceSyncManager }
 
     func enterSplit(with itemID: UUID, placeOnRight: Bool, in window: BrowserWindowState) {
