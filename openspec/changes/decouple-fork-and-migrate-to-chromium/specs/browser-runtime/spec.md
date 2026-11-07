@@ -57,6 +57,15 @@ The browser SHALL isolate persistent website data and site permissions by profil
 - **THEN** the other space using A can use that session
 - **AND** B receives neither the session nor A's permission grants
 
+### Requirement: Independent private sessions
+The browser SHALL isolate website data and site-permission grants between independently opened private sessions.
+
+#### Scenario: Independently opened private windows remain isolated
+- **GIVEN** two private windows are opened independently
+- **WHEN** one signs in to a site, stores website data and grants a site permission
+- **THEN** the other receives none of that session's cookies, website data or permission grants
+- **AND** closing either private session does not clear the other session's live data
+
 ### Requirement: Private session disposal
 The browser SHALL discard private-session browsing data when the private session ends.
 

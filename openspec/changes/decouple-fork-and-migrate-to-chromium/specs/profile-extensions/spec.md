@@ -56,12 +56,17 @@ The browser SHALL require user consent before an extension gains additional perm
 - **AND** declining does not grant it through another profile's acceptance
 
 ### Requirement: No extensions in private sessions
-The browser SHALL keep extensions disabled in private sessions for the initial Chromium release.
+The browser SHALL keep extensions installed by users or organizations disabled in private sessions for the initial Chromium release.
 
 #### Scenario: Installed extension during private browsing
-- **GIVEN** an extension is enabled in a regular profile
+- **GIVEN** a user-installed extension is enabled in a regular profile
 - **WHEN** a private session is opened
 - **THEN** the extension does not execute in it or receive its page events
+
+#### Scenario: Regular-profile incognito preference cannot enable private execution
+- **GIVEN** a user-installed extension has incognito access enabled in a regular profile
+- **WHEN** a private session is opened
+- **THEN** the extension remains unable to execute in that private session or receive its page events
 
 ### Requirement: Profile settings shortcuts
 Each Chromium-backed profile's settings page SHALL offer quick links to Chromium Settings, Extensions, Privacy and Security, Site Settings, and Clear Browsing Data for that selected profile.
