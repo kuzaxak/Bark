@@ -19,6 +19,8 @@ private enum Native {
     static var creates = 0
     static var selected: Int32 = 10
     static var attached: Int32 = 10
+    static var selectionCalls = 0
+    static var attachmentCalls = 0
     static var nativeCloses: [(Int32, Int32)] = []
     static var onObserve: ((Int32, Int32) -> Void)?
     static var onSelect: (() -> Int32)?
@@ -44,9 +46,12 @@ private enum Native {
             tabTitle: { window, tab, _, _ in MainActor.assumeIsolated {
                 Native.tabs[window]?.contains(tab) == true && Native.profiles[window] != nil ? 1 : 0
             } },
-            selectWindow: { window in MainActor.assumeIsolated { Native.selected = window; return 1 } },
+            selectWindow: { window in MainActor.assumeIsolated {
+                Native.selectionCalls += 1; Native.selected = window; return 1
+            } },
             closeWindow: { window in MainActor.assumeIsolated { Native.tabs[window] = nil; Native.profiles[window] = nil; return 1 } },
             attach: { window, view in MainActor.assumeIsolated {
+                Native.attachmentCalls += 1
                 if let callback = Native.onAttach { return callback(window) }
                 Native.attached = view == nil ? 0 : window; return 1
             } })
@@ -68,6 +73,7 @@ private enum Native {
             navigate: { _, _, _ in preconditionFailure("Host must not navigate during construction") },
             back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in 1 }, stop: { _, _ in 1 },
             select: { window, _ in MainActor.assumeIsolated {
+                Native.selectionCalls += 1
                 if let callback = Native.onSelect { return callback() }
                 Native.selected = window; return 1
             } },
@@ -208,6 +214,39 @@ private enum HostChecks {
         precondition(pendingOutcome == nil && Native.observations.count == ownedCount + 2)
         Native.emit(8, page: pendingClose.navigation)
         precondition(pendingOutcome == .cancelled && Native.observations.count == ownedCount + 1)
+
+        // A live same-profile transfer must not carry this product sidebar
+        // into an unregistered physical/native owner.
+        func moveObservedPage(_ page: ChromiumPageNavigation, to owner: Int32) {
+            for native in Array(Native.tabs.keys) { Native.tabs[native]?.removeAll { $0 == page.nativeTabID } }
+            Native.tabs[owner, default: []].append(page.nativeTabID)
+            let entry = Native.observations.first { $0.value.3 == page.nativeTabID }!
+            page.state.url!.absoluteString.withCString {
+                entry.value.0?(entry.value.1, entry.key, 6, owner, page.nativeTabID, $0, nil, 0, 0)
+            }
+        }
+        moveObservedPage(nested.navigation, to: 11) // 11 has the same real profile UUID as 10.
+        let beforeSelection = Native.selectionCalls, beforeAttachment = Native.attachmentCalls
+        precondition(!host.selectPage(nested.navigation, in: window))
+        precondition(Native.selectionCalls == beforeSelection && Native.attachmentCalls == beforeAttachment)
+        precondition(Native.selected == 10 && Native.attached == 10)
+        moveObservedPage(nested.navigation, to: 10)
+
+        // Transfer during native selection is revalidated before any sidebar detach.
+        Native.onSelect = {
+            Native.onSelect = nil
+            moveObservedPage(nested.navigation, to: 11)
+            return 1
+        }
+        precondition(!host.selectPage(nested.navigation, in: window))
+        precondition(Native.attachmentCalls == beforeAttachment && Native.attached == 10)
+        moveObservedPage(nested.navigation, to: 10)
+
+        // The normal supported same-model-window profile switch still mounts.
+        precondition(host.selectPage(first, in: window))
+        precondition(Native.selected == 20 && Native.attached == 20)
+        precondition(host.selectPage(original, in: window))
+        precondition(Native.selected == 10 && Native.attached == 10)
 
         // Runtime supersession must never restore the earlier native selection.
         Native.onSelect = {

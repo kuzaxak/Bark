@@ -314,9 +314,8 @@ final class ChromiumNativePageHost: NativePageHost {
 
     func selectPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
         guard let page = navigation as? ChromiumPageNavigation,
-              let binding = pages[ObjectIdentifier(page)], binding.window == window.id,
-              let mount = mounts[window.id], let shell = mount.shell,
-              profileID(page.nativeWindowID) == page.profileID else { return false }
+              canAdoptPage(page, in: window),
+              let mount = mounts[window.id], let shell = mount.shell else { return false }
         // Cross-window transfer is explicitly unsupported until attachment and
         // last-tab source lifetime can be admitted transactionally.
         let old = mount.client
@@ -324,20 +323,23 @@ final class ChromiumNativePageHost: NativePageHost {
         let attempt = mount.generation
         // Native callbacks may supersede this request. Never select an older
         // client merely because the runtime rejected a superseded admission.
-        guard page.selectNativePage(), mount.generation == attempt else { return false }
+        guard page.selectNativePage(), mount.generation == attempt,
+              canAdoptPage(page, in: window) else { return false }
         let target = page.nativeWindowID
         if old == target { return true }
         let oldAlive = profileID(old) != nil
         if oldAlive {
             let detached = api.attach(old, nil)
-            guard mount.generation == attempt else { return false }
+            guard mount.generation == attempt, page.nativeWindowID == target,
+                  canAdoptPage(page, in: window) else { return false }
             if detached != 1 {
                 _ = api.selectWindow(old)
                 return false
             }
         }
         let attached = api.attach(target, Unmanaged.passUnretained(shell).toOpaque())
-        guard mount.generation == attempt else { return false }
+        guard mount.generation == attempt, page.nativeWindowID == target,
+              canAdoptPage(page, in: window) else { return false }
         guard attached == 1 else {
             if oldAlive, profileID(old) != nil {
                 _ = api.selectWindow(old)
