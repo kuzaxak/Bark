@@ -719,7 +719,21 @@ public final class TabsController {
             guard prepared, self.windowRegistry.windows[window.id] === window,
                   self.session(for: itemID) === page, page.profile?.id == profileID,
                   let navigation = page.navigation,
-                  let host = page.nativeResourceHost ?? self.nativePageHost,
+                  let host = page.nativeResourceHost ?? self.nativePageHost else {
+                if window.nativeSelectionGeneration == generation {
+                    window.nativeSelectionGeneration = nil
+                    window.nativeSelectionSession = nil
+                }
+                return
+            }
+            // Capture before the host hides the outgoing native surface. A
+            // synchronous completion may reenter selection, so revalidate below.
+            if let leaving = self.selectedSession(in: window), leaving !== page {
+                leaving.captureSwitcherSnapshot()
+            }
+            guard window.nativeSelectionGeneration == generation,
+                  self.windowRegistry.windows[window.id] === window,
+                  self.session(for: itemID) === page, page.profile?.id == profileID,
                   host.selectPage(navigation, in: window),
                   window.nativeSelectionGeneration == generation,
                   self.windowRegistry.windows[window.id] === window,

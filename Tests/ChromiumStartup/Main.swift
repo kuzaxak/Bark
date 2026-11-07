@@ -41,6 +41,16 @@ struct StartupTests {
         precondition(normal.root == normalRoot.appendingPathComponent("NookChromium", isDirectory: true))
         precondition(!normal.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
         precondition(normal.engineArguments(executable: "Nook").contains("--disable-sync"))
+        let withURLs = try ChromiumStartupConfiguration(arguments: ["Nook",
+            "--no-sandbox", "https://fixture.invalid/cli", "file:///private/tmp/fixture.html"],
+            applicationSupportDirectory: normalRoot)
+        let engineURLs = withURLs.engineArguments(executable: "Nook")
+        precondition(!engineURLs.contains("--no-sandbox"))
+        precondition(Array(engineURLs.suffix(3)) == ["--", "https://fixture.invalid/cli", "file:///private/tmp/fixture.html"])
+        let literal = try ChromiumStartupConfiguration(arguments: ["Nook", "--", "--barc-app-profile=literal"],
+            applicationSupportDirectory: normalRoot)
+        precondition(!literal.isVerification && literal.launchArguments == ["--barc-app-profile=literal"])
+        precondition(config.launchArguments.isEmpty)
         try normal.prepare()
         precondition(FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("Engine").path))
         let redirected = normalRoot.appendingPathComponent("RedirectedSupport")

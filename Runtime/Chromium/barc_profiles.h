@@ -95,5 +95,16 @@ BARC_PROFILES_API size_t barc_window_private_session_uuid(int32_t window,
                                                         size_t capacity);
 #ifdef __cplusplus
 }
+#include <string>
+#include "base/functional/callback_forward.h"
+class Profile;
+namespace barc {
+// Exact regular Barc UUID only. Callback borrows manager-owned Profile; it must
+// synchronously establish browser ownership. Failed/cancelled loads return
+// null.
+void WithRegularProfileForApplication(
+    std::string uuid,
+    base::OnceCallback<void(Profile*)> callback);
+}  // namespace barc
 #endif
 #endif

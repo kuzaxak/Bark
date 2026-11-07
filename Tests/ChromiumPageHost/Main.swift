@@ -124,7 +124,8 @@ private enum Native {
             close: { window, tab in MainActor.assumeIsolated {
                 Native.nativeCloses.append((window, tab)); return 1
             } },
-            profileUUID: { window, buffer, capacity in MainActor.assumeIsolated {
+            captureThumbnail: { _, _, _ in 0 },
+            clearSiteData: { _, _, _, _ in 0 }, profileUUID: { window, buffer, capacity in MainActor.assumeIsolated {
                 guard let profile = Native.profiles[window] else { return 0 }
                 let bytes = Array(profile.uuidString.utf8CString)
                 if let buffer, capacity >= bytes.count {

@@ -63,7 +63,8 @@ private enum Native {
         reload: { window, tab in MainActor.assumeIsolated { Native.calls.append("reload:\(window):\(tab)"); return 1 } },
         stop: { _, _ in 1 },
         select: { _, _ in 1 }, close: { _, _ in 1 },
-        profileUUID: { _, pointer, capacity in MainActor.assumeIsolated {
+        captureThumbnail: { _, _, _ in 0 },
+        clearSiteData: { _, _, _, _ in 0 }, profileUUID: { _, pointer, capacity in MainActor.assumeIsolated {
             let bytes = Array(Native.profile.uuidString.utf8CString)
             if let pointer, capacity >= bytes.count {
                 for (index, byte) in bytes.enumerated() { pointer[index] = byte }

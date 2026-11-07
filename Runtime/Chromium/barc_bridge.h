@@ -44,7 +44,7 @@ BARC_API int barc_tab_transfer(int32_t source_window,
 enum BarcPageCommand {
   BARC_PAGE_FIND = 0, BARC_PAGE_FIND_NEXT = 1, BARC_PAGE_FIND_PREVIOUS = 2,
   BARC_PAGE_ZOOM_IN = 3, BARC_PAGE_ZOOM_OUT = 4, BARC_PAGE_ZOOM_RESET = 5,
-  BARC_PAGE_PRINT = 6, BARC_PAGE_DEVTOOLS = 7
+  BARC_PAGE_PRINT = 6, BARC_PAGE_DEVTOOLS = 7, BARC_PAGE_HARD_RELOAD = 8
 };
 BARC_API int barc_tab_execute_command(int32_t window, int32_t tab,
                                      int32_t command);
@@ -146,6 +146,30 @@ typedef void (*BarcTabCallback)(void* context, uint64_t observation,
 BARC_API uint64_t barc_tab_observe(int32_t window, int32_t tab,
                                   BarcTabCallback callback, void* context);
 BARC_API void barc_tab_unobserve(uint64_t observation);
+// Bounded PNG capture of an already-presented tab. One in flight per existing
+// observation. Bytes are borrowed during callback; nullptr/0 means failure.
+// Context is the observation's existing context. Unobserve/terminal teardown
+// cancels publication. Acceptance never loads, selects, shows or wakes a page.
+typedef void (*BarcTabThumbnailCallback)(void* context, uint64_t observation,
+                                        uint64_t request, const uint8_t* png, size_t length);
+BARC_API int barc_tab_capture_thumbnail(uint64_t observation, uint64_t request,
+                                       BarcTabThumbnailCallback callback);
+// Exact current-document site data commands. Return dispatch acceptance; the
+// callback reports deletion completion/cancellation/failure on the UI thread.
+// COOKIES_AND_RELOAD waits for deletion, then reports reload dispatch acceptance.
+// Cookie scope is host/.host and current top-level partition keys; CACHE never
+// deletes cookies/DOM storage or globally flushes renderer memory resources. Unobserve/terminal teardown cancels publication.
+enum BarcSiteDataAction {
+  BARC_SITE_COOKIES = 0, BARC_SITE_CACHE = 1, BARC_SITE_COOKIES_AND_RELOAD = 2
+};
+enum BarcSiteDataResult {
+  BARC_SITE_COMPLETED = 0, BARC_SITE_CANCELLED = 1, BARC_SITE_FAILED = 2
+};
+typedef void (*BarcSiteDataCallback)(void* context, uint64_t observation,
+                                    uint64_t request, int32_t result);
+BARC_API int barc_tab_clear_site_data(uint64_t observation, uint64_t request,
+                                      int32_t action, BarcSiteDataCallback callback);
+
 BARC_API int barc_tab_go_back(int32_t window, int32_t tab);
 BARC_API int barc_tab_go_forward(int32_t window, int32_t tab);
 BARC_API int barc_tab_reload(int32_t window, int32_t tab);

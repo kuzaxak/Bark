@@ -21,6 +21,7 @@ import NookWeb
     static var revision: UInt64 = 1
     static var attachments = 0
     static var membershipChecks = 0
+    static var snapshotReads = 0
     static var admitted: [Int32] = []
     static var shown: [Int32] = []
     static var privateIDs: [Int32: UUID] = [:]
@@ -69,6 +70,7 @@ import NookWeb
     }
     static var discovery: ChromiumDiscoveryAPI {
         ChromiumDiscoveryAPI(read: { windowRows, windowCapacity, tabRows, tabCapacity, size in MainActor.assumeIsolated {
+            Native.snapshotReads += 1
             let rows = Native.windows.values.sorted { $0.window < $1.window }
             size?.pointee = BarcDiscoverySnapshot(revision: Native.revision, window_count: rows.count, tab_count: Native.tabs.count)
             guard windowCapacity >= rows.count, tabCapacity >= Native.tabs.count else { return 1 }
@@ -151,7 +153,8 @@ import NookWeb
                 precondition((Native.allowFailedPrivateClose && Native.privateIDs[window] != nil || Native.restoring) && Native.tabs.contains { $0.window == window && $0.tab == tab })
                 Native.failedPrivateCloses.append((window, tab)); Native.tabs.removeAll { $0.window == window && $0.tab == tab }; return 1
             } },
-            profileUUID: { window, output, capacity in MainActor.assumeIsolated {
+            captureThumbnail: { _, _, _ in 0 },
+            clearSiteData: { _, _, _, _ in 0 }, profileUUID: { window, output, capacity in MainActor.assumeIsolated {
                 guard let row = Native.windows[window], let profile = ChromiumDiscoveryAPI.profileID(row) else { return 0 }
                 let bytes = profile.uuidString.utf8CString
                 if let output, capacity >= bytes.count {
@@ -432,6 +435,11 @@ private struct NoTokens: KagiTokenStore {
     admission.apply(Native.discovery.readSnapshot()!)
     precondition(registry.windows[source.id] == nil && tabs.session(for: item) === originalSession)
     precondition(tabs.selectedSession(in: child) === originalSession && originalSession.navigation === page && !page.isClosed)
+    registry.setActive(child)
+    let privateTarget = admission.browserTarget(kind: 1, regularProfile: nil)
+    precondition(privateTarget?.window == page.nativeWindowID && privateTarget?.regularProfile == nil)
+    precondition(admission.browserTarget(kind: 0, regularProfile: a) == nil)
+
     precondition(tabs.tree == originalTree && tabs.device == originalDevice)
     // A user-created tab reuses this exact private client; any persistent
     // profile factory, native focus or navigation replay remains a hard trap.
@@ -589,6 +597,27 @@ private struct NoTokens: KagiTokenStore {
         precondition(splitAdmission.prepareInitialWindow() == nil && splitRegistry.windows.isEmpty)
         precondition(splitTabs.device.windows.first?.split == split && Native.restoredURLs.isEmpty)
     }
+    do {
+        let openingRoot = root.appendingPathComponent("opening")
+        let openingStore = TabStore(directory: openingRoot)
+        var openingDevice = device; openingDevice.windows = [device.windows[0]]
+        openingStore.save(tree, openingDevice); openingStore.flush()
+        let openingRegistry = WindowRegistry()
+        let openingTabs = TabsController(settings: settings, windowRegistry: openingRegistry,
+            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: openingRoot)
+        let openingAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: openingTabs,
+            registry: openingRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+        let pending = openingAdmission.prepareInitialWindow()!
+        precondition(openingAdmission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1)
+        openingRegistry.unregister(pending.id)
+        // Native creation can also precede catalog/model admission. Its real
+        // identity is not permission to create a parallel regular window.
+        Native.windows[999] = Native.window(999, group: 999, profile: Native.work, active: 9990)
+        precondition(openingAdmission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1)
+        Native.windows[999] = nil
+        precondition(openingAdmission.browserTarget(kind: 0, regularProfile: Native.work)?.regularProfile == Native.work)
+    }
     let initial = BrowserWindowState(id: rootID)
     registry.register(initial); tabs.attach(window: initial)
     factory(1001, profile: Native.work)
@@ -605,6 +634,27 @@ private struct NoTokens: KagiTokenStore {
     factory(1002, profile: Native.personal); requests[0].1?(0, 1002, requests[0].2)
     precondition(registry.windows[extraID]?.selectedItemID == selected)
     precondition(Native.restoredURLs == [rootURL.absoluteString, selectedURL.absoluteString])
+    registry.setActive(initial)
+    let snapshots = Native.snapshotReads
+    precondition(admission.browserTarget(kind: 0, regularProfile: Native.personal)?.window == 1001)
+    precondition(Native.snapshotReads == snapshots)
+    let priorActive = Native.windows[1001]!.active_tab
+    Native.windows[1001]?.active_tab = 12345
+    Native.tabs.append(Native.tab(12345, window: 1001))
+    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1)
+    Native.tabs.removeAll { $0.tab == 12345 }; Native.windows[1001]?.active_tab = priorActive
+    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == 1001)
+
+    registry.setActive(registry.windows[extraID]!)
+    precondition(admission.browserTarget(kind: 1, regularProfile: Native.work)?.window == 1002)
+    precondition(admission.browserTarget(kind: 2, regularProfile: Native.work)?.window == 1002)
+    precondition(admission.browserTarget(kind: 99, regularProfile: Native.work) == nil)
+    registry.activeWindowId = nil // A settings/private window is frontmost.
+    let frontRegular = admission.browserTarget(kind: 0, regularProfile: UUID())?.window
+    precondition(frontRegular == 1001 || frontRegular == 1002)
+    registry.setActive(registry.windows[extraID]!)
+
+
     factory(1003, profile: Native.personal); Native.rejectNextObservation = true
     requests[1].1?(0, 1003, requests[1].2)
     precondition(registry.windows[failedID] == nil && tabs.device.windows.contains { $0.id == failedID })
@@ -659,6 +709,10 @@ private struct NoTokens: KagiTokenStore {
     Native.end(1001); Native.end(1002); Native.end(1005); Native.end(1006)
     admission.apply(Native.discovery.readSnapshot()!)
     precondition(registry.windows.isEmpty && Set(tabs.device.windows.map(\.id)) == Set(device.windows.map(\.id)))
+    let noWindow = admission.browserTarget(kind: 1, regularProfile: Native.personal)
+    precondition(noWindow?.window == 0 && noWindow?.regularProfile == Native.personal)
+    precondition(admission.browserTarget(kind: 0, regularProfile: UUID()) == nil)
+
     tabs.saveNow()
     let saved = TabStore(directory: root).load()
     precondition(Set(saved.device.windows.map(\.id)) == Set(device.windows.map(\.id)) && saved.device.windows.first { $0.id == splitID }?.split == split)

@@ -124,7 +124,13 @@ extension BrowserManager {
             return false
         }
         if command == .copyURL { copyURL(of: page, in: window); return true }
-        return native.performNativePageCommand(command)
+        return native.performNativePageCommand(command) { [weak self, weak window, weak page, weak native] outcome in
+            guard case .failed = outcome, let self, let window, let page, let native,
+                  self.windowRegistry?.windows[window.id] === window,
+                  self.windowRegistry?.activeWindow === window,
+                  self.frontPage(in: window) === page, page.navigation === native else { return }
+            self.showWindowToast("Could not clear site data", in: window)
+        }
     }
 
     private func clearCookies(of page: PageSession) {

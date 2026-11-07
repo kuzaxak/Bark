@@ -281,7 +281,7 @@ extension TabsController {
             if let previous, previous !== session {
                 onLeavingTab?(previous.itemID, window)
                 guard admissionIsCurrent() else { return }
-                previous.captureSwitcherSnapshot()
+                if profileEngine != .chromium { previous.captureSwitcherSnapshot() }
                 dropStaleSwitcherSnapshots()
             }
             session.loadWebViewIfNeeded()
@@ -302,7 +302,7 @@ extension TabsController {
     /// Keeps switcher pictures only for each window's most recent tabs (what the card can show).
     private func dropStaleSwitcherSnapshots() {
         let keep = Set(allWindows.flatMap { recentItems(in: $0).prefix(TabSwitcherState.maxItems) })
-        for session in sessions where session.switcherSnapshot != nil && !keep.contains(session.itemID) {
+        for session in sessions where (session.switcherSnapshot != nil || session.switcherCaptureInFlight != nil) && !keep.contains(session.itemID) {
             session.switcherSnapshot = nil
         }
     }

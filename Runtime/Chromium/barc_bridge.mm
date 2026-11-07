@@ -12,6 +12,10 @@
 
 #include "base/command_line.h"
 #include "base/auto_reset.h"
+#include "base/synchronization/atomic_flag.h"
+#include "base/task/bind_post_task.h"
+#include "base/task/thread_pool.h"
+#include "base/barrier_callback.h"
 #include "base/no_destructor.h"
 #include "base/memory/weak_ptr.h"
 #include "base/scoped_observation.h"
@@ -49,14 +53,27 @@
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
+#include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/browsing_data_filter_builder.h"
+#include "content/public/browser/browsing_data_remover.h"
+#include "content/public/browser/storage_partition.h"
+#include "content/public/browser/weak_document_ptr.h"
+#include "mojo/public/cpp/bindings/callback_helpers.h"
+#include "net/cookies/canonical_cookie.h"
+#include "net/cookies/cookie_partition_key_collection.h"
+#include "services/network/public/mojom/cookie_manager.mojom.h"
+#include "third_party/blink/public/common/storage_key/storage_key.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_widget_host_view.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
 #include "ui/base/base_window.h"
 #include "ui/gfx/geometry/insets.h"
+#include "ui/gfx/codec/png_codec.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "url/gurl.h"
 
@@ -168,6 +185,8 @@ class BrowserDiscovery final
     if (callback)
       callback(context, token_, revision);
     // Callback may unobserve, release context or shut down; no member access.
+    // Availability delivery is coalesced and non-nestable after this lifetime.
+    barc::NotifyApplicationBrowserAvailable();
   }
   const uint64_t token_;
   BarcDiscoveryCallback callback_;
@@ -461,6 +480,7 @@ Observations& ObservationTable() {
   return *table;
 }
 class TabObservation : public content::WebContentsObserver,
+                       public content::BrowsingDataRemover::Observer,
                        public TabStripModelObserver,
                        public std::enable_shared_from_this<TabObservation> {
  public:
@@ -481,6 +501,12 @@ class TabObservation : public content::WebContentsObserver,
   bool active() const { return active_; }
   bool closing() const { return closing_; }
   void Cancel() {
+    if (thumbnail_) {
+      thumbnail_->cancelled.Set();
+      thumbnail_.reset();
+    }
+    site_data_remover_.Reset();
+    site_data_.reset();
     active_ = false;
     callback_ = nullptr;
     context_ = nullptr;
@@ -489,6 +515,104 @@ class TabObservation : public content::WebContentsObserver,
     detach_ = {};
     insert_ = {};
     discard_ = {};
+  }
+  bool CaptureThumbnail(uint64_t request, BarcTabThumbnailCallback callback) {
+    auto keep_alive = shared_from_this();
+    if (!active_ || closing_ || thumbnail_ || !request || !callback || !web_contents())
+      return false;
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    auto* view = web_contents()->GetRenderWidgetHostView();
+    auto* document = web_contents()->GetPrimaryMainFrame();
+    if (!owner || owner->IsDeleteScheduled() ||
+        !owner->IsSelectedForNativeWindow() ||
+        owner->GetTabStripModel()->GetActiveTab() != tab ||
+        web_contents()->GetVisibility() != content::Visibility::VISIBLE ||
+        !view || !view->IsShowing() || !document)
+      return false;
+    const gfx::Size bounds = view->GetViewBounds().size();
+    if (bounds.IsEmpty())
+      return false;
+    // Scale at the compositor copy, never capture a full-resolution bitmap.
+    const double scale = std::min(1.0, 400.0 / std::max(bounds.width(), bounds.height()));
+    const gfx::Size output(std::max(1, static_cast<int>(bounds.width() * scale)),
+                           std::max(1, static_cast<int>(bounds.height() * scale)));
+    auto capture = std::make_shared<ThumbnailCapture>();
+    capture->owner = owner->GetWeakPtr();
+    capture->document = document->GetWeakDocumentPtr();
+    capture->navigation = navigation_;
+    capture->request = request;
+    capture->callback = callback;
+    thumbnail_ = capture;
+    view->CopyFromSurface(gfx::Rect(), output, base::Seconds(1),
+        base::BindPostTaskToCurrentDefault(base::BindOnce(
+            [](std::weak_ptr<TabObservation> weak,
+               std::shared_ptr<ThumbnailCapture> capture,
+               const content::CopyFromSurfaceResult& result) {
+              if (auto self = weak.lock())
+                self->ThumbnailCopied(std::move(capture), result);
+            }, weak_from_this(), capture)));
+    return true;
+  }
+  bool ClearSiteData(uint64_t request, int32_t action, BarcSiteDataCallback callback) {
+    auto keep_alive = shared_from_this();
+    if (!active_ || closing_ || site_data_ || !request || !callback ||
+        action < BARC_SITE_COOKIES || action > BARC_SITE_COOKIES_AND_RELOAD ||
+        !web_contents())
+      return false;
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    auto* frame = web_contents()->GetPrimaryMainFrame();
+    const GURL url = frame ? frame->GetLastCommittedURL() : GURL();
+    if (!owner || owner->IsDeleteScheduled() || !owner->IsSelectedForNativeWindow() ||
+        owner->GetTabStripModel()->GetActiveTab() != tab ||
+        web_contents()->GetBrowserContext() != owner->GetProfile() || !frame ||
+        !url.SchemeIsHTTPOrHTTPS() || frame->GetLastCommittedOrigin().opaque() ||
+        frame->GetStorageKey().nonce().has_value() ||
+        frame->GetStorageKey().top_level_site().opaque() ||
+        (action == BARC_SITE_COOKIES_AND_RELOAD &&
+         !chrome::IsCommandEnabled(owner, IDC_RELOAD)))
+      return false;
+    auto pending = std::make_shared<SiteDataRequest>();
+    pending->owner = owner->GetWeakPtr();
+    pending->document = frame->GetWeakDocumentPtr();
+    pending->navigation = navigation_;
+    pending->request = request;
+    pending->action = action;
+    pending->host = url.host();
+    pending->keys = net::CookiePartitionKeyCollection::MatchesSite(
+        frame->GetStorageKey().top_level_site());
+    pending->callback = callback;
+    site_data_ = pending;
+    if (action == BARC_SITE_CACHE) {
+      auto filter = content::BrowsingDataFilterBuilder::Create(
+          content::BrowsingDataFilterBuilder::Mode::kDelete,
+          content::BrowsingDataFilterBuilder::OriginMatchingMode::kOriginInAllContexts);
+      filter->AddOrigin(frame->GetLastCommittedOrigin());
+      filter->SetStoragePartitionConfig(frame->GetStoragePartition()->GetConfig());
+      auto* remover = owner->GetProfile()->GetBrowsingDataRemover();
+      site_data_remover_.Observe(remover);
+      remover->RemoveWithFilterAndReply(base::Time(), base::Time::Max(),
+          content::BrowsingDataRemover::DATA_TYPE_CACHE,
+          content::BrowsingDataRemover::ORIGIN_TYPE_UNPROTECTED_WEB,
+          std::move(filter), this);
+    } else {
+      frame->GetStoragePartition()->GetCookieManagerForBrowserProcess()->GetAllCookies(
+          mojo::WrapCallbackWithDropHandler(base::BindOnce(
+              [](std::weak_ptr<TabObservation> weak,
+                 std::shared_ptr<SiteDataRequest> pending,
+                 const std::vector<net::CanonicalCookie>& cookies) {
+                if (auto self = weak.lock()) self->ClearExactCookies(pending, cookies);
+              }, weak_from_this(), pending), base::BindOnce(
+              [](std::weak_ptr<TabObservation> weak,
+                 std::shared_ptr<SiteDataRequest> pending) {
+                if (auto self = weak.lock()) self->FinishSiteData(pending, false);
+              }, weak_from_this(), pending)));
+    }
+    return true;
+  }
+  void OnBrowsingDataRemoverDone(uint64_t failed) override {
+    if (site_data_) FinishSiteData(site_data_, failed == 0);
   }
   void Emit(int32_t event, int32_t error = 0, uint32_t extra = 0,
             const GURL* event_url = nullptr) {
@@ -526,6 +650,9 @@ class TabObservation : public content::WebContentsObserver,
   void DidUpdateAudioMutingState(bool) override { Emit(BARC_TAB_STATE); }
   void DidStartNavigation(content::NavigationHandle* handle) override {
     auto keep_alive = shared_from_this();
+    if (handle->IsInPrimaryMainFrame() && thumbnail_)
+      thumbnail_->cancelled.Set();
+    if (handle->IsInPrimaryMainFrame() && site_data_) site_data_->cancelled = true;
     if (!handle->IsInPrimaryMainFrame() || handle->IsSameDocument())
       return;
     navigation_ = handle->GetNavigationId();
@@ -624,6 +751,147 @@ class TabObservation : public content::WebContentsObserver,
     }
   }
  private:
+  struct ThumbnailCapture {
+    ThumbnailCapture();
+    ~ThumbnailCapture();
+    base::WeakPtr<BrowserWindowInterface> owner;
+    content::WeakDocumentPtr document;
+    int64_t navigation = 0;
+    uint64_t request = 0;
+    BarcTabThumbnailCallback callback = nullptr;
+    base::AtomicFlag cancelled;
+  };
+  bool ThumbnailIsCurrent(const std::shared_ptr<ThumbnailCapture>& capture) {
+    if (!active_ || closing_ || thumbnail_ != capture ||
+        capture->cancelled.IsSet() || capture->navigation != navigation_ ||
+        !capture->owner || capture->owner->IsDeleteScheduled() || !web_contents())
+      return false;
+    auto* document = capture->document.AsRenderFrameHostIfValid();
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    return document && document == web_contents()->GetPrimaryMainFrame() &&
+        owner == capture->owner.get() &&
+        Window(owner->GetSessionID().id()) == owner &&
+        LookupTab(owner, tab_id()) == tab && tab->GetContents() == web_contents() &&
+        document->GetBrowserContext() == owner->GetProfile();
+  }
+  void FinishThumbnail(std::shared_ptr<ThumbnailCapture> capture,
+                       std::vector<uint8_t> bytes = {}) {
+    if (thumbnail_ != capture)
+      return;
+    auto keep_alive = shared_from_this();
+    const bool current = ThumbnailIsCurrent(capture);
+    thumbnail_.reset();
+    if (!active_ || !capture->callback)
+      return;
+    base::AutoReset<int> callback_scope(&navigation_callback_depth,
+                                        navigation_callback_depth + 1);
+    capture->callback(context_.get(), token_, capture->request,
+                      current && !bytes.empty() ? bytes.data() : nullptr,
+                      current ? bytes.size() : 0);
+  }
+  void ThumbnailCopied(std::shared_ptr<ThumbnailCapture> capture,
+                       const content::CopyFromSurfaceResult& result) {
+    if (!ThumbnailIsCurrent(capture) || !result.has_value() ||
+        result->bitmap.drawsNothing() || result->bitmap.width() > 400 ||
+        result->bitmap.height() > 400) {
+      FinishThumbnail(std::move(capture));
+      return;
+    }
+    SkBitmap bitmap = result->bitmap;
+    bitmap.setImmutable();
+    base::ThreadPool::PostTaskAndReplyWithResult(FROM_HERE,
+        {base::TaskPriority::BEST_EFFORT},
+        base::BindOnce([](std::shared_ptr<ThumbnailCapture> capture, SkBitmap bitmap) {
+          if (capture->cancelled.IsSet())
+            return std::vector<uint8_t>();
+          auto encoded = gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, false);
+          if (capture->cancelled.IsSet() || !encoded || encoded->size() > 1048576)
+            return std::vector<uint8_t>();
+          return std::move(*encoded);
+        }, capture, std::move(bitmap)),
+        base::BindOnce([](std::weak_ptr<TabObservation> weak,
+                          std::shared_ptr<ThumbnailCapture> capture,
+                          std::vector<uint8_t> bytes) {
+          if (auto self = weak.lock())
+            self->FinishThumbnail(std::move(capture), std::move(bytes));
+        }, weak_from_this(), capture));
+  }
+  std::shared_ptr<ThumbnailCapture> thumbnail_;
+
+  struct SiteDataRequest {
+    SiteDataRequest();
+    ~SiteDataRequest();
+    base::WeakPtr<BrowserWindowInterface> owner;
+    content::WeakDocumentPtr document;
+    int64_t navigation = 0;
+    uint64_t request = 0;
+    int32_t action = BARC_SITE_COOKIES;
+    std::string host;
+    net::CookiePartitionKeyCollection keys;
+    BarcSiteDataCallback callback = nullptr;
+    bool cancelled = false;
+  };
+  bool SiteDataIsCurrent(const std::shared_ptr<SiteDataRequest>& pending) {
+    if (!active_ || closing_ || site_data_ != pending || pending->cancelled ||
+        pending->navigation != navigation_ || !pending->owner ||
+        pending->owner->IsDeleteScheduled() || !web_contents()) return false;
+    auto* frame = pending->document.AsRenderFrameHostIfValid();
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    return frame && frame == web_contents()->GetPrimaryMainFrame() &&
+        owner == pending->owner.get() && owner->IsSelectedForNativeWindow() &&
+        Window(owner->GetSessionID().id()) == owner && LookupTab(owner, tab_id()) == tab &&
+        owner->GetTabStripModel()->GetActiveTab() == tab &&
+        tab->GetContents() == web_contents() &&
+        frame->GetBrowserContext() == owner->GetProfile();
+  }
+  void ClearExactCookies(std::shared_ptr<SiteDataRequest> pending,
+                         const std::vector<net::CanonicalCookie>& cookies) {
+    if (!SiteDataIsCurrent(pending)) { FinishSiteData(pending, true); return; }
+    // host_name filters only host cookies; including_domains expands to eTLD+1.
+    // Neither preserves the product's exact host/.host scope. Delete selected
+    // canonical cookies instead, explicitly retaining unrelated CHIPS keys.
+    std::vector<net::CanonicalCookie> matching;
+    for (const auto& cookie : cookies) {
+      if ((cookie.Domain() == pending->host || cookie.Domain() == "." + pending->host) &&
+          (!cookie.IsPartitioned() || pending->keys.Contains(*cookie.PartitionKey())))
+        matching.push_back(cookie);
+    }
+    if (matching.empty()) { FinishSiteData(pending, true); return; }
+    auto done = base::BarrierCallback<bool>(matching.size(), base::BindOnce(
+        [](std::weak_ptr<TabObservation> weak, std::shared_ptr<SiteDataRequest> pending,
+           const std::vector<bool>& results) {
+          if (auto self = weak.lock()) self->FinishSiteData(pending,
+              std::ranges::all_of(results, [](bool result) { return result; }));
+        }, weak_from_this(), pending));
+    auto* manager = pending->document.AsRenderFrameHostIfValid()
+                        ->GetStoragePartition()->GetCookieManagerForBrowserProcess();
+    for (const auto& cookie : matching) {
+      manager->DeleteCanonicalCookie(cookie,
+          mojo::WrapCallbackWithDefaultInvokeIfNotRun(base::BindOnce(done), false));
+    }
+  }
+  void FinishSiteData(std::shared_ptr<SiteDataRequest> pending, bool success) {
+    if (site_data_ != pending) return;
+    auto keep_alive = shared_from_this();
+    int32_t result = !SiteDataIsCurrent(pending) ? BARC_SITE_CANCELLED :
+        (success ? BARC_SITE_COMPLETED : BARC_SITE_FAILED);
+    site_data_remover_.Reset();
+    site_data_.reset();
+    if (result == BARC_SITE_COMPLETED && pending->action == BARC_SITE_COOKIES_AND_RELOAD) {
+      auto* owner = pending->owner.get();
+      result = chrome::IsCommandEnabled(owner, IDC_RELOAD) && chrome::ExecuteCommand(owner, IDC_RELOAD)
+          ? BARC_SITE_COMPLETED : BARC_SITE_FAILED;
+    }
+    if (!active_ || !pending->callback) return;
+    base::AutoReset<int> callback_scope(&navigation_callback_depth, navigation_callback_depth + 1);
+    pending->callback(context_.get(), token_, pending->request, result);
+  }
+  std::shared_ptr<SiteDataRequest> site_data_;
+  base::ScopedObservation<content::BrowsingDataRemover,
+                           content::BrowsingDataRemover::Observer> site_data_remover_{this};
+
   void UnbindOwner() {
     window_cancelled_ = {};
     if (strip_)
@@ -654,6 +922,9 @@ class TabObservation : public content::WebContentsObserver,
     Emit(BARC_TAB_CLOSE_CANCELLED);
   }
   void Detach(tabs::TabInterface*, tabs::TabInterface::DetachReason reason) {
+    if (thumbnail_)
+      thumbnail_->cancelled.Set();
+    if (site_data_) site_data_->cancelled = true;
     if (reason == tabs::TabInterface::DetachReason::kDelete)
       Close();
     else
@@ -665,6 +936,9 @@ class TabObservation : public content::WebContentsObserver,
   }
   void Discard(tabs::TabInterface*, content::WebContents*,
                content::WebContents* replacement) {
+    if (thumbnail_)
+      thumbnail_->cancelled.Set();
+    if (site_data_) site_data_->cancelled = true;
     navigation_ = 0;
     navigation_flags_ = 0;
     committed_ = false;
@@ -709,6 +983,10 @@ class TabObservation : public content::WebContentsObserver,
   base::CallbackListSubscription window_cancelled_;
   base::CallbackListSubscription detach_, insert_, discard_;
 };
+TabObservation::ThumbnailCapture::ThumbnailCapture() = default;
+TabObservation::ThumbnailCapture::~ThumbnailCapture() = default;
+TabObservation::SiteDataRequest::SiteDataRequest() = default;
+TabObservation::SiteDataRequest::~SiteDataRequest() = default;
 }  // namespace
 
 uint64_t barc_discovery_observe(BarcDiscoveryCallback callback, void* context) {
@@ -823,6 +1101,23 @@ void barc_tab_unobserve(uint64_t token) {
     ObservationTable().erase(found);
   observer->Cancel();
 }
+int barc_tab_capture_thumbnail(uint64_t token, uint64_t request,
+                               BarcTabThumbnailCallback callback) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
+    return 0;
+  const auto found = ObservationTable().find(token);
+  return found != ObservationTable().end() &&
+         found->second->CaptureThumbnail(request, callback);
+}
+
+int barc_tab_clear_site_data(uint64_t token, uint64_t request, int32_t action,
+                             BarcSiteDataCallback callback) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      discovery_stopped || navigation_callback_depth)
+    return 0;
+  const auto found = ObservationTable().find(token);
+  return found != ObservationTable().end() && found->second->ClearSiteData(request, action, callback);
+}
 uint64_t barc_downloads_observe(BarcDownloadCallback callback, void* context) {
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
       !callback || DownloadOwner() || discovery_stopped ||
@@ -877,11 +1172,12 @@ size_t barc_download_copy_safe_target(uint64_t token, uint64_t manager,
 }
 int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
                              int32_t command) {
-  if (navigation_callback_depth)
+  if (discovery_stopped || navigation_callback_depth)
     return 0;
   auto* window = Window(window_id);
   auto* tab = LookupTab(window, tab_id);
-  if (!tab || tab->GetContents()->GetBrowserContext() != window->GetProfile() ||
+  if (!tab || window->IsDeleteScheduled() ||
+      tab->GetContents()->GetBrowserContext() != window->GetProfile() ||
       !window->IsSelectedForNativeWindow() ||
       window->GetTabStripModel()->GetActiveWebContents() != tab->GetContents())
     return 0;
@@ -895,6 +1191,7 @@ int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
     case BARC_PAGE_ZOOM_RESET: chrome_command = IDC_ZOOM_NORMAL; break;
     case BARC_PAGE_PRINT: chrome_command = IDC_PRINT; break;
     case BARC_PAGE_DEVTOOLS: chrome_command = IDC_DEV_TOOLS; break;
+    case BARC_PAGE_HARD_RELOAD: chrome_command = IDC_RELOAD_BYPASSING_CACHE; break;
     default: return 0;
   }
   if (!chrome::IsCommandEnabled(window, chrome_command) ||

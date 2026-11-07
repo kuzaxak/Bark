@@ -116,7 +116,11 @@ public final class PageSession: NSObject, Identifiable {
     /// WebKit's own PDF viewer is showing the page, so Nook draws its controls over it.
     public var isDisplayingPDF: Bool = false
     /// A small picture of the page taken as the window left it, for the Control-Tab switcher.
-    public var switcherSnapshot: PlatformImage?
+    public var switcherSnapshot: PlatformImage? {
+        didSet { if switcherSnapshot == nil { switcherSnapshotGeneration &+= 1 } }
+    }
+    @ObservationIgnored var switcherSnapshotGeneration: UInt64 = 0
+    @ObservationIgnored var switcherCaptureInFlight: UUID?
     /// The link under the pointer while Shift is held, for Link Previews; nil otherwise.
     public var linkPreview: LinkPreviewTarget?
     /// Bumped whenever the PDF controls should show: a PDF loads, or the pointer moves over one.
@@ -351,6 +355,7 @@ public final class PageSession: NSObject, Identifiable {
     func navigationChanged(_ event: PageNavigationEvent) {
         switch event {
         case .started(let newURL):
+            switcherSnapshot = nil
             navigationVisitRecorded = false
             navigationFinishedReported = false
             navigationCancelled = false
@@ -370,6 +375,7 @@ public final class PageSession: NSObject, Identifiable {
                 url = newURL
             }
         case .committed(let newURL, let sameDocument):
+            switcherSnapshot = nil
             if let newURL { navigationDocumentURL = newURL }
             if newURL != nil { navigationHasCommittedPage = true }
             if !sameDocument {

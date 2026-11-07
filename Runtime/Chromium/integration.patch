@@ -213,7 +213,7 @@
    return BrowserLayoutParams();
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -3405,8 +3405,16 @@
+@@ -3405,8 +3405,20 @@
        "//components/remote_cocoa/browser",
      ]
      include_dirs = [ "$target_gen_dir" ]
@@ -228,7 +228,11 @@
        "Carbon.framework",
        "Quartz.framework",
      ]
-+    deps += [ "//chrome/browser/ui/tabs:utils" ]
++    deps += [
++      "//chrome/browser/ui/tabs:utils",
++      "//components/viz/common",
++      "//ui/gfx/codec",
++    ]
    }
 @@ -4715,6 +4723,7 @@
      "//content/public/browser",
@@ -240,7 +244,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,42 @@
+@@ -19,3 +19,44 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -279,13 +283,15 @@
 +_barc_window_admit_discovered
 +_barc_tab_observe
 +_barc_tab_unobserve
++_barc_tab_capture_thumbnail
++_barc_tab_clear_site_data
 +_barc_tab_go_back
 +_barc_tab_go_forward
 +_barc_tab_reload
 +_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,46 @@
+@@ -29,5 +29,48 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -325,6 +331,8 @@
 +_barc_window_admit_discovered
 +_barc_tab_observe
 +_barc_tab_unobserve
++_barc_tab_capture_thumbnail
++_barc_tab_clear_site_data
 +_barc_tab_go_back
 +_barc_tab_go_forward
 +_barc_tab_reload
@@ -334,7 +342,7 @@
  _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,95 @@
+@@ -9782,3 +9782,97 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -413,8 +421,10 @@
 +      "//extensions/browser/api/messaging",
 +      "//extensions/common",
 +      "//net:test_support",
++      "//services/network/public/cpp",
 +      "//testing/gtest",
 +      "//ui/base",
++      "//ui/gfx/codec",
 +      "//ui/views",
 +      "//url",
 +    ]

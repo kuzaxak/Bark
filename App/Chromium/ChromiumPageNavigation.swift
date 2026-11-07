@@ -15,6 +15,12 @@ struct ChromiumNavigationAPI {
     typealias Command = @convention(c) (Int32, Int32) -> Int32
     typealias Navigate = @convention(c) (Int32, Int32, UnsafePointer<CChar>?) -> Int32
     typealias PageCommand = @convention(c) (Int32, Int32, Int32) -> Int32
+    typealias ThumbnailCallback = @convention(c) (
+        UnsafeMutableRawPointer?, UInt64, UInt64, UnsafePointer<UInt8>?, Int
+    ) -> Void
+    typealias CaptureThumbnail = @convention(c) (UInt64, UInt64, ThumbnailCallback?) -> Int32
+    typealias SiteDataCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, Int32) -> Void
+    typealias SiteData = @convention(c) (UInt64, UInt64, Int32, SiteDataCallback?) -> Int32
     typealias ProfileUUID = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
 
     let observe: Observe
@@ -26,6 +32,8 @@ struct ChromiumNavigationAPI {
     let stop: Command
     let select: Command
     let close: Command
+    let captureThumbnail: CaptureThumbnail
+    let clearSiteData: SiteData
     let profileUUID: ProfileUUID
     var executePageCommand: PageCommand? = nil
     var setMuted: PageCommand? = nil
@@ -49,12 +57,16 @@ extension ChromiumNavigationAPI {
         stop = try resolve("barc_tab_stop", Command.self)
         select = try resolve("barc_tab_select", Command.self)
         close = try resolve("barc_tab_close", Command.self)
+        captureThumbnail = try resolve("barc_tab_capture_thumbnail", CaptureThumbnail.self)
+        clearSiteData = try resolve("barc_tab_clear_site_data", SiteData.self)
         profileUUID = try resolve("barc_window_profile_uuid", ProfileUUID.self)
         executePageCommand = try resolve("barc_tab_execute_command", PageCommand.self)
         setMuted = try resolve("barc_tab_set_muted", PageCommand.self)
         privateSessionUUID = try resolve("barc_window_private_session_uuid", ProfileUUID.self)
     }
 }
+
+enum ChromiumSiteDataOutcome: Equatable { case completed, cancelled, failed }
 
 enum ChromiumNavigationError: Error {
     case missingSymbol(String)
@@ -75,6 +87,13 @@ final class ChromiumPageNavigation: PageNavigation {
     private let api: ChromiumNavigationAPI
     private let tab: Int32
     private var window: Int32
+    private var nextThumbnailRequest: UInt64 = 0
+    private var thumbnailGeneration: UInt64 = 0
+    private var thumbnailRequest: (id: UInt64, generation: UInt64, window: Int32,
+                                   completion: @MainActor (Data?) -> Void)?
+    private var nextSiteDataRequest: UInt64 = 0
+    private var siteDataRequest: (id: UInt64, window: Int32,
+                                  completion: @MainActor (ChromiumSiteDataOutcome) -> Void)?
     private var observation: UInt64 = 0
     private var invalidated = false
     private(set) var isClosed = false
@@ -162,9 +181,82 @@ final class ChromiumPageNavigation: PageNavigation {
         return setMuted(window, tab, muted ? 1 : 0) == 1
     }
 
+    @discardableResult
+    func captureThumbnail(completion: @escaping @MainActor (Data?) -> Void) -> Bool {
+        guard !invalidated, !isClosed, observation != 0, window > 0,
+              thumbnailRequest == nil, nextThumbnailRequest != UInt64.max else { return false }
+        nextThumbnailRequest += 1
+        let request = nextThumbnailRequest
+        thumbnailRequest = (request, thumbnailGeneration, window, completion)
+        let accepted = api.captureThumbnail(observation, request, { pointer, token, request, bytes, count in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+                context.owner?.receivedThumbnail(token: token, request: request, bytes: bytes, count: count)
+            }
+        }) == 1
+        if !accepted, thumbnailRequest?.id == request { thumbnailRequest = nil }
+        return accepted
+    }
+
+    private func receivedThumbnail(token: UInt64, request: UInt64,
+                                   bytes: UnsafePointer<UInt8>?, count: Int) {
+        guard token == observation, let pending = thumbnailRequest, pending.id == request else { return }
+        thumbnailRequest = nil
+        guard !invalidated, !isClosed, pending.generation == thumbnailGeneration,
+              pending.window == window, let bytes, count > 0, count <= 1_048_576 else {
+            pending.completion(nil)
+            return
+        }
+        pending.completion(Data(bytes: bytes, count: count))
+    }
+
+    private func cancelThumbnail() {
+        thumbnailGeneration &+= 1
+        let pending = thumbnailRequest
+        thumbnailRequest = nil
+        pending?.completion(nil)
+    }
+
+    @discardableResult
+    func clearNativeSiteData(_ action: Int32,
+                             completion: @escaping @MainActor (ChromiumSiteDataOutcome) -> Void) -> Bool {
+        guard !invalidated, !isClosed, observation != 0, window > 0,
+              siteDataRequest == nil, nextSiteDataRequest != UInt64.max else { return false }
+        nextSiteDataRequest += 1
+        let request = nextSiteDataRequest
+        siteDataRequest = (request, window, completion)
+        let accepted = api.clearSiteData(observation, request, action, { pointer, token, request, result in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+                context.owner?.receivedSiteData(token: token, request: request, result: result)
+            }
+        }) == 1
+        if !accepted, siteDataRequest?.id == request { siteDataRequest = nil }
+        return accepted
+    }
+
+    private func receivedSiteData(token: UInt64, request: UInt64, result: Int32) {
+        guard token == observation, let pending = siteDataRequest, pending.id == request else { return }
+        siteDataRequest = nil
+        guard !invalidated, !isClosed, pending.window == window else {
+            pending.completion(.cancelled); return
+        }
+        pending.completion(result == 0 ? .completed : (result == 1 ? .cancelled : .failed))
+    }
+
+    private func cancelSiteData() {
+        let pending = siteDataRequest
+        siteDataRequest = nil
+        pending?.completion(.cancelled)
+    }
+
     func invalidate() {
         guard !invalidated else { return }
         invalidated = true
+        cancelThumbnail()
+        cancelSiteData()
         let token = observation
         observation = 0
         onStateChanged = nil
@@ -193,7 +285,11 @@ final class ChromiumPageNavigation: PageNavigation {
         observation = token  // INITIAL can call out before observe() returns.
         let ownerChanged = self.window != window
         self.window = window  // A live transfer changes the owner, never the page.
-        if ownerChanged { onNativeOwnerChanged?(window) }
+        if ownerChanged {
+            cancelThumbnail()
+            cancelSiteData()
+            onNativeOwnerChanged?(window)
+        }
         guard !invalidated else { return }
         if event == 8 { // CLOSE_CANCELLED is not navigation cancellation.
             onNativeCloseOutcome?(.cancelled)
@@ -221,6 +317,8 @@ final class ChromiumPageNavigation: PageNavigation {
             state = snapshot
             onStateChanged?(snapshot)
         }
+        guard !invalidated else { return }
+        if event == 1 || event == 2 { cancelThumbnail() }
         guard !invalidated else { return }
         switch event {
         case 1: onEvent?(.started(url))

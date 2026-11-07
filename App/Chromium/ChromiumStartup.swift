@@ -6,11 +6,12 @@ struct ChromiumStartupConfiguration {
     let root: URL
     let profileID: UUID?
     let isVerification: Bool
+    let launchArguments: [String]
     var minimumBridgeVersion: UInt32 { isVerification ? 2 : 3 }
 
     init(arguments: [String], applicationSupportDirectory: URL? = nil) throws {
         func value(_ name: String) throws -> String? {
-            let supplied = arguments.filter { $0 == name || $0.hasPrefix(name + "=") }
+            let supplied = arguments.prefix { $0 != "--" }.filter { $0 == name || $0.hasPrefix(name + "=") }
             guard supplied.count <= 1 else { throw StartupError.invalidConfiguration }
             guard let argument = supplied.first else { return nil }
             guard argument.hasPrefix(name + "="), argument.count > name.count + 1 else {
@@ -18,6 +19,15 @@ struct ChromiumStartupConfiguration {
             }
             return String(argument.dropFirst(name.count + 1))
         }
+        // Forward only positional input to Chromium's own startup parser. App
+        // overrides remain consumed here; unknown switches never become engine
+        // security/configuration overrides. `--` permits a literal dash prefix.
+        var positional: [String] = [], literal = false
+        for argument in arguments.dropFirst() {
+            if argument == "--", !literal { literal = true; continue }
+            if literal || !argument.hasPrefix("-") { positional.append(argument) }
+        }
+        launchArguments = positional
         let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
         if path != nil || hint != nil {
             guard let path, path.hasPrefix("/private/tmp/"), let id = hint.flatMap(UUID.init(uuidString:)) else {
@@ -72,6 +82,7 @@ struct ChromiumStartupConfiguration {
                       "--disable-sync", "--barc-shared-native-window", "--barc-native-shell",
                       "--user-data-dir=" + root.appendingPathComponent("Engine").path]
         if isVerification { result.append("--use-mock-keychain") }
+        if !launchArguments.isEmpty { result.append("--"); result += launchArguments }
         return result
     }
 

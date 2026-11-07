@@ -443,3 +443,54 @@ size_t barc_window_private_session_uuid(int32_t id,
   }
   return uuid.size() + 1;
 }
+
+namespace barc {
+void WithRegularProfileForApplication(
+    std::string uuid,
+    base::OnceCallback<void(Profile*)> callback) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto* manager = Manager();
+  if (!manager || CanonicalUUID(uuid) != uuid || uuid.empty()) {
+    std::move(callback).Run(nullptr);
+    return;
+  }
+  const auto path = manager->user_data_dir().AppendASCII(kPrefix + uuid);
+  manager->CreateProfileAsync(
+      path,
+      base::BindOnce(
+          [](base::FilePath path, base::OnceCallback<void(Profile*)> callback,
+             Profile* profile) {
+            auto* manager = Manager();
+            if (!manager || !profile || !profile->IsRegularProfile() ||
+                profile->GetPath() != path ||
+                manager->GetProfileByPath(path) != profile) {
+              std::move(callback).Run(nullptr);
+              return;
+            }
+            auto keep_alive = ScopedProfileKeepAlive::TryAcquire(
+                profile, ProfileKeepAliveOrigin::kProfileCreationFlow);
+            if (!keep_alive) {
+              std::move(callback).Run(nullptr);
+              return;
+            }
+            auto alive = profile->GetWeakPtr();
+            std::move(callback).Run(profile);
+            // A changed model can defer/refuse after loading. Do not clear the
+            // initial reference inside ProfileManager's RunCallbacks loop:
+            // another callback from that same initialization still borrows this
+            // Profile.
+            base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+                FROM_HERE,
+                base::BindOnce(
+                    [](base::WeakPtr<Profile> alive, base::FilePath path) {
+                      auto* manager = Manager();
+                      if (manager && alive &&
+                          manager->GetProfileByPath(path) == alive.get()) {
+                        manager->ClearFirstBrowserWindowKeepAlive(alive.get());
+                      }
+                    },
+                    alive, path));
+          },
+          path, std::move(callback)));
+}
+}  // namespace barc

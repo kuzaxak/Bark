@@ -2,6 +2,7 @@ import AppKit
 import BarcChromium
 import NookWeb
 import NookTabsCore
+import NookSettings
 
 /// One actual product window, sharing the existing model registry and sidebar.
 /// The hosting view retains its window-local palette/organizer/hover state.
@@ -40,6 +41,101 @@ final class ChromiumCreatedPageAdmission {
               products[row.physical_group] == nil else { return false }
         products[row.physical_group] = product
         return true
+    }
+
+    /// Reuse the model's regular-profile preference for external links. A private
+    /// New Window requires its still-live exact native session, never UUID replay.
+    func browserTarget(kind: Int32, regularProfile: UUID?) -> (window: Int32, regularProfile: UUID?)? {
+        guard (0...2).contains(kind) else { return nil }
+        func target(_ product: ChromiumProductWindow) -> Int32? {
+            let state = product.state
+            guard registry.windows[state.id] === state,
+                  let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
+                  page.isPrivateSession == state.isIncognito,
+                  host.isNativeSelection(page, in: state),
+                  let row = api.windowState(page.nativeWindowID),
+                  row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return nil }
+            let expected = state.isIncognito ? state.ephemeralProfile?.id :
+                state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) }
+            guard expected == page.profileID,
+                  api.identity(row) == page.profileID else { return nil }
+            return row.window
+        }
+        // The ordinary selected-owner route needs only the existing O(1)
+        // membership/identity queries, not a catalog allocation over all tabs.
+        if let active = registry.activeWindow,
+           let product = products.values.first(where: { $0.state === active }),
+           !product.preservesSavedRecord, kind != 0 || !active.isIncognito {
+            if let native = target(product) { return (native, nil) }
+            if active.isIncognito { return nil }
+            if kind == 0, active.selectedItemID != nil, tabs.selectedSession(in: active)?.navigation == nil {
+                return (-1, nil)
+            }
+        }
+        guard let snapshot = api.readSnapshot() else { return nil }
+        let liveGroups = Set(snapshot.windows.map(\.physical_group))
+        let live = products.filter { liveGroups.contains($0.key) }.map(\.value)
+        let zOrder = NSApp?.orderedWindows ?? []
+        let regular = live.filter { !$0.state.isIncognito && $0.state.spaceID != nil &&
+            registry.windows[$0.state.id] === $0.state && !$0.preservesSavedRecord }.sorted {
+                let a = $0.shell.window.flatMap(zOrder.firstIndex(of:)) ?? .max
+                let b = $1.shell.window.flatMap(zOrder.firstIndex(of:)) ?? .max
+                return a == b ? $0.state.id.uuidString < $1.state.id.uuidString : a < b
+            }
+        if kind == 0 {
+            let opening = registry.windows.values.contains { state in
+                !state.isIncognito && state.spaceID != nil &&
+                !regular.contains(where: { $0.state === state })
+            }
+            switch ExternalLinkWindow(activeWindow: registry.activeWindowId,
+                                      regularWindows: regular.map { $0.state.id }, windowOpening: opening) {
+            case .existing(let id):
+                guard let product = regular.first(where: { $0.state.id == id }) else { return nil }
+                if let native = target(product) { return (native, nil) }
+                if product.state.selectedItemID != nil && tabs.selectedSession(in: product.state)?.navigation == nil {
+                    return (-1, nil)
+                }
+                // Chrome may already have selected a new tab/client while the
+                // posted catalog callback has not yet reflected it in the model.
+                if let group = products.first(where: { $0.value === product })?.key,
+                   let actual = snapshot.windows.first(where: {
+                       $0.physical_group == group && $0.selected_client == $0.window &&
+                       $0.active_tab > 0 && $0.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 &&
+                       ChromiumDiscoveryAPI.profileID($0) != nil
+                   }), let page = tabs.selectedSession(in: product.state)?.navigation as? ChromiumPageNavigation,
+                   actual.window != page.nativeWindowID || actual.active_tab != page.nativeTabID {
+                    return (-1, nil)
+                }
+                return nil
+            case .opening: return (-1, nil)
+            case .new:
+                // A real normal owner can precede model/catalog admission. Do
+                // not create a parallel window while that owner is on its way.
+                let nativeOpening = snapshot.windows.contains { row in
+                    row.kind == BARC_DISCOVERY_NORMAL.rawValue &&
+                    row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 &&
+                    ChromiumDiscoveryAPI.profileID(row) != nil && !isUtility(row.window)
+                }
+                return nativeOpening ? (-1, nil) : fallback(regularProfile)
+            }
+        }
+        if let active = registry.activeWindow,
+           let product = live.first(where: { $0.state === active }) {
+            guard let native = target(product) else { return nil }
+            return (native, nil)
+        }
+        if registry.activeWindow?.isIncognito == true { return nil }
+        if let product = regular.first {
+            guard let native = target(product) else { return nil }
+            return (native, nil)
+        }
+        return fallback(regularProfile)
+
+        func fallback(_ id: UUID?) -> (window: Int32, regularProfile: UUID?)? {
+            guard let id, tabs.tree.profiles.contains(where: { $0.id == id }),
+                  tabs.orderedSpaces.contains(where: { tabs.tree.dataStoreID(for: $0.id) == id }) else { return nil }
+            return (0, id)
+        }
     }
 
     func shouldDetachModelWindow(_ state: BrowserWindowState) -> Bool {

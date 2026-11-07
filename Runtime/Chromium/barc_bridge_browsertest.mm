@@ -1,4 +1,5 @@
 #import <AppKit/AppKit.h>
+#import "chrome/browser/app_controller_mac.h"
 
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
@@ -7,6 +8,7 @@
 #include "base/run_loop.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <memory>
 #include <optional>
@@ -18,6 +20,12 @@
 #include "base/files/scoped_temp_dir.h"
 #include "base/files/file_util.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/browser/storage_partition.h"
+#include "services/network/public/cpp/resource_request.h"
+#include "services/network/public/cpp/simple_url_loader.h"
+#include "services/network/public/cpp/shared_url_loader_factory.h"
+#include "net/base/isolation_info.h"
+#include "net/traffic_annotation/network_traffic_annotation_test_helper.h"
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
 #include "base/task/execution_fence.h"
@@ -52,6 +60,7 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/embedder_browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/browser_window/public/profile_browser_collection.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/find_bar/find_bar_controller.h"
 #include "chrome/browser/ui/tabs/tab_muted_utils.h"
@@ -95,9 +104,14 @@
 #include "content/public/test/test_navigation_observer.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/http_response.h"
+#include "net/dns/mock_host_resolver.h"
+#include "net/cookies/cookie_partition_key.h"
+#include "net/cookies/cookie_partition_key_collection.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/gfx/codec/png_codec.h"
 #include "ui/shell_dialogs/fake_select_file_dialog.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/view_observer.h"
@@ -141,6 +155,26 @@ struct NavigationEvent {
 };
 class NavigationEvents {
  public:
+  int thumbnail_calls = 0;
+  uint64_t thumbnail_request = 0;
+  std::vector<uint8_t> thumbnail;
+  static void ReceiveThumbnail(void* context, uint64_t observation,
+                               uint64_t request, const uint8_t* png, size_t size) {
+    auto* self = static_cast<NavigationEvents*>(context);
+    EXPECT_EQ(self->token, observation);
+    ++self->thumbnail_calls;
+    self->thumbnail_request = request;
+    self->thumbnail = png && size
+        ? UNSAFE_BUFFERS(std::vector<uint8_t>(png, png + size))
+        : std::vector<uint8_t>();
+  }
+  std::vector<int32_t> site_results;
+  static void SiteDataResult(void* context, uint64_t observation,
+                              uint64_t request, int32_t result) {
+    auto* self = static_cast<NavigationEvents*>(context);
+    EXPECT_EQ(self->token, observation);
+    self->site_results.push_back(result);
+  }
   ~NavigationEvents() { barc_tab_unobserve(token); }
   static void Receive(void* context, uint64_t observation, int32_t kind,
                       int32_t window, int32_t tab, const char* url,
@@ -1106,6 +1140,236 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_TRUE(result.finished);
   EXPECT_FALSE(result.granted);
   EXPECT_EQ(regular, SharedWindow(regular_id));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       ThumbnailUsesVisibleExactDocumentAndBoundsOutput) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  Navigate(work, embedded_test_server()->GetURL("/title1.html"));
+  const int32_t tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  work->GetWindow()->Show();
+  content::WaitForCopyableViewInWebContents(work->GetTabStripModel()->GetActiveWebContents());
+  NavigationEvents events;
+  events.token = barc_tab_observe(work_id, tab, NavigationEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  EXPECT_EQ(0, barc_tab_capture_thumbnail(0, 1, NavigationEvents::ReceiveThumbnail));
+  ASSERT_EQ(1, barc_tab_capture_thumbnail(events.token, 1, NavigationEvents::ReceiveThumbnail));
+  EXPECT_EQ(0, barc_tab_capture_thumbnail(events.token, 2, NavigationEvents::ReceiveThumbnail));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.thumbnail_calls == 1; }));
+  EXPECT_EQ(1u, events.thumbnail_request);
+  ASSERT_FALSE(events.thumbnail.empty());
+  const SkBitmap image = gfx::PNGCodec::Decode(events.thumbnail);
+  ASSERT_FALSE(image.drawsNothing());
+  EXPECT_LE(image.width(), 400);
+  EXPECT_LE(image.height(), 400);
+  ASSERT_EQ(1, barc_tab_select(personal_id, barc_window_tab_at(personal_id, 0)));
+  EXPECT_EQ(0, barc_tab_capture_thumbnail(events.token, 3, NavigationEvents::ReceiveThumbnail));
+  EXPECT_FALSE(work->IsSelectedForNativeWindow());
+
+  ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  ASSERT_EQ(1, barc_tab_capture_thumbnail(events.token, 4, NavigationEvents::ReceiveThumbnail));
+  Navigate(work, embedded_test_server()->GetURL("/title2.html"));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.thumbnail_calls == 2; }));
+  EXPECT_TRUE(events.thumbnail.empty());
+  EXPECT_EQ(4u, events.thumbnail_request);
+  const uint64_t stale = events.token;
+  barc_tab_unobserve(stale);
+  events.token = 0;
+  EXPECT_EQ(0, barc_tab_capture_thumbnail(stale, 5, NavigationEvents::ReceiveThumbnail));
+}
+
+class BarcSiteDataBrowserTest : public BarcSharedNativeWindowBrowserTest {
+ public:
+  void SetUpOnMainThread() override {
+    BarcSharedNativeWindowBrowserTest::SetUpOnMainThread();
+    // BrowserTestBase freezes resolver rules before entering the test body.
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
+                       SiteCookiesPreserveDomainsPartitionsAndOtherProfiles) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const auto page_url = embedded_test_server()->GetURL("sub.a.test", "/title1.html");
+  const GURL cookie_url("https://sub.a.test/");
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  Navigate(work, page_url);
+  const int32_t tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  SharedProfileResult private_result;
+  barc_private_session_open_window(SharedProfileCompleted, &private_result);
+  ASSERT_EQ(BARC_PROFILE_OK, private_result.Get<0>());
+  auto* private_owner = SharedWindow(private_result.Get<1>());
+  ASSERT_TRUE(private_owner);
+  ASSERT_TRUE(private_owner->GetProfile()->IsOffTheRecord());
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url, "host=1; Path=/"));
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url, "domain=1; Domain=sub.a.test; Path=/"));
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url, "parent=1; Domain=a.test; Path=/"));
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), GURL("https://sibling.a.test/"), "sibling=1; Path=/"));
+  const auto current_key = net::CookiePartitionKey::FromURLForTesting(page_url);
+  const auto other_key = net::CookiePartitionKey::FromURLForTesting(GURL("https://b.test"));
+  const auto inclusive = net::CookieOptions::SameSiteCookieContext::MakeInclusive();
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url,
+      "chip=1; Secure; SameSite=None; Partitioned; Path=/", inclusive, current_key));
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url,
+      "otherchip=1; Secure; SameSite=None; Partitioned; Path=/", inclusive, other_key));
+  ASSERT_TRUE(content::SetCookie(personal->GetProfile(), cookie_url, "personal=1; Path=/"));
+  ASSERT_TRUE(content::SetCookie(private_owner->GetProfile(), cookie_url, "private=1; Path=/"));
+  ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  NavigationEvents events;
+  events.token = barc_tab_observe(work_id, tab, NavigationEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  EXPECT_EQ(0, barc_tab_clear_site_data(events.token, 1, -1, NavigationEvents::SiteDataResult));
+  ASSERT_EQ(1, barc_tab_clear_site_data(events.token, 1, BARC_SITE_COOKIES, NavigationEvents::SiteDataResult));
+  EXPECT_EQ(0, barc_tab_clear_site_data(events.token, 2, BARC_SITE_CACHE, NavigationEvents::SiteDataResult));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.site_results.size() == 1; }));
+  EXPECT_EQ(BARC_SITE_COMPLETED, events.site_results.back());
+  const std::string remaining = content::GetCookies(work->GetProfile(), cookie_url);
+  EXPECT_FALSE(remaining.contains("host=1"));
+  EXPECT_FALSE(remaining.contains("domain=1"));
+  EXPECT_FALSE(remaining.starts_with("chip=1"));
+  EXPECT_FALSE(remaining.contains("; chip=1"));
+  EXPECT_TRUE(remaining.contains("parent=1"));
+  EXPECT_TRUE(remaining.contains("otherchip=1"));
+  EXPECT_TRUE(content::GetCookies(work->GetProfile(), GURL("https://sibling.a.test/")).contains("sibling=1"));
+  EXPECT_TRUE(content::GetCookies(personal->GetProfile(), cookie_url).contains("personal=1"));
+  EXPECT_TRUE(content::GetCookies(private_owner->GetProfile(), cookie_url).contains("private=1"));
+  Navigate(private_owner, page_url);
+  const int32_t private_id = private_result.Get<1>();
+  const int32_t private_tab = barc_window_tab_at(private_id, 0);
+  ASSERT_EQ(1, barc_tab_select(private_id, private_tab));
+  NavigationEvents private_events;
+  private_events.token = barc_tab_observe(private_id, private_tab, NavigationEvents::Receive, &private_events);
+  ASSERT_NE(0u, private_events.token);
+  ASSERT_EQ(1, barc_tab_clear_site_data(private_events.token, 1, BARC_SITE_COOKIES, NavigationEvents::SiteDataResult));
+  ASSERT_TRUE(base::test::RunUntil([&] { return private_events.site_results.size() == 1; }));
+  EXPECT_EQ(BARC_SITE_COMPLETED, private_events.site_results.back());
+  EXPECT_FALSE(content::GetCookies(private_owner->GetProfile(), cookie_url).contains("private=1"));
+  EXPECT_TRUE(content::GetCookies(personal->GetProfile(), cookie_url).contains("personal=1"));
+  EXPECT_TRUE(content::GetCookies(work->GetProfile(), cookie_url).contains("parent=1"));
+  ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url, "reload=1; Path=/"));
+  content::TestNavigationObserver cookie_reload(work->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_EQ(1, barc_tab_clear_site_data(events.token, 2, BARC_SITE_COOKIES_AND_RELOAD, NavigationEvents::SiteDataResult));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.site_results.size() == 2; }));
+  EXPECT_EQ(BARC_SITE_COMPLETED, events.site_results.back());
+  cookie_reload.Wait();
+  EXPECT_FALSE(content::GetCookies(work->GetProfile(), cookie_url).contains("reload=1"));
+
+  // A real navigation before cookie enumeration completes must not reload its
+  // replacement or even begin the deferred canonical-cookie deletions.
+  ASSERT_TRUE(content::SetCookie(work->GetProfile(), cookie_url, "late=1; Path=/"));
+  ASSERT_EQ(1, barc_tab_clear_site_data(events.token, 3, BARC_SITE_COOKIES_AND_RELOAD, NavigationEvents::SiteDataResult));
+  Navigate(work, embedded_test_server()->GetURL("sub.a.test", "/title2.html"));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.site_results.size() == 3; }));
+  EXPECT_EQ(BARC_SITE_CANCELLED, events.site_results.back());
+  EXPECT_TRUE(content::GetCookies(work->GetProfile(), cookie_url).contains("late=1"));
+  const int32_t peer_id = barc_window_new_peer(work_id);
+  auto* peer = SharedWindow(peer_id);
+  ASSERT_TRUE(peer);
+  ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  ASSERT_EQ(1, barc_tab_clear_site_data(events.token, 4, BARC_SITE_COOKIES_AND_RELOAD, NavigationEvents::SiteDataResult));
+  ASSERT_EQ(1, barc_tab_transfer(work_id, tab, peer_id));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.site_results.size() == 4; }));
+  EXPECT_EQ(BARC_SITE_CANCELLED, events.site_results.back());
+  EXPECT_TRUE(content::GetCookies(peer->GetProfile(), cookie_url).contains("late=1"));
+  ASSERT_EQ(1, barc_tab_select(peer_id, tab));
+  ASSERT_EQ(1, barc_tab_clear_site_data(events.token, 5, BARC_SITE_COOKIES_AND_RELOAD, NavigationEvents::SiteDataResult));
+  ui_test_utils::BrowserDestroyedObserver closed(peer);
+  ASSERT_EQ(1, barc_window_close(peer_id));
+  closed.Wait();
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(4u, events.site_results.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
+                       SiteCacheIsOriginFilteredAndHardReloadPreservesStorage) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+  https_server.ServeFilesFromSourceDirectory("chrome/test/data");
+  auto counts = std::make_shared<std::array<std::atomic<int>, 2>>();
+  https_server.RegisterRequestHandler(base::BindRepeating(
+      [](std::shared_ptr<std::array<std::atomic<int>, 2>> counts,
+         const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url != "/cache-probe") return nullptr;
+        const bool target = request.headers.at("Host").starts_with("a.test");
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_code(net::HTTP_OK);
+        response->AddCustomHeader("Cache-Control", "max-age=3600");
+        response->set_content(std::string(target ? "A" : "B") +
+            std::to_string(++(*counts)[target ? 0 : 1]));
+        return response;
+      }, counts));
+  ASSERT_TRUE(https_server.Start());
+  const int32_t window_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* window = SharedWindow(window_id);
+  ASSERT_TRUE(window);
+  Navigate(window, https_server.GetURL("a.test", "/title1.html"));
+  const int32_t tab = barc_window_tab_at(window_id, 0);
+  auto* contents = window->GetTabStripModel()->GetActiveWebContents();
+  const auto other_url = https_server.GetURL("b.test", "/title1.html");
+  const int32_t other = barc_tab_create(window_id, other_url.spec().c_str(), 0);
+  ASSERT_GT(other, 0);
+  auto* other_contents = window->GetTabStripModel()->GetWebContentsAt(1);
+  ASSERT_TRUE(content::WaitForLoadStop(other_contents));
+  ASSERT_TRUE(content::ExecJs(other_contents, "localStorage.keep='other'"));
+  // Probe the actual HTTP cache via this Profile's browser factory, avoiding
+  // renderer memory-cache hits which scoped removal deliberately does not flush.
+  auto read_http_cache = [&](const GURL& url) {
+    auto request = std::make_unique<network::ResourceRequest>();
+    request->url = url;
+    request->credentials_mode = network::mojom::CredentialsMode::kOmit;
+    request->trusted_params = network::ResourceRequest::TrustedParams();
+    request->trusted_params->isolation_info = net::IsolationInfo::Create(
+        net::IsolationInfo::RequestType::kOther, url::Origin::Create(url),
+        url::Origin::Create(url), net::SiteForCookies::FromUrl(url));
+    auto loader = network::SimpleURLLoader::Create(std::move(request), TRAFFIC_ANNOTATION_FOR_TESTS);
+    auto factory = contents->GetPrimaryMainFrame()->GetStoragePartition()
+                       ->GetURLLoaderFactoryForBrowserProcess();
+    base::test::TestFuture<std::optional<std::string>> result;
+    loader->DownloadToString(factory.get(), result.GetCallback(), 1024);
+    const auto& body = result.Get();
+    EXPECT_TRUE(body.has_value());
+    return body.value_or("");
+  };
+  const auto target_cache = https_server.GetURL("a.test", "/cache-probe");
+  const auto other_cache = https_server.GetURL("b.test", "/cache-probe");
+  EXPECT_EQ("A1", read_http_cache(target_cache));
+  EXPECT_EQ("B1", read_http_cache(other_cache));
+  EXPECT_EQ("A1", read_http_cache(target_cache));
+  ASSERT_TRUE(content::ExecJs(contents,
+      "localStorage.keep='yes'; document.cookie='keep=yes'; caches.open('keep').then(c=>c.put('/keep',new Response('yes')));"));
+  NavigationEvents events;
+  events.token = barc_tab_observe(window_id, tab, NavigationEvents::Receive, &events);
+  ASSERT_NE(0u, events.token);
+  ASSERT_EQ(1, barc_tab_clear_site_data(events.token, 1, BARC_SITE_CACHE, NavigationEvents::SiteDataResult));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.site_results.size() == 1; }));
+  EXPECT_EQ(BARC_SITE_COMPLETED, events.site_results.back());
+  EXPECT_EQ("A2", read_http_cache(target_cache));
+  EXPECT_EQ("B1", read_http_cache(other_cache));
+  EXPECT_EQ("yes", content::EvalJs(contents, "localStorage.keep"));
+  EXPECT_EQ("other", content::EvalJs(other_contents, "localStorage.keep"));
+  EXPECT_TRUE(content::EvalJs(contents, "document.cookie.includes('keep=yes')").ExtractBool());
+  EXPECT_EQ("yes", content::EvalJs(contents, "caches.open('keep').then(c=>c.match('/keep')).then(r=>r.text())"));
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, other, BARC_PAGE_HARD_RELOAD));
+  chrome::BrowserCommandController::From(window)->UpdateCommandEnabled(IDC_RELOAD_BYPASSING_CACHE, false);
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, tab, BARC_PAGE_HARD_RELOAD));
+  chrome::BrowserCommandController::From(window)->UpdateCommandEnabled(IDC_RELOAD_BYPASSING_CACHE, true);
+  content::TestNavigationObserver reloaded(contents);
+  ASSERT_EQ(1, barc_tab_execute_command(window_id, tab, BARC_PAGE_HARD_RELOAD));
+  reloaded.Wait();
+  EXPECT_EQ("yes", content::EvalJs(contents, "localStorage.keep"));
+  EXPECT_TRUE(content::EvalJs(contents, "document.cookie.includes('keep=yes')").ExtractBool());
 }
 
 IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
@@ -3046,6 +3310,13 @@ class BarcEarlyRegisteredReturnBrowserTest : public InProcessBrowserTest {
         [](void* context) { ++static_cast<BarcEarlyRegisteredReturnBrowserTest*>(context)->deliveries; }, this);
     barc_set_runtime_close_callback(
         [](int32_t, void* context) { ++static_cast<BarcEarlyRegisteredReturnBrowserTest*>(context)->deliveries; }, this);
+    barc_set_runtime_browser_target_callback(
+        [](int32_t, char*, size_t, void* context) {
+          ++static_cast<BarcEarlyRegisteredReturnBrowserTest*>(context)
+                ->deliveries;
+          return 0;
+        },
+        this);
     ASSERT_FALSE(barc::RuntimeCallbacksClearedForTesting());
     if (AbortBeforeMain()) {
       barc_runtime_complete_startup(0);
@@ -3073,6 +3344,9 @@ class BarcEarlyPostedReturnBrowserTest : public BarcEarlyRegisteredReturnBrowser
   class AbortBeforeReadyDrain : public ChromeBrowserMainExtraParts {
    public:
     void PostBrowserStart() override {
+      if (!barc::IsNativeApplicationMode()) {
+        barc::SetApplicationLaunchReadyCallback(base::BindRepeating([] {}));
+      }
       // ChromeBrowserMainParts calls barc::PostRuntimeReady immediately after
       // all PostBrowserStart parts. This task therefore runs with kPosted,
       // before the subsequently posted runtime-ready callback can drain.
@@ -3097,4 +3371,461 @@ IN_PROC_BROWSER_TEST_F(BarcEarlyPostedReturnBrowserTest,
   EXPECT_TRUE(barc::RuntimeCallbacksClearedForTesting());
   EXPECT_FALSE(barc::IsNativeApplicationRegistered());
   EXPECT_EQ(0, deliveries);
+}
+
+// Mechanical handler/ownership tests, using Chromium's ordinary browser-test
+// focus helpers. These do not qualify native AppleEvent delivery or key focus.
+@interface AppController (BarcLaunchTests)
+- (void)openStartupUrls;
+@end
+
+class BarcApplicationLaunchBrowserTest
+    : public BarcSharedNativeWindowBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command) override {
+    BarcSharedNativeWindowBrowserTest::SetUpCommandLine(command);
+    command->AppendSwitch("no-startup-window");
+    command->AppendArg("data:text/plain,cli-once");
+    command->AppendArg("javascript:document.title='forbidden'");
+  }
+  void SetUp() override {
+    barc_set_runtime_browser_target_callback(
+        [](int32_t kind, char* output, size_t capacity, void* pointer) {
+          auto* self = static_cast<BarcApplicationLaunchBrowserTest*>(pointer);
+          ++self->target_reads;
+          if (output && capacity) {
+            output[0] = 0;
+          }
+          if (kind == 0 && self->opening) {
+            return int32_t{-1};
+          }
+          if (self->target > 0) {
+            return self->target;
+          }
+          if (self->fallback && output && capacity >= self->uuid.size() + 1) {
+            // SAFETY: native resolver supplies a writable `capacity` buffer;
+            // the preceding bound includes the controlled string's NUL byte.
+            UNSAFE_BUFFERS(base::span(output, capacity)
+                               .copy_prefix_from(base::span(
+                                   self->uuid.c_str(), self->uuid.size() + 1)));
+          }
+          return int32_t{0};
+        },
+        this);
+    barc_set_runtime_ready_callback(
+        [](void* pointer) {
+          auto* self = static_cast<BarcApplicationLaunchBrowserTest*>(pointer);
+          // The default test browser is only startup scaffolding; requested
+          // URLs must go into the real Barc Work profile created below.
+          GlobalBrowserCollection::GetInstance()->ForEach(
+              [](BrowserWindowInterface* browser) {
+                NSView* header =
+                    [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+                CHECK(barc_window_attach_native_shell(
+                    browser->GetSessionID().id(), (__bridge void*)header));
+                CHECK(barc_window_admit_discovered(browser->GetSessionID().id(),
+                                                   (__bridge void*)header));
+                return true;
+              });
+          barc_profile_open_window(
+              kSharedWork, BARC_PROFILE_BLANK,
+              [](barc_profile_status status, int32_t window, void* pointer) {
+                auto* self =
+                    static_cast<BarcApplicationLaunchBrowserTest*>(pointer);
+                CHECK_EQ(BARC_PROFILE_OK, status);
+                self->target = window;
+                NSView* header =
+                    [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+                CHECK(barc_window_attach_native_shell(window,
+                                                      (__bridge void*)header));
+                // This exact C-factory blank is excluded from discovery
+                // admission. The fixture binds its target before explicit
+                // startup presentation.
+                barc_runtime_complete_startup(window);
+              },
+              self);
+        },
+        this);
+    BarcSharedNativeWindowBrowserTest::SetUp();
+  }
+
+ protected:
+  int32_t target = 0;
+  bool fallback = false;
+  int target_reads = 0;
+  bool opening = false;
+  int32_t created_during_resolution = 0;
+  std::string uuid = kSharedWork;
+  class OpeningOnCreation : public BrowserCollectionObserver {
+   public:
+    explicit OpeningOnCreation(BarcApplicationLaunchBrowserTest* owner)
+        : owner_(owner) {
+      observation_.Observe(GlobalBrowserCollection::GetInstance());
+    }
+    void OnBrowserCreated(BrowserWindowInterface* browser) override {
+      if (browser->GetProfile()->GetPath().BaseName().MaybeAsASCII() ==
+          "Barc-" + owner_->uuid) {
+        owner_->created_during_resolution = browser->GetSessionID().id();
+        owner_->opening = true;
+      }
+    }
+
+   private:
+    raw_ptr<BarcApplicationLaunchBrowserTest> owner_;
+    base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+        observation_{this};
+  };
+  bool InitialURLsReady() {
+    return target > 0 && CountURL(GURL("data:text/plain,cli-once")) == 1 &&
+           CountURL(GURL("data:text/plain,early-once")) == 1;
+  }
+  class EarlyURL : public ChromeBrowserMainExtraParts {
+   public:
+    void PostBrowserStart() override {
+      [AppController.sharedController
+          application:NSApp
+             openURLs:@[ [NSURL URLWithString:@"data:text/plain,early-once"] ]];
+    }
+  };
+  void CreatedBrowserMainParts(content::BrowserMainParts* parts) override {
+    InProcessBrowserTest::CreatedBrowserMainParts(parts);
+    static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
+        std::make_unique<EarlyURL>());
+  }
+  void Admit(int32_t window) {
+    NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+    ASSERT_EQ(1,
+              barc_window_attach_native_shell(window, (__bridge void*)header));
+    BarcDiscoveryWindow row{};
+    ASSERT_EQ(1, barc_window_discovery_state(window, &row));
+    if (row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY) {
+      ASSERT_EQ(1, barc_window_show(window));
+    } else {
+      ASSERT_EQ(1,
+                barc_window_admit_discovered(window, (__bridge void*)header));
+    }
+  }
+  int CountURL(const GURL& url) {
+    auto* browser = SharedWindow(target);
+    if (!browser) {
+      return 0;
+    }
+    int count = 0;
+    for (int i = 0; i < browser->GetTabStripModel()->count(); ++i) {
+      if (browser->GetTabStripModel()->GetWebContentsAt(i)->GetVisibleURL() ==
+          url) {
+        ++count;
+      }
+    }
+    return count;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
+                       CommandLineAndEarlyURLDrainOnceIntoExactModelProfile) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  std::array<char, 37> identity{};
+  ASSERT_EQ(37u,
+            barc_window_profile_uuid(target, identity.data(), identity.size()));
+  EXPECT_EQ(kSharedWork, std::string(identity.data()));
+  const GURL cli("data:text/plain,cli-once");
+  const GURL early("data:text/plain,early-once");
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return CountURL(cli) == 1 && CountURL(early) == 1; }));
+  EXPECT_EQ(3u, barc_window_tab_count(target));
+  [AppController.sharedController openStartupUrls];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, CountURL(cli));
+  EXPECT_EQ(1, CountURL(early));
+  EXPECT_EQ(3u, barc_window_tab_count(target));
+  DiscoveryRows rows;
+  rows.Read();
+  EXPECT_EQ(1u, rows.windows.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
+                       URLUsesExactOwnerRatherThanAnotherSameProfileWindow) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  auto* work = SharedWindow(target);
+  ASSERT_TRUE(work);
+  const int32_t peer = barc_window_new_peer(target);
+  ASSERT_GT(peer, 0);
+  Admit(peer);
+  ASSERT_EQ(work->GetProfile(), SharedWindow(peer)->GetProfile());
+  ASSERT_EQ(1, barc_window_select(peer));
+  SharedWindow(peer)->GetWindow()->Activate();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return ProfileBrowserCollection::GetForProfile(work->GetProfile())
+               ->FindTabbedBrowser() == SharedWindow(peer);
+  }));  // Prove the profile-only heuristic would choose the wrong owner.
+  const size_t peer_tabs = barc_window_tab_count(peer);
+  const size_t work_tabs = barc_window_tab_count(target);
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL URLWithString:@"data:text/html,exact-owner"] ]];
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return barc_window_tab_count(target) == work_tabs + 1; }));
+  EXPECT_EQ(peer_tabs, barc_window_tab_count(peer));
+  EXPECT_EQ(1, CountURL(GURL("data:text/html,exact-owner")));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
+                       NoWindowCommandsUseExactRegularUUIDAndDockReusesOwner) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  const int32_t original = target;
+  auto* profile = SharedWindow(original)->GetProfile();
+  target = 0;
+  fallback = true;
+  NSMenuItem* item = [[NSMenuItem alloc] init];
+  item.tag = IDC_NEW_WINDOW;
+  ui_test_utils::BrowserCreatedObserver created;
+  [AppController.sharedController commandDispatch:item];
+  auto* next = created.Wait();
+  ASSERT_TRUE(next);
+  EXPECT_EQ(profile, next->GetProfile());
+  EXPECT_NE(original, next->GetSessionID().id());
+  target = next->GetSessionID().id();
+  Admit(target);
+  DiscoveryRows rows;
+  rows.Read();
+  auto row =
+      std::find_if(rows.tabs.begin(), rows.tabs.end(),
+                   [&](const auto& tab) { return tab.window == target; });
+  ASSERT_NE(rows.tabs.end(), row);
+  EXPECT_EQ(0u, row->flags & BARC_DISCOVERY_TAB_APP_FACTORY);
+  const size_t before = rows.windows.size();
+  [AppController.sharedController applicationShouldHandleReopen:NSApp
+                                              hasVisibleWindows:NO];
+  base::RunLoop().RunUntilIdle();
+  rows.Read();
+  EXPECT_EQ(before, rows.windows.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
+                       AsyncRegularTargetChangeCancelsInsteadOfRetargeting) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  target = 0;
+  fallback = true;
+  uuid = "275a935d-37a0-434e-a272-d84f9e938bd0";
+  base::test::TestFuture<barc::ApplicationBrowserResult,
+                         BrowserWindowInterface*, Profile*>
+      completed;
+  barc::RunInApplicationBrowser(1, completed.GetCallback());
+  uuid = kSharedWork;
+  ASSERT_TRUE(completed.Wait());
+  EXPECT_EQ(barc::ApplicationBrowserResult::kUnavailable, completed.Get<0>());
+  EXPECT_EQ(nullptr, completed.Get<1>());
+  EXPECT_EQ(nullptr, completed.Get<2>());
+}
+
+class BarcCancelledApplicationLaunchBrowserTest
+    : public BarcEarlyPostedReturnBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command) override {
+    BarcEarlyPostedReturnBrowserTest::SetUpCommandLine(command);
+    if (!command->HasSwitch("no-startup-window")) {
+      command->AppendSwitch("no-startup-window");
+    }
+    command->AppendSwitch("barc-native-shell");
+    command->AppendSwitch("barc-shared-native-window");
+  }
+
+ protected:
+  class QueueBeforeAbort : public ChromeBrowserMainExtraParts {
+   public:
+    void PostBrowserStart() override {
+      GlobalBrowserCollection::GetInstance()->ForEach(
+          [](BrowserWindowInterface* browser) {
+            NSView* header =
+                [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+            CHECK(barc_window_attach_native_shell(browser->GetSessionID().id(),
+                                                  (__bridge void*)header));
+            CHECK(barc_window_admit_discovered(browser->GetSessionID().id(),
+                                               (__bridge void*)header));
+            return true;
+          });
+      [AppController.sharedController
+          application:NSApp
+             openURLs:@[
+               [NSURL
+                   URLWithString:@"data:text/plain,cancelled-before-ready"]
+             ]];
+      NSMenuItem* item = [[NSMenuItem alloc] init];
+      item.tag = IDC_NEW_WINDOW;
+      [AppController.sharedController commandDispatch:item];
+      [AppController.sharedController applicationShouldHandleReopen:NSApp
+                                                  hasVisibleWindows:NO];
+    }
+  };
+  void CreatedBrowserMainParts(content::BrowserMainParts* parts) override {
+    BarcEarlyPostedReturnBrowserTest::CreatedBrowserMainParts(parts);
+    static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
+        std::make_unique<QueueBeforeAbort>());
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(
+    BarcCancelledApplicationLaunchBrowserTest,
+    PendingURLAndWindowRequestsCannotFallBackAfterEarlyStop) {
+  ASSERT_TRUE(barc::RuntimeCallbacksClearedForTesting());
+  ASSERT_FALSE(barc::IsNativeApplicationRegistered());
+  ASSERT_TRUE(barc::IsNativeApplicationMode());
+  DiscoveryRows before;
+  before.Read();
+  [AppController.sharedController openStartupUrls];
+  NSMenuItem* item = [[NSMenuItem alloc] init];
+  item.tag = IDC_NEW_WINDOW;
+  [AppController.sharedController commandDispatch:item];
+  [AppController.sharedController applicationShouldHandleReopen:NSApp
+                                              hasVisibleWindows:NO];
+  base::RunLoop().RunUntilIdle();
+  DiscoveryRows after;
+  after.Read();
+  EXPECT_EQ(before.windows.size(), after.windows.size());
+  EXPECT_EQ(before.tabs.size(), after.tabs.size());
+  EXPECT_TRUE(after.windows.empty());
+  EXPECT_TRUE(after.tabs.empty());
+  EXPECT_EQ(0, deliveries);
+}
+
+IN_PROC_BROWSER_TEST_F(
+    BarcApplicationLaunchBrowserTest,
+    URLsDuringAsyncResolutionWaitForAdmissionAndDeliverOnce) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  const size_t browsers_before =
+      GlobalBrowserCollection::GetInstance()->GetSize();
+  int revisions = 0;
+  const uint64_t token = barc_discovery_observe(
+      [](void* context, uint64_t, uint64_t) { ++*static_cast<int*>(context); },
+      &revisions);
+  ASSERT_NE(0u, token);
+  base::ScopedClosureRunner stop(base::BindOnce(
+      [](uint64_t token) { barc_discovery_unobserve(token); }, token));
+  target = 0;
+  fallback = true;
+  uuid = "c2f82058-fdcc-41d8-a384-b330ab524a2d";
+  OpeningOnCreation mark_opening(this);
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL URLWithString:@"data:text/plain,first-pending"] ]];
+  // This arrives while the real ProfileManager/JSON preference load is pending.
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL URLWithString:@"data:text/plain,second-pending"] ]];
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return created_during_resolution > 0; }));
+  const int32_t created = created_during_resolution;
+  ASSERT_TRUE(opening);
+  EXPECT_EQ(browsers_before + 1,
+            GlobalBrowserCollection::GetInstance()->GetSize());
+  // Real structural notifications while model admission is still pending must
+  // neither create another owner nor consume the queued second URL.
+  ASSERT_GT(barc_tab_create(created, "about:blank", 0), 0);
+  ASSERT_TRUE(base::test::RunUntil([&] { return revisions > 0; }));
+  const int previous_revisions = revisions;
+  ASSERT_GT(barc_tab_create(created, "about:blank", 0), 0);
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return revisions > previous_revisions; }));
+  EXPECT_EQ(browsers_before + 1,
+            GlobalBrowserCollection::GetInstance()->GetSize());
+  target = created;
+  EXPECT_EQ(1, CountURL(GURL("data:text/plain,first-pending")));
+  EXPECT_EQ(0, CountURL(GURL("data:text/plain,second-pending")));
+  opening = false;
+  Admit(created);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return CountURL(GURL("data:text/plain,second-pending")) == 1; }));
+  [AppController.sharedController openStartupUrls];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, CountURL(GURL("data:text/plain,first-pending")));
+  EXPECT_EQ(1, CountURL(GURL("data:text/plain,second-pending")));
+  EXPECT_EQ(browsers_before + 1,
+            GlobalBrowserCollection::GetInstance()->GetSize());
+  const int reads_after_delivery = target_reads;
+  const int delivered_revisions = revisions;
+  ASSERT_GT(barc_tab_create(created, "about:blank", 0), 0);
+  ASSERT_TRUE(
+      base::test::RunUntil([&] { return revisions > delivered_revisions; }));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(reads_after_delivery, target_reads);  // Empty queue does no lookup.
+}
+
+IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
+                       ShutdownDuringAsyncURLResolutionCannotCreateOrRetarget) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  const size_t before = GlobalBrowserCollection::GetInstance()->GetSize();
+  target = 0;
+  fallback = true;
+  uuid = "b8cb5258-c878-4ddf-9fae-bc1fd449a1f1";
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL URLWithString:@"data:text/plain,cancel-on-stop"] ]];
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL
+                      URLWithString:@"data:text/plain,also-cancel-on-stop"] ]];
+  base::test::TestFuture<barc::ApplicationBrowserResult,
+                         BrowserWindowInterface*, Profile*>
+      completed;
+  barc::RunInApplicationBrowser(1, completed.GetCallback());
+  barc::RuntimeStopped();
+  EXPECT_TRUE(barc::RuntimeCallbacksClearedForTesting());
+  ASSERT_TRUE(completed.Wait());
+  EXPECT_EQ(barc::ApplicationBrowserResult::kUnavailable, completed.Get<0>());
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(before, GlobalBrowserCollection::GetInstance()->GetSize());
+  [AppController.sharedController openStartupUrls];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(before, GlobalBrowserCollection::GetInstance()->GetSize());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
+                       AsyncUUIDBecomingOpeningRetainsBatchUntilRealAdmission) {
+  ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
+  const size_t before = GlobalBrowserCollection::GetInstance()->GetSize();
+  target = 0;
+  fallback = true;
+  uuid = "70315c5b-246a-4d47-acfc-cc9556c70925";
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL
+                      URLWithString:@"data:text/plain,uuid-then-opening"] ]];
+  opening = true;  // Model window preparation begins before async prefs finish.
+  [AppController.sharedController
+      application:NSApp
+         openURLs:@[ [NSURL URLWithString:@"data:text/plain,during-opening"] ]];
+  base::test::TestFuture<barc::ApplicationBrowserResult> loaded;
+  barc::RunInApplicationBrowser(
+      1, base::BindOnce(
+             [](base::test::TestFuture<barc::ApplicationBrowserResult>* done,
+                barc::ApplicationBrowserResult result, BrowserWindowInterface*,
+                Profile*) {
+               done->SetValue(
+                   result);  // No borrowed Profile escapes this callback.
+             },
+             base::Unretained(&loaded)));
+  ASSERT_TRUE(loaded.Wait());
+  EXPECT_EQ(barc::ApplicationBrowserResult::kReady, loaded.Get());
+  EXPECT_EQ(before, GlobalBrowserCollection::GetInstance()->GetSize());
+  const int32_t prepared = Open(uuid.c_str(), 0, BARC_PROFILE_BLANK);
+  ASSERT_GT(prepared, 0);
+  target = prepared;
+  opening = false;
+  int revisions = 0;
+  const uint64_t token = barc_discovery_observe(
+      [](void* context, uint64_t, uint64_t) { ++*static_cast<int*>(context); },
+      &revisions);
+  ASSERT_NE(0u, token);
+  base::ScopedClosureRunner stop(base::BindOnce(
+      [](uint64_t token) { barc_discovery_unobserve(token); }, token));
+  Admit(prepared);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return CountURL(GURL("data:text/plain,uuid-then-opening")) == 1 &&
+           CountURL(GURL("data:text/plain,during-opening")) == 1;
+  }));
+  EXPECT_EQ(before + 1, GlobalBrowserCollection::GetInstance()->GetSize());
+  [AppController.sharedController openStartupUrls];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1, CountURL(GURL("data:text/plain,uuid-then-opening")));
+  EXPECT_EQ(1, CountURL(GURL("data:text/plain,during-opening")));
 }

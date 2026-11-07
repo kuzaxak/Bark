@@ -9,6 +9,8 @@ import NookTweaks
 @testable import NookWeb
 
 #if os(macOS)
+import AppKit
+
 @MainActor
 struct NativePageLifecycleTests {
     @Test func acceptedQuitPreservesAllSavedWindowsBeforeRegistryRetirement() throws {
@@ -51,6 +53,84 @@ struct NativePageLifecycleTests {
         #expect(f.window.selectedItemID == id && f.tabs.session(for: id)?.navigation != nil)
         #expect(original.items.keys.allSatisfy { f.tabs.tree.item($0)?.url == original.item($0)?.url })
         #expect(f.host.closes.isEmpty)
+    }
+
+    @Test func nativeSwitcherCapturePrecedesHostSelectionAndNeverCreatesWebKit() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let first = try #require(f.tabs.selectedSession(in: f.window))
+        let native = f.host.finishCreate(0)
+        native.allowsThumbnails = true
+        var capturedBeforeSelection = false
+        f.host.onSelect = { _, _ in
+            capturedBeforeSelection = native.thumbnailCompletions.count == 1
+        }
+        _ = f.tabs.open(url: URL(string: "about:blank")!, in: f.window, placement: .newTab)
+        _ = f.host.finishCreate(1)
+        #expect(capturedBeforeSelection && first.primaryWebView == nil)
+        #expect(first.switcherCaptureInFlight != nil)
+    }
+
+    @Test func reentrantSwitcherCaptureCannotSelectSupersededTarget() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let first = try #require(f.tabs.selectedSession(in: f.window))
+        let native = f.host.finishCreate(0)
+        native.allowsThumbnails = true
+        let selections = f.host.selectionCount
+        native.onCapture = { f.tabs.select(first.itemID, in: f.window) }
+        let second = try #require(f.tabs.open(url: URL(string: "about:blank#second")!,
+            in: f.window, placement: .newTab))
+        _ = f.host.finishCreate(1)
+        #expect(f.window.selectedItemID == first.itemID && f.window.selectedItemID != second)
+        #expect(f.host.selectionCount == selections + 1)
+    }
+
+    @Test func pendingSwitcherCaptureCannotReturnAfterRecentBudgetPrunesNilImage() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let first = try #require(f.tabs.selectedSession(in: f.window))
+        let native = f.host.finishCreate(0)
+        native.allowsThumbnails = true
+        let generation = first.switcherSnapshotGeneration
+        for index in 1...TabSwitcherState.maxItems {
+            _ = f.tabs.open(url: URL(string: "about:blank#\(index)")!, in: f.window, placement: .newTab)
+            _ = f.host.finishCreate(index)
+        }
+        #expect(first.switcherSnapshot == nil && native.thumbnailCompletions.count == 1)
+        #expect(!f.tabs.recentItems(in: f.window).prefix(TabSwitcherState.maxItems).contains(first.itemID))
+        #expect(first.switcherSnapshotGeneration != generation)
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2,
+            pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 8, bitsPerPixel: 32))
+        native.thumbnailCompletions[0](bitmap.representation(using: .png, properties: [:]))
+        #expect(first.switcherSnapshot == nil && first.switcherCaptureInFlight == nil)
+    }
+
+    @Test func switcherClearNavigationAndOwnerEndRejectLateThumbnails() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let page = try #require(f.tabs.selectedSession(in: f.window))
+        let native = f.host.finishCreate(0)
+        native.allowsThumbnails = true
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2,
+            pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 8, bitsPerPixel: 32))
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        page.captureSwitcherSnapshot(); page.captureSwitcherSnapshot()
+        #expect(native.thumbnailCompletions.count == 1)
+        page.switcherSnapshot = nil
+        native.thumbnailCompletions[0](png)
+        #expect(page.switcherSnapshot == nil && page.switcherCaptureInFlight == nil)
+        page.captureSwitcherSnapshot()
+        native.onEvent?(.started(URL(string: "about:blank")))
+        native.thumbnailCompletions[1](png)
+        #expect(page.switcherSnapshot == nil)
+        page.captureSwitcherSnapshot()
+        native.thumbnailCompletions[2](png)
+        #expect(page.switcherSnapshot != nil)
+        page.switcherSnapshot = nil
+        page.captureSwitcherSnapshot()
+        let late = native.thumbnailCompletions[3]
+        page.nativeOwnerEnded()
+        late(png)
+        #expect(page.switcherSnapshot == nil && page.navigation == nil && page.primaryWebView == nil)
     }
 
     @Test func privateNativeAdoptionIsEphemeralAndOwnerEndNeverDeletesSavedState() throws {
@@ -1163,6 +1243,15 @@ private final class NativeTestPage: PageNavigation {
     var onStateChanged: ((PageNavigationState) -> Void)?
     var onEvent: ((PageNavigationEvent) -> Void)?
     var loaded: [URL] = []
+    var allowsThumbnails = false
+    var onCapture: (() -> Void)?
+    var thumbnailCompletions: [@MainActor (Data?) -> Void] = []
+    func captureThumbnail(completion: @escaping @MainActor (Data?) -> Void) -> Bool {
+        guard allowsThumbnails else { return false }
+        thumbnailCompletions.append(completion)
+        let callback = onCapture; onCapture = nil; callback?()
+        return true
+    }
     var invalidated = false
     var stops = 0
     init(profileID: UUID) { self.profileID = profileID }

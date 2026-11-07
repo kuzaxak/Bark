@@ -143,6 +143,8 @@ Native hosts need origin allowlists, bounded messages, and profile-correct port 
 
 Use native Chromium capabilities where appropriate and retire private WebKit hooks instead of translating private selectors. Do not keep a hidden WKWebView path for a difficult macOS feature without an explicit scoped decision.
 
+Native current-site commands intentionally correct two legacy behaviors: **Clear Site Cache** removes origin-filtered HTTP/code-cache stores for the current exact origin/storage partition, preserving cookies and DOM storage; scoped removal does not flush current renderer memory resources or unrelated cache entries; **Hard Reload** uses Chromium's bypass-cache reload rather than deleting all non-cookie website data. Cookie clearing preserves the existing exact host/`.host` domain scope and limits partitioned cookies to the current top-level site, within the actual regular/private Profile. **Clear Cookies and Reload** waits for deletion and revalidates the original live document/owner before reload dispatch; navigation, transfer or close cannot retarget that follow-up. Cancellation suppresses follow-up and stale success delivery; it cannot undo deletion already dispatched.
+
 ### 6a. Make resource management a shared product policy
 
 Implement one engine-neutral lifecycle coordinator for automatic pressure handling, timeout/budget eviction, and bulk hidden-tab actions. The current `TabCompositorManager` already protects visible, audible, PiP, mini-player and camera/microphone pages, but `TabsController.unloadAllHidden()` checks fewer signals. Neither path establishes a complete unsaved-work/upload/screen-sharing protection contract. Reconcile these paths before making eviction more aggressive.

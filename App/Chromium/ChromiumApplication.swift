@@ -11,12 +11,15 @@ private typealias ProfileCallback = @convention(c) (Int32, Int32, UnsafeMutableR
 @MainActor
 final class ChromiumApplication: ChromiumStartupBridge {
     private typealias Register = @convention(c) (ReadyCallback?, UnsafeMutableRawPointer?) -> Void
+    private typealias TargetCallback = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int, UnsafeMutableRawPointer?) -> Int32
+    private typealias RegisterTarget = @convention(c) (TargetCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias RegisterClose = @convention(c) (CloseCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias Open = @convention(c) (UnsafePointer<CChar>?, Int32, ProfileCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias Main = @convention(c) (Int32, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> Int32
     private typealias Complete = @convention(c) (Int32) -> Void
     private let registerCallback: Register
     private let registerClose: RegisterClose
+    private let registerTarget: RegisterTarget
     private let open: Open
     private let privateOpen: ChromiumCreatedPageAdmission.PrivateOpen
     private let closeWindow: @convention(c) (Int32) -> Int32
@@ -59,6 +62,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
         registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
         registerClose = try symbol("barc_set_runtime_close_callback", RegisterClose.self)
+        registerTarget = try symbol("barc_set_runtime_browser_target_callback", RegisterTarget.self)
         open = try symbol("barc_profile_open_window", Open.self)
         privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
         closeWindow = try symbol("barc_window_close", (@convention(c) (Int32) -> Int32).self)
@@ -95,6 +99,20 @@ final class ChromiumApplication: ChromiumStartupBridge {
 
     func registerReady(_ callback: @escaping @MainActor () -> Void) {
         ready = callback
+        registerTarget({ kind, output, capacity, pointer in
+            MainActor.assumeIsolated {
+                if let output, capacity > 0 { output.pointee = 0 }
+                guard let pointer else { return 0 }
+                let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
+                guard app.acceptsWindows, let manager = app.browserManager,
+                      let result = app.admission?.browserTarget(kind: kind, regularProfile: manager.currentProfile?.id) else { return 0 }
+                if result.window != 0 { return result.window }
+                guard let id = result.regularProfile, let output, capacity >= 37 else { return 0 }
+                let bytes = id.uuidString.lowercased().utf8CString
+                for (index, byte) in bytes.enumerated() { output[index] = byte }
+                return 0
+            }
+        }, Unmanaged.passUnretained(self).toOpaque())
         registerClose({ accepted, pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }

@@ -9,12 +9,22 @@ extension PageCommand {
         case .actualSize: Int32(BARC_PAGE_ZOOM_RESET.rawValue)
         case .print: Int32(BARC_PAGE_PRINT.rawValue)
         case .webInspector: Int32(BARC_PAGE_DEVTOOLS.rawValue)
+        case .hardReload: Int32(BARC_PAGE_HARD_RELOAD.rawValue)
+        default: nil
+        }
+    }
+
+    var nativeSiteDataAction: Int32? {
+        switch self {
+        case .clearSiteCookies: Int32(BARC_SITE_COOKIES.rawValue)
+        case .clearSiteCache: Int32(BARC_SITE_CACHE.rawValue)
+        case .clearCookiesAndReload: Int32(BARC_SITE_COOKIES_AND_RELOAD.rawValue)
         default: nil
         }
     }
 
     var supportsNativePage: Bool {
-        if nativeBrowserCommand != nil { return true }
+        if nativeBrowserCommand != nil || nativeSiteDataAction != nil { return true }
         switch self {
         case .goBack, .goForward, .reload, .copyURL, .mute: return true
         default: return false
@@ -24,7 +34,11 @@ extension PageCommand {
 
 extension ChromiumPageNavigation {
     @discardableResult
-    func performNativePageCommand(_ command: PageCommand) -> Bool {
+    func performNativePageCommand(_ command: PageCommand,
+                                  completion: @escaping @MainActor (ChromiumSiteDataOutcome) -> Void = { _ in }) -> Bool {
+        if let action = command.nativeSiteDataAction {
+            return clearNativeSiteData(action, completion: completion)
+        }
         switch command {
         case .goBack: return goBack()
         case .goForward: return goForward()

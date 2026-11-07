@@ -67,10 +67,15 @@ public protocol PageNavigation: AnyObject {
     /// Return command acceptance. Actual mute state arrives through snapshots;
     /// an unsupported engine refuses without optimistic model changes.
     @discardableResult func setAudioMuted(_ muted: Bool) -> Bool
+    /// Requests a bounded PNG thumbnail of an already-presented page. False
+    /// means unsupported/refused and no completion; never loads or shows a page.
+    /// Accepted requests complete once, with nil on cancellation.
+    @discardableResult func captureThumbnail(completion: @escaping @MainActor (Data?) -> Void) -> Bool
     /// Ends commands and observations. The owning session releases the surface.
     func invalidate()
 }
 
 extension PageNavigation {
     public func setAudioMuted(_ muted: Bool) -> Bool { false }
+    public func captureThumbnail(completion: @escaping @MainActor (Data?) -> Void) -> Bool { false }
 }

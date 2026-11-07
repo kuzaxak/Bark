@@ -15,6 +15,13 @@ private enum Native {
     static var acceptsCommands = true
     static var acceptsObserver = true
     static var pageCommands: [(Int32, Int32, Int32)] = []
+    static var thumbnailCallback: ChromiumNavigationAPI.ThumbnailCallback?
+    static var thumbnailRequest: UInt64 = 0
+    static var thumbnailAccepts = true
+    static var siteDataCallback: ChromiumNavigationAPI.SiteDataCallback?
+    static var siteDataRequest: UInt64 = 0
+    static var siteDataActions: [Int32] = []
+    static var acceptsSiteData = true
     static var muteRequests: [(Int32, Int32, Int32)] = []
 
     static func reset() {
@@ -58,7 +65,14 @@ private enum Native {
             stop: { window, tab in MainActor.assumeIsolated { Native.command("stop", window, tab) } },
             select: { window, tab in MainActor.assumeIsolated { Native.command("select", window, tab) } },
             close: { window, tab in MainActor.assumeIsolated { Native.command("close", window, tab) } },
-            profileUUID: { _, buffer, capacity in
+            captureThumbnail: { _, request, callback in MainActor.assumeIsolated {
+                Native.thumbnailRequest = request; Native.thumbnailCallback = callback
+                return Native.thumbnailAccepts ? 1 : 0
+            } },
+            clearSiteData: { _, request, action, callback in MainActor.assumeIsolated {
+                Native.siteDataRequest = request; Native.siteDataActions.append(action)
+                Native.siteDataCallback = callback; return Native.acceptsSiteData ? 1 : 0
+            } }, profileUUID: { _, buffer, capacity in
                 MainActor.assumeIsolated {
                     let bytes = Array(Native.profile.uuidString.lowercased().utf8CString)
                     if let buffer, capacity >= bytes.count {
@@ -101,7 +115,7 @@ private enum NavigationChecks {
                      "Dispatch acceptance is not mute state")
         Native.emit(6, flags: 256 | 512)
         precondition(page!.state.isAudioMuted == true && page!.state.isAudible == true)
-        precondition(!page!.performNativePageCommand(.hardReload))
+        precondition(page!.performNativePageCommand(.hardReload) && Native.pageCommands.last?.2 == 8)
         var events: [PageNavigationEvent] = []
         page?.onEvent = { events.append($0) }
         Native.emit(6, window: 11, flags: 6)
@@ -214,6 +228,67 @@ private enum NavigationChecks {
 
         page = nil
 
+        Native.reset()
+        let thumbnailPage = try Native.page()
+        var thumbnailResults: [Data?] = []
+        precondition(thumbnailPage.captureThumbnail { thumbnailResults.append($0) })
+        precondition(!thumbnailPage.captureThumbnail { _ in preconditionFailure() })
+        let firstCapture = Native.thumbnailCallback, firstRequest = Native.thumbnailRequest
+        Native.emit(1)
+        precondition(thumbnailResults.count == 1 && thumbnailResults[0] == nil)
+        firstCapture?(Native.context, 41, firstRequest, nil, 0)
+        precondition(thumbnailResults.count == 1)
+        precondition(thumbnailPage.captureThumbnail { thumbnailResults.append($0) })
+        let secondRequest = Native.thumbnailRequest
+        let png = Data([137, 80, 78, 71])
+        png.withUnsafeBytes { bytes in
+            firstCapture?(Native.context, 41, firstRequest, bytes.bindMemory(to: UInt8.self).baseAddress, png.count)
+            precondition(thumbnailResults.count == 1)
+            Native.thumbnailCallback?(Native.context, 41, secondRequest, bytes.bindMemory(to: UInt8.self).baseAddress, png.count)
+        }
+        precondition(thumbnailResults.count == 2 && thumbnailResults[1] == png)
+        precondition(thumbnailPage.captureThumbnail { thumbnailResults.append($0) })
+        let transferCapture = Native.thumbnailCallback, transferRequest = Native.thumbnailRequest
+        Native.emit(0, window: 11)
+        precondition(thumbnailResults.count == 3 && thumbnailResults[2] == nil)
+        transferCapture?(Native.context, 41, transferRequest, nil, 0)
+        precondition(thumbnailResults.count == 3)
+        precondition(thumbnailPage.captureThumbnail { thumbnailResults.append($0) })
+        let stoppedCapture = Native.thumbnailCallback, stoppedRequest = Native.thumbnailRequest
+        let stoppedContext = Native.context
+        thumbnailPage.invalidate()
+        precondition(thumbnailResults.count == 4 && thumbnailResults[3] == nil)
+        stoppedCapture?(stoppedContext, 41, stoppedRequest, nil, 0)
+        precondition(thumbnailResults.count == 4)
+        let dataPage = try Native.page()
+        var dataResults: [ChromiumSiteDataOutcome] = []
+        precondition(dataPage.performNativePageCommand(.clearSiteCookies) { dataResults.append($0) })
+        precondition(Native.siteDataActions.last == 0 && dataResults.isEmpty)
+        precondition(!dataPage.performNativePageCommand(.clearSiteCache) { _ in preconditionFailure() })
+        Native.siteDataCallback?(Native.context, 41, Native.siteDataRequest, 0)
+        precondition(dataResults == [.completed])
+        precondition(dataPage.performNativePageCommand(.clearSiteCache) { dataResults.append($0) })
+        precondition(Native.siteDataActions.last == 1)
+        Native.siteDataCallback?(Native.context, 41, Native.siteDataRequest, 2)
+        precondition(dataResults == [.completed, .failed])
+        precondition(dataPage.performNativePageCommand(.clearCookiesAndReload) { dataResults.append($0) })
+        Native.emit(1, url: "https://fixture.test/superseding")
+        // Native document validation owns completion and conditional reload;
+        // Swift never reloads after a cookie callback itself.
+        Native.siteDataCallback?(Native.context, 41, Native.siteDataRequest, 1)
+        precondition(dataResults.last == .cancelled && Native.commands.isEmpty)
+        precondition(dataPage.performNativePageCommand(.clearSiteCookies) { dataResults.append($0) })
+        let transferred = Native.siteDataCallback, transferredRequest = Native.siteDataRequest
+        Native.emit(0, window: 11)
+        precondition(dataResults.count == 4 && dataResults.last == .cancelled)
+        transferred?(Native.context, 41, transferredRequest, 0)
+        precondition(dataResults.count == 4)
+        precondition(dataPage.performNativePageCommand(.clearSiteCache) { dataResults.append($0) })
+        let closing = Native.siteDataCallback, closingRequest = Native.siteDataRequest
+        let context = Native.context
+        dataPage.invalidate()
+        closing?(context, 41, closingRequest, 0)
+        precondition(dataResults.count == 5 && dataResults.last == .cancelled)
         print("Chromium navigation adapter: profile binding, transfer routing, lifecycle and cancellation passed")
     }
 }

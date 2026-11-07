@@ -93,7 +93,7 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 29 ordered patches and 14 copied
+procedure. The complete reviewed candidate has 30 ordered patches and 14 copied
 sources. Copies precede `lifecycle-close.patch`; the Swift overlay follows those
 copies. Do not recopy sources or reapply an overlay afterward. Start from the
 pinned unmodified source, not a partially patched checkout.
@@ -102,7 +102,7 @@ pinned unmodified source, not a partially patched checkout.
 set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown runtime-native-bootstrap native-shell-signing native-discovery private-entrypoints native-permission-owner
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown runtime-native-bootstrap native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing
         if test "$patch" = lifecycle-close
             for source in barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -280,6 +280,24 @@ flushes saved windows before native session/window teardown; a later veto resume
 model operations and window admission. This is distinct from the first quit
 attempt, which may still fail beforeunload/download consent. Source/fixture
 checks do not qualify real multiwindow quit cancellation until engine execution.
+
+### Native launch routing
+
+The matched framework requires `barc_set_runtime_browser_target_callback`.
+Positional inputs reach Chromium's StartupTabProviderImpl and existing startup
+navigation/validation, with no legacy AppDelegate. Early URLs stay in
+AppController's StartupTabs; one async resolution spans validation/profile load.
+Temporary opening requeues there until posted discovery/admission availability,
+without a second owner or URL replay. Shutdown clears borrowed callbacks and
+cancels pending delivery. New Window uses the exact live model owner or an
+existing regular model UUID; Dock reopen shows that admitted owner when present.
+
+This is ordinary native URL delivery, not complete external-link parity:
+Nook's mini-window destination and site-routing preferences are not wired here.
+Forced-incognito regular-profile launches fail closed before stock OTR creation;
+preserving that managed profile's policies in an independent private session is
+unfinished. Real LaunchServices/AppleEvent/key delivery and engine execution of
+the new browser cases remain unqualified by source/fixture checks.
 
 ### Installed signing proof
 
