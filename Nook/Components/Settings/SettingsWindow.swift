@@ -41,6 +41,7 @@ struct SettingsWindow: View {
         HStack(spacing: 0) {
             SettingsSidebar(selection: selection, query: $query)
             Divider()
+            if browserManager.engine == .webKit || tab == .spaces || tab == .profiles {
             SettingsDetailPane(
                 tab: tab,
                 path: Binding(get: { paths[tab] ?? [] }, set: { paths[tab] = $0 }),
@@ -56,6 +57,10 @@ struct SettingsWindow: View {
             // Rebuilds the pane per tab so each opens scrolled to the top.
             .id(tab)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                Text("These settings are unavailable in this build.")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
         .onChange(of: location) { old, _ in
             if restoring { restoring = false; return }
@@ -160,6 +165,7 @@ private struct SettingsSidebar: View {
                     ForEach(Array(SettingsTabs.sidebarGroups.enumerated()), id: \.offset) { _, group in
                         let tabs = group.tabs.filter { tab in
                             guard tab.matches(query) else { return false }
+                            if browserManager.engine == .chromium, tab != .spaces, tab != .profiles { return false }
                             return tab != .extensions || browserManager.extensionManager != nil
                         }
                         if !tabs.isEmpty {

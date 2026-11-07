@@ -13,6 +13,7 @@ import NookWeb
 import NookUI
 
 struct SpaceSwitcherTitle: View {
+    @EnvironmentObject private var browserManager: BrowserManager
     @Environment(TabsController.self) private var tabs
     @Environment(BrowserWindowState.self) private var windowState
     @Environment(\.nookSettings) private var nookSettings
@@ -95,9 +96,17 @@ struct SpaceSwitcherTitle: View {
         }
         Divider()
         Button("New Space…", systemImage: "plus", action: onNewSpace)
+        if tabs.profileEngine == .chromium {
+            Button("Profile Settings", systemImage: "person.crop.circle") {
+                browserManager.openSettings(tab: .profiles)
+            }
+        }
         Button("Space Settings", systemImage: "gearshape") {
-            SettingsNavigation.shared.currentSettingsTab = .spaces
-            openSettings()
+            if tabs.profileEngine == .chromium { browserManager.openSpaceSettings() }
+            else {
+                SettingsNavigation.shared.currentSettingsTab = .spaces
+                openSettings()
+            }
         }
     }
 }

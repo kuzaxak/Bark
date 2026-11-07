@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import NookSettings
 import NookWeb
 import SwiftUI
 
@@ -20,6 +21,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let navigationAPI: ChromiumNavigationAPI
     private let configuration: ChromiumStartupConfiguration
     private let pageHost: ChromiumNativePageHost
+    private let profilePages: ChromiumProfilePagePresenter
+    private var settingsWindow: NSWindow?
+    private var settingsCloseObserver: NSObjectProtocol?
     private var storage: ChromiumAppStorage?
     private var browserManager: BrowserManager?
     private let registry = WindowRegistry()
@@ -38,6 +42,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         self.configuration = configuration
         navigationAPI = try ChromiumNavigationAPI(library: handle)
         pageHost = try ChromiumNativePageHost(api: ChromiumPageHostAPI(library: handle), navigationAPI: navigationAPI)
+        profilePages = try ChromiumProfilePagePresenter(api: ChromiumProfilePageAPI(library: handle), navigationAPI: navigationAPI)
         func symbol<T>(_ name: String, _: T.Type) throws -> T {
             guard let pointer = dlsym(handle, name) else { throw LoaderError.missingSymbol(name) }
             return unsafeBitCast(pointer, to: T.self)
@@ -99,6 +104,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
             manager.tabs.nativePageHost = pageHost
+            manager.tabs.onOpenProfilePage = { [weak profilePages] profile, destination, canPresent, completion in
+                guard let profilePages else { completion(.failure(.presentationUnavailable)); return }
+                profilePages.open(profile, destination: destination, canPresent: canPresent, completion: completion)
+            }
+            manager.nativeOpenSettings = { [weak self] tab in self?.showSettings(tab) }
             modelWindow.sidebarWidth = manager.sidebarWidth
             modelWindow.sidebarContentWidth = max(manager.sidebarWidth - 16, 0)
             modelWindow.isSidebarVisible = true
@@ -158,6 +168,38 @@ final class ChromiumApplication: ChromiumStartupBridge {
         // Existing-client blank binding is synchronous. Refuse startup if model
         // admission did not produce a real engine page; never create WebKit.
         return manager.tabs.selectedSession(in: modelWindow)?.isUnloaded == false
+    }
+
+    private func showSettings(_ tab: SettingsTabs) {
+        guard tab == .spaces || tab == .profiles, let manager = browserManager, let storage else { return }
+        SettingsNavigation.shared.currentSettingsTab = tab
+        if let settingsWindow { settingsWindow.makeKeyAndOrderFront(nil); return }
+        let view = SettingsWindow()
+            .environmentObject(manager)
+            .environmentObject(manager.gradientColorManager)
+            .environment(manager.tabs)
+            .environment(storage.settings)
+            .environment(\.nookSettings, storage.settings)
+            .environment(\.tabActions, manager)
+            .defaultAppStorage(storage.defaults)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 540),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "Settings"
+        window.isReleasedWhenClosed = false
+        window.contentView = NSHostingView(rootView: view)
+        settingsWindow = window
+        settingsCloseObserver = NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification, object: window, queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.settingsWindow = nil
+                if let observer = self.settingsCloseObserver { NotificationCenter.default.removeObserver(observer) }
+                self.settingsCloseObserver = nil
+            }
+        }
+        window.center()
+        window.makeKeyAndOrderFront(nil)
     }
 
     enum LoaderError: Error { case missingSymbol(String), ownerEndedProtocolRequired }

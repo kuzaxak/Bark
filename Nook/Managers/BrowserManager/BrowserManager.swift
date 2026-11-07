@@ -401,6 +401,7 @@ class BrowserManager: ObservableObject {
     /// SwiftUI's action for the Settings scene, handed over by `WindowView`. The old
     /// `showSettingsWindow:` selector no longer opens a SwiftUI Settings scene.
     var openSettingsAction: OpenSettingsAction?
+    var nativeOpenSettings: ((SettingsTabs) -> Void)?
 
     var modelContext: ModelContext
     /// The tab model: tree, device state, window selection and live pages.
@@ -892,6 +893,7 @@ class BrowserManager: ObservableObject {
     }
 
     func openSettings(tab: SettingsTabs) {
+        if engine == .chromium { nativeOpenSettings?(tab); return }
         SettingsNavigation.shared.currentSettingsTab = tab
         openSettingsAction?.callAsFunction()
     }
