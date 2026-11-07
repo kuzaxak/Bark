@@ -11,6 +11,100 @@ import NookTweaks
 #if os(macOS)
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func nativeTransferReusesSessionAndRepairsOnlySourceSelection() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let page = fixture.host.finishCreate(0)
+        let item = try #require(fixture.window.selectedItemID)
+        let session = try #require(fixture.tabs.session(for: item))
+        let space = try #require(fixture.window.spaceID)
+        let otherSpace = try #require(fixture.tabs.createSpace(name: "Other", icon: "house", accentHex: "#123456",
+            after: nil, sharingLoginsWith: space))
+        let target = BrowserWindowState(); target.spaceID = otherSpace
+        fixture.registry.register(target)
+        fixture.tabs.attach(window: target, restoringSavedState: false)
+        let tree = fixture.tabs.tree, loads = page.loaded.count, selections = fixture.host.selectionCount
+        let admitted = fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: target, spaceID: space, select: false)
+        #expect(admitted == item && fixture.tabs.session(for: item) === session && session.navigation === page)
+        #expect(fixture.window.selectedItemID == nil && target.selectedItemID == nil && target.spaceID == otherSpace)
+        #expect(fixture.tabs.tree == tree && page.loaded.count == loads && !page.invalidated)
+        #expect(fixture.host.selectionCount == selections && fixture.host.closes.isEmpty && fixture.host.creates.count == 1)
+        #expect(fixture.tabs.miniPlayerPages(for: target).count == 1)
+        let device = fixture.tabs.device
+        #expect(fixture.tabs.adoptNativePage(page, through: fixture.host, in: target, spaceID: space, select: false) == item)
+        #expect(fixture.tabs.device == device)
+    }
+
+    @Test func sourceSelectionCallbackCannotPublishAnObsoleteTransfer() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let page = fixture.host.finishCreate(0)
+        let item = try #require(fixture.window.selectedItemID), space = try #require(fixture.window.spaceID)
+        let target = BrowserWindowState(), newer = BrowserWindowState()
+        for window in [target, newer] {
+            window.spaceID = space; fixture.registry.register(window)
+            fixture.tabs.attach(window: window, restoringSavedState: false)
+        }
+        fixture.host.nativeOwnerWindow = target.id
+        var nested: UUID?, observed = false
+        withObservationTracking { _ = fixture.window.selectedItemBySpace } onChange: {
+            MainActor.assumeIsolated {
+                guard !observed else { return }; observed = true
+                fixture.host.nativeOwnerWindow = newer.id
+                nested = fixture.tabs.adoptNativePage(page, through: fixture.host,
+                    in: newer, spaceID: space, select: false)
+            }
+        }
+        let obsolete = fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: target, spaceID: space, select: false)
+        #expect(observed && obsolete == nil && nested == item)
+        let session = try #require(fixture.tabs.session(for: item))
+        #expect(fixture.tabs.isNativePageOwner(session, in: newer))
+        #expect(!fixture.tabs.isNativePageOwner(session, in: target) && session.navigation === page)
+        #expect(fixture.host.closes.isEmpty && !page.invalidated)
+    }
+
+    @Test func sourceUnregisterDuringTransferDoesNotRecreateItsSavedRecord() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let page = fixture.host.finishCreate(0)
+        let item = try #require(fixture.window.selectedItemID), space = try #require(fixture.window.spaceID)
+        let target = BrowserWindowState(); target.spaceID = space
+        fixture.registry.register(target); fixture.tabs.attach(window: target, restoringSavedState: false)
+        fixture.registry.onWindowClose = { id in
+            if let source = fixture.registry.windows[id] { fixture.tabs.detach(window: source) }
+        }
+        var observed = false
+        withObservationTracking { _ = fixture.window.selectedItemBySpace } onChange: {
+            MainActor.assumeIsolated {
+                guard !observed else { return }; observed = true
+                fixture.registry.unregister(fixture.window.id)
+            }
+        }
+        let moved = fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: target, spaceID: space, select: false)
+        #expect(observed && moved == item && fixture.registry.windows[fixture.window.id] == nil)
+        #expect(!fixture.tabs.device.windows.contains { $0.id == fixture.window.id })
+        let session = try #require(fixture.tabs.session(for: item))
+        #expect(fixture.tabs.isNativePageOwner(session, in: target) && session.navigation === page)
+        #expect(!page.invalidated && fixture.host.closes.isEmpty)
+    }
+
+    @Test func pendingNativeCloseRefusesTransferWithoutDeletingItem() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let page = fixture.host.finishCreate(0)
+        let item = try #require(fixture.window.selectedItemID), space = try #require(fixture.window.spaceID)
+        let target = BrowserWindowState(); target.spaceID = space
+        fixture.registry.register(target); fixture.tabs.attach(window: target, restoringSavedState: false)
+        fixture.tabs.close(item)
+        #expect(fixture.tabs.adoptNativePage(page, through: fixture.host, in: target, spaceID: space, select: false) == nil)
+        #expect(fixture.tabs.tree.item(item) != nil && !page.invalidated)
+        fixture.host.finishClose(0, admitted: false)
+        #expect(fixture.tabs.adoptNativePage(page, through: fixture.host, in: target, spaceID: space, select: false) == item)
+    }
+
     @Test func engineCreatedWindowDoesNotClaimSavedRecordOrInventSelection() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -742,8 +836,9 @@ private final class ControlledNativeHost: NativePageHost {
     }
     private(set) var selectionCount = 0
     var admitsAdoption = true
+    var nativeOwnerWindow: UUID?
     func canAdoptPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool {
-        admitsAdoption && !(page as! NativeTestPage).invalidated
+        admitsAdoption && (nativeOwnerWindow == nil || nativeOwnerWindow == window.id) && !(page as! NativeTestPage).invalidated
     }
     func selectPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool {
         selectionCount += 1

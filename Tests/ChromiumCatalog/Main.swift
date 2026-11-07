@@ -20,6 +20,7 @@ import NookWeb
     static var context: UnsafeMutableRawPointer?
     static var revision: UInt64 = 1
     static var attachments = 0
+    static var membershipChecks = 0
     static var admitted: [Int32] = []
 
     static func window(_ id: Int32, group: UInt64, profile: UUID?, kind: UInt32 = 0,
@@ -72,11 +73,13 @@ import NookWeb
                 let rows = Native.tabs.filter { $0.window == window }
                 return rows.indices.contains(index) ? rows[index].tab : 0
             } }, tabTitle: { window, tab, _, _ in MainActor.assumeIsolated {
-                Native.tabs.contains { $0.window == window && $0.tab == tab } ? 1 : 0
+                Native.membershipChecks += 1
+                return Native.tabs.contains { $0.window == window && $0.tab == tab } ? 1 : 0
             } }, selectWindow: { _ in preconditionFailure("Discovery focused a window") },
             closeWindow: { _ in preconditionFailure("Discovery closed native contents") },
             attach: { window, view in MainActor.assumeIsolated {
-                Native.attachments += 1; Native.shells[window] = view; return 1
+                Native.attachments += 1; Native.shells[window] = view
+                return Native.onAttach?(window) ?? 1
             } }, shellIsOwned: { window, view in MainActor.assumeIsolated {
                 Native.windows[window] != nil && Native.shells[window] == view ? 1 : 0
             } }, detachIfOwned: { window, view in MainActor.assumeIsolated {
@@ -106,6 +109,16 @@ import NookWeb
                 }
                 return bytes.count
             } })
+    }
+    static var onAttach: ((Int32) -> Int32)?
+    static func move(_ tab: Int32, to window: Int32) {
+        tabs.removeAll { $0.tab == tab }; tabs.append(Self.tab(tab, window: window, flags: 2))
+        windows[window]?.active_tab = tab
+        let entries = observers.filter { $0.value.3 == tab }
+        for (token, entry) in entries {
+            observers[token] = (entry.0, entry.1, window, tab)
+            entry.0?(entry.1, token, 6, window, tab, nil, nil, 0, 0)
+        }
     }
     static func end(_ window: Int32) {
         for (token, value) in observers.filter({ $0.value.2 == window }) {
@@ -157,7 +170,7 @@ private struct NoTokens: KagiTokenStore {
 
         // Origin alone never blacklists future non-factory tabs in a window.
         Native.windows[10] = Native.window(10, group: 1, profile: Native.work, flags: 1 | 4 | 8 | 16, active: 101)
-        Native.tabs = [Native.tab(100, window: 10, flags: 2), Native.tab(101, window: 10)]
+        Native.tabs = [Native.tab(100, window: 10, flags: 2), Native.tab(101, window: 10), Native.tab(102, window: 10), Native.tab(103, window: 10)]
         Native.publish()
         precondition(shellCount == 1 && registry.windows.count == 1)
         let first = registry.allWindows.first!
@@ -166,7 +179,10 @@ private struct NoTokens: KagiTokenStore {
         precondition(Native.observers.values.allSatisfy { $0.3 != 100 })
         precondition(Native.admitted == [10] && registry.activeWindowId == first.id)
         let initialTree = tabs.tree, initialDevice = tabs.device, initialAttachments = Native.attachments
+        let membershipsBeforeUnchanged = Native.membershipChecks
         Native.publish()
+        precondition(Native.membershipChecks == membershipsBeforeUnchanged + 1,
+                     "Stable background tabs must not each validate native membership")
         precondition(tabs.tree == initialTree && tabs.device == initialDevice && Native.attachments == initialAttachments)
 
         // A selected page in a new inactive physical window does not focus it.
@@ -217,9 +233,55 @@ private struct NoTokens: KagiTokenStore {
         Native.publish()
         precondition(shellCount == 3 && registry.windows.count == 3)
 
+        // Native-origin cross-physical transfer preserves the exact modeled
+        // session, adapter and item, including a previously claimed factory tab.
+        let movedSession = selected
+        let movedPage = movedSession.navigation as! ChromiumPageNavigation
+        let movedItem = movedSession.itemID, savedTree = tabs.tree, observedCount = Native.observers.count
+        Native.move(101, to: 30)
+        Native.publish()
+        precondition(tabs.session(for: movedItem) === movedSession && movedSession.navigation === movedPage)
+        precondition(inactive.selectedItemID == movedItem && tabs.tree == savedTree)
+        precondition(Native.observers.count == observedCount && movedPage.nativeWindowID == 30)
+
+        // A last-tab source disappears while its live page enters a newly
+        // created physical group. Destination admission precedes source detach.
+        Native.windows[31] = Native.window(31, group: 31, profile: Native.work, flags: 4 | 16, active: 101)
+        Native.move(101, to: 31)
+        Native.end(30) // Only the remaining 300 resource ends, never the moved page.
+        Native.publish()
+        let destination = registry.allWindows.first { $0.selectedItemID == movedItem }!
+        precondition(registry.windows[inactive.id] == nil && destination !== inactive)
+        precondition(!tabs.device.windows.contains { $0.id == inactive.id })
+        precondition(tabs.session(for: movedItem) === movedSession && !movedPage.isClosed)
+        precondition(movedSession.navigation === movedPage && tabs.tree == savedTree)
+
+        // A header callback transfers again before the outer snapshot can
+        // publish. The next invalidation reconciles the actual owner, no focus,
+        // new observation, reload or rollback to the obsolete destination.
+        Native.windows[32] = Native.window(32, group: 32, profile: Native.work, flags: 4 | 16, active: 320)
+        Native.tabs.append(Native.tab(320, window: 32))
+        Native.windows[33] = Native.window(33, group: 33, profile: Native.work, flags: 4 | 16, active: 101)
+        Native.move(101, to: 33)
+        Native.end(31)
+        Native.onAttach = { owner in
+            guard owner == 33 else { return 1 }
+            Native.onAttach = nil
+            Native.move(101, to: 32)
+            Native.windows[33] = nil
+            return 0
+        }
+        Native.publish(); Native.publish()
+        let finalOwner = registry.allWindows.first { $0.selectedItemID == movedItem }!
+        precondition(finalOwner !== destination && movedPage.nativeWindowID == 32)
+        precondition(tabs.session(for: movedItem) === movedSession && movedSession.navigation === movedPage)
+        precondition(tabs.sessions.filter { $0.navigation === movedPage }.count == 1)
+        precondition(tabs.tree.item(movedItem) == savedTree.item(movedItem))
+
         // Losing an original logical client does not destroy its physical group.
+        let shellsBeforeLogicalEnd = shellCount
         Native.end(10); Native.publish()
-        precondition(registry.windows[first.id] === first && shellCount == 3)
+        precondition(registry.windows[first.id] === first && shellCount == shellsBeforeLogicalEnd)
         let savedItems = Set(tabs.tree.items.keys)
         Native.end(30); Native.publish()
         precondition(registry.windows[inactive.id] == nil && Set(tabs.tree.items.keys) == savedItems)
@@ -228,6 +290,45 @@ private struct NoTokens: KagiTokenStore {
         precondition(Native.callback == nil)
         for window in Array(Native.windows.keys) { Native.end(window) }
         tabs.saveNow()
+        try checkOnlySourceTransfer()
         print("Chromium catalog admission checks passed")
     }
+}
+
+/// Source was the sole product window: admission must register the destination
+/// before detach decides whether to retain the last saved window record.
+@MainActor private func checkOnlySourceTransfer() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcLastTransfer-\(UUID())")
+    let suite = "BarcLastTransfer-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    tabs.nativePageHost = host
+    registry.onWindowClose = { id in
+        if let window = registry.windows[id], tabs.device.windows.contains(where: { $0.id == id }) { tabs.detach(window: window) }
+    }
+    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    Native.windows[501] = Native.window(501, group: 501, profile: Native.work, active: 5010)
+    Native.tabs = [Native.tab(5010, window: 501)]
+    admission.apply(Native.discovery.readSnapshot()!)
+    let source = registry.allWindows.first!, session = tabs.selectedSession(in: registry.allWindows.first!)!
+    let page = session.navigation as! ChromiumPageNavigation, item = session.itemID
+    precondition(registry.windows.count == 1 && tabs.device.windows.contains { $0.id == source.id })
+    Native.windows[502] = Native.window(502, group: 502, profile: Native.work, active: 5010)
+    Native.move(5010, to: 502); Native.end(501)
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows.count == 1 && registry.windows[source.id] == nil)
+    precondition(tabs.device.windows.count == 1 && !tabs.device.windows.contains { $0.id == source.id })
+    precondition(tabs.selectedSession(in: registry.allWindows.first!) === session && session.navigation === page)
+    precondition(tabs.tree.item(item) != nil && !page.isClosed)
+    Native.end(502); tabs.saveNow()
 }

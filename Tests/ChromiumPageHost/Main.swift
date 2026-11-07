@@ -532,13 +532,32 @@ private func checkAuthoritativeGroups() throws {
     Native.profiles[123] = profile.id; Native.tabs[123] = [1230]; Native.groups[123] = 51
     move(to: 123)
     precondition(!host.canAdoptPage(page, in: window))
-    let beforeForeign = Native.selectionCalls, beforeClose = Native.nativeCloses.count
+    let beforeForeign = Native.selectionCalls
     precondition(!host.selectPage(page, in: window))
+    let destination = BrowserWindowState(), destinationShell = NSView()
+    precondition(host.registerWindow(destination, nativeOwner: 123, shell: destinationShell))
+    let rejectedMove = try host.bindExistingPage(nativeWindow: 123, tab: page.nativeTabID, profile: profile, in: destination).get()
+    precondition(rejectedMove.navigation === page)
+    rejectedMove.finish(adopted: false)
+    precondition(!host.canAdoptPage(page, in: destination))
+    let outerMove = try host.bindExistingPage(nativeWindow: 123, tab: page.nativeTabID, profile: profile, in: destination).get()
+    let nestedMove = try host.bindExistingPage(nativeWindow: 123, tab: page.nativeTabID, profile: profile, in: destination).get()
+    nestedMove.finish(adopted: true); outerMove.finish(adopted: false)
+    precondition(host.canAdoptPage(page, in: destination), "Rejected outer move reverted nested admission")
+    // Refusal after native close starts must not change ownership behind the
+    // pending terminal callback. Cancellation leaves the same adapter reusable.
+    host.closePage(page) { _ in }
+    if case .success = host.bindExistingPage(nativeWindow: 123, tab: page.nativeTabID, profile: profile, in: window) {
+        preconditionFailure("Pending close admitted a transfer")
+    }
+    Native.emit(8, page: page)
+    precondition(host.canAdoptPage(page, in: destination))
+    let beforeCleanupCloses = Native.nativeCloses.count
     Native.profiles[121] = nil; Native.tabs[121] = nil
     Native.profiles[122] = nil; Native.tabs[122] = nil
     precondition(host.unregisterWindow(window, absentFrom: Native.discovery.readSnapshot()!))
     precondition(!page.isClosed && Native.observations.values.contains { $0.3 == page.nativeTabID })
-    precondition(Native.selectionCalls == beforeForeign && Native.nativeCloses.count == beforeClose)
+    precondition(Native.selectionCalls == beforeForeign && Native.nativeCloses.count == beforeCleanupCloses)
     Native.emit(7, page: page, flags: 128)
     precondition(page.isClosed)
 }

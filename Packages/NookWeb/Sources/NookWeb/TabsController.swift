@@ -805,6 +805,13 @@ public final class TabsController {
         refreshWindows(showing: itemID)
     }
 
+    /// Pure model ownership for catalog reconciliation; unlike presentation
+    /// lookup this also identifies a background page without scanning sessions.
+    public func isNativePageOwner(_ session: PageSession, in window: BrowserWindowState) -> Bool {
+        profileEngine == .chromium && liveSessions[session.itemID] === session &&
+        pageOwners[session.itemID] == window.id && windowRegistry.windows[window.id] === window
+    }
+
     /// Brings forward the window holding the item's live page.
     public func showOwnerWindow(of itemID: UUID) {
         pageOwnerWindow(of: itemID)?.windowHandle?.bringToFront()
@@ -1022,8 +1029,42 @@ public final class TabsController {
         if let existing = liveSessions.values.first(where: { $0.navigation === page }) {
             guard !existing.nativeIsEnding, existing.nativeRelease == nil,
                   existing.profile?.id == page.profileID, tree.spaceID(of: existing.itemID) == spaceID else { return nil }
+            let source = pageOwners[existing.itemID].flatMap { windowRegistry.windows[$0] }
+            if !select, pageOwners[existing.itemID] == window.id { return existing.itemID }
+            if source !== window {
+                guard window.split == nil, source?.split == nil else { return nil }
+                cancelNativeSelection(for: existing)
+                if let source { existing.cancelNativePreparation(in: source) }
+                guard selectionIsCurrent(), isCurrent(), !existing.nativeIsEnding,
+                      existing.nativeRelease == nil, existing.navigation === page else { return nil }
+                let previousOwner = pageOwners[existing.itemID]
+                func transferIsCurrent() -> Bool {
+                    selectionIsCurrent() && isCurrent() && liveSessions[existing.itemID] === existing &&
+                    existing.navigation === page && !existing.nativeIsEnding && existing.nativeRelease == nil &&
+                    pageOwners[existing.itemID] == previousOwner
+                }
+                // Native transfer chose its replacement tab. Clear only this
+                // stale source selection; catalog reflection publishes the real
+                // replacement without selecting/focusing/loading a native page.
+                if let source {
+                    for (space, selected) in source.selectedItemBySpace where selected == existing.itemID {
+                        guard windowRegistry.windows[source.id] === source else { break }
+                        source.selectedItemBySpace[space] = nil
+                        guard transferIsCurrent() else { return nil }
+                    }
+                    if windowRegistry.windows[source.id] === source {
+                        mirror(source)
+                        guard transferIsCurrent() else { return nil }
+                    }
+                }
+            }
+            guard selectionIsCurrent(), isCurrent(), existing.navigation === page,
+                  !existing.nativeIsEnding, existing.nativeRelease == nil else { return nil }
             if generation != nil { window.nativeSelectionSession = existing }
             finishNativeAdoption(existing, in: window, opener: nil, parent: nil, select: select, generation: generation)
+            guard selectionIsCurrent(), isCurrent(), liveSessions[existing.itemID] === existing,
+                  existing.navigation === page, !existing.nativeIsEnding, existing.nativeRelease == nil,
+                  pageOwners[existing.itemID] == window.id else { return nil }
             return existing.itemID
         }
         let position = opener.flatMap {

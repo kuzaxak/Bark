@@ -39,12 +39,6 @@ final class ChromiumCreatedPageAdmission {
 
     func apply(_ snapshot: ChromiumDiscoverySnapshot) {
         let liveGroups = Set(snapshot.windows.map(\.physical_group))
-        // Logical owner closure does not destroy a surviving physical group's shell.
-        for (group, product) in products where !liveGroups.contains(group) {
-            guard host.unregisterWindow(product.state, absentFrom: snapshot) else { continue }
-            registry.unregister(product.state.id)
-            products.removeValue(forKey: group)
-        }
         let utilityGroups = Set(snapshot.windows.filter { isUtility($0.window) }.map(\.physical_group))
         let rows = Dictionary(uniqueKeysWithValues: snapshot.windows.map { ($0.window, $0) })
         let selectedRows = Dictionary(uniqueKeysWithValues: snapshot.windows.filter { $0.selected_client == $0.window }.map { ($0.physical_group, $0) })
@@ -53,7 +47,7 @@ final class ChromiumCreatedPageAdmission {
             return (page.nativeTabID, session)
         })
         let candidates = snapshot.tabs.filter { tab in
-            guard tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0,
+            guard tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0 || sessions[tab.tab] != nil,
                   let row = rows[tab.window] else { return false }
             return eligible(row) && !utilityGroups.contains(row.physical_group)
         }
@@ -78,6 +72,26 @@ final class ChromiumCreatedPageAdmission {
                 continue
             }
             products[row.physical_group] = ChromiumProductWindow(state: state, shell: shell)
+        }
+
+        // Existing live pages retain their model/session across native moves.
+        // An already admitted owner is a pure no-op in adoptNativePage.
+        for tab in candidates {
+            guard let session = sessions[tab.tab], let page = session.navigation as? ChromiumPageNavigation,
+                  page.nativeWindowID == tab.window, let row = rows[tab.window],
+                  let product = products[row.physical_group], let profile = session.profile,
+                  let space = tabs.spaceID(of: session.itemID),
+                  ChromiumDiscoveryAPI.profileID(row) == profile.id else { continue }
+            if tabs.isNativePageOwner(session, in: product.state) && host.isBoundPage(page, in: product.state) { continue }
+            let nativeAdmitted = host.canAdoptPage(page, in: product.state)
+            var binding: ChromiumExistingPageBinding?
+            if !nativeAdmitted {
+                guard case .success(let admission) = host.bindExistingPage(nativeWindow: tab.window,
+                    tab: tab.tab, profile: profile, in: product.state) else { continue }
+                binding = admission
+            }
+            let item = tabs.adoptNativePage(page, through: host, in: product.state, spaceID: space, select: false)
+            binding?.finish(adopted: item != nil)
         }
 
         // Resolve newly created opener chains in this single callback. Each
@@ -133,6 +147,14 @@ final class ChromiumCreatedPageAdmission {
             if verified.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
                 _ = api.admit(selected.window, Unmanaged.passUnretained(product.shell).toOpaque())
             }
+        }
+        // Admit any destination before retiring a last-tab source, so normal
+        // detach removes its record rather than preserving a phantom last window.
+        // Logical owner closure does not destroy a surviving physical group's shell.
+        for (group, product) in products where !liveGroups.contains(group) {
+            guard host.unregisterWindow(product.state, absentFrom: snapshot) else { continue }
+            registry.unregister(product.state.id)
+            products.removeValue(forKey: group)
         }
         // Re-read only live rows after admission/header callbacks. A selected
         // tab in a background or ShowInactive window is not physical activation.

@@ -104,7 +104,8 @@ final class ChromiumNativePageHost: NativePageHost {
         }
     }
     @MainActor private final class Binding {
-        let window: UUID
+        var window: UUID
+        var admissionGeneration: UInt64 = 0
         let page: ChromiumPageNavigation
         var owned: Bool
         var attempts = 0
@@ -273,11 +274,17 @@ final class ChromiumNativePageHost: NativePageHost {
             return .failure(HostError.existingPageRefused)
         }
         if let binding = pages.values.first(where: { $0.page.nativeTabID == tab }) {
-            guard binding.page.nativeWindowID == nativeWindow,
-                  canAdoptPage(binding.page, in: window) else {
+            guard binding.page.nativeWindowID == nativeWindow, !binding.page.isClosed,
+                  binding.page.profileID == profile.id, closing[ObjectIdentifier(binding.page)] == nil else {
                 return .failure(HostError.existingPageRefused)
             }
-            return .success(beginAdmission(binding))
+            let previous = binding.window
+            binding.window = window.id
+            guard canAdoptPage(binding.page, in: window) else {
+                binding.window = previous
+                return .failure(HostError.existingPageRefused)
+            }
+            return .success(beginAdmission(binding, previousWindow: previous == window.id ? nil : previous))
         }
         // That blank belongs to an app factory completion that has not claimed
         // it yet. Never steal its observer or make a second model page for it.
@@ -304,12 +311,26 @@ final class ChromiumNativePageHost: NativePageHost {
         }
     }
 
-    private func beginAdmission(_ binding: Binding) -> ChromiumExistingPageBinding {
+    private func beginAdmission(_ binding: Binding, previousWindow: UUID? = nil) -> ChromiumExistingPageBinding {
         binding.attempts += 1
+        binding.admissionGeneration &+= 1
+        let generation = binding.admissionGeneration
+        let nativeOwner = binding.page.nativeWindowID
+        let modelOwner = binding.window
         return ChromiumExistingPageBinding(navigation: binding.page) { [weak self, weak binding] adopted in
             guard let self, let binding, self.pages[ObjectIdentifier(binding.page)] === binding else { return }
             binding.attempts -= 1
             if adopted { binding.owned = true }
+            else if let previousWindow, binding.admissionGeneration == generation,
+                    !binding.page.isClosed, self.closing[ObjectIdentifier(binding.page)] == nil,
+                    binding.page.nativeWindowID == nativeOwner,
+                    let destination = self.mounts[modelOwner],
+                    let row = self.liveState(nativeOwner), row.physical_group == destination.group,
+                    let previousMount = self.mounts[previousWindow], previousMount.model != nil,
+                    let previousClient = previousMount.attachedClient,
+                    self.liveState(previousClient)?.physical_group == previousMount.group {
+                binding.window = previousWindow
+            }
             self.discardUnclaimed(binding)
         }
     }
@@ -320,6 +341,15 @@ final class ChromiumNativePageHost: NativePageHost {
               closing[id] == nil else { return }
         pages.removeValue(forKey: id)
         binding.page.invalidate()
+    }
+
+    /// Cheap reconciliation identity check only. It grants no native admission;
+    /// actual moves and rejected attempts still validate current C membership.
+    func isBoundPage(_ page: ChromiumPageNavigation, in window: BrowserWindowState) -> Bool {
+        guard !page.isClosed, let binding = pages[ObjectIdentifier(page)], binding.page === page,
+              binding.window == window.id, closing[ObjectIdentifier(page)] == nil,
+              let mount = mounts[window.id], mount.model === window, mount.shell != nil else { return false }
+        return true
     }
 
     /// Background admission uses the current native owner, never a client cache.
