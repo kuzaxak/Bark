@@ -54,6 +54,8 @@ const char* Destination(barc_profile_destination destination) {
       return "chrome://settings/content";
     case BARC_PROFILE_CLEAR_DATA:
       return "chrome://settings/clearBrowserData";
+    case BARC_PROFILE_BLANK:
+      return "about:blank";
   }
   return nullptr;
 }
@@ -83,10 +85,12 @@ struct OpenRequest {
         ui_runner(base::SingleThreadTaskRunner::GetCurrentDefault()) {}
   ~OpenRequest() {
     auto completion = std::exchange(callback, nullptr);
+    void* data = user_data.get();
+    user_data = nullptr;
     if (!completion)
       return;
     if (content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) {
-      completion(BARC_PROFILE_CANCELLED, 0, user_data);
+      completion(BARC_PROFILE_CANCELLED, 0, data);
     } else {
       ui_runner->PostTask(
           FROM_HERE, base::BindOnce(
@@ -95,17 +99,20 @@ struct OpenRequest {
                                    content::BrowserThread::UI))
                              callback(BARC_PROFILE_CANCELLED, 0, data);
                          },
-                         completion, user_data.get()));
+                         completion, data));
     }
   }
 
   void Complete(barc_profile_status status, int32_t window) {
     auto completion = std::exchange(callback, nullptr);
+    void* data = user_data.get();
+    user_data = nullptr;
     if (completion)
-      completion(status, window, user_data);
+      completion(status, window, data);
   }
 
   bool private_session = false;
+  bool show_after_creation = true;
   std::string uuid;
   const char* destination;
   barc_profile_window_callback callback;
@@ -236,7 +243,7 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
       request->native_owner &&
       current_selection.get() != selection_before.get() &&
       current_selection.get() != window_alive.get();
-  if (!nested_selection_wins) {
+  if (request->show_after_creation && !nested_selection_wins) {
     window_alive->GetWindow()->Show();
   }
   if (!valid_context() || !contents_alive ||
@@ -298,6 +305,7 @@ void barc_profile_open_window(const char* profile_uuid,
   auto request = std::make_unique<OpenRequest>(
       CanonicalUUID(profile_uuid ? profile_uuid : ""), Destination(destination),
       callback, user_data);
+  request->show_after_creation = destination != BARC_PROFILE_BLANK;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&BeginOpen, std::move(request)));
 }
@@ -321,6 +329,7 @@ void barc_profile_open_in_native_window(int32_t native_owner,
       callback, user_data,
       std::optional(owner ? owner->GetWeakPtr()
                           : base::WeakPtr<BrowserWindowInterface>()));
+  request->show_after_creation = destination != BARC_PROFILE_BLANK;
   // Validate again after asynchronous profile readiness; only the native weak
   // identity is retained across that boundary, never an unchecked host pointer.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(

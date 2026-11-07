@@ -174,7 +174,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, InvalidUUIDNeverFallsBack) {
     EXPECT_EQ(0, result.Get<1>());
   }
   Result destination;
-  barc_profile_open_window(kWork, static_cast<barc_profile_destination>(5),
+  barc_profile_open_window(kWork, static_cast<barc_profile_destination>(-1),
                            Completed, &destination);
   EXPECT_EQ(BARC_PROFILE_INVALID_ARGUMENT, destination.Get<0>());
   EXPECT_EQ(0, destination.Get<1>());

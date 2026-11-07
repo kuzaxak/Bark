@@ -27,7 +27,10 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+#include "ui/views/view_tracker.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
@@ -44,6 +47,7 @@
 namespace {
 // UI-thread-only; the storage outlives all reentrant observer callouts.
 int navigation_callback_depth = 0;
+bool attaching_native_shell = false;
 BrowserWindowInterface* Window(int32_t id) {
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
       id <= 0)
@@ -73,6 +77,7 @@ Observations& ObservationTable() {
   return *table;
 }
 class TabObservation : public content::WebContentsObserver,
+                       public TabStripModelObserver,
                        public std::enable_shared_from_this<TabObservation> {
  public:
   TabObservation(uint64_t token, tabs::TabInterface* tab,
@@ -85,7 +90,9 @@ class TabObservation : public content::WebContentsObserver,
         &TabObservation::Inserted, base::Unretained(this)));
     discard_ = tab->RegisterWillDiscardContents(base::BindRepeating(
         &TabObservation::Discard, base::Unretained(this)));
+    BindOwner();
   }
+  ~TabObservation() override { UnbindOwner(); }
   int32_t tab_id() const { return tab_.raw_value(); }
   bool active() const { return active_; }
   bool closing() const { return closing_; }
@@ -94,6 +101,7 @@ class TabObservation : public content::WebContentsObserver,
     callback_ = nullptr;
     context_ = nullptr;
     Observe(nullptr);
+    UnbindOwner();
     detach_ = {};
     insert_ = {};
     discard_ = {};
@@ -204,12 +212,67 @@ class TabObservation : public content::WebContentsObserver,
   }
   void TitleWasSet(content::NavigationEntry*) override { Emit(BARC_TAB_TITLE); }
   void WebContentsDestroyed() override { Close(); }
+  void BeforeUnloadFired(bool proceed) override {
+    if (proceed)
+      return;
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    auto* controller = owner ? UnloadController::From(owner) : nullptr;
+    // WebContents notifies before its delegate resets the window-close state.
+    // Window/group refusal comes from the terminal window notification instead.
+    if (!controller || !controller->is_attempting_to_close_browser())
+      Emit(BARC_TAB_CLOSE_CANCELLED);
+  }
+  void OnTabCloseCancelled(const tabs::TabInterface* tab) override {
+    if (tab->GetHandle() == tab_)
+      Emit(BARC_TAB_CLOSE_CANCELLED);
+  }
+  void OnTabStripModelDestroyed(TabStripModel* strip) override {
+    if (strip_ == strip) {
+      strip_ = nullptr;
+      window_cancelled_ = {};
+    }
+  }
  private:
+  void UnbindOwner() {
+    window_cancelled_ = {};
+    if (strip_)
+      strip_->RemoveObserver(this);
+    strip_ = nullptr;
+  }
+  void BindOwner() {
+    UnbindOwner();
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    if (!owner)
+      return;
+    strip_ = owner->GetTabStripModel();
+    strip_->AddObserver(this);
+    window_cancelled_ = owner->RegisterBrowserCloseCancelled(base::BindRepeating(
+        &TabObservation::WindowCloseCancelled, base::Unretained(this)));
+  }
+  void WindowCloseCancelled(BrowserWindowInterface* owner,
+                            BrowserWindowInterface::ClosingStatus status) {
+    if (status != BrowserWindowInterface::ClosingStatus::kDeniedByUser &&
+        status != BrowserWindowInterface::ClosingStatus::kDeniedByPolicy)
+      return;
+    auto* tab = tab_.Get();
+    auto* controller = UnloadController::From(owner);
+    if (!tab || tab->GetBrowserWindowInterface() != owner || !controller ||
+        controller->IsWaitingForDownloadCloseConfirmation())
+      return;
+    Emit(BARC_TAB_CLOSE_CANCELLED);
+  }
   void Detach(tabs::TabInterface*, tabs::TabInterface::DetachReason reason) {
     if (reason == tabs::TabInterface::DetachReason::kDelete)
       Close();
+    else
+      UnbindOwner();
   }
-  void Inserted(tabs::TabInterface*) { Emit(BARC_TAB_STATE); }
+  void Inserted(tabs::TabInterface*) {
+    BindOwner();
+    Emit(BARC_TAB_STATE);
+  }
   void Discard(tabs::TabInterface*, content::WebContents*,
                content::WebContents* replacement) {
     navigation_ = 0;
@@ -236,7 +299,9 @@ class TabObservation : public content::WebContentsObserver,
       base::AutoReset<int> callback_scope(&navigation_callback_depth,
                                           navigation_callback_depth + 1);
       callback(context, token_, BARC_TAB_CLOSED,
-               owner ? owner->GetSessionID().id() : 0, tab_id(), "", "", 0, 0);
+               owner ? owner->GetSessionID().id() : 0, tab_id(), "", "", 0,
+               owner && UnloadController::From(owner)->owner_close_admitted()
+                   ? BARC_TAB_OWNER_ENDED : 0);
     }
     ObservationTable().erase(token_);
     Cancel();
@@ -250,6 +315,8 @@ class TabObservation : public content::WebContentsObserver,
   int64_t navigation_ = 0;
   bool committed_ = false;
   uint32_t navigation_flags_ = 0;
+  raw_ptr<TabStripModel> strip_ = nullptr;
+  base::CallbackListSubscription window_cancelled_;
   base::CallbackListSubscription detach_, insert_, discard_;
 };
 }  // namespace
@@ -310,7 +377,7 @@ int barc_tab_stop(int32_t window, int32_t tab_id) {
   return 1;
 }
 uint32_t barc_bridge_version() {
-  return 1;
+  return 2;
 }
 const char* barc_chromium_version() {
   return version_info::GetVersionNumber().data();
@@ -513,30 +580,71 @@ size_t barc_tab_copy_title(int32_t id,
   }
   return title.size() + 1;
 }
+int barc_window_show(int32_t id) {
+  if (!barc_window_select(id))
+    return 0;
+  auto* window = Window(id);
+  if (!window || !window->IsSelectedForNativeWindow())
+    return 0;
+  auto alive = window->GetWeakPtr();
+  window->GetWindow()->Show();
+  return alive && Window(id) == alive.get() &&
+         alive->IsSelectedForNativeWindow();
+}
 int barc_window_attach_native_shell(int32_t id, void* native_view) {
   auto* window = Window(id);
-  if (!window)
-    return 0;
-  auto* browser_view = BrowserView::GetBrowserViewForBrowser(window);
+  auto* browser_view = window ? BrowserView::GetBrowserViewForBrowser(window)
+                              : nullptr;
   auto* host = browser_view ? browser_view->barc_native_shell() : nullptr;
-  if (!host)
+  if (!host || attaching_native_shell)
     return 0;
-  if (!native_view) {
-    host->Detach();
-    host->SetVisible(false);
-    browser_view->InvalidateLayout();
-    return 1;
-  }
   NSView* view = (__bridge NSView*)native_view;
-  if (view.window &&
-      view.window !=
+  if (view.window && view.window !=
           browser_view->GetWidget()->GetNativeWindow().GetNativeNSWindow())
     return 0;
+  auto owner = window->GetWeakPtr();
+  auto browser = browser_view->GetAsWeakPtr();
+  auto* selected_view = browser_view->browser_widget()->selected_browser_view();
+  if (!selected_view)
+    return 0;
+  auto selected = selected_view->GetAsWeakPtr();
+  views::ViewTracker host_alive(host);
+  const auto intact = [&] {
+    return owner && Window(id) == owner.get() && browser && host_alive.view() &&
+           BrowserView::GetBrowserViewForBrowser(owner.get()) == browser.get() &&
+           browser->barc_native_shell() == host_alive.view() && selected &&
+           browser->browser_widget()->selected_browser_view() == selected.get();
+  };
+  // Stack-owned guards survive synchronous native teardown. C close requests
+  // are non-nestable deferred; native NSWindow.close is guarded inside Views.
+  base::AutoReset<bool> attach_scope(&attaching_native_shell, true);
+  base::AutoReset<int> callback_scope(&navigation_callback_depth,
+                                      navigation_callback_depth + 1);
   host->Detach();
-  host->Attach(gfx::NativeView(view));
-  host->SetVisible(true);
-  browser_view->InvalidateLayout();
-  return 1;
+  if (!intact())
+    return 0;
+  if (view) {
+    host->Attach(gfx::NativeView(view));
+    if (!intact() || host->native_view().GetNativeNSView() != view)
+      return 0;
+  }
+  host->SetVisible(view != nil);
+  if (!intact())
+    return 0;
+  browser->InvalidateLayout();
+  return intact();
+}
+
+int barc_window_native_shell_is_owned(int32_t id, void* expected_view) {
+  auto* window = Window(id);
+  auto* browser = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
+  auto* host = browser ? browser->barc_native_shell() : nullptr;
+  return host &&
+         host->native_view().GetNativeNSView() == (__bridge NSView*)expected_view;
+}
+int barc_window_detach_native_shell_if_owned(int32_t id, void* expected_view) {
+  return expected_view && barc_window_native_shell_is_owned(id, expected_view)
+             ? barc_window_attach_native_shell(id, nullptr) : 0;
 }
 
 @class BarcNativeShell;
@@ -684,11 +792,17 @@ int NativeShellWidth(const BrowserView* browser_view) {
   return shell && shell->GetVisible() ? kNativeShellWidth : 0;
 }
 views::NativeViewHost* CreateNativeShell(BrowserView* browser_view) {
-  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("barc-native-shell") ||
+  const bool registered = IsNativeApplicationRegistered();
+  if ((!registered &&
+       !base::CommandLine::ForCurrentProcess()->HasSwitch("barc-native-shell")) ||
       browser_view->browser()->GetType() != BrowserWindowInterface::TYPE_NORMAL)
     return nullptr;
   auto* host =
       browser_view->AddChildView(std::make_unique<views::NativeViewHost>());
+  if (registered) {
+    host->SetVisible(false);
+    return host;
+  }
   BarcNativeShell* shell =
       [[BarcNativeShell alloc] initWithBrowser:browser_view->browser()];
   host->Attach(gfx::NativeView(shell));

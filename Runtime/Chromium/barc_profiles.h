@@ -15,6 +15,7 @@ typedef enum {
   BARC_PROFILE_PRIVACY = 2,
   BARC_PROFILE_SITE_SETTINGS = 3,
   BARC_PROFILE_CLEAR_DATA = 4,
+  BARC_PROFILE_BLANK = 5,
 } barc_profile_destination;
 
 typedef enum {
@@ -34,6 +35,8 @@ typedef void (*barc_profile_window_callback)(barc_profile_status status,
 // its app model). Nil UUID is rejected. No display name or path is accepted.
 // Creates a normal Chromium window in that profile; never uses the active or
 // default profile. Window is a process-local SessionID, 0 on failure.
+// BLANK constructs an inactive about:blank owner without Show; the caller
+// admits its model/native attachment before selecting/presenting it.
 // Completion is queued on UI and occurs once while the browser UI loop remains
 // operational. Cancellation during shutdown is best effort: no callback is
 // delivered on another thread, but once UI stops accepting tasks delivery is

@@ -11,22 +11,27 @@ diff --git a/chrome/browser/ui/views/frame/barc_bridge.mm b/chrome/browser/ui/vi
  
  #include <algorithm>
  #include <array>
-@@ -346,13 +349,26 @@
-   return shell && shell->GetVisible() ? kNativeShellWidth : 0;
+@@ -793,8 +796,14 @@
  }
  views::NativeViewHost* CreateNativeShell(BrowserView* browser_view) {
--  if (!base::CommandLine::ForCurrentProcess()->HasSwitch("barc-native-shell") ||
+   const bool registered = IsNativeApplicationRegistered();
+-  if ((!registered &&
+-       !base::CommandLine::ForCurrentProcess()->HasSwitch("barc-native-shell")) ||
 +  auto* command_line = base::CommandLine::ForCurrentProcess();
 +#if defined(BARC_ENABLE_SWIFTUI_SMOKE)
 +  const bool swiftui_smoke = command_line->HasSwitch("barc-swiftui-smoke");
 +#else
 +  const bool swiftui_smoke = false;
 +#endif
-+  if ((!swiftui_smoke && !command_line->HasSwitch("barc-native-shell")) ||
++  if ((!registered && !swiftui_smoke &&
++       !command_line->HasSwitch("barc-native-shell")) ||
        browser_view->browser()->GetType() != BrowserWindowInterface::TYPE_NORMAL)
      return nullptr;
    auto* host =
-       browser_view->AddChildView(std::make_unique<views::NativeViewHost>());
+@@ -803,8 +812,15 @@
+     host->SetVisible(false);
+     return host;
+   }
 -  BarcNativeShell* shell =
 -      [[BarcNativeShell alloc] initWithBrowser:browser_view->browser()];
 +  NSView* shell;

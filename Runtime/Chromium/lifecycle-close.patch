@@ -1,0 +1,210 @@
+--- a/chrome/browser/ui/unload_controller.h
++++ b/chrome/browser/ui/unload_controller.h
+@@ -138,6 +138,8 @@
+ 
+   // Called when the window closing process has been cancelled.
+   void NotifyWindowCloseCancelled(BrowserWindowInterface::ClosingStatus status);
++  // Pending download confirmation is not an actual user refusal.
++  bool IsWaitingForDownloadCloseConfirmation() const;
+ 
+   // Called when the window closing process has been completed and the window
+   // can be safely destroyed.
+--- a/chrome/browser/ui/unload_controller.cc
++++ b/chrome/browser/ui/unload_controller.cc
+@@ -639,6 +639,7 @@
+     DevToolsWindow::OnPageCloseCanceled(it);
+   }
+   tabs_needing_unload_fired_.clear();
++  auto alive = GetWeakPtr();
+   const State previous_state = state_;
+   const bool notify_application_shutdown =
+       before_unload_purpose_ != BeforeUnloadPurpose::kNativeWindowGroup;
+@@ -654,8 +655,18 @@
+     CHECK(on_close_confirmed.is_null());
+   }
+ 
++  if (!alive) {
++    return;
++  }
+   if (notify_application_shutdown) {
+     chrome::OnClosingAllBrowsers(false);
++    if (!alive) {
++      return;
++    }
++    // Group cancellation is broadcast only after all member ownership/state
++    // has reset. Ordinary window cancellation is terminal here.
++    NotifyWindowCloseCancelled(
++        BrowserWindowInterface::ClosingStatus::kDeniedByUser);
+   }
+ }
+ 
+@@ -1171,8 +1182,12 @@
+   // kUnloadCompleted when the downloads tab below is added; otherwise tab
+   // strip observers may skip this browser because it is still attempting to
+   // close.
++  auto alive = GetWeakPtr();
+   std::move(warn_before_closing_callback_)
+       .Run(WarnBeforeClosingResult::kDoNotClose);
++  if (!alive) {
++    return;
++  }
+ 
+   // Show the download page so the user can figure-out what downloads are still
+   // in-progress.
+@@ -1189,6 +1204,11 @@
+       // don't prompt every time any tab is closed. http://crbug.com/40336263
+       CancelWindowClose();
+   }
++}
++
++bool UnloadController::IsWaitingForDownloadCloseConfirmation() const {
++  return cancel_download_confirmation_state_ ==
++         CancelDownloadConfirmationState::kWaitingForResponse;
+ }
+ 
+ void UnloadController::NotifyWindowCloseCancelled(
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -8,6 +8,7 @@
+ #include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
++#include "base/scoped_observation.h"
+ #include "build/build_config.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
+ #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+@@ -15,6 +16,7 @@
+ #include "ui/base/pointer/touch_ui_controller.h"
+ #include "ui/views/context_menu_controller.h"
+ #include "ui/views/widget/widget.h"
++#include "ui/views/widget/widget_observer.h"
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ #include <optional>
+@@ -59,6 +61,7 @@
+ 
+ // This is a virtual interface that allows system specific browser widgets.
+ class BrowserWidget : public views::Widget,
++                      public views::WidgetObserver,
+                       public views::ContextMenuController {
+  public:
+   explicit BrowserWidget(BrowserView* browser_view);
+@@ -195,6 +198,9 @@
+   bool RefreshSelectedLogicalBrowserView();
+   void ContinuePhysicalClose();
+   void OnPhysicalWarning(size_t index, bool proceed);
++  void ResumeAfterPhysicalWarningDismissed();
++  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
++  void OnWidgetDestroying(views::Widget* widget) override;
+   void OnPhysicalBeforeUnload(size_t index, bool proceed);
+   bool ValidatePhysicalCloseParticipants() const;
+   void CancelPhysicalClose();
+@@ -205,6 +211,8 @@
+       physical_close_participants_;
+   size_t physical_close_index_ = 0;
+   bool physical_close_waiting_ = false;
++  base::ScopedObservation<views::Widget, views::WidgetObserver>
++      physical_warning_observation_{this};
+ 
+   raw_ptr<BrowserNativeWidget> browser_native_widget_;
+ 
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -125,6 +125,7 @@
+ 
+ BrowserWidget::~BrowserWidget() {
+   closing_all_browsers_subscription_ = {};
++  physical_warning_observation_.Reset();
+   physical_close_weak_factory_.InvalidateWeakPtrs();
+   set_widget_closed();
+ 
+@@ -422,6 +423,7 @@
+ }
+ 
+ void BrowserWidget::CancelPhysicalClose() {
++  physical_warning_observation_.Reset();
+   physical_close_weak_factory_.InvalidateWeakPtrs();
+   auto cancellation = physical_close_weak_factory_.GetWeakPtr();
+   const auto participants = physical_close_participants_;
+@@ -437,6 +439,17 @@
+   physical_close_index_ = 0;
+   physical_close_waiting_ = false;
+   physical_close_phase_ = PhysicalClosePhase::kIdle;
++  // Every participant now permits a callback-driven retry. No member group
++  // state is written after notifying consumers, which can close this host.
++  for (const auto& browser : participants) {
++    if (browser && !browser->IsDeleteScheduled()) {
++      UnloadController::From(browser.get())->NotifyWindowCloseCancelled(
++          BrowserWindowInterface::ClosingStatus::kDeniedByUser);
++      if (!cancellation) {
++        return;
++      }
++    }
++  }
+ }
+ 
+ void BrowserWidget::ContinuePhysicalClose() {
+@@ -577,14 +590,51 @@
+       !physical_close_waiting_ || physical_close_index_ != index + 1) {
+     return;
+   }
+-  physical_close_waiting_ = false;
+   if (!proceed || !ValidatePhysicalCloseParticipants()) {
+     CancelPhysicalClose();
+     return;
+   }
+-  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++  auto* view = BrowserView::GetBrowserViewForBrowser(
++      physical_close_participants_[index].get());
++  auto warning = view->pending_download_warning_;
++  if (warning && warning->IsVisible()) {
++    // Accept runs before the modal actually hides. Advancing now can require a
++    // profile switch while its native prompt still owns the responder/anchor.
++    physical_warning_observation_.Observe(warning.get());
++    return;
++  }
++  ResumeAfterPhysicalWarningDismissed();
++}
++
++void BrowserWidget::ResumeAfterPhysicalWarningDismissed() {
++  physical_warning_observation_.Reset();
++  if (physical_close_phase_ != PhysicalClosePhase::kWarnings ||
++      !physical_close_waiting_) {
++    return;
++  }
++  if (!ValidatePhysicalCloseParticipants()) {
++    CancelPhysicalClose();
++    return;
++  }
++  physical_close_waiting_ = false;
++  // Do not resume from a nested native-modal teardown callback. Group cancel
++  // or host destruction invalidates this existing generation-bound weak task.
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
+       FROM_HERE, base::BindOnce(&BrowserWidget::ContinuePhysicalClose,
+                                 physical_close_weak_factory_.GetWeakPtr()));
++}
++
++void BrowserWidget::OnWidgetVisibilityChanged(views::Widget* widget,
++                                              bool visible) {
++  if (!visible && physical_warning_observation_.IsObservingSource(widget)) {
++    ResumeAfterPhysicalWarningDismissed();
++  }
++}
++
++void BrowserWidget::OnWidgetDestroying(views::Widget* widget) {
++  if (physical_warning_observation_.IsObservingSource(widget)) {
++    ResumeAfterPhysicalWarningDismissed();
++  }
+ }
+ 
+ void BrowserWidget::OnPhysicalBeforeUnload(size_t index, bool proceed) {
+--- a/chrome/browser/ui/views/frame/BUILD.gn
++++ b/chrome/browser/ui/views/frame/BUILD.gn
+@@ -2744,6 +2744,7 @@
+     "//build:buildflag_header_h",
+     "//chrome/app:command_ids",
+     "//chrome/browser/app_mode",
++    "//chrome/browser/lifetime",
+     "//chrome/browser/profiles:profile",
+     "//chrome/browser/themes",
+     "//chrome/browser/ui:browser_init_state",

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <memory>
+#include <sstream>
 #include <string>
 #include <vector>
 
@@ -38,6 +39,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/app_menu_button.h"
+#include "chrome/browser/ui/views/download/download_in_progress_dialog_view.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/frame/tab_strip_region_view.h"
@@ -71,7 +73,34 @@
 #include "ui/base/window_open_disposition.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/view_observer.h"
+#include "ui/views/controls/native/native_view_host.h"
+#include "ui/views/view_utils.h"
+#include "ui/views/window/dialog_delegate.h"
+#include "ui/views/widget/widget_observer.h"
 #include "url/gurl.h"
+
+@interface BarcReentrantNativeView : NSView
+@property(copy) void (^onMove)(NSView*);
+@property(copy) void (^onVisibility)(NSView*);
+@end
+@implementation BarcReentrantNativeView
+@synthesize onMove = _onMove;
+@synthesize onVisibility = _onVisibility;
+- (void)setHidden:(BOOL)hidden {
+  [super setHidden:hidden];
+  auto callback = self.onVisibility;
+  self.onVisibility = nil;
+  if (callback)
+    callback(self);
+}
+- (void)viewDidMoveToWindow {
+  [super viewDidMoveToWindow];
+  auto callback = self.onMove;
+  self.onMove = nil;
+  if (callback)
+    callback(self);
+}
+@end
 
 namespace {
 struct NavigationEvent {
@@ -110,15 +139,26 @@ class NavigationEvents {
       EXPECT_EQ(1, self->close_window_started ? barc_window_close(window)
                                             : barc_tab_close(window, tab));
     }
+    if (kind == BARC_TAB_CLOSE_CANCELLED) {
+      if (self->retry_cancelled) {
+        self->retry_cancelled = false;
+        EXPECT_EQ(1, barc_tab_close(window, tab));
+      } else if (self->unsubscribe_cancelled) {
+        barc_tab_unobserve(observation);
+      }
+    }
     if (kind == BARC_TAB_CLOSED) {
       barc_tab_unobserve(observation);
       EXPECT_EQ(0u, barc_tab_observe(window, tab, Receive, context));
+      if (self->on_closed)
+        std::move(self->on_closed).Run();
     }
   }
   size_t Count(int32_t kind) const {
     return std::count_if(events.begin(), events.end(),
                         [kind](const auto& e) { return e.kind == kind; });
   }
+  base::OnceClosure on_closed;
   uint64_t token = 0;
   raw_ptr<std::unique_ptr<NavigationEvents>> release_owner = nullptr;
   bool unsubscribe_initial = false;
@@ -127,7 +167,30 @@ class NavigationEvents {
   bool unsubscribe_before_close = false;
   int32_t transfer_destination = 0;
   bool transfer_refused = false;
+  bool retry_cancelled = false;
+  bool unsubscribe_cancelled = false;
   std::vector<NavigationEvent> events;
+};
+
+// Preempt only after acceptance has started dismissing this exact warning.
+class PreemptOnDownloadWarningDismissal : public views::WidgetObserver {
+ public:
+  PreemptOnDownloadWarningDismissal(views::Widget* warning,
+                                    base::OnceClosure preempt)
+      : preempt_(std::move(preempt)) {
+    observation_.Observe(warning);
+  }
+  void OnWidgetVisibilityChanged(views::Widget*, bool visible) override {
+    if (!visible) Preempt();
+  }
+  void OnWidgetDestroying(views::Widget*) override { Preempt(); }
+ private:
+  void Preempt() {
+    observation_.Reset();
+    if (preempt_) std::move(preempt_).Run();
+  }
+  base::OnceClosure preempt_;
+  base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{this};
 };
 
 class ViewOwnerDeletionObserver : public views::ViewObserver {
@@ -211,6 +274,106 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NativeShellRetainedUntilDetach) {
   EXPECT_EQ(1, barc_window_close(empty_peer));
   peer_closed.Wait();
   EXPECT_EQ(0, barc_window_close(empty_peer));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NativeAttachReentrantCallbacks) {
+  const int32_t primary = browser()->GetSessionID().id();
+  auto* primary_view = BrowserView::GetBrowserViewForBrowser(browser());
+  auto* popup = CreateBrowserWindow(BrowserWindowCreateParams(
+      BrowserWindowInterface::TYPE_POPUP, browser()->GetProfile(), true));
+  ASSERT_TRUE(popup);
+  const int32_t popup_id = popup->GetSessionID().id();
+  ASSERT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(popup)->barc_native_shell());
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(popup_id, nullptr));
+  ui_test_utils::BrowserDestroyedObserver popup_closed(popup);
+  ASSERT_EQ(1, barc_window_close(popup_id));
+  popup_closed.Wait();
+  BarcReentrantNativeView* shell = [[BarcReentrantNativeView alloc] init];
+  NSView* nested = [[NSView alloc] init];
+  shell.onMove = ^(NSView*) {
+    EXPECT_EQ(0, barc_window_attach_native_shell(primary, (__bridge void*)nested));
+    EXPECT_EQ(1, barc_window_select(primary));
+  };
+  ASSERT_EQ(1, barc_window_attach_native_shell(primary, (__bridge void*)shell));
+  EXPECT_EQ(shell, primary_view->barc_native_shell()->native_view().GetNativeNSView());
+  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, (__bridge void*)shell));
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, (__bridge void*)nested));
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, nullptr));
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(-1, (__bridge void*)shell));
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(-1, nullptr));
+  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)nested));
+  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, nullptr));
+  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(-1, (__bridge void*)shell));
+  EXPECT_EQ(shell, primary_view->barc_native_shell()->native_view().GetNativeNSView());
+  EXPECT_EQ(1, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)shell));
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, (__bridge void*)shell));
+  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, nullptr));
+  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, nullptr));
+  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, nullptr));
+  EXPECT_EQ(1, barc_window_attach_native_shell(primary, (__bridge void*)nested));
+  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, (__bridge void*)shell));
+  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, (__bridge void*)nested));
+  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)shell));
+  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, (__bridge void*)nested));
+  EXPECT_EQ(1, barc_window_attach_native_shell(primary, (__bridge void*)shell));
+  shell.onMove = ^(NSView*) {
+    EXPECT_EQ(0, barc_window_attach_native_shell(primary, (__bridge void*)nested));
+  };
+  ASSERT_EQ(1, barc_window_attach_native_shell(primary, nullptr));
+  EXPECT_FALSE(primary_view->barc_native_shell()->native_view());
+
+  // Raw Cocoa close bypasses C-ABI close deferral during both reparenting
+  // and the NativeViewHost visibility callout.
+  for (bool close_on_visibility : {false, true}) {
+    const int32_t peer = barc_window_new_peer(primary);
+    ASSERT_GT(peer, 0);
+    ASSERT_NE(0, barc_tab_create(peer, "about:blank", 0));
+    auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+        SessionID::FromSerializedValue(peer));
+    auto alive = owner->GetWeakPtr();
+    auto* peer_view = BrowserView::GetBrowserViewForBrowser(owner);
+    auto view_alive = peer_view->GetAsWeakPtr();
+    NSWindow* native_window = peer_view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
+    BarcReentrantNativeView* closing = [[BarcReentrantNativeView alloc] init];
+    if (close_on_visibility)
+      closing.onVisibility = ^(NSView*) { [native_window close]; };
+    else
+      closing.onMove = ^(NSView*) { [native_window close]; };
+    EXPECT_EQ(0, barc_window_attach_native_shell(peer, (__bridge void*)closing));
+    EXPECT_FALSE(view_alive);
+    ASSERT_TRUE(base::test::RunUntil([&] { return !alive; }));
+    EXPECT_NE(nullptr, primary_view->barc_native_shell());
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, ClosedDistinguishesOwnerShutdown) {
+  const int32_t primary = browser()->GetSessionID().id();
+  for (int close_kind : {0, 1, 2, 3}) {
+    SCOPED_TRACE(close_kind);
+    const int32_t peer = barc_window_new_peer(primary);
+    ASSERT_GT(peer, 0);
+    const int32_t tab = barc_tab_create(peer, "about:blank", 0);
+    ASSERT_NE(0, tab);
+    NavigationEvents events;
+    ASSERT_NE(0u, barc_tab_observe(peer, tab, NavigationEvents::Receive, &events));
+    if (close_kind == 0) {
+      ASSERT_EQ(1, barc_tab_close(peer, tab));
+    } else if (close_kind == 1) {
+      ASSERT_TRUE(content::ExecJs(tabs::TabHandle(tab).Get()->GetContents(),
+                                  "window.close();"));
+    } else if (close_kind == 2) {
+      ASSERT_EQ(1, barc_window_close(peer));
+    } else {
+      auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+          SessionID::FromSerializedValue(peer));
+      [owner->GetWindow()->GetNativeWindow().GetNativeNSWindow() close];
+    }
+    ASSERT_TRUE(base::test::RunUntil([&] { return events.Count(BARC_TAB_CLOSED) == 1; }));
+    const auto terminal = std::find_if(events.events.begin(), events.events.end(),
+        [](const auto& event) { return event.kind == BARC_TAB_CLOSED; });
+    ASSERT_NE(events.events.end(), terminal);
+    EXPECT_EQ(close_kind >= 2, !!(terminal->flags & BARC_TAB_OWNER_ENDED));
+  }
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
@@ -475,6 +638,16 @@ void SharedProfileCompleted(barc_profile_status status,
                             void* data) {
   static_cast<SharedProfileResult*>(data)->SetValue(status, window);
 }
+struct ReleasedProfileRequest {
+  raw_ptr<SharedProfileResult> result;
+  raw_ptr<std::unique_ptr<ReleasedProfileRequest>> owner;
+  static void Completed(barc_profile_status status, int32_t window, void* data) {
+    auto* request = static_cast<ReleasedProfileRequest*>(data);
+    auto* owner = request->owner.get();
+    request->result->SetValue(status, window);
+    owner->reset();
+  }
+};
 BrowserWindowInterface* SharedWindow(int32_t id) {
   return GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
       SessionID::FromSerializedValue(id));
@@ -731,9 +904,27 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   auto personal_alive = personal->GetWeakPtr();
   auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
   auto host_alive = host->GetWeakPtr();
+  NavigationEvents work_events, personal_events;
+  ASSERT_NE(0u, barc_tab_observe(work_id, barc_window_tab_at(work_id, 0),
+                               NavigationEvents::Receive, &work_events));
+  ASSERT_NE(0u, barc_tab_observe(personal_id, barc_window_tab_at(personal_id, 0),
+                               NavigationEvents::Receive, &personal_events));
+  work_events.on_closed = base::BindLambdaForTesting([&] {
+    if (personal_alive) {
+      EXPECT_TRUE(UnloadController::From(personal_alive.get())->owner_close_admitted());
+      EXPECT_EQ(personal_alive->GetTabStripModel()->count(),
+                static_cast<int>(barc_window_tab_count(personal_id)));
+    }
+  });
   ui_test_utils::BrowserDestroyedObserver work_closed(work);
   ui_test_utils::BrowserDestroyedObserver personal_closed(personal);
   host->CloseNow();
+  for (const auto* events : {&work_events, &personal_events}) {
+    ASSERT_EQ(1u, events->Count(BARC_TAB_CLOSED));
+    const auto terminal = std::find_if(events->events.begin(), events->events.end(),
+        [](const auto& event) { return event.kind == BARC_TAB_CLOSED; });
+    EXPECT_TRUE(terminal->flags & BARC_TAB_OWNER_ENDED);
+  }
   work_closed.Wait();
   personal_closed.Wait();
   EXPECT_FALSE(work_alive);
@@ -937,6 +1128,8 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   host->Close();
   auto* first = ui_test_utils::WaitForAppModalDialog();
   ASSERT_TRUE(first->is_before_unload_dialog());
+  EXPECT_EQ(0u, work_events.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(0u, personal_events.Count(BARC_TAB_CLOSE_CANCELLED));
   auto* first_page = first->web_contents();
   ASSERT_TRUE(first_page == pages[0] || first_page == pages[1]);
   EXPECT_TRUE((first_page == pages[0] ? work : personal)
@@ -958,6 +1151,9 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                 ->is_attempting_to_close_browser();
   }));
   EXPECT_FALSE(cancelled_application_quit);
+  EXPECT_EQ(1u, work_events.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(1u, personal_events.Count(BARC_TAB_CLOSE_CANCELLED));
+
   EXPECT_EQ(0u, work_events.Count(BARC_TAB_CLOSED));
   EXPECT_EQ(0u, personal_events.Count(BARC_TAB_CLOSED));
   const size_t work_titles = work_events.Count(BARC_TAB_TITLE);
@@ -1051,7 +1247,8 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   ASSERT_TRUE(base::test::RunUntil([&] {
     for (const auto& child :
          views::Widget::GetAllOwnedWidgets(host->GetNativeView())) {
-      if (!children_before.contains(child) && child->IsVisible()) {
+      if (!children_before.contains(child) && child->IsVisible() &&
+          views::AsViewClass<DownloadInProgressDialogView>(child->GetClientContentsView())) {
         warning = child->GetWeakPtr();
         return true;
       }
@@ -1089,6 +1286,63 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(download_guid, remaining_downloads.front()->GetGuid());
   EXPECT_EQ(download::DownloadItem::IN_PROGRESS,
             remaining_downloads.front()->GetState());
+  NavigationEvents wait_work, wait_otr;
+  ASSERT_NE(0u, barc_tab_observe(work_id, barc_window_tab_at(work_id, 0),
+                                NavigationEvents::Receive, &wait_work));
+  ASSERT_NE(0u, barc_tab_observe(otr_id, barc_window_tab_at(otr_id, 0),
+                                NavigationEvents::Receive, &wait_otr));
+  // A second local group accepts its download warning. Preempt at its actual
+  // dismissal, while accepted continuation is still pending, not by a timer.
+  content::PrepContentsForBeforeUnloadTest(page);
+  host->Close();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    for (const auto& child : views::Widget::GetAllOwnedWidgets(host->GetNativeView())) {
+      if (child->IsVisible() && views::AsViewClass<DownloadInProgressDialogView>(
+                                    child->GetClientContentsView())) {
+        warning = child->GetWeakPtr();
+        return true;
+      }
+    }
+    return false;
+  }));
+  base::test::TestFuture<base::FilePath> second_aborted;
+  bool preempted_during_wait = false;
+  PreemptOnDownloadWarningDismissal preempt_on_dismissal(
+      warning.get(), base::BindLambdaForTesting([&] {
+        preempted_during_wait = true;
+        EXPECT_TRUE(host->HasPhysicalClosePending());
+        EXPECT_FALSE(host->IsPhysicalCloseCommitted());
+        ASSERT_TRUE(otr_profile_alive);
+        chrome::CloseAllBrowsersWithProfile(
+            otr_profile_alive.get(), false, base::NullCallback(),
+            second_aborted.GetRepeatingCallback<const base::FilePath&>());
+      }));
+  warning->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+  auto* second_dialog = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(second_dialog->is_before_unload_dialog());
+  EXPECT_TRUE(preempted_during_wait);
+  EXPECT_EQ(page, second_dialog->web_contents());
+  // Local group cancellation is complete before the replacement profile-family
+  // close is refused. That later abort resets both regular and OTR controllers.
+  EXPECT_EQ(1u, wait_work.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(1u, wait_otr.Count(BARC_TAB_CLOSE_CANCELLED));
+  second_dialog->view()->CancelAppModalDialog();
+  EXPECT_EQ(otr_path, second_aborted.Get());
+  ASSERT_TRUE(work_alive);
+  ASSERT_TRUE(otr_alive);
+  EXPECT_FALSE(host->HasPhysicalClosePending());
+  EXPECT_EQ(2u, wait_work.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(2u, wait_otr.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(0u, wait_work.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(0u, wait_otr.Count(BARC_TAB_CLOSED));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(host->HasPhysicalClosePending());
+  EXPECT_EQ(2u, wait_work.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(2u, wait_otr.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(0u, wait_work.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(0u, wait_otr.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(page, otr_alive->GetTabStripModel()->GetWebContentsAt(0));
+  EXPECT_EQ("unsaved", content::EvalJs(page, "draft.value"));
   ASSERT_TRUE(content::ExecJs(page, "onbeforeunload = null;"));
 }
 
@@ -1523,4 +1777,277 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
   ASSERT_TRUE(content::WaitForLoadStop(new_contents));
   EXPECT_EQ(2u, observed.Count(BARC_TAB_FINISHED));
   EXPECT_EQ("Title Of Awesomeness", observed.events.back().title);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
+                       TabCloseCancellationAllowsUnsubscribeAndRetry) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+      embedded_test_server()->GetURL("/title1.html")));
+  const int32_t window = browser()->GetSessionID().id();
+  const int32_t tab = barc_window_tab_at(window, 0);
+  auto* page = tabs::TabHandle(tab).Get()->GetContents();
+  ASSERT_NE(0, barc_tab_create(window, "about:blank", 0));
+  ASSERT_TRUE(content::ExecJs(page,
+      "document.body.innerHTML='<input id=draft>'; draft.value='keep';"
+      "onbeforeunload=()=> 'keep';"));
+  content::PrepContentsForBeforeUnloadTest(page);
+  NavigationEvents events;
+  events.retry_cancelled = true;
+  events.unsubscribe_cancelled = true;
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &events));
+  content::WebContentsDestroyedWatcher destroyed(page);
+  ASSERT_EQ(1, barc_tab_close(window, tab));
+  auto* first = ui_test_utils::WaitForAppModalDialog();
+  EXPECT_EQ(0u, events.Count(BARC_TAB_CLOSE_CANCELLED));
+  first->view()->CancelAppModalDialog();
+  auto* second = ui_test_utils::WaitForAppModalDialog();
+  EXPECT_EQ(page, second->web_contents());
+  EXPECT_EQ(1u, events.Count(BARC_TAB_CLOSE_CANCELLED));
+  EXPECT_EQ(0u, events.Count(BARC_TAB_CLOSED));
+  auto second_alive = second->GetWeakPtr();
+  second->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !second_alive && events.Count(BARC_TAB_CLOSE_CANCELLED) == 2;
+  }));
+  EXPECT_EQ(page, tabs::TabHandle(tab).Get()->GetContents());
+  EXPECT_EQ("keep", content::EvalJs(page, "draft.value"));
+  ASSERT_TRUE(content::ExecJs(page, "onbeforeunload=null;"));
+  barc_tab_unobserve(events.token);
+  const size_t delivered = events.events.size();
+  ASSERT_EQ(1, barc_tab_close(window, tab));
+  destroyed.Wait();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(nullptr, tabs::TabHandle(tab).Get());
+  EXPECT_EQ(delivered, events.events.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
+                       WindowCloseCancellationFollowsTransferredObservation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),
+      embedded_test_server()->GetURL("/title1.html")));
+  const int32_t source = browser()->GetSessionID().id();
+  const int32_t tab = barc_window_tab_at(source, 0);
+  auto* page = tabs::TabHandle(tab).Get()->GetContents();
+  ASSERT_NE(0, barc_tab_create(source, "about:blank", 0));
+  ASSERT_TRUE(content::ExecJs(page, "onbeforeunload=()=> 'keep';"));
+  content::PrepContentsForBeforeUnloadTest(page);
+  NavigationEvents events;
+  ASSERT_NE(0u, barc_tab_observe(source, tab, NavigationEvents::Receive, &events));
+  const int32_t peer = barc_window_new_peer(source);
+  ASSERT_EQ(1, barc_tab_transfer(source, tab, peer));
+  ASSERT_EQ(1, barc_window_close(peer));
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  EXPECT_EQ(0u, events.Count(BARC_TAB_CLOSE_CANCELLED));
+  dialog->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return events.Count(BARC_TAB_CLOSE_CANCELLED) == 1;
+  }));
+  EXPECT_EQ(peer, events.events.back().window);
+  EXPECT_EQ(0u, events.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(page, tabs::TabHandle(tab).Get()->GetContents());
+  ASSERT_TRUE(content::ExecJs(page, "onbeforeunload=null;"));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       BlankConstructionWaitsForModelAdmission) {
+  SharedProfileResult first;
+  auto request = std::make_unique<ReleasedProfileRequest>();
+  request->result = &first;
+  request->owner = &request;
+  barc_profile_open_window(kSharedWork, BARC_PROFILE_BLANK,
+                           ReleasedProfileRequest::Completed, request.get());
+  ASSERT_EQ(BARC_PROFILE_OK, first.Get<0>());
+  EXPECT_EQ(nullptr, request);
+  auto* work = SharedWindow(first.Get<1>());
+  ASSERT_NE(nullptr, work);
+  EXPECT_FALSE(work->GetWindow()->IsVisible());
+  auto* page = work->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::WaitForLoadStop(page));
+  EXPECT_EQ(GURL("about:blank"), page->GetLastCommittedURL());
+  SharedProfileResult second;
+  barc_profile_open_in_native_window(first.Get<1>(), kSharedPersonal,
+      BARC_PROFILE_BLANK, SharedProfileCompleted, &second);
+  ASSERT_EQ(BARC_PROFILE_OK, second.Get<0>());
+  auto* personal = SharedWindow(second.Get<1>());
+  ASSERT_NE(nullptr, personal);
+  EXPECT_EQ(work->GetWindow()->GetNativeWindow(),
+            personal->GetWindow()->GetNativeWindow());
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+  EXPECT_FALSE(personal->IsSelectedForNativeWindow());
+  EXPECT_FALSE(personal->GetWindow()->IsVisible());
+  NSView* shell = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+  ASSERT_EQ(1, barc_window_attach_native_shell(second.Get<1>(), (__bridge void*)shell));
+  ASSERT_EQ(1, barc_window_select(second.Get<1>()));
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  EXPECT_FALSE(work->IsSelectedForNativeWindow());
+  // The startup completion path uses this same normal Show only after caller
+  // admission/attachment. This is a construction test, not native-focus proof.
+  auto alive = personal->GetWeakPtr();
+  ASSERT_EQ(1, barc_window_show(second.Get<1>()));
+  EXPECT_EQ(0, barc_window_show(-1));
+  ASSERT_TRUE(alive);
+  EXPECT_TRUE(alive->GetWindow()->IsVisible());
+  BarcReentrantNativeView* switching = [[BarcReentrantNativeView alloc] init];
+  const int32_t work_id = first.Get<1>();
+  switching.onMove = ^(NSView*) { EXPECT_EQ(1, barc_window_select(work_id)); };
+  EXPECT_EQ(0, barc_window_attach_native_shell(second.Get<1>(),
+                                               (__bridge void*)switching));
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+  EXPECT_FALSE(personal->IsSelectedForNativeWindow());
+  // Inactive detach remains supported and must not steal the newer selection.
+  EXPECT_EQ(1, barc_window_attach_native_shell(second.Get<1>(), nullptr));
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       DownloadWarningCancelsOnlyAfterRefusal) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      &content::SlowDownloadHttpResponse::HandleSlowDownloadRequest));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork);
+  auto* work = SharedWindow(work_id);
+  ASSERT_NE(nullptr, work);
+  Profile* otr_profile = work->GetProfile()->GetPrimaryOTRProfile(true);
+  auto profile_alive = otr_profile->GetWeakPtr();
+  BrowserWindowCreateParams params(otr_profile, true);
+  params.native_window_owner = work->GetSessionID();
+  auto* otr = CreateBrowserWindow(std::move(params));
+  ASSERT_NE(nullptr, otr);
+  const int32_t otr_id = otr->GetSessionID().id();
+  ASSERT_NE(0, barc_tab_create(otr_id, "about:blank", 1));
+  auto* manager = otr_profile->GetDownloadManager();
+  auto* prefs_for_download = DownloadPrefs::FromDownloadManager(manager);
+  otr_profile->GetPrefs()->SetBoolean(prefs::kPromptForDownload, false);
+  ASSERT_FALSE(prefs_for_download->PromptForDownload());
+  base::ScopedClosureRunner cleanup(base::BindLambdaForTesting([profile_alive] {
+    if (!profile_alive) return;
+    content::DownloadManager::DownloadVector items;
+    profile_alive->GetDownloadManager()->GetAllDownloads(&items);
+    for (const auto& item : items) item->Cancel(true);
+  }));
+  content::DownloadTestObserverInProgress progress(manager, 1);
+  ASSERT_NE(0, barc_tab_create(otr_id,
+      embedded_test_server()->GetURL(content::SlowDownloadHttpResponse::kKnownSizeUrl)
+          .spec().c_str(), 0));
+  progress.WaitForFinished();
+  std::vector<std::unique_ptr<NavigationEvents>> observations;
+  std::vector<int32_t> observed_windows;
+  std::vector<int32_t> observed_tabs;
+  for (auto* owner : {work, otr}) {
+    for (int index = 0; index < owner->GetTabStripModel()->count(); ++index) {
+      auto events = std::make_unique<NavigationEvents>();
+      ASSERT_NE(0u, barc_tab_observe(owner->GetSessionID().id(),
+          owner->GetTabStripModel()->GetTabAtIndex(index)->GetHandle().raw_value(),
+          NavigationEvents::Receive, events.get()));
+      observed_tabs.push_back(owner->GetTabStripModel()->GetTabAtIndex(index)
+                                  ->GetHandle().raw_value());
+      observed_windows.push_back(owner->GetSessionID().id());
+      observations.push_back(std::move(events));
+    }
+  }
+  auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  auto host_alive = host->GetWeakPtr();
+  auto children_before = views::Widget::GetAllOwnedWidgets(host->GetNativeView());
+  auto find_warning = [&]() -> base::WeakPtr<views::Widget> {
+    for (const auto& child : views::Widget::GetAllOwnedWidgets(host->GetNativeView())) {
+      if (!children_before.contains(child) && child->IsVisible() &&
+          views::AsViewClass<DownloadInProgressDialogView>(child->GetClientContentsView()))
+        return child->GetWeakPtr();
+    }
+    return {};
+  };
+  base::WeakPtr<views::Widget> warning;
+  const char* phase = "logical-refusal";
+  auto describe = [&] {
+    std::ostringstream state;
+    state << "phase=" << phase << " host alive=" << !!host_alive;
+    if (host_alive) {
+      auto* browser_host = static_cast<BrowserWidget*>(host_alive.get());
+      state << " pending=" << browser_host->HasPhysicalClosePending()
+            << " committed=" << browser_host->IsPhysicalCloseCommitted();
+      if (host_alive->GetNativeView()) {
+        for (const auto& child : views::Widget::GetAllOwnedWidgets(
+                 host_alive->GetNativeView())) {
+          state << " widget visible=" << child->IsVisible()
+                << " closed=" << child->IsClosed();
+          if (child->GetClientContentsView())
+            state << " type=" << child->GetClientContentsView()->GetClassMetaData()->type_name();
+        }
+      }
+    }
+    for (size_t index = 0; index < observations.size(); ++index) {
+      state << " window=" << observed_windows[index] << " tab=" << observed_tabs[index]
+            << " CLOSED=" << observations[index]->Count(BARC_TAB_CLOSED)
+            << " CANCEL=" << observations[index]->Count(BARC_TAB_CLOSE_CANCELLED);
+      auto* tab = tabs::TabHandle(observed_tabs[index]).Get();
+      auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+      if (owner) {
+        auto* controller = UnloadController::From(owner);
+        state << " owner=" << owner->GetSessionID().id()
+              << " tabs=" << owner->GetTabStripModel()->count()
+              << " delete=" << owner->IsDeleteScheduled();
+        if (controller)
+          state << " attempt=" << controller->is_attempting_to_close_browser()
+                << " warning=" << controller->IsWaitingForDownloadCloseConfirmation()
+                << " status=" << static_cast<int>(controller->GetBrowserClosingStatus());
+      }
+    }
+    return state.str();
+  };
+  // Logical close uses HandleBeforeClose, whose initial DeniedByUser status
+  // still means a pending warning. It must not complete a cancellation yet.
+  ASSERT_EQ(1, barc_window_close(otr_id));
+  ASSERT_TRUE(base::test::RunUntil([&] { warning = find_warning(); return !!warning; }))
+      << describe();
+  for (const auto& events : observations)
+    EXPECT_EQ(0u, events->Count(BARC_TAB_CLOSE_CANCELLED));
+  warning->widget_delegate()->AsDialogDelegate()->CancelDialog();
+  std::vector<size_t> prior_cancellations;
+  for (int32_t owner : observed_windows)
+    prior_cancellations.push_back(owner == otr_id ? 1u : 0u);
+  auto cancellation_counts_match = [&](size_t group_cancellations) {
+    for (size_t index = 0; index < observations.size(); ++index) {
+      if (observations[index]->Count(BARC_TAB_CLOSE_CANCELLED) !=
+          prior_cancellations[index] + group_cancellations) return false;
+    }
+    return true;
+  };
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !warning && cancellation_counts_match(0);
+  })) << describe();
+  phase = "group-refusal";
+  children_before = views::Widget::GetAllOwnedWidgets(host->GetNativeView());
+  host->Close();
+  ASSERT_TRUE(base::test::RunUntil([&] { warning = find_warning(); return !!warning; }))
+      << describe();
+  EXPECT_TRUE(cancellation_counts_match(0)) << describe();
+  warning->widget_delegate()->AsDialogDelegate()->CancelDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !warning && cancellation_counts_match(1);
+  })) << describe();
+  for (const auto& events : observations) EXPECT_EQ(0u, events->Count(BARC_TAB_CLOSED));
+  ASSERT_TRUE(profile_alive);
+  content::DownloadManager::DownloadVector downloads;
+  profile_alive->GetDownloadManager()->GetAllDownloads(&downloads);
+  ASSERT_EQ(1u, downloads.size());
+  EXPECT_EQ(download::DownloadItem::IN_PROGRESS, downloads.front()->GetState());
+  downloads.clear();
+  phase = "group-acceptance";
+  children_before = views::Widget::GetAllOwnedWidgets(host->GetNativeView());
+  host->Close();
+  ASSERT_TRUE(base::test::RunUntil([&] { warning = find_warning(); return !!warning; }))
+      << describe();
+  EXPECT_TRUE(cancellation_counts_match(1)) << describe();
+  auto* accept = warning->widget_delegate()->AsDialogDelegate();
+  children_before.clear();
+  accept->AcceptDialog();
+  const bool closed = base::test::RunUntil([&] {
+    return std::all_of(observations.begin(), observations.end(),
+        [](const auto& e) { return e->Count(BARC_TAB_CLOSED) == 1; });
+  });
+
+  ASSERT_TRUE(closed) << describe();
+  EXPECT_TRUE(cancellation_counts_match(1)) << describe();
 }

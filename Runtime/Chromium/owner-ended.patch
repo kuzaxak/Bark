@@ -1,0 +1,64 @@
+diff --git a/chrome/browser/ui/unload_controller.h b/chrome/browser/ui/unload_controller.h
+--- a/chrome/browser/ui/unload_controller.h
++++ b/chrome/browser/ui/unload_controller.h
+@@ -132,6 +132,10 @@
+   // and IsDeleteScheduled().
+   bool is_attempting_to_close_browser() const { return state_ != State::kIdle; }
+ 
++  // True after admitted owner close or irreversible native-window destruction.
++  bool owner_close_admitted() const { return owner_close_admitted_; }
++  void OnNativeWindowDestroying() { owner_close_admitted_ = true; }
++
+   // Returns true if the browser window has completed closing and is scheduled
+   // for deletion.
+   bool is_delete_scheduled() const { return is_delete_scheduled_; }
+@@ -449,6 +453,7 @@
+   base::RepeatingCallback<void(bool)> on_close_confirmed_;
+ 
+   // Tells if the browser should skip warning the user when closing the window.
++  bool owner_close_admitted_ = false;
+   bool force_skip_warning_user_on_close_ = false;
+ 
+   // Registered handlers that can intercept and confirm tab unload events.
+diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_controller.cc
+--- a/chrome/browser/ui/unload_controller.cc
++++ b/chrome/browser/ui/unload_controller.cc
+@@ -185,6 +185,8 @@
+     return;
+   }
+ 
++  owner_close_admitted_ = true;
++
+   // Don't use GetForProfileIfExisting here, we want to force creation of the
+   // session service so that user can restore what was open.
+   SessionServiceBase* service =
+diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -138,6 +138,7 @@
+   ui::ColorProviderKey::ThemeInitializerSupplier* GetCustomTheme()
+       const override;
+   void OnNativeWidgetWorkspaceChanged() override;
++  void OnNativeWidgetDestroying() override;
+   void OnNativeWidgetDestroyed() override;
+ 
+   // views::ContextMenuController:
+diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -1104,6 +1104,15 @@
+   Widget::OnNativeWidgetWorkspaceChanged();
+ }
+ 
++void BrowserWidget::OnNativeWidgetDestroying() {
++  // Mark every logical owner before the first BrowserView observer destroys
++  // tabs and delivers foreign CLOSED callbacks that may query another owner.
++  for (BrowserView* view : GetLogicalBrowserViews()) {
++    UnloadController::From(view->browser())->OnNativeWindowDestroying();
++  }
++  Widget::OnNativeWidgetDestroying();
++}
++
+ void BrowserWidget::OnNativeWidgetDestroyed() {
+   const auto clients = GetLogicalBrowserViews();
+   if (clients.size() > 1) {
