@@ -4,12 +4,15 @@
 
 #include <utility>
 
+#include "base/callback_list.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/no_destructor.h"
 #include "base/memory/raw_ptr.h"
 #include "base/task/single_thread_task_runner.h"
 #include "chrome/browser/lifetime/application_lifetime.h"
+#include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
@@ -32,10 +35,25 @@ struct Startup {
   Phase phase = Phase::kEmpty;
   void (*callback)(void*) = nullptr;
   raw_ptr<void> user_data = nullptr;
+  void (*close_callback)(int32_t, void*) = nullptr;
+  raw_ptr<void> close_user_data = nullptr;
+  bool accepted_close_notified = false;
+  base::CallbackListSubscription accepted_close_subscription;
+  base::CallbackListSubscription closing_subscription;
 };
 Startup& State() {
   static base::NoDestructor<Startup> state;
   return *state;
+}
+void ClearCallbacks() {
+  auto& state = State();
+  state.callback = nullptr;
+  state.user_data = nullptr;
+  state.close_callback = nullptr;
+  state.close_user_data = nullptr;
+  state.accepted_close_notified = false;
+  state.accepted_close_subscription = {};
+  state.closing_subscription = {};
 }
 }  // namespace
 
@@ -53,6 +71,43 @@ void barc_set_runtime_ready_callback(void (*callback)(void*), void* user_data) {
   state.phase = Phase::kRegistered;
 }
 
+void barc_set_runtime_close_callback(void (*callback)(int32_t, void*),
+                                     void* user_data) {
+  CHECK(pthread_main_np());
+  auto& state = State();
+  CHECK(state.phase == Phase::kEmpty || state.phase == Phase::kRegistered);
+  CHECK(!state.close_callback);
+  CHECK(callback);
+  state.close_callback = callback;
+  state.close_user_data = user_data;
+  state.accepted_close_subscription =
+      chrome::AddAllBrowsersCloseAcceptedCallback(base::BindRepeating([] {
+        auto& state = State();
+        if (!barc::IsNativeApplicationRegistered() ||
+            !browser_shutdown::IsTryingToQuit() ||
+            state.accepted_close_notified || !state.close_callback) {
+          return;
+        }
+        state.accepted_close_notified = true;
+        auto callback = state.close_callback;
+        void* data = state.close_user_data.get();
+        callback(1, data);
+      }));
+  state.closing_subscription = chrome::AddClosingAllBrowsersCallback(
+      base::BindRepeating([](bool closing) {
+        auto& state = State();
+        if (closing || !state.accepted_close_notified ||
+            !barc::IsNativeApplicationRegistered() || !state.close_callback) {
+          return;
+        }
+        // Reset before client code can reenter another shutdown attempt.
+        state.accepted_close_notified = false;
+        auto callback = state.close_callback;
+        void* data = state.close_user_data.get();
+        callback(0, data);
+      }));
+}
+
 void barc_runtime_complete_startup(int32_t window) {
   CHECK(pthread_main_np());
   auto& state = State();
@@ -60,8 +115,7 @@ void barc_runtime_complete_startup(int32_t window) {
   // still be able to release its callback storage without touching a dead UI.
   if (state.phase == Phase::kRegistered || state.phase == Phase::kPosted ||
       state.phase == Phase::kStopped) {
-    state.callback = nullptr;
-    state.user_data = nullptr;
+    ClearCallbacks();
     state.phase = Phase::kStopped;
     return;
   }
@@ -86,6 +140,12 @@ void barc_runtime_complete_startup(int32_t window) {
 }
 
 namespace barc {
+bool RuntimeCallbacksClearedForTesting() {
+  const auto& state = State();
+  return !state.callback && !state.user_data && !state.close_callback &&
+         !state.close_user_data && !state.accepted_close_notified &&
+         !state.accepted_close_subscription && !state.closing_subscription;
+}
 bool IsNativeApplicationRegistered() {
   const auto phase = State().phase;
   return phase != Phase::kEmpty && phase != Phase::kStopped;
@@ -111,10 +171,9 @@ void PostRuntimeReady() {
       }));
 }
 void RuntimeStopped() {
-  StopBrowserDiscovery();
   auto& state = State();
-  state.callback = nullptr;
-  state.user_data = nullptr;
   state.phase = Phase::kStopped;
+  ClearCallbacks();
+  StopBrowserDiscovery();
 }
 }  // namespace barc

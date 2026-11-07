@@ -244,6 +244,10 @@ public final class TabsController {
         store.flush()
     }
 
+    /// A late native beforeunload veto reversed an accepted app-close phase.
+    /// Existing records remain authoritative; no saved-window snapshot/replay.
+    public func resumeAfterCancelledTermination() { isTerminating = false }
+
     func pushUndo(_ change: Change) {
         guard !change.isEmpty else { return }
         undoStack.append(change)

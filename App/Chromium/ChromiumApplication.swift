@@ -5,22 +5,22 @@ import NookWeb
 import SwiftUI
 
 private typealias ReadyCallback = @convention(c) (UnsafeMutableRawPointer?) -> Void
+private typealias CloseCallback = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Void
 private typealias ProfileCallback = @convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void
 
 @MainActor
 final class ChromiumApplication: ChromiumStartupBridge {
     private typealias Register = @convention(c) (ReadyCallback?, UnsafeMutableRawPointer?) -> Void
+    private typealias RegisterClose = @convention(c) (CloseCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias Open = @convention(c) (UnsafePointer<CChar>?, Int32, ProfileCallback?, UnsafeMutableRawPointer?) -> Void
-    private typealias TabAt = @convention(c) (Int32, Int) -> Int32
-    private typealias Attach = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Int32
     private typealias Main = @convention(c) (Int32, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> Int32
     private typealias Complete = @convention(c) (Int32) -> Void
     private let registerCallback: Register
+    private let registerClose: RegisterClose
     private let open: Open
     private let privateOpen: ChromiumCreatedPageAdmission.PrivateOpen
     private let closeWindow: @convention(c) (Int32) -> Int32
     private var acceptsWindows = true
-    private let tabAt: TabAt
     private let navigationAPI: ChromiumNavigationAPI
     private let configuration: ChromiumStartupConfiguration
     private let pageHost: ChromiumNativePageHost
@@ -35,7 +35,6 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var browserManager: BrowserManager?
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
-    private let attach: Attach
     private let chromeMain: Main
     private let complete: Complete
     private var ready: (@MainActor () -> Void)?
@@ -59,11 +58,10 @@ final class ChromiumApplication: ChromiumStartupBridge {
             throw configuration.isVerification ? LoaderError.ownerEndedProtocolRequired : LoaderError.isolatedKeychainProtocolRequired
         }
         registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
+        registerClose = try symbol("barc_set_runtime_close_callback", RegisterClose.self)
         open = try symbol("barc_profile_open_window", Open.self)
         privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
         closeWindow = try symbol("barc_window_close", (@convention(c) (Int32) -> Int32).self)
-        tabAt = try symbol("barc_window_tab_at", TabAt.self)
-        attach = try symbol("barc_window_attach_native_shell", Attach.self)
         chromeMain = try symbol("ChromeMain", Main.self)
         complete = try symbol("barc_runtime_complete_startup", Complete.self)
     }
@@ -97,6 +95,20 @@ final class ChromiumApplication: ChromiumStartupBridge {
 
     func registerReady(_ callback: @escaping @MainActor () -> Void) {
         ready = callback
+        registerClose({ accepted, pointer in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
+                if accepted == 1 {
+                    app.acceptsWindows = false
+                    app.browserManager?.tabs.flushSync()
+                } else {
+                    app.browserManager?.tabs.resumeAfterCancelledTermination()
+                    app.acceptsWindows = true
+                    app.admission?.resumeRestoredWindows(canPresent: { [weak app] in app?.acceptsWindows == true })
+                }
+            }
+        }, Unmanaged.passUnretained(self).toOpaque())
         registerCallback({ pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
@@ -127,25 +139,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 profilePages.open(profile, destination: destination, canPresent: canPresent, completion: completion)
             }
             manager.nativeOpenSettings = { [weak self] tab in self?.showSettings(tab) }
-            let modelWindow = BrowserWindowState()
-            initialWindow = modelWindow
-            modelWindow.sidebarWidth = manager.sidebarWidth
-            modelWindow.sidebarContentWidth = max(manager.sidebarWidth - 16, 0)
-            modelWindow.isSidebarVisible = true
-            registry.register(modelWindow)
-            manager.tabs.attach(window: modelWindow)
-            guard modelWindow.split == nil, let space = modelWindow.spaceID,
-                  let profile = manager.tabs.profile(forSpace: space) else {
-                completion(nil); return
-            }
             self.storage = storage
             browserManager = manager
             registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
-            registry.onWindowClose = { [weak manager, weak registry = self.registry] id in
+            registry.onWindowClose = { [weak self, weak manager, weak registry = self.registry] id in
                 guard let manager, let state = registry?.windows[id] else { return }
                 let tabs = manager.tabs
                 manager.downloadManager.dismissPreview(in: state)
-                if state.isIncognito || tabs.device.windows.contains(where: { $0.id == id }) {
+                if state.isIncognito || (tabs.device.windows.contains(where: { $0.id == id }) &&
+                    self?.admission?.shouldDetachModelWindow(state) == true) {
                     tabs.detach(window: state)
                 }
             }
@@ -168,6 +170,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     })
             }
             catalog.onSnapshot = { [weak admission] in admission?.apply($0) }
+            guard let modelWindow = admission.prepareInitialWindow() else { completion(nil); return }
+            initialWindow = modelWindow
+            guard let space = modelWindow.spaceID, let profile = manager.tabs.profile(forSpace: space) else {
+                registry.unregister(modelWindow.id); completion(nil); return
+            }
             opened = completion
             profile.id.uuidString.withCString { uuid in
             open(uuid, 5, { status, window, pointer in
@@ -188,6 +195,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
 
     func completeStartup(_ window: Int32) {
         complete(window)
+        guard window > 0, acceptsWindows,
+              let row = discoveryAPI.windowState(window), row.flags & 32 == 0 else { return }
+        admission?.restoreSavedWindows(open: open, close: closeWindow, canPresent: { [weak self] in self?.acceptsWindows == true })
     }
 
     private func makeShell(for state: BrowserWindowState, manager: BrowserManager,
@@ -208,26 +218,12 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     func attachShell(to window: Int32) -> Bool {
-        guard let storage, let manager = browserManager, let modelWindow = initialWindow,
+        guard storage != nil, let manager = browserManager, let modelWindow = initialWindow,
               let admission else { return false }
-        let blank = tabAt(window, 0)
-        guard blank > 0 else { return false }
-        let view = makeShell(for: modelWindow, manager: manager, storage: storage)
-        guard attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1,
-              pageHost.registerWindow(modelWindow, nativeOwner: window, shell: view,
-                                      initialBlankTab: blank),
-              admission.registerInitial(ChromiumProductWindow(state: modelWindow, shell: view),
-                                        nativeWindow: window) else { return false }
+        guard let space = modelWindow.spaceID, let profile = manager.tabs.profile(forSpace: space),
+              admission.admitRestoredWindow(modelWindow, native: window, profile: profile.id,
+                  show: false, canPresent: { [weak self] in self?.acceptsWindows == true }) else { return false }
         initialWindow = nil
-        modelWindow.windowHandle = view.window
-        if let selected = modelWindow.selectedItemID {
-            manager.tabs.select(selected, in: modelWindow)
-        } else {
-            _ = manager.tabs.open(url: URL(string: "about:blank")!, in: modelWindow, placement: .newTab)
-        }
-        // Existing-client blank binding is synchronous. Refuse startup if model
-        // admission did not produce a real engine page; never create WebKit.
-        guard manager.tabs.selectedSession(in: modelWindow)?.isUnloaded == false else { return false }
         return catalog.start()
     }
 

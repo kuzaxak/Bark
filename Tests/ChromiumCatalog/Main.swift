@@ -31,6 +31,11 @@ import NookWeb
     static var allowFailedPrivateClose = false
     static var failedPrivateCloses: [(Int32, Int32)] = []
     static var privateCreatedClients: [Int32] = []
+    static var restoring = false
+    static var restoredURLs: [String] = []
+    static var onShow: ((Int32) -> Int32)?
+    static var onCloseWindow: ((Int32) -> Int32)?
+    static var savedRequests: [(UUID, ChromiumCreatedPageAdmission.SavedCallback?, UnsafeMutableRawPointer?)] = []
     static var privateCallback: (@convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void)?
     static var privateContext: UnsafeMutableRawPointer?
     static func copyPrivateID(_ window: Int32, _ output: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> Int {
@@ -86,7 +91,7 @@ import NookWeb
             Native.copyPrivateID(window, output, capacity)
         } }, show: { window in MainActor.assumeIsolated {
             precondition(Native.shells[window] != nil && Native.windows[window]?.selected_client == window)
-            Native.shown.append(window); return 1
+            Native.shown.append(window); return Native.onShow?(window) ?? 1
         } })
     }
     static var host: ChromiumPageHostAPI {
@@ -104,7 +109,10 @@ import NookWeb
                 Native.membershipChecks += 1
                 return Native.tabs.contains { $0.window == window && $0.tab == tab } ? 1 : 0
             } }, selectWindow: { _ in preconditionFailure("Discovery focused a window") },
-            closeWindow: { _ in preconditionFailure("Discovery closed native contents") },
+            closeWindow: { window in MainActor.assumeIsolated {
+                guard Native.restoring, let close = Native.onCloseWindow else { preconditionFailure("Discovery closed native contents") }
+                return close(window)
+            } },
             attach: { window, view in MainActor.assumeIsolated {
                 Native.attachments += 1; Native.shells[window] = view
                 return Native.onAttach?(window) ?? 1
@@ -124,17 +132,23 @@ import NookWeb
             }
             let token = Native.nextToken; Native.nextToken += 1
             Native.observers[token] = (callback, context, window, tab)
-            "https://fixture.invalid/live-\(tab)".withCString {
+            (Native.restoring ? "about:blank" : "https://fixture.invalid/live-\(tab)").withCString {
                 callback?(context, token, 0, window, tab, $0, nil, 0, 0)
             }
             return token
         } }, unobserve: { token in MainActor.assumeIsolated { Native.observers[token] = nil } },
-            navigate: { _, _, _ in preconditionFailure("Existing page was reloaded") },
+            navigate: { window, tab, url in MainActor.assumeIsolated {
+                precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
+                Native.restoredURLs.append(String(cString: url!)); return 1
+            } },
             back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in preconditionFailure("Existing page was reloaded") },
             stop: { _, _ in preconditionFailure("Existing page was stopped") },
-            select: { _, _ in preconditionFailure("Discovery selected/focused a native tab") },
+            select: { window, tab in MainActor.assumeIsolated {
+                precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
+                Native.windows[window]?.active_tab = tab; return 1
+            } },
             close: { window, tab in MainActor.assumeIsolated {
-                precondition(Native.allowFailedPrivateClose && Native.privateIDs[window] != nil && Native.tabs.contains { $0.window == window && $0.tab == tab })
+                precondition((Native.allowFailedPrivateClose && Native.privateIDs[window] != nil || Native.restoring) && Native.tabs.contains { $0.window == window && $0.tab == tab })
                 Native.failedPrivateCloses.append((window, tab)); Native.tabs.removeAll { $0.window == window && $0.tab == tab }; return 1
             } },
             profileUUID: { window, output, capacity in MainActor.assumeIsolated {
@@ -330,6 +344,7 @@ private struct NoTokens: KagiTokenStore {
         tabs.saveNow()
         try checkOnlySourceTransfer()
         try checkPrivateSessions()
+        try checkSavedWindowRestoration()
         print("Chromium catalog admission checks passed")
     }
 }
@@ -516,4 +531,135 @@ private struct NoTokens: KagiTokenStore {
     tabs.saveNow()
     let saved = TabStore(directory: root).load()
     precondition(saved.tree == originalTree && saved.device == originalDevice)
+}
+
+@MainActor private func checkSavedWindowRestoration() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/BarcSavedWindows-\(UUID())", isDirectory: true)
+    let suite = "BarcSavedWindows-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "house", accentHex: "#123456", after: nil)
+    tree.createSpace(id: Native.personal, name: "Personal", icon: "house", accentHex: "#123456", after: Native.work)
+    let first = UUID(), selected = UUID(), unloaded = UUID(), lateSelected = UUID(), splitOther = UUID()
+    let rootURL = URL(string: "https://fixture.invalid/restored-root")!, selectedURL = URL(string: "https://fixture.invalid/restored-selected")!
+    _ = try tree.createTab(id: first, url: rootURL, title: "Root", in: .tabs(spaceID: Native.work), after: nil)
+    _ = try tree.createTab(id: selected, url: selectedURL, title: "Selected", in: .tabs(spaceID: Native.personal), after: nil)
+    _ = try tree.createTab(id: unloaded, url: URL(string: "https://fixture.invalid/unloaded")!, title: "Unloaded", in: .tabs(spaceID: Native.personal), after: selected)
+    _ = try tree.createTab(id: lateSelected, url: URL(string: "https://fixture.invalid/late-selected")!, title: "Late", in: .tabs(spaceID: Native.personal), after: unloaded)
+    _ = try tree.createTab(id: splitOther, url: URL(string: "https://fixture.invalid/split-other")!, title: "Split", in: .tabs(spaceID: Native.work), after: first)
+    let rootID = UUID(), extraID = UUID(), failedID = UUID(), lateID = UUID(), splitID = UUID()
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let split = SplitRecord([first, splitOther])!
+    device.windows = [WindowRecord(id: rootID, spaceID: Native.work, selectedItemBySpace: [Native.work: first]),
+        WindowRecord(id: extraID, spaceID: Native.personal, selectedItemBySpace: [Native.personal: selected]),
+        WindowRecord(id: failedID, spaceID: Native.personal, selectedItemBySpace: [Native.personal: unloaded]),
+        WindowRecord(id: lateID, spaceID: Native.personal, selectedItemBySpace: [Native.personal: lateSelected]),
+        WindowRecord(id: splitID, spaceID: Native.work, selectedItemBySpace: [Native.work: first], split: split)]
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    tabs.nativePageHost = host
+    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    registry.onWindowClose = { [weak admission, weak registry, weak tabs] id in
+        guard let admission, let registry, let tabs, let state = registry.windows[id] else { return }
+        if admission.shouldDetachModelWindow(state) { tabs.detach(window: state) }
+    }
+    func factory(_ id: Int32, profile: UUID) {
+        Native.windows[id] = Native.window(id, group: UInt64(id), profile: profile, flags: 4 | 8, active: id * 10)
+        Native.tabs.append(Native.tab(id * 10, window: id, flags: 2))
+    }
+    Native.restoring = true; defer { Native.restoring = false }
+    // Initial split refusal preserves the record and never starts a native page.
+    do {
+        var splitDevice = device
+        splitDevice.windows = [device.windows.last!]
+        let splitRoot = root.appendingPathComponent("split-first")
+        let splitStore = TabStore(directory: splitRoot); splitStore.save(tree, splitDevice); splitStore.flush()
+        let splitRegistry = WindowRegistry()
+        let splitTabs = TabsController(settings: settings, windowRegistry: splitRegistry,
+            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: splitRoot)
+        let splitAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: splitTabs,
+            registry: splitRegistry, isUtility: { _ in false }, makeShell: { _ in preconditionFailure("Split created a shell") })
+        precondition(splitAdmission.prepareInitialWindow() == nil && splitRegistry.windows.isEmpty)
+        precondition(splitTabs.device.windows.first?.split == split && Native.restoredURLs.isEmpty)
+    }
+    let initial = BrowserWindowState(id: rootID)
+    registry.register(initial); tabs.attach(window: initial)
+    factory(1001, profile: Native.work)
+    precondition(admission.admitRestoredWindow(initial, native: 1001, profile: Native.work, show: false, canPresent: { true }))
+    precondition(initial.id == rootID && initial.selectedItemID == first && Native.restoredURLs == [rootURL.absoluteString])
+    var canPresent = true, closed: [Int32] = []
+    admission.restoreSavedWindows(open: { profile, destination, callback, pointer in MainActor.assumeIsolated {
+        precondition(destination == 5)
+        Native.savedRequests.append((UUID(uuidString: String(cString: profile!))!, callback, pointer))
+    } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: { canPresent })
+    precondition(Native.savedRequests.count == 3 && Native.savedRequests.allSatisfy { $0.0 == Native.personal })
+    precondition(registry.windows[splitID] == nil && tabs.device.windows.first { $0.id == splitID }?.split == split)
+    let requests = Native.savedRequests; Native.savedRequests = []
+    factory(1002, profile: Native.personal); requests[0].1?(0, 1002, requests[0].2)
+    precondition(registry.windows[extraID]?.selectedItemID == selected)
+    precondition(Native.restoredURLs == [rootURL.absoluteString, selectedURL.absoluteString])
+    factory(1003, profile: Native.personal); Native.rejectNextObservation = true
+    requests[1].1?(0, 1003, requests[1].2)
+    precondition(registry.windows[failedID] == nil && tabs.device.windows.contains { $0.id == failedID })
+    canPresent = false; factory(1004, profile: Native.personal)
+    requests[2].1?(0, 1004, requests[2].2)
+    precondition(closed == [1003, 1004] && registry.windows[lateID] == nil)
+    precondition(Native.restoredURLs == [rootURL.absoluteString, selectedURL.absoluteString])
+    precondition(tabs.unclaimedWindowRecords().map(\.id).contains(failedID) && tabs.unclaimedWindowRecords().map(\.id).contains(lateID))
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(tabs.device.windows.count == 5 && tabs.tree.items.count == tree.items.count)
+    // Show can reenter quit after product/host registration. Keep that model
+    // registered while native close is pending or refused, and retry its same page.
+    canPresent = true
+    admission.restoreSavedWindows(open: { profile, _, callback, pointer in MainActor.assumeIsolated {
+        Native.savedRequests.append((UUID(uuidString: String(cString: profile!))!, callback, pointer))
+    } }, close: { _ in preconditionFailure("Bound restoration must retain its close observation") }, canPresent: { canPresent })
+    let retries = Native.savedRequests; Native.savedRequests = []
+    precondition(retries.count == 2)
+    var closeRequests: [Int32] = []
+    Native.onCloseWindow = { id in closeRequests.append(id); return id == 1005 ? 1 : 0 }
+    Native.onShow = { _ in canPresent = false; return 1 }
+    factory(1005, profile: Native.personal); retries[0].1?(0, 1005, retries[0].2)
+    let pendingState = registry.windows[failedID]!
+    let pendingPage = tabs.selectedSession(in: pendingState)!.navigation!
+    precondition(closeRequests == [1005] && registry.windows[failedID] === pendingState)
+    let loaded = Native.restoredURLs
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(!admission.shouldDetachModelWindow(pendingState))
+    canPresent = true; Native.onShow = nil
+    for (token, entry) in Native.observers.filter({ $0.value.2 == 1005 }) {
+        entry.0?(entry.1, token, 8, 1005, entry.3, nil, nil, 0, 0)
+    }
+    precondition(registry.windows[failedID] === pendingState && tabs.selectedSession(in: pendingState)?.navigation === pendingPage)
+    precondition(Native.restoredURLs == loaded && host.isNativeSelection(pendingPage, in: pendingState))
+    // An immediate refusal also cannot unregister its still-live owner.
+    Native.onShow = { _ in canPresent = false; return 1 }
+    factory(1006, profile: Native.personal); retries[1].1?(0, 1006, retries[1].2)
+    let refusedState = registry.windows[lateID]!
+    let refusedPage = tabs.selectedSession(in: refusedState)!.navigation!
+    precondition(closeRequests == [1005, 1006] && registry.windows[lateID] === refusedState)
+    precondition(host.isNativeSelection(refusedPage, in: refusedState))
+    let retainedRecord = tabs.device.windows.first { $0.id == lateID }
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(!admission.shouldDetachModelWindow(refusedState))
+    Native.end(1006); admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows[lateID] == nil && tabs.device.windows.first { $0.id == lateID } == retainedRecord)
+    canPresent = true; Native.onShow = nil
+    admission.resumeRestoredWindows(canPresent: { canPresent })
+    precondition(Native.restoredURLs.count == loaded.count + 1)
+    Native.onCloseWindow = nil
+    tabs.flushSync() // Accepted app-close notification, before either group retires.
+    Native.end(1001); Native.end(1002); Native.end(1005); Native.end(1006)
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(registry.windows.isEmpty && Set(tabs.device.windows.map(\.id)) == Set(device.windows.map(\.id)))
+    tabs.saveNow()
+    let saved = TabStore(directory: root).load()
+    precondition(Set(saved.device.windows.map(\.id)) == Set(device.windows.map(\.id)) && saved.device.windows.first { $0.id == splitID }?.split == split)
 }

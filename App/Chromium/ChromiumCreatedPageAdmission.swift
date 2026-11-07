@@ -1,6 +1,7 @@
 import AppKit
 import BarcChromium
 import NookWeb
+import NookTabsCore
 
 /// One actual product window, sharing the existing model registry and sidebar.
 /// The hosting view retains its window-local palette/organizer/hover state.
@@ -8,7 +9,11 @@ import NookWeb
 final class ChromiumProductWindow {
     let state: BrowserWindowState
     let shell: NSView
-    init(state: BrowserWindowState, shell: NSView) { self.state = state; self.shell = shell }
+    /// A failed restore must not erase its already-saved window record.
+    var preservesSavedRecord: Bool
+    init(state: BrowserWindowState, shell: NSView, preservesSavedRecord: Bool = false) {
+        self.state = state; self.shell = shell; self.preservesSavedRecord = preservesSavedRecord
+    }
 }
 
 /// Admission of existing native pages, not a second tab model. Only the native
@@ -35,6 +40,186 @@ final class ChromiumCreatedPageAdmission {
               products[row.physical_group] == nil else { return false }
         products[row.physical_group] = product
         return true
+    }
+
+    func shouldDetachModelWindow(_ state: BrowserWindowState) -> Bool {
+        products.values.contains { $0.state === state && !$0.preservesSavedRecord }
+    }
+
+    /// First and additional restores share the exact existing record identity.
+    /// A saved split remains unclaimed until native split presentation exists.
+    func prepareInitialWindow() -> BrowserWindowState? {
+        prepareSavedWindow(tabs.unclaimedWindowRecords().first)
+    }
+
+    private func prepareSavedWindow(_ record: WindowRecord?) -> BrowserWindowState? {
+        if let record {
+            guard registry.windows[record.id] == nil,
+                  tabs.device.windows.contains(where: { $0.id == record.id }) else { return nil }
+        }
+        let state = BrowserWindowState(id: record?.id ?? UUID())
+        registry.register(state)
+        guard registry.windows[state.id] === state,
+              record == nil || tabs.device.windows.contains(where: { $0.id == state.id }) else {
+            if registry.windows[state.id] === state { registry.unregister(state.id) }
+            return nil
+        }
+        tabs.attach(window: state)
+        guard state.split == nil else {
+            registry.unregister(state.id)
+            fputs("A saved split-view window cannot yet be restored in Chromium. Its saved state was kept.\n", stderr)
+            return nil
+        }
+        return registry.windows[state.id] === state ? state : nil
+    }
+
+    /// Bind the factory's exact reserved blank to an existing saved model, then
+    /// present. No new tab tree, profile registry or incoming-URL replay exists.
+    func admitRestoredWindow(_ state: BrowserWindowState, native: Int32, profile: UUID,
+                             show: Bool, canPresent: () -> Bool) -> Bool {
+        func current() -> Bool {
+            canPresent() && registry.windows[state.id] === state && !state.isIncognito &&
+            state.privateTree == nil && state.split == nil &&
+            state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
+        }
+        guard current(), let row = api.windowState(native), eligibleRegularFactory(row, profile: profile),
+              products[row.physical_group] == nil,
+              let snapshot = api.readSnapshot(),
+              let blank = snapshot.tabs.first(where: {
+                  $0.window == native && $0.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue != 0
+              })?.tab else { return false }
+        let shell = makeShell(state)
+        guard current(), let checked = api.windowState(native), checked.physical_group == row.physical_group,
+              eligibleRegularFactory(checked, profile: profile), products[row.physical_group] == nil,
+              host.registerWindow(state, nativeOwner: native, shell: shell, initialBlankTab: blank) else { return false }
+        let product = ChromiumProductWindow(state: state, shell: shell, preservesSavedRecord: true)
+        products[row.physical_group] = product
+        if let selected = state.selectedItemID { tabs.select(selected, in: state) }
+        else { _ = tabs.open(url: URL(string: "about:blank")!, in: state, placement: .newTab) }
+        state.windowHandle = shell.window // Existing pending-frame authority.
+        return finishRestoredPresentation(product, native: native, profile: profile,
+                                          show: show, canPresent: canPresent)
+    }
+
+    private func finishRestoredPresentation(_ product: ChromiumProductWindow, native: Int32,
+                                            profile: UUID, show: Bool, canPresent: () -> Bool) -> Bool {
+        let state = product.state
+        func current() -> Bool {
+            canPresent() && registry.windows[state.id] === state && !state.isIncognito && state.split == nil &&
+            state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
+        }
+        guard current(), let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
+              page.nativeWindowID == native, page.profileID == profile, !page.isPrivateSession,
+              host.isNativeSelection(page, in: state) else { return false }
+        if show, api.show(native) != 1 { return false }
+        guard current(), host.isNativeSelection(page, in: state),
+              tabs.selectedSession(in: state)?.navigation === page else { return false }
+        product.preservesSavedRecord = false
+        return true
+    }
+
+    /// Cancellation can precede or follow per-page close-cancel delivery. Either
+    /// source can retry the same bound page, never a new factory/load operation.
+    func resumeRestoredWindows(canPresent: () -> Bool) {
+        guard canPresent(), let snapshot = api.readSnapshot() else { return }
+        for (group, product) in products where product.preservesSavedRecord {
+            guard let row = snapshot.windows.first(where: { $0.physical_group == group && $0.selected_client == $0.window }),
+                  let profile = ChromiumDiscoveryAPI.profileID(row) else { continue }
+            _ = finishRestoredPresentation(product, native: row.window, profile: profile, show: true, canPresent: canPresent)
+        }
+    }
+
+    private func retireEndedRestore(_ state: BrowserWindowState) -> Bool {
+        guard let pair = products.first(where: { $0.value.state === state }),
+              let snapshot = api.readSnapshot(), !snapshot.windows.contains(where: { $0.physical_group == pair.key }),
+              host.unregisterWindow(state, absentFrom: snapshot) else { return false }
+        registry.unregister(state.id)
+        products.removeValue(forKey: pair.key)
+        return true
+    }
+
+    private func eligibleRegularFactory(_ row: BarcDiscoveryWindow, profile: UUID) -> Bool {
+        row.physical_group != 0 && row.kind == BARC_DISCOVERY_NORMAL.rawValue &&
+        row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 &&
+        ChromiumDiscoveryAPI.profileID(row) == profile
+    }
+
+    typealias SavedCallback = @convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void
+    typealias SavedOpen = @convention(c) (UnsafePointer<CChar>?, Int32, SavedCallback?, UnsafeMutableRawPointer?) -> Void
+    @MainActor private final class SavedRequest {
+        weak var admission: ChromiumCreatedPageAdmission?
+        let state: BrowserWindowState
+        let profile: UUID
+        let registry: WindowRegistry
+        let api: ChromiumDiscoveryAPI
+        let host: ChromiumNativePageHost
+        let close: (Int32) -> Int32
+        let canPresent: () -> Bool
+        init(_ admission: ChromiumCreatedPageAdmission, state: BrowserWindowState, profile: UUID,
+             close: @escaping (Int32) -> Int32, canPresent: @escaping () -> Bool) {
+            self.admission = admission; self.state = state; self.profile = profile
+            self.registry = admission.registry; self.api = admission.api; self.host = admission.host
+            self.close = close; self.canPresent = canPresent
+        }
+        func complete(_ status: Int32, _ native: Int32) {
+            if status == 0, let admission,
+               admission.admitRestoredWindow(state, native: native, profile: profile,
+                                              show: true, canPresent: canPresent) { return }
+            if let admission, let product = admission.products.values.first(where: { $0.state === state }) {
+                // Once registered, keep model/shell ownership while close is
+                // pending or refused. Only actual group disappearance retires it.
+                if status == 0, let row = api.windowState(native), ChromiumDiscoveryAPI.profileID(row) == profile,
+                   host.canCloseUnadmittedWindow(native) {
+                    let hasNativeCreatedTabs = api.readSnapshot()?.tabs.contains {
+                        $0.window == native && $0.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0
+                    } == true
+                    if !hasNativeCreatedTabs, let page = admission.tabs.selectedSession(in: state)?.navigation,
+                       (page as? ChromiumPageNavigation)?.nativeWindowID == native {
+                        host.closeUnadmittedWindow(page) { [self, weak admission] outcome in
+                            guard let admission else { return }
+                            if outcome == .cancelled {
+                                _ = admission.finishRestoredPresentation(product, native: native, profile: profile,
+                                                                         show: true, canPresent: canPresent)
+                            }
+                            _ = admission.retireEndedRestore(state)
+                        }
+                    } else if !hasNativeCreatedTabs { _ = close(native) }
+                }
+                _ = admission.retireEndedRestore(state)
+                return
+            }
+            if status == 0, let row = api.windowState(native), ChromiumDiscoveryAPI.profileID(row) == profile,
+               host.canCloseUnadmittedWindow(native) { _ = close(native) }
+            // No host/product was published: unregister without normal detach,
+            // leaving the original saved record available for retry.
+            if registry.windows[state.id] === state { registry.unregister(state.id) }
+            fputs("A saved browser window could not be restored. Its saved state was kept.\n", stderr)
+        }
+    }
+
+    func restoreSavedWindows(open: SavedOpen, close: @escaping (Int32) -> Int32,
+                             canPresent: @escaping () -> Bool) {
+        for record in tabs.unclaimedWindowRecords() {
+            guard canPresent(), registry.windows[record.id] == nil,
+                  tabs.device.windows.contains(where: { $0.id == record.id }) else { continue }
+            guard let state = prepareSavedWindow(record) else { continue }
+            guard let space = state.spaceID, let profile = tabs.profile(forSpace: space) else {
+                registry.unregister(state.id)
+                fputs("A saved unavailable-profile window could not be restored. Its saved state was kept.\n", stderr)
+                continue
+            }
+            let request = SavedRequest(self, state: state, profile: profile.id, close: close, canPresent: canPresent)
+            // C borrows this operation until callback; stopped UI delivery can
+            // retain it until process shutdown, like other profile factories.
+            profile.id.uuidString.withCString { uuid in
+                open(uuid, 5, { status, native, pointer in
+                    MainActor.assumeIsolated {
+                        guard let pointer else { return }
+                        Unmanaged<SavedRequest>.fromOpaque(pointer).takeRetainedValue().complete(status, native)
+                    }
+                }, Unmanaged.passRetained(request).toOpaque())
+            }
+        }
     }
 
     /// A factory callback explicitly hands off its exact blank; ordinary
@@ -223,6 +408,8 @@ final class ChromiumCreatedPageAdmission {
                   let verified = api.windowState(selected.window), verified.physical_group == group,
                   verified.selected_client == selected.window, verified.active_tab == selected.active_tab else { continue }
             product.state.windowHandle = product.shell.window
+            // Selection reflection is not successful restored presentation.
+            // A failed Show can still have pending/refused native close.
             if verified.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
                 _ = api.admit(selected.window, Unmanaged.passUnretained(product.shell).toOpaque())
             }

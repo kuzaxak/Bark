@@ -20,14 +20,20 @@
 #include "content/public/browser/download_manager.h"
 #include "base/functional/callback_helpers.h"
 #include "base/scoped_observation.h"
+#include "base/task/execution_fence.h"
 #include "base/test/bind.h"
+#include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/chrome_browser_main.h"
+#include "chrome/browser/chrome_browser_main_extra_parts.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/threading/thread_restrictions.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/browser_process.h"
 #include "chrome/browser/download/download_prefs.h"
+#include "chrome/browser/file_select_helper.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
+#include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/policy/developer_tools_policy_handler.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
@@ -61,6 +67,7 @@
 #include "chrome/browser/ui/views/tab_search_bubble_host.h"
 #include "chrome/browser/ui/views/tabs/shared/tab_strip_combo_button.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -68,10 +75,14 @@
 #include "components/javascript_dialogs/app_modal_dialog_controller.h"
 #include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/prefs/pref_service.h"
+#include "components/permissions/permission_request_manager.h"
+#include "components/permissions/test/mock_permission_prompt_factory.h"
+#include "components/permissions/test/mock_permission_request.h"
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/zoom/zoom_controller.h"
 #include "content/public/browser/download_manager.h"
+#include "content/public/browser/file_select_listener.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/render_process_host.h"
@@ -82,10 +93,12 @@
 #include "content/public/test/no_renderer_crashes_assertion.h"
 #include "content/public/test/slow_download_http_response.h"
 #include "content/public/test/test_navigation_observer.h"
+#include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
+#include "ui/shell_dialogs/fake_select_file_dialog.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/view_observer.h"
 #include "ui/views/controls/native/native_view_host.h"
@@ -247,6 +260,22 @@ class PreemptOnDownloadWarningDismissal : public views::WidgetObserver {
   }
   base::OnceClosure preempt_;
   base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{this};
+};
+
+// Keep cancellation observable without opening a real OS picker in mechanics.
+class UploadSelectionListener : public content::FileSelectListener {
+ public:
+  int cancelled = 0;
+  int selected = 0;
+
+ private:
+  ~UploadSelectionListener() override = default;
+  void FileSelected(std::vector<blink::mojom::FileChooserFileInfoPtr>,
+                    const base::FilePath&,
+                    blink::mojom::FileChooserParams::Mode) override {
+    ++selected;
+  }
+  void FileSelectionCanceled() override { ++cancelled; }
 };
 
 class ViewOwnerDeletionObserver : public views::ViewObserver {
@@ -765,6 +794,319 @@ class BarcSharedNativeWindowBrowserTest : public BarcBridgeBrowserTest {
     ASSERT_TRUE(content::WaitForLoadStop(contents));
   }
 };
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       UploadChooserFollowsLogicalOwnerWhilePhysicalInactive) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  Navigate(work, embedded_test_server()->GetURL("/file_input.html"));
+  const int32_t work_tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  auto* contents = work->GetTabStripModel()->GetActiveWebContents();
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(contents);
+  ASSERT_TRUE(tab);
+  auto* factory = ui::FakeSelectFileDialog::RegisterFactory();
+  base::ScopedClosureRunner reset_factory(base::BindOnce([] {
+    ui::SelectFileDialog::SetFactory(nullptr);
+  }));
+  int opened = 0;
+  factory->SetOpenCallback(base::BindLambdaForTesting([&] { ++opened; }));
+  blink::mojom::FileChooserParams params;
+  params.mode = blink::mojom::FileChooserParams::Mode::kOpen;
+
+  // Deliberately use logical inactivity, independent of the locked console.
+  // A native activation callback cannot cover this already-inactive owner.
+  auto* active = BrowserActiveStateManager::From(work);
+  active->DidBecomeInactive();
+  int native_deselections = 0;
+  auto deselected = work->RegisterNativeWindowSelectionChanged(
+      base::BindLambdaForTesting([&] {
+        if (!work->IsSelectedForNativeWindow()) {
+          ++native_deselections;
+        }
+      }));
+  auto pending = base::MakeRefCounted<UploadSelectionListener>();
+  {
+    base::ScopedThreadPoolExecutionFence delay_preparation;
+    FileSelectHelper::RunFileChooser(contents->GetPrimaryMainFrame(), pending,
+                                    params);
+    EXPECT_EQ(0, opened);
+    ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+    EXPECT_TRUE(tab->IsActivated());
+    EXPECT_EQ(1, pending->cancelled);
+  }
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(0, opened);
+  EXPECT_EQ(1, pending->cancelled);
+  EXPECT_EQ(1, native_deselections);
+
+  // A fresh request from the now-inactive retained client is refused too.
+  auto background = base::MakeRefCounted<UploadSelectionListener>();
+  FileSelectHelper::RunFileChooser(contents->GetPrimaryMainFrame(), background,
+                                  params);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, background->cancelled);
+  EXPECT_EQ(0, opened);
+
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  active->DidBecomeInactive();
+  auto shown = base::MakeRefCounted<UploadSelectionListener>();
+  FileSelectHelper::RunFileChooser(contents->GetPrimaryMainFrame(), shown,
+                                  params);
+  ASSERT_TRUE(base::test::RunUntil([&] { return opened == 1; }));
+  scoped_refptr<ui::FakeSelectFileDialog> dialog = factory->GetLastDialog();
+  ASSERT_TRUE(dialog);
+  ASSERT_TRUE(dialog->listener());
+  ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+  EXPECT_EQ(1, shown->cancelled);
+  EXPECT_EQ(nullptr, dialog->listener());
+  dialog->CallFileSelectionCanceled();
+  EXPECT_EQ(1, shown->cancelled);
+  EXPECT_EQ(0, shown->selected);
+  EXPECT_EQ(2, native_deselections);
+
+  // Destruction retains upstream RFH/WebContents cancellation authority.
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  auto closing = base::MakeRefCounted<UploadSelectionListener>();
+  FileSelectHelper::RunFileChooser(contents->GetPrimaryMainFrame(), closing,
+                                  params);
+  ASSERT_TRUE(base::test::RunUntil([&] { return opened == 2; }));
+  scoped_refptr<ui::FakeSelectFileDialog> closing_dialog = factory->GetLastDialog();
+  ASSERT_TRUE(closing_dialog);
+  deselected = {};
+  ui_test_utils::BrowserDestroyedObserver closed(work);
+  ASSERT_EQ(1, barc_window_close(work_id));
+  closed.Wait();
+  EXPECT_EQ(1, closing->cancelled);
+  EXPECT_EQ(0, closing->selected);
+  EXPECT_EQ(nullptr, closing_dialog->listener());
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       UploadChooserCancelsBeforeTransferOrDiscard) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t source_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* source = SharedWindow(source_id);
+  ASSERT_TRUE(source);
+  Navigate(source, embedded_test_server()->GetURL("/file_input.html"));
+  const int32_t moving = barc_window_tab_at(source_id, 0);
+  auto* moving_contents = source->GetTabStripModel()->GetActiveWebContents();
+  const int32_t foreground = barc_tab_create(source_id, "about:blank", 1);
+  ASSERT_GT(foreground, 0);
+  ASSERT_EQ(1, barc_tab_select(source_id, foreground));
+  const int32_t destination_id = barc_window_new_peer(source_id);
+  auto* destination = SharedWindow(destination_id);
+  ASSERT_TRUE(destination);
+  ASSERT_EQ(source->GetProfile(), destination->GetProfile());
+  auto* factory = ui::FakeSelectFileDialog::RegisterFactory();
+  base::ScopedClosureRunner reset_factory(base::BindOnce([] {
+    ui::SelectFileDialog::SetFactory(nullptr);
+  }));
+  int opened = 0;
+  factory->SetOpenCallback(base::BindLambdaForTesting([&] { ++opened; }));
+  blink::mojom::FileChooserParams params;
+  params.mode = blink::mojom::FileChooserParams::Mode::kOpen;
+
+  // A queued background request has no WillDeactivate notification on move.
+  // Make it active at its destination before preparation resumes: it must still
+  // cancel, rather than opening under a new native owner.
+  ASSERT_EQ(1, barc_tab_select(source_id, foreground));
+  EXPECT_FALSE(tabs::TabInterface::MaybeGetFromContents(moving_contents)->IsActivated());
+  auto pending_move = base::MakeRefCounted<UploadSelectionListener>();
+  {
+    base::ScopedThreadPoolExecutionFence delay_preparation;
+    FileSelectHelper::RunFileChooser(moving_contents->GetPrimaryMainFrame(),
+                                    pending_move, params);
+    ASSERT_EQ(1, barc_tab_transfer(source_id, moving, destination_id));
+    ASSERT_EQ(1, barc_tab_select(destination_id, moving));
+    EXPECT_EQ(moving_contents, destination->GetTabStripModel()->GetActiveWebContents());
+    EXPECT_EQ(1, pending_move->cancelled);
+  }
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(0, opened);
+  EXPECT_EQ(1, pending_move->cancelled);
+
+  // The already-open dialog is cancelled before the real reverse transfer.
+  auto shown_move = base::MakeRefCounted<UploadSelectionListener>();
+  FileSelectHelper::RunFileChooser(moving_contents->GetPrimaryMainFrame(),
+                                  shown_move, params);
+  ASSERT_TRUE(base::test::RunUntil([&] { return opened == 1; }));
+  scoped_refptr<ui::FakeSelectFileDialog> moved_dialog = factory->GetLastDialog();
+  ASSERT_TRUE(moved_dialog);
+  ASSERT_EQ(1, barc_tab_transfer(destination_id, moving, source_id));
+  EXPECT_EQ(1, shown_move->cancelled);
+  EXPECT_EQ(nullptr, moved_dialog->listener());
+  ASSERT_EQ(1, barc_tab_select(source_id, moving));
+
+  // Exercise the real TabStripModel/TabModel contents swap and deliberately
+  // retain its old WebContents. Cancellation cannot rely on later destruction.
+  auto pending_discard = base::MakeRefCounted<UploadSelectionListener>();
+  std::unique_ptr<content::WebContents> old_contents;
+  {
+    base::ScopedThreadPoolExecutionFence delay_preparation;
+    FileSelectHelper::RunFileChooser(moving_contents->GetPrimaryMainFrame(),
+                                    pending_discard, params);
+    auto replacement = content::WebContents::Create(
+        content::WebContents::CreateParams(source->GetProfile()));
+    old_contents = source->GetTabStripModel()->DiscardWebContents(
+        moving_contents, std::move(replacement));
+    EXPECT_EQ(moving_contents, old_contents.get());
+    EXPECT_EQ(1, pending_discard->cancelled);
+  }
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(1, opened);
+  EXPECT_EQ(1, pending_discard->cancelled);
+  old_contents.reset();
+
+  auto* current = source->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(
+      current, embedded_test_server()->GetURL("/file_input.html")));
+  auto shown_discard = base::MakeRefCounted<UploadSelectionListener>();
+  FileSelectHelper::RunFileChooser(current->GetPrimaryMainFrame(), shown_discard,
+                                  params);
+  ASSERT_TRUE(base::test::RunUntil([&] { return opened == 2; }));
+  scoped_refptr<ui::FakeSelectFileDialog> discarded_dialog = factory->GetLastDialog();
+  ASSERT_TRUE(discarded_dialog);
+  auto replacement = content::WebContents::Create(
+      content::WebContents::CreateParams(source->GetProfile()));
+  old_contents = source->GetTabStripModel()->DiscardWebContents(
+      current, std::move(replacement));
+  EXPECT_EQ(current, old_contents.get());
+  EXPECT_EQ(1, shown_discard->cancelled);
+  EXPECT_EQ(nullptr, discarded_dialog->listener());
+  EXPECT_EQ(0, shown_discard->selected);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       NativeDeselectionPreservesReentrantSelection) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  const int32_t third_id = Open(kSharedWork, work_id, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  auto* personal = SharedWindow(personal_id);
+  auto* third = SharedWindow(third_id);
+  ASSERT_TRUE(work);
+  ASSERT_TRUE(personal);
+  ASSERT_TRUE(third);
+  const int32_t work_tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
+  const int32_t third_tab = barc_window_tab_at(third_id, 0);
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  int notifications = 0;
+  auto deselected = work->RegisterNativeWindowSelectionChanged(
+      base::BindLambdaForTesting([&] {
+        if (work->IsSelectedForNativeWindow()) { return; }
+        ++notifications;
+        EXPECT_FALSE(work->IsSelectedForNativeWindow());
+        EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+        EXPECT_EQ(1, barc_tab_select(third_id, third_tab));
+      }));
+  EXPECT_EQ(0, barc_tab_select(personal_id, personal_tab));
+  EXPECT_EQ(1, notifications);
+  EXPECT_TRUE(third->IsSelectedForNativeWindow());
+  EXPECT_FALSE(personal->IsSelectedForNativeWindow());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       PermissionRequestsWaitForActualLogicalOwner) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const auto url = embedded_test_server()->GetURL("/title1.html");
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  Navigate(work, url);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  const int32_t work_tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
+  ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+  auto* contents = work->GetTabStripModel()->GetActiveWebContents();
+  auto* manager = permissions::PermissionRequestManager::FromWebContents(contents);
+  ASSERT_TRUE(manager);
+  permissions::MockPermissionPromptFactory prompts(manager);
+  permissions::MockPermissionRequest::MockPermissionRequestState result;
+  manager->AddRequest(contents->GetPrimaryMainFrame(),
+      std::make_unique<permissions::MockPermissionRequest>(url,
+          permissions::RequestType::kGeolocation, result.GetWeakPtr()));
+  content::RunAllTasksUntilIdle();
+  EXPECT_TRUE(tabs::TabInterface::MaybeGetFromContents(contents)->IsActivated());
+  EXPECT_FALSE(prompts.is_visible());
+  EXPECT_EQ(0, prompts.show_count());
+  EXPECT_FALSE(result.finished);
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  EXPECT_EQ(1, prompts.show_count());
+  ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+  EXPECT_FALSE(prompts.is_visible());
+  EXPECT_FALSE(result.finished);
+  EXPECT_FALSE(result.granted);
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  EXPECT_EQ(2, prompts.show_count());
+
+  // The prompt factory itself may reenter native selection. Its returned view
+  // must not remain visible under Personal, nor create recursively on return.
+  ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+  bool supersede = true;
+  manager->set_view_factory_for_testing(base::BindLambdaForTesting(
+      [&](content::WebContents* page, permissions::PermissionPrompt::Delegate* delegate) {
+        auto prompt = prompts.Create(page, delegate);
+        if (supersede) {
+          supersede = false;
+          EXPECT_EQ(1, barc_tab_select(personal_id, personal_tab));
+        }
+        return prompt;
+      }));
+  EXPECT_EQ(0, barc_tab_select(work_id, work_tab));
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  EXPECT_FALSE(prompts.is_visible());
+  EXPECT_FALSE(result.finished);
+  ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  EXPECT_TRUE(prompts.is_visible());
+  EXPECT_FALSE(result.finished);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       PrivatePermissionRequestEndsWithActualOwner) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t regular_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* regular = SharedWindow(regular_id);
+  ASSERT_TRUE(regular);
+  SharedProfileResult opened;
+  barc_private_session_open_window(SharedProfileCompleted, &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t private_id = opened.Get<1>();
+  auto* private_owner = SharedWindow(private_id);
+  ASSERT_TRUE(private_owner);
+  ASSERT_TRUE(private_owner->GetProfile()->IsOffTheRecord());
+  ASSERT_NE(regular->GetProfile(), private_owner->GetProfile());
+  const auto url = embedded_test_server()->GetURL("/title1.html");
+  Navigate(private_owner, url);
+  auto* contents = private_owner->GetTabStripModel()->GetActiveWebContents();
+  auto* manager = permissions::PermissionRequestManager::FromWebContents(contents);
+  ASSERT_TRUE(manager);
+  permissions::MockPermissionPromptFactory prompts(manager);
+  permissions::MockPermissionRequest::MockPermissionRequestState result;
+  manager->AddRequest(contents->GetPrimaryMainFrame(),
+      std::make_unique<permissions::MockPermissionRequest>(url,
+          permissions::RequestType::kGeolocation, result.GetWeakPtr()));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  ui_test_utils::BrowserDestroyedObserver closed(private_owner);
+  ASSERT_EQ(1, barc_window_close(private_id));
+  closed.Wait();
+  EXPECT_FALSE(prompts.is_visible());
+  EXPECT_TRUE(result.finished);
+  EXPECT_FALSE(result.granted);
+  EXPECT_EQ(regular, SharedWindow(regular_id));
+}
 
 IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                        PageCommandsRequireExactActiveOwnerAndRespectPolicy) {
@@ -2612,4 +2954,147 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
   EXPECT_FALSE(popup->flags & BARC_DISCOVERY_TAB_APP_FACTORY);
   EXPECT_EQ(tabs::TabInterface::GetFromContents(opener)->GetHandle().raw_value(),
             popup->opener_tab);
+}
+
+// Native accepted-close delivery is distinct from the initial quit attempt.
+class BarcAcceptedQuitBrowserTest : public BarcDiscoveryBrowserTest {
+ public:
+  void SetUp() override {
+    barc_set_runtime_close_callback(
+        [](int32_t accepted, void* pointer) {
+          auto* self = static_cast<BarcAcceptedQuitBrowserTest*>(pointer);
+          self->phases.push_back(accepted);
+          if (accepted && self->on_accepted) {
+            self->on_accepted.Run();
+          }
+        },
+        this);
+    BarcDiscoveryBrowserTest::SetUp();
+  }
+ protected:
+  std::vector<int32_t> phases;
+  base::RepeatingClosure on_accepted;
+};
+
+IN_PROC_BROWSER_TEST_F(BarcAcceptedQuitBrowserTest,
+                       InitialBeforeUnloadVetoNeverSignalsAcceptedClose) {
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), GURL("data:text/html,initial")));
+  auto* page = browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(page, "onbeforeunload=()=> 'keep';"));
+  content::PrepContentsForBeforeUnloadTest(page);
+  chrome::CloseAllBrowsersAndQuit();
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  EXPECT_TRUE(phases.empty());
+  dialog->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([] { return !browser_shutdown::IsTryingToQuit(); }));
+  EXPECT_TRUE(phases.empty());
+  ASSERT_TRUE(content::ExecJs(page, "onbeforeunload=null;"));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAcceptedQuitBrowserTest,
+                       LateWindowVetoReversesAcceptedCloseAndKeepsBrowserUsable) {
+  auto* profile = browser()->GetProfile();
+  auto keep_alive = ScopedProfileKeepAlive::TryAcquire(
+      profile, ProfileKeepAliveOrigin::kProfileCreationFlow);
+  ASSERT_TRUE(keep_alive);
+  const int32_t original = browser()->GetSessionID().id();
+  base::WeakPtr<BrowserWindowInterface> late;
+  content::WebContents* late_page = nullptr;
+  bool prepared = false;
+  on_accepted = base::BindLambdaForTesting([&] {
+    // The accepted notification precedes even the first native owner teardown.
+    EXPECT_GT(barc_window_tab_count(original), 0u);
+    auto* created = CreateBrowser(profile);
+    late = created->GetWeakPtr();
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(created, GURL("data:text/html,late")));
+    late_page = created->GetTabStripModel()->GetActiveWebContents();
+    prepared = content::ExecJs(late_page, "onbeforeunload=()=> 'keep';");
+    content::PrepContentsForBeforeUnloadTest(late_page);
+  });
+  base::ScopedClosureRunner clear_handler(base::BindLambdaForTesting([&] {
+    on_accepted.Reset();
+  }));
+  chrome::CloseAllBrowsersAndQuit();
+  ASSERT_TRUE(late);
+  ASSERT_TRUE(prepared);
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  EXPECT_EQ(late_page, dialog->web_contents());
+  EXPECT_EQ(std::vector<int32_t>({1}), phases);
+  dialog->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return phases == std::vector<int32_t>({1, 0}) &&
+           !browser_shutdown::IsTryingToQuit();
+  }));
+  ASSERT_TRUE(late);
+  EXPECT_GT(barc_tab_create(late->GetSessionID().id(), "about:blank", 0), 0);
+  ASSERT_TRUE(content::ExecJs(late_page, "onbeforeunload=null;"));
+  chrome::OnClosingAllBrowsers(false);
+  EXPECT_EQ(std::vector<int32_t>({1, 0}), phases); // No duplicate cancellation.
+}
+
+// An early ChromeMain return must release borrowed application callbacks even
+// when the browser main loop never reaches RuntimeStopped().
+class BarcEarlyRegisteredReturnBrowserTest : public InProcessBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    InProcessBrowserTest::SetUpCommandLine(command_line);
+    // These early-return cases never admit or present a startup window.
+    command_line->AppendSwitch(switches::kNoStartupWindow);
+  }
+  void SetUp() override {
+    barc_set_runtime_ready_callback(
+        [](void* context) { ++static_cast<BarcEarlyRegisteredReturnBrowserTest*>(context)->deliveries; }, this);
+    barc_set_runtime_close_callback(
+        [](int32_t, void* context) { ++static_cast<BarcEarlyRegisteredReturnBrowserTest*>(context)->deliveries; }, this);
+    ASSERT_FALSE(barc::RuntimeCallbacksClearedForTesting());
+    if (AbortBeforeMain()) {
+      barc_runtime_complete_startup(0);
+      ASSERT_TRUE(barc::RuntimeCallbacksClearedForTesting());
+    }
+    InProcessBrowserTest::SetUp();
+  }
+ protected:
+  virtual bool AbortBeforeMain() const { return true; }
+  int deliveries = 0;
+};
+
+IN_PROC_BROWSER_TEST_F(BarcEarlyRegisteredReturnBrowserTest,
+                       ReleasesBothBorrowedContextsAndSubscriptions) {
+  EXPECT_TRUE(barc::RuntimeCallbacksClearedForTesting());
+  EXPECT_FALSE(barc::IsNativeApplicationRegistered());
+  chrome::OnAllBrowsersCloseAccepted();
+  chrome::OnClosingAllBrowsers(false);
+  EXPECT_EQ(0, deliveries);
+}
+
+class BarcEarlyPostedReturnBrowserTest : public BarcEarlyRegisteredReturnBrowserTest {
+ protected:
+  bool AbortBeforeMain() const override { return false; }
+  class AbortBeforeReadyDrain : public ChromeBrowserMainExtraParts {
+   public:
+    void PostBrowserStart() override {
+      // ChromeBrowserMainParts calls barc::PostRuntimeReady immediately after
+      // all PostBrowserStart parts. This task therefore runs with kPosted,
+      // before the subsequently posted runtime-ready callback can drain.
+      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+          FROM_HERE, base::BindOnce([] {
+            EXPECT_TRUE(barc::IsNativeApplicationRegistered());
+            EXPECT_FALSE(barc::RuntimeCallbacksClearedForTesting());
+            barc_runtime_complete_startup(0);
+            EXPECT_TRUE(barc::RuntimeCallbacksClearedForTesting());
+          }));
+    }
+  };
+  void CreatedBrowserMainParts(content::BrowserMainParts* parts) override {
+    InProcessBrowserTest::CreatedBrowserMainParts(parts);
+    static_cast<ChromeBrowserMainParts*>(parts)->AddParts(
+        std::make_unique<AbortBeforeReadyDrain>());
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarcEarlyPostedReturnBrowserTest,
+                       ReleasesBeforeQueuedReadyDelivery) {
+  EXPECT_TRUE(barc::RuntimeCallbacksClearedForTesting());
+  EXPECT_FALSE(barc::IsNativeApplicationRegistered());
+  EXPECT_EQ(0, deliveries);
 }

@@ -484,6 +484,22 @@ final class ChromiumNativePageHost: NativePageHost {
         return api.shellIsOwned(native, Unmanaged.passUnretained(shell).toOpaque()) == 1
     }
 
+    /// A failed restore closes its logical window but keeps the existing page
+    /// observation until actual terminal/cancelled outcome. Reuse close callbacks.
+    func closeUnadmittedWindow(_ navigation: any PageNavigation,
+                               completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+        guard let page = navigation as? ChromiumPageNavigation else { completion(.cancelled); return }
+        if page.isClosed { completion(page.nativeCloseOutcome ?? .ownerEnded); return }
+        let id = ObjectIdentifier(page)
+        guard pages[id]?.page === page, canCloseUnadmittedWindow(page.nativeWindowID) else { completion(.cancelled); return }
+        if closing[id] != nil { closing[id]?.append(completion); return }
+        closing[id] = [completion]
+        let accepted = api.closeWindow(page.nativeWindowID)
+        if accepted != 1, let callbacks = closing.removeValue(forKey: id) {
+            callbacks.forEach { $0(.cancelled) }
+        }
+    }
+
     func closePage(_ navigation: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         guard let page = navigation as? ChromiumPageNavigation else { completion(.cancelled); return }
         if page.isClosed { completion(page.nativeCloseOutcome ?? .closed); return }

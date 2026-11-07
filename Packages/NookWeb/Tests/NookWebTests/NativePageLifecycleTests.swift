@@ -11,6 +11,48 @@ import NookTweaks
 #if os(macOS)
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func acceptedQuitPreservesAllSavedWindowsBeforeRegistryRetirement() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        _ = f.host.finishCreate(0)
+        let other = BrowserWindowState(); other.spaceID = f.window.spaceID
+        f.registry.register(other); f.tabs.attach(window: other, restoringSavedState: false)
+        let request = f.host.creates.count
+        _ = f.tabs.open(url: URL(string: "https://fixture.invalid/second")!, in: other, placement: .newTab)
+        _ = f.host.finishCreate(request)
+        let ids = Set([f.window.id, other.id]), tree = f.tabs.tree
+        f.tabs.flushSync()
+        #expect(Set(f.tabs.device.windows.map(\.id)) == ids)
+        f.registry.onWindowClose = { id in if let window = f.registry.windows[id] { f.tabs.detach(window: window) } }
+        f.registry.unregister(f.window.id); f.registry.unregister(other.id)
+        #expect(Set(f.tabs.device.windows.map(\.id)) == ids && f.tabs.tree == tree)
+        f.tabs.saveNow()
+        let saved = TabStore(directory: f.directory.appendingPathComponent("Tabs")).load()
+        #expect(Set(saved.device.windows.map(\.id)) == ids && saved.tree == tree)
+    }
+
+    @Test func lateQuitCancellationResumesNativeOperationsWithoutReplacingSavedItems() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        _ = f.host.finishCreate(0)
+        let original = f.tabs.tree, selected = f.window.selectedItemID
+        let other = BrowserWindowState(); other.spaceID = f.window.spaceID
+        f.registry.register(other); f.tabs.attach(window: other, restoringSavedState: false)
+        f.tabs.mirror(other)
+        f.tabs.flushSync()
+        f.tabs.resumeAfterCancelledTermination()
+        #expect(f.tabs.tree == original && f.window.selectedItemID == selected)
+        f.registry.onWindowClose = { id in if let window = f.registry.windows[id] { f.tabs.detach(window: window) } }
+        f.registry.unregister(other.id)
+        #expect(!f.tabs.device.windows.contains { $0.id == other.id })
+        #expect(f.tabs.device.windows.contains { $0.id == f.window.id })
+        let request = f.host.creates.count
+        let id = try #require(f.tabs.open(url: URL(string: "https://fixture.invalid/resumed")!, in: f.window, placement: .newTab))
+        #expect(f.host.creates.count == request + 1)
+        _ = f.host.finishCreate(request)
+        #expect(f.window.selectedItemID == id && f.tabs.session(for: id)?.navigation != nil)
+        #expect(original.items.keys.allSatisfy { f.tabs.tree.item($0)?.url == original.item($0)?.url })
+        #expect(f.host.closes.isEmpty)
+    }
+
     @Test func privateNativeAdoptionIsEphemeralAndOwnerEndNeverDeletesSavedState() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let a = f.privateWindow(), b = f.privateWindow()
