@@ -19,29 +19,8 @@ extension PageSession: WKNavigationDelegate {
         _ webView: WKWebView,
         didStartProvisionalNavigation navigation: WKNavigation!
     ) {
-        loadingState = .didStartProvisionalNavigation
-        blockedURL = nil
-        certificateWarning = nil
-        controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
-
-        if let newURL = webView.url {
-            // Only reset for actual URL changes, not just reloads
-            if newURL.absoluteString != self.url.absoluteString {
-                hasAudioContent = false
-                hasPlayingAudio = false
-                // Note: isAudioMuted is preserved to maintain user's mute preference
-                // Reset sampled domain to force resampling on new page
-                if let newDomain = extractDomain(from: newURL),
-                   newDomain != lastSampledDomain {
-                    lastSampledDomain = nil
-                    lastTopBarDomain = nil
-                }
-                // Update URL but don't persist yet - wait for navigation to complete
-                self.url = newURL
-            } else {
-                self.url = newURL
-            }
-        }
+        guard acceptsNavigationCallbacks(from: webView) else { return }
+        navigationChanged(.started(webView.url), from: webView, navigation: navigation)
     }
 
     // MARK: - Content Committed
@@ -49,9 +28,9 @@ extension PageSession: WKNavigationDelegate {
         _ webView: WKWebView,
         didCommit navigation: WKNavigation!
     ) {
-        loadingState = .didCommit
-        linkPreview = nil
-        certificateWarning = nil
+        guard acceptsNavigationCallbacks(from: webView) else { return }
+        guard navigationChanged(.committed(webView.url), from: webView,
+                                navigation: navigation) else { return }
         pdfLoadStateChanged(webView)
         if let capture = devCapture {
             capture.reset()
@@ -62,7 +41,6 @@ extension PageSession: WKNavigationDelegate {
         }
         // First commit of the process is the launch-to-first-paint mark; later ones no-op.
         LaunchMetrics.markFirstPaint()
-        controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
         // A new page gets its dialogs back.
         jsDialogCount = 0
         jsDialogsSuppressed = false
@@ -74,21 +52,6 @@ extension PageSession: WKNavigationDelegate {
         #if os(macOS)
         controller?.vault?.pageCommitted(in: webView)
         #endif
-
-        if let newURL = webView.url {
-            self.url = newURL
-            controller?.pageCommitted(itemID: itemID, url: newURL)
-            controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
-            // Update website shortcut detector with new URL; it follows the window's tab, not Peek.
-            if !isDetached { controller?.sessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
-            // Grant extension access to the committed URL. This is critical for
-            // server-side redirects (e.g. appstoreconnect.apple.com → idmsa.apple.com)
-            // where decidePolicyFor only granted access to the initial URL, not the
-            // redirect target. Without this, content scripts can't inject on the
-            // redirected page and chrome.tabs.query() won't return the URL.
-            controller?.tabEvents?.grantAccess(to: newURL)
-            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
-        }
     }
 
     // MARK: - Loading Success
@@ -96,30 +59,17 @@ extension PageSession: WKNavigationDelegate {
         _ webView: WKWebView,
         didFinish navigation: WKNavigation!
     ) {
-        loadingState = .didFinish
+        guard acceptsNavigationCallbacks(from: webView) else { return }
+        guard navigationChanged(.finished(webView.url, title: nil,
+                                          isReload: mainFrameNavigationType == .reload),
+                                from: webView, navigation: navigation) else { return }
         pdfLoadStateChanged(webView)
-        controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
 
         if let newURL = webView.url {
-            self.url = newURL
-            // Grant extension access to the final URL after all redirects.
-            // decidePolicyFor only grants access to the initial navigation URL;
-            // server-side redirects land here with a different URL that needs
-            // its own grant for content scripts and chrome.tabs.query().
-            controller?.tabEvents?.grantAccess(to: newURL)
-            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
-
-            // Wake MV3 background workers so they can process the new page
-            // (autofill detection, badge count updates, etc.)
-            controller?.tabEvents?.wakeBackgroundWorkers()
-
             // Extension diagnostics: check content scripts, background worker, and messaging
             #if DEBUG
             controller?.tabEvents?.diagnose(for: webView, url: newURL)
             #endif
-            // The final URL after redirects.
-            controller?.pageCommitted(itemID: itemID, url: newURL)
-            controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
             if let settings = controller?.settings { BoostTweaks.runScripts(for: newURL, in: webView, settings: settings) }
 
             // Load saved zoom level for the new domain
@@ -133,29 +83,20 @@ extension PageSession: WKNavigationDelegate {
         // CRITICAL: Update navigation state after back/forward navigation
         updateNavigationStateEnhanced(source: "didFinish")
 
+        let finishedURL = webView.url
         webView.evaluateJavaScript("document.title") {
             [weak self] result, error in
+            // A retired surface must not add history/title after unload or engine replacement.
+            guard let session = self, session.acceptsNavigationCallbacks(from: webView),
+                  webView.url == finishedURL else { return }
             // evaluateJavaScript completion runs on main thread; no dispatch needed
             if let title = result as? String {
-                self?.updateTitle(title)
-
-                // Add to profile-aware history after title is updated
                 if let currentURL = webView.url {
-                    let profile = self?.profile
-                    let profileId = profile?.id ?? self?.controller?.sessionDelegate?.currentProfile?.id
-                    let isEphemeral = self?.isPrivate == true || self?.isAgentPage == true || profile?.isEphemeral == true
-                    let weight: Double = self?.typedVisitPending == true ? 2 : self?.mainFrameNavigationType == .reload ? 0 : 1
-                    self?.typedVisitPending = false
-                    self?.controller?.history?.addVisit(
-                        url: currentURL,
-                        title: title,
-                        timestamp: Date(),
-                        tabId: self?.id,
-                        profileId: profileId,
-                        isEphemeral: isEphemeral,
-                        weight: weight
-                    )
-                    self?.schedulePageTextCapture(in: webView, sameDocument: false)
+                    if session.navigationChanged(.finished(currentURL, title: title,
+                        isReload: session.mainFrameNavigationType == .reload),
+                        from: webView, navigation: navigation) {
+                        session.schedulePageTextCapture(in: webView, sameDocument: false)
+                    }
                 }
             }
         }
@@ -200,13 +141,17 @@ extension PageSession: WKNavigationDelegate {
         didFail navigation: WKNavigation!,
         withError error: Error
     ) {
-        loadingState = .didFail(error)
+        guard acceptsNavigationCallbacks(from: webView) else { return }
+        navigationChanged(.failed(error, provisional: false,
+                                  committedURL: webView.backForwardList.currentItem?.url),
+                          from: webView, navigation: navigation)
 
         updateNavigationStateEnhanced(source: "didFail")
     }
 
     // MARK: - Web Process Crash Recovery
     public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        guard acceptsNavigationCallbacks(from: webView) else { return }
         let now = Date()
         // Reset crash counter if last crash was more than 30 seconds ago (new crash burst)
         if now.timeIntervalSince(lastWebProcessCrashDate) > 30 {
@@ -261,8 +206,11 @@ extension PageSession: WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
     ) {
-        loadingState = .didFailProvisionalNavigation(error)
+        guard acceptsNavigationCallbacks(from: webView) else { return }
         let attempted = url
+        guard navigationChanged(.failed(error, provisional: true,
+                                        committedURL: webView.backForwardList.currentItem?.url),
+                                from: webView, navigation: navigation) else { return }
         if Self.isBlockedByContentBlocker(error) {
             blockedURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? attempted
         } else if !webView.isLoading, let warning = CertificateWarning(

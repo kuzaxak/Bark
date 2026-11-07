@@ -260,11 +260,202 @@ public final class PageSession: NSObject, Identifiable {
 
     // MARK: - Web View Ownership
 
-    var primaryWebView: WKWebView?
+    private var navigationDocumentURL: URL?
+    private var navigationHasCommittedPage = false
+    private var navigationVisitRecorded = false
+    private var navigationFinishedReported = false
+    private var navigationCancelled = false
+    var navigation: (any PageNavigation)?
+    var primaryWebView: WKWebView? {
+        didSet {
+            guard primaryWebView !== oldValue else { return }
+            navigation?.invalidate()
+            navigation = nil
+            guard let primaryWebView else { return }
+            let adapter = WebKitPageNavigation(webView: primaryWebView, profileID: profile?.id)
+            navigation = adapter
+            adapter.onEvent = { [weak self, weak adapter] event in
+                guard let self, let adapter, self.navigation === adapter else { return }
+                self.navigationChanged(event)
+            }
+            adapter.onStateChanged = { [weak self, weak adapter] state in
+                guard let self, let adapter, self.navigation === adapter else { return }
+                self.applyNavigationState(state)
+            }
+            updateNavigationState()
+        }
+    }
+
+    /// Attach an engine-owned page without creating a WebKit surface. An existing
+    /// WebKit page must first be unloaded; never keep two live engines for one item.
+    public func installNavigation(_ page: any PageNavigation) {
+        precondition(primaryWebView == nil, "Unload the WebKit page before replacing its engine")
+        precondition(profile?.id == nil || profile?.id == page.profileID,
+                     "Navigation must belong to this page's profile")
+        navigation?.stop()
+        navigation?.invalidate()
+        navigation = page
+        page.onEvent = { [weak self, weak page] event in
+            guard let self, let page, self.navigation === page else { return }
+            self.navigationChanged(event)
+        }
+        page.onStateChanged = { [weak self, weak page] state in
+            guard let self, let page, self.navigation === page else { return }
+            self.applyNavigationState(state)
+        }
+        applyNavigationState(page.state)
+        if let url = page.state.url { self.url = url }
+        navigationDocumentURL = page.state.isLoading ? nil : page.state.url
+        navigationHasCommittedPage = page.state.url != nil && !page.state.isLoading
+        navigationVisitRecorded = navigationHasCommittedPage
+        navigationFinishedReported = navigationHasCommittedPage
+        navigationCancelled = false
+        loadingState = page.state.isLoading ? .didStartProvisionalNavigation :
+            (page.state.url == nil ? .idle : .didFinish)
+    }
+
+    private func applyNavigationState(_ state: PageNavigationState) {
+        canGoBack = state.canGoBack
+        canGoForward = state.canGoForward
+        if let title = state.title, !title.isEmpty { updateTitle(title) }
+        // A displayed pending URL is not a committed URL to persist. Only
+        // lifecycle events notify the tree or append a history visit.
+        if let url = state.url { self.url = url }
+        if state.isLoading {
+            if !loadingState.isLoading { loadingState = .didStartProvisionalNavigation }
+        } else if loadingState.isLoading {
+            loadingState = .didFinish
+        }
+        // A nonloading snapshot must not erase an explicit failure/cancellation.
+    }
+
+    func navigationChanged(_ event: PageNavigationEvent) {
+        switch event {
+        case .started(let newURL):
+            navigationVisitRecorded = false
+            navigationFinishedReported = false
+            navigationCancelled = false
+            loadingState = .didStartProvisionalNavigation
+            blockedURL = nil
+            certificateWarning = nil
+            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+            if let newURL {
+                if newURL != navigationDocumentURL {
+                    hasAudioContent = false
+                    hasPlayingAudio = false
+                    if let domain = extractDomain(from: newURL), domain != lastSampledDomain {
+                        lastSampledDomain = nil
+                        lastTopBarDomain = nil
+                    }
+                }
+                url = newURL
+            }
+        case .committed(let newURL, let sameDocument):
+            if let newURL { navigationDocumentURL = newURL }
+            if newURL != nil { navigationHasCommittedPage = true }
+            if !sameDocument {
+                navigationVisitRecorded = false
+                navigationFinishedReported = false
+                navigationCancelled = false
+                loadingState = .didCommit
+                linkPreview = nil
+                certificateWarning = nil
+                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+            }
+            if let newURL {
+                url = newURL
+                controller?.pageCommitted(itemID: itemID, url: newURL)
+                controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
+                if !isDetached { controller?.sessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
+                controller?.tabEvents?.grantAccess(to: newURL)
+                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+            }
+        case .finished(let newURL, let finalTitle, let isReload):
+            guard !navigationCancelled else { return }
+            if let newURL { navigationDocumentURL = newURL }
+            if newURL != nil { navigationHasCommittedPage = true }
+            loadingState = .didFinish
+            if !navigationFinishedReported {
+                navigationFinishedReported = true
+                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+                if let newURL {
+                    url = newURL
+                    controller?.tabEvents?.grantAccess(to: newURL)
+                    controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                    controller?.tabEvents?.wakeBackgroundWorkers()
+                    controller?.pageCommitted(itemID: itemID, url: newURL)
+                    controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
+                }
+            }
+            if let finalTitle, let newURL {
+                updateTitle(finalTitle)
+                guard !navigationVisitRecorded else { return }
+                navigationVisitRecorded = true
+                let boundProfile = profile
+                let profileID = navigation?.profileID ?? boundProfile?.id ?? controller?.sessionDelegate?.currentProfile?.id
+                let ephemeral = isPrivate || isAgentPage || boundProfile?.isEphemeral == true
+                let weight: Double = typedVisitPending ? 2 : isReload ? 0 : 1
+                typedVisitPending = false
+                controller?.history?.addVisit(url: newURL, title: finalTitle, timestamp: Date(),
+                    tabId: id, profileId: profileID, isEphemeral: ephemeral, weight: weight)
+            }
+        case .failed(let error, let provisional, let committedURL):
+            if let committedURL { navigationDocumentURL = committedURL }
+            if let committedURL, committedURL != url {
+                url = committedURL
+                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                controller?.pageCommitted(itemID: itemID, url: committedURL)
+            }
+            loadingState = provisional ? .didFailProvisionalNavigation(error) : .didFail(error)
+        case .cancelled(let committedURL):
+            if let committedURL { navigationDocumentURL = committedURL }
+            navigationCancelled = true
+            navigationVisitRecorded = true
+            typedVisitPending = false
+            loadingState = .idle
+            if let committedURL, committedURL != url {
+                url = committedURL
+                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                controller?.pageCommitted(itemID: itemID, url: committedURL)
+            }
+            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+        case .titleChanged(let title):
+            if !title.isEmpty { updateTitle(title) }
+        case .closed:
+            // Engine deletion already happened. Detach before callbacks and
+            // never call stop/close back into the deleted native page.
+            let ended = navigation
+            navigation = nil
+            ended?.invalidate()
+            navigationHasCommittedPage = false
+            loadingState = .idle
+            onClose?()
+            if !isDetached { controller?.close(itemID) }
+        }
+    }
+
+    @discardableResult
+    func navigationChanged(_ event: PageNavigationEvent, from view: WKWebView,
+                           navigation token: WKNavigation? = nil) -> Bool {
+        guard acceptsNavigationCallbacks(from: view) else { return false }
+        if view === primaryWebView, let adapter = navigation as? WebKitPageNavigation {
+            return adapter.report(event, navigation: token)
+        }
+        // Legacy secondary windows remain WebKit-specific until hosting is ported.
+        navigationChanged(event)
+        return true
+    }
+
+    func acceptsNavigationCallbacks(from view: WKWebView) -> Bool {
+        guard navigation != nil else { return false }
+        return view === primaryWebView ||
+            controller?.webViews?.allWebViews(for: itemID).contains(where: { $0 === view }) == true
+    }
+
     /// The window that owns the primary web view; nil until a window displays the page.
     @ObservationIgnored var primaryWindowId: UUID?
 
-    public var isUnloaded: Bool { primaryWebView == nil }
+    public var isUnloaded: Bool { navigation == nil }
 
     /// Console and network log while Developer Mode is on; nil otherwise.
     public internal(set) var devCapture: DevCapture?
@@ -316,7 +507,7 @@ public final class PageSession: NSObject, Identifiable {
     // MARK: - Web View Lifecycle
 
     public func loadWebViewIfNeeded() {
-        if primaryWebView == nil {
+        if navigation == nil {
             setupWebView()
         }
         ensureFaviconLoaded()
@@ -328,7 +519,8 @@ public final class PageSession: NSObject, Identifiable {
         primaryWindowId = windowId
     }
 
-    private func setupWebView() {
+    private func setupWebView(initialLoad: Bool = true) {
+        guard navigation == nil else { return }
         let interval = BrowserPerformance.signposter.beginInterval("WebViewCreation")
         defer { BrowserPerformance.signposter.endInterval("WebViewCreation", interval) }
         let resolvedProfile = profile
@@ -405,7 +597,7 @@ public final class PageSession: NSObject, Identifiable {
         }
         // Consume popup suppression only after setup succeeds. WebKit drives the original
         // navigation; any replacement view must load the saved URL.
-        let shouldLoadInitialURL = !isPopupHost
+        let shouldLoadInitialURL = initialLoad && !isPopupHost
         isPopupHost = false
         let history = savedHistory
         savedHistory = nil
@@ -482,6 +674,10 @@ public final class PageSession: NSObject, Identifiable {
         if let primary, primary.backForwardList.currentItem != nil {
             savedHistory = primary.interactionState
         }
+        navigation?.stop()
+        navigation?.invalidate()
+        navigation = nil
+        navigationHasCommittedPage = false
         let coordinator = controller?.webViews
         let primaryIsPooled = primary.map { view in
             coordinator?.allWebViews(for: itemID).contains(where: { $0 === view }) == true
@@ -570,13 +766,7 @@ public final class PageSession: NSObject, Identifiable {
     /// subresources load. Uses the protocol cache policy: restoring an evicted page with
     /// returnCacheDataElseLoad served the stale cached document without revalidation.
     public static func loadPage(_ url: URL, in webView: WKWebView) {
-        if url.isFileURL {
-            webView.loadFileURL(url, allowingReadAccessTo: url.deletingLastPathComponent())
-        } else {
-            var request = URLRequest(url: url)
-            request.timeoutInterval = 30.0
-            webView.load(request)
-        }
+        WebKitPageNavigation.load(url, in: webView)
     }
 
     public func load(_ newURL: URL) {
@@ -595,7 +785,8 @@ public final class PageSession: NSObject, Identifiable {
         hasFavicon = false
         faviconFetchAttempts = 0
 
-        PageSession.loadPage(newURL, in: activeWebView)
+        if navigation == nil { setupWebView(initialLoad: false) }
+        navigation?.load(newURL)
 
         // Keep other windows displaying this page on the same URL.
         controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
@@ -615,9 +806,13 @@ public final class PageSession: NSObject, Identifiable {
     /// Back in `view`, one window's view of this page (the primary by default). With no page left
     /// to go back to, the tab closes and the tab that opened it shows.
     public func goBack(in view: WKWebView? = nil) {
-        if let view = view ?? primaryWebView, view.canGoBack {
-            view.goBack()
-        } else if !canGoBack, let controller, let window = controller.window(for: self) {
+        let wentBack: Bool
+        if let view, view !== primaryWebView {
+            wentBack = WebKitPageNavigation.goBack(in: view)
+        } else {
+            wentBack = navigation?.goBack() ?? false
+        }
+        if !wentBack, !canGoBack, let controller, let window = controller.window(for: self) {
             controller.returnToOpener(itemID, in: window)
         }
     }
@@ -627,31 +822,37 @@ public final class PageSession: NSObject, Identifiable {
 
     public func goForward() {
         guard canGoForward else { return }
-        primaryWebView?.goForward()
+        navigation?.goForward()
     }
 
     public func refresh() {
         // An unloaded page has nothing to reload: recreate it, which loads the saved URL.
-        guard primaryWebView != nil else {
+        guard navigation != nil else {
             loadWebViewIfNeeded()
             controller?.refreshWindows(showing: itemID)
             return
         }
         loadingState = .didStartProvisionalNavigation
+        if primaryWebView == nil {
+            if navigation?.reload() != true { navigation?.load(url) }
+            return
+        }
         // The primary view can also belong to the coordinator. Reload each view once.
         var views = controller?.webViews?.allWebViews(for: itemID) ?? []
         if let primary = primaryWebView { views.append(primary) }
         var reloaded = Set<ObjectIdentifier>()
         for view in views where reloaded.insert(ObjectIdentifier(view)).inserted {
             // reload() does nothing when no page ever committed (first load failed).
-            if view.backForwardList.currentItem == nil || view.reload() == nil {
-                PageSession.loadPage(url, in: view)
+            if view === primaryWebView {
+                if navigation?.reload() != true { navigation?.load(url) }
+            } else if !WebKitPageNavigation.reload(view) {
+                WebKitPageNavigation.load(url, in: view)
             }
         }
     }
 
     public func stop() {
-        primaryWebView?.stopLoading()
+        navigation?.stop()
         loadingState = .idle
     }
 
@@ -719,7 +920,10 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     /// False until a page commits: a blocked first load leaves nothing to go back to.
-    public var hasCommittedPage: Bool { primaryWebView?.backForwardList.currentItem != nil }
+    public var hasCommittedPage: Bool {
+        if let primaryWebView { return primaryWebView.backForwardList.currentItem != nil }
+        return navigationHasCommittedPage
+    }
 
     /// Selects this page in the active window (a click inside the web view).
     public func activate() {
@@ -728,9 +932,9 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     public func updateNavigationState() {
-        guard let webView = primaryWebView else { return }
-        let newCanGoBack = webView.canGoBack
-        let newCanGoForward = webView.canGoForward
+        guard let state = navigation?.state else { return }
+        let newCanGoBack = state.canGoBack
+        let newCanGoForward = state.canGoForward
         if newCanGoBack != canGoBack || newCanGoForward != canGoForward {
             canGoBack = newCanGoBack
             canGoForward = newCanGoForward
@@ -758,9 +962,6 @@ public final class PageSession: NSObject, Identifiable {
 
     public func setupNavigationStateObservers(for webView: WKWebView) {
         if !navigationStateObservedWebViews.contains(webView) {
-            webView.addObserver(self, forKeyPath: "canGoBack", options: [.new, .initial], context: nil)
-            webView.addObserver(self, forKeyPath: "canGoForward", options: [.new, .initial], context: nil)
-            webView.addObserver(self, forKeyPath: "title", options: [.new], context: nil)
             webView.addObserver(self, forKeyPath: "fullscreenState", options: [.new], context: nil)
             let observesAudio = webView.responds(to: Self.isPlayingAudioSelector)
             mediaLog.info("""
@@ -778,9 +979,6 @@ public final class PageSession: NSObject, Identifiable {
 
     func removeNavigationStateObservers(from webView: WKWebView) {
         if navigationStateObservedWebViews.contains(webView) {
-            webView.removeObserver(self, forKeyPath: "canGoBack")
-            webView.removeObserver(self, forKeyPath: "canGoForward")
-            webView.removeObserver(self, forKeyPath: "title")
             webView.removeObserver(self, forKeyPath: "fullscreenState")
             if webView.responds(to: Self.isPlayingAudioSelector) {
                 webView.removeObserver(self, forKeyPath: Self.isPlayingAudioKey)
@@ -811,13 +1009,6 @@ public final class PageSession: NSObject, Identifiable {
                 initial=\(change?[.oldKey] == nil, privacy: .public) applied=\(applied, privacy: .public)
                 """)
             if applied, let audible { webKitAudioChanged(audible) }
-        } else if keyPath == "canGoBack" || keyPath == "canGoForward", object is WKWebView {
-            updateNavigationState()
-        } else if keyPath == "title", let webView = object as? WKWebView {
-            // Real-time title updates from KVO (especially for SPAs)
-            if let newTitle = webView.title, !newTitle.isEmpty, newTitle != title {
-                updateTitle(newTitle)
-            }
         } else if keyPath == "fullscreenState", let webView = object as? WKWebView {
             // The compositor skips its passes while fullscreen; catch up once the page is back.
             if webView.fullscreenState == .notInFullscreen { controller?.refreshWindows(showing: itemID) }
