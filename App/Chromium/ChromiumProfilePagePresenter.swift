@@ -213,6 +213,7 @@ private extension ProfilePageDestination {
         case .privacy: "chrome://settings/privacy"
         case .siteSettings: "chrome://settings/content"
         case .clearData: "chrome://settings/clearBrowserData"
+        case .downloads: "chrome://settings/downloads"
         }
     }
 }

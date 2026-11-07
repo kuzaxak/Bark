@@ -222,8 +222,10 @@ struct ProfileDetailForm: View {
             }
 
             #if os(macOS)
-            Section {
-                downloadLocationPicker
+            if tabs.profileEngine == .webKit {
+                Section {
+                    downloadLocationPicker
+                }
             }
             #endif
 
@@ -357,6 +359,7 @@ private extension ProfilePageDestination {
         case .privacy: "Privacy and Security"
         case .siteSettings: "Site Settings"
         case .clearData: "Clear Browsing Data"
+        case .downloads: "Downloads"
         }
     }
 }

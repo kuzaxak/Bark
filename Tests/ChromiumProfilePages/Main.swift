@@ -113,7 +113,7 @@ private enum ProfileChecks {
 
         let routes: [(ProfilePageDestination, String)] = [(.settings, "chrome://settings/"),
             (.extensions, "chrome://extensions/"), (.privacy, "chrome://settings/privacy"),
-            (.siteSettings, "chrome://settings/content"), (.clearData, "chrome://settings/clearBrowserData")]
+            (.siteSettings, "chrome://settings/content"), (.clearData, "chrome://settings/clearBrowserData"), (.downloads, "chrome://settings/downloads")]
         for (index, route) in routes.enumerated() {
             Native.calls = []
             presenter.open(profile, destination: route.0, canPresent: { true }) { outcomes.append($0) }
