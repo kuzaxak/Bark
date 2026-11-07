@@ -32,6 +32,7 @@ struct StartupTests {
             "Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test",
             "--barc-app-profile=\(id.uuidString)"])
         precondition(config.profileID == id)
+        precondition(!config.engineArguments(executable: "Nook").contains { $0.hasPrefix("--profile-directory=") })
         precondition(config.engineArguments(executable: "Nook").contains("--disable-sync"))
         precondition(config.engineArguments(executable: "Nook").contains("--no-startup-window"))
         for bad in ["/Users/example/Library", "/private/tmp/../var", "/private/tmp"] {

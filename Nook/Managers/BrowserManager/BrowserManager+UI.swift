@@ -19,14 +19,16 @@ extension BrowserManager: TabActions {
     var spaceSync: (any SpaceSyncControls)? { spaceSyncManager }
 
     func enterSplit(with itemID: UUID, placeOnRight: Bool, in window: BrowserWindowState) {
+        guard engine == .webKit else { return }
         splitManager.enterSplit(with: itemID, placeOn: placeOnRight ? .trailing : .leading, in: window)
     }
 
     func offersSplit(in window: BrowserWindowState) -> Bool {
-        splitManager.offersAddSplitView(in: window)
+        engine == .webKit && splitManager.offersAddSplitView(in: window)
     }
 
     func separateSplit(in window: BrowserWindowState) {
+        guard engine == .webKit else { return }
         splitManager.separateAll(in: window)
     }
 

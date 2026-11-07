@@ -88,6 +88,7 @@ struct SidebarMenuHoverDownloads: View {
 }
 
 struct SidebarMenuHoverDownloadItem: View {
+    @EnvironmentObject var browserManager: BrowserManager
     @State private var isHovering: Bool = false
     let download: Download
 
@@ -173,7 +174,7 @@ struct SidebarMenuHoverDownloadItem: View {
         }
         // Opens in place, as Arc does, rather than in Finder.
         .onTapGesture {
-            if download.completedFile != nil { DownloadManager.shared.previewing = download }
+            if download.completedFile != nil { browserManager.downloadManager.previewing = download }
         }
         .onDrag {
             download.dragItemProvider()

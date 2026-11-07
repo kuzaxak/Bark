@@ -329,7 +329,8 @@ public class SearchManager {
         guard let url = session?.url ?? tabs.device.openPages[item.id]?.url ?? item.url else { return nil }
         let title = item.customTitle.flatMap { $0.isEmpty ? nil : $0 } ?? session?.title ?? item.displayTitle
         let favicon = session?.favicon
-            ?? url.host.flatMap { FaviconCache.shared.swiftUIImage(for: $0) }
+            ?? (tabs.profileEngine == .webKit
+                ? url.host.flatMap { FaviconCache.shared.swiftUIImage(for: $0) } : nil)
             ?? SwiftUI.Image(systemName: "globe")
         return TabMatch(itemID: item.id, title: title, url: url, favicon: favicon, spaceIcon: spaceIcon(of: item.id), detail: detail)
     }

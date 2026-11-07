@@ -23,6 +23,8 @@ struct ChromiumNavigationAPI {
     let forward: Command
     let reload: Command
     let stop: Command
+    let select: Command
+    let close: Command
     let profileUUID: ProfileUUID
 }
 
@@ -41,6 +43,8 @@ extension ChromiumNavigationAPI {
         forward = try resolve("barc_tab_go_forward", Command.self)
         reload = try resolve("barc_tab_reload", Command.self)
         stop = try resolve("barc_tab_stop", Command.self)
+        select = try resolve("barc_tab_select", Command.self)
+        close = try resolve("barc_tab_close", Command.self)
         profileUUID = try resolve("barc_window_profile_uuid", ProfileUUID.self)
     }
 }
@@ -65,6 +69,12 @@ final class ChromiumPageNavigation: PageNavigation {
     private var window: Int32
     private var observation: UInt64 = 0
     private var invalidated = false
+    private(set) var isClosed = false
+    private(set) var nativeCloseOutcome: PageCloseOutcome?
+    var nativeWindowID: Int32 { window }
+    var nativeTabID: Int32 { tab }
+    // Host-only lifecycle channel. PageSession retains its event/state channels.
+    var onNativeCloseOutcome: ((PageCloseOutcome) -> Void)?
     private let context = CallbackContext()
 
     private final class CallbackContext {
@@ -122,6 +132,9 @@ final class ChromiumPageNavigation: PageNavigation {
     @discardableResult func reload() -> Bool { command(api.reload) }
     func stop() { _ = command(api.stop) }
 
+    @discardableResult func selectNativePage() -> Bool { command(api.select) }
+    @discardableResult func requestNativeClose() -> Bool { command(api.close) }
+
     private func command(_ action: ChromiumNavigationAPI.Command) -> Bool {
         !invalidated && window > 0 && action(window, tab) == 1
     }
@@ -133,6 +146,7 @@ final class ChromiumPageNavigation: PageNavigation {
         observation = 0
         onStateChanged = nil
         onEvent = nil
+        onNativeCloseOutcome = nil
         if token != 0 { api.unobserve(token) }
     }
 
@@ -142,11 +156,22 @@ final class ChromiumPageNavigation: PageNavigation {
               observation == 0 || observation == token else { return }
         observation = token  // INITIAL can call out before observe() returns.
         self.window = window  // A live transfer changes the owner, never the page.
+        if event == 8 { // CLOSE_CANCELLED is not navigation cancellation.
+            onNativeCloseOutcome?(.cancelled)
+            return
+        }
         if event == 7 { // CLOSED: the engine has already ended observation.
             observation = 0
+            isClosed = true
+            let outcome: PageCloseOutcome = flags & 128 != 0 ? .ownerEnded : .closed
+            nativeCloseOutcome = outcome
             let notify = onEvent
+            let closeOutcome = onNativeCloseOutcome
             invalidate()
-            notify?(.closed)
+            // Let a pending unload/delete finish before the general closed
+            // event can be interpreted as an unsolicited model deletion.
+            closeOutcome?(outcome)
+            notify?(outcome == .ownerEnded ? .ownerEnded : .closed)
             return
         }
         let snapshot = PageNavigationState(

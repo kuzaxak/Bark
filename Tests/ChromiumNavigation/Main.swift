@@ -54,6 +54,8 @@ private enum Native {
             forward: { window, tab in MainActor.assumeIsolated { Native.command("forward", window, tab) } },
             reload: { window, tab in MainActor.assumeIsolated { Native.command("reload", window, tab) } },
             stop: { window, tab in MainActor.assumeIsolated { Native.command("stop", window, tab) } },
+            select: { window, tab in MainActor.assumeIsolated { Native.command("select", window, tab) } },
+            close: { window, tab in MainActor.assumeIsolated { Native.command("close", window, tab) } },
             profileUUID: { _, buffer, capacity in
                 MainActor.assumeIsolated {
                     let bytes = Array(Native.profile.uuidString.lowercased().utf8CString)
@@ -152,6 +154,43 @@ private enum NavigationChecks {
             preconditionFailure("Rejected observation was usable")
         } catch ChromiumNavigationError.observationRejected {}
         precondition(Native.cancelled.isEmpty)
+        Native.reset()
+        page = try Native.page()
+        var outcomes: [PageCloseOutcome] = []
+        var order: [String] = []
+        page!.onNativeCloseOutcome = { admitted in
+            outcomes.append(admitted)
+            if admitted == .closed { order.append("host"); page?.invalidate() }
+        }
+        page!.onEvent = { event in if case .closed = event { order.append("page") } }
+        Native.emit(6, window: 12)
+        precondition(page!.selectNativePage())
+        precondition(Native.commands.last?.1 == 12)
+        precondition(page!.requestNativeClose())
+        precondition(outcomes.isEmpty, "Dispatch acceptance completed close")
+        Native.emit(8, window: 12)
+        precondition(outcomes == [.cancelled] && page!.goBack())
+        precondition(page!.requestNativeClose())
+        Native.emit(7, window: 12)
+        precondition(outcomes == [.cancelled, .closed] && order == ["host", "page"])
+        precondition(page!.isClosed && !page!.requestNativeClose())
+        Native.emit(7, window: 12)
+        precondition(outcomes.count == 2 && Native.cancelled.isEmpty)
+        page = try Native.page()
+        var ownerOrder: [String] = []
+        page!.onNativeCloseOutcome = {
+            precondition($0 == .ownerEnded)
+            ownerOrder.append("host")
+        }
+        page!.onEvent = {
+            if case .ownerEnded = $0 { ownerOrder.append("page") }
+            else { preconditionFailure("Owner teardown was reported as tab deletion") }
+        }
+        Native.emit(7, flags: 128)
+        precondition(ownerOrder == ["host", "page"] && page!.nativeCloseOutcome == .ownerEnded)
+
+        page = nil
+
         print("Chromium navigation adapter: profile binding, transfer routing, lifecycle and cancellation passed")
     }
 }

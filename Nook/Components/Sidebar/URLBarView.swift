@@ -342,7 +342,8 @@ struct URLBarView: View {
                 let session = browserManager.tabs.session(for: item.id)
                 guard let url = session?.url ?? item.url, url.absoluteString != prefilledAddress else { return nil }
                 let title = item.customTitle ?? session?.title ?? item.displayTitle
-                let favicon = session?.favicon ?? url.host.flatMap { FaviconCache.shared.swiftUIImage(for: $0) } ?? Image(systemName: "globe")
+                let favicon = session?.favicon ?? (browserManager.engine == .webKit
+                    ? url.host.flatMap { FaviconCache.shared.swiftUIImage(for: $0) } : nil) ?? Image(systemName: "globe")
                 let match = SearchManager.TabMatch(itemID: item.id, title: title, url: url, favicon: favicon)
                 return SearchManager.SearchSuggestion(text: title, type: .tab(match))
             }
@@ -381,7 +382,7 @@ struct URLBarView: View {
                     submitAddress(suggestion)
                 } label: {
                     HStack(spacing: 12) {
-                        AddressSuggestionFavicon(suggestion: suggestion)
+                        AddressSuggestionFavicon(suggestion: suggestion, useLegacyCache: browserManager.engine == .webKit)
                             .frame(width: 20, height: 20)
                         HStack(spacing: 6) {
                             Text(suggestionTitle(suggestion))
@@ -603,6 +604,7 @@ private struct AddressActivationAccessibility: ViewModifier {
 
 private struct AddressSuggestionFavicon: View {
     let suggestion: SearchManager.SearchSuggestion
+    let useLegacyCache: Bool
     @State private var cached: NSImage?
 
     private var url: URL? {
@@ -627,7 +629,7 @@ private struct AddressSuggestionFavicon: View {
         }
         .task(id: url?.host) {
             cached = nil
-            if let host = url?.host { cached = await FaviconCache.shared.cachedImage(for: host) }
+            if useLegacyCache, let host = url?.host { cached = await FaviconCache.shared.cachedImage(for: host) }
         }
     }
 }

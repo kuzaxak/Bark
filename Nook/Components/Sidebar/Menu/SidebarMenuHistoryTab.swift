@@ -161,8 +161,10 @@ struct SidebarMenuHistoryTab: View {
                             entry: entry,
                             onTap: { openInCurrentTab(entry.url) },
                             onOpenInNewTab: { openInNewTab(entry.url) },
-                            onDelete: { deleteEntry(entry) }
+                            onDelete: { deleteEntry(entry) },
+                            useLegacyCache: browserManager.engine == .webKit
                         )
+
                     }
                 }
 
@@ -325,12 +327,13 @@ struct HistoryRowView: View {
     let onTap: () -> Void
     let onOpenInNewTab: () -> Void
     let onDelete: () -> Void
+    var useLegacyCache = true
 
     @State private var isHovered: Bool = false
 
     var body: some View {
         HStack(spacing: NookDesign.Spacing.md) {
-            HistoryFavicon(url: entry.url)
+            HistoryFavicon(url: entry.url, useLegacyCache: useLegacyCache)
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.displayTitle)
@@ -391,6 +394,7 @@ struct HistoryRowView: View {
 /// A history page's favicon: the cache first, the network only for a row on screen.
 struct HistoryFavicon: View {
     let url: URL
+    var useLegacyCache = true
     @State private var favicon: SwiftUI.Image?
 
     var body: some View {
@@ -401,7 +405,8 @@ struct HistoryFavicon: View {
             .foregroundStyle(.secondary)
             // Cancelled when the row scrolls away; the old onAppear Task kept fetching for rows long gone.
             .task(id: url.host) {
-                guard url.scheme == "http" || url.scheme == "https", let host = url.host else { return }
+                guard useLegacyCache,
+                      url.scheme == "http" || url.scheme == "https", let host = url.host else { return }
                 if let cached = await FaviconCache.shared.cachedImage(for: host) {
                     favicon = SwiftUI.Image(platformImage: cached)
                     return

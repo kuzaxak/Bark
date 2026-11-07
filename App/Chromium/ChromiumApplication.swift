@@ -18,8 +18,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let open: Open
     private let tabAt: TabAt
     private let navigationAPI: ChromiumNavigationAPI
-    private let profileID: UUID
-    private var page: PageSession?
+    private let configuration: ChromiumStartupConfiguration
+    private let pageHost: ChromiumNativePageHost
+    private var storage: ChromiumAppStorage?
+    private var browserManager: BrowserManager?
+    private let registry = WindowRegistry()
+    private let modelWindow = BrowserWindowState()
+    private let commandPalette = CommandPalette()
+    private let organizer = TabOrganizerManager()
+    private let hover = HoverSidebarManager()
     private let attach: Attach
     private let chromeMain: Main
     private let complete: Complete
@@ -27,13 +34,16 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var opened: (@MainActor (Int32?) -> Void)?
     private var shell: NSView?
 
-    private init(framework handle: UnsafeMutableRawPointer, profileID: UUID) throws {
-        self.profileID = profileID
+    private init(framework handle: UnsafeMutableRawPointer, configuration: ChromiumStartupConfiguration) throws {
+        self.configuration = configuration
         navigationAPI = try ChromiumNavigationAPI(library: handle)
+        pageHost = try ChromiumNativePageHost(api: ChromiumPageHostAPI(library: handle), navigationAPI: navigationAPI)
         func symbol<T>(_ name: String, _: T.Type) throws -> T {
             guard let pointer = dlsym(handle, name) else { throw LoaderError.missingSymbol(name) }
             return unsafeBitCast(pointer, to: T.self)
         }
+        let version = try symbol("barc_bridge_version", (@convention(c) () -> UInt32).self)
+        guard version() >= 2 else { throw LoaderError.ownerEndedProtocolRequired }
         registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
         open = try symbol("barc_profile_open_window", Open.self)
         tabAt = try symbol("barc_window_tab_at", TabAt.self)
@@ -47,7 +57,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         do {
             let config = try ChromiumStartupConfiguration(arguments: arguments)
             try config.prepare()
-            let app = try ChromiumApplication(framework: framework, profileID: config.profileID)
+            let app = try ChromiumApplication(framework: framework, configuration: config)
             let startup = ChromiumStartup(bridge: app, profile: config.profileID) { message in
                 fputs(message + "\n", stderr)
             }
@@ -80,9 +90,32 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     func openProfile(_ id: UUID, completion: @escaping @MainActor (Int32?) -> Void) {
-        opened = completion
-        id.uuidString.withCString { uuid in
-            open(uuid, 0, { status, window, pointer in
+        // This runs only after runtime-ready. The persisted model UUID owns
+        // the native profile; the CLI hint must never relabel a model profile.
+        do {
+            let storage = try ChromiumAppStorage(configuration: configuration)
+            let manager = BrowserManager(settings: storage.settings, windowRegistry: registry,
+                persistence: storage.persistence, userDefaults: storage.defaults,
+                downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
+                cloudSyncEnabled: false, engine: .chromium)
+            manager.tabs.nativePageHost = pageHost
+            modelWindow.sidebarWidth = manager.sidebarWidth
+            modelWindow.sidebarContentWidth = max(manager.sidebarWidth - 16, 0)
+            modelWindow.isSidebarVisible = true
+            registry.register(modelWindow)
+            manager.tabs.attach(window: modelWindow)
+            guard modelWindow.split == nil, let space = modelWindow.spaceID,
+                  let profile = manager.tabs.profile(forSpace: space) else {
+                completion(nil); return
+            }
+            self.storage = storage
+            browserManager = manager
+            hover.browserManager = manager
+            hover.windowRegistry = registry
+            hover.nookSettings = storage.settings
+            opened = completion
+            profile.id.uuidString.withCString { uuid in
+            open(uuid, 5, { status, window, pointer in
                 MainActor.assumeIsolated {
                     guard let pointer else { return }
                     let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
@@ -91,6 +124,10 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     completion?(status == 0 && window > 0 ? window : nil)
                 }
             }, Unmanaged.passUnretained(self).toOpaque())
+            }
+        } catch {
+            fputs("Chromium app stores refused: \(error)\n", stderr)
+            completion(nil)
         }
     }
 
@@ -99,31 +136,30 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     func attachShell(to window: Int32) -> Bool {
-        let tab = tabAt(window, 0)
-        guard tab > 0 else { return false }
-        do {
-            let navigation = try ChromiumPageNavigation(
-                profileID: profileID, window: window, tab: tab, api: navigationAPI)
-            // No HTTP favicon/cache access at construction, and no WebKit
-            // surface. Bind native observation before accepting UI navigation.
-            let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
-                                      title: "", isPrivate: false, controller: nil)
-            session.installNavigation(navigation)
-            let view = NSHostingView(rootView: ChromiumNavigationShell(page: session))
-            guard attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1 else {
-                navigation.invalidate()
-                return false
-            }
-            page = session
-            shell = view
-            return true
-        } catch {
-            fputs("Chromium page binding failed: \(error)\n", stderr)
-            return false
+        guard let storage, let manager = browserManager else { return false }
+        let blank = tabAt(window, 0)
+        guard blank > 0 else { return false }
+        let view = NSHostingView(rootView: ChromiumSidebarShell(browserManager: manager,
+            storage: storage, window: modelWindow, registry: registry,
+            commandPalette: commandPalette, organizer: organizer, hover: hover))
+        guard attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1,
+              pageHost.registerWindow(modelWindow, nativeOwner: window, shell: view,
+                                      initialBlankTab: blank) else { return false }
+        shell = view
+        modelWindow.windowHandle = view.window
+        registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
+        registry.setActive(modelWindow)
+        if let selected = modelWindow.selectedItemID {
+            manager.tabs.select(selected, in: modelWindow)
+        } else {
+            _ = manager.tabs.open(url: URL(string: "about:blank")!, in: modelWindow, placement: .newTab)
         }
+        // Existing-client blank binding is synchronous. Refuse startup if model
+        // admission did not produce a real engine page; never create WebKit.
+        return manager.tabs.selectedSession(in: modelWindow)?.isUnloaded == false
     }
 
-    enum LoaderError: Error { case missingSymbol(String) }
+    enum LoaderError: Error { case missingSymbol(String), ownerEndedProtocolRequired }
 }
 
 #if NOOK_CHROMIUM_LIBRARY
