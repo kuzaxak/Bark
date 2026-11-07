@@ -93,6 +93,18 @@ extension TabsController {
         }
     }
 
+    /// Complete an admitted native adoption through the existing selection and
+    /// opener bookkeeping, without repeating native selection or navigation.
+    func finishNativeAdoption(_ session: PageSession, in window: BrowserWindowState,
+                              opener: UUID?, parent: Parent?, select shouldSelect: Bool, generation: UUID?) {
+        if let opener, let parent { linked(session.itemID, from: opener, at: parent, owner: .main) }
+        if shouldSelect {
+            select(session.itemID, in: window, leaving: selectedSession(in: window), nativeAdmitted: true, adoptionGeneration: generation)
+        } else {
+            recordPageOwner(session.itemID, in: window)
+        }
+    }
+
     // MARK: - Detached Pages
 
     /// A page outside the tree, for Peek or a mini window. It loads at once, runs the same
@@ -202,7 +214,12 @@ extension TabsController {
 
     /// `previous` is what the window showed before; a space switch has already moved on from it.
     private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?,
-                        nativeAdmitted: Bool = false) {
+                        nativeAdmitted: Bool = false, adoptionGeneration: UUID? = nil) {
+        func admissionIsCurrent() -> Bool {
+            adoptionGeneration == nil || (window.nativeSelectionGeneration == adoptionGeneration &&
+                windowRegistry.windows[window.id] === window && item(itemID) != nil)
+        }
+        guard admissionIsCurrent() else { return }
         let owner = owner(of: window)
         let source = tree(owner)
         guard let item = source.item(itemID) else { return }
@@ -234,12 +251,14 @@ extension TabsController {
         }
         guard let spaceID = window.spaceID else { return }
         if movedSpace { sessionDelegate?.windowSpaceChanged(window) }
+        guard admissionIsCurrent() else { return }
         window.selectedItemBySpace[spaceID] = itemID
         window.emptiedSpaces.remove(spaceID)
         if case .main = owner { markSeen([itemID] + (previous.map { [$0.itemID] } ?? [])) }
         // The latest window to select a page takes its live view; others show a placeholder.
         if profileEngine == .chromium { recordPageOwner(itemID, in: window) }
         else { takeControl(itemID, in: window) }
+        guard admissionIsCurrent() else { return }
         var recent = window.recentItemsBySpace[spaceID, default: []]
         recent.removeAll { $0 == itemID }
         recent.append(itemID)
@@ -248,17 +267,21 @@ extension TabsController {
         if let session = ensureSession(for: itemID) {
             if let previous, previous !== session {
                 onLeavingTab?(previous.itemID, window)
+                guard admissionIsCurrent() else { return }
                 previous.captureSwitcherSnapshot()
                 dropStaleSwitcherSnapshots()
             }
             session.loadWebViewIfNeeded()
+            guard admissionIsCurrent() else { return }
             if session !== previous, !session.isPrivate {
                 tabEvents?.tabActivated(new: session, previous: previous)
+                guard admissionIsCurrent() else { return }
             }
             // The mini player goes by the frames' reports; ask again rather than wait for them.
             if let previous, previous !== session { previous.refreshMediaReports() }
             session.refreshMediaReports()
         }
+        guard admissionIsCurrent() else { return }
         mirror(window)
         window.refreshCompositor()
     }

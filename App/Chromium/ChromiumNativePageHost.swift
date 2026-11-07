@@ -8,10 +8,12 @@ struct ChromiumPageHostAPI {
     typealias Create = @convention(c) (Int32, UnsafePointer<CChar>?, Int32) -> Int32
     typealias TabAt = @convention(c) (Int32, Int) -> Int32
     typealias WindowCommand = @convention(c) (Int32) -> Int32
+    typealias TabTitle = @convention(c) (Int32, Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
     typealias Attach = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Int32
     let open: Open
     let create: Create
     let tabAt: TabAt
+    let tabTitle: TabTitle
     let selectWindow: WindowCommand
     let closeWindow: WindowCommand
     let attach: Attach
@@ -24,17 +26,35 @@ struct ChromiumPageHostAPI {
         open = try load("barc_profile_open_in_native_window", Open.self)
         create = try load("barc_tab_create", Create.self)
         tabAt = try load("barc_window_tab_at", TabAt.self)
+        tabTitle = try load("barc_tab_copy_title", TabTitle.self)
         selectWindow = try load("barc_window_select", WindowCommand.self)
         closeWindow = try load("barc_window_close", WindowCommand.self)
         attach = try load("barc_window_attach_native_shell", Attach.self)
     }
 
-    init(open: @escaping Open, create: @escaping Create, tabAt: @escaping TabAt,
+    init(open: @escaping Open, create: @escaping Create, tabAt: @escaping TabAt, tabTitle: @escaping TabTitle,
          selectWindow: @escaping WindowCommand, closeWindow: @escaping WindowCommand,
          attach: @escaping Attach) {
-        self.open = open; self.create = create; self.tabAt = tabAt
+        self.open = open; self.create = create; self.tabAt = tabAt; self.tabTitle = tabTitle
         self.selectWindow = selectWindow; self.closeWindow = closeWindow; self.attach = attach
     }
+}
+
+/// One observation admission attempt. Finish after the synchronous model
+/// adoption result; abandoning it never closes the existing native contents.
+@MainActor
+final class ChromiumExistingPageBinding {
+    let navigation: ChromiumPageNavigation
+    private var completion: ((Bool) -> Void)?
+    init(navigation: ChromiumPageNavigation, completion: @escaping (Bool) -> Void) {
+        self.navigation = navigation; self.completion = completion
+    }
+    func finish(adopted: Bool) {
+        let callback = completion
+        completion = nil
+        callback?(adopted)
+    }
+    isolated deinit { completion?(false) }
 }
 
 /// Only native handles are cached here. TabsController remains the model owner.
@@ -44,9 +64,12 @@ final class ChromiumNativePageHost: NativePageHost {
     private struct ClientKey: Hashable { let window: UUID; let profile: UUID }
     @MainActor private final class Mount {
         weak var shell: NSView?
+        weak var model: BrowserWindowState?
         var client: Int32
         var generation: UInt64 = 0
-        init(shell: NSView, client: Int32) { self.shell = shell; self.client = client }
+        init(shell: NSView, client: Int32, model: BrowserWindowState) {
+            self.shell = shell; self.client = client; self.model = model
+        }
     }
     @MainActor private final class Request {
         var cancelled = false
@@ -71,9 +94,14 @@ final class ChromiumNativePageHost: NativePageHost {
             self.host = host; self.key = key; requests = [request]
         }
     }
-    private struct Binding {
+    @MainActor private final class Binding {
         let window: UUID
         let page: ChromiumPageNavigation
+        var owned: Bool
+        var attempts = 0
+        init(window: UUID, page: ChromiumPageNavigation, owned: Bool) {
+            self.window = window; self.page = page; self.owned = owned
+        }
     }
     private let api: ChromiumPageHostAPI
     private let navigationAPI: ChromiumNavigationAPI
@@ -95,7 +123,7 @@ final class ChromiumNativePageHost: NativePageHost {
                         shell: NSView, initialBlankTab: Int32? = nil) -> Bool {
         guard mounts[window.id] == nil, let profile = profileID(nativeOwner),
               !mounts.values.contains(where: { $0.shell === shell || $0.client == nativeOwner }) else { return false }
-        mounts[window.id] = Mount(shell: shell, client: nativeOwner)
+        mounts[window.id] = Mount(shell: shell, client: nativeOwner, model: window)
         clients[ClientKey(window: window.id, profile: profile)] = nativeOwner
         if let initialBlankTab { blankTabs[nativeOwner] = initialBlankTab }
         return true
@@ -174,33 +202,114 @@ final class ChromiumNativePageHost: NativePageHost {
         guard tab > 0 else { return .failure(HostError.creationRefused) }
         do {
             let page = try ChromiumPageNavigation(profileID: key.profile, window: client, tab: tab, api: navigationAPI)
-            let id = ObjectIdentifier(page)
-            pages[id] = Binding(window: key.window, page: page)
-            page.onNativeCloseOutcome = { [weak self, weak page] outcome in
-                guard let self, let page else { return }
-                if outcome != .cancelled {
-                    self.pages.removeValue(forKey: id)
-                    self.blankTabs.removeValue(forKey: page.nativeWindowID)
-                }
-                if outcome == .ownerEnded {
-                    let owner = page.nativeWindowID
-                    for key in self.clients.keys.filter({ self.clients[$0] == owner }) {
-                        self.clients.removeValue(forKey: key)
-                    }
-                    self.blankTabs.removeValue(forKey: owner)
-                    for mount in self.mounts.values where mount.client == owner {
-                        mount.generation &+= 1
-                        mount.client = 0
-                    }
-                }
-                let callbacks = self.closing.removeValue(forKey: id) ?? []
-                callbacks.forEach { $0(outcome) }
-            }
+            record(page, in: key.window)
             return .success(page)
         } catch {
             if profileID(client) == key.profile { _ = navigationAPI.close(client, tab) }
             return .failure(error)
         }
+    }
+
+    private func record(_ page: ChromiumPageNavigation, in windowID: UUID, owned: Bool = true) {
+        let id = ObjectIdentifier(page)
+        pages[id] = Binding(window: windowID, page: page, owned: owned)
+        page.onNativeCloseOutcome = { [weak self, weak page] outcome in
+            guard let self, let page else { return }
+            if outcome != .cancelled {
+                self.pages.removeValue(forKey: id)
+                self.blankTabs.removeValue(forKey: page.nativeWindowID)
+            }
+            if outcome == .ownerEnded {
+                let owner = page.nativeWindowID
+                for key in self.clients.keys.filter({ self.clients[$0] == owner }) {
+                    self.clients.removeValue(forKey: key)
+                }
+                self.blankTabs.removeValue(forKey: owner)
+                for mount in self.mounts.values where mount.client == owner {
+                    mount.generation &+= 1
+                    mount.client = 0
+                }
+            }
+            let callbacks = self.closing.removeValue(forKey: id) ?? []
+            callbacks.forEach { $0(outcome) }
+            if outcome == .cancelled, let binding = self.pages[id] { self.discardUnclaimed(binding) }
+        }
+    }
+
+    /// Bind a page that Chromium already created. Only clients already mounted
+    /// for this model window/profile qualify; global discovery is separate.
+    func bindExistingPage(nativeWindow: Int32, tab: Int32, profile: Profile,
+                          in window: BrowserWindowState) -> Result<ChromiumExistingPageBinding, Error> {
+        guard profile.engine == .chromium, !profile.isEphemeral, !window.isIncognito else {
+            return .failure(HostError.unsupportedProfile)
+        }
+        let key = ClientKey(window: window.id, profile: profile.id)
+        guard let mount = mounts[window.id], mount.model === window, mount.shell != nil,
+              clients[key] == nativeWindow, profileID(nativeWindow) == profile.id,
+              tab > 0, api.tabTitle(nativeWindow, tab, nil, 0) > 0 else {
+            return .failure(HostError.existingPageRefused)
+        }
+        if let binding = pages.values.first(where: { $0.page.nativeTabID == tab }) {
+            guard binding.page.nativeWindowID == nativeWindow,
+                  canAdoptPage(binding.page, in: window) else {
+                return .failure(HostError.existingPageRefused)
+            }
+            return .success(beginAdmission(binding))
+        }
+        // That blank belongs to an app factory completion that has not claimed
+        // it yet. Never steal its observer or make a second model page for it.
+        guard blankTabs[nativeWindow] != tab else { return .failure(HostError.existingPageRefused) }
+        do {
+            let page = try ChromiumPageNavigation(profileID: profile.id, window: nativeWindow, tab: tab, api: navigationAPI)
+            guard page.nativeWindowID == nativeWindow, !page.isClosed,
+                  clients[key] == nativeWindow, profileID(nativeWindow) == profile.id,
+                  api.tabTitle(nativeWindow, tab, nil, 0) > 0 else {
+                page.invalidate()
+                return .failure(HostError.existingPageRefused)
+            }
+            record(page, in: window.id, owned: false)
+            let binding = pages[ObjectIdentifier(page)]!
+            guard canAdoptPage(page, in: window) else {
+                discardUnclaimed(binding)
+                return .failure(HostError.existingPageRefused)
+            }
+            return .success(beginAdmission(binding))
+        } catch {
+            // Observation failure is not ownership of the native resource.
+            return .failure(error)
+        }
+    }
+
+    private func beginAdmission(_ binding: Binding) -> ChromiumExistingPageBinding {
+        binding.attempts += 1
+        return ChromiumExistingPageBinding(navigation: binding.page) { [weak self, weak binding] adopted in
+            guard let self, let binding, self.pages[ObjectIdentifier(binding.page)] === binding else { return }
+            binding.attempts -= 1
+            if adopted { binding.owned = true }
+            self.discardUnclaimed(binding)
+        }
+    }
+
+    private func discardUnclaimed(_ binding: Binding) {
+        let id = ObjectIdentifier(binding.page)
+        guard pages[id] === binding, !binding.owned, binding.attempts == 0,
+              closing[id] == nil else { return }
+        pages.removeValue(forKey: id)
+        binding.page.invalidate()
+    }
+
+    /// Background adoption validates ownership without selecting or loading.
+    func canAdoptPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
+        guard let page = navigation as? ChromiumPageNavigation, !page.isClosed,
+              let profile = page.profileID, let binding = pages[ObjectIdentifier(page)],
+              binding.page === page, binding.window == window.id,
+              closing[ObjectIdentifier(page)] == nil,
+              let mount = mounts[window.id], mount.model === window, mount.shell != nil,
+              clients[ClientKey(window: window.id, profile: profile)] == page.nativeWindowID,
+              profileID(page.nativeWindowID) == profile else { return false }
+        // LookupTab checks the current TabInterface owner. Empty titles still
+        // require one NUL byte; detached/stale/foreign tabs return zero.
+        return api.tabTitle(page.nativeWindowID, page.nativeTabID, nil, 0) > 0
     }
 
     func selectPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
@@ -273,5 +382,5 @@ final class ChromiumNativePageHost: NativePageHost {
         return nil
     }
 
-    enum HostError: Error { case unsupportedProfile, missingWindow, creationRefused, cancelled }
+    enum HostError: Error { case unsupportedProfile, missingWindow, creationRefused, cancelled, existingPageRefused }
 }

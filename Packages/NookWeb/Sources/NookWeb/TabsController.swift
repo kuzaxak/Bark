@@ -981,6 +981,94 @@ public final class TabsController {
         save()
     }
 
+    /// Admit an already-existing regular Chromium page. The host has bound its
+    /// native resource before this call; rejection never closes that resource.
+    /// No load/create command is issued and the engine's opener/document survives.
+    @discardableResult
+    public func adoptNativePage(_ page: any PageNavigation, through host: any NativePageHost,
+                                in window: BrowserWindowState, spaceID: UUID,
+                                from opener: UUID? = nil, select: Bool) -> UUID? {
+        func isCurrent() -> Bool {
+            profileEngine == .chromium && !isTerminating && nativePageHost === host &&
+            windowRegistry.windows[window.id] === window && !window.isIncognito && window.privateTree == nil &&
+            tree.space(spaceID) != nil && tree.dataStoreID(for: spaceID) == page.profileID &&
+            page.profileID != nil && host.canAdoptPage(page, in: window)
+        }
+        guard isCurrent() else { return nil }
+        if let opener {
+            guard tree.spaceID(of: opener) == spaceID, tree.item(opener)?.url != nil else { return nil }
+        }
+        let generation = select ? UUID() : nil
+        if let generation {
+            let previous = window.nativeSelectionSession
+            window.nativeSelectionGeneration = generation
+            window.nativeSelectionSession = nil
+            previous?.cancelNativePreparation(in: window)
+        }
+        defer {
+            if let generation, window.nativeSelectionGeneration == generation {
+                window.nativeSelectionGeneration = nil
+                window.nativeSelectionSession = nil
+            }
+        }
+        func selectionIsCurrent() -> Bool {
+            generation == nil || window.nativeSelectionGeneration == generation
+        }
+        guard selectionIsCurrent(), isCurrent(), !select || host.selectPage(page, in: window),
+              selectionIsCurrent(), isCurrent() else { return nil }
+        guard let profile = profile(forSpace: spaceID) else { return nil }
+        let state = page.state
+        guard selectionIsCurrent(), isCurrent() else { return nil }
+        if let existing = liveSessions.values.first(where: { $0.navigation === page }) {
+            guard !existing.nativeIsEnding, existing.nativeRelease == nil,
+                  existing.profile?.id == page.profileID, tree.spaceID(of: existing.itemID) == spaceID else { return nil }
+            if generation != nil { window.nativeSelectionSession = existing }
+            finishNativeAdoption(existing, in: window, opener: nil, parent: nil, select: select, generation: generation)
+            return existing.itemID
+        }
+        let position = opener.flatMap {
+            tree.linkTabPosition(in: spaceID, opener: $0, nest: settings.nestLinkTabsUnderOpener,
+                                 openers: device.openers ?? [:])
+        } ?? tree.newTabPosition(in: spaceID, after: window.selectedItemID, climbingFolders: settings.newTabsAtTopLevel)
+        let url = state.url ?? URL(string: "about:blank")!
+        let title = state.title ?? url.host ?? url.absoluteString
+        let id = UUID()
+        let originalTree = tree
+        var proposed = originalTree
+        let change: Change
+        do {
+            change = try proposed.createTab(id: id, url: url, title: title, in: position.0, after: position.1)
+        } catch { return nil }
+        let session = PageSession(itemID: id, url: url, title: title, isPrivate: false, controller: self)
+        // Seed without publishing title/history reports before the item exists.
+        session.controller = nil
+        session.detachedProfile = profile
+        session.installNavigation(page)
+        session.nativeResourceHost = host
+        guard selectionIsCurrent(), isCurrent(), tree == originalTree, session.navigation === page,
+              !liveSessions.values.contains(where: { $0.navigation === page }) else {
+            // A nested admission may now own this adapter's callbacks. Leave it
+            // intact; the caller releases only its unadmitted host binding.
+            if !liveSessions.values.contains(where: { $0.navigation === page }) {
+                page.onEvent = nil
+                page.onStateChanged = nil
+            }
+            return nil
+        }
+        session.detachedProfile = nil
+        session.controller = self
+        // Bind before the existing publication boundary: a reentrant observer
+        // sees one real page and cannot bootstrap a second renderer.
+        liveSessions[id] = session
+        tree = proposed
+        pushUndo(change)
+        if generation != nil { window.nativeSelectionSession = session }
+        finishNativeAdoption(session, in: window, opener: opener, parent: position.0, select: select, generation: generation)
+        save()
+        onTreeChanged?()
+        return id
+    }
+
     func addSession(_ session: PageSession) {
         liveSessions[session.itemID] = session
     }

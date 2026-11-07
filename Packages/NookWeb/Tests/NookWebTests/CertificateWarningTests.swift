@@ -451,13 +451,14 @@ final class StillLoadingWebView: WKWebView {
 final class RecordingCertificateDelegate: PageSessionDelegate {
     var certificateExceptions = CertificateExceptions()
     private(set) var visits: [CertificateWarning] = []
+    var onSpaceChanged: ((BrowserWindowState) -> Void)?
 
     func confirmVisit(despite warning: CertificateWarning, in session: PageSession) { visits.append(warning) }
 
     var currentProfile: Profile? { nil }
     var currentProfilePublisher: AnyPublisher<Profile?, Never> { Just(nil).eraseToAnyPublisher() }
     func navigateAcrossWindows(_ itemID: UUID, to url: URL) {}
-    func windowSpaceChanged(_ window: BrowserWindowState) {}
+    func windowSpaceChanged(_ window: BrowserWindowState) { onSpaceChanged?(window) }
     func addDownload(_ download: WKDownload, originalURL: URL, suggestedFilename: String) {}
     func saveFile(_ data: Data, suggestedFilename: String, originalURL: URL, from webView: WKWebView) {}
     func toggleFullScreen(for webView: WKWebView) -> Bool { false }

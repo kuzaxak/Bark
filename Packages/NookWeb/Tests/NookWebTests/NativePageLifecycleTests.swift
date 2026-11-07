@@ -1,5 +1,6 @@
 // Licensed under GPL-3.0. See LICENSE.
 import Foundation
+import Observation
 import Testing
 import NookBlocker
 import NookSettings
@@ -10,6 +11,193 @@ import NookTweaks
 #if os(macOS)
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func adoptingExistingPagePreservesDocumentAndDeduplicatesPublishedAdmission() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let opener = try #require(fixture.window.selectedItemID)
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let profile = try #require(fixture.tabs.tree.dataStoreID(for: space))
+        let native = NativeTestPage(profileID: profile)
+        let url = URL(string: "https://synthetic.invalid/existing")!
+        native.state = PageNavigationState(url: url, title: "Live form", canGoBack: true, canGoForward: false)
+        let originalState = native.state
+        var publicationSawBoundPage = false
+        var repeated: UUID?
+        fixture.tabs.onTreeChanged = {
+            let page = fixture.tabs.sessions.first { $0.navigation === native }
+            publicationSawBoundPage = page != nil
+            page?.loadWebViewIfNeeded()
+            repeated = fixture.tabs.adoptNativePage(native, through: fixture.host,
+                in: fixture.window, spaceID: space, from: opener, select: false)
+        }
+        let adopted = try #require(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, from: opener, select: false))
+        fixture.tabs.onTreeChanged = nil
+        let session = try #require(fixture.tabs.session(for: adopted))
+        #expect(publicationSawBoundPage && repeated == adopted)
+        #expect(session.navigation === native && session.profile?.id == profile)
+        #expect(session.url == url && session.title == "Live form" && session.canGoBack)
+        #expect(fixture.tabs.opener(of: adopted) == opener)
+        #expect(fixture.window.selectedItemID == opener)
+        #expect(native.loaded.isEmpty && native.stops == 0 && !native.invalidated)
+        #expect(native.state == originalState && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+        native.onEvent?(.ownerEnded)
+        #expect(session.isUnloaded && fixture.tabs.tree.item(adopted)?.url == url)
+        #expect(fixture.host.closes.isEmpty)
+    }
+
+    @Test func reentrantSpaceCallbackCannotOverwriteNewerSelection() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let selected = try #require(fixture.window.selectedItemID)
+        fixture.host.finishCreate(0)
+        let originalSpace = try #require(fixture.window.spaceID)
+        let personal = try #require(fixture.tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: nil))
+        let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: personal)))
+        let delegate = RecordingCertificateDelegate()
+        fixture.tabs.sessionDelegate = delegate
+        delegate.onSpaceChanged = { _ in
+            delegate.onSpaceChanged = nil
+            fixture.tabs.select(selected, in: fixture.window)
+        }
+        let adopted = try #require(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: personal, select: true))
+        #expect(fixture.window.selectedItemID == selected && fixture.window.spaceID == originalSpace)
+        #expect(fixture.tabs.session(for: adopted)?.navigation === native)
+        #expect(native.loaded.isEmpty && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+    }
+
+    @Test func profileObserverReentryCannotReplaceAnAdmittedPageBinding() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let profile = try #require(fixture.tabs.profile(forSpace: space))
+        let native = NativeTestPage(profileID: profile.id)
+        profile.name = "Stale metadata"
+        var nested: UUID?
+        var observed = false
+        withObservationTracking {
+            _ = profile.name
+        } onChange: {
+            MainActor.assumeIsolated {
+                guard !observed else { return }
+                observed = true
+                nested = fixture.tabs.adoptNativePage(native, through: fixture.host,
+                    in: fixture.window, spaceID: space, select: false)
+            }
+        }
+        let adopted = try #require(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false))
+        #expect(nested == adopted)
+        let session = try #require(fixture.tabs.session(for: adopted))
+        native.onEvent?(.ownerEnded)
+        #expect(session.isUnloaded && fixture.tabs.tree.item(adopted) != nil)
+        #expect(native.loaded.isEmpty && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+    }
+
+    @Test func snapshotReentryReusesNewerBindingInsteadOfOverwritingCallbacks() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        var nested: UUID?
+        native.onReadState = {
+            nested = fixture.tabs.adoptNativePage(native, through: fixture.host,
+                in: fixture.window, spaceID: space, select: false)
+        }
+        let adopted = try #require(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false))
+        #expect(nested == adopted)
+        let session = try #require(fixture.tabs.session(for: adopted))
+        native.onEvent?(.ownerEnded)
+        #expect(session.isUnloaded && fixture.tabs.tree.item(adopted) != nil)
+        #expect(native.loaded.isEmpty && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+    }
+
+    @Test func selectedAdoptionBindsExistingResourceAndClosesOnlyAfterActualOutcome() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        let selectedBefore = fixture.host.selectionCount
+        let adopted = try #require(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, select: true))
+        #expect(fixture.window.selectedItemID == adopted)
+        #expect(fixture.host.selectionCount == selectedBefore + 1)
+        #expect(native.loaded.isEmpty && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+        fixture.tabs.close(adopted)
+        #expect(fixture.tabs.tree.item(adopted) != nil && fixture.host.closes.count == 1)
+        fixture.host.finishClose(0, admitted: true)
+        #expect(fixture.tabs.tree.item(adopted) == nil && native.invalidated)
+        #expect(native.stops == 0 && fixture.host.closes.count == 1)
+    }
+
+    @Test func adoptionUsesExplicitInactiveProfileWithoutAnotherCreateOrLoad() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let selected = fixture.window.selectedItemID
+        fixture.host.finishCreate(0)
+        let personal = try #require(fixture.tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: nil))
+        let profile = try #require(fixture.tabs.tree.dataStoreID(for: personal))
+        let native = NativeTestPage(profileID: profile)
+        let adopted = try #require(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: personal, select: false))
+        #expect(fixture.tabs.session(for: adopted)?.profile?.id == profile)
+        #expect(fixture.tabs.tree.spaceID(of: adopted) == personal && fixture.window.selectedItemID == selected)
+        #expect(fixture.host.creates.count == 1 && native.loaded.isEmpty && fixture.host.closes.isEmpty)
+        #expect(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: personal, select: true) == adopted)
+        #expect(fixture.window.selectedItemID == adopted && fixture.window.spaceID == personal)
+        #expect(fixture.host.creates.count == 1 && native.loaded.isEmpty && fixture.host.closes.isEmpty)
+    }
+
+    @Test func refusedForeignStaleAndEndingAdoptionsLeaveNativeResourceUntouched() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let profile = try #require(fixture.tabs.tree.dataStoreID(for: space))
+        let native = NativeTestPage(profileID: profile)
+        let foreign = NativeTestPage(profileID: UUID())
+        let original = fixture.tabs.tree
+        let selected = fixture.window.selectedItemID
+        #expect(fixture.tabs.adoptNativePage(foreign, through: fixture.host,
+            in: fixture.window, spaceID: space, select: true) == nil)
+        #expect(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: BrowserWindowState(), spaceID: space, select: false) == nil)
+        fixture.host.admitSelection = false
+        #expect(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, select: true) == nil)
+        fixture.host.admitSelection = true
+        fixture.host.admitsAdoption = false
+        #expect(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false) == nil)
+        #expect(fixture.tabs.tree == original && fixture.window.selectedItemID == selected)
+        #expect(native.onEvent == nil && native.loaded.isEmpty && native.stops == 0 && !native.invalidated)
+        #expect(foreign.loaded.isEmpty && !foreign.invalidated && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+    }
+
+    @Test func reentrantNewerSelectionPreventsPublishingAnObsoleteAdoption() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let selected = try #require(fixture.window.selectedItemID)
+        let originalPage = fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        let original = fixture.tabs.tree
+        fixture.host.onSelect = { _, _ in fixture.tabs.select(selected, in: fixture.window) }
+        #expect(fixture.tabs.adoptNativePage(native, through: fixture.host,
+            in: fixture.window, spaceID: space, select: true) == nil)
+        #expect(fixture.tabs.tree == original && fixture.window.selectedItemID == selected)
+        #expect(fixture.tabs.sessions.allSatisfy { $0.navigation !== native })
+        #expect(native.loaded.isEmpty && !native.invalidated && native.onEvent == nil)
+        #expect(originalPage.loaded.count == 1 && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+    }
+
     @Test func ownerEndDuringPendingClosePreservesSavedTabAndCancelsSelection() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -449,7 +637,13 @@ private final class ControlledNativeHost: NativePageHost {
             }
         }
     }
+    private(set) var selectionCount = 0
+    var admitsAdoption = true
+    func canAdoptPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool {
+        admitsAdoption && !(page as! NativeTestPage).invalidated
+    }
     func selectPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool {
+        selectionCount += 1
         let admitted = admitSelection
         let callback = onSelect
         onSelect = nil
@@ -494,7 +688,17 @@ private final class ControlledNativeHost: NativePageHost {
 @MainActor
 private final class NativeTestPage: PageNavigation {
     let profileID: UUID?
-    var state = PageNavigationState(url: URL(string: "about:blank")!, canGoBack: false, canGoForward: false)
+    private var snapshot = PageNavigationState(url: URL(string: "about:blank")!, canGoBack: false, canGoForward: false)
+    var onReadState: (() -> Void)?
+    var state: PageNavigationState {
+        get {
+            let callback = onReadState
+            onReadState = nil
+            callback?()
+            return snapshot
+        }
+        set { snapshot = newValue }
+    }
     var onStateChanged: ((PageNavigationState) -> Void)?
     var onEvent: ((PageNavigationEvent) -> Void)?
     var loaded: [URL] = []

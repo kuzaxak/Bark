@@ -13,6 +13,10 @@ public protocol NativePageHost: AnyObject {
     func createPage(for session: PageSession, profile: Profile, in window: BrowserWindowState,
                     completion: @escaping @MainActor (Result<any PageNavigation, Error>) -> Void)
         -> (@MainActor () -> Void)
+    /// Pure admission query for an existing, unmodified page. Validate this host,
+    /// model window, native owner/profile and live membership; reject ending or
+    /// pending-close owners. This must not select, create, navigate or close.
+    func canAdoptPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool
     /// Actual selection admission, including transfer when necessary. False
     /// leaves the existing owner intact; it is not a completed focus claim.
     func selectPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool
