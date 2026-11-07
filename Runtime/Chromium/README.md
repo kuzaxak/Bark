@@ -249,6 +249,24 @@ launcher, which isolates each test in its own child, with one job to avoid
 competing native windows; do not use `--single-process-tests` for this suite.
 Its unpacked test loader does not qualify store installation or permission UI.
 
+The changed Views ownership/close paths also require the existing
+`views_unittests` target. After the candidate build exits, build that target in
+the same output and run the retained-client cases plus nearby upstream
+destruction, reentrant close, veto and frame-layout regressions:
+
+```fish
+autoninja -C out/Barc-x64 -j 8 views_unittests
+set views_filter 'ClientOwnsWidgetTest.*:WidgetObserverTest.CloseReentrancy:DesktopWidgetTest.CloseRequested_*:DesktopWidgetTest.SingleWindowClosing:WidgetTest.ReplaceClientContentsView:DialogClientViewTest.LayoutAfterCloseWithDetachedDelegate:DefaultFrameViewTest.GetNonDecoratedClientAreaBoundsInScreen:WidgetTest.RetainedClient*:WidgetTest.PhysicalCloseFinalizesRetainedDelegates'
+out/Barc-x64/views_unittests --gtest_filter="$views_filter" --gtest_list_tests
+out/Barc-x64/views_unittests --test-launcher-jobs=1 --gtest_filter="$views_filter"
+```
+
+The pinned source supplies 16 selected cases, including all four
+`ClientOwnsWidgetTest` cases. Check their names against the actual binary's list;
+an empty or partial selection is not a pass. These tests do not establish
+Browser/Profile ownership, grouped beforeunload or real native focus, which
+remain separate browser-test and installed-build requirements.
+
 Profile creation validates/canonicalizes UUIDs and resolves the immediate
 user-data child `Barc-<uuid>` through ProfileManager without active/default
 fallback. Callers must revalidate UUIDs against the app model; reported identity
