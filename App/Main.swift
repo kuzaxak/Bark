@@ -7,6 +7,7 @@
 //  built, since those already read UserDefaults and Application Support.
 //
 
+#if !NOOK_CHROMIUM_LIBRARY
 @main
 enum Main {
     static func main() {
@@ -14,3 +15,5 @@ enum Main {
         NookApp.main()
     }
 }
+
+#endif
