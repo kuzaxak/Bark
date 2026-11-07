@@ -96,6 +96,12 @@ The browser SHALL let users keep a selected tab or site active independently of 
 ### Requirement: Bounded background resource policy
 The browser SHALL apply its configured background resource policy to eligible pages while reporting when protected pages prevent reaching the target.
 
+#### Scenario: Inactive spaces retain their last selected tabs
+- **GIVEN** inactive spaces retain eligible pages that are not displayed in any browser surface and exceed the configured background residency target
+- **WHEN** the policy evaluates those pages
+- **THEN** being the last selected tab in an inactive space does not alone exempt a page from the background policy
+- **AND** pages still displayed in another window, split pane or Peek remain protected
+
 #### Scenario: Protected workload exceeds the budget
 - **GIVEN** active calls and visible pages already exceed the configured resource target
 - **WHEN** the policy evaluates background tabs
@@ -109,6 +115,13 @@ The browser SHALL prioritize a selected sleeping tab's restoration over speculat
 - **WHEN** the user selects a discarded tab while background warming is queued
 - **THEN** the selected tab restores first with visible loading state
 - **AND** it retains its tab identity, profile, and supported navigation state
+
+#### Scenario: Return to a space whose selected page was discarded
+- **GIVEN** an inactive space's last selected page has been discarded
+- **WHEN** the user returns to that space without selecting a different tab
+- **THEN** the page begins restoration with visible loading state
+- **AND** restoration does not require another tab click
+- **AND** the page retains its tab identity, profile, and supported navigation state
 
 ### Requirement: Observable lifecycle decisions
 The browser SHALL expose a tab's resource state and reason for retention or suspension in diagnostics without recording browsing content.
