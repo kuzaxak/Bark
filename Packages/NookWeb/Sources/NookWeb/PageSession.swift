@@ -1077,6 +1077,7 @@ public final class PageSession: NSObject, Identifiable {
     /// Chromium supplies its own icon; its pages must never use WebKit's
     /// process-wide URLSession/cache path, including during model construction.
     private var usesWebKitFavicon: Bool {
+        guard controller?.loadsWebKitFavicons != false else { return false }
         if let navigation { return navigation is WebKitPageNavigation }
         return (detachedProfile?.engine ?? controller?.profileEngine ?? .webKit) == .webKit
     }

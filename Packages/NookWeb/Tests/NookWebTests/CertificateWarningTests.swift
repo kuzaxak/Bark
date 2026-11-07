@@ -225,6 +225,7 @@ enum TestCertificate {
         var trust: SecTrust?
         SecTrustCreateWithCertificates(certificate, SecPolicyCreateSSL(true, host as CFString), &trust)
         if trusted { SecTrustSetAnchorCertificates(trust!, [certificate] as CFArray) }
+        SecTrustSetNetworkFetchAllowed(trust!, false)
         SecTrustSetVerifyDate(trust!, date as CFDate)
         return trust!
     }
@@ -320,6 +321,20 @@ struct PageCertificateWarningTests {
     private func selectedPage(in host: Host) throws -> PageSession {
         let item = try #require(host.window.selectedItemID)
         return try #require(host.tabs.ensureSession(for: item))
+    }
+
+    @Test func recordingFixturesNeverStartFaviconCacheOrNetworkWork() async throws {
+        let host = try Host()
+        let page = try selectedPage(in: host)
+        page.load(URL(string: "https://100.64.0.43/kvm/")!)
+        page.ensureFaviconLoaded()
+        await page.fetchAndSetFavicon(for: URL(string: "https://100.64.0.43/kvm/")!)
+        await Task.yield()
+        #expect(!host.tabs.loadsWebKitFavicons)
+        #expect(page.faviconFetchAttempts == 0 && !page.faviconFetchInFlight)
+        #expect(!page.hasFavicon)
+        #expect((page.activeWebView as? RecordingWebView)?.requested.last ==
+            URL(string: "https://100.64.0.43/kvm/")!)
     }
 
     @Test func aCertificateFailureShowsTheCardUntilTheNextLoadStarts() throws {
