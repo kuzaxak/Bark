@@ -453,7 +453,7 @@ class BrowserManager: ObservableObject {
         return entities.map { ($0.id, $0.name) }
     }
 
-    private let engine: Profile.Engine
+    let engine: Profile.Engine
 
     init(
         settings: NookSettingsService,
@@ -526,7 +526,7 @@ class BrowserManager: ObservableObject {
         self.historyManager.onHistoryCleared = { [caches = tabs.translationCaches] profile, cutoff in
             Task { await caches.erase(profile: profile, usedBefore: cutoff) }
         }
-        self.tabs.webViews = self
+        self.tabs.webViews = engine == .webKit ? self : nil
         self.tabs.sessionDelegate = self
         self.tabs.tabEvents = self
         self.tabs.alerts = self

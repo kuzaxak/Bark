@@ -17,7 +17,8 @@ import NookWeb
 
 extension BrowserManager: WebViewProvider {
     func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView {
-        FocusableWKWebView(frame: .zero, configuration: configuration)
+        precondition(engine == .webKit, "Chromium pages require their native surface")
+        return FocusableWKWebView(frame: .zero, configuration: configuration)
     }
 
     func webView(for itemID: UUID, in windowID: UUID) -> WKWebView? {
@@ -96,6 +97,7 @@ extension BrowserManager: PageSessionDelegate {
     }
 
     func requestPictureInPicture(for session: PageSession, webView: WKWebView?) {
+        guard engine == .webKit else { return }
         PiPManager.shared.requestPiP(for: session, webView: webView)
     }
 
@@ -135,12 +137,12 @@ extension BrowserManager: PageSessionDelegate {
 
 extension BrowserManager: TabEventObserver {
     func tabOpened(_ session: PageSession) {
-        ExtensionManager.shared.notifyTabOpened(session)
+        extensionManager?.notifyTabOpened(session)
     }
 
     func tabActivated(new session: PageSession, previous: PageSession?) {
         zoomManager.showZoomLevel(for: session.itemID)
-        ExtensionManager.shared.notifyTabActivated(new: session, previous: previous)
+        extensionManager?.notifyTabActivated(new: session, previous: previous)
         // The loaded-page budget was only ever reached from startup warming and split view, so
         // opening tabs by hand never checked it and no cap could bind.
         compositorManager?.pageActivated(session.itemID)
@@ -148,30 +150,31 @@ extension BrowserManager: TabEventObserver {
     }
 
     func tabClosed(itemID: UUID) {
-        ExtensionManager.shared.notifyTabClosed(itemID: itemID)
+        extensionManager?.notifyTabClosed(itemID: itemID)
         exitSidebarPiP(showing: itemID)
     }
 
     func tabMoved(itemID: UUID, from oldIndex: Int?, in oldWindow: BrowserWindowState?, pinnedChanged: Bool) {
-        ExtensionManager.shared.notifyTabMoved(
+        extensionManager?.notifyTabMoved(
             itemID: itemID, from: oldIndex, in: oldWindow, pinnedChanged: pinnedChanged)
     }
 
     func tabPropertiesChanged(_ session: PageSession, properties: WKWebExtension.TabChangedProperties) {
-        ExtensionManager.shared.notifyTabPropertiesChanged(session, properties: properties)
+        extensionManager?.notifyTabPropertiesChanged(session, properties: properties)
     }
 
     func grantAccess(to url: URL) {
-        ExtensionManager.shared.grantExtensionAccessToURL(url)
+        extensionManager?.grantExtensionAccessToURL(url)
     }
 
     func wakeBackgroundWorkers() {
-        ExtensionManager.shared.wakeBackgroundWorkers()
+        extensionManager?.wakeBackgroundWorkers()
     }
 
     /// Leaving a playing video moves it into the sidebar panel; coming back puts it inline again.
     /// Runs before the compositor refreshes, so the outgoing web view is still mounted.
     private func updateSidebarPiP(new session: PageSession, previous: PageSession?) {
+        guard engine == .webKit else { return }
         let windows = Array(windowRegistry?.windows.values ?? [:].values)
         // The window that made the selection: a script or background window is not the key one.
         let active = windowRegistry?.activeWindow
@@ -211,6 +214,7 @@ extension BrowserManager: TabEventObserver {
 
     /// Ends any window's sidebar picture-in-picture of `itemID`.
     func exitSidebarPiP(showing itemID: UUID) {
+        guard engine == .webKit else { return }
         for window in windowRegistry?.windows.values ?? [:].values {
             window.sidebarPiPController?.exitIfShowing(itemID)
         }
@@ -218,6 +222,7 @@ extension BrowserManager: TabEventObserver {
 
     /// A hidden sidebar has nowhere to dock, so a docked video carries on in the system window.
     func sidebarPiPSidebarHidden(in windowState: BrowserWindowState) {
+        guard engine == .webKit else { return }
         guard let controller = windowState.sidebarPiPController, controller.isDocked,
             let session = controller.session, let webView = controller.webView
         else { return }
@@ -227,6 +232,7 @@ extension BrowserManager: TabEventObserver {
 
     /// The video follows the focused window, docked or floating, so its drop zone is always here.
     func moveSidebarPiP(to windowState: BrowserWindowState) {
+        guard engine == .webKit else { return }
         guard !windowState.isIncognito, let target = windowState.sidebarPiPController, !target.isShowing,
             let source = windowRegistry?.windows.values.compactMap(\.sidebarPiPController)
                 .first(where: { $0 !== target && $0.isShowing }),
@@ -246,13 +252,15 @@ extension BrowserManager: TabEventObserver {
         }
     }
 
+    // Chromium owns its extension lifecycle; absence is explicit, never a
+    // request to initialize the legacy singleton.
     var nativeController: WKWebExtensionController? {
-        ExtensionManager.shared.nativeController
+        extensionManager?.nativeController
     }
 
     func diagnose(for webView: WKWebView, url: URL) {
         #if DEBUG
-        ExtensionManager.shared.diagnoseExtensionState(for: webView, url: url)
+        extensionManager?.diagnoseExtensionState(for: webView, url: url)
         #endif
     }
 }
