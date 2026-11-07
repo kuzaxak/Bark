@@ -104,7 +104,7 @@ end
 
 Stop on any failed check/application; do not skip patches or continue to GN.
 After every patch succeeds, copy the current bridge/profile implementations and
-all five regression sources into that same checkout. In particular, include
+all six regression sources into that same checkout. In particular, include
 the macOS policy regression supplied with the policy patches:
 
 ```fish
@@ -112,6 +112,7 @@ cp "$barc_repo/Runtime/Chromium/barc_bridge.h" "$barc_repo/Runtime/Chromium/barc
 cp "$barc_repo/Runtime/Chromium/barc_profiles.h" "$barc_repo/Runtime/Chromium/barc_profiles.mm" chrome/browser/ui/views/frame/
 cp "$barc_repo/Runtime/Chromium/barc_bridge_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_profiles_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_native_policy_browsertest.mm" chrome/browser/ui/views/frame/
 cp "$barc_repo/Runtime/Chromium/barc_extension_focus_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_extension_dialog_browsertest.mm" chrome/browser/ui/views/frame/
+cp "$barc_repo/Runtime/Chromium/barc_extension_storage_browsertest.mm" chrome/browser/ui/views/frame/
 ```
 
 These hooks use Chromium's existing macOS UI target and framework exports; the
@@ -218,20 +219,21 @@ Neither launch command is a qualification result.
 
 ### Regression scope and remaining qualification
 
-The maintained `barc_browser_tests` target has **five sources and six classes**:
+The maintained `barc_browser_tests` target has **six sources and seven classes**:
 `BarcBridgeBrowserTest` and `BarcSharedNativeWindowBrowserTest` in
 `barc_bridge_browsertest.mm`, `BarcProfilesBrowserTest` in
 `barc_profiles_browsertest.mm`, `BarcNativePolicyBrowserTest` in
 `barc_native_policy_browsertest.mm`, and `BarcExtensionFocusBrowserTest` in
 `barc_extension_focus_browsertest.mm`, plus `BarcExtensionDialogBrowserTest` in
-`barc_extension_dialog_browsertest.mm`. It uses Chromium's existing
+`barc_extension_dialog_browsertest.mm`, and `BarcExtensionStorageBrowserTest` in
+`barc_extension_storage_browsertest.mm`. It uses Chromium's existing
 `browser_tests_runner`, `test_support` and `test_support_ui`, with no custom
 runner or registration in monolithic `browser_tests`. Inspect the generated
 graph/incremental estimate and compile added objects before committing to its
 separate build. Its ordinary launcher filter is:
 
 ```fish
-out/Barc-x64/barc_browser_tests --test-launcher-jobs=1 --gtest_filter='BarcBridgeBrowserTest.*:BarcProfilesBrowserTest.*:BarcSharedNativeWindowBrowserTest.*:BarcNativePolicyBrowserTest.*:BarcExtensionFocusBrowserTest.*:BarcExtensionDialogBrowserTest.*'
+out/Barc-x64/barc_browser_tests --test-launcher-jobs=1 --test-launcher-retry-limit=0 --gtest_filter='BarcBridgeBrowserTest.*:BarcProfilesBrowserTest.*:BarcSharedNativeWindowBrowserTest.*:BarcNativePolicyBrowserTest.*:BarcExtensionFocusBrowserTest.*:BarcExtensionDialogBrowserTest.*:BarcExtensionStorageBrowserTest.*'
 ```
 
 These regressions encode transfer/draft/scroll/history, profile binding,

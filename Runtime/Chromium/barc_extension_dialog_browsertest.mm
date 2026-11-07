@@ -1,27 +1,37 @@
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
 
+#include <utility>
+
 #include "base/command_line.h"
 #include "base/functional/callback_helpers.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
+#include "chrome/browser/extensions/extension_disabled_ui.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_manager_service.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/extension_installed_watcher.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog.h"
+#include "chrome/browser/ui/global_error/global_error.h"
+#include "chrome/browser/ui/global_error/global_error_bubble_view_base.h"
+#include "chrome/browser/ui/global_error/global_error_service.h"
+#include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/extensions_container_views.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/test_utils.h"
+#include "extensions/browser/disable_reason.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_builder.h"
@@ -263,4 +273,75 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
 IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
                        SwitchBeforeInstallNotificationCancelsPostInstall) {
   CheckDelayedPostInstallCancellation();
+}
+
+IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
+                       OriginalProfileDisabledErrorAdmitsOTROwner) {
+  int32_t work_id = 0;
+  int32_t personal_id = 0;
+  ASSERT_NO_FATAL_FAILURE(OpenPair(work_id, personal_id));
+  auto* work = Window(work_id);
+  auto* personal = Window(personal_id);
+  auto* profile = work->GetProfile();
+  auto* otr_profile = profile->GetPrimaryOTRProfile(true);
+  BrowserWindowCreateParams params(otr_profile, true);
+  params.native_window_owner = work->GetSessionID();
+  auto* otr = CreateBrowserWindow(std::move(params));
+  ASSERT_TRUE(otr);
+  const int32_t otr_id = otr->GetSessionID().id();
+  ASSERT_NE(0, barc_tab_create(otr_id, "about:blank", 1));
+  ASSERT_EQ(1, barc_window_select(otr_id));
+  auto* otr_view = BrowserView::GetBrowserViewForBrowser(otr);
+  auto* personal_view = BrowserView::GetBrowserViewForBrowser(personal);
+  ASSERT_EQ(otr_view->GetWidget(), personal_view->GetWidget());
+  auto extension = extensions::ExtensionBuilder("Original profile disabled")
+                       .SetManifestKey("action", base::DictValue())
+                       .Build();
+  auto* registrar = extensions::ExtensionRegistrar::Get(profile);
+  registrar->AddExtension(extension.get());
+  registrar->DisableExtension(extension->id(),
+                             {extensions::disable_reason::DISABLE_USER_ACTION});
+  content::RunAllTasksUntilIdle();
+  auto* errors = GlobalErrorServiceFactory::GetForProfile(profile);
+  ASSERT_EQ(errors, GlobalErrorServiceFactory::GetForProfile(otr_profile));
+  const size_t old_error_count = errors->errors().size();
+  extensions::AddExtensionDisabledError(profile, extension.get(), false);
+  ASSERT_EQ(old_error_count + 1, errors->errors().size());
+  // This exact newly added error is ExtensionDisabledGlobalError, derived from
+  // GlobalErrorWithStandardBubble; exercise its real deferred cancel callback.
+  auto* error = static_cast<GlobalErrorWithStandardBubble*>(
+      errors->errors().back().get());
+  error->ExecuteMenuItem(otr);
+  ASSERT_TRUE(error->GetBubbleView());
+  error->GetBubbleView()->CloseBubbleView();
+  content::RunAllTasksUntilIdle();
+  const auto old_widgets = views::test::WidgetTest::GetAllWidgets();
+  error->BubbleViewCancelButtonPressed(otr);
+  views::Widget* prompt = nullptr;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    for (const auto& widget : views::test::WidgetTest::GetAllWidgets()) {
+      if (!old_widgets.contains(widget) && widget->IsVisible() &&
+          widget->widget_delegate()->AsBubbleDialogDelegate()) {
+        prompt = widget.get();
+        return true;
+      }
+    }
+    return false;
+  }));
+  auto* anchor = prompt->widget_delegate()->AsBubbleDialogDelegate()
+                     ->GetAnchorView();
+  ASSERT_TRUE(anchor);
+  EXPECT_TRUE(otr_view->Contains(anchor));
+  EXPECT_FALSE(personal_view->Contains(anchor));
+  auto prompt_alive = prompt->GetWeakPtr();
+  ui_test_utils::BrowserDestroyedObserver closed(otr);
+  EXPECT_EQ(1, barc_window_close(otr_id));
+  closed.Wait();
+  EXPECT_TRUE(base::test::RunUntil([&] { return !prompt_alive; }));
+  ASSERT_TRUE(Window(work_id));
+  ASSERT_TRUE(Window(personal_id));
+  EXPECT_TRUE(extensions::ExtensionRegistry::Get(profile)
+                  ->disabled_extensions().Contains(extension->id()));
+  EXPECT_FALSE(extensions::ExtensionRegistry::Get(personal->GetProfile())
+                   ->GetInstalledExtension(extension->id()));
 }

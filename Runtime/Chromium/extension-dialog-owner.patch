@@ -12,11 +12,11 @@ diff --git a/chrome/browser/extensions/extension_context_menu_model.cc b/chrome/
 -    helper->BeginUninstall(profile, parent, extension);
 +    helper->BeginUninstall(profile, browser, extension);
    }
- 
+
   private:
 @@ -328,9 +328,15 @@
    ~UninstallDialogHelper() override = default;
- 
+
    void BeginUninstall(Profile* profile,
 -                      gfx::NativeWindow parent,
 +                      BrowserWindowInterface* browser,
@@ -46,7 +46,7 @@ diff --git a/chrome/browser/extensions/extension_disabled_ui_desktop.cc b/chrome
 --- a/chrome/browser/extensions/extension_disabled_ui_desktop.cc
 +++ b/chrome/browser/extensions/extension_disabled_ui_desktop.cc
 @@ -230,8 +230,8 @@
- 
+
  void ExtensionDisabledGlobalError::BubbleViewCancelButtonPressed(
      BrowserWindowInterface* browser) {
 -  uninstall_dialog_ = ExtensionUninstallDialog::Create(
@@ -75,10 +75,10 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
  #include "ui/base/page_transition_types.h"
  #include "ui/base/window_open_disposition.h"
  #include "ui/display/display.h"
-@@ -81,6 +83,33 @@
- 
+@@ -81,6 +83,35 @@
+
  ExtensionUninstallDialog::~ExtensionUninstallDialog() = default;
- 
+
 +#if !BUILDFLAG(IS_ANDROID)
 +std::unique_ptr<ExtensionUninstallDialog>
 +ExtensionUninstallDialog::CreateForBrowser(Profile* profile,
@@ -101,7 +101,9 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
 +
 +bool ExtensionUninstallDialog::CanShowForBrowserOwner() const {
 +  return !browser_owner_ || (browser_owner() && browser_owner()->GetWindow() &&
-+                             browser_owner()->GetProfile() == profile_ &&
++                             (browser_owner()->GetProfile() == profile_ ||
++                              browser_owner()->GetProfile()->GetOriginalProfile() ==
++                                  profile_) &&
 +                             !browser_owner()->IsDeleteScheduled() &&
 +                             browser_owner()->IsSelectedForNativeWindow());
 +}
@@ -109,21 +111,21 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
  void ExtensionUninstallDialog::ConfirmUninstallByExtension(
      const scoped_refptr<const Extension>& extension,
      const scoped_refptr<const Extension>& triggering_extension,
-@@ -102,6 +131,10 @@
+@@ -102,6 +133,10 @@
    extension_ = extension;
    uninstall_reason_ = reason;
- 
+
 +  if (!CanShowForBrowserOwner()) {
 +    OnDialogClosed(CLOSE_ACTION_CANCELED);
 +    return;
 +  }
    if (!profile_)
      return;
- 
-@@ -133,13 +166,34 @@
- 
+
+@@ -133,13 +168,34 @@
+
    dialog_shown_ = true;
- 
+
 +  // Profile destruction already delivered cancellation through its observer.
 +  if (!profile_)
 +    return;
@@ -137,7 +139,7 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
      OnDialogClosed(CLOSE_ACTION_CANCELED);
      return;
    }
- 
+
    if (g_on_will_show_callback != nullptr) {
 +    const auto weak_this = AsWeakPtr();
      g_on_will_show_callback->Run();
@@ -153,18 +155,18 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
 +    OnDialogClosed(CLOSE_ACTION_CANCELED);
 +    return;
    }
- 
+
    switch (ScopedTestDialogAutoConfirm::GetAutoConfirmValue()) {
 diff --git a/chrome/browser/extensions/extension_uninstall_dialog.h b/chrome/browser/extensions/extension_uninstall_dialog.h
 --- a/chrome/browser/extensions/extension_uninstall_dialog.h
 +++ b/chrome/browser/extensions/extension_uninstall_dialog.h
 @@ -6,12 +6,14 @@
  #define CHROME_BROWSER_EXTENSIONS_EXTENSION_UNINSTALL_DIALOG_H_
- 
+
  #include <memory>
 +#include <optional>
  #include <string>
- 
+
  #include "base/memory/raw_ptr.h"
  #include "base/memory/weak_ptr.h"
  #include "base/scoped_observation.h"
@@ -174,9 +176,9 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.h b/chrome/bro
  #include "chrome/browser/extensions/chrome_app_icon_delegate.h"
  #include "chrome/browser/profiles/profile.h"
 @@ -26,6 +28,8 @@
- 
+
  static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
- 
+
 +class BrowserWindowInterface;
 +
  namespace ui {
@@ -185,7 +187,7 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.h b/chrome/bro
 @@ -69,6 +73,15 @@
    static std::unique_ptr<ExtensionUninstallDialog>
    Create(Profile* profile, gfx::NativeWindow parent, Delegate* delegate);
- 
+
 +#if !BUILDFLAG(IS_ANDROID)
 +  // Browser-origin prompts retain logical ownership across asynchronous icon
 +  // loading; an inactive or destroyed owner cancels instead of rebinding.
@@ -197,22 +199,22 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.h b/chrome/bro
 +
    ExtensionUninstallDialog(const ExtensionUninstallDialog&) = delete;
    ExtensionUninstallDialog& operator=(const ExtensionUninstallDialog&) = delete;
- 
+
 @@ -115,6 +128,8 @@
        return triggering_extension_.get(); }
    const gfx::ImageSkia& icon() const { return icon_->image_skia(); }
    gfx::NativeWindow parent() { return parent_; }
 +  BrowserWindowInterface* browser_owner() const;
 +  bool CanShowForBrowserOwner() const;
- 
+
   private:
    // Uninstalls the extension. Returns true on success, and populates `error` on
 @@ -148,6 +163,7 @@
- 
+
    // The dialog's parent window.
    gfx::NativeWindow parent_;
 +  std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner_;
- 
+
    // The delegate we will call Accepted/Canceled on after confirmation dialog.
    raw_ptr<Delegate> delegate_;
 diff --git a/chrome/browser/ui/extensions/extension_install_ui_desktop.cc b/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
@@ -247,7 +249,7 @@ diff --git a/chrome/browser/ui/extensions/extension_install_ui_desktop.cc b/chro
 +        browser_window->GetWeakPtr());
      return;
    }
- 
+
 diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chrome/browser/ui/extensions/extension_post_install_dialog.cc
 --- a/chrome/browser/ui/extensions/extension_post_install_dialog.cc
 +++ b/chrome/browser/ui/extensions/extension_post_install_dialog.cc
@@ -266,7 +268,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
  #include "chrome/common/url_constants.h"
 @@ -44,6 +50,26 @@
  namespace extensions {
- 
+
  namespace {
 +#if !BUILDFLAG(IS_ANDROID)
 +bool CanPresentForBrowserOwner(
@@ -289,7 +291,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
 +#endif
 +
  constexpr gfx::Size kMaxIconSize{43, 43};
- 
+
  void ConfigurePostInstallDialogModel(
 @@ -137,11 +163,17 @@
      content::WebContents* web_contents,
@@ -301,7 +303,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
    if (!web_contents) {
      return;
    }
- 
+
 +#if !BUILDFLAG(IS_ANDROID)
 +  if (!CanPresentForBrowserOwner(browser_owner, profile, web_contents))
 +    return;
@@ -311,9 +313,9 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
        web_contents, std::move(model));
    gfx::NativeWindow native_window = web_contents->GetTopLevelNativeWindow();
 @@ -153,14 +185,6 @@
- 
+
    ui::DialogModel::Builder dialog_model_builder(std::move(delegate));
- 
+
 -  if (!show_iph_callback.is_null()) {
 -    dialog_model_builder.SetDialogDestroyingCallback(base::BindOnce(
 -        base::IgnoreResult(&base::SequencedTaskRunner::PostTask),
@@ -328,7 +330,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
 @@ -169,6 +193,12 @@
                                    weak_delegate->model(),
                                    manage_shortcuts_callback);
- 
+
 +  if (!weak_profile)
 +    return;
 +#if !BUILDFLAG(IS_ANDROID)
@@ -341,7 +343,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
 @@ -183,7 +213,52 @@
    }
  #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
- 
+
 +  if (!weak_profile)
 +    return;
 +#if !BUILDFLAG(IS_ANDROID)
@@ -448,7 +450,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chr
 +          icon, std::move(get_web_contents_callback),
 +          std::move(show_iph_callback)));
  }
- 
+
  }  // namespace extensions
 diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.h b/chrome/browser/ui/extensions/extension_post_install_dialog.h
 --- a/chrome/browser/ui/extensions/extension_post_install_dialog.h
@@ -456,7 +458,7 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.h b/chro
 @@ -5,14 +5,18 @@
  #ifndef CHROME_BROWSER_UI_EXTENSIONS_EXTENSION_POST_INSTALL_DIALOG_H_
  #define CHROME_BROWSER_UI_EXTENSIONS_EXTENSION_POST_INSTALL_DIALOG_H_
- 
+
 +#include <optional>
 +
  #include "base/functional/callback_forward.h"
@@ -465,13 +467,13 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.h b/chro
 +#include "base/memory/weak_ptr.h"
  #include "chrome/browser/ui/extensions/extension_install_ui.h"
  #include "extensions/buildflags/buildflags.h"
- 
+
  static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
- 
+
 +class BrowserWindowInterface;
  class Profile;
  class SkBitmap;
- 
+
 @@ -29,7 +33,10 @@
      const SkBitmap& icon,
      base::OnceCallback<content::WebContents*()> get_web_contents_callback,
@@ -481,16 +483,16 @@ diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.h b/chro
 +    // Supplied-but-expired ownership cancels; it never falls back to native UI.
 +    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner =
 +        std::nullopt);
- 
+
  }  // namespace extensions
- 
+
 diff --git a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc b/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
 --- a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
 +++ b/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
 @@ -5,10 +5,16 @@
  #include <memory>
  #include <string>
- 
+
 +#include "base/callback_list.h"
  #include "base/functional/callback.h"
  #include "base/memory/raw_ptr.h"
@@ -512,13 +514,13 @@ diff --git a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc b/c
 +  void OnBrowserOwnerClosed(BrowserWindowInterface* browser);
 +  base::CallbackListSubscription browser_close_subscription_;
 +#endif
- 
+
    // Pointer to the DialogModel for the dialog. This is cleared when the dialog
    // is being closed and OnDialogClosed is reported. As such it prevents access
 @@ -121,9 +131,38 @@
                                 ui::DialogModelLabel(checkbox_label));
    }
- 
+
 +  if (!CanShowForBrowserOwner()) {
 +    OnDialogClosed(CLOSE_ACTION_CANCELED);
 +    return;
@@ -554,11 +556,11 @@ diff --git a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc b/c
 +#endif
    ShowDialog(parent(), extension()->id(), std::move(dialog_model));
  }
- 
+
 @@ -132,12 +171,31 @@
    dialog_model_->host()->Close();
  }
- 
+
 +#if !BUILDFLAG(IS_ANDROID)
 +void ExtensionUninstallDialogImpl::OnBrowserOwnerClosed(
 +    BrowserWindowInterface* browser) {
@@ -596,13 +598,13 @@ diff --git a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc b/c
 +#endif
    OnDialogClosed(CLOSE_ACTION_CANCELED);
  }
- 
+
 diff --git a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc b/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
 --- a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
 +++ b/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
 @@ -186,11 +186,8 @@
    }
- 
+
    DCHECK(!uninstall_dialog_);
 -  uninstall_dialog_ = ExtensionUninstallDialog::Create(
 -      browser()->GetProfile(),
@@ -611,7 +613,7 @@ diff --git a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc b/chr
 -      this);
 +  uninstall_dialog_ = ExtensionUninstallDialog::CreateForBrowser(
 +      browser()->GetProfile(), browser(), this);
- 
+
    // The dialog can be closed by UI system whenever it likes, but
    // OnExtensionUninstallDialogClosed will be called anyway.
 diff --git a/chrome/browser/ui/webui/app_home/app_home_page_handler.cc b/chrome/browser/ui/webui/app_home/app_home_page_handler.cc
@@ -628,16 +630,220 @@ diff --git a/chrome/browser/ui/webui/app_home/app_home_page_handler.cc b/chrome/
 +                                                             this);
    return extension_uninstall_dialog_.get();
  }
- 
+
 @@ -546,8 +547,9 @@
    extension_dialog_prompting_ = true;
- 
+
    BrowserWindowInterface* browser = GetCurrentBrowser();
 -  extension_uninstall_dialog_ = extensions::ExtensionUninstallDialog::Create(
 -      profile_, browser->GetWindow()->GetNativeWindow(), this);
 +  extension_uninstall_dialog_ =
 +      extensions::ExtensionUninstallDialog::CreateForBrowser(profile_, browser,
 +                                                             this);
- 
+
    extension_uninstall_dialog_->ConfirmUninstall(
        extension, extensions::UNINSTALL_REASON_USER_INITIATED,
+diff --git a/chrome/browser/extensions/chrome_extension_function_details.cc b/chrome/browser/extensions/chrome_extension_function_details.cc
+--- a/chrome/browser/extensions/chrome_extension_function_details.cc
++++ b/chrome/browser/extensions/chrome_extension_function_details.cc
+@@ -79,13 +79,18 @@
+   return window_controller;
+ }
+
+-gfx::NativeWindow ChromeExtensionFunctionDetails::GetNativeWindowForUI() {
++gfx::NativeWindow ChromeExtensionFunctionDetails::GetNativeWindowForUI(
++    BrowserWindowInterface** logical_browser) {
++  if (logical_browser)
++    *logical_browser = nullptr;
+   // Try to use WindowControllerList first because WebContents's
+   // GetTopLevelNativeWindow() can't return the top level window when the tab
+   // is not focused.
+   WindowController* controller =
+       WindowControllerList::GetInstance()->CurrentWindowForFunction(function_);
+   if (controller) {
++    if (logical_browser)
++      *logical_browser = controller->GetBrowserWindowInterface();
+     return controller->window()->GetNativeWindow();
+   }
+
+@@ -129,6 +134,8 @@
+     }
+   }
+   if (browser) {
++    if (logical_browser)
++      *logical_browser = browser;
+     return browser->GetWindow()->GetNativeWindow();
+   }
+
+diff --git a/chrome/browser/extensions/chrome_extension_function_details.h b/chrome/browser/extensions/chrome_extension_function_details.h
+--- a/chrome/browser/extensions/chrome_extension_function_details.h
++++ b/chrome/browser/extensions/chrome_extension_function_details.h
+@@ -12,6 +12,7 @@
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+
+ class ExtensionFunction;
++class BrowserWindowInterface;
+
+ namespace extensions {
+ class WindowController;
+@@ -61,7 +62,11 @@
+   // - The sender web contents
+   // - Open app windows
+   // - A browser with the same profile
+-  gfx::NativeWindow GetNativeWindowForUI();
++  // Optionally reports the logical browser selected by this same resolution.
++  // Native/non-browser surfaces leave it null; callers must not infer a browser
++  // back from the returned native window, which may be shared.
++  gfx::NativeWindow GetNativeWindowForUI(
++      BrowserWindowInterface** logical_browser = nullptr);
+
+   // Returns a pointer to the associated ExtensionFunction
+   ExtensionFunction* function() { return function_; }
+diff --git a/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc b/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc
+--- a/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc
++++ b/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc
+@@ -5,15 +5,22 @@
+ #include "chrome/browser/extensions/api/management/chrome_management_api_delegate.h"
+
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <utility>
+
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
++#include "base/task/single_thread_task_runner.h"
++#include "build/build_config.h"
+ #include "chrome/browser/extensions/chrome_extension_function_details.h"
+ #include "chrome/browser/extensions/extension_management.h"
+ #include "chrome/browser/extensions/extension_tab_util.h"
+ #include "chrome/browser/extensions/launch_util.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
+ #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "extensions/browser/api/management/management_api.h"
+ #include "extensions/browser/extension_registrar.h"
+ #include "extensions/browser/launch_util.h"
+@@ -85,10 +92,54 @@
+       const Extension* target_extension,
+       bool show_programmatic_uninstall_ui)
+       : function_(function) {
+-    ChromeExtensionFunctionDetails details(function);
+-    extension_uninstall_dialog_ = ExtensionUninstallDialog::Create(
+-        Profile::FromBrowserContext(function->browser_context()),
+-        details.GetNativeWindowForUI(), this);
++    std::optional<tabs::TabHandle> sender_tab;
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner;
++#if !BUILDFLAG(IS_ANDROID)
++    auto* sender = function->GetSenderWebContents();
++    auto* tab =
++        sender ? tabs::TabInterface::MaybeGetFromContents(sender) : nullptr;
++    if (tab) {
++      auto* owner = tab->GetBrowserWindowInterface();
++      if (!owner) {
++        // An identified tab is detached/closing. Never choose another browser
++        // by activity or by its shared native window. Complete after the
++        // caller has stored this delegate and returned RespondLater().
++        base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++            FROM_HERE,
++            base::BindOnce(&ManagementUninstallFunctionUninstallDialogDelegate::
++                               OnExtensionUninstallDialogClosed,
++                           weak_factory_.GetWeakPtr(), false,
++                           std::u16string()));
++        return;
++      }
++      sender_tab = tab->GetHandle();
++      browser_owner = owner->GetWeakPtr();
++      extension_uninstall_dialog_ = ExtensionUninstallDialog::CreateForBrowser(
++          Profile::FromBrowserContext(function->browser_context()), owner,
++          this);
++    } else
++#endif
++    {
++      // Keep the existing controller/native/AppWindow/final-browser choice,
++      // but retain its logical browser when that choice has one.
++      ChromeExtensionFunctionDetails details(function);
++      BrowserWindowInterface* owner = nullptr;
++      const auto parent = details.GetNativeWindowForUI(&owner);
++#if !BUILDFLAG(IS_ANDROID)
++      if (owner) {
++        browser_owner = owner->GetWeakPtr();
++        extension_uninstall_dialog_ =
++            ExtensionUninstallDialog::CreateForBrowser(
++                Profile::FromBrowserContext(function->browser_context()), owner,
++                this);
++      } else
++#endif
++      {
++        extension_uninstall_dialog_ = ExtensionUninstallDialog::Create(
++            Profile::FromBrowserContext(function->browser_context()), parent,
++            this);
++      }
++    }
+     bool uninstall_from_webstore =
+         (function->extension() &&
+          function->extension()->id() == kWebStoreAppId) ||
+@@ -108,13 +159,15 @@
+       source = UNINSTALL_SOURCE_EXTENSION;
+       reason = UNINSTALL_REASON_MANAGEMENT_API;
+     }
+-    if (show_programmatic_uninstall_ui) {
+-      extension_uninstall_dialog_->ConfirmUninstallByExtension(
+-          target_extension, function->extension(), reason, source);
+-    } else {
+-      extension_uninstall_dialog_->ConfirmUninstall(target_extension, reason,
+-                                                    source);
+-    }
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(
++            &ManagementUninstallFunctionUninstallDialogDelegate::Confirm,
++            weak_factory_.GetWeakPtr(),
++            scoped_refptr<const Extension>(target_extension),
++            scoped_refptr<const Extension>(function->extension()),
++            show_programmatic_uninstall_ui, reason, source, sender_tab,
++            browser_owner));
+   }
+
+   ManagementUninstallFunctionUninstallDialogDelegate(
+@@ -131,8 +184,39 @@
+   }
+
+  private:
++  void Confirm(scoped_refptr<const Extension> target,
++               scoped_refptr<const Extension> requester,
++               bool show_programmatic_ui,
++               UninstallReason reason,
++               UninstallSource source,
++               std::optional<tabs::TabHandle> sender_tab,
++               std::optional<base::WeakPtr<BrowserWindowInterface>> owner) {
++#if !BUILDFLAG(IS_ANDROID)
++    if ((owner && !*owner) ||
++        (sender_tab &&
++         (!owner || !sender_tab->Get() ||
++          sender_tab->Get()->GetBrowserWindowInterface() != owner->get()))) {
++      OnExtensionUninstallDialogClosed(false, std::u16string());
++      return;
++    }
++#endif
++    // The TabHandle is revalidated before this posted confirmation only. The
++    // dialog retains the originating weak browser through icon delivery and
++    // acceptance; it does not follow a later tab reparent to a different owner.
++    // Confirm may synchronously cancel and release the function/delegate.
++    // Do not access members after either call.
++    if (show_programmatic_ui) {
++      extension_uninstall_dialog_->ConfirmUninstallByExtension(
++          target, requester, reason, source);
++      return;
++    }
++    extension_uninstall_dialog_->ConfirmUninstall(target, reason, source);
++  }
++
+   raw_ptr<ManagementUninstallFunctionBase> function_;
+   std::unique_ptr<ExtensionUninstallDialog> extension_uninstall_dialog_;
++  base::WeakPtrFactory<ManagementUninstallFunctionUninstallDialogDelegate>
++      weak_factory_{this};
+ };
+
+ SupervisedUserExtensionsDelegate*
