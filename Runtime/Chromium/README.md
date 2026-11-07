@@ -230,7 +230,7 @@ graph/incremental estimate and compile added objects before committing to its
 separate build. Its ordinary launcher filter is:
 
 ```fish
-out/Barc-x64/barc_browser_tests --gtest_filter='BarcBridgeBrowserTest.*:BarcProfilesBrowserTest.*:BarcSharedNativeWindowBrowserTest.*:BarcNativePolicyBrowserTest.*:BarcExtensionFocusBrowserTest.*'
+out/Barc-x64/barc_browser_tests --test-launcher-jobs=1 --gtest_filter='BarcBridgeBrowserTest.*:BarcProfilesBrowserTest.*:BarcSharedNativeWindowBrowserTest.*:BarcNativePolicyBrowserTest.*:BarcExtensionFocusBrowserTest.*'
 ```
 
 These regressions encode transfer/draft/scroll/history, profile binding,
@@ -243,6 +243,10 @@ from baseline compilation, candidate compilation and test-object compilation.
 
 The extension focus case loads the same synthetic MV3 extension into both real
 profiles and checks actual focus events while the native window remains key.
+It enables upstream UI controls before base setup to prevent the harness from
+swizzling `NSApp.keyWindow` and simulating focus notifications. Use the normal
+launcher, which isolates each test in its own child, with one job to avoid
+competing native windows; do not use `--single-process-tests` for this suite.
 Its unpacked test loader does not qualify store installation or permission UI.
 
 Profile creation validates/canonicalizes UUIDs and resolves the immediate

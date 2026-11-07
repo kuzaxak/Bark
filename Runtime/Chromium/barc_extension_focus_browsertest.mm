@@ -28,6 +28,7 @@
 #include "extensions/test/test_extension_dir.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
+#include "ui/base/test/ui_controls.h"
 
 namespace {
 constexpr char kWork[] = "46bad13a-f9f9-4524-b376-299b82a19268";
@@ -57,6 +58,14 @@ void ScopeListener(ExtensionTestMessageListener& listener,
 
 class BarcExtensionFocusBrowserTest : public InProcessBrowserTest {
  public:
+  void SetUp() override {
+    // Opt into real macOS focus before the base installs its fake-focus scope.
+    // This process-wide UI-test opt-in follows interactive_ui_tests; run this
+    // real-focus case in its own test child, without batching unrelated cases.
+    ui_controls::EnableUIControls();
+    ASSERT_TRUE(ui_controls::IsUIControlsEnabled());
+    InProcessBrowserTest::SetUp();
+  }
   void SetUpCommandLine(base::CommandLine* command_line) override {
     InProcessBrowserTest::SetUpCommandLine(command_line);
     command_line->AppendSwitch("barc-native-shell");
