@@ -11,8 +11,8 @@
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
-#include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/browser_process.h"
+#include "chrome/browser/download/download_prefs.h"
 #include "chrome/browser/lifetime/application_lifetime_desktop.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
@@ -621,6 +621,19 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
     EXPECT_NE(bubble_host, other_view->GetTabSearchBubbleHost());
   }
   auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  auto* work_contents = work->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(work_contents);
+  // Exercise retained inactive contents that still resolve to the shared host,
+  // whose native metadata identifies the selected Personal BrowserView.
+  ASSERT_EQ(host, views::Widget::GetTopLevelWidgetForNativeView(
+                      work_contents->GetNativeView()));
+  ASSERT_EQ(personal_view, BrowserView::GetBrowserViewForNativeWindow(
+                               host->GetNativeWindow()));
+  EXPECT_EQ(work_view,
+            BrowserWindow::FindBrowserWindowWithWebContents(work_contents));
+  EXPECT_EQ(personal_view, BrowserWindow::FindBrowserWindowWithWebContents(
+                               personal->GetTabStripModel()
+                                   ->GetActiveWebContents()));
   auto host_alive = host->GetWeakPtr();
   const auto native_window = host->GetNativeWindow();
   auto* contents = personal->GetTabStripModel()->GetActiveWebContents();

@@ -288,7 +288,7 @@
  _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,72 @@
+@@ -9782,3 +9782,73 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -300,6 +300,7 @@
 +    defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
 +    sources = [
 +      "../browser/ui/views/frame/barc_bridge_browsertest.mm",
++      "../browser/ui/views/frame/barc_extension_dialog_browsertest.mm",
 +      "../browser/ui/views/frame/barc_extension_focus_browsertest.mm",
 +      "../browser/ui/views/frame/barc_profiles_browsertest.mm",
 +      "../browser/ui/views/frame/barc_native_policy_browsertest.mm",

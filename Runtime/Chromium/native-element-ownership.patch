@@ -20,18 +20,48 @@
    bool initialized() const { return initialized_; }
 --- a/chrome/browser/ui/views/frame/browser_view.cc
 +++ b/chrome/browser/ui/views/frame/browser_view.cc
-@@ -1583,6 +1583,10 @@
-   return 1.f;
+@@ -1181,21 +1181,19 @@
+ // static
+ BrowserWindow* BrowserWindow::FindBrowserWindowWithWebContents(
+     content::WebContents* web_contents) {
+-  // Check first to see if the we can find a top level widget for the
+-  // `web_contents`. This covers the case of searching for the browser window
+-  // associated with a non-tab contents and the active tab contents. Fall back
+-  // to searching the tab strip model for a tab contents match. This later
+-  // search is necessary as a tab contents can be swapped out of the browser
+-  // window's ContentWebView on a tab switch and may disassociate with its top
+-  // level NativeView.
++  // A tab's logical owner is authoritative even when its native view still
++  // belongs to another selected BrowserView or the tab is being detached.
++  if (auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents)) {
++    return BrowserView::GetBrowserViewForBrowser(
++        tab->GetBrowserWindowInterface());
++  }
++  // Non-tab contents retain their native-window association.
+   if (const auto* widget = views::Widget::GetTopLevelWidgetForNativeView(
+           web_contents->GetNativeView())) {
+     return BrowserView::GetBrowserViewForNativeWindow(
+         widget->GetNativeWindow());
+   }
+-  const auto* browser =
+-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
+-  return browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
++  return nullptr;
  }
 
-+ui::TrackedElement* BrowserView::GetFallbackPopupAnchor() {
-+  return fallback_popup_anchor_.get();
+ // static
+@@ -1581,6 +1579,10 @@
+   }
+
+   return 1.f;
 +}
 +
++ui::TrackedElement* BrowserView::GetFallbackPopupAnchor() {
++  return fallback_popup_anchor_.get();
+ }
+
  views::Widget* BrowserView::GetWidgetForAnchoring() {
- #if BUILDFLAG(IS_MAC)
-   if (WindowFeatureController::From(browser())->UsesImmersiveFullscreenMode()) {
-@@ -4408,9 +4412,11 @@
+@@ -4408,9 +4410,11 @@
          combo_button->end_button(), browser_.get());
      combo_button->SetTabSearchBubbleHost(tab_search_bubble_host_.get());
    } else {
