@@ -1,0 +1,176 @@
+// Licensed under GPL-3.0. See LICENSE.
+import Darwin
+import Foundation
+import NookWeb
+
+/// The additive C boundary in Runtime/Chromium/barc_bridge.h. Resolve once per
+/// runtime, then share the functions between pages; no polling or extra views.
+struct ChromiumNavigationAPI {
+    typealias Callback = @convention(c) (
+        UnsafeMutableRawPointer?, UInt64, Int32, Int32, Int32,
+        UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32, UInt32
+    ) -> Void
+    typealias Observe = @convention(c) (Int32, Int32, Callback?, UnsafeMutableRawPointer?) -> UInt64
+    typealias Unobserve = @convention(c) (UInt64) -> Void
+    typealias Command = @convention(c) (Int32, Int32) -> Int32
+    typealias Navigate = @convention(c) (Int32, Int32, UnsafePointer<CChar>?) -> Int32
+    typealias ProfileUUID = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
+
+    let observe: Observe
+    let unobserve: Unobserve
+    let navigate: Navigate
+    let back: Command
+    let forward: Command
+    let reload: Command
+    let stop: Command
+    let profileUUID: ProfileUUID
+}
+
+extension ChromiumNavigationAPI {
+    init(library: UnsafeMutableRawPointer) throws {
+        func resolve<T>(_ name: String, _: T.Type) throws -> T {
+            guard let address = dlsym(library, name) else {
+                throw ChromiumNavigationError.missingSymbol(name)
+            }
+            return unsafeBitCast(address, to: T.self)
+        }
+        observe = try resolve("barc_tab_observe", Observe.self)
+        unobserve = try resolve("barc_tab_unobserve", Unobserve.self)
+        navigate = try resolve("barc_tab_navigate", Navigate.self)
+        back = try resolve("barc_tab_go_back", Command.self)
+        forward = try resolve("barc_tab_go_forward", Command.self)
+        reload = try resolve("barc_tab_reload", Command.self)
+        stop = try resolve("barc_tab_stop", Command.self)
+        profileUUID = try resolve("barc_window_profile_uuid", ProfileUUID.self)
+    }
+}
+
+enum ChromiumNavigationError: Error {
+    case missingSymbol(String)
+    case profileMismatch
+    case observationRejected
+}
+
+/// Navigation for an existing Chromium tab. The native browser still owns its
+/// surface and lifetime. Rebinding the page model never creates a second page.
+@MainActor
+final class ChromiumPageNavigation: PageNavigation {
+    let profileID: UUID?
+    private(set) var state = PageNavigationState(canGoBack: false, canGoForward: false)
+    var onStateChanged: ((PageNavigationState) -> Void)?
+    var onEvent: ((PageNavigationEvent) -> Void)?
+
+    private let api: ChromiumNavigationAPI
+    private let tab: Int32
+    private var window: Int32
+    private var observation: UInt64 = 0
+    private var invalidated = false
+    private let context = CallbackContext()
+
+    private final class CallbackContext {
+        weak var owner: ChromiumPageNavigation?
+    }
+
+    init(profileID: UUID, window: Int32, tab: Int32, api: ChromiumNavigationAPI) throws {
+        // Verify the native owner, rather than trusting a caller's profile label.
+        var uuid = [CChar](repeating: 0, count: 37)
+        let required = api.profileUUID(window, &uuid, uuid.count)
+        guard required == uuid.count,
+              UUID(uuidString: String(decoding: uuid.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)) == profileID else {
+            throw ChromiumNavigationError.profileMismatch
+        }
+        self.profileID = profileID
+        self.window = window
+        self.tab = tab
+        self.api = api
+        context.owner = self
+        let token = api.observe(window, tab, { pointer, token, event, window, tab, url, title, error, flags in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+                // Copy borrowed strings before calling any client code, which
+                // can close the tab or cancel this observation synchronously.
+                context.owner?.receive(
+                    token: token, event: event, window: window, tab: tab,
+                    url: url.flatMap { URL(string: String(cString: $0)) },
+                    title: title.map { String(cString: $0) }, error: error, flags: flags)
+            }
+        }, Unmanaged.passUnretained(context).toOpaque())
+        guard token != 0, !invalidated else {
+            invalidate()
+            throw ChromiumNavigationError.observationRejected
+        }
+        observation = token
+    }
+
+    isolated deinit {
+        if observation != 0 { api.unobserve(observation) }
+    }
+
+    func load(_ url: URL) {
+        guard !invalidated, window > 0 else { return }
+        let accepted = url.absoluteString.withCString { api.navigate(window, tab, $0) }
+        if accepted != 1, !invalidated {
+            let error = NSError(domain: "Barc.Chromium.Command", code: 1,
+                                userInfo: [NSLocalizedDescriptionKey: "This tab is no longer available."])
+            onEvent?(.failed(error, provisional: true, committedURL: state.url))
+        }
+    }
+
+    @discardableResult func goBack() -> Bool { command(api.back) }
+    @discardableResult func goForward() -> Bool { command(api.forward) }
+    @discardableResult func reload() -> Bool { command(api.reload) }
+    func stop() { _ = command(api.stop) }
+
+    private func command(_ action: ChromiumNavigationAPI.Command) -> Bool {
+        !invalidated && window > 0 && action(window, tab) == 1
+    }
+
+    func invalidate() {
+        guard !invalidated else { return }
+        invalidated = true
+        let token = observation
+        observation = 0
+        onStateChanged = nil
+        onEvent = nil
+        if token != 0 { api.unobserve(token) }
+    }
+
+    private func receive(token: UInt64, event: Int32, window: Int32, tab: Int32,
+                         url: URL?, title: String?, error: Int32, flags: UInt32) {
+        guard !invalidated, tab == self.tab, token != 0,
+              observation == 0 || observation == token else { return }
+        observation = token  // INITIAL can call out before observe() returns.
+        self.window = window  // A live transfer changes the owner, never the page.
+        if event == 7 { // CLOSED: the engine has already ended observation.
+            observation = 0
+            let notify = onEvent
+            invalidate()
+            notify?(.closed)
+            return
+        }
+        let snapshot = PageNavigationState(
+            url: url, title: title, isLoading: flags & 1 != 0,
+            canGoBack: flags & 2 != 0, canGoForward: flags & 4 != 0)
+        if state != snapshot {
+            state = snapshot
+            onStateChanged?(snapshot)
+        }
+        guard !invalidated else { return }
+        switch event {
+        case 1: onEvent?(.started(url))
+        case 2: onEvent?(.committed(url, sameDocument: flags & 16 != 0))
+        case 3: onEvent?(.finished(url, title: title, isReload: flags & 8 != 0))
+        case 4:
+            if flags & 64 != 0 {
+                onEvent?(.cancelled(committedURL: url))
+                return
+            }
+            let failure = NSError(domain: "Barc.Chromium.Navigation", code: Int(error),
+                                  userInfo: [NSLocalizedDescriptionKey: "The page could not be loaded."])
+            onEvent?(.failed(failure, provisional: flags & 32 != 0, committedURL: url))
+        case 5: if let title { onEvent?(.titleChanged(title)) }
+        default: break  // INITIAL and STATE never invent a history visit.
+        }
+    }
+}
