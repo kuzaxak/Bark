@@ -1,0 +1,4 @@
+module BarcChromium {
+  header "../../../Runtime/Chromium/barc_bridge.h"
+  export *
+}

@@ -12,6 +12,7 @@
 #include "chrome/browser/lifetime/application_lifetime.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
+#include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
@@ -105,6 +106,7 @@ void PostRuntimeReady() {
       }));
 }
 void RuntimeStopped() {
+  StopBrowserDiscovery();
   auto& state = State();
   state.callback = nullptr;
   state.user_data = nullptr;

@@ -11,6 +11,44 @@ import NookTweaks
 #if os(macOS)
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func engineCreatedWindowDoesNotClaimSavedRecordOrInventSelection() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let space = try #require(fixture.window.spaceID)
+        let item = try #require(fixture.window.selectedItemID)
+        let saved = BrowserWindowState()
+        saved.spaceID = space
+        saved.selectedItemBySpace = [space: item]
+        fixture.tabs.mirror(saved)
+        let record = try #require(fixture.tabs.device.windows.first { $0.id == saved.id })
+        let native = BrowserWindowState()
+        native.spaceID = space
+        native.selectedItemBySpace = [space: item]
+        fixture.registry.register(native)
+        let creates = fixture.host.creates.count
+        fixture.tabs.attach(window: native, restoringSavedState: false)
+        #expect(native.spaceID == space && native.selectedItemID == nil && native.selectedItemBySpace.isEmpty)
+        #expect(fixture.tabs.device.windows.contains(record))
+        #expect(!fixture.tabs.device.windows.contains { $0.id == native.id })
+        fixture.registry.unregister(native.id) // Failed admission: no saved record is detached/preserved.
+        #expect(fixture.tabs.device.windows.contains(record))
+        #expect(fixture.host.creates.count == creates && fixture.host.selectionCount == 0)
+        let restored = BrowserWindowState()
+        fixture.registry.register(restored)
+        fixture.tabs.attach(window: restored)
+        #expect(restored.spaceID == space && restored.selectedItemID == item)
+        #expect(!fixture.tabs.device.windows.contains { $0.id == saved.id })
+    }
+
+    @Test func engineCreatedWindowWithoutExplicitSpaceDoesNotBorrowDefaultProfile() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let native = BrowserWindowState()
+        fixture.registry.register(native)
+        fixture.tabs.attach(window: native, restoringSavedState: false)
+        #expect(native.spaceID == nil && native.selectedItemID == nil)
+    }
+
     @Test func adoptingExistingPagePreservesDocumentAndDeduplicatesPublishedAdmission() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -196,6 +234,71 @@ struct NativePageLifecycleTests {
         #expect(fixture.tabs.sessions.allSatisfy { $0.navigation !== native })
         #expect(native.loaded.isEmpty && !native.invalidated && native.onEvent == nil)
         #expect(originalPage.loaded.count == 1 && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+    }
+
+    @Test func nativeSelectionReflectionUpdatesBackgroundModelWithoutActivationOrLoading() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        _ = fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let profile = try #require(fixture.tabs.profile(forSpace: space))
+        let page = NativeTestPage(profileID: profile.id)
+        let id = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false))
+        let foreground = BrowserWindowState()
+        fixture.registry.register(foreground)
+        fixture.registry.setActive(foreground)
+        fixture.host.nativeSelectedPage = page
+        fixture.host.nativeSelectedWindow = fixture.window.id
+        let selections = fixture.host.selectionCount, creates = fixture.host.creates.count
+        #expect(fixture.tabs.reflectNativeSelection(id, in: fixture.window))
+        #expect(fixture.window.selectedItemID == id)
+        #expect(fixture.registry.activeWindowId == foreground.id)
+        #expect(fixture.host.selectionCount == selections && fixture.host.creates.count == creates)
+        #expect(page.loaded.isEmpty && fixture.host.closes.isEmpty)
+        #expect(fixture.tabs.device.windows.first { $0.id == fixture.window.id }?.selectedItemBySpace[space] == id)
+    }
+
+    @Test func reflectionRefusesUnselectedPageAndReentrantHeaderSupersession() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let original = fixture.host.finishCreate(0)
+        let previous = fixture.window.selectedItemID
+        let space = try #require(fixture.window.spaceID)
+        let page = NativeTestPage(profileID: original.profileID!)
+        let id = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false))
+        let selections = fixture.host.selectionCount
+        #expect(!fixture.tabs.reflectNativeSelection(id, in: fixture.window))
+        fixture.host.nativeSelectedPage = page
+        fixture.host.nativeSelectedWindow = fixture.window.id
+        fixture.host.onAcceptNativeSelection = { _, _ in fixture.host.nativeSelectedPage = original }
+        #expect(!fixture.tabs.reflectNativeSelection(id, in: fixture.window))
+        #expect(fixture.window.selectedItemID == previous && fixture.host.selectionCount == selections)
+        #expect(page.loaded.isEmpty && fixture.host.closes.isEmpty)
+    }
+
+    @Test func newerNativeReflectionDuringPublicationWinsWithoutFocusOrRollback() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let original = fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let first = NativeTestPage(profileID: original.profileID!), newer = NativeTestPage(profileID: original.profileID!)
+        let firstID = try #require(fixture.tabs.adoptNativePage(first, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false))
+        let newerID = try #require(fixture.tabs.adoptNativePage(newer, through: fixture.host,
+            in: fixture.window, spaceID: space, select: false))
+        fixture.host.nativeSelectedPage = first
+        fixture.host.nativeSelectedWindow = fixture.window.id
+        let selections = fixture.host.selectionCount
+        fixture.tabs.onLeavingTab = { _, window in
+            fixture.tabs.onLeavingTab = nil
+            fixture.host.nativeSelectedPage = newer
+            #expect(fixture.tabs.reflectNativeSelection(newerID, in: window))
+        }
+        #expect(!fixture.tabs.reflectNativeSelection(firstID, in: fixture.window))
+        #expect(fixture.window.selectedItemID == newerID && fixture.host.selectionCount == selections)
+        #expect(first.loaded.isEmpty && newer.loaded.isEmpty && fixture.host.closes.isEmpty)
     }
 
     @Test func ownerEndDuringPendingClosePreservesSavedTabAndCancelsSelection() throws {
@@ -649,6 +752,25 @@ private final class ControlledNativeHost: NativePageHost {
         onSelect = nil
         callback?(page, window)
         return admitted
+    }
+    var nativeSelectedPage: NativeTestPage?
+    var nativeSelectedWindow: UUID?
+    private var nativeHeaderPage: NativeTestPage?
+    var onAcceptNativeSelection: ((any PageNavigation, BrowserWindowState) -> Void)?
+    func acceptNativeSelection(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool {
+        guard canAdoptPage(page, in: window), nativeSelectedPage === page,
+              nativeSelectedWindow == window.id else { return false }
+        let callback = onAcceptNativeSelection
+        onAcceptNativeSelection = nil
+        callback?(page, window)
+        guard canAdoptPage(page, in: window), nativeSelectedPage === page,
+              nativeSelectedWindow == window.id else { return false }
+        nativeHeaderPage = page as? NativeTestPage
+        return true
+    }
+    func isNativeSelection(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool {
+        canAdoptPage(page, in: window) && nativeSelectedPage === page &&
+            nativeSelectedWindow == window.id && nativeHeaderPage === page
     }
     func closePage(_ page: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         closes.append(Closing(page: page as! NativeTestPage, completion: completion))

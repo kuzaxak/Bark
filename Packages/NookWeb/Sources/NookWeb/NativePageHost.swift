@@ -20,6 +20,11 @@ public protocol NativePageHost: AnyObject {
     /// Actual selection admission, including transfer when necessary. False
     /// leaves the existing owner intact; it is not a completed focus claim.
     func selectPage(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool
+    /// Attach the existing product header only if this page is already the
+    /// native selection. Never select, focus, load, show, or roll back a client.
+    func acceptNativeSelection(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool
+    /// Pure current native selection and exact product-header ownership check.
+    func isNativeSelection(_ page: any PageNavigation, in window: BrowserWindowState) -> Bool
     /// Report actual tab deletion, explicit cancellation, or logical owner teardown.
     /// Dispatching a close request must not complete this operation.
     func closePage(_ page: any PageNavigation,

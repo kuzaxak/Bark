@@ -1,0 +1,434 @@
+diff --git a/chrome/browser/ui/tabs/tab_model.h b/chrome/browser/ui/tabs/tab_model.h
+--- a/chrome/browser/ui/tabs/tab_model.h
++++ b/chrome/browser/ui/tabs/tab_model.h
+@@ -52,6 +52,8 @@
+ 
+   TabStripModel* owning_model() const { return owning_model_; }
+   tabs::TabInterface* opener() const;
++  bool barc_app_factory_origin() const { return barc_app_factory_origin_; }
++  void set_barc_app_factory_origin() { barc_app_factory_origin_ = true; }
+   bool reset_opener_on_active_tab_change() const {
+     return reset_opener_on_active_tab_change_;
+   }
+@@ -235,6 +237,7 @@
+   raw_ptr<TabStripModel> owning_model_ = nullptr;
+   raw_ptr<TabStripModel> soon_to_be_owning_model_ = nullptr;
+   bool will_be_detaching_ = false;
++  bool barc_app_factory_origin_ = false;
+   tabs::TabHandle opener_handle_;
+   bool reset_opener_on_active_tab_change_ = false;
+   bool pinned_ = false;
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #if BUILDFLAG(IS_MAC)
+ #include "chrome/browser/ui/views/frame/barc_bridge.h"
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+ #endif
+ 
+ #include <stdint.h>
+@@ -1629,9 +1630,110 @@
+ ///////////////////////////////////////////////////////////////////////////////
+ // BrowserView, BrowserWindow implementation:
+ 
++bool BrowserView::BarcPresentationCurrent(
++    const std::optional<BarcPresentationGuard>& guard) const {
++  if (!guard)
++    return true;
++#if BUILDFLAG(IS_MAC)
++  return !browser_widget_->IsClosed() && IsSelectedForNativeWindow() &&
++      guard->sequence == barc_presentation_sequence_ &&
++      guard->shell_epoch == barc_shell_epoch_;
++#else
++  return false;
++#endif
++}
++bool BrowserView::BarcPresentationShouldStayInactive(
++    const std::optional<BarcPresentationGuard>& guard) const {
++  if (!guard)
++    return false;
++  return guard->selection_epoch != browser_widget_->barc_selection_epoch();
++}
++bool BrowserView::SelectBarcPresentationClient(
++    std::optional<BarcPresentationGuard>* guard) {
++  // Admission continuations never select an older logical client. Only the
++  // ordinary unguarded Chrome presentation path keeps its stock selection.
++  if (*guard)
++    return BarcPresentationCurrent(*guard);
++  if (IsSelectedForNativeWindow())
++    return true;
++  auto alive = GetAsWeakPtr();
++  return browser_widget_->SelectLogicalBrowserView(this) && alive;
++}
++
++#if BUILDFLAG(IS_MAC)
++bool BrowserView::BarcAwaitingNativeAdmission() const {
++  return barc::IsNativeApplicationRegistered() && barc_native_shell_ &&
++      browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
++      !barc_app_factory_origin_ && !barc_native_admitted_;
++}
++void BrowserView::MarkBarcAppFactoryOrigin() {
++  if (barc_app_factory_origin_)
++    return;
++  barc_app_factory_origin_ = true;
++  barc_pending_presentation_ = BarcNativePresentation::kNone;
++  ++barc_presentation_sequence_;
++  barc::BrowserDiscoveryChanged();
++}
++void BrowserView::BarcNativeShellWillChange() { ++barc_shell_epoch_; }
++bool BrowserView::DeferBarcNativePresentation(BarcNativePresentation intent) {
++  if (!barc::IsNativeApplicationRegistered() || !barc_native_shell_ ||
++      browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
++      barc_app_factory_origin_)
++    return false;
++  ++barc_presentation_sequence_;
++  if (barc_native_admitted_)
++    return false;
++  barc_pending_presentation_ = intent;
++  barc_pending_guard_ = {barc_presentation_sequence_,
++      browser_widget_->barc_selection_epoch(), barc_shell_epoch_};
++  barc::BrowserDiscoveryChanged();
++  return true;
++}
++bool BrowserView::AdmitBarcNativeWindow(gfx::NativeView expected) {
++  if (!barc::IsNativeApplicationRegistered() || !barc_native_shell_ ||
++      !expected || barc_native_shell_->native_view() != expected ||
++      browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
++      barc_app_factory_origin_ || !IsSelectedForNativeWindow())
++    return false;
++  if (barc_native_admitted_)
++    return true;
++  auto alive = GetAsWeakPtr();
++  const auto intent = barc_pending_presentation_;
++  auto guard = barc_pending_guard_;
++  guard.shell_epoch = barc_shell_epoch_;  // Admission owns the attached header.
++  barc_native_admitted_ = true;
++  barc_pending_presentation_ = BarcNativePresentation::kNone;
++  barc::BrowserDiscoveryChanged();
++  // An obsolete presentation request does not undo a successful model/header
++  // admission, but must never override a later native selection or intent.
++  switch (intent) {
++    case BarcNativePresentation::kShow: ShowImpl(guard); break;
++    case BarcNativePresentation::kShowInactive: ShowInactiveImpl(guard); break;
++    case BarcNativePresentation::kActivate: ActivateImpl(guard); break;
++    case BarcNativePresentation::kNone: break;
++  }
++  return alive && IsSelectedForNativeWindow() && barc_native_shell_ &&
++         barc_native_shell_->native_view() == expected;
++}
++#endif
++
+ void BrowserView::Show() {
+-  if (!IsSelectedForNativeWindow() &&
+-      !browser_widget_->SelectLogicalBrowserView(this)) {
++#if BUILDFLAG(IS_MAC)
++  if (DeferBarcNativePresentation(BarcNativePresentation::kShow))
++    return;
++#endif
++  ShowImpl(std::nullopt);
++}
++
++void BrowserView::ShowImpl(std::optional<BarcPresentationGuard> guard) {
++  if (!BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
++  auto alive = GetAsWeakPtr();
++  if (!SelectBarcPresentationClient(&guard)) {
+     return;
+   }
+   // Attempts to show closed windows should no-op.
+@@ -1640,11 +1742,15 @@
+   }
+ 
+   if (auto* manager = InitialWebUIManager::From(browser())) {
+-    if (manager->RequestDeferShow(base::BindOnce(
+-            &BrowserView::Show, weak_ptr_factory_.GetWeakPtr()))) {
++    auto continuation = guard
++        ? base::BindOnce(&BrowserView::ShowImpl, GetAsWeakPtr(), guard)
++        : base::BindOnce(&BrowserView::Show, GetAsWeakPtr());
++    if (manager->RequestDeferShow(std::move(continuation))) {
+       return;
+     }
+   }
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
+   // The Browser associated with this browser window must become the active
+@@ -1656,6 +1762,12 @@
+   BrowserActiveStateManager::From(browser())->DidBecomeActive();
+ #endif
+ 
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
+   // If the window is already visible, just activate it.
+   if (browser_widget_->IsVisible()) {
+     browser_widget_->Activate();
+@@ -1679,7 +1791,11 @@
+     return;
+   }
+ 
++  if (!BarcPresentationCurrent(guard) || BarcPresentationShouldStayInactive(guard))
++    return;
+   OnWindowDidShow();
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
+ 
+   // The fullscreen transition clears out focus, but there are some cases (for
+   // example, new window in Mac fullscreen with toolbar showing) where we need
+@@ -1699,16 +1815,27 @@
+ }
+ 
+ void BrowserView::ShowInactive() {
+-  if (!IsSelectedForNativeWindow() &&
+-      !browser_widget_->SelectLogicalBrowserView(this)) {
+-    return;
+-  }
+-  if (!browser_widget_->IsVisible()) {
++#if BUILDFLAG(IS_MAC)
++  if (DeferBarcNativePresentation(BarcNativePresentation::kShowInactive))
++    return;
++#endif
++  ShowInactiveImpl(std::nullopt);
++}
++void BrowserView::ShowInactiveImpl(std::optional<BarcPresentationGuard> guard) {
++  if (!SelectBarcPresentationClient(&guard))
++    return;
++  if (!browser_widget_->IsVisible())
+     browser_widget_->ShowInactive();
+-  }
+ }
+ 
+ void BrowserView::Hide() {
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationRegistered() && barc_native_shell_ &&
++      !barc_app_factory_origin_) {
++    ++barc_presentation_sequence_;
++    barc_pending_presentation_ = BarcNativePresentation::kNone;
++  }
++#endif
+   if (!IsSelectedForNativeWindow()) {
+     return;
+   }
+@@ -1749,8 +1876,21 @@
+ }
+ 
+ void BrowserView::Activate() {
+-  if (!IsSelectedForNativeWindow() &&
+-      !browser_widget_->SelectLogicalBrowserView(this)) {
++#if BUILDFLAG(IS_MAC)
++  if (DeferBarcNativePresentation(BarcNativePresentation::kActivate))
++    return;
++#endif
++  ActivateImpl(std::nullopt);
++}
++void BrowserView::ActivateImpl(std::optional<BarcPresentationGuard> guard) {
++  if (!BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
++  auto alive = GetAsWeakPtr();
++  if (!SelectBarcPresentationClient(&guard)) {
+     return;
+   }
+   if (browser_widget_->IsClosed()) {
+@@ -1761,17 +1901,27 @@
+   }
+ 
+   if (auto* manager = InitialWebUIManager::From(browser())) {
+-    if (manager->RequestDeferShow(base::BindOnce(
+-            &BrowserView::Activate, weak_ptr_factory_.GetWeakPtr()))) {
++    auto continuation = guard
++        ? base::BindOnce(&BrowserView::ActivateImpl, GetAsWeakPtr(), guard)
++        : base::BindOnce(&BrowserView::Activate, GetAsWeakPtr());
++    if (manager->RequestDeferShow(std::move(continuation))) {
+       return;
+     }
+   }
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
+   // Update the list managed by `BrowserList` synchronously the same way
+   // `BrowserView::Show()` does.
+   BrowserActiveStateManager::From(browser_)->DidBecomeActive();
+ #endif
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
+   browser_widget_->Activate();
+ }
+ 
+@@ -2928,6 +3078,9 @@
+ 
+ void BrowserView::OnWidgetVisibilityChanged(views::Widget* widget,
+                                             bool visible) {
++#if BUILDFLAG(IS_MAC)
++  barc::BrowserDiscoveryChanged();
++#endif
+   visible = visible && IsSelectedForNativeWindow();
+   UpdateLoadingAnimations(visible);
+ 
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -193,6 +193,11 @@
+   Profile* GetProfile() const;
+ #if BUILDFLAG(IS_MAC)
+   views::NativeViewHost* barc_native_shell() const { return barc_native_shell_; }
++  bool barc_app_factory_origin() const { return barc_app_factory_origin_; }
++  void MarkBarcAppFactoryOrigin();
++  bool BarcAwaitingNativeAdmission() const;
++  bool AdmitBarcNativeWindow(gfx::NativeView expected);
++  void BarcNativeShellWillChange();
+ #endif
+ 
+   const TopControlsSlideController* top_controls_slide_controller() const {
+@@ -839,6 +844,21 @@
+   void DeleteBrowserWindow() final;
+ 
+  private:
++  enum class BarcNativePresentation { kNone, kShow, kShowInactive, kActivate };
++  struct BarcPresentationGuard {
++    uint64_t sequence = 0;
++    uint64_t selection_epoch = 0;
++    uint64_t shell_epoch = 0;
++  };
++  bool BarcPresentationCurrent(const std::optional<BarcPresentationGuard>& guard) const;
++  bool BarcPresentationShouldStayInactive(const std::optional<BarcPresentationGuard>& guard) const;
++  bool SelectBarcPresentationClient(std::optional<BarcPresentationGuard>* guard);
++  void ShowImpl(std::optional<BarcPresentationGuard> guard);
++  void ShowInactiveImpl(std::optional<BarcPresentationGuard> guard);
++  void ActivateImpl(std::optional<BarcPresentationGuard> guard);
++#if BUILDFLAG(IS_MAC)
++  bool DeferBarcNativePresentation(BarcNativePresentation intent);
++#endif
+   friend class BrowserWidget;
+   void TransferPhysicalWidgetOwnershipTo(BrowserView* destination);
+   void SetOwnFrameView(BrowserFrameView* frame);
+@@ -1254,6 +1274,12 @@
+   raw_ptr<MultiContentsView> multi_contents_view_ = nullptr;
+ #if BUILDFLAG(IS_MAC)
+   raw_ptr<views::NativeViewHost> barc_native_shell_ = nullptr;
++  bool barc_app_factory_origin_ = false;
++  bool barc_native_admitted_ = false;
++  uint64_t barc_presentation_sequence_ = 0;
++  uint64_t barc_shell_epoch_ = 0;
++  BarcNativePresentation barc_pending_presentation_ = BarcNativePresentation::kNone;
++  BarcPresentationGuard barc_pending_guard_;
+ #endif
+ 
+   // The view responsible for housing the contents of the vertical tab strip.
+diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -36,6 +36,7 @@
+ #include "chrome/browser/ui/views/frame/browser_native_widget_factory.h"
+ #include "chrome/browser/ui/views/frame/browser_root_view.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/barc_bridge.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+ #include "chrome/browser/ui/views/frame/system_menu_model_builder.h"
+ #include "chrome/browser/ui/views/frame/top_container_view.h"
+@@ -114,7 +115,8 @@
+     : browser_native_widget_(nullptr),
+       root_view_(nullptr),
+       browser_frame_view_(nullptr),
+-      browser_view_(browser_view) {
++      browser_view_(browser_view),
++      barc_physical_group_(static_cast<uint64_t>(browser_view->browser()->GetSessionID().id())) {
+   // Don't focus anything on creation, selecting a tab will set the focus.
+   set_focus_on_creation(false);
+   views::WidgetStationarityMonitor::GetInstance().TrackWidget(*this);
+@@ -740,14 +742,17 @@
+   }
+   if ((!closing_current && (browser_view_->browser()->IsDeleteScheduled() ||
+                             browser_view_->suppress_layout_for_teardown_ ||
+-                            view->suppress_layout_for_teardown_)) ||
+-      browser_view_->browser()->GetType() !=
++                            view->suppress_layout_for_teardown_))) {
++    return false;
++  }
++  // Identity selection is a no-op for a singleton native popup too. Actual
++  // shared-client switching below remains restricted to normal browsers.
++  if (view == browser_view_)
++    return true;
++  if (browser_view_->browser()->GetType() !=
+           BrowserWindowInterface::Type::TYPE_NORMAL ||
+       view->browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
+     return false;
+-  }
+-  if (view == browser_view_) {
+-    return true;
+   }
+   // CURRENTLY UNQUALIFIED: switching with fullscreen/transitions or visible
+   // native child prompts/popups needs profile-correct responder/anchor proof.
+@@ -817,6 +822,10 @@
+     return false;
+   }
+   browser_view_ = view;
++  ++barc_selection_epoch_;
++#if BUILDFLAG(IS_MAC)
++  barc::BrowserDiscoveryChanged();
++#endif
+   browser_frame_view_ = view->GetFrameView();
+   SelectClientDelegate(view);
+   SetNativeWindowProperty(BrowserView::kBrowserViewKey, view);
+@@ -1102,6 +1111,14 @@
+   chrome::SaveWindowVisibleOnAllWorkspaces(browser_view_->browser(),
+                                            IsVisibleOnAllWorkspaces());
+   Widget::OnNativeWidgetWorkspaceChanged();
++}
++
++bool BrowserWidget::OnNativeWidgetActivationChanged(bool active) {
++#if BUILDFLAG(IS_MAC)
++  if (ShouldHandleNativeWidgetActivationChanged(active))
++    barc::BrowserDiscoveryChanged();
++#endif
++  return Widget::OnNativeWidgetActivationChanged(active);
+ }
+ 
+ void BrowserWidget::OnNativeWidgetDestroying() {
+diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -82,6 +82,8 @@
+ 
+   // Selection is independent of which logical view uniquely owns this Widget.
+   BrowserView* selected_browser_view() const { return browser_view_; }
++  uint64_t barc_physical_group() const { return barc_physical_group_; }
++  uint64_t barc_selection_epoch() const { return barc_selection_epoch_; }
+ 
+   // Grouped physical-close preflight never unloads a participant until all
+   // warning and beforeunload decisions succeed. Ordinary one-client close
+@@ -138,6 +140,7 @@
+   ui::ColorProviderKey::ThemeInitializerSupplier* GetCustomTheme()
+       const override;
+   void OnNativeWidgetWorkspaceChanged() override;
++  bool OnNativeWidgetActivationChanged(bool active) override;
+   void OnNativeWidgetDestroying() override;
+   void OnNativeWidgetDestroyed() override;
+ 
+@@ -227,6 +230,8 @@
+ 
+   // The explicitly selected logical client, independently of unique ownership.
+   raw_ptr<BrowserView> browser_view_;
++  const uint64_t barc_physical_group_;
++  uint64_t barc_selection_epoch_ = 0;
+   bool selecting_logical_view_ = false;
+ 
+   std::unique_ptr<SystemMenuModelBuilder> menu_model_builder_;

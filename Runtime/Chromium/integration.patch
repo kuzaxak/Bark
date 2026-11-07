@@ -238,7 +238,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,30 @@
+@@ -19,3 +19,35 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -263,6 +263,11 @@
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
 +_barc_window_select
++_barc_discovery_snapshot
++_barc_discovery_observe
++_barc_discovery_unobserve
++_barc_window_discovery_state
++_barc_window_admit_discovered
 +_barc_tab_observe
 +_barc_tab_unobserve
 +_barc_tab_go_back
@@ -271,7 +276,7 @@
 +_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,34 @@
+@@ -29,5 +29,39 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -297,6 +302,11 @@
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
 +_barc_window_select
++_barc_discovery_snapshot
++_barc_discovery_observe
++_barc_discovery_unobserve
++_barc_window_discovery_state
++_barc_window_admit_discovered
 +_barc_tab_observe
 +_barc_tab_unobserve
 +_barc_tab_go_back

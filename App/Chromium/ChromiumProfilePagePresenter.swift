@@ -77,6 +77,10 @@ final class ChromiumProfilePagePresenter {
         self.api = api; self.navigationAPI = navigationAPI
     }
 
+    /// Catalog exclusion is current utility ownership, not a permanent factory
+    /// origin blacklist. A released utility window's later pages remain eligible.
+    func ownsNativeWindow(_ window: Int32) -> Bool { pages[window] != nil }
+
     func open(_ profile: ProfileSummary, destination: ProfilePageDestination,
               canPresent: @escaping @MainActor () -> Bool,
               completion: @escaping @MainActor (Result<Void, ProfilePageOpenError>) -> Void) {

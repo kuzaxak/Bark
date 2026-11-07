@@ -21,27 +21,29 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let navigationAPI: ChromiumNavigationAPI
     private let configuration: ChromiumStartupConfiguration
     private let pageHost: ChromiumNativePageHost
+    private let discoveryAPI: ChromiumDiscoveryAPI
+    private let catalog: ChromiumWindowCatalog
+    private var admission: ChromiumCreatedPageAdmission?
     private let profilePages: ChromiumProfilePagePresenter
     private var settingsWindow: NSWindow?
     private var settingsCloseObserver: NSObjectProtocol?
     private var storage: ChromiumAppStorage?
     private var browserManager: BrowserManager?
     private let registry = WindowRegistry()
-    private let modelWindow = BrowserWindowState()
-    private let commandPalette = CommandPalette()
-    private let organizer = TabOrganizerManager()
-    private let hover = HoverSidebarManager()
+    private var initialWindow: BrowserWindowState?
     private let attach: Attach
     private let chromeMain: Main
     private let complete: Complete
     private var ready: (@MainActor () -> Void)?
     private var opened: (@MainActor (Int32?) -> Void)?
-    private var shell: NSView?
 
     private init(framework handle: UnsafeMutableRawPointer, configuration: ChromiumStartupConfiguration) throws {
         self.configuration = configuration
         navigationAPI = try ChromiumNavigationAPI(library: handle)
-        pageHost = try ChromiumNativePageHost(api: ChromiumPageHostAPI(library: handle), navigationAPI: navigationAPI)
+        discoveryAPI = try ChromiumDiscoveryAPI(library: handle)
+        catalog = ChromiumWindowCatalog(api: discoveryAPI)
+        pageHost = try ChromiumNativePageHost(api: ChromiumPageHostAPI(library: handle),
+            navigationAPI: navigationAPI, discoveryAPI: discoveryAPI)
         profilePages = try ChromiumProfilePagePresenter(api: ChromiumProfilePageAPI(library: handle), navigationAPI: navigationAPI)
         func symbol<T>(_ name: String, _: T.Type) throws -> T {
             guard let pointer = dlsym(handle, name) else { throw LoaderError.missingSymbol(name) }
@@ -73,6 +75,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             var argv: [UnsafePointer<CChar>?] = strings.map { UnsafePointer($0) } + [nil]
             return withExtendedLifetime((app, startup)) {
                 let code = app.chromeMain(Int32(engineArguments.count), &argv)
+                app.catalog.stop()
                 return startup.runtimeReturned(code)
             }
         } catch {
@@ -109,10 +112,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 profilePages.open(profile, destination: destination, canPresent: canPresent, completion: completion)
             }
             manager.nativeOpenSettings = { [weak self] tab in self?.showSettings(tab) }
+            let modelWindow = BrowserWindowState()
+            initialWindow = modelWindow
             modelWindow.sidebarWidth = manager.sidebarWidth
             modelWindow.sidebarContentWidth = max(manager.sidebarWidth - 16, 0)
             modelWindow.isSidebarVisible = true
-            modelWindow.commandPalette = commandPalette
             registry.register(modelWindow)
             manager.tabs.attach(window: modelWindow)
             guard modelWindow.split == nil, let space = modelWindow.spaceID,
@@ -121,9 +125,20 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }
             self.storage = storage
             browserManager = manager
-            hover.browserManager = manager
-            hover.windowRegistry = registry
-            hover.nookSettings = storage.settings
+            registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
+            registry.onWindowClose = { [weak manager, weak registry = self.registry] id in
+                guard let tabs = manager?.tabs, let state = registry?.windows[id],
+                      tabs.device.windows.contains(where: { $0.id == id }) else { return }
+                tabs.detach(window: state)
+            }
+            let admission = ChromiumCreatedPageAdmission(api: discoveryAPI, host: pageHost,
+                tabs: manager.tabs, registry: registry,
+                isUtility: { [weak profilePages] in profilePages?.ownsNativeWindow($0) == true },
+                makeShell: { [unowned self, manager, storage] state in
+                    self.makeShell(for: state, manager: manager, storage: storage)
+                })
+            self.admission = admission
+            catalog.onSnapshot = { [weak admission] in admission?.apply($0) }
             opened = completion
             profile.id.uuidString.withCString { uuid in
             open(uuid, 5, { status, window, pointer in
@@ -146,20 +161,36 @@ final class ChromiumApplication: ChromiumStartupBridge {
         complete(window)
     }
 
+    private func makeShell(for state: BrowserWindowState, manager: BrowserManager,
+                           storage: ChromiumAppStorage) -> NSView {
+        let palette = CommandPalette()
+        let organizer = TabOrganizerManager()
+        let hover = HoverSidebarManager()
+        state.sidebarWidth = manager.sidebarWidth
+        state.sidebarContentWidth = max(manager.sidebarWidth - 16, 0)
+        state.isSidebarVisible = true
+        state.commandPalette = palette
+        hover.browserManager = manager
+        hover.windowRegistry = registry
+        hover.nookSettings = storage.settings
+        return NSHostingView(rootView: ChromiumSidebarShell(browserManager: manager,
+            storage: storage, window: state, registry: registry,
+            commandPalette: palette, organizer: organizer, hover: hover))
+    }
+
     func attachShell(to window: Int32) -> Bool {
-        guard let storage, let manager = browserManager else { return false }
+        guard let storage, let manager = browserManager, let modelWindow = initialWindow,
+              let admission else { return false }
         let blank = tabAt(window, 0)
         guard blank > 0 else { return false }
-        let view = NSHostingView(rootView: ChromiumSidebarShell(browserManager: manager,
-            storage: storage, window: modelWindow, registry: registry,
-            commandPalette: commandPalette, organizer: organizer, hover: hover))
+        let view = makeShell(for: modelWindow, manager: manager, storage: storage)
         guard attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1,
               pageHost.registerWindow(modelWindow, nativeOwner: window, shell: view,
-                                      initialBlankTab: blank) else { return false }
-        shell = view
+                                      initialBlankTab: blank),
+              admission.registerInitial(ChromiumProductWindow(state: modelWindow, shell: view),
+                                        nativeWindow: window) else { return false }
+        initialWindow = nil
         modelWindow.windowHandle = view.window
-        registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
-        registry.setActive(modelWindow)
         if let selected = modelWindow.selectedItemID {
             manager.tabs.select(selected, in: modelWindow)
         } else {
@@ -167,7 +198,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
         // Existing-client blank binding is synchronous. Refuse startup if model
         // admission did not produce a real engine page; never create WebKit.
-        return manager.tabs.selectedSession(in: modelWindow)?.isUnloaded == false
+        guard manager.tabs.selectedSession(in: modelWindow)?.isUnloaded == false else { return false }
+        return catalog.start()
     }
 
     private func showSettings(_ tab: SettingsTabs) {

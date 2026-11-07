@@ -1,4 +1,5 @@
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
+#include "chrome/browser/ui/views/frame/barc_bridge.h"
 
 #include <algorithm>
 #include <memory>
@@ -25,6 +26,8 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
+#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
@@ -191,6 +194,8 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
     return;
   }
   auto window_alive = created->GetWeakPtr();
+  if (auto* view = BrowserView::GetBrowserViewForBrowser(created))
+    view->MarkBarcAppFactoryOrigin();
   auto valid_context = [&] {
     if (!Manager() || !window_alive || window_alive->IsDeleteScheduled() ||
         window_alive->GetProfile() != profile || !window_alive->GetWindow()) {
@@ -233,6 +238,8 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
     cancel_creation(BARC_PROFILE_CANCELLED);
     return;
   }
+  static_cast<tabs::TabModel*>(strip->GetTabAtIndex(index))->set_barc_app_factory_origin();
+  barc::BrowserDiscoveryChanged();
   auto contents_alive = strip->GetWebContentsAt(index)->GetWeakPtr();
   if (contents_alive->GetBrowserContext() != profile) {
     cancel_creation(BARC_PROFILE_FAILED);

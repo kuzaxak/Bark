@@ -6,12 +6,15 @@
 #include <array>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <string_view>
 
 #include "base/command_line.h"
 #include "base/auto_reset.h"
 #include "base/no_destructor.h"
+#include "base/scoped_observation.h"
+#include "base/task/single_thread_task_runner.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/navigation_discard_reason.h"
 #include "net/base/net_errors.h"
@@ -21,11 +24,15 @@
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/version_info/version_info.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/views/frame/barc_profiles.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/browser_window/public/browser_collection_observer.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/tabs/tab_model.h"
 #include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -37,6 +44,7 @@
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
 #include "ui/base/base_window.h"
@@ -68,6 +76,150 @@ tabs::TabInterface* LookupTab(BrowserWindowInterface* window, int32_t id) {
 GURL URL(const char* value) {
   return value ? GURL(value) : GURL();
 }
+// Catalog state owns only subscriptions, never browsers, tabs or profiles.
+uint64_t discovery_revision = 0;
+bool discovery_stopped = false;
+class BrowserDiscovery;
+std::shared_ptr<BrowserDiscovery>& DiscoveryOwner() {
+  static base::NoDestructor<std::shared_ptr<BrowserDiscovery>> owner;
+  return *owner;
+}
+class BrowserDiscovery final
+    : public BrowserCollectionObserver,
+      public TabStripModelObserver,
+      public std::enable_shared_from_this<BrowserDiscovery> {
+ public:
+  BrowserDiscovery(uint64_t token, BarcDiscoveryCallback callback, void* context)
+      : token_(token), callback_(callback), context_(context) {}
+  ~BrowserDiscovery() override { Cancel(); }
+  uint64_t token() const { return token_; }
+  void Start() {
+    auto* collection = GlobalBrowserCollection::GetInstance();
+    collection_.Observe(collection);
+    collection->ForEach([&](BrowserWindowInterface* browser) {
+      AddStrip(browser->GetTabStripModel());
+      return true;
+    });
+  }
+  void Cancel() {
+    weak_factory_.InvalidateWeakPtrs();
+    queued_ = false;
+    callback_ = nullptr;
+    context_ = nullptr;
+    collection_.Reset();
+    auto strips = std::move(strips_);
+    strips_.clear();
+    for (const auto& strip : strips)
+      strip->RemoveObserver(this);
+  }
+  void Schedule() {
+    if (queued_ || !callback_)
+      return;
+    queued_ = true;
+    content::GetUIThreadTaskRunner({})->PostNonNestableTask(
+        FROM_HERE, base::BindOnce(&BrowserDiscovery::Deliver,
+                                 weak_factory_.GetWeakPtr()));
+  }
+  void OnBrowserCreated(BrowserWindowInterface* browser) override {
+    AddStrip(browser->GetTabStripModel());
+    barc::BrowserDiscoveryChanged();
+  }
+  void OnBrowserClosed(BrowserWindowInterface* browser) override {
+    auto* strip = browser->GetTabStripModel();
+    if (strips_.erase(strip))
+      strip->RemoveObserver(this);
+    barc::BrowserDiscoveryChanged();
+  }
+  void OnBrowserActivated(BrowserWindowInterface*) override {
+    barc::BrowserDiscoveryChanged();
+  }
+  void OnBrowserDeactivated(BrowserWindowInterface*) override {
+    barc::BrowserDiscoveryChanged();
+  }
+  void OnTabStripModelChanged(TabStripModel*, const TabStripModelChange& change,
+                             const TabStripSelectionChange& selection) override {
+    if (change.type() != TabStripModelChange::kSelectionOnly ||
+        selection.old_tab != selection.new_tab)
+      barc::BrowserDiscoveryChanged();
+  }
+  void OnTabStripModelDestroyed(TabStripModel* strip) override {
+    strips_.erase(strip);
+    barc::BrowserDiscoveryChanged();
+  }
+ private:
+  void AddStrip(TabStripModel* strip) {
+    if (strip && strips_.insert(strip).second)
+      strip->AddObserver(this);
+  }
+  void Deliver() {
+    auto keep_alive = shared_from_this();
+    queued_ = false;
+    auto callback = callback_;
+    void* context = context_.get();
+    const uint64_t revision = discovery_revision;
+    if (callback)
+      callback(context, token_, revision);
+    // Callback may unobserve, release context or shut down; no member access.
+  }
+  const uint64_t token_;
+  BarcDiscoveryCallback callback_;
+  raw_ptr<void> context_;
+  bool queued_ = false;
+  base::ScopedObservation<GlobalBrowserCollection, BrowserCollectionObserver>
+      collection_{this};
+  std::set<raw_ptr<TabStripModel>> strips_;
+  base::WeakPtrFactory<BrowserDiscovery> weak_factory_{this};
+};
+
+bool DiscoveryWindowRow(BrowserWindowInterface* browser,
+                        BarcDiscoveryWindow* row) {
+  auto* view = browser && !browser->IsDeleteScheduled()
+                   ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
+  auto* widget = view ? view->browser_widget() : nullptr;
+  auto* selected = widget ? widget->selected_browser_view() : nullptr;
+  if (!view || !selected || widget->IsClosed())
+    return false;
+  *row = {};
+  row->window = browser->GetSessionID().id();
+  row->physical_group = widget->barc_physical_group();
+  row->selected_client = selected->browser()->GetSessionID().id();
+  auto* active = browser->GetTabStripModel()->GetActiveTab();
+  row->active_tab = active ? active->GetHandle().raw_value() : 0;
+  switch (browser->GetType()) {
+    case BrowserWindowInterface::TYPE_NORMAL: row->kind = BARC_DISCOVERY_NORMAL; break;
+    case BrowserWindowInterface::TYPE_POPUP: row->kind = BARC_DISCOVERY_POPUP; break;
+    case BrowserWindowInterface::TYPE_APP:
+    case BrowserWindowInterface::TYPE_APP_POPUP: row->kind = BARC_DISCOVERY_APP; break;
+    case BrowserWindowInterface::TYPE_DEVTOOLS: row->kind = BARC_DISCOVERY_DEVTOOLS; break;
+    default: row->kind = BARC_DISCOVERY_OTHER_WINDOW; break;
+  }
+  auto* profile = browser->GetProfile();
+  row->profile_kind = profile->IsGuestSession() ? BARC_DISCOVERY_GUEST
+      : profile->IsIncognitoProfile() ? BARC_DISCOVERY_INCOGNITO
+      : profile->IsRegularProfile() ? BARC_DISCOVERY_REGULAR
+      : BARC_DISCOVERY_OTHER_PROFILE;
+  if (row->profile_kind == BARC_DISCOVERY_REGULAR)
+    barc_window_profile_uuid(row->window, row->regular_profile_uuid,
+                             sizeof(row->regular_profile_uuid));
+  if (widget->IsActive()) row->flags |= BARC_DISCOVERY_PHYSICAL_ACTIVE;
+  if (widget->IsVisible()) row->flags |= BARC_DISCOVERY_PHYSICAL_VISIBLE;
+  if (selected == view) row->flags |= BARC_DISCOVERY_SELECTED_CLIENT;
+  if (view->barc_app_factory_origin()) row->flags |= BARC_DISCOVERY_WINDOW_APP_FACTORY;
+  if (view->BarcAwaitingNativeAdmission()) row->flags |= BARC_DISCOVERY_AWAITING_ADMISSION;
+  if (UnloadController::From(browser)->owner_close_admitted())
+    row->flags |= BARC_DISCOVERY_OWNER_ENDING;
+  return true;
+}
+int32_t DiscoveryOpener(tabs::TabInterface* tab) {
+  auto* frame = tab->GetContents()->GetOpener();
+  auto* opener = frame ? tabs::TabInterface::MaybeGetFromContents(
+                            content::WebContents::FromRenderFrameHost(frame)) : nullptr;
+  auto* owner = opener ? opener->GetBrowserWindowInterface() : nullptr;
+  auto* current = tab->GetBrowserWindowInterface();
+  return owner && current && owner->GetProfile() == current->GetProfile()
+             ? opener->GetHandle().raw_value() : 0;
+}
+
 // Tokens own observers, never tabs or profiles. Each callback holds only its
 // observer alive, so unsubscribe/close during delivery cannot free its stack.
 class TabObservation;
@@ -321,6 +473,91 @@ class TabObservation : public content::WebContentsObserver,
 };
 }  // namespace
 
+uint64_t barc_discovery_observe(BarcDiscoveryCallback callback, void* context) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      discovery_stopped || !GlobalBrowserCollection::GetInstance() ||
+      !callback || DiscoveryOwner())
+    return 0;
+  static uint64_t next_token = 0;
+  CHECK_NE(next_token, UINT64_MAX);
+  auto observer = std::make_shared<BrowserDiscovery>(++next_token, callback, context);
+  DiscoveryOwner() = observer;
+  observer->Start();
+  barc::BrowserDiscoveryChanged();
+  return observer->token();
+}
+void barc_discovery_unobserve(uint64_t token) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
+    return;
+  auto observer = DiscoveryOwner();
+  if (observer && observer->token() == token) {
+    DiscoveryOwner().reset();
+    observer->Cancel();
+  }
+}
+int barc_window_discovery_state(int32_t window, BarcDiscoveryWindow* row) {
+  return !discovery_stopped && row && DiscoveryWindowRow(Window(window), row);
+}
+int32_t barc_discovery_snapshot(BarcDiscoveryWindow* windows, size_t window_capacity,
+                                BarcDiscoveryTab* tabs, size_t tab_capacity,
+                                BarcDiscoverySnapshot* snapshot) {
+  if (!snapshot || (!windows && window_capacity) || (!tabs && tab_capacity))
+    return BARC_DISCOVERY_READ_INVALID_ARGUMENT;
+  *snapshot = {};
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      discovery_stopped || !GlobalBrowserCollection::GetInstance())
+    return BARC_DISCOVERY_READ_UNAVAILABLE;
+  auto* collection = GlobalBrowserCollection::GetInstance();
+  collection->ForEach([&](BrowserWindowInterface* browser) {
+    BarcDiscoveryWindow row;
+    if (DiscoveryWindowRow(browser, &row)) {
+      ++snapshot->window_count;
+      snapshot->tab_count += browser->GetTabStripModel()->count();
+    }
+    return true;
+  });
+  snapshot->revision = discovery_revision;
+  if (window_capacity < snapshot->window_count || tab_capacity < snapshot->tab_count)
+    return BARC_DISCOVERY_READ_CAPACITY;
+  base::span<BarcDiscoveryWindow> window_rows;
+  base::span<BarcDiscoveryTab> tab_rows;
+  // SAFETY: C callers supply writable arrays of the declared capacities; after
+  // this boundary conversion every write is checked against the counted rows.
+  if (windows) window_rows = UNSAFE_BUFFERS(base::span(windows, window_capacity));
+  if (tabs) tab_rows = UNSAFE_BUFFERS(base::span(tabs, tab_capacity));
+  size_t window_index = 0, tab_index = 0;
+  collection->ForEach([&](BrowserWindowInterface* browser) {
+    BarcDiscoveryWindow row;
+    if (!DiscoveryWindowRow(browser, &row))
+      return true;
+    window_rows[window_index++] = row;
+    auto* strip = browser->GetTabStripModel();
+    for (int index = 0; index < strip->count(); ++index) {
+      auto* tab = strip->GetTabAtIndex(index);
+      tab_rows[tab_index++] = {row.window, tab->GetHandle().raw_value(),
+          DiscoveryOpener(tab), index,
+          (row.active_tab == tab->GetHandle().raw_value()
+               ? static_cast<uint32_t>(BARC_DISCOVERY_ACTIVE_TAB) : 0u) |
+          (static_cast<tabs::TabModel*>(strip->GetTabAtIndex(index))->barc_app_factory_origin()
+               ? static_cast<uint32_t>(BARC_DISCOVERY_TAB_APP_FACTORY) : 0u)};
+    }
+    return true;
+  });
+  return BARC_DISCOVERY_READ_OK;
+}
+int barc_window_admit_discovered(int32_t id, void* expected_view) {
+  auto* window = Window(id);
+  auto* view = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
+  if (!view || !expected_view || !barc_window_native_shell_is_owned(id, expected_view))
+    return 0;
+  NSView* expected = (__bridge NSView*)expected_view;
+  auto owner = window->GetWeakPtr();
+  auto alive = view->GetAsWeakPtr();
+  const bool admitted = view->AdmitBarcNativeWindow(gfx::NativeView(expected));
+  return admitted && owner && Window(id) == owner.get() && alive &&
+         barc_window_native_shell_is_owned(id, (__bridge void*)expected);
+}
+
 uint64_t barc_tab_observe(int32_t window, int32_t tab_id,
                           BarcTabCallback callback, void* context) {
   auto* tab = LookupTab(Window(window), tab_id);
@@ -388,6 +625,8 @@ int32_t barc_window_new_peer(int32_t source) {
     return 0;
   auto* peer = CreateBrowserWindow(
       BrowserWindowCreateParams(*window->GetProfile(), true));
+  if (auto* view = peer ? BrowserView::GetBrowserViewForBrowser(peer) : nullptr)
+    view->MarkBarcAppFactoryOrigin();
   return peer ? peer->GetSessionID().id() : 0;
 }
 int barc_window_close(int32_t id) {
@@ -437,6 +676,8 @@ int32_t barc_tab_create(int32_t id, const char* value, int foreground) {
   const int index = strip->GetIndexOfWebContents(contents);
   if (index == TabStripModel::kNoTab)
     return 0;
+  static_cast<tabs::TabModel*>(strip->GetTabAtIndex(index))->set_barc_app_factory_origin();
+  barc::BrowserDiscoveryChanged();
   const int32_t tab_id = strip->GetTabAtIndex(index)->GetHandle().raw_value();
   // A nested profile selection wins over this request's original foreground
   // intent. Show itself can also invoke callbacks, so resolve once more after it.
@@ -620,6 +861,7 @@ int barc_window_attach_native_shell(int32_t id, void* native_view) {
   base::AutoReset<bool> attach_scope(&attaching_native_shell, true);
   base::AutoReset<int> callback_scope(&navigation_callback_depth,
                                       navigation_callback_depth + 1);
+  browser->BarcNativeShellWillChange();
   host->Detach();
   if (!intact())
     return 0;
@@ -787,6 +1029,16 @@ void ShellObserver::OnTabStripModelDestroyed(TabStripModel*) {
 }  // namespace
 
 namespace barc {
+void BrowserDiscoveryChanged() {
+  CHECK_NE(discovery_revision, UINT64_MAX);
+  ++discovery_revision;
+  if (auto observer = DiscoveryOwner()) observer->Schedule();
+}
+void StopBrowserDiscovery() {
+  discovery_stopped = true;
+  auto observer = std::move(DiscoveryOwner());
+  if (observer) observer->Cancel();
+}
 int NativeShellWidth(const BrowserView* browser_view) {
   auto* shell = browser_view->barc_native_shell();
   return shell && shell->GetVisible() ? kNativeShellWidth : 0;

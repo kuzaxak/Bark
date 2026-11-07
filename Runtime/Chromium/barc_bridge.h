@@ -104,6 +104,100 @@ BARC_API int barc_window_native_shell_is_owned(int32_t window,
 // Detach only the exact currently attached NSView; null/mismatch/stale returns 0.
 BARC_API int barc_window_detach_native_shell_if_owned(int32_t window,
                                                     void* expected_view);
+enum BarcDiscoveryWindowKind {
+  BARC_DISCOVERY_NORMAL = 0, BARC_DISCOVERY_POPUP = 1,
+  BARC_DISCOVERY_APP = 2, BARC_DISCOVERY_DEVTOOLS = 3,
+  BARC_DISCOVERY_OTHER_WINDOW = 4
+};
+enum BarcDiscoveryProfileKind {
+  BARC_DISCOVERY_REGULAR = 0, BARC_DISCOVERY_INCOGNITO = 1,
+  BARC_DISCOVERY_GUEST = 2, BARC_DISCOVERY_OTHER_PROFILE = 3
+};
+enum BarcDiscoveryWindowFlags {
+  BARC_DISCOVERY_PHYSICAL_ACTIVE = 1,
+  BARC_DISCOVERY_PHYSICAL_VISIBLE = 2,
+  BARC_DISCOVERY_SELECTED_CLIENT = 4,
+  BARC_DISCOVERY_WINDOW_APP_FACTORY = 8,
+  BARC_DISCOVERY_AWAITING_ADMISSION = 16,
+  BARC_DISCOVERY_OWNER_ENDING = 32
+};
+enum BarcDiscoveryTabFlags {
+  BARC_DISCOVERY_ACTIVE_TAB = 1,
+  BARC_DISCOVERY_TAB_APP_FACTORY = 2
+};
+
+typedef struct BarcDiscoveryWindow {
+  uint64_t physical_group;  // Opaque; not a live window handle. Zero is invalid.
+  int32_t window;
+  int32_t active_tab;       // Actual selection in this logical tab strip, or 0.
+  int32_t selected_client;  // Authoritative logical client for physical_group.
+  uint32_t kind;
+  uint32_t profile_kind;
+  uint32_t flags;
+  // Existing barc_window_profile_uuid result, NUL-terminated. Empty for every
+  // nonregular/unknown profile; no default-profile inference.
+  char regular_profile_uuid[37];
+} BarcDiscoveryWindow;
+
+typedef struct BarcDiscoveryTab {
+  int32_t window;
+  int32_t tab;
+  int32_t opener_tab;  // Live JS opener TabHandle, or 0 (including noopener).
+  int32_t index;
+  uint32_t flags;      // ACTIVE_TAB does not imply physical activation/focus.
+} BarcDiscoveryTab;
+
+typedef struct BarcDiscoverySnapshot {
+  uint64_t revision;
+  size_t window_count;
+  size_t tab_count;
+} BarcDiscoverySnapshot;
+
+enum BarcDiscoveryReadStatus {
+  BARC_DISCOVERY_READ_OK = 0,
+  BARC_DISCOVERY_READ_CAPACITY = 1,
+  BARC_DISCOVERY_READ_UNAVAILABLE = 2,
+  BARC_DISCOVERY_READ_INVALID_ARGUMENT = 3
+};
+// Pure live enumeration; no callbacks, selection, focus, navigation or showing.
+// out_snapshot is required. Null arrays with zero capacity query needed counts.
+// Insufficient capacity writes counts/revision only, never partial array rows.
+// Run both calls on UI without yielding; retry capacity only if caller yielded.
+BARC_API int32_t barc_discovery_snapshot(BarcDiscoveryWindow* windows,
+                                size_t window_capacity,
+                                BarcDiscoveryTab* tabs,
+                                size_t tab_capacity,
+                                BarcDiscoverySnapshot* out_snapshot);
+
+typedef void (*BarcDiscoveryCallback)(void* context, uint64_t observation,
+                                     uint64_t revision);
+// One observer; duplicate registration returns0. Initial and later invalidations
+// are coalesced posted NON-nestable tasks, never inline mutation callbacks.
+// Revision changes cover ownership/membership, logical/active-tab selection,
+// physical active/visible and admission state; not title/loading/progress.
+// Callback is invalidation only: read a fresh snapshot. It may unobserve/close.
+// Unobserve clears borrowed context and cancels every pending delivery; caller
+// keeps context alive until unobserve (which is safe from inside its callback).
+BARC_API uint64_t barc_discovery_observe(BarcDiscoveryCallback callback, void* context);
+BARC_API void barc_discovery_unobserve(uint64_t observation);
+
+// Pure single-window row lookup using the same authoritative row builder as
+// snapshot, without enumerating/copying the catalog or invoking callbacks.
+// out_window is required; returns 0 if unavailable. No selection/focus/show.
+BARC_API int barc_window_discovery_state(int32_t window,
+                                        BarcDiscoveryWindow* out_window);
+
+// Chrome-created NORMAL windows only: attach/admit model first. Checks exact
+// nonnull currently attached NSView before releasing deferred first Show mode.
+// Refusal/stale/reentrant replacement returns0; never adopts/reloads/focuses a
+// different logical client. Preserve Show/ShowInactive/Activate intent; do not
+// replay over a newer intent or later native selection. Repeated admission of
+// the same admitted view succeeds without replaying presentation.
+// POPUP display/opener behavior is untouched.
+// Factory-origin windows/tabs must be deduplicated against their own completion;
+// consumers must not auto-adopt them from an earlier catalog notification.
+BARC_API int barc_window_admit_discovered(int32_t window, void* expected_native_view);
+
 #ifdef __cplusplus
 }
 
@@ -113,6 +207,9 @@ class View;
 }  // namespace views
 class BrowserView;
 namespace barc {
+// Internal Chrome-view hooks; no foreign callbacks are invoked inline.
+void BrowserDiscoveryChanged();
+void StopBrowserDiscovery();
 inline constexpr int kNativeShellWidth = 240;
 int NativeShellWidth(const BrowserView* browser_view);
 views::NativeViewHost* CreateNativeShell(BrowserView* browser_view);

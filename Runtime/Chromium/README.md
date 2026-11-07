@@ -92,130 +92,90 @@ First wait for the baseline build to terminate and capture its artifact, source/
 toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
-From `build/chromium-engine/checkout/src`:
+From `build/chromium-engine/checkout/src`, use this single stop-on-error
+procedure. The complete reviewed candidate has 25 ordered patches and 14 copied
+sources. Copies precede `lifecycle-close.patch`; the Swift overlay follows those
+copies. Do not recopy sources or reapply an overlay afterward. Start from the
+pinned unmodified source, not a partially patched checkout.
 
 ```fish
 set barc_repo (realpath ../../../..)
-for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions
-    git apply --check "$barc_repo/Runtime/Chromium/$patch.patch"; or break
-    git apply "$barc_repo/Runtime/Chromium/$patch.patch"; or break
+function prepare_native_candidate
+    set -l runtime "$argv[1]/Runtime/Chromium"
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup runtime-native-bootstrap native-shell-signing native-discovery
+        if test "$patch" = lifecycle-close
+            for source in barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup.h barc_runtime_startup.cc
+                cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
+            end
+        end
+        git apply --check "$runtime/$patch.patch"; or return 1
+        git apply "$runtime/$patch.patch"; or return 1
+    end
 end
+if prepare_native_candidate "$barc_repo"
+    cp "$barc_repo/Runtime/Chromium/args-x64.gn" out/Barc-x64/args.gn; and \
+        gn gen out/Barc-x64 --fail-on-unused-args; and \
+        autoninja -C out/Barc-x64 -j 8 chrome chrome/installer/mac
+end
+functions -e prepare_native_candidate
 ```
 
-Stop on any failed check/application; do not skip patches or continue to GN.
-After every patch succeeds, copy the current bridge/profile implementations and
-all six regression sources into that same checkout. In particular, include
-the macOS policy regression supplied with the policy patches:
+On failure, stop and inspect the checkout; this is not an idempotent resume
+command. No intermediate core-only full build is needed. Keep separate scratch
+outputs for GN-only configuration checks, not duplicate complete engines.
+The installer target generates `Chromium Packaging/` from the same source and
+build properties, including the pinned signer and per-process entitlements.
+Compilation does not sign or notarize the app.
+
+### Native application and experimental smoke
+
+Application launch requires the native bootstrap, runtime-ready/lifecycle hooks
+and `NookNativeShell.framework`. The stock executable initializes Chromium's
+allocator and loads the fixed bundle-local framework entry; `ChromeMain` owns
+the sole application loop. There is no core-only application launch path or
+WebKit fallback. Build the Intel native framework from the same reviewed app
+revision, using its existing source/package/resource references:
 
 ```fish
-cp "$barc_repo/Runtime/Chromium/barc_bridge.h" "$barc_repo/Runtime/Chromium/barc_bridge.mm" chrome/browser/ui/views/frame/
-cp "$barc_repo/Runtime/Chromium/barc_profiles.h" "$barc_repo/Runtime/Chromium/barc_profiles.mm" chrome/browser/ui/views/frame/
-cp "$barc_repo/Runtime/Chromium/barc_bridge_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_profiles_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_native_policy_browsertest.mm" chrome/browser/ui/views/frame/
-cp "$barc_repo/Runtime/Chromium/barc_extension_focus_browsertest.mm" "$barc_repo/Runtime/Chromium/barc_extension_dialog_browsertest.mm" chrome/browser/ui/views/frame/
-cp "$barc_repo/Runtime/Chromium/barc_extension_storage_browsertest.mm" chrome/browser/ui/views/frame/
+set native_derived "$barc_repo/build/native-derived"
+xcodebuild -project "$barc_repo/Nook.xcodeproj" -scheme NookNativeShell \
+    -configuration Release -destination 'generic/platform=macOS' \
+    -derivedDataPath "$native_derived" ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES \
+    CODE_SIGNING_ALLOWED=NO -jobs 4 build
 ```
 
-These hooks use Chromium's existing macOS UI target and framework exports; the
-C interface is bounded feasibility code, not a stable external C++ embedding
-ABI. Choose core-only or the optional SwiftUI overlay below **before** the next
-candidate GN generation/build. There is no need for an intermediate core-only
-full build. Separate scratch outputs are for small GN-only configuration checks,
-not additional complete engines.
-
-`--barc-native-shell` attaches the minimal AppKit sidebar through Views'
-`NativeViewHost`. Chromium keeps its Browser, Profile, tab model, extension
-services, WebUI and application loop. The bridge reserves native layout space,
-validates SessionID/TabHandle ownership, and accepts an `NSHostingView` as a
-replacement shell; nullptr explicitly detaches it.
-
-Add `--barc-shared-native-window` to opt into the retained logical-client
-composition path. Each logical Browser retains its own Profile and tab model
-while sharing one physical Widget. The default remains the stock separate-window
-path. Patch application, compilation and source regressions do not qualify
-cross-profile selection, focus, policy or teardown in an executing native window.
-Inactive-client window geometry/API semantics remain an explicit G1 case.
-Same-profile transfer moves the live TabModel; cross-profile transfer is rejected
-and requires explicit recreation. Successful close dispatch is not completed
-teardown evidence.
-
-### Optional SwiftUI hosting smoke
-
-Apply this overlay **after** copying the current core `.h`/`.mm` files above;
-recopying `barc_bridge.mm` afterward would erase the overlay. Check and apply
-`swiftui-smoke.patch` first, then `swiftui-smoke-build.patch`, stopping on failure:
+Stage only after both builds succeed, preserving engine inputs and using a new
+output directory. The staging script copies the complete versioned framework,
+Sparkle and SPM resource bundles, and preserves Chromium's Assets.car. Do not
+copy a loose native dylib, Assets.car or metallib into Chromium resources.
 
 ```fish
-git apply --check "$barc_repo/Runtime/Chromium/swiftui-smoke.patch"; and git apply "$barc_repo/Runtime/Chromium/swiftui-smoke.patch"
+set engine_out "$PWD/out/Barc-x64"
+set staging_input "$barc_repo/build/native-signing-input"
+mkdir "$staging_input"; and \
+    bash "$barc_repo/scripts/stage-chromium-app.sh" "$engine_out/Chromium.app" \
+        "$native_derived/Build/Products/Release" "$staging_input/Chromium.app"; and \
+    ditto "$engine_out/Chromium Packaging" "$staging_input/Chromium Packaging"
 ```
 
-Only after that succeeds:
+Do not sign or launch a partially staged bundle. The framework requires its
+standard FMWK Info.plist, `ee.qdo.nook.NativeShell` identity, version-A executable,
+Assets.car, default.metallib and exported `barc_native_main`. Preserve sandbox,
+hardened-runtime, helper entitlements and library validation throughout staging
+and signing. The signing patch retains pre-submission signature verification and
+moves Gatekeeper assessment after awaited notarization; it does not confer
+notarization or release acceptance.
 
-```fish
-git apply --check "$barc_repo/Runtime/Chromium/swiftui-smoke-build.patch"; and git apply "$barc_repo/Runtime/Chromium/swiftui-smoke-build.patch"
-```
-
-Then copy the Swift view and C declaration:
-
-```fish
-cp "$barc_repo/Runtime/Chromium/BarcSwiftUISmoke.swift" "$barc_repo/Runtime/Chromium/barc_swiftui_smoke.h" chrome/browser/ui/views/frame/
-```
-
-`barc_enable_mac_swift_smoke` defaults to false; the launch switch alone does not
-compile Swift support. This is an `NSHostingView` counter/text-field smoke view,
-not the Nook SwiftUI application: it adds no `App`/`Scene` entry point or second
-application loop. Hosting, interaction and IME still require native execution;
-a GN check or compiled object does not prove them.
-
-### One candidate build
-
-For the installed signing proof, also apply the bounded packaging correction:
-
-```fish
-git apply --check "$barc_repo/Runtime/Chromium/signing.patch"; and git apply "$barc_repo/Runtime/Chromium/signing.patch"
-```
-
-It retains signature verification before submission and performs Gatekeeper
-assessment after notarization has completed. The normal DMG packaging path is
-used for this proof. Stop if the patch fails to apply.
-
-After the core patches/copies and any selected Swift overlay are complete, set
-the candidate arguments in the existing output. Only do this after the baseline
-has terminated and its artifact/provenance is captured:
-
-```fish
-cp "$barc_repo/Runtime/Chromium/args-x64.gn" out/Barc-x64/args.gn
-```
-
-For the optional SwiftUI candidate, enable its flag before GN generation; omit
-this line for a core-only candidate:
-
-```fish
-printf '\nbarc_enable_mac_swift_smoke = true\n' >> out/Barc-x64/args.gn
-```
-
-Generate/build the selected candidate once, reusing the existing engine output:
-
-```fish
-gn gen out/Barc-x64 --fail-on-unused-args
-autoninja -C out/Barc-x64 -j 8 chrome chrome/installer/mac
-```
-
-The second target generates `Chromium Packaging/` from the same pinned source
-and build properties. It supplies the upstream signer and per-process
-entitlements; it does not sign or notarize the app during compilation.
-
-For local qualification only, launch with a fresh synthetic store. The mock
-keychain is limited to that fixture, never a shipping setting. Development CDP,
-if needed, uses a loopback-only port (this lane reserves 9228). Keep the sandbox.
-The core AppKit shell uses:
-
-```fish
-out/Barc-x64/Chromium.app/Contents/MacOS/Chromium --barc-native-shell --barc-shared-native-window --user-data-dir="$PWD/out/Barc-x64/native-synthetic-profile" --use-mock-keychain
-```
-
-For a candidate built with the Swift flag, use `--barc-swiftui-smoke` instead of
-`--barc-native-shell`; retain `--barc-shared-native-window` when testing composition.
-Neither launch command is a qualification result.
+The retained `--barc-swiftui-smoke` counter/text-field view is experimental engine
+hosting material, not the native application. Its two patches are already in the
+ordered procedure above; do not apply them a second time. To compile that smoke,
+add `barc_enable_mac_swift_smoke = true` to candidate args before the single GN
+step, not after compilation. Leave it disabled for normal application builds.
+The native application supplies `--barc-native-shell` and
+`--barc-shared-native-window` through its validated startup configuration. Verify
+only with a fresh `/private/tmp` synthetic app root and explicit profile UUID;
+never use a real profile. Patch application, compilation and mechanical tests do
+not establish native interaction, media, profile isolation or release readiness.
 
 ### Regression scope and remaining qualification
 
@@ -307,13 +267,12 @@ After the candidate build succeeds, use its generated `Chromium Packaging`
 tools with Python 3.11 or newer. Set `signing_identity` to the existing Developer
 ID Application identity and `notary_profile` to the existing notarytool Keychain
 profile. Keep credentials out of arguments and logs; the profile name is enough.
-From the engine source root:
+From the engine source root, after successful complete staging above:
 
 ```fish
-set engine_out "$PWD/out/Barc-x64"
 set signed_out "$PWD/out/Barc-x64-signed"
 python3 "$engine_out/Chromium Packaging/sign_chrome.py" \
-    --identity "$signing_identity" --input "$engine_out" --output "$signed_out" \
+    --identity "$signing_identity" --input "$staging_input" --output "$signed_out" \
     --notarize staple --notary-arg=--keychain-profile --notary-arg="$notary_profile"
 ```
 

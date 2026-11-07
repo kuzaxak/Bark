@@ -1069,6 +1069,44 @@ public final class TabsController {
         return id
     }
 
+    /// Reflect an already selected engine page without activating its native
+    /// window or bootstrapping another page. Adoption must have bound it first.
+    @discardableResult
+    public func reflectNativeSelection(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
+        guard profileEngine == .chromium, !isTerminating,
+              windowRegistry.windows[window.id] === window, !window.isIncognito, window.privateTree == nil,
+              let session = session(for: itemID), let page = session.navigation,
+              let host = nativePageHost, session.nativeResourceHost === host,
+              let spaceID = tree.spaceID(of: itemID), tree.item(itemID)?.url != nil,
+              page.profileID != nil, tree.dataStoreID(for: spaceID) == page.profileID,
+              !session.nativeIsEnding, session.nativeRelease == nil,
+              host.canAdoptPage(page, in: window) else { return false }
+        let generation = UUID()
+        let previous = window.nativeSelectionSession
+        window.nativeSelectionGeneration = generation
+        window.nativeSelectionSession = session
+        if previous !== session { previous?.cancelNativePreparation(in: window) }
+        defer {
+            if window.nativeSelectionGeneration == generation {
+                window.nativeSelectionGeneration = nil
+                window.nativeSelectionSession = nil
+            }
+        }
+        func modelIsCurrent() -> Bool {
+            !isTerminating && nativePageHost === host && windowRegistry.windows[window.id] === window &&
+            window.nativeSelectionGeneration == generation && !window.isIncognito && window.privateTree == nil &&
+            self.session(for: itemID) === session && session.nativeResourceHost === host && session.navigation === page && !session.nativeIsEnding && session.nativeRelease == nil &&
+            tree.item(itemID)?.url != nil && tree.spaceID(of: itemID) == spaceID &&
+            tree.dataStoreID(for: spaceID) == page.profileID
+        }
+        guard modelIsCurrent(), host.acceptNativeSelection(page, in: window), modelIsCurrent() else { return false }
+        let validate = { modelIsCurrent() && host.isNativeSelection(page, in: window) }
+        guard validate() else { return false }
+        finishNativeAdoption(session, in: window, opener: nil, parent: nil,
+                             select: true, generation: generation, validateNative: validate)
+        return validate() && window.selectedItemID == itemID
+    }
+
     func addSession(_ session: PageSession) {
         liveSessions[session.itemID] = session
     }
@@ -1077,7 +1115,7 @@ public final class TabsController {
 
     /// Sets up a newly registered window: a private window gets its own tree; a regular window
     /// takes an unclaimed saved window record, else the first space. Loads no pages.
-    public func attach(window: BrowserWindowState) {
+    public func attach(window: BrowserWindowState, restoringSavedState: Bool = true) {
         if window.isIncognito, window.ephemeralProfile != nil {
             if window.privateTree == nil {
                 // One temporary space, never written to disk. Its pages use the window's
@@ -1091,26 +1129,33 @@ public final class TabsController {
             trackMiniPlayer(of: window)
             return
         }
-        let claimed = Set(regularWindows.map(\.id)).subtracting([window.id])
-        if let index = device.windows.firstIndex(where: { $0.id == window.id })
-            ?? device.windows.firstIndex(where: { !claimed.contains($0.id) }) {
-            let record = device.windows[index]
-            window.spaceID = record.spaceID.flatMap { tree.space($0)?.id }
-            window.selectedItemBySpace = record.selectedItemBySpace.filter { tree.item($0.value) != nil }
-            window.split = record.split
-            window.pendingFrame = record.frame
-            window.applyPendingFrame()
-            device.windows[index].id = window.id
-        }
-        if window.spaceID == nil {
-            window.spaceID = tree.orderedSpaces.first?.id
+        if restoringSavedState {
+            let claimed = Set(regularWindows.map(\.id)).subtracting([window.id])
+            if let index = device.windows.firstIndex(where: { $0.id == window.id })
+                ?? device.windows.firstIndex(where: { !claimed.contains($0.id) }) {
+                let record = device.windows[index]
+                window.spaceID = record.spaceID.flatMap { tree.space($0)?.id }
+                window.selectedItemBySpace = record.selectedItemBySpace.filter { tree.item($0.value) != nil }
+                window.split = record.split
+                window.pendingFrame = record.frame
+                window.applyPendingFrame()
+                device.windows[index].id = window.id
+            }
+            if window.spaceID == nil {
+                window.spaceID = tree.orderedSpaces.first?.id
+            }
+        } else {
+            // An engine-created window supplies its exact-profile space. Its
+            // real native selection will be reflected only after page adoption.
+            window.selectedItemBySpace.removeAll()
+            window.split = nil
         }
         refreshLiveFolders()
-        if let spaceID = window.spaceID, window.selectedItemBySpace[spaceID] == nil,
+        if restoringSavedState, let spaceID = window.spaceID, window.selectedItemBySpace[spaceID] == nil,
            let first = displayOrder(in: window).first {
             window.selectedItemBySpace[spaceID] = first
         }
-        mirror(window)
+        if restoringSavedState { mirror(window) }
         trackMiniPlayer(of: window)
     }
 

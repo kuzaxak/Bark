@@ -1,5 +1,6 @@
 // Licensed under GPL-3.0. See LICENSE.
 import AppKit
+import BarcChromium
 import NookWeb
 import NookBlocker
 import NookSettings
@@ -12,13 +13,21 @@ private enum Native {
     static let second = UUID()
     static var profiles: [Int32: UUID] = [10: first]
     static var tabs: [Int32: [Int32]] = [10: [100]]
+    static var groups: [Int32: UInt64] = [11: 2]
+    static var activeTabs: [Int32: Int32] = [:]
+    static var ending: Set<Int32> = []
     static var nextTab: Int32 = 200
     static var pending: (ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)?
     static var openedFrom: [Int32] = []
     static var opens = 0
     static var creates = 0
     static var selected: Int32 = 10
-    static var attached: Int32 = 10
+    static var headerOwners: Set<Int32> = [10]
+    private static var lastAttached: Int32 = 10
+    static var attached: Int32 {
+        get { lastAttached }
+        set { lastAttached = newValue; headerOwners = newValue == 0 ? [] : [newValue] }
+    }
     static var selectionCalls = 0
     static var attachmentCalls = 0
     static var nativeCloses: [(Int32, Int32)] = []
@@ -53,8 +62,43 @@ private enum Native {
             attach: { window, view in MainActor.assumeIsolated {
                 Native.attachmentCalls += 1
                 if let callback = Native.onAttach { return callback(window) }
-                Native.attached = view == nil ? 0 : window; return 1
+                if view == nil { Native.headerOwners.remove(window) } else {
+                    Native.headerOwners.insert(window); Native.lastAttached = window
+                }
+                return 1
+            } },
+            shellIsOwned: { window, _ in MainActor.assumeIsolated { Native.headerOwners.contains(window) ? 1 : 0 } },
+            detachIfOwned: { window, _ in MainActor.assumeIsolated {
+                guard Native.headerOwners.contains(window) else { return 0 }
+                Native.attachmentCalls += 1
+                if let callback = Native.onAttach { return callback(window) }
+                Native.headerOwners.remove(window); if Native.lastAttached == window { Native.lastAttached = 0 }; return 1
             } })
+    }
+
+    static func row(_ window: Int32) -> BarcDiscoveryWindow? {
+        guard let profile = profiles[window], let list = tabs[window], !list.isEmpty else { return nil }
+        var row = BarcDiscoveryWindow()
+        row.window = window; row.physical_group = groups[window] ?? 1
+        row.active_tab = activeTabs[window].flatMap { list.contains($0) ? $0 : nil } ?? list[0]
+        row.selected_client = selected; row.profile_kind = 0
+        row.flags = ending.contains(window) ? 32 : 0
+        withUnsafeMutableBytes(of: &row.regular_profile_uuid) { buffer in
+            for (i, byte) in profile.uuidString.utf8CString.enumerated() { buffer[i] = UInt8(bitPattern: byte) }
+        }
+        return row
+    }
+    static var discovery: ChromiumDiscoveryAPI {
+        ChromiumDiscoveryAPI(read: { windows, capacity, _, _, output in MainActor.assumeIsolated {
+            let rows = Native.profiles.keys.sorted().compactMap { Native.row($0) }
+            output?.pointee.window_count = rows.count; output?.pointee.tab_count = 0
+            output?.pointee.revision = 1
+            guard capacity >= rows.count else { return 1 }
+            for (index, row) in rows.enumerated() { windows?[index] = row }
+            return 0
+        } }, state: { window, output in MainActor.assumeIsolated {
+            guard let row = Native.row(window) else { return 0 }; output?.pointee = row; return 1
+        } }, observe: { _, _ in 1 }, unobserve: { _ in }, admit: { _, _ in 1 })
     }
 
     static var navigation: ChromiumNavigationAPI {
@@ -72,10 +116,10 @@ private enum Native {
             unobserve: { token in MainActor.assumeIsolated { Native.observations[token] = nil } },
             navigate: { _, _, _ in preconditionFailure("Host must not navigate during construction") },
             back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in 1 }, stop: { _, _ in 1 },
-            select: { window, _ in MainActor.assumeIsolated {
+            select: { window, tab in MainActor.assumeIsolated {
                 Native.selectionCalls += 1
                 if let callback = Native.onSelect { return callback() }
-                Native.selected = window; return 1
+                Native.selected = window; Native.activeTabs[window] = tab; return 1
             } },
             close: { window, tab in MainActor.assumeIsolated {
                 Native.nativeCloses.append((window, tab)); return 1
@@ -97,6 +141,7 @@ private enum Native {
     }
 
     static func emit(_ event: Int32, page: ChromiumPageNavigation, flags: UInt32 = 0) {
+        if event == 7 && flags & 128 != 0 { ending.insert(page.nativeWindowID) }
         let entry = observations.first { $0.value.3 == page.nativeTabID }!
         entry.value.0?(entry.value.1, entry.key, event, page.nativeWindowID, page.nativeTabID, nil, nil, 0, flags)
     }
@@ -105,7 +150,7 @@ private enum Native {
 @main
 private enum HostChecks {
     @MainActor static func main() throws {
-        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation)
+        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
         let window = BrowserWindowState()
         let shell = NSView()
         precondition(host.registerWindow(window, nativeOwner: 10, shell: shell, initialBlankTab: 100))
@@ -120,7 +165,7 @@ private enum HostChecks {
         }
         precondition(original.nativeTabID == 100 && Native.creates == 0)
         precondition(host.canAdoptPage(original, in: window))
-        let reservedHost = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation)
+        let reservedHost = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
         let reservedWindow = BrowserWindowState(), reservedShell = NSView()
         precondition(reservedHost.registerWindow(reservedWindow, nativeOwner: 10, shell: reservedShell, initialBlankTab: 100))
         let beforeReserved = Native.nextObservation
@@ -323,6 +368,7 @@ private enum HostChecks {
             preconditionFailure("Known ending logical owner admitted another page")
         }
         precondition(Native.nextObservation == beforeEnding && Native.nativeCloses.count == beforeEndingCloses)
+        try checkAuthoritativeGroups()
         try checkActualModelAdoption()
         print("Chromium page host checks passed")
     }
@@ -356,7 +402,7 @@ private func checkActualModelAdoption() throws {
     registry.setActive(window)
     tabs.attach(window: window)
     let space = window.spaceID!, profile = tabs.profile(forSpace: space)!
-    let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation)
+    let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
     tabs.nativePageHost = host
     let shell = NSView()
     Native.profiles[90] = profile.id
@@ -385,4 +431,114 @@ private func checkActualModelAdoption() throws {
         preconditionFailure("Owner-ended event admitted another existing native page")
     }
     precondition(Native.creates == beforeCreates && Native.opens == beforeOpens && Native.nativeCloses.count == beforeCloses)
+}
+
+/// No production client mirror: every guard reads the fake native C row.
+@MainActor
+private func checkAuthoritativeGroups() throws {
+    let profile = Profile(engine: .chromium)
+    for owner: Int32 in [120, 121, 122] {
+        Native.profiles[owner] = profile.id; Native.tabs[owner] = [owner * 10]
+        Native.groups[owner] = 50
+    }
+    Native.selected = 120; Native.attached = 120
+    let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let window = BrowserWindowState(), shell = NSView()
+    precondition(host.registerWindow(window, nativeOwner: 120, shell: shell))
+    let binding = try host.bindExistingPage(nativeWindow: 121, tab: 1210, profile: profile, in: window).get()
+    binding.finish(adopted: true)
+    let page = binding.navigation
+    precondition(host.canAdoptPage(page, in: window), "Extra same-profile client needs no registration")
+    let selectCount = Native.selectionCalls, attachCount = Native.attachmentCalls
+    precondition(!host.acceptNativeSelection(page, in: window))
+    precondition(!host.isNativeSelection(page, in: window))
+    precondition(Native.selectionCalls == selectCount && Native.attachmentCalls == attachCount)
+    Native.selected = 121
+    precondition(host.acceptNativeSelection(page, in: window))
+    precondition(host.isNativeSelection(page, in: window) && Native.selectionCalls == selectCount)
+
+    // A native-origin selection has no Swift generation increment. Both
+    // detach and attach callouts must still refuse rollback over client 122.
+    for detachPhase in [true, false] {
+        Native.selected = 120; Native.attached = 120
+        let old = try host.bindExistingPage(nativeWindow: 120, tab: 1200, profile: profile, in: window).get()
+        old.finish(adopted: true)
+        precondition(host.acceptNativeSelection(old.navigation, in: window))
+        let before = Native.selectionCalls
+        Native.onAttach = { owner in
+            if detachPhase || owner == 121 {
+                Native.onAttach = nil; Native.selected = 122
+                return 0
+            }
+            Native.attached = 0; return 1
+        }
+        precondition(!host.selectPage(page, in: window))
+        precondition(Native.selected == 122 && Native.selectionCalls == before + 1,
+                     "Old Swift admission rolled back native-origin selection")
+        Native.onAttach = nil
+    }
+
+    // The C API may attach the view and only then discover supersession.
+    // A later native reflection must release that partial target attachment.
+    Native.selected = 120; Native.attached = 120
+    let oldHeader = try host.bindExistingPage(nativeWindow: 120, tab: 1200, profile: profile, in: window).get()
+    oldHeader.finish(adopted: true)
+    precondition(host.acceptNativeSelection(oldHeader.navigation, in: window))
+    Native.onAttach = { owner in
+        if owner == 120 { Native.headerOwners.remove(120); return 1 }
+        Native.headerOwners.insert(owner)
+        Native.onAttach = nil; Native.selected = 122
+        return 0
+    }
+    precondition(!host.selectPage(page, in: window))
+    precondition(Native.headerOwners == [121] && Native.selected == 122)
+    let third = try host.bindExistingPage(nativeWindow: 122, tab: 1220, profile: profile, in: window).get()
+    third.finish(adopted: true)
+    let noSelect = Native.selectionCalls
+    precondition(host.acceptNativeSelection(third.navigation, in: window))
+    precondition(Native.headerOwners == [122] && Native.selectionCalls == noSelect,
+                 "Reflection left a stale partial NativeViewHost owner")
+
+    // An ordinary refusal after physical attachment must compare-detach the
+    // attempted target before restoring the previous admitted header.
+    Native.onAttach = { owner in
+        if owner == 122 { Native.headerOwners.remove(122); return 1 }
+        Native.headerOwners.insert(owner); Native.onAttach = nil; return 0
+    }
+    precondition(!host.selectPage(oldHeader.navigation, in: window))
+    precondition(Native.selected == 122 && Native.headerOwners == [122])
+
+    // Transfer inside one group reuses the same observation/adapter.
+    func move(to owner: Int32) {
+        Native.tabs[page.nativeWindowID]?.removeAll { $0 == page.nativeTabID }
+        Native.tabs[owner, default: []].append(page.nativeTabID)
+        let entry = Native.observations.first { $0.value.3 == page.nativeTabID }!
+        entry.value.0?(entry.value.1, entry.key, 6, owner, page.nativeTabID, nil, nil, 0, 0)
+    }
+    move(to: 122)
+    let reused = try host.bindExistingPage(nativeWindow: 122, tab: 1210, profile: profile, in: window).get()
+    precondition(reused.navigation === page); reused.finish(adopted: true)
+    precondition(host.canAdoptPage(page, in: window))
+
+    // Death of the original logical client leaves the physical mount usable.
+    Native.profiles[120] = nil; Native.tabs[120] = nil
+    Native.selected = 122; Native.activeTabs[122] = page.nativeTabID
+    precondition(host.acceptNativeSelection(page, in: window))
+    let surviving = Native.discovery.readSnapshot()!
+    precondition(!host.unregisterWindow(window, absentFrom: surviving))
+
+    // A move to another physical group is neither destruction nor authority to
+    // move product UI. Releasing the absent group must retain this observation.
+    Native.profiles[123] = profile.id; Native.tabs[123] = [1230]; Native.groups[123] = 51
+    move(to: 123)
+    precondition(!host.canAdoptPage(page, in: window))
+    let beforeForeign = Native.selectionCalls, beforeClose = Native.nativeCloses.count
+    precondition(!host.selectPage(page, in: window))
+    Native.profiles[121] = nil; Native.tabs[121] = nil
+    Native.profiles[122] = nil; Native.tabs[122] = nil
+    precondition(host.unregisterWindow(window, absentFrom: Native.discovery.readSnapshot()!))
+    precondition(!page.isClosed && Native.observations.values.contains { $0.3 == page.nativeTabID })
+    precondition(Native.selectionCalls == beforeForeign && Native.nativeCloses.count == beforeClose)
+    Native.emit(7, page: page, flags: 128)
+    precondition(page.isClosed)
 }

@@ -273,7 +273,8 @@ public final class PageSession: NSObject, Identifiable {
     @ObservationIgnored var nativePreparationCompletions: [@MainActor (Bool) -> Void] = []
     @ObservationIgnored var nativeIsEnding = false
     @ObservationIgnored var nativeUnloadPending = false
-    var navigation: (any PageNavigation)?
+    /// Reading the bound engine page never creates or loads a resource.
+    public internal(set) var navigation: (any PageNavigation)?
     var primaryWebView: WKWebView? {
         didSet {
             guard primaryWebView !== oldValue else { return }

@@ -2,6 +2,9 @@
 
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
+#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "base/run_loop.h"
 
 #include <algorithm>
 #include <array>
@@ -2050,4 +2053,248 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
 
   ASSERT_TRUE(closed) << describe();
   EXPECT_TRUE(cancellation_counts_match(1)) << describe();
+}
+
+
+namespace {
+struct DiscoveryEvents {
+  std::vector<uint64_t> revisions;
+  bool unsubscribe = false;
+  int32_t close_window = 0;
+  static void Receive(void* context, uint64_t token, uint64_t revision) {
+    auto* self = static_cast<DiscoveryEvents*>(context);
+    self->revisions.push_back(revision);
+    const int32_t close_window = self->close_window;
+    if (self->unsubscribe)
+      barc_discovery_unobserve(token);
+    if (close_window)
+      EXPECT_EQ(1, barc_window_close(close_window));
+  }
+};
+struct DiscoveryRows {
+  std::vector<BarcDiscoveryWindow> windows;
+  std::vector<BarcDiscoveryTab> tabs;
+  BarcDiscoverySnapshot snapshot{};
+  void Read() {
+    const auto result = barc_discovery_snapshot(nullptr, 0, nullptr, 0, &snapshot);
+    ASSERT_TRUE(result == BARC_DISCOVERY_READ_CAPACITY ||
+                result == BARC_DISCOVERY_READ_OK);
+    windows.resize(snapshot.window_count);
+    tabs.resize(snapshot.tab_count);
+    ASSERT_EQ(BARC_DISCOVERY_READ_OK,
+              barc_discovery_snapshot(windows.data(), windows.size(),
+                                      tabs.data(), tabs.size(), &snapshot));
+  }
+};
+}  // namespace
+
+class BarcDiscoveryBrowserTest : public BarcSharedNativeWindowBrowserTest {
+ public:
+  void SetUp() override {
+    barc_set_runtime_ready_callback([](void*) {
+      int32_t initial = 0;
+      GlobalBrowserCollection::GetInstance()->ForEach(
+          [&](BrowserWindowInterface* window) {
+            if (window->GetType() == BrowserWindowInterface::TYPE_NORMAL) {
+              initial = window->GetSessionID().id();
+              return false;
+            }
+            return true;
+          });
+      CHECK_GT(initial, 0);
+      NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+      CHECK(barc_window_attach_native_shell(initial, (__bridge void*)header));
+      CHECK(barc_window_admit_discovered(initial, (__bridge void*)header));
+      barc_runtime_complete_startup(initial);
+    }, nullptr);
+    BarcSharedNativeWindowBrowserTest::SetUp();
+  }
+ protected:
+  BrowserWindowInterface* NewNormal() {
+    return CreateBrowserWindow(BrowserWindowCreateParams(
+        BrowserWindowInterface::TYPE_NORMAL, browser()->GetProfile(), false));
+  }
+  NSView* Attach(int32_t id) {
+    NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
+    EXPECT_EQ(1, barc_window_attach_native_shell(id, (__bridge void*)header));
+    return header;
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
+                       AdmissionPreservesIndependentPresentationAndHide) {
+  auto* first = NewNormal();
+  auto* second = NewNormal();
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(second);
+  const int32_t first_id = first->GetSessionID().id();
+  const int32_t second_id = second->GetSessionID().id();
+  chrome::AddAndReturnTabAt(first, GURL("about:blank"), -1, true);
+  chrome::AddAndReturnTabAt(second, GURL("about:blank"), -1, true);
+  first->GetWindow()->Show();
+  second->GetWindow()->ShowInactive();
+  EXPECT_FALSE(first->GetWindow()->IsVisible());
+  EXPECT_FALSE(second->GetWindow()->IsVisible());
+  // Active-tab mutation must not consume a deferred first Show.
+  chrome::AddAndReturnTabAt(first, GURL("about:blank"), -1, true);
+  NSView* first_header = Attach(first_id);
+  NSView* second_header = Attach(second_id);
+  ASSERT_EQ(1, barc_window_admit_discovered(first_id,
+                                           (__bridge void*)first_header));
+  ASSERT_EQ(1, barc_window_admit_discovered(second_id,
+                                           (__bridge void*)second_header));
+  EXPECT_TRUE(first->GetWindow()->IsVisible());
+  EXPECT_TRUE(second->GetWindow()->IsVisible());
+  BarcDiscoveryWindow row{};
+  ASSERT_EQ(1, barc_window_discovery_state(second_id, &row));
+  EXPECT_FALSE(row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+  EXPECT_FALSE(row.flags & BARC_DISCOVERY_PHYSICAL_ACTIVE);
+  // Hide explicitly cancels presentation, while admission may still succeed.
+  auto* hidden = NewNormal();
+  ASSERT_TRUE(hidden);
+  chrome::AddAndReturnTabAt(hidden, GURL("about:blank"), -1, true);
+  hidden->GetWindow()->Show();
+  hidden->GetWindow()->Hide();
+  const int32_t hidden_id = hidden->GetSessionID().id();
+  NSView* hidden_header = Attach(hidden_id);
+  ASSERT_EQ(1, barc_window_admit_discovered(hidden_id,
+                                           (__bridge void*)hidden_header));
+  EXPECT_FALSE(hidden->GetWindow()->IsVisible());
+  EXPECT_EQ(0, barc_window_admit_discovered(hidden_id,
+                                           (__bridge void*)first_header));
+  // Popups retain their ordinary Chrome presentation and no product header.
+  auto* popup = CreateBrowserWindow(BrowserWindowCreateParams(
+      BrowserWindowInterface::TYPE_POPUP, browser()->GetProfile(), false));
+  ASSERT_TRUE(popup);
+  chrome::AddAndReturnTabAt(popup, GURL("about:blank"), -1, true);
+  popup->GetWindow()->ShowInactive();
+  EXPECT_TRUE(popup->GetWindow()->IsVisible());
+  EXPECT_EQ(1, barc_window_select(popup->GetSessionID().id()));
+  EXPECT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(popup)->barc_native_shell());
+  EXPECT_EQ(0, barc_window_admit_discovered(popup->GetSessionID().id(),
+                                           (__bridge void*)first_header));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
+                       SnapshotCoalescesAndTracksFactoryMembership) {
+  DiscoveryEvents events;
+  const uint64_t token = barc_discovery_observe(DiscoveryEvents::Receive, &events);
+  ASSERT_NE(0u, token);
+  EXPECT_EQ(0u, barc_discovery_observe(DiscoveryEvents::Receive, &events));
+  EXPECT_TRUE(events.revisions.empty());
+  base::RunLoop().RunUntilIdle();
+  ASSERT_EQ(1u, events.revisions.size());
+  const int32_t id = browser()->GetSessionID().id();
+  BarcDiscoveryWindow direct{};
+  ASSERT_EQ(1, barc_window_discovery_state(id, &direct));
+  const int32_t created = barc_tab_create(id, "about:blank", 1);
+  ASSERT_GT(created, 0);
+  DiscoveryRows rows;
+  rows.Read();
+  auto found = std::ranges::find(rows.tabs, created, &BarcDiscoveryTab::tab);
+  ASSERT_NE(rows.tabs.end(), found);
+  EXPECT_TRUE(found->flags & BARC_DISCOVERY_TAB_APP_FACTORY);
+  EXPECT_TRUE(found->flags & BARC_DISCOVERY_ACTIVE_TAB);
+  ASSERT_EQ(1, barc_window_discovery_state(id, &direct));
+  EXPECT_EQ(created, direct.active_tab);
+  // Capacity refusal must not expose partial rows.
+  BarcDiscoveryWindow untouched{};
+  untouched.window = -123;
+  BarcDiscoverySnapshot counts{};
+  EXPECT_EQ(BARC_DISCOVERY_READ_CAPACITY,
+            barc_discovery_snapshot(&untouched, 1, nullptr, 0, &counts));
+  EXPECT_EQ(-123, untouched.window);
+  base::RunLoop().RunUntilIdle();
+  const size_t settled = events.revisions.size();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(settled, events.revisions.size());
+  // Same-count replacement is structural, even though both count queries match.
+  const size_t previous_count = rows.tabs.size();
+  ASSERT_EQ(1, barc_tab_close(id, created));
+  const int32_t replacement = barc_tab_create(id, "about:blank", 0);
+  ASSERT_GT(replacement, 0);
+  rows.Read();
+  EXPECT_EQ(previous_count, rows.tabs.size());
+  EXPECT_EQ(rows.tabs.end(), std::ranges::find(rows.tabs, created, &BarcDiscoveryTab::tab));
+  EXPECT_NE(rows.tabs.end(), std::ranges::find(rows.tabs, replacement, &BarcDiscoveryTab::tab));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_GT(events.revisions.size(), settled);
+  // Pending delivery is canceled, and self-unsubscription admits a new owner.
+  events.unsubscribe = true;
+  auto* closing = NewNormal();
+  ASSERT_TRUE(closing);
+  chrome::AddAndReturnTabAt(closing, GURL("about:blank"), -1, true);
+  events.close_window = closing->GetSessionID().id();
+  auto closing_alive = closing->GetWeakPtr();
+  base::RunLoop().RunUntilIdle();
+  ASSERT_TRUE(base::test::RunUntil([&] { return !closing_alive; }));
+  const size_t canceled = events.revisions.size();
+  chrome::AddAndReturnTabAt(browser(), GURL("about:blank"), -1, false);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(canceled, events.revisions.size());
+  const uint64_t pending = barc_discovery_observe(DiscoveryEvents::Receive, &events);
+  ASSERT_NE(0u, pending);
+  barc_discovery_unobserve(pending);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(canceled, events.revisions.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
+                       PhysicalIdentitySurvivesOwnerAndOpenerStaysNative) {
+  const int32_t work = Open("5a33ed34-5816-4a1c-b20c-eed936e4ee73", 0,
+                            BARC_PROFILE_BLANK);
+  ASSERT_GT(work, 0);
+  const int32_t personal = Open("74446f9e-12fc-45d8-bb7f-33640823fe44", work,
+                                BARC_PROFILE_BLANK);
+  ASSERT_GT(personal, 0);
+  BarcDiscoveryWindow work_row{}, personal_row{};
+  ASSERT_EQ(1, barc_window_discovery_state(work, &work_row));
+  ASSERT_EQ(1, barc_window_discovery_state(personal, &personal_row));
+  const uint64_t group = work_row.physical_group;
+  EXPECT_EQ(group, personal_row.physical_group);
+  EXPECT_EQ(work, personal_row.selected_client);
+  EXPECT_EQ(BARC_DISCOVERY_REGULAR, personal_row.profile_kind);
+  EXPECT_STREQ("74446f9e-12fc-45d8-bb7f-33640823fe44",
+               personal_row.regular_profile_uuid);
+  EXPECT_TRUE(work_row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
+  EXPECT_FALSE(personal_row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+  const int32_t initial_tab = barc_window_tab_at(personal, 0);
+  DiscoveryRows rows;
+  rows.Read();
+  auto initial = std::ranges::find(rows.tabs, initial_tab, &BarcDiscoveryTab::tab);
+  ASSERT_NE(rows.tabs.end(), initial);
+  EXPECT_TRUE(initial->flags & BARC_DISCOVERY_TAB_APP_FACTORY);
+  auto* work_owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+      SessionID::FromSerializedValue(work));
+  ui_test_utils::BrowserDestroyedObserver closed(work_owner);
+  ASSERT_EQ(1, barc_window_close(work));
+  closed.Wait();
+  EXPECT_EQ(0, barc_window_discovery_state(work, &work_row));
+  ASSERT_EQ(1, barc_window_discovery_state(personal, &personal_row));
+  EXPECT_EQ(group, personal_row.physical_group);
+  EXPECT_EQ(personal, personal_row.selected_client);
+  // A Chrome-created popup is not an app-factory tab/window. Its actual JS
+  // opener is reported without selecting or showing a product header.
+  auto* opener = browser()->GetTabStripModel()->GetActiveWebContents();
+  content::WebContentsAddedObserver added;
+  ASSERT_TRUE(content::ExecJs(opener,
+      "window.open('about:blank', 'catalog-popup', 'popup,width=400,height=300')"));
+  auto* popup_contents = added.GetWebContents();
+  ASSERT_TRUE(popup_contents);
+  auto* popup_tab = tabs::TabInterface::GetFromContents(popup_contents);
+  ASSERT_TRUE(popup_tab);
+  auto* popup_owner = popup_tab->GetBrowserWindowInterface();
+  ASSERT_TRUE(popup_owner);
+  BarcDiscoveryWindow popup_row{};
+  ASSERT_EQ(1, barc_window_discovery_state(popup_owner->GetSessionID().id(),
+                                          &popup_row));
+  EXPECT_EQ(BARC_DISCOVERY_POPUP, popup_row.kind);
+  EXPECT_FALSE(popup_row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
+  rows.Read();
+  auto popup = std::ranges::find(rows.tabs, popup_tab->GetHandle().raw_value(),
+                                 &BarcDiscoveryTab::tab);
+  ASSERT_NE(rows.tabs.end(), popup);
+  EXPECT_FALSE(popup->flags & BARC_DISCOVERY_TAB_APP_FACTORY);
+  EXPECT_EQ(tabs::TabInterface::GetFromContents(opener)->GetHandle().raw_value(),
+            popup->opener_tab);
 }

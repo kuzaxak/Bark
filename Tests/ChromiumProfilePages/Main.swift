@@ -121,8 +121,10 @@ private enum ProfileChecks {
             let window = Int32(index + 10)
             Native.opened(window)
             guard case .success = outcomes.removeLast() else { preconditionFailure() }
+            precondition(presenter.ownsNativeWindow(window))
             precondition(Native.calls == ["open:" + profile.id.uuidString, "attach", "select", "navigate:" + route.1, "show"])
             Native.close(window, flags: 0)
+            precondition(!presenter.ownsNativeWindow(window))
             precondition(Native.calls.last == "detach")
         }
 

@@ -96,10 +96,11 @@ extension TabsController {
     /// Complete an admitted native adoption through the existing selection and
     /// opener bookkeeping, without repeating native selection or navigation.
     func finishNativeAdoption(_ session: PageSession, in window: BrowserWindowState,
-                              opener: UUID?, parent: Parent?, select shouldSelect: Bool, generation: UUID?) {
+                              opener: UUID?, parent: Parent?, select shouldSelect: Bool, generation: UUID?,
+                              validateNative: (() -> Bool)? = nil) {
         if let opener, let parent { linked(session.itemID, from: opener, at: parent, owner: .main) }
         if shouldSelect {
-            select(session.itemID, in: window, leaving: selectedSession(in: window), nativeAdmitted: true, adoptionGeneration: generation)
+            select(session.itemID, in: window, leaving: selectedSession(in: window), nativeAdmitted: true, adoptionGeneration: generation, validateNative: validateNative)
         } else {
             recordPageOwner(session.itemID, in: window)
         }
@@ -214,10 +215,12 @@ extension TabsController {
 
     /// `previous` is what the window showed before; a space switch has already moved on from it.
     private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?,
-                        nativeAdmitted: Bool = false, adoptionGeneration: UUID? = nil) {
+                        nativeAdmitted: Bool = false, adoptionGeneration: UUID? = nil,
+                        validateNative: (() -> Bool)? = nil) {
         func admissionIsCurrent() -> Bool {
-            adoptionGeneration == nil || (window.nativeSelectionGeneration == adoptionGeneration &&
-                windowRegistry.windows[window.id] === window && item(itemID) != nil)
+            (adoptionGeneration == nil || (window.nativeSelectionGeneration == adoptionGeneration &&
+                windowRegistry.windows[window.id] === window && item(itemID) != nil)) &&
+            (validateNative?() ?? true)
         }
         guard admissionIsCurrent() else { return }
         let owner = owner(of: window)
