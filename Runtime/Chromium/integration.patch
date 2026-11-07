@@ -238,7 +238,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,21 @@
+@@ -19,3 +19,27 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -260,9 +260,15 @@
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
 +_barc_window_select
++_barc_tab_observe
++_barc_tab_unobserve
++_barc_tab_go_back
++_barc_tab_go_forward
++_barc_tab_reload
++_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,25 @@
+@@ -29,5 +29,31 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -285,6 +291,12 @@
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
 +_barc_window_select
++_barc_tab_observe
++_barc_tab_unobserve
++_barc_tab_go_back
++_barc_tab_go_forward
++_barc_tab_reload
++_barc_tab_stop
 +
  # _ChromeMain must be listed last.  That's the whole point of this file.
  _ChromeMain

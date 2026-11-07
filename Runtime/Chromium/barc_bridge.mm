@@ -4,11 +4,17 @@
 
 #include <algorithm>
 #include <array>
+#include <map>
 #include <memory>
 #include <string>
 #include <string_view>
 
 #include "base/command_line.h"
+#include "base/auto_reset.h"
+#include "base/no_destructor.h"
+#include "content/public/browser/navigation_handle.h"
+#include "content/public/browser/navigation_discard_reason.h"
+#include "net/base/net_errors.h"
 #include "base/compiler_specific.h"
 #include "base/containers/span.h"
 #include "base/functional/bind.h"
@@ -26,6 +32,7 @@
 #include "components/sessions/core/session_id.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/common/referrer.h"
@@ -35,6 +42,8 @@
 #include "url/gurl.h"
 
 namespace {
+// UI-thread-only; the storage outlives all reentrant observer callouts.
+int navigation_callback_depth = 0;
 BrowserWindowInterface* Window(int32_t id) {
   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
       id <= 0)
@@ -55,8 +64,251 @@ tabs::TabInterface* LookupTab(BrowserWindowInterface* window, int32_t id) {
 GURL URL(const char* value) {
   return value ? GURL(value) : GURL();
 }
+// Tokens own observers, never tabs or profiles. Each callback holds only its
+// observer alive, so unsubscribe/close during delivery cannot free its stack.
+class TabObservation;
+using Observations = std::map<uint64_t, std::shared_ptr<TabObservation>>;
+Observations& ObservationTable() {
+  static base::NoDestructor<Observations> table;
+  return *table;
+}
+class TabObservation : public content::WebContentsObserver,
+                       public std::enable_shared_from_this<TabObservation> {
+ public:
+  TabObservation(uint64_t token, tabs::TabInterface* tab,
+                 BarcTabCallback callback, void* context)
+      : content::WebContentsObserver(tab->GetContents()), token_(token),
+        tab_(tab->GetHandle()), callback_(callback), context_(context) {
+    detach_ = tab->RegisterWillDetach(base::BindRepeating(
+        &TabObservation::Detach, base::Unretained(this)));
+    insert_ = tab->RegisterDidInsert(base::BindRepeating(
+        &TabObservation::Inserted, base::Unretained(this)));
+    discard_ = tab->RegisterWillDiscardContents(base::BindRepeating(
+        &TabObservation::Discard, base::Unretained(this)));
+  }
+  int32_t tab_id() const { return tab_.raw_value(); }
+  bool active() const { return active_; }
+  bool closing() const { return closing_; }
+  void Cancel() {
+    active_ = false;
+    callback_ = nullptr;
+    context_ = nullptr;
+    Observe(nullptr);
+    detach_ = {};
+    insert_ = {};
+    discard_ = {};
+  }
+  void Emit(int32_t event, int32_t error = 0, uint32_t extra = 0,
+            const GURL* event_url = nullptr) {
+    auto keep_alive = shared_from_this();
+    if (!active_ || !callback_)
+      return;
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    const int32_t window = owner ? owner->GetSessionID().id() : 0;
+    uint32_t flags = extra;
+    std::string url, title;
+    if (web_contents()) {
+      auto& controller = web_contents()->GetController();
+      if (web_contents()->IsLoading())
+        flags |= BARC_TAB_LOADING;
+      if (controller.CanGoBack())
+        flags |= BARC_TAB_BACK;
+      if (controller.CanGoForward())
+        flags |= BARC_TAB_FORWARD;
+      url = web_contents()->GetVisibleURL().spec();
+      title = base::UTF16ToUTF8(web_contents()->GetTitle());
+    }
+    if (event_url)
+      url = event_url->spec();
+    base::AutoReset<int> callback_scope(&navigation_callback_depth,
+                                        navigation_callback_depth + 1);
+    callback_(context_.get(), token_, event, window, tab_id(), url.c_str(),
+              title.c_str(), error, flags);
+  }
+  void DidStartNavigation(content::NavigationHandle* handle) override {
+    auto keep_alive = shared_from_this();
+    if (!handle->IsInPrimaryMainFrame() || handle->IsSameDocument())
+      return;
+    navigation_ = handle->GetNavigationId();
+    committed_ = false;
+    navigation_flags_ = handle->GetReloadType() != content::ReloadType::NONE
+                            ? BARC_TAB_RELOAD
+                            : 0;
+    Emit(BARC_TAB_STARTED, 0, navigation_flags_, &handle->GetURL());
+  }
+  void DidFinishNavigation(content::NavigationHandle* handle) override {
+    auto keep_alive = shared_from_this();
+    if (!handle->IsInPrimaryMainFrame())
+      return;
+    if (handle->IsSameDocument()) {
+      if (handle->HasCommitted() && handle->GetNetErrorCode() == net::OK)
+        Emit(BARC_TAB_COMMITTED, 0, BARC_TAB_SAME_DOCUMENT, &handle->GetURL());
+      return;
+    }
+    // A subscription cannot reconstruct starts or failures from before binding.
+    // A real new primary commit is observable; otherwise report current state.
+    if (!navigation_) {
+      if (handle->HasCommitted() && handle->GetNetErrorCode() == net::OK)
+        Emit(BARC_TAB_COMMITTED, 0, 0, &handle->GetURL());
+      else
+        Emit(BARC_TAB_STATE);
+      return;
+    }
+    if (handle->GetNavigationId() != navigation_)
+      return;
+    if (handle->GetNetErrorCode() != net::OK) {
+      committed_ = false;
+      // Replacement can cancel the old request before the new DidStart arrives.
+      // The public discard reason identifies that ordering without URL guesses.
+      if (auto reason = handle->GetNavigationDiscardReason(); reason) {
+        switch (*reason) {
+          case content::NavigationDiscardReason::kNewReloadNavigation:
+          case content::NavigationDiscardReason::kNewHistoryNavigation:
+          case content::NavigationDiscardReason::kNewOtherNavigationBrowserInitiated:
+          case content::NavigationDiscardReason::kNewOtherNavigationRendererInitiated:
+          case content::NavigationDiscardReason::kNewDuplicateNavigation:
+          case content::NavigationDiscardReason::kCommittedNavigation:
+            Emit(BARC_TAB_STATE);
+            return;
+          default:
+            break;
+        }
+      }
+      const GURL displayed = web_contents()->GetLastCommittedURL();
+      Emit(BARC_TAB_FAILED, handle->GetNetErrorCode(), navigation_flags_ |
+          (!handle->HasCommitted() ? BARC_TAB_PROVISIONAL : 0) |
+          (handle->GetNetErrorCode() == net::ERR_ABORTED ? BARC_TAB_ABORTED : 0),
+          &displayed);
+      return;
+    }
+    if (!handle->HasCommitted())
+      return;
+    committed_ = true;
+    const GURL url = handle->GetURL();
+    Emit(BARC_TAB_COMMITTED, 0, navigation_flags_, &url);
+  }
+  void NavigationListPruned(const content::PrunedDetails&) override {
+    Emit(BARC_TAB_STATE);
+  }
+  void NavigationEntriesDeleted() override { Emit(BARC_TAB_STATE); }
+  void DidStartLoading() override { Emit(BARC_TAB_STATE); }
+  void DidStopLoading() override {
+    auto keep_alive = shared_from_this();
+    if (committed_) {
+      committed_ = false;
+      Emit(BARC_TAB_FINISHED, 0, navigation_flags_);
+    } else {
+      Emit(BARC_TAB_STATE);
+    }
+  }
+  void TitleWasSet(content::NavigationEntry*) override { Emit(BARC_TAB_TITLE); }
+  void WebContentsDestroyed() override { Close(); }
+ private:
+  void Detach(tabs::TabInterface*, tabs::TabInterface::DetachReason reason) {
+    if (reason == tabs::TabInterface::DetachReason::kDelete)
+      Close();
+  }
+  void Inserted(tabs::TabInterface*) { Emit(BARC_TAB_STATE); }
+  void Discard(tabs::TabInterface*, content::WebContents*,
+               content::WebContents* replacement) {
+    navigation_ = 0;
+    navigation_flags_ = 0;
+    committed_ = false;
+    Observe(replacement);
+    Emit(BARC_TAB_STATE);
+  }
+  void Close() {
+    auto keep_alive = shared_from_this();
+    if (!active_)
+      return;
+    // Keep duplicate admission blocked through the terminal callout, including
+    // when it unsubscribes before attempting to bind the closing tab again.
+    closing_ = true;
+    auto callback = callback_;
+    void* context = context_.get();
+    callback_ = nullptr;
+    context_ = nullptr;
+    active_ = false;
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    if (callback) {
+      base::AutoReset<int> callback_scope(&navigation_callback_depth,
+                                          navigation_callback_depth + 1);
+      callback(context, token_, BARC_TAB_CLOSED,
+               owner ? owner->GetSessionID().id() : 0, tab_id(), "", "", 0, 0);
+    }
+    ObservationTable().erase(token_);
+    Cancel();
+  }
+  const uint64_t token_;
+  const tabs::TabHandle tab_;
+  BarcTabCallback callback_;
+  raw_ptr<void> context_;
+  bool active_ = true;
+  bool closing_ = false;
+  int64_t navigation_ = 0;
+  bool committed_ = false;
+  uint32_t navigation_flags_ = 0;
+  base::CallbackListSubscription detach_, insert_, discard_;
+};
 }  // namespace
 
+uint64_t barc_tab_observe(int32_t window, int32_t tab_id,
+                          BarcTabCallback callback, void* context) {
+  auto* tab = LookupTab(Window(window), tab_id);
+  if (!tab || !callback)
+    return 0;
+  for (const auto& entry : ObservationTable())
+    if (entry.second->tab_id() == tab_id)
+      return 0;
+  static uint64_t next_token = 0;
+  CHECK_NE(next_token, UINT64_MAX);
+  const uint64_t token = ++next_token;
+  auto observer = std::make_shared<TabObservation>(token, tab, callback, context);
+  ObservationTable().emplace(token, observer);
+  observer->Emit(BARC_TAB_INITIAL);
+  return observer->active() ? token : 0;
+}
+void barc_tab_unobserve(uint64_t token) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI))
+    return;
+  auto found = ObservationTable().find(token);
+  if (found == ObservationTable().end())
+    return;
+  auto observer = found->second;
+  if (!observer->closing())
+    ObservationTable().erase(found);
+  observer->Cancel();
+}
+int barc_tab_go_back(int32_t window, int32_t tab_id) {
+  auto* tab = LookupTab(Window(window), tab_id);
+  if (!tab || !tab->GetContents()->GetController().CanGoBack())
+    return 0;
+  tab->GetContents()->GetController().GoBack();
+  return 1;
+}
+int barc_tab_go_forward(int32_t window, int32_t tab_id) {
+  auto* tab = LookupTab(Window(window), tab_id);
+  if (!tab || !tab->GetContents()->GetController().CanGoForward())
+    return 0;
+  tab->GetContents()->GetController().GoForward();
+  return 1;
+}
+int barc_tab_reload(int32_t window, int32_t tab_id) {
+  auto* tab = LookupTab(Window(window), tab_id);
+  if (!tab)
+    return 0;
+  tab->GetContents()->GetController().Reload(content::ReloadType::NORMAL, true);
+  return 1;
+}
+int barc_tab_stop(int32_t window, int32_t tab_id) {
+  auto* tab = LookupTab(Window(window), tab_id);
+  if (!tab)
+    return 0;
+  tab->GetContents()->Stop();
+  return 1;
+}
 uint32_t barc_bridge_version() {
   return 1;
 }
@@ -75,6 +327,11 @@ int barc_window_close(int32_t id) {
   auto* window = Window(id);
   if (!window)
     return 0;
+  if (navigation_callback_depth) {
+    return content::GetUIThreadTaskRunner({})->PostNonNestableTask(
+        FROM_HERE, base::BindOnce([](int32_t window) { barc_window_close(window); },
+                                 id));
+  }
   window->GetWindow()->Close();
   return 1;
 }
@@ -159,6 +416,12 @@ int barc_tab_close(int32_t id, int32_t tab_id) {
   auto* tab = LookupTab(window, tab_id);
   if (!tab)
     return 0;
+  if (navigation_callback_depth) {
+    return content::GetUIThreadTaskRunner({})->PostNonNestableTask(
+        FROM_HERE, base::BindOnce(
+            [](int32_t window, int32_t tab) { barc_tab_close(window, tab); },
+            id, tab_id));
+  }
   window->GetTabStripModel()->CloseWebContents(
       tab->GetContents(), TabCloseTypes::CLOSE_USER_GESTURE |
                               TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
@@ -172,6 +435,8 @@ int barc_tab_transfer(int32_t source_id,
   auto* tab = LookupTab(source, tab_id);
   if (!tab || !destination || source == destination ||
       source->GetProfile() != destination->GetProfile())
+    return 0;
+  if (navigation_callback_depth)
     return 0;
   if (!barc_window_select(destination_id))
     return 0;

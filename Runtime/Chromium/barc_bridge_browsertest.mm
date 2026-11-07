@@ -3,7 +3,11 @@
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
 #include "chrome/browser/ui/views/frame/barc_profiles.h"
 
+#include <algorithm>
 #include <array>
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "base/command_line.h"
 #include "base/functional/callback_helpers.h"
@@ -62,6 +66,7 @@
 #include "content/public/test/slow_download_http_response.h"
 #include "content/public/test/test_navigation_observer.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
@@ -69,6 +74,62 @@
 #include "url/gurl.h"
 
 namespace {
+struct NavigationEvent {
+  int32_t kind;
+  int32_t window;
+  std::string url;
+  std::string title;
+  int32_t error;
+  uint32_t flags;
+};
+class NavigationEvents {
+ public:
+  ~NavigationEvents() { barc_tab_unobserve(token); }
+  static void Receive(void* context, uint64_t observation, int32_t kind,
+                      int32_t window, int32_t tab, const char* url,
+                      const char* title, int32_t error, uint32_t flags) {
+    auto* self = static_cast<NavigationEvents*>(context);
+    self->token = observation;
+    self->events.push_back({kind, window, url, title, error, flags});
+    if (kind == BARC_TAB_INITIAL && self->release_owner) {
+      auto* owner = self->release_owner.get();
+      barc_tab_unobserve(observation);
+      owner->reset();
+      return;
+    }
+    if (self->unsubscribe_initial && kind == BARC_TAB_INITIAL)
+      barc_tab_unobserve(observation);
+    if (kind == BARC_TAB_STARTED && self->transfer_destination) {
+      EXPECT_EQ(0, barc_tab_transfer(window, tab, self->transfer_destination));
+      self->transfer_refused = true;
+    }
+    if (kind == BARC_TAB_STARTED &&
+        (self->close_started || self->close_window_started)) {
+      if (self->unsubscribe_before_close)
+        barc_tab_unobserve(observation);
+      EXPECT_EQ(1, self->close_window_started ? barc_window_close(window)
+                                            : barc_tab_close(window, tab));
+    }
+    if (kind == BARC_TAB_CLOSED) {
+      barc_tab_unobserve(observation);
+      EXPECT_EQ(0u, barc_tab_observe(window, tab, Receive, context));
+    }
+  }
+  size_t Count(int32_t kind) const {
+    return std::count_if(events.begin(), events.end(),
+                        [kind](const auto& e) { return e.kind == kind; });
+  }
+  uint64_t token = 0;
+  raw_ptr<std::unique_ptr<NavigationEvents>> release_owner = nullptr;
+  bool unsubscribe_initial = false;
+  bool close_started = false;
+  bool close_window_started = false;
+  bool unsubscribe_before_close = false;
+  int32_t transfer_destination = 0;
+  bool transfer_refused = false;
+  std::vector<NavigationEvent> events;
+};
+
 class ViewOwnerDeletionObserver : public views::ViewObserver {
  public:
   ViewOwnerDeletionObserver(BrowserWindowInterface* browser, BrowserView* view)
@@ -863,6 +924,11 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                               "onbeforeunload = () => 'keep draft';"));
     content::PrepContentsForBeforeUnloadTest(page);
   }
+  NavigationEvents work_events, personal_events;
+  ASSERT_NE(0u, barc_tab_observe(work_id, barc_window_tab_at(work_id, 0),
+                                NavigationEvents::Receive, &work_events));
+  ASSERT_NE(0u, barc_tab_observe(personal_id, barc_window_tab_at(personal_id, 0),
+                                NavigationEvents::Receive, &personal_events));
   bool cancelled_application_quit = false;
   auto quit_observation = chrome::AddClosingAllBrowsersCallback(
       base::BindLambdaForTesting([&](bool closing) {
@@ -892,6 +958,17 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                 ->is_attempting_to_close_browser();
   }));
   EXPECT_FALSE(cancelled_application_quit);
+  EXPECT_EQ(0u, work_events.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(0u, personal_events.Count(BARC_TAB_CLOSED));
+  const size_t work_titles = work_events.Count(BARC_TAB_TITLE);
+  const size_t personal_titles = personal_events.Count(BARC_TAB_TITLE);
+  ASSERT_TRUE(content::ExecJs(pages[0], "document.title='Work stays live'"));
+  ASSERT_TRUE(content::ExecJs(pages[1], "document.title='Personal stays live'"));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return work_events.Count(BARC_TAB_TITLE) > work_titles &&
+           personal_events.Count(BARC_TAB_TITLE) > personal_titles;
+  }));
+
   ASSERT_TRUE(host_alive);
   EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(work_alive.get())
                       ->browser_widget());
@@ -1226,4 +1303,224 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(work->GetProfile(), noopener->GetBrowserContext());
   EXPECT_EQ(true, content::EvalJs(noopener, "window.opener === null"));
   EXPECT_TRUE(SharedWindow(personal_id));
+}
+
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NavigationCommandsAndEvents) {
+  net::test_server::ControllableHttpResponse slow(embedded_test_server(), "/slow");
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const auto window = browser()->GetSessionID().id();
+  const auto tab = barc_window_tab_at(window, 0);
+  auto* contents = browser()->tab_strip_model()->GetWebContentsAt(0);
+  NavigationEvents observed;
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &observed));
+  ASSERT_EQ(1u, observed.events.size());
+  EXPECT_EQ(BARC_TAB_INITIAL, observed.events.front().kind);
+  EXPECT_EQ(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &observed));
+  const GURL first = embedded_test_server()->GetURL("/title1.html");
+  const GURL second = embedded_test_server()->GetURL("/title2.html");
+  ASSERT_EQ(1, barc_tab_navigate(window, tab, first.spec().c_str()));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  ASSERT_EQ(1, barc_tab_navigate(window, tab,
+      embedded_test_server()->GetURL("/server-redirect?" + second.spec()).spec().c_str()));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_EQ(second, contents->GetLastCommittedURL());
+  ASSERT_TRUE(base::test::RunUntil([&] { return observed.Count(BARC_TAB_FINISHED) == 2; }));
+  EXPECT_EQ(second.spec(), observed.events.back().url);
+  EXPECT_TRUE(observed.events.back().flags & BARC_TAB_BACK);
+  ASSERT_EQ(1, barc_tab_go_back(window, tab));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_EQ(first, contents->GetLastCommittedURL());
+  EXPECT_TRUE(observed.events.back().flags & BARC_TAB_FORWARD);
+  ASSERT_EQ(1, barc_tab_go_forward(window, tab));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_EQ(second, contents->GetLastCommittedURL());
+  const size_t before_reload = observed.events.size();
+  ASSERT_EQ(1, barc_tab_reload(window, tab));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_TRUE(std::any_of(observed.events.begin() + before_reload,
+                         observed.events.end(), [&](const auto& event) {
+    return event.kind == BARC_TAB_FINISHED &&
+           (event.flags & BARC_TAB_RELOAD) && event.url == second.spec() &&
+           !(event.flags & BARC_TAB_LOADING);
+  }));
+  const size_t before_same_document = observed.events.size();
+  const size_t starts_before_same_document = observed.Count(BARC_TAB_STARTED);
+  const size_t finishes_before_same_document = observed.Count(BARC_TAB_FINISHED);
+  ASSERT_TRUE(content::ExecJs(contents, "document.title='Observed title'; history.pushState({}, '', '#same')"));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return std::any_of(observed.events.begin() + before_same_document,
+                       observed.events.end(), [&](const auto& event) {
+      return event.kind == BARC_TAB_COMMITTED &&
+             (event.flags & BARC_TAB_SAME_DOCUMENT) &&
+             event.url == second.spec() + "#same";
+    });
+  }));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return std::any_of(observed.events.begin() + before_same_document,
+                       observed.events.end(), [](const auto& event) {
+      return event.kind == BARC_TAB_TITLE && event.title == "Observed title";
+    });
+  }));
+  EXPECT_EQ(starts_before_same_document, observed.Count(BARC_TAB_STARTED));
+  EXPECT_EQ(finishes_before_same_document, observed.Count(BARC_TAB_FINISHED));
+  ASSERT_EQ(1, barc_tab_navigate(window, tab,
+      embedded_test_server()->GetURL("/slow").spec().c_str()));
+  slow.WaitForRequest();
+  ASSERT_EQ(1, barc_tab_stop(window, tab));
+  ASSERT_TRUE(base::test::RunUntil([&] { return observed.Count(BARC_TAB_FAILED) == 1; }));
+  const auto& failed = *std::find_if(observed.events.begin(), observed.events.end(),
+      [](const auto& e) { return e.kind == BARC_TAB_FAILED; });
+  EXPECT_TRUE(failed.flags & BARC_TAB_ABORTED);
+  EXPECT_TRUE(failed.flags & BARC_TAB_PROVISIONAL);
+  const size_t finished = observed.Count(BARC_TAB_FINISHED);
+  slow.Done();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(finished, observed.Count(BARC_TAB_FINISHED));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NavigationObserverLifetimeAndTransfer) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const auto window = browser()->GetSessionID().id();
+  const auto tab = barc_window_tab_at(window, 0);
+  NavigationEvents cancelled;
+  cancelled.unsubscribe_initial = true;
+  EXPECT_EQ(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &cancelled));
+  auto self_releasing = std::make_unique<NavigationEvents>();
+  self_releasing->release_owner = &self_releasing;
+  EXPECT_EQ(0u, barc_tab_observe(window, tab, NavigationEvents::Receive,
+                                self_releasing.get()));
+  EXPECT_EQ(nullptr, self_releasing);
+  NavigationEvents observed;
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &observed));
+  const auto peer = barc_window_new_peer(window);
+  ASSERT_GT(peer, 0);
+  // Keep the source alive, independently of the moving observed tab.
+  ASSERT_NE(0, barc_tab_create(window, "about:blank", 0));
+  ASSERT_EQ(1, barc_tab_transfer(window, tab, peer));
+  EXPECT_EQ(peer, observed.events.back().window);
+  EXPECT_EQ(0, barc_tab_reload(window, tab));
+  auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+      SessionID::FromSerializedValue(peer));
+  ASSERT_NE(nullptr, owner);
+  auto* contents = owner->GetTabStripModel()->GetWebContentsAt(0);
+  observed.transfer_destination = window;
+  ASSERT_EQ(1, barc_tab_navigate(peer, tab,
+      embedded_test_server()->GetURL("/title1.html").spec().c_str()));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_TRUE(observed.transfer_refused);
+  EXPECT_EQ(owner, tabs::TabHandle(tab).Get()->GetBrowserWindowInterface());
+  EXPECT_EQ(1u, cancelled.events.size());
+  EXPECT_EQ(peer, observed.events.back().window);
+  barc_tab_unobserve(observed.token);
+  const size_t count = observed.events.size();
+  ASSERT_EQ(1, barc_tab_reload(peer, tab));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_EQ(count, observed.events.size());
+  NavigationEvents closing;
+  closing.close_started = true;
+  ASSERT_NE(0u, barc_tab_observe(peer, tab, NavigationEvents::Receive, &closing));
+  ASSERT_EQ(1, barc_tab_navigate(peer, tab,
+      embedded_test_server()->GetURL("/title2.html").spec().c_str()));
+  ASSERT_TRUE(base::test::RunUntil([&] { return closing.Count(BARC_TAB_CLOSED) == 1; }));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(1u, closing.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(BARC_TAB_CLOSED, closing.events.back().kind);
+  auto* source_page = browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(source_page, "window.unrelatedMarker = 'live'"));
+  for (bool unsubscribe : {false, true}) {
+    const auto close_window = barc_window_new_peer(window);
+    const auto close_tab = barc_tab_create(close_window, "about:blank", 1);
+    ASSERT_NE(0, close_tab);
+    auto* close_owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+        SessionID::FromSerializedValue(close_window));
+    ASSERT_NE(nullptr, close_owner);
+    auto alive = close_owner->GetWeakPtr();
+    ASSERT_TRUE(content::WaitForLoadStop(
+        close_owner->GetTabStripModel()->GetActiveWebContents()));
+    NavigationEvents window_closing;
+    window_closing.close_window_started = true;
+    window_closing.unsubscribe_before_close = unsubscribe;
+    ASSERT_NE(0u, barc_tab_observe(close_window, close_tab,
+                                  NavigationEvents::Receive, &window_closing));
+    ASSERT_EQ(1, barc_tab_navigate(close_window, close_tab,
+        embedded_test_server()->GetURL("/title2.html").spec().c_str()));
+    ASSERT_TRUE(base::test::RunUntil([&] { return !alive; }));
+    EXPECT_EQ(unsubscribe ? 0u : 1u, window_closing.Count(BARC_TAB_CLOSED));
+    const size_t delivered = window_closing.events.size();
+    base::RunLoop().RunUntilIdle();
+    EXPECT_EQ(delivered, window_closing.events.size());
+    EXPECT_EQ("live", content::EvalJs(source_page, "unrelatedMarker"));
+  }
+
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
+                       NavigationBindingDuringLoadAndContentsReplacement) {
+  net::test_server::ControllableHttpResponse pending(embedded_test_server(),
+                                                    "/pending");
+  net::test_server::ControllableHttpResponse superseded(embedded_test_server(),
+                                                       "/superseded");
+  net::test_server::ControllableHttpResponse tail(embedded_test_server(), "/tail");
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const auto window = browser()->GetSessionID().id();
+  const auto tab = barc_window_tab_at(window, 0);
+  auto* contents = browser()->tab_strip_model()->GetWebContentsAt(0);
+  ASSERT_EQ(1, barc_tab_navigate(window, tab,
+      embedded_test_server()->GetURL("/pending").spec().c_str()));
+  pending.WaitForRequest();
+  NavigationEvents observed;
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &observed));
+  EXPECT_TRUE(observed.events.front().flags & BARC_TAB_LOADING);
+  pending.Send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<title>Pending</title><img src='/tail'>");
+  pending.Done();
+  tail.WaitForRequest();
+  const size_t before_same_document = observed.events.size();
+  ASSERT_TRUE(content::ExecJs(contents, "history.pushState({}, '', '#during-load')"));
+  EXPECT_TRUE(contents->IsLoading());
+  EXPECT_EQ(0u, observed.Count(BARC_TAB_FINISHED));
+  EXPECT_TRUE(std::any_of(observed.events.begin() + before_same_document,
+                         observed.events.end(), [&](const auto& event) {
+    return event.kind == BARC_TAB_COMMITTED &&
+           (event.flags & BARC_TAB_SAME_DOCUMENT) &&
+           (event.flags & BARC_TAB_LOADING) &&
+           event.url == embedded_test_server()->GetURL("/pending#during-load").spec();
+  }));
+  barc_tab_unobserve(observed.token);
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &observed));
+  EXPECT_EQ(BARC_TAB_INITIAL, observed.events.back().kind);
+  EXPECT_TRUE(observed.events.back().flags & BARC_TAB_LOADING);
+  tail.Send("HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\n");
+  tail.Done();
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  ASSERT_EQ(0u, observed.Count(BARC_TAB_FINISHED));
+  EXPECT_EQ(0u, observed.Count(BARC_TAB_STARTED));
+  EXPECT_FALSE(observed.events.back().flags & BARC_TAB_LOADING);
+  EXPECT_EQ(contents->GetVisibleURL().spec(), observed.events.back().url);
+  ASSERT_EQ(1, barc_tab_navigate(window, tab,
+      embedded_test_server()->GetURL("/superseded").spec().c_str()));
+  superseded.WaitForRequest();
+  ASSERT_EQ(1, barc_tab_navigate(window, tab,
+      embedded_test_server()->GetURL("/title1.html").spec().c_str()));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  superseded.Done();
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(0u, observed.Count(BARC_TAB_FAILED));
+  EXPECT_EQ(1u, observed.Count(BARC_TAB_FINISHED));
+  // Discard is supported only in the background; the TabHandle survives while
+  // observation leaves the old contents before their destruction.
+  ASSERT_NE(0, barc_tab_create(window, "about:blank", 1));
+  auto replacement = content::WebContents::Create(
+      content::WebContents::CreateParams(browser()->GetProfile()));
+  auto* new_contents = replacement.get();
+  auto old = browser()->tab_strip_model()->DiscardWebContents(
+      contents, std::move(replacement));
+  old.reset();
+  EXPECT_EQ(0u, observed.Count(BARC_TAB_CLOSED));
+  EXPECT_EQ(BARC_TAB_STATE, observed.events.back().kind);
+  ASSERT_EQ(1, barc_tab_navigate(window, tab,
+      embedded_test_server()->GetURL("/title2.html").spec().c_str()));
+  ASSERT_TRUE(content::WaitForLoadStop(new_contents));
+  EXPECT_EQ(2u, observed.Count(BARC_TAB_FINISHED));
+  EXPECT_EQ("Title Of Awesomeness", observed.events.back().title);
 }
