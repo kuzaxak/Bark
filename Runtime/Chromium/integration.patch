@@ -259,6 +259,33 @@
 +_barc_profile_open_in_native_window
 +_barc_window_profile_uuid
 +_barc_window_select
+--- a/chrome/app/framework.order
++++ b/chrome/app/framework.order
+@@ -29,5 +29,24 @@
+ # Entry point for the web app shortcut copier.
+ _ChromeWebAppShortcutCopierMain
+ 
++# Native browser-layer bridge entry points.
++_barc_bridge_version
++_barc_chromium_version
++_barc_window_new_peer
++_barc_window_close
++_barc_window_tab_count
++_barc_window_tab_at
++_barc_tab_create
++_barc_tab_select
++_barc_tab_navigate
++_barc_tab_close
++_barc_tab_transfer
++_barc_tab_copy_title
++_barc_window_attach_native_shell
++_barc_profile_open_window
++_barc_profile_open_in_native_window
++_barc_window_profile_uuid
++_barc_window_select
++
+ # _ChromeMain must be listed last.  That's the whole point of this file.
+ _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
 @@ -9782,3 +9782,72 @@
