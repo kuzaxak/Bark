@@ -45,6 +45,7 @@ public struct ItemFavicon: View {
     let item: Item
     let session: PageSession?
     @State private var cached: Image?
+    @Environment(TabsController.self) private var tabs
 
     public init(item: Item, session: PageSession?) {
         self.item = item
@@ -52,15 +53,19 @@ public struct ItemFavicon: View {
     }
 
     public var body: some View {
-        (session?.favicon ?? cached ?? Image(systemName: "globe"))
+        (session?.favicon ?? (tabs.profileEngine == .webKit ? cached : nil) ?? Image(systemName: "globe"))
             .resizable()
             .scaledToFit()
             // Keyed on the session too: closing a pinned tab or favorite ends its page but keeps
             // the row, and the cached icon must be loaded then.
-            .task(id: "\(item.url?.host ?? "")|\(session == nil)") {
+            .task(id: "\(item.id)|\(item.url?.host ?? "")|\(session == nil)|\(tabs.profileEngine == .webKit)") {
+                guard !Task.isCancelled else { return }
+                cached = nil
+                guard tabs.profileEngine == .webKit else { return }
                 session?.ensureFaviconLoaded()
                 guard let host = item.url?.host,
-                      let image = await FaviconCache.shared.cachedImage(for: host) else { return }
+                      let image = await FaviconCache.shared.cachedImage(for: host),
+                      !Task.isCancelled else { return }
                 cached = Image(platformImage: image)
             }
     }

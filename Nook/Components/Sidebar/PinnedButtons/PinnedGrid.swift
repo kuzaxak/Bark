@@ -207,7 +207,7 @@ private struct PinnedTile: View {
                 hasLeftPinnedURL: tabs.hasLeftHome(item.id),
                 onResetToPinnedURL: { tabs.resetToHome(item.id) },
                 colors: tileColors,
-                glowHost: tileColors == nil ? nil : item.url?.host,
+                glowHost: tabs.profileEngine == .webKit && tileColors != nil ? item.url?.host : nil,
                 isDimmed: windowRegistry.activeWindowId != windowState.id,
                 caption: meetingBadge(live),
                 hasUnread: hasUnread(live, session: session),

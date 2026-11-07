@@ -72,14 +72,14 @@ public struct PinnedTabView<Icon: View>: View {
                 NookDesign.Radius.shape(NookDesign.Radius.lg)
                     .fill(backgroundColor)
                     .animation(NookDesign.Motion.quick, value: isHovered)
-                if let glow, colors != nil {
+                if let glow, glowHost != nil, colors != nil {
                     glowImage(glow)
                         .opacity(NookDesign.Surface.favoriteGlowOpacity(dark: colorScheme == .dark, hovered: isHovered, dimmed: isDimmed))
                         .clipShape(NookDesign.Radius.shape(NookDesign.Radius.lg))
                         .allowsHitTesting(false)
                 }
                 if isActive, let colors {
-                    if let glow, !isDimmed {
+                    if let glow, glowHost != nil, !isDimmed {
                         glowImage(glow)
                             .mask(NookDesign.Radius.shape(NookDesign.Radius.lg)
                                 .strokeBorder(Color.black, lineWidth: NookDesign.Size.favoriteBorder))
@@ -144,9 +144,12 @@ public struct PinnedTabView<Icon: View>: View {
             self.isHovered = hovering
         }
         .task(id: wantsGlow ? glowHost : nil) {
+            guard !Task.isCancelled else { return }
             glow = nil
             guard wantsGlow, let glowHost else { return }
-            glow = await FaviconGlow.shared.image(forHost: glowHost)
+            let image = await FaviconGlow.shared.image(forHost: glowHost)
+            guard !Task.isCancelled else { return }
+            glow = image
         }
     }
 
