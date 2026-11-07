@@ -96,7 +96,7 @@ From `build/chromium-engine/checkout/src`:
 
 ```fish
 set barc_repo (realpath ../../../..)
-for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner
+for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions
     git apply --check "$barc_repo/Runtime/Chromium/$patch.patch"; or break
     git apply "$barc_repo/Runtime/Chromium/$patch.patch"; or break
 end
@@ -322,3 +322,13 @@ synthetic user-data directory and keep the Chromium sandbox enabled. Inspect
 helper ownership, resources, profile/extension behavior and clean shutdown.
 Repeat with native ARM artifacts on Apple Silicon. These commands are prepared
 inputs; no installed or notarized result is claimed by this document.
+
+The private-session bridge creates a separate Guest parent and primary OTR for
+each independent session. Its tests cover session cookies/site grants, popup
+inheritance, final object/metadata disposal, rejected installed extensions even
+with regular-profile incognito permission, and unused/failed creation cleanup.
+Disk/crash cleanup, PDF rendering, detached private surfaces and native
+Guest/Incognito menu routing remain unqualified; PDF registration alone is not
+rendering evidence. The popup regression separately checks JavaScript opener
+messaging and live state through same-profile transfer, plus `noopener`; its
+separate native popup window does not qualify Peek integration.

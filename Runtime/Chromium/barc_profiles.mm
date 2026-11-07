@@ -105,6 +105,7 @@ struct OpenRequest {
       completion(status, window, user_data);
   }
 
+  bool private_session = false;
   std::string uuid;
   const char* destination;
   barc_profile_window_callback callback;
@@ -122,14 +123,26 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
     request->Complete(BARC_PROFILE_UNAVAILABLE, 0);
     return;
   }
-  if (!profile || !profile->IsRegularProfile() ||
-      profile->GetPath() != request->path ||
-      manager->GetProfileByPath(request->path) != profile) {
+  if (request->private_session) {
+    if (!profile || !profile->IsGuestSession() ||
+        !profile->IsPrimaryOTRProfile() ||
+        !ProfileManager::IsPrivateSessionProfilePath(profile->GetPath()) ||
+        manager->GetProfileByPath(profile->GetPath()) !=
+            profile->GetOriginalProfile() ||
+        profile->GetOriginalProfile()->GetPrimaryOTRProfile(false) != profile) {
+      request->Complete(BARC_PROFILE_FAILED, 0);
+      return;
+    }
+    request->path = profile->GetPath();
+  } else if (!profile || !profile->IsRegularProfile() ||
+             profile->GetPath() != request->path ||
+             manager->GetProfileByPath(request->path) != profile) {
     request->Complete(BARC_PROFILE_FAILED, 0);
     return;
   }
   request->keep_alive = ScopedProfileKeepAlive::TryAcquire(
-      profile, ProfileKeepAliveOrigin::kProfileCreationFlow);
+      request->private_session ? profile->GetOriginalProfile() : profile,
+      ProfileKeepAliveOrigin::kProfileCreationFlow);
   if (!request->keep_alive ||
       GetBrowserWindowCreationStatusForProfile(*profile) !=
           BrowserWindowInterface::CreationStatus::kOk) {
@@ -238,6 +251,17 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
   request->Complete(BARC_PROFILE_OK, window_alive->GetSessionID().id());
 }
 
+void BeginPrivateSession(std::unique_ptr<OpenRequest> request) {
+  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto* manager = Manager();
+  if (!manager) {
+    request->Complete(BARC_PROFILE_UNAVAILABLE, 0);
+    return;
+  }
+  manager->CreatePrivateSessionAsync(
+      base::BindOnce(&ProfileReady, std::move(request)));
+}
+
 void BeginOpen(std::unique_ptr<OpenRequest> request) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   if (request->uuid.empty() || !request->destination) {
@@ -301,6 +325,19 @@ void barc_profile_open_in_native_window(int32_t native_owner,
   // identity is retained across that boundary, never an unchecked host pointer.
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
       FROM_HERE, base::BindOnce(&BeginOpen, std::move(request)));
+}
+
+void barc_private_session_open_window(barc_profile_window_callback callback,
+                                      void* user_data) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!callback) {
+    return;
+  }
+  auto request = std::make_unique<OpenRequest>(
+      std::string(), "about:blank", callback, user_data);
+  request->private_session = true;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&BeginPrivateSession, std::move(request)));
 }
 
 size_t barc_window_profile_uuid(int32_t id, char* buffer, size_t capacity) {

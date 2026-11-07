@@ -1100,3 +1100,130 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(work)->GetWidget());
   EXPECT_EQ(host, BrowserView::GetBrowserViewForBrowser(personal)->GetWidget());
 }
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       PopupOpenerSurvivesSameProfileLiveTransfer) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  const int32_t personal_id = Open(kSharedPersonal, work_id);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  const GURL url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_NO_FATAL_FAILURE(Navigate(work, url));
+  auto* source = work->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_TRUE(personal->IsSelectedForNativeWindow());
+  ASSERT_FALSE(work->IsSelectedForNativeWindow());
+  ASSERT_TRUE(content::ExecJs(source, R"JS(
+    window.addEventListener('message', e => {
+      if (e.origin === location.origin && e.source === window.openedPopup &&
+          e.data === 'reverse') e.source.postMessage('reverse-ack', e.origin);
+    });
+  )JS"));
+  BrowserWindowInterface* popup_browser = nullptr;
+  content::WebContents* popup = nullptr;
+  {
+    ui_test_utils::BrowserCreatedObserver popup_created;
+    content::WebContentsAddedObserver popup_contents_added;
+    // ExecJs defaults to a normal test user gesture; no popup/security bypass.
+    ASSERT_TRUE(content::ExecJs(source, content::JsReplace(
+        "window.openedPopup = window.open($1, 'barc-popup', 'popup,width=400,height=300');"
+        "if (!openedPopup) throw Error('popup blocked');", url)));
+    popup_browser = popup_created.Wait();
+    popup = popup_contents_added.GetWebContents();
+  }
+  ASSERT_TRUE(popup_browser);
+  ASSERT_TRUE(popup);
+  ASSERT_EQ(popup, popup_browser->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_TRUE(content::WaitForLoadStop(popup));
+  ASSERT_EQ(url, popup->GetLastCommittedURL());
+  EXPECT_EQ(work->GetProfile(), popup_browser->GetProfile());
+  EXPECT_EQ(work->GetProfile(), popup->GetBrowserContext());
+  EXPECT_NE(personal->GetProfile(), popup->GetBrowserContext());
+  const auto shared_native = work->GetWindow()->GetNativeWindow();
+  EXPECT_NE(shared_native, popup_browser->GetWindow()->GetNativeWindow());
+  ASSERT_TRUE(content::ExecJs(popup, R"JS(
+    if (!window.opener) throw Error('missing JS opener');
+    document.body.innerHTML = '<input id="draft">';
+    document.getElementById('draft').value = 'unsaved-popup';
+    window.liveProbe = (() => {
+      let count = 10;
+      const body = document.body;
+      return () => [++count, body === document.body,
+                    document.getElementById('draft').value];
+    })();
+    window.addEventListener('message', e => {
+      if (e.origin === location.origin && e.source === window.opener &&
+          e.data === 'forward') e.source.postMessage('forward-ack', e.origin);
+    });
+  )JS"));
+  auto exchange = [&] {
+    EXPECT_EQ("forward-ack", content::EvalJs(source, R"JS(
+      new Promise(resolve => {
+        function onReply(e) {
+          if (e.origin === location.origin && e.source === openedPopup &&
+              e.data === 'forward-ack') {
+            removeEventListener('message', onReply); resolve(e.data);
+          }
+        }
+        addEventListener('message', onReply);
+        openedPopup.postMessage('forward', location.origin);
+      })
+    )JS"));
+    EXPECT_EQ("reverse-ack", content::EvalJs(popup, R"JS(
+      new Promise(resolve => {
+        function onReply(e) {
+          if (e.origin === location.origin && e.source === opener &&
+              e.data === 'reverse-ack') {
+            removeEventListener('message', onReply); resolve(e.data);
+          }
+        }
+        addEventListener('message', onReply);
+        opener.postMessage('reverse', location.origin);
+      })
+    )JS"));
+  };
+  exchange();
+  EXPECT_EQ("[11,true,\"unsaved-popup\"]",
+            content::EvalJs(popup, "JSON.stringify(liveProbe())"));
+  auto* original_frame = popup->GetPrimaryMainFrame();
+  const int32_t popup_id = popup_browser->GetSessionID().id();
+  const int32_t popup_tab = barc_window_tab_at(popup_id, 0);
+  ASSERT_NE(0, popup_tab);
+  const int32_t peer_id = barc_window_new_peer(popup_id);
+  ASSERT_NE(0, peer_id);
+  ui_test_utils::BrowserDestroyedObserver popup_closed(popup_browser);
+  ASSERT_EQ(1, barc_tab_transfer(popup_id, popup_tab, peer_id));
+  popup_closed.Wait();
+  auto* peer = SharedWindow(peer_id);
+  ASSERT_TRUE(peer);
+  EXPECT_EQ(work->GetProfile(), peer->GetProfile());
+  EXPECT_EQ(popup, peer->GetTabStripModel()->GetActiveWebContents());
+  EXPECT_EQ(original_frame, popup->GetPrimaryMainFrame());
+  EXPECT_EQ(popup_tab, barc_window_tab_at(peer_id, 0));
+  exchange();
+  EXPECT_EQ("[12,true,\"unsaved-popup\"]",
+            content::EvalJs(popup, "JSON.stringify(liveProbe())"));
+  // TabStripModel opener metadata may change at detach; JS opener must not.
+  BrowserWindowInterface* noopener_browser = nullptr;
+  content::WebContents* noopener = nullptr;
+  {
+    ui_test_utils::BrowserCreatedObserver noopener_created;
+    content::WebContentsAddedObserver noopener_contents_added;
+    EXPECT_EQ(true, content::EvalJs(source, content::JsReplace(
+        "window.open($1, '_blank', 'noopener,popup,width=400,height=300') === null",
+        url)));
+    noopener_browser = noopener_created.Wait();
+    noopener = noopener_contents_added.GetWebContents();
+  }
+  ASSERT_TRUE(noopener_browser);
+  ASSERT_TRUE(noopener);
+  ASSERT_TRUE(content::WaitForLoadStop(noopener));
+  ASSERT_EQ(url, noopener->GetLastCommittedURL());
+  EXPECT_EQ(work->GetProfile(), noopener_browser->GetProfile());
+  EXPECT_EQ(work->GetProfile(), noopener->GetBrowserContext());
+  EXPECT_EQ(true, content::EvalJs(noopener, "window.opener === null"));
+  EXPECT_TRUE(SharedWindow(personal_id));
+}
