@@ -96,7 +96,7 @@ From `build/chromium-engine/checkout/src`:
 
 ```fish
 set barc_repo (realpath ../../../..)
-for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership
+for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization
     git apply --check "$barc_repo/Runtime/Chromium/$patch.patch"; or break
     git apply "$barc_repo/Runtime/Chromium/$patch.patch"; or break
 end

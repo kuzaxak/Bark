@@ -1,0 +1,405 @@
+diff --git a/components/prefs/segregated_pref_store.cc b/components/prefs/segregated_pref_store.cc
+--- a/components/prefs/segregated_pref_store.cc
++++ b/components/prefs/segregated_pref_store.cc
+@@ -35,13 +35,20 @@
+     OnInitializationCompleted(bool succeeded) {
+   initialization_succeeded_ = succeeded;
+
+-  // Notify Observers only after all underlying PrefStores of the outer
+-  // SegregatedPrefStore are initialized.
+-  if (!outer_->IsInitializationComplete()) {
++  // Failure is terminal even when the failed store never becomes initialized.
++  // Successful completion still waits for both underlying stores.
++  if (outer_->initialization_failed_ ||
++      (succeeded && !outer_->IsInitializationComplete())) {
+     return;
+   }
+-
+-  if (outer_->read_error_delegate_.has_value() &&
++  if (!succeeded) {
++    outer_->initialization_failed_ = true;
++  }
++  scoped_refptr<SegregatedPrefStore> keep_alive(outer_.get());
++
++  // Match JsonPrefStore: failed initialization notifies observers directly;
++  // read-error delegates describe errors in an otherwise completed read.
++  if (succeeded && outer_->read_error_delegate_.has_value() &&
+       outer_->read_error_delegate_.value()) {
+     PersistentPrefStore::PrefReadError read_error = outer_->GetReadError();
+     if (read_error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
+@@ -50,7 +57,8 @@
+   }
+
+   for (auto& observer : outer_->observers_) {
+-    observer.OnInitializationCompleted(outer_->IsInitializationSuccessful());
++    observer.OnInitializationCompleted(succeeded &&
++                                       outer_->IsInitializationSuccessful());
+   }
+ }
+
+@@ -160,6 +168,7 @@
+ }
+
+ PersistentPrefStore::PrefReadError SegregatedPrefStore::ReadPrefs() {
++  scoped_refptr<SegregatedPrefStore> keep_alive(this);
+   // Note: Both of these stores own PrefFilters which makes ReadPrefs
+   // asynchronous. This is okay in this case as only the first call will be
+   // truly asynchronous, the second call will then unblock the migration in
+@@ -174,6 +183,7 @@
+ }
+
+ void SegregatedPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
++  scoped_refptr<SegregatedPrefStore> keep_alive(this);
+   read_error_delegate_.emplace(error_delegate);
+   default_pref_store_->ReadPrefsAsync(nullptr);
+   selected_pref_store_->ReadPrefsAsync(nullptr);
+diff --git a/components/prefs/segregated_pref_store.h b/components/prefs/segregated_pref_store.h
+--- a/components/prefs/segregated_pref_store.h
++++ b/components/prefs/segregated_pref_store.h
+@@ -132,6 +132,8 @@
+   std::optional<std::unique_ptr<PersistentPrefStore::ReadErrorDelegate>>
+       read_error_delegate_;
+   base::ObserverList<PrefStore::Observer, true> observers_;
++  // Failure is terminal; set before callbacks to suppress peer completion.
++  bool initialization_failed_ = false;
+   UnderlyingPrefStoreObserver default_observer_;
+   UnderlyingPrefStoreObserver selected_observer_;
+ };
+diff --git a/components/prefs/segregated_pref_store_unittest.cc b/components/prefs/segregated_pref_store_unittest.cc
+--- a/components/prefs/segregated_pref_store_unittest.cc
++++ b/components/prefs/segregated_pref_store_unittest.cc
+@@ -8,6 +8,7 @@
+ #include <set>
+ #include <string>
+ #include <utility>
++#include <vector>
+
+ #include "base/functional/bind.h"
+ #include "base/functional/callback.h"
+@@ -15,6 +16,7 @@
+ #include "base/memory/ref_counted.h"
+ #include "base/run_loop.h"
+ #include "base/synchronization/waitable_event.h"
++#include "base/test/bind.h"
+ #include "base/test/task_environment.h"
+ #include "base/values.h"
+ #include "components/prefs/persistent_pref_store.h"
+@@ -56,6 +58,29 @@
+
+  private:
+   raw_ptr<Data> data_;
++};
++
++// JsonPrefStore leaves IsInitializationComplete false after a failed read.
++class FailedInitializationPrefStore : public TestingPrefStore {
++ public:
++  FailedInitializationPrefStore() { set_read_success(false); }
++  bool IsInitializationComplete() const override { return false; }
++
++ protected:
++  ~FailedInitializationPrefStore() override = default;
++};
++
++class InitializationCountingObserver : public PrefStore::Observer {
++ public:
++  void OnPrefValueChanged(std::string_view) override {}
++  void OnInitializationCompleted(bool success) override {
++    completions.push_back(success);
++    if (on_completion) {
++      on_completion.Run();
++    }
++  }
++  std::vector<bool> completions;
++  base::RepeatingClosure on_completion;
+ };
+
+ enum class CommitPendingWriteMode {
+@@ -354,6 +379,79 @@
+   EXPECT_FALSE(segregated_store_->IsInitializationComplete());
+   default_store_->SetBlockAsyncRead(false);
+   EXPECT_TRUE(segregated_store_->IsInitializationComplete());
++}
++
++TEST_F(SegregatedPrefStoreTest, InitializationFailureNotifiedOnce) {
++  for (bool fail_default : {false, true}) {
++    for (bool failure_first : {false, true}) {
++      SCOPED_TRACE(testing::Message() << "fail_default=" << fail_default
++                                      << " failure_first=" << failure_first);
++      auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++      auto peer = base::MakeRefCounted<TestingPrefStore>();
++      failed->set_read_error(
++          PersistentPrefStore::PREF_READ_ERROR_FILE_NOT_SPECIFIED);
++      failed->SetBlockAsyncRead(true);
++      peer->SetBlockAsyncRead(true);
++      auto store = base::MakeRefCounted<SegregatedPrefStore>(
++          fail_default ? failed : peer, fail_default ? peer : failed,
++          PrefNameSet());
++      InitializationCountingObserver observer;
++      store->AddObserver(&observer);
++      MockReadErrorDelegate::Data error(
++          false, PersistentPrefStore::PREF_READ_ERROR_NONE);
++      store->ReadPrefsAsync(new MockReadErrorDelegate(&error));
++      EXPECT_TRUE(observer.completions.empty());
++      if (failure_first) {
++        failed->SetBlockAsyncRead(false);
++        EXPECT_EQ(std::vector<bool>({false}), observer.completions);
++        peer->SetBlockAsyncRead(false);
++      } else {
++        peer->SetBlockAsyncRead(false);
++        EXPECT_TRUE(observer.completions.empty());
++        failed->SetBlockAsyncRead(false);
++      }
++      EXPECT_EQ(std::vector<bool>({false}), observer.completions);
++      EXPECT_FALSE(store->IsInitializationComplete());
++      EXPECT_FALSE(error.invoked);
++      store->RemoveObserver(&observer);
++    }
++  }
++}
++
++TEST_F(SegregatedPrefStoreTest, FailureCallbackCanCompletePeerReentrantly) {
++  auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++  auto peer = base::MakeRefCounted<TestingPrefStore>();
++  failed->SetBlockAsyncRead(true);
++  peer->SetBlockAsyncRead(true);
++  auto store =
++      base::MakeRefCounted<SegregatedPrefStore>(failed, peer, PrefNameSet());
++  InitializationCountingObserver observer;
++  observer.on_completion = base::BindRepeating(
++      [](TestingPrefStore* peer) { peer->SetBlockAsyncRead(false); },
++      base::Unretained(peer.get()));
++  store->AddObserver(&observer);
++  store->ReadPrefsAsync(nullptr);
++  failed->SetBlockAsyncRead(false);
++  EXPECT_EQ(std::vector<bool>({false}), observer.completions);
++  EXPECT_TRUE(peer->IsInitializationComplete());
++  store->RemoveObserver(&observer);
++}
++
++TEST_F(SegregatedPrefStoreTest, FailureCallbackCanReleaseStoreDuringRead) {
++  auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++  auto peer = base::MakeRefCounted<TestingPrefStore>();
++  auto store =
++      base::MakeRefCounted<SegregatedPrefStore>(failed, peer, PrefNameSet());
++  InitializationCountingObserver observer;
++  observer.on_completion = base::BindLambdaForTesting([&] {
++    store->RemoveObserver(&observer);
++    store.reset();
++  });
++  store->AddObserver(&observer);
++  store->ReadPrefsAsync(nullptr);
++  EXPECT_FALSE(store);
++  EXPECT_EQ(std::vector<bool>({false}), observer.completions);
++  EXPECT_TRUE(peer->IsInitializationComplete());
+ }
+
+ TEST_F(SegregatedPrefStoreTest, GetValues) {
+--- a/components/sync_preferences/dual_layer_user_pref_store.cc
++++ b/components/sync_preferences/dual_layer_user_pref_store.cc
+@@ -100,14 +100,20 @@
+     OnInitializationCompleted(bool succeeded) {
+   initialization_succeeded_ = succeeded;
+ 
+-  // Notify observers only after all underlying PrefStores are initialized.
+-  if (!outer_->IsInitializationComplete()) {
++  // Failure is terminal even when the failed store never becomes initialized.
++  // Successful completion still waits for both underlying stores.
++  if (outer_->initialization_failed_ ||
++      (succeeded && !outer_->IsInitializationComplete())) {
+     return;
+   }
+-
+-  // Forward error if any of the underlying store reported error upon
+-  // ReadPrefsAsync().
+-  if (outer_->read_error_delegate_.has_value() &&
++  if (!succeeded) {
++    outer_->initialization_failed_ = true;
++  }
++  scoped_refptr<DualLayerUserPrefStore> keep_alive(outer_.get());
++
++  // As with JsonPrefStore, read errors accompany an otherwise completed read;
++  // failed initialization is reported directly to observers.
++  if (succeeded && outer_->read_error_delegate_.has_value() &&
+       outer_->read_error_delegate_.value()) {
+     if (auto read_error = outer_->GetReadError();
+         read_error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
+@@ -116,7 +122,8 @@
+   }
+ 
+   for (auto& observer : outer_->observers_) {
+-    observer.OnInitializationCompleted(outer_->IsInitializationSuccessful());
++    observer.OnInitializationCompleted(succeeded &&
++                                       outer_->IsInitializationSuccessful());
+   }
+ }
+ 
+@@ -446,6 +453,7 @@
+ }
+ 
+ PersistentPrefStore::PrefReadError DualLayerUserPrefStore::ReadPrefs() {
++  scoped_refptr<DualLayerUserPrefStore> keep_alive(this);
+   // Call ReadPrefs() on both stores before reporting error.
+   auto local_prefs_read_error = local_pref_store_->ReadPrefs();
+   auto account_prefs_read_error = account_pref_store_->ReadPrefs();
+@@ -457,6 +465,7 @@
+ }
+ 
+ void DualLayerUserPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
++  scoped_refptr<DualLayerUserPrefStore> keep_alive(this);
+   // The store is expected to take ownership of `error_delegate`, thus it's not
+   // valid to forward the same to the two underlying stores. Instead, if any
+   // error occurs, it's reported in OnInitializationCompleted() handle.
+--- a/components/sync_preferences/dual_layer_user_pref_store.h
++++ b/components/sync_preferences/dual_layer_user_pref_store.h
+@@ -270,6 +270,8 @@
+   // Used to avoid self-notifications.
+   bool is_setting_prefs_ = false;
+ 
++  // Failure is terminal; set before callbacks to suppress peer completion.
++  bool initialization_failed_ = false;
+   base::ObserverList<PrefStore::Observer, true> observers_;
+ 
+   const scoped_refptr<PrefModelAssociatorClient> pref_model_associator_client_;
+--- a/components/sync_preferences/dual_layer_user_pref_store_unittest.cc
++++ b/components/sync_preferences/dual_layer_user_pref_store_unittest.cc
+@@ -159,6 +159,16 @@
+   return testing::AssertionFailure();
+ }
+ 
++// JsonPrefStore intentionally remains uninitialized after a failed read.
++class FailedInitializationPrefStore : public TestingPrefStore {
++ public:
++  FailedInitializationPrefStore() { set_read_success(false); }
++  bool IsInitializationComplete() const override { return false; }
++
++ protected:
++  ~FailedInitializationPrefStore() override = default;
++};
++
+ class MockPrefStoreObserver : public PrefStore::Observer {
+  public:
+   ~MockPrefStoreObserver() override = default;
+@@ -297,6 +307,84 @@
+             PersistentPrefStore::PREF_READ_ERROR_JSON_PARSE);
+ 
+   store()->RemoveObserver(&observer);
++}
++
++TEST_F(DualLayerUserPrefStoreInitializationTest,
++       UninitializedFailureNotifiedOnce) {
++  for (bool fail_local : {false, true}) {
++    for (bool failure_first : {false, true}) {
++      SCOPED_TRACE(testing::Message() << "fail_local=" << fail_local
++                                      << " failure_first=" << failure_first);
++      auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++      auto peer = base::MakeRefCounted<TestingPrefStore>();
++      failed->set_read_error(
++          PersistentPrefStore::PREF_READ_ERROR_FILE_NOT_SPECIFIED);
++      failed->SetBlockAsyncRead(true);
++      peer->SetBlockAsyncRead(true);
++      auto pref_store = base::MakeRefCounted<DualLayerUserPrefStore>(
++          fail_local ? failed : peer, fail_local ? peer : failed,
++          pref_model_associator_client_);
++      testing::StrictMock<MockPrefStoreObserver> observer;
++      pref_store->AddObserver(&observer);
++      int completions = 0;
++      EXPECT_CALL(observer, OnInitializationCompleted(false))
++          .WillOnce([&](bool) { ++completions; });
++      pref_store->ReadPrefsAsync(
++          new testing::StrictMock<MockReadErrorDelegate>);
++      EXPECT_EQ(0, completions);
++      if (failure_first) {
++        failed->SetBlockAsyncRead(false);
++        EXPECT_EQ(1, completions);
++        peer->SetBlockAsyncRead(false);
++      } else {
++        peer->SetBlockAsyncRead(false);
++        EXPECT_EQ(0, completions);
++        failed->SetBlockAsyncRead(false);
++      }
++      EXPECT_EQ(1, completions);
++      EXPECT_FALSE(pref_store->IsInitializationComplete());
++      EXPECT_EQ(PersistentPrefStore::PREF_READ_ERROR_FILE_NOT_SPECIFIED,
++                pref_store->GetReadError());
++      pref_store->RemoveObserver(&observer);
++    }
++  }
++}
++
++TEST_F(DualLayerUserPrefStoreInitializationTest,
++       FailureCallbackCanCompletePeerReentrantly) {
++  auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++  auto peer = base::MakeRefCounted<TestingPrefStore>();
++  failed->SetBlockAsyncRead(true);
++  peer->SetBlockAsyncRead(true);
++  auto pref_store = base::MakeRefCounted<DualLayerUserPrefStore>(
++      failed, peer, pref_model_associator_client_);
++  testing::StrictMock<MockPrefStoreObserver> observer;
++  pref_store->AddObserver(&observer);
++  EXPECT_CALL(observer, OnInitializationCompleted(false)).WillOnce([&](bool) {
++    peer->SetBlockAsyncRead(false);
++  });
++  pref_store->ReadPrefsAsync(nullptr);
++  failed->SetBlockAsyncRead(false);
++  EXPECT_TRUE(peer->IsInitializationComplete());
++  EXPECT_FALSE(pref_store->IsInitializationComplete());
++  pref_store->RemoveObserver(&observer);
++}
++
++TEST_F(DualLayerUserPrefStoreInitializationTest,
++       FailureCallbackCanReleaseStoreDuringRead) {
++  auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++  auto peer = base::MakeRefCounted<TestingPrefStore>();
++  auto pref_store = base::MakeRefCounted<DualLayerUserPrefStore>(
++      failed, peer, pref_model_associator_client_);
++  testing::StrictMock<MockPrefStoreObserver> observer;
++  pref_store->AddObserver(&observer);
++  EXPECT_CALL(observer, OnInitializationCompleted(false)).WillOnce([&](bool) {
++    pref_store->RemoveObserver(&observer);
++    pref_store.reset();
++  });
++  pref_store->ReadPrefsAsync(nullptr);
++  EXPECT_FALSE(pref_store);
++  EXPECT_TRUE(peer->IsInitializationComplete());
+ }
+ 
+ TEST_F(DualLayerUserPrefStoreInitializationTest,
+--- a/chrome/browser/profiles/profile_impl.cc
++++ b/chrome/browser/profiles/profile_impl.cc
+@@ -1223,18 +1223,24 @@
+ 
+ void ProfileImpl::OnPrefsLoaded(CreateMode create_mode, bool success) {
+   TRACE_EVENT0("browser", "ProfileImpl::OnPrefsLoaded");
+-  if (!success) {
+-    if (delegate_)
+-      delegate_->OnProfileCreationFinished(this, create_mode, false, false);
+-    return;
+-  }
+-
+-  // Fail fast if the browser is shutting down. We want to avoid launching new
+-  // UI, finalising profile creation, etc. which would trigger a crash down the
+-  // the line. See crbug.com/40475418
+-  if (g_browser_process->IsShuttingDown()) {
+-    if (delegate_)
+-      delegate_->OnProfileCreationFinished(this, create_mode, false, false);
++  // A failed read or shutdown must not initialize profile UI. The delegate can
++  // destroy this profile and its PrefService, so asynchronous completion waits
++  // until the pref-store/filter observer stack releases temporary references.
++  if (!success || g_browser_process->IsShuttingDown()) {
++    auto notify_failure = base::BindOnce(
++        [](base::WeakPtr<ProfileImpl> profile, CreateMode create_mode) {
++          if (profile && profile->delegate_) {
++            profile->delegate_->OnProfileCreationFinished(
++                profile.get(), create_mode, false, false);
++          }
++        },
++        weak_ptr_factory_.GetWeakPtr(), create_mode);
++    if (create_mode == CreateMode::kAsynchronous) {
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, std::move(notify_failure));
++    } else {
++      std::move(notify_failure).Run();
++    }
+     return;
+   }
+ 
