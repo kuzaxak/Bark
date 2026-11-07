@@ -301,8 +301,9 @@
     "Identical inputs are required on native Intel and Apple Silicon. Neither architecture, hardware acceleration nor software fallback is qualified here.",
     "Codec/CDM build paths and redistribution rights remain separate release gates."
   ],
+  "adaptive_inputs": "adaptive-media-fixtures.json: fixed synthetic HLS/DASH VOD, players, aligned renditions and seek/switch expectations; browser execution remains untested.",
   "unresolved_inputs": [
-    "Intended HLS and DASH player version/configuration, master/media manifests, at least two aligned renditions, frozen expected seek/switch output. Fragmented files alone are not an adaptive streaming scenario.",
+    "Intended service/site workflows and versions for HLS/DASH, plus actual MSE playback/seek/rendition-switch qualification. The fixed synthetic adaptive input is specified separately in adaptive-media-fixtures.json.",
     "Long-duration media/loop policy and expected audio/video continuity across native surfaces, PiP, mini-player, system controls and resource actions.",
     "WebRTC peer/server inputs, negotiated VP8/Opus and H.264/Opus cases, real camera/mic/device changes and silent screen-sharing workflow.",
     "Named protected service, test account, licensed CDM/version, approved distribution/host verification and playback expectations remain unresolved; no service is waived."

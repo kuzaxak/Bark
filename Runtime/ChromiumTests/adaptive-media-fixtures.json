@@ -1,0 +1,338 @@
+{
+  "schema_version": 1,
+  "status": "qualification inputs; browser execution untested",
+  "purpose": "M2 future qualification inputs; no playback qualification",
+  "provenance": "Synthetic FFmpeg 9.0.2; fixed 12-second testsrc2 + 440 Hz sine, no source/customer media; media bytes frozen by hashes. HLS wall-clock PROGRAM-DATE-TIME tags removed.",
+  "players": [
+    {
+      "name": "hls.js",
+      "version": "1.6.13",
+      "path": "players/hls-1.6.13.min.js",
+      "sha256": "7c47cd97d7a6e7b98d9623dd8ed9a6d45af4be4085e0c2001cd7175c2b4cfb07",
+      "bytes": 541012,
+      "release": "https://github.com/video-dev/hls.js/releases/tag/v1.6.13",
+      "download": "https://github.com/video-dev/hls.js/releases/download/v1.6.13/release.zip"
+    },
+    {
+      "name": "dash.js",
+      "version": "5.0.3",
+      "path": "players/dash-5.0.3.all.min.js",
+      "sha256": "f7cff5c204b364b188505d0b3e5701d62a1732225ec24a310e137ddf895966af",
+      "bytes": 933471,
+      "release": "https://github.com/Dash-Industry-Forum/dash.js/releases/tag/v5.0.3",
+      "download": "https://cdn.dashjs.org/v5.0.3/modern/umd/dash.all.min.js"
+    }
+  ],
+  "streams": {
+    "0": {
+      "stream": {
+        "codec_name": "h264",
+        "profile": "Main",
+        "width": 320,
+        "height": 180,
+        "pix_fmt": "yuv420p",
+        "level": 12,
+        "start_time": "0.000000",
+        "duration": "12.000000"
+      },
+      "packets": 288,
+      "keyframe_pts": [
+        0.0,
+        2.0,
+        4.0,
+        6.0,
+        8.0,
+        10.0
+      ]
+    },
+    "1": {
+      "stream": {
+        "codec_name": "h264",
+        "profile": "Main",
+        "width": 640,
+        "height": 360,
+        "pix_fmt": "yuv420p",
+        "level": 30,
+        "start_time": "0.000000",
+        "duration": "12.000000"
+      },
+      "packets": 288,
+      "keyframe_pts": [
+        0.0,
+        2.0,
+        4.0,
+        6.0,
+        8.0,
+        10.0
+      ]
+    },
+    "2": {
+      "stream": {
+        "codec_name": "aac",
+        "profile": "LC",
+        "sample_rate": "48000",
+        "channels": 2,
+        "start_time": "0.000000",
+        "duration": "12.021333"
+      },
+      "packets": 564,
+      "keyframe_pts": null
+    }
+  },
+  "files": [
+    {
+      "path": "media/chunk-stream0-00001.m4s",
+      "bytes": 39529,
+      "sha256": "1dfd1a90ff8e767fc017af58044d93e1a595fb562179d5423c863fc4bb088d10"
+    },
+    {
+      "path": "media/chunk-stream0-00002.m4s",
+      "bytes": 50054,
+      "sha256": "d0f2134f91d46ae9e816a408083556da075510a96860b487915b7db3a160baca"
+    },
+    {
+      "path": "media/chunk-stream0-00003.m4s",
+      "bytes": 47195,
+      "sha256": "077d58a0189575f6a2960645cc3760f479af662ef4f2eb836de5e849bfc67200"
+    },
+    {
+      "path": "media/chunk-stream0-00004.m4s",
+      "bytes": 48483,
+      "sha256": "45ecee0de14e4ef19e5b5eea98d8a805497b454cd33b6bc14ad00d30a35965d0"
+    },
+    {
+      "path": "media/chunk-stream0-00005.m4s",
+      "bytes": 42624,
+      "sha256": "f575e8ff9ac13f4c048f74ba696952b19c5c09ad6c52ff1a41e3331ab8148995"
+    },
+    {
+      "path": "media/chunk-stream0-00006.m4s",
+      "bytes": 43138,
+      "sha256": "cfb600b4ff3c819c22197362718ecda81c2a3d6a6674f60f9b5b218f5a48b208"
+    },
+    {
+      "path": "media/chunk-stream1-00001.m4s",
+      "bytes": 135295,
+      "sha256": "323f58cbf540acf04b83b35d93c8a6942ed9fa2e1c08630dc0c12fc8497ed859"
+    },
+    {
+      "path": "media/chunk-stream1-00002.m4s",
+      "bytes": 146961,
+      "sha256": "5bdd4e402a13539473eec72b4447b01b7c855ea7fc029f37351998cfb414aced"
+    },
+    {
+      "path": "media/chunk-stream1-00003.m4s",
+      "bytes": 135479,
+      "sha256": "17a6dae72224b9bedc1686a8dace30094ed8f3d5c3a8a2dfddb4fcb4ad70ac05"
+    },
+    {
+      "path": "media/chunk-stream1-00004.m4s",
+      "bytes": 142932,
+      "sha256": "28df79880837121625d5a822d7d097d52d407182b7d951d8b3445114a4481f66"
+    },
+    {
+      "path": "media/chunk-stream1-00005.m4s",
+      "bytes": 133349,
+      "sha256": "4e461bc3091344ec1c8fb77a562338e4243f8f898fcc2dda17db0519fb03415a"
+    },
+    {
+      "path": "media/chunk-stream1-00006.m4s",
+      "bytes": 135113,
+      "sha256": "b0297899ad052e9a02d3141a2e45bcf732471eb59a44168cbbca8f01247597b0"
+    },
+    {
+      "path": "media/chunk-stream2-00001.m4s",
+      "bytes": 16742,
+      "sha256": "bc00ff35b4c7ca32614a9279b59077542598cbf0386336c215466464fc81a4ad"
+    },
+    {
+      "path": "media/chunk-stream2-00002.m4s",
+      "bytes": 16672,
+      "sha256": "88eb6b293ba60ee12279fab75874ea3286a3dea8dd70e7e81611020f55ef95c7"
+    },
+    {
+      "path": "media/chunk-stream2-00003.m4s",
+      "bytes": 16632,
+      "sha256": "ff7b1b7214005b9eb01e7443c4ea11bbe9fdca5f1958e82930fd30ffeb194e39"
+    },
+    {
+      "path": "media/chunk-stream2-00004.m4s",
+      "bytes": 16658,
+      "sha256": "4b21b34db8c36428dc639e6de69d80bc2827ba13733d29d70991672ddae04923"
+    },
+    {
+      "path": "media/chunk-stream2-00005.m4s",
+      "bytes": 16656,
+      "sha256": "bf2023200df25f946cf03c4d39c5e57ea2e4a6098071389b2951e76777f881f0"
+    },
+    {
+      "path": "media/chunk-stream2-00006.m4s",
+      "bytes": 17022,
+      "sha256": "4fdc2658ccf3bad83a171105c2c2733571e36420c4351dc2842665513c5460d4"
+    },
+    {
+      "path": "media/init-stream0.m4s",
+      "bytes": 790,
+      "sha256": "0dba2c9d19ae24e7e9174c4be8a6da267e4ebee2a6c5f2a2b879d7046db46e58"
+    },
+    {
+      "path": "media/init-stream1.m4s",
+      "bytes": 792,
+      "sha256": "48350ddb3ca025832d53380b133e113255e3246dbaae3095e4e74e6f4c80a11e"
+    },
+    {
+      "path": "media/init-stream2.m4s",
+      "bytes": 728,
+      "sha256": "7b3b32af2be781ba46795b5b6c6c23f191b53aaf93224b9d72ec323fe7459e0c"
+    },
+    {
+      "path": "media/manifest.mpd",
+      "bytes": 2328,
+      "sha256": "190ac319ac7f292d3bbf087092b312aba4b05b1bd0e38f6a92c735d394d9c345"
+    },
+    {
+      "path": "media/master.m3u8",
+      "bytes": 360,
+      "sha256": "fa95640cad12dedd0f0ff06ef2f57a6d65fdc390b4dac97c32ddf28d7616291e"
+    },
+    {
+      "path": "media/media_0.m3u8",
+      "bytes": 374,
+      "sha256": "66fbb529b179bbd8b5df2b3134c9c3213e5fcdb2a3b75bdd07f55eb1bef3bc0b"
+    },
+    {
+      "path": "media/media_1.m3u8",
+      "bytes": 374,
+      "sha256": "19347e15c6dc87aa60a58f6eebfe584498c9611a356d799bdec34c456464f324"
+    },
+    {
+      "path": "media/media_2.m3u8",
+      "bytes": 374,
+      "sha256": "704ae85e64ab55c044a512fa825db9a810550ef157bac13e25b3d0ec8767d42b"
+    }
+  ],
+  "configuration": {
+    "hls.js": {
+      "entry": "media/master.m3u8",
+      "construction": "Illustrative, browser-unverified: new Hls({autoStartLoad:false,startLevel:0}); register MANIFEST_PARSED listener first (set currentLevel=0; startLoad(0)), then attachMedia(video) and loadSource(url). enableWorker retains default true.",
+      "manual_switch": "hls.currentLevel = 1 (or 0); never use native-HLS fallback for this MSE case"
+    },
+    "dash.js": {
+      "entry": "media/manifest.mpd",
+      "construction": "Illustrative, browser-unverified: dashjs.MediaPlayer().create(); updateSettings({streaming:{abr:{autoSwitchBitrate:{video:false,audio:false}}}}); register STREAM_INITIALIZED listener first (setRepresentationForTypeById(\"video\",\"0\",true)), then initialize(video,url,false).",
+      "manual_switch": "player.setRepresentationForTypeById(\"video\",\"1\",true) (or \"0\")"
+    }
+  },
+  "expected_sequence": [
+    "User starts playback on 320x180 rendition (representation/level 0); observe advancing video and 440 Hz stereo audio.",
+    "At media time 2 seconds request 640x360 (1), require player confirmation plus a decoded 640x360 frame before media time 6 seconds; no fatal error, monotonic media time and continuous audio.",
+    "Pause, seek to 7.25 seconds; require seek completion/currentTime within 1/24 second and resumed frames from the 6\u20138 second segment; no new document/bootstrap.",
+    "At media time 8 seconds request 320x180 (0), require confirmation plus decoded 320x180 frame before 12 seconds; reach ended once, total duration approximately 12 seconds."
+  ],
+  "coverage_limits": [
+    "Video keyframes/segment boundaries exactly aligned at 0,2,4,6,8,10 seconds; shared AAC audio segments follow 1024-sample packet boundaries, not exact 2-second video cuts.",
+    "This fixed synthetic VOD does not cover live latency, encryption/CDM, captions, discontinuities, network adaptation, intended commercial services, long-duration stability, native HLS, hardware decoding or either native architecture.",
+    "Player initialization and switch APIs source-inspected only; no browser, server, playback, seek/switch or performance execution performed."
+  ],
+  "derivation": {
+    "tool": "FFmpeg 9.0.2 (Homebrew 9.0.2_1, Intel macOS), libx264 core 165 r3222 b35605a",
+    "argv": [
+      "ffmpeg",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-y",
+      "-filter_threads",
+      "1",
+      "-filter_complex_threads",
+      "1",
+      "-f",
+      "lavfi",
+      "-i",
+      "testsrc2=size=640x360:rate=24:duration=12",
+      "-f",
+      "lavfi",
+      "-i",
+      "sine=frequency=440:sample_rate=48000:duration=12",
+      "-filter_complex",
+      "[0:v]split=2[hi][small];[small]scale=320:180[lo]",
+      "-map",
+      "[lo]",
+      "-map",
+      "[hi]",
+      "-map",
+      "1:a",
+      "-c:v",
+      "libx264",
+      "-threads:v:0",
+      "1",
+      "-threads:v:1",
+      "1",
+      "-preset",
+      "veryfast",
+      "-profile:v",
+      "main",
+      "-pix_fmt",
+      "yuv420p",
+      "-g",
+      "48",
+      "-keyint_min",
+      "48",
+      "-sc_threshold",
+      "0",
+      "-bf",
+      "0",
+      "-b:v:0",
+      "180k",
+      "-b:v:1",
+      "550k",
+      "-c:a",
+      "aac",
+      "-threads:a",
+      "1",
+      "-b:a",
+      "64k",
+      "-ac",
+      "2",
+      "-fflags",
+      "+bitexact",
+      "-flags:v",
+      "+bitexact",
+      "-flags:a",
+      "+bitexact",
+      "-f",
+      "dash",
+      "-seg_duration",
+      "2",
+      "-use_template",
+      "1",
+      "-use_timeline",
+      "1",
+      "-adaptation_sets",
+      "id=0,streams=v id=1,streams=a",
+      "-hls_playlist",
+      "1",
+      "-hls_master_name",
+      "master.m3u8",
+      "media/manifest.mpd"
+    ],
+    "postprocess": "Remove lines beginning #EXT-X-PROGRAM-DATE-TIME: from media/*.m3u8; these are unnecessary nondeterministic wall-clock tags.",
+    "working_directory": "Use a new empty ignored build directory containing media/; create media/ first. All argv paths are relative to that directory.",
+    "reproducibility": "Second independent generation matched all 26 media SHA256 values after only PROGRAM-DATE-TIME removal; other FFmpeg/libx264 versions may differ.",
+    "instructions": "Verify every generated file and downloaded player against the listed SHA256 before use. Use the same frozen bytes on both architectures; another tool build or architecture may generate different bytes. Keep media, players and probe logs outside commits."
+  },
+  "audio_timeline": {
+    "sample_rate": 48000,
+    "packet_count": 564,
+    "packet_duration_sum_samples": 577024,
+    "first_packet_pts_samples": -1024,
+    "first_packet_skip_samples": 1024,
+    "last_packet_pts_samples": 575488,
+    "last_packet_duration_samples": 512,
+    "effective_presentation_range_seconds": [
+      0,
+      12
+    ],
+    "explanation": "ffprobe stream.duration=12.021333 counts 1024 AAC priming samples. The first packet has PTS -1024 and Skip Samples=1024; final packet ends at sample 576000 (12s). Effective presentation is 12s, matching static MPD/HLS VOD duration; no bytes or audio packets were truncated. Per-segment AAC packet cuts do not coincide exactly with video 2s cuts."
+  }
+}
