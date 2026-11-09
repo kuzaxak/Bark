@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "‏میان‌بر Chromium";
+CFBundleGetInfoString = "Bark 156.0.8078.80, ‏حق نشر 2026 نویسندگان Chromium. کلیه حقوق محفوظ است.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "‏حق نشر 2026 نویسندگان Chromium. کلیه حقوق محفوظ است.";
+NSLocalNetworkUsageDescription = "این کار به شما امکان می‌دهد از بین دستگاه‌های دردسترس انتخاب کنید و محتوا را در آن‌ها نمایش دهید.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

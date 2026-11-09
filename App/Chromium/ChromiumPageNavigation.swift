@@ -6,7 +6,7 @@ import AppKit
 import NookBlocker
 import NookWeb
 
-/// The additive C boundary in Runtime/Chromium/barc_bridge.h. Resolve once per
+/// The additive C boundary in Runtime/Chromium/barc_bridge_api.h. Resolve once per
 /// runtime, then share the functions between pages; no polling or extra views.
 struct ChromiumNavigationAPI {
     typealias Callback = @convention(c) (

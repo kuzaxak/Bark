@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "‏‫Chromium شارٹ کٹ";
+CFBundleGetInfoString = "Bark 156.0.8078.80, ‏کاپی رائٹ ‎2026 The Chromium Authors۔ جملہ حقوق محفوظ۔";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "‏کاپی رائٹ ‎2026 The Chromium Authors۔ جملہ حقوق محفوظ۔";
+NSLocalNetworkUsageDescription = "یہ آپ کو دستیاب آلات میں سے انتخاب کرنے اور ان پر مواد ڈسپلے کرنے کی اجازت دے گا۔";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "Acceso directo de Chromium";
+CFBundleGetInfoString = "Bark 156.0.8078.80, Copyright 2026 Los autores de Chromium. Todos los derechos reservados.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "Copyright 2026 Los autores de Chromium. Todos los derechos reservados.";
+NSLocalNetworkUsageDescription = "Esto te permitirá seleccionar dispositivos disponibles y mostrar contenido en ellos.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

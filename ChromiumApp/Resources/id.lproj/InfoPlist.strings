@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "Pintasan Chromium";
+CFBundleGetInfoString = "Bark 156.0.8078.80, Hak Cipta 2026 Pengarang Chromium. Semua hak dilindungi undang-undang.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "Hak Cipta 2026 Pengarang Chromium. Semua hak dilindungi undang-undang.";
+NSLocalNetworkUsageDescription = "Tindakan ini akan memungkinkan Anda memilih dari perangkat yang tersedia dan menampilkan konten di perangkat tersebut.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "ทางลัดของ Chromium";
+CFBundleGetInfoString = "Bark 156.0.8078.80, ลิขสิทธิ์ 2026 The Chromium Authors สงวนลิขสิทธิ์";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "ลิขสิทธิ์ 2026 The Chromium Authors สงวนลิขสิทธิ์";
+NSLocalNetworkUsageDescription = "สิทธิ์นี้จะช่วยให้คุณสามารถเลือกจากอุปกรณ์ที่พร้อมใช้งานและแสดงเนื้อหาบนอุปกรณ์เหล่านั้น";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

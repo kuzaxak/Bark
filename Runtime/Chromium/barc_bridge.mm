@@ -3539,7 +3539,7 @@ int barc_tab_stop(int32_t window, int32_t tab_id) {
   return 1;
 }
 uint32_t barc_bridge_version() {
-  return 6;
+  return BARC_BRIDGE_VERSION;
 }
 const char* barc_chromium_version() {
   return version_info::GetVersionNumber().data();

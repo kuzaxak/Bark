@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "Chromium షార్ట్‌కట్";
+CFBundleGetInfoString = "Bark 156.0.8078.80, కాపీరైట్ 2026 Chromium రచయితలు. అన్ని హ‌క్కులు రిజ‌ర్వ్ చేయ‌బ‌డ్డాయి.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "కాపీరైట్ 2026 Chromium రచయితలు. అన్ని హ‌క్కులు రిజ‌ర్వ్ చేయ‌బ‌డ్డాయి.";
+NSLocalNetworkUsageDescription = "ఇది అందుబాటులో ఉన్న పరికరాల నుండి ఎంచుకోవడానికి, వాటిలో కంటెంట్‌ను డిస్‌ప్లే చేయడానికి మిమ్మల్ని అనుమతిస్తుంది.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

@@ -126,7 +126,7 @@ def build(mutation=None):
     generated = out / 'generated'
     shutil.rmtree(generated, ignore_errors=True)
     generated.mkdir(parents=True)
-    modules, objects = [], []
+    modules, objects = ['-I', str(root / 'Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Headers')], []
     for package in ['NookSettings', 'NookTabsCore']:
         scratch = out / 'packages' / package
         p = run(['swift', 'build', '--package-path', str(root / 'Packages' / package), '--scratch-path', str(scratch), '--jobs', '2'],

@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "Chromium शॉर्टकट";
+CFBundleGetInfoString = "Bark 156.0.8078.80, Copyright 2026 The Chromium लेखक. सर्व हक्क राखीव.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "Copyright 2026 The Chromium लेखक. सर्व हक्क राखीव.";
+NSLocalNetworkUsageDescription = "यामुळे तुम्हाला उपलब्ध डिव्हाइसमधून निवडता येईल आणि आशय दाखवता येईल.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

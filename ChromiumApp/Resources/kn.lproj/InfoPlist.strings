@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "Chromium ಶಾರ್ಟ್‌ಕಟ್";
+CFBundleGetInfoString = "Bark 156.0.8078.80, ಹಕ್ಕುಸ್ವಾಮ್ಯ 2026 Chromium ಲೇಖಕರು. ಎಲ್ಲಾ ಹಕ್ಕುಗಳನ್ನು ಕಾಯ್ದಿರಿಸಲಾಗಿದೆ.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "ಹಕ್ಕುಸ್ವಾಮ್ಯ 2026 Chromium ಲೇಖಕರು. ಎಲ್ಲಾ ಹಕ್ಕುಗಳನ್ನು ಕಾಯ್ದಿರಿಸಲಾಗಿದೆ.";
+NSLocalNetworkUsageDescription = "ಲಭ್ಯವಿರುವ ಸಾಧನಗಳಿಂದ ಆಯ್ಕೆ ಮಾಡಲು ಮತ್ತು ಅವುಗಳಲ್ಲಿ ಕಂಟೆಂಟ್‌ ಅನ್ನು ಪ್ರದರ್ಶಿಸಲು ಇದು ನಿಮಗೆ ಅನುಮತಿಸುತ್ತದೆ.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

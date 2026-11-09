@@ -1,3 +1,4 @@
+import BarcChromium
 import Foundation
 
 @MainActor
@@ -40,7 +41,7 @@ struct StartupTests {
         defer { try? FileManager.default.removeItem(at: normalRoot) }
         let normal = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: normalRoot)
         precondition(!normal.isVerification && normal.profileID == nil)
-        precondition(normal.requiredBridgeVersion == 6 && config.requiredBridgeVersion == 6)
+        precondition(normal.requiredBridgeVersion == UInt32(BARC_BRIDGE_VERSION) && config.requiredBridgeVersion == UInt32(BARC_BRIDGE_VERSION))
         precondition(normal.root == normalRoot.appendingPathComponent("NookChromium", isDirectory: true))
         precondition(config.aiConfigURL.path == "/private/tmp/nook-startup-test/App/ai_config.json")
         precondition(config.aiKeychainService == "ee.qdo.nook.chromium-verification.aiProvider.26edca9982aeea417df94b6de0431c4c446fa35683d1e743c65a8f42fdedf377")

@@ -1,0 +1,6 @@
+module BarcChromium {
+  header "barc_bridge_api.h"
+  header "barc_runtime_startup_api.h"
+  header "barc_page_tweaks.h"
+  export *
+}

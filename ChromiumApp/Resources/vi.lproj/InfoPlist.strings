@@ -1,0 +1,11 @@
+"Chromium Shortcut" = "Lối tắt tới Chromium";
+CFBundleGetInfoString = "Bark 156.0.8078.80, Bản quyền 2026 Tác giả Chromium. Mọi quyền được bảo lưu.";
+NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSCameraUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSHumanReadableCopyright = "Bản quyền 2026 Tác giả Chromium. Mọi quyền được bảo lưu.";
+NSLocalNetworkUsageDescription = "Thao tác này sẽ cho phép bạn chọn trong số các thiết bị có sẵn và hiển thị nội dung trên các thiết bị đó.";
+NSLocationUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSMicrophoneUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
+NSWebBrowserPublicKeyCredentialUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

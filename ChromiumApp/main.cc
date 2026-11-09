@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "BarcChromium/barc_bridge_api.h"
 #include "early_zone_registration_apple.h"
 
 extern "C" {
@@ -73,8 +74,9 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   if (!library) {
     FatalError("dlopen %s: %s.", framework_path, dlerror());
   }
-  if (!dlsym(library, "ChromeMain")) {
-    FatalError("dlsym ChromeMain: %s.", dlerror());
+  if (!dlsym(library, BARC_ENGINE_MAIN_SYMBOL)) {
+    FatalError("dlsym %s: %s. Bark Framework was built for another bridge version; this app needs version %d.",
+               BARC_ENGINE_MAIN_SYMBOL, dlerror(), BARC_BRIDGE_VERSION);
   }
 
   char* native_path = JoinPath(

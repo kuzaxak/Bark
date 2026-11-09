@@ -104,7 +104,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         open = try symbol("barc_profile_open_window", Open.self)
         privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
         closeWindow = try symbol("barc_window_close", (@convention(c) (Int32) -> Int32).self)
-        chromeMain = try symbol("ChromeMain", Main.self)
+        chromeMain = try symbol(BARC_ENGINE_MAIN_SYMBOL, Main.self)
         complete = try symbol("barc_runtime_complete_startup", Complete.self)
     }
 
