@@ -1,0 +1,297 @@
+--- a/chrome/browser/ui/browser.cc
++++ b/chrome/browser/ui/browser.cc
+@@ -657,6 +657,11 @@
+     return;
+   }
+ 
++  if (auto* unload = UnloadController::From(this);
++      unload && unload->RetainsEmptyTabStrip()) {
++    return;
++  }
++
+   // Note: even though the tab strip is empty, the call to Close() may not
+   // result in closing this Browser. This can happen in the case of closing
+   // the last Browser with ongoing downloads.
+@@ -802,6 +807,11 @@
+   }
+ 
+   if (tab_strip_model_->empty()) {
++    if (UnloadController::From(this)->RetainsEmptyTabStrip()) {
++      auto* const commands = chrome::BrowserCommandController::From(this);
++      commands->LoadingStateChanged(/*is_loading=*/false, /*force=*/true);
++      commands->TabStateChanged();
++    }
+     return;
+   }
+ 
+--- a/chrome/browser/ui/unload_controller.h
++++ b/chrome/browser/ui/unload_controller.h
+@@ -136,6 +136,12 @@
+   bool owner_close_admitted() const { return owner_close_admitted_; }
+   void OnNativeWindowDestroying() { owner_close_admitted_ = true; }
+ 
++  // Lets the embedder keep a browser open once its last tab closes or moves
++  // out. A browser that is closing, deleted or quitting still closes.
++  using EmptyTabStripRetention = bool (*)(BrowserWindowInterface* browser);
++  static void SetEmptyTabStripRetention(EmptyTabStripRetention retention);
++  bool RetainsEmptyTabStrip() const;
++
+   // Returns true if the browser window has completed closing and is scheduled
+   // for deletion.
+   bool is_delete_scheduled() const { return is_delete_scheduled_; }
+--- a/chrome/browser/ui/unload_controller.cc
++++ b/chrome/browser/ui/unload_controller.cc
+@@ -224,6 +224,22 @@
+   }
+ }
+ 
++namespace {
++UnloadController::EmptyTabStripRetention g_empty_tab_strip_retention = nullptr;
++}  // namespace
++
++// static
++void UnloadController::SetEmptyTabStripRetention(
++    EmptyTabStripRetention retention) {
++  g_empty_tab_strip_retention = retention;
++}
++
++bool UnloadController::RetainsEmptyTabStrip() const {
++  return state_ == State::kIdle && !is_delete_scheduled_ &&
++         !owner_close_admitted_ && !browser_shutdown::IsTryingToQuit() &&
++         g_empty_tab_strip_retention && g_empty_tab_strip_retention(browser_);
++}
++
+ UnloadController::UnloadController(BrowserWindowInterface* browser)
+     : browser_(browser),
+       scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this),
+@@ -734,7 +750,7 @@
+ void UnloadController::TabStripEmpty() {
+   // Set state_ here, so that extensions, etc, do not attempt to add tabs to the
+   // browser before it closes.
+-  if (state_ == State::kIdle) {
++  if (state_ == State::kIdle && !RetainsEmptyTabStrip()) {
+     TransitionTo(State::kUnloadCompleted);
+   }
+ }
+--- a/chrome/browser/ui/browser_commands.cc
++++ b/chrome/browser/ui/browser_commands.cc
+@@ -1309,7 +1309,10 @@
+ 
+ void Stop(BrowserWindowInterface* browser) {
+   base::RecordAction(UserMetricsAction("Stop"));
+-  browser->GetTabStripModel()->GetActiveWebContents()->Stop();
++  if (content::WebContents* contents =
++          browser->GetTabStripModel()->GetActiveWebContents()) {
++    contents->Stop();
++  }
+ }
+ 
+ void NewWindow(BrowserWindowInterface* browser) {
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -2163,6 +2163,22 @@
+   content::WebContents* current_web_contents =
+       browser_->tab_strip_model()->GetActiveWebContents();
+   if (!current_web_contents) {  // May be NULL during tab restore.
++    if (browser_->tab_strip_model()->empty()) {
++      // A native app-owned browser stays open with no tabs. Clear what its
++      // last tab enabled; the next active tab enables these again.
++      for (int command :
++           {IDC_BACK, IDC_FORWARD, IDC_RELOAD, IDC_RELOAD_BYPASSING_CACHE,
++            IDC_RELOAD_CLEARING_CACHE, IDC_DUPLICATE_TAB, IDC_WINDOW_MUTE_SITE,
++            IDC_WINDOW_PIN_TAB, IDC_WINDOW_GROUP_TAB, IDC_VIEW_SOURCE,
++            IDC_SEND_TAB_TO_SELF, IDC_QRCODE_GENERATOR, IDC_SHOW_TRANSLATE,
++            IDC_CREATE_SHORTCUT, IDC_INSTALL_PWA, IDC_OPEN_IN_CHROME,
++            IDC_TOGGLE_REQUEST_TABLET_SITE, IDC_READING_LIST_MENU_ADD_TAB,
++            IDC_FIND, IDC_FIND_NEXT, IDC_FIND_PREVIOUS, IDC_PRINT,
++            IDC_BASIC_PRINT, IDC_SAVE_PAGE, IDC_BOOKMARK_THIS_TAB,
++            IDC_ZOOM_PLUS, IDC_ZOOM_NORMAL, IDC_ZOOM_MINUS, IDC_ROUTE_MEDIA}) {
++        command_updater_->UpdateCommandEnabled(command, false);
++      }
++    }
+     return;
+   }
+ 
+--- a/chrome/browser/extensions/extension_tab_util.cc
++++ b/chrome/browser/extensions/extension_tab_util.cc
+@@ -1032,7 +1032,7 @@
+         if (browser_profile == profile ||
+             browser_profile == incognito_profile) {
+           TabListInterface* tab_list = TabListInterface::From(browser);
+-          if (tab_list) {
++          if (tab_list && tab_list->GetActiveTab()) {
+             content::WebContents* tab_contents =
+                 tab_list->GetActiveTab()->GetContents();
+             CHECK(tab_contents);
+--- a/chrome/browser/extensions/api/extension_action/extension_action_api.cc
++++ b/chrome/browser/extensions/api/extension_action/extension_action_api.cc
+@@ -122,8 +122,11 @@
+ bool HasPopupOnActiveTab(BrowserWindowInterface& browser,
+                          content::BrowserContext* browser_context,
+                          const Extension& extension) {
+-  content::WebContents* web_contents =
+-      TabListInterface::From(&browser)->GetActiveTab()->GetContents();
++  tabs::TabInterface* active_tab = TabListInterface::From(&browser)->GetActiveTab();
++  if (!active_tab) {
++    return false;
++  }
++  content::WebContents* web_contents = active_tab->GetContents();
+   ExtensionAction* extension_action =
+       ExtensionActionManager::Get(browser_context)
+           ->GetExtensionAction(extension);
+--- a/chrome/browser/extensions/api/search/search_api.cc
++++ b/chrome/browser/extensions/api/search/search_api.cc
+@@ -132,6 +132,9 @@
+         return RespondNow(Error("No active browser."));
+       }
+       web_contents = browser->GetTabStripModel()->GetActiveWebContents();
++      if (!web_contents) {
++        return RespondNow(Error("No active tab."));
++      }
+     }
+ #else
+     TabModel* tab_model = nullptr;
+--- a/chrome/app/framework.exports
++++ b/chrome/app/framework.exports
+@@ -37,6 +37,7 @@
+ _barc_window_new_peer
+ _barc_window_new_peer_in_native_window
+ _barc_window_close
++_barc_window_set_app_lifetime
+ _barc_window_tab_count
+ _barc_window_tab_at
+ _barc_tab_create
+--- a/chrome/app/framework.order
++++ b/chrome/app/framework.order
+@@ -41,6 +41,7 @@
+ _barc_window_new_peer
+ _barc_window_new_peer_in_native_window
+ _barc_window_close
++_barc_window_set_app_lifetime
+ _barc_window_tab_count
+ _barc_window_tab_at
+ _barc_tab_create
+--- a/chrome/browser/ui/views/frame/barc_bridge.mm
++++ b/chrome/browser/ui/views/frame/barc_bridge.mm
+@@ -271,6 +271,22 @@
+ // Catalog state owns only subscriptions, never browsers, tabs or profiles.
+ uint64_t discovery_revision = 0;
+ bool discovery_stopped = false;
++// Physical groups whose lifetime the app owns. Group ids are never reused.
++std::set<uint64_t>& AppLifetimeGroups() {
++  static base::NoDestructor<std::set<uint64_t>> groups;
++  return *groups;
++}
++bool HasAppLifetime(BrowserWindowInterface* browser) {
++  auto* view = browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
++  auto* widget = view ? view->browser_widget() : nullptr;
++  return widget && AppLifetimeGroups().contains(widget->barc_physical_group());
++}
++bool RetainsEmptyTabStrip(BrowserWindowInterface* browser) {
++  if (!HasAppLifetime(browser))
++    return false;
++  auto* widget = BrowserView::GetBrowserViewForBrowser(browser)->browser_widget();
++  return !widget->IsClosed() && !widget->IsPhysicalCloseCommitted();
++}
+ class BrowserDiscovery;
+ std::shared_ptr<BrowserDiscovery>& DiscoveryOwner() {
+   static base::NoDestructor<std::shared_ptr<BrowserDiscovery>> owner;
+@@ -409,6 +425,9 @@
+   if (view->BarcAwaitingNativeAdmission()) row->flags |= BARC_DISCOVERY_AWAITING_ADMISSION;
+   if (UnloadController::From(browser)->owner_close_admitted())
+     row->flags |= BARC_DISCOVERY_OWNER_ENDING;
++  if (browser->GetTabStripModel()->empty()) row->flags |= BARC_DISCOVERY_EMPTY_STRIP;
++  if (AppLifetimeGroups().contains(row->physical_group))
++    row->flags |= BARC_DISCOVERY_APP_LIFETIME;
+   return true;
+ }
+ int32_t DiscoveryOpener(tabs::TabInterface* tab) {
+@@ -3667,6 +3686,20 @@
+   window->GetWindow()->Close();
+   return 1;
+ }
++int barc_window_set_app_lifetime(int32_t id) {
++  auto* window = Window(id);
++  auto* view = window && !window->IsDeleteScheduled() &&
++                       window->GetType() == BrowserWindowInterface::TYPE_NORMAL
++                   ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
++  auto* widget = view ? view->browser_widget() : nullptr;
++  if (!widget || widget->IsClosed() || widget->HasPhysicalClosePending() ||
++      UnloadController::From(window)->is_attempting_to_close_browser())
++    return 0;
++  UnloadController::SetEmptyTabStripRetention(&RetainsEmptyTabStrip);
++  if (AppLifetimeGroups().insert(widget->barc_physical_group()).second)
++    barc::BrowserDiscoveryChanged();
++  return 1;
++}
+ size_t barc_window_tab_count(int32_t id) {
+   auto* window = Window(id);
+   return window ? window->GetTabStripModel()->count() : 0;
+@@ -3686,7 +3719,8 @@
+   GURL url = URL(value);
+   if (!window || !url.is_valid())
+     return 0;
+-  const bool present = window->GetTabStripModel()->empty() || foreground;
++  const bool present = foreground || (window->GetTabStripModel()->empty() &&
++                                      !HasAppLifetime(window));
+   if (present && !barc_window_select(id))
+     return 0;
+   window = Window(id);
+@@ -3712,6 +3746,8 @@
+   return LookupTab(Window(id), tab_id) ? tab_id : 0;
+ }
+ int barc_tab_select(int32_t id, int32_t tab_id) {
++  if (navigation_callback_depth)
++    return 0;
+   auto* window = Window(id);
+   auto* tab = LookupTab(window, tab_id);
+   if (!tab || !barc_window_select(id))
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -24,7 +24,10 @@
+ #include "ui/views/view_tracker.h"
+ #include "ui/views/controls/native/native_view_host.h"
+ #include "ui/views/background.h"
++#include "chrome/browser/devtools/devtools_window.h"
++#include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/web_contents.h"
++#include "third_party/blink/public/mojom/frame/sudden_termination_disabler_type.mojom.h"
+ #include "content/public/browser/media_session.h"
+ 
+ #include <algorithm>
+@@ -171,6 +174,27 @@
+ }
+ 
+ namespace {
++// Unload, pagehide and visibilitychange listeners run at close without a
++// dialog; only a beforeunload listener can ask the person to stay.
++bool MayPromptBeforeUnload(BrowserWindowInterface* browser,
++                           base::span<content::WebContents* const> only_tabs) {
++  auto* strip = browser->GetTabStripModel();
++  for (int i = 0; i < strip->count(); ++i) {
++    auto* contents = strip->GetWebContentsAt(i);
++    if (!only_tabs.empty() && !std::ranges::contains(only_tabs, contents)) continue;
++    if (DevToolsWindow::NeedsToInterceptBeforeUnload(contents)) return true;
++    bool listening = false;
++    contents->GetPrimaryMainFrame()->ForEachRenderFrameHost(
++        [&listening](content::RenderFrameHost* frame) {
++          listening |= frame->IsRenderFrameLive() &&
++              frame->GetSuddenTerminationDisablerState(
++                  blink::mojom::SuddenTerminationDisablerType::kBeforeUnloadHandler);
++        });
++    if (listening) return true;
++  }
++  return false;
++}
++
+ // The physical view has no profile or tabstrip. Commands resolve the existing
+ // tab's logical owner at the actual user interaction, never from creation order.
+ class BarcPresentedContentsDelegate final : public MultiContentsViewDelegate {
+@@ -2017,6 +2041,7 @@
+       auto* controller = UnloadController::From(browser.get());
+       const auto only_tabs = PhysicalCloseContentsFor(browser.get());
+       if (controller->TabsNeedBeforeUnloadFired(only_tabs) &&
++          MayPromptBeforeUnload(browser.get(), only_tabs) &&
+           !SelectLogicalBrowserView(
+               BrowserView::GetBrowserViewForBrowser(browser.get()))) {
+         if (alive) {

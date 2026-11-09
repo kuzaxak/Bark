@@ -600,27 +600,11 @@ extension TabsController {
                 }
                 continue
             }
-            let order = displayOrder(in: window)
-            let index = order.firstIndex(of: selected) ?? 0
-            // Recent items stay eligible inside collapsed folders; ones moved to another space do not.
-            let source = tree(owner(of: window))
-            // Only open tabs qualify: every tab in the tabs section, and pinned tabs or favorites
-            // whose page is still open. With none left the window shows the empty space.
-            let isOpen: (UUID) -> Bool = { id in
-                // A reopened page is recorded before its session exists.
-                !source.isBookmark(id) || self.session(for: id) != nil || self.device.openPages[id] != nil
-            }
-            let recent = (window.recentItemsBySpace[spaceID] ?? []).reversed().filter { id in
-                guard let item = source.item(id), !item.isFolder, isOpen(id) else { return false }
-                return source.spaceID(of: id) == spaceID
-            }
-            let candidates = recent
-                + order[(index + 1)...].filter { !ids.contains($0) && isOpen($0) }
-                + order[..<index].reversed().filter { !ids.contains($0) && isOpen($0) }
+            let next = successor(in: window, leaving: ids)
             for (space, item) in window.selectedItemBySpace where ids.contains(item) {
                 window.selectedItemBySpace[space] = nil
             }
-            if let next = candidates.first {
+            if let next {
                 select(next, in: window)
             } else {
                 window.selectedItemBySpace[spaceID] = nil
@@ -630,6 +614,30 @@ extension TabsController {
                 window.refreshCompositor()
             }
         }
+    }
+
+    /// The tab a window shows when its selected one goes: its most recent open tab in the
+    /// space, else the next in display order, else the previous.
+    func successor(in window: BrowserWindowState, leaving ids: Set<UUID>) -> UUID? {
+        guard let selected = window.selectedItemID, let spaceID = window.spaceID else { return nil }
+        let order = displayOrder(in: window)
+        let index = order.firstIndex(of: selected) ?? 0
+        // Recent items stay eligible inside collapsed folders; ones moved to another space do not.
+        let source = tree(owner(of: window))
+        // Only open tabs qualify: every tab in the tabs section, and pinned tabs or favorites
+        // whose page is still open. With none left the window shows the empty space.
+        let isOpen: (UUID) -> Bool = { id in
+            // A reopened page is recorded before its session exists.
+            !source.isBookmark(id) || self.session(for: id) != nil || self.device.openPages[id] != nil
+        }
+        let recent = (window.recentItemsBySpace[spaceID] ?? []).reversed().filter { id in
+            guard !ids.contains(id), let item = source.item(id), !item.isFolder, isOpen(id) else { return false }
+            return source.spaceID(of: id) == spaceID
+        }
+        let candidates = recent
+            + order[(index + 1)...].filter { !ids.contains($0) && isOpen($0) }
+            + order[..<index].reversed().filter { !ids.contains($0) && isOpen($0) }
+        return candidates.first
     }
 
     // MARK: - Move

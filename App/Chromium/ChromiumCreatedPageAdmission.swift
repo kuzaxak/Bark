@@ -140,8 +140,15 @@ final class ChromiumCreatedPageAdmission {
         guard (0...2).contains(kind) else { return nil }
         func target(_ product: ChromiumProductWindow) -> Int32? {
             let state = product.state
-            guard registry.windows[state.id] === state,
-                  let session = tabs.selectedSession(in: state), let page = session.navigation as? ChromiumPageNavigation,
+            guard registry.windows[state.id] === state else { return nil }
+            if state.showsNativeEmptySpace {
+                guard let profileID = state.isIncognito ? state.ephemeralProfile?.id :
+                          state.spaceID.flatMap({ tabs.tree.dataStoreID(for: $0) }),
+                      state.isIncognito || tabs.isProfileAvailable(profileID) else { return nil }
+                if let client = host.emptySpaceClient(in: state, profile: profileID, open: kind == 0) { return client }
+                return kind == 0 ? -1 : host.liveClient(in: state.id)
+            }
+            guard let session = tabs.selectedSession(in: state), let page = session.navigation as? ChromiumPageNavigation,
                   page.isPrivateSession == state.isIncognito,
                   host.isNativeSelection(page, in: state) || coveredByPeek(session, state),
                   let row = api.windowState(page.nativeWindowID),
@@ -993,6 +1000,7 @@ final class ChromiumCreatedPageAdmission {
         // successful pass consumes rows. An unmodeled/popup opener falls back
         // to this exact profile's existing space without altering the JS opener.
         let candidateIDs = Set(candidates.map(\.tab))
+        var created: Set<Int32> = []
         var deferBatchOpeners = true
         var pending = candidates.filter { sessions[$0.tab] == nil }
         while !pending.isEmpty {
@@ -1048,6 +1056,7 @@ final class ChromiumCreatedPageAdmission {
                 binding.finish(adopted: valid)
                 if valid, let admitted {
                     sessions[tab.tab] = admitted
+                    created.insert(tab.tab)
                     progressed = true
                     if detached === admitted { didAdoptDetached(tab.tab) }
                 }
@@ -1069,10 +1078,13 @@ final class ChromiumCreatedPageAdmission {
             // unlike ordinary selection it cannot select/focus/load in Chromium.
             let alreadyMirrored = product.state.selectedItemID == session.itemID &&
                 session.navigation.map { host.isNativeSelection($0, in: product.state) } == true
-            // The shell follows the client Chromium fell back to, or the window loses its sidebar.
-            // The selection stays Nook's to decide.
-            if tabs.spaceID(of: session.itemID) != product.state.spaceID,
-               tabs.nativeSelectionIsSettling(in: product.state) {
+            // Chromium activates a neighbour when the active tab closes. While Nook
+            // picks the next tab, only a page Chromium just opened, such as a link,
+            // takes the selection. A page that closed itself reads closed here before
+            // its CLOSED reaches the model.
+            let closedSelection = (tabs.selectedSession(in: product.state)?.navigation as? ChromiumPageNavigation)?.isClosed == true
+            if tabs.nativeSelectionIsSettling(in: product.state) || closedSelection,
+               !created.contains(selected.active_tab) {
                 if let page = session.navigation { _ = host.acceptNativeSelection(page, in: product.state) }
                 continue
             }
@@ -1123,6 +1135,9 @@ final class ChromiumCreatedPageAdmission {
         }
         if let active {
             if registry.activeWindowId != active.id { registry.setActive(active) }
+        }
+        for (group, product) in products where liveGroups.contains(group) && !utilityGroups.contains(group) {
+            host.closeSurplusClients(in: product.state, snapshot: snapshot)
         }
     }
 

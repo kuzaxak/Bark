@@ -971,8 +971,13 @@ final class ChromiumPageNavigation: PageNavigation {
             invalidate()
             // Let a pending unload/delete finish before the general closed
             // event can be interpreted as an unsolicited model deletion.
-            closeOutcome?(outcome)
-            notify?(outcome == .ownerEnded ? .ownerEnded : .closed)
+            let deliver = {
+                closeOutcome?(outcome)
+                notify?(outcome == .ownerEnded ? .ownerEnded : .closed)
+            }
+            // CLOSED arrives inside a bridge callback, where barc_tab_select
+            // refuses the selection the app makes next.
+            if outcome == .closed { Task { @MainActor in deliver() } } else { deliver() }
             return
         }
         if event == 1 || (event == 2 && flags & 16 == 0) {

@@ -3065,6 +3065,13 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   const int32_t personal_id = Open(kSharedPersonal, work_id);
   auto* personal = SharedWindow(personal_id);
   ASSERT_TRUE(personal);
+  // Unload-time listeners make close run page events, but cannot prompt.
+  for (auto* window : {work, personal}) {
+    auto* page = window->GetTabStripModel()->GetActiveWebContents();
+    ASSERT_TRUE(content::WaitForLoadStop(page));
+    ASSERT_TRUE(content::ExecJs(page, "addEventListener('pagehide', () => {});"
+                                      "addEventListener('unload', () => {});"));
+  }
   int intermediate_activations = 0;
   auto count = base::BindLambdaForTesting(
       [&](BrowserWindowInterface*) { ++intermediate_activations; });
@@ -3073,11 +3080,19 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   auto second =
       BrowserActiveStateManager::From(personal)->RegisterDidBecomeActive(count);
   auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  auto host_alive = host->GetWeakPtr();
+  int selections_before_commit = 0;
+  auto count_selection = base::BindLambdaForTesting([&] {
+    if (host_alive && !host->IsPhysicalCloseCommitted()) ++selections_before_commit;
+  });
+  auto work_selection = work->RegisterNativeWindowSelectionChanged(count_selection);
+  auto personal_selection = personal->RegisterNativeWindowSelectionChanged(count_selection);
   ui_test_utils::BrowserDestroyedObserver work_closed(work);
   ui_test_utils::BrowserDestroyedObserver personal_closed(personal);
   host->Close();
   work_closed.Wait();
   personal_closed.Wait();
+  EXPECT_EQ(0, selections_before_commit);
   EXPECT_EQ(0, intermediate_activations);
 }
 
@@ -12268,4 +12283,324 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, HistoryMenuResolvesStableEntriesLi
   // A new navigation prunes the captured forward entry, even for its same URL.
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), second));
   EXPECT_EQ(0, barc_tab_go_to_history_entry(window, tab, second_id));
+}
+
+class BarcAppLifetimeBrowserTest : public BarcDiscoveryBrowserTest {
+ protected:
+  uint32_t Flags(int32_t id) {
+    BarcDiscoveryWindow row{};
+    return barc_window_discovery_state(id, &row) ? row.flags : 0;
+  }
+  BarcDiscoveryWindow Row(int32_t id) {
+    BarcDiscoveryWindow row{};
+    EXPECT_EQ(1, barc_window_discovery_state(id, &row));
+    return row;
+  }
+  void CloseOnlyTab(int32_t id) {
+    ASSERT_EQ(1u, barc_window_tab_count(id));
+    const int32_t tab = barc_window_tab_at(id, 0);
+    content::WebContentsDestroyedWatcher destroyed(tabs::TabHandle(tab).Get()->GetContents());
+    ASSERT_EQ(1, barc_tab_close(id, tab));
+    destroyed.Wait();
+    content::RunAllTasksUntilIdle();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarcAppLifetimeBrowserTest,
+                       EmptiedSelectedClientStaysSelectedAndUsable) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(work);
+  ASSERT_TRUE(personal);
+  auto* view = BrowserView::GetBrowserViewForBrowser(work);
+  auto* host = view->browser_widget();
+  auto host_alive = host->GetWeakPtr();
+  auto work_alive = work->GetWeakPtr();
+  EXPECT_EQ(0, barc_window_set_app_lifetime(-1));
+  ASSERT_EQ(1, barc_window_set_app_lifetime(personal_id));
+  EXPECT_TRUE(Flags(work_id) & BARC_DISCOVERY_APP_LIFETIME);
+  EXPECT_TRUE(Flags(personal_id) & BARC_DISCOVERY_APP_LIFETIME);
+  EXPECT_FALSE(Flags(browser()->GetSessionID().id()) & BARC_DISCOVERY_APP_LIFETIME);
+  ASSERT_EQ(1, barc_window_select(work_id));
+
+  ASSERT_NO_FATAL_FAILURE(CloseOnlyTab(work_id));
+  ASSERT_TRUE(work_alive);
+  ASSERT_TRUE(host_alive);
+  EXPECT_TRUE(work->GetTabStripModel()->empty());
+  EXPECT_FALSE(UnloadController::From(work)->is_attempting_to_close_browser());
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+  EXPECT_FALSE(personal->IsSelectedForNativeWindow());
+  const auto emptied = Row(work_id);
+  EXPECT_EQ(work_id, emptied.selected_client);
+  EXPECT_EQ(0, emptied.active_tab);
+  EXPECT_TRUE(emptied.flags & BARC_DISCOVERY_EMPTY_STRIP);
+  EXPECT_FALSE(emptied.flags & BARC_DISCOVERY_OWNER_ENDING);
+  EXPECT_FALSE(Flags(personal_id) & BARC_DISCOVERY_EMPTY_STRIP);
+
+  // Ordinary window and command traffic reaches the empty selected client.
+  EXPECT_EQ(nullptr, view->GetActiveWebContents());
+  host->Show();
+  host->Activate();
+  host->SetBounds(gfx::Rect(40, 40, 900, 700));
+  host->LayoutRootViewIfNecessary();
+  host->Deactivate();
+  host->Hide();
+  host->Show();
+  for (int command : {IDC_RELOAD, IDC_BACK, IDC_FIND, IDC_FOCUS_LOCATION,
+                      IDC_ZOOM_PLUS, IDC_PRINT, IDC_DEV_TOOLS, IDC_SAVE_PAGE,
+                      IDC_BOOKMARK_THIS_TAB, IDC_FOCUS_NEXT_PANE}) {
+    chrome::ExecuteCommand(work, command);
+  }
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(work_alive);
+  EXPECT_TRUE(work->GetTabStripModel()->empty());
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  ASSERT_EQ(1, barc_window_select(work_id));
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+
+  const int32_t refilled = barc_tab_create(work_id, "about:blank", 0);
+  ASSERT_NE(0, refilled);
+  ASSERT_EQ(1, barc_tab_select(work_id, refilled));
+  EXPECT_EQ(refilled, Row(work_id).active_tab);
+  EXPECT_FALSE(Flags(work_id) & BARC_DISCOVERY_EMPTY_STRIP);
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+
+  // A background client empties and refills without taking the selection.
+  ASSERT_NO_FATAL_FAILURE(CloseOnlyTab(personal_id));
+  ASSERT_TRUE(SharedWindow(personal_id));
+  EXPECT_TRUE(Flags(personal_id) & BARC_DISCOVERY_EMPTY_STRIP);
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+  ASSERT_NE(0, barc_tab_create(personal_id, "about:blank", 0));
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+  EXPECT_FALSE(personal->IsSelectedForNativeWindow());
+
+  // Moving the last tab out leaves its source open and empty.
+  const int32_t peer_id = Open(kSharedWork, work_id, BARC_PROFILE_BLANK);
+  ASSERT_GT(peer_id, 0);
+  ASSERT_EQ(1, barc_window_select(work_id));
+  EXPECT_TRUE(Flags(peer_id) & BARC_DISCOVERY_APP_LIFETIME);
+  ASSERT_EQ(1, barc_tab_transfer(work_id, refilled, peer_id));
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(work_alive);
+  EXPECT_TRUE(Flags(work_id) & BARC_DISCOVERY_EMPTY_STRIP);
+  EXPECT_TRUE(SharedWindow(peer_id)->IsSelectedForNativeWindow());
+
+  // Clients end only when the app closes them; the last one takes the window.
+  ui_test_utils::BrowserDestroyedObserver work_closed(work);
+  ASSERT_EQ(1, barc_window_close(work_id));
+  work_closed.Wait();
+  ASSERT_TRUE(host_alive);
+  EXPECT_TRUE(SharedWindow(peer_id)->IsSelectedForNativeWindow());
+  ui_test_utils::BrowserDestroyedObserver personal_closed(personal);
+  ASSERT_EQ(1, barc_window_close(personal_id));
+  personal_closed.Wait();
+  ASSERT_TRUE(host_alive);
+  ui_test_utils::BrowserDestroyedObserver peer_closed(SharedWindow(peer_id));
+  ASSERT_EQ(1, barc_window_close(peer_id));
+  peer_closed.Wait();
+  ASSERT_TRUE(base::test::RunUntil([&] { return !host_alive; }));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppLifetimeBrowserTest,
+                       OnlyClientKeepsWindowUntilCloseButton) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  ASSERT_EQ(1, barc_window_set_app_lifetime(work_id));
+  ASSERT_EQ(1, barc_window_show(work_id));
+  auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  auto host_alive = host->GetWeakPtr();
+  ASSERT_NO_FATAL_FAILURE(CloseOnlyTab(work_id));
+  ASSERT_TRUE(SharedWindow(work_id));
+  ASSERT_TRUE(host_alive);
+  EXPECT_TRUE(host->IsVisible());
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
+  EXPECT_TRUE(Flags(work_id) & BARC_DISCOVERY_EMPTY_STRIP);
+
+  // A page closing itself as the window's only page leaves the client too.
+  const int32_t page = barc_tab_create(work_id, "about:blank", 0);
+  ASSERT_NE(0, page);
+  auto* contents = tabs::TabHandle(page).Get()->GetContents();
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  content::WebContentsDestroyedWatcher destroyed(contents);
+  content::ExecuteScriptAsync(contents, "window.close()");
+  destroyed.Wait();
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(SharedWindow(work_id));
+  ASSERT_TRUE(host_alive);
+  EXPECT_TRUE(Flags(work_id) & BARC_DISCOVERY_EMPTY_STRIP);
+
+  ui_test_utils::BrowserDestroyedObserver closed(work);
+  host->Close();
+  closed.Wait();
+  ASSERT_TRUE(base::test::RunUntil([&] { return !host_alive; }));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppLifetimeBrowserTest,
+                       CloseButtonEndsEveryClientIncludingEmptyOnes) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(work);
+  ASSERT_TRUE(personal);
+  ASSERT_EQ(1, barc_window_set_app_lifetime(work_id));
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_NO_FATAL_FAILURE(CloseOnlyTab(work_id));
+  ASSERT_TRUE(SharedWindow(work_id));
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+  auto host_alive = host->GetWeakPtr();
+  NavigationEvents events;
+  ASSERT_NE(0u, barc_tab_observe(personal_id, barc_window_tab_at(personal_id, 0),
+                                 NavigationEvents::Receive, &events));
+  ui_test_utils::BrowserDestroyedObserver work_closed(work);
+  ui_test_utils::BrowserDestroyedObserver personal_closed(personal);
+  host->Close();
+  work_closed.Wait();
+  personal_closed.Wait();
+  ASSERT_TRUE(base::test::RunUntil([&] { return !host_alive; }));
+  ASSERT_EQ(1u, events.Count(BARC_TAB_CLOSED));
+  for (const auto& event : events.events) {
+    if (event.kind == BARC_TAB_CLOSED) EXPECT_TRUE(event.flags & BARC_TAB_OWNER_ENDED);
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppLifetimeBrowserTest,
+                       SelectionInsideStripChangeIsRefused) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  ASSERT_EQ(1, barc_window_set_app_lifetime(work_id));
+  const int32_t first = barc_window_tab_at(work_id, 0);
+  const int32_t second = barc_tab_create(work_id, "about:blank", 0);
+  ASSERT_NE(0, second);
+  ASSERT_EQ(1, barc_tab_select(work_id, first));
+  NavigationEvents events;
+  bool reentered = false;
+  events.on_closed = base::BindLambdaForTesting([&] {
+    reentered = true;
+    EXPECT_EQ(0, barc_tab_select(work_id, second));
+  });
+  ASSERT_NE(0u, barc_tab_observe(work_id, first, NavigationEvents::Receive, &events));
+  chrome::CloseTab(work);
+  ASSERT_TRUE(base::test::RunUntil([&] { return reentered; }));
+  content::RunAllTasksUntilIdle();
+  ASSERT_EQ(1, work->GetTabStripModel()->count());
+  EXPECT_EQ(1, barc_tab_select(work_id, second));
+  EXPECT_EQ(second, Row(work_id).active_tab);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppLifetimeBrowserTest,
+                       EmptyClientSurvivesExtensionApisAndCommands) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      [](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        if (request.relative_url != "/stall") return nullptr;
+        return std::make_unique<net::test_server::HungResponse>();
+      }));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  ASSERT_EQ(1, barc_window_set_app_lifetime(work_id));
+  ASSERT_EQ(1, barc_window_show(work_id));
+  auto work_alive = work->GetWeakPtr();
+  auto* host = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
+
+  extensions::TestExtensionDir dir;
+  dir.WriteManifest(R"({"manifest_version":3,"name":"Empty client",
+    "version":"1.0","permissions":["declarativeNetRequest","search"],
+    "action":{"default_popup":"popup.html"},
+    "background":{"service_worker":"worker.js"}})");
+  dir.WriteFile(FILE_PATH_LITERAL("popup.html"), "<p>popup</p>");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"),
+                "chrome.test.sendMessage('empty-client-extension-ready');");
+  ExtensionTestMessageListener ready("empty-client-extension-ready");
+  ready.set_browser_context(work->GetProfile());
+  extensions::ChromeTestExtensionLoader loader(work->GetProfile());
+  const auto extension = loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  ASSERT_TRUE(ready.WaitUntilSatisfied());
+  auto worker = [&](const std::string& script) {
+    return extensions::BackgroundScriptExecutor::ExecuteScript(
+        work->GetProfile(), extension->id(), script,
+        extensions::BackgroundScriptExecutor::ResultCapture::kSendScriptResult);
+  };
+
+  // A page still loading as the client's last tab leaves Stop enabled.
+  auto* page = tabs::TabHandle(barc_window_tab_at(work_id, 0)).Get()->GetContents();
+  page->GetController().LoadURL(embedded_test_server()->GetURL("/stall"),
+      content::Referrer(), ui::PAGE_TRANSITION_TYPED, std::string());
+  ASSERT_TRUE(base::test::RunUntil([&] { return page->IsLoading(); }));
+  EXPECT_TRUE(chrome::IsCommandEnabled(work, IDC_STOP));
+  ASSERT_NO_FATAL_FAILURE(CloseOnlyTab(work_id));
+  ASSERT_TRUE(work_alive);
+  ASSERT_TRUE(work->GetTabStripModel()->empty());
+  for (int command : {IDC_STOP, IDC_RELOAD, IDC_BACK, IDC_FORWARD, IDC_DUPLICATE_TAB,
+                      IDC_VIEW_SOURCE, IDC_ZOOM_PLUS, IDC_FIND, IDC_PRINT,
+                      IDC_SAVE_PAGE, IDC_BOOKMARK_THIS_TAB}) {
+    EXPECT_FALSE(chrome::IsCommandEnabled(work, command)) << command;
+  }
+  chrome::Stop(work);
+
+  EXPECT_EQ(base::Value("cleared"), worker(R"(
+    chrome.declarativeNetRequest.setExtensionActionOptions(
+        {displayActionCountAsBadgeText: true})
+      .then(() => chrome.declarativeNetRequest.setExtensionActionOptions(
+        {displayActionCountAsBadgeText: false}))
+      .then(() => chrome.test.sendScriptResult('cleared'));
+  )"));
+  EXPECT_EQ(base::Value("refused"), worker(R"(
+    chrome.search.query({text: 'empty', disposition: 'CURRENT_TAB'})
+      .then(() => chrome.test.sendScriptResult('searched'),
+            () => chrome.test.sendScriptResult('refused'));
+  )"));
+  host->Activate();
+  ASSERT_TRUE(base::test::RunUntil([&] { return host->IsActive(); }));
+  EXPECT_EQ(base::Value("refused"), worker(R"(
+    chrome.action.openPopup()
+      .then(() => chrome.test.sendScriptResult('opened'),
+            () => chrome.test.sendScriptResult('refused'));
+  )"));
+  ASSERT_TRUE(work_alive);
+  EXPECT_TRUE(work->GetTabStripModel()->empty());
+
+  // Every menu and keyboard command still enabled must leave the client alive.
+  for (int command : {IDC_BACK, IDC_FORWARD, IDC_RELOAD, IDC_RELOAD_BYPASSING_CACHE,
+       IDC_STOP, IDC_HOME, IDC_CLOSE_TAB, IDC_DUPLICATE_TAB, IDC_DUPLICATE_TARGET_TAB,
+       IDC_GROUP_TARGET_TAB, IDC_MUTE_TARGET_SITE, IDC_PIN_TARGET_TAB,
+       IDC_WINDOW_CLOSE_OTHER_TABS, IDC_WINDOW_CLOSE_TABS_TO_RIGHT, IDC_WINDOW_GROUP_TAB,
+       IDC_WINDOW_MUTE_SITE, IDC_WINDOW_PIN_TAB, IDC_MOVE_TAB_TO_NEW_WINDOW,
+       IDC_CYCLE_TO_NEXT_TAB, IDC_CYCLE_TO_PREV_TAB, IDC_SELECT_NEXT_TAB,
+       IDC_SELECT_PREVIOUS_TAB, IDC_SELECT_TAB_0, IDC_SELECT_TAB_7, IDC_SELECT_LAST_TAB,
+       IDC_MOVE_TAB_NEXT, IDC_MOVE_TAB_PREVIOUS, IDC_FIND, IDC_FIND_NEXT,
+       IDC_FIND_PREVIOUS, IDC_CLOSE_FIND_OR_STOP, IDC_FOCUS_LOCATION, IDC_FOCUS_SEARCH,
+       IDC_FOCUS_NEXT_PANE, IDC_FOCUS_PREVIOUS_PANE, IDC_FOCUS_NEXT_TAB_GROUP,
+       IDC_FOCUS_PREV_TAB_GROUP, IDC_FOCUS_INACTIVE_POPUP_FOR_ACCESSIBILITY,
+       IDC_DEV_TOOLS, IDC_DEV_TOOLS_CONSOLE, IDC_DEV_TOOLS_INSPECT, IDC_VIEW_SOURCE,
+       IDC_PRINT, IDC_BASIC_PRINT, IDC_SAVE_PAGE, IDC_EMAIL_PAGE_LOCATION,
+       IDC_BOOKMARK_THIS_TAB, IDC_BOOKMARK_ALL_TABS, IDC_ZOOM_PLUS, IDC_ZOOM_NORMAL,
+       IDC_ZOOM_MINUS, IDC_ROUTE_MEDIA, IDC_SHOW_TRANSLATE, IDC_MANAGE_PASSWORDS_FOR_PAGE,
+       IDC_SAVE_CREDIT_CARD_FOR_PAGE, IDC_SHARING_HUB, IDC_SHARING_HUB_SCREENSHOT,
+       IDC_CONTENT_CONTEXT_LENS_OVERLAY, IDC_REPORT_UNSAFE_SITE, IDC_SHOW_AS_TAB,
+       IDC_NEW_SPLIT_TAB, IDC_CREATE_NEW_TAB_GROUP, IDC_ADD_NEW_TAB_TO_GROUP,
+       IDC_CLOSE_TAB_GROUP, IDC_SHOW_READING_MODE_KEYBOARD}) {
+    SCOPED_TRACE(command);
+    if (!chrome::IsCommandEnabled(work, command)) continue;
+    chrome::ExecuteCommand(work, command);
+    content::RunAllTasksUntilIdle();
+    ASSERT_TRUE(work_alive);
+    while (barc_window_tab_count(work_id)) {
+      const int32_t tab = barc_window_tab_at(work_id, 0);
+      content::WebContentsDestroyedWatcher destroyed(tabs::TabHandle(tab).Get()->GetContents());
+      ASSERT_EQ(1, barc_tab_close(work_id, tab));
+      destroyed.Wait();
+    }
+  }
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(work_alive);
 }

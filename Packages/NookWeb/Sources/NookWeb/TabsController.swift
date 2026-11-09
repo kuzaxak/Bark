@@ -817,14 +817,19 @@ public final class TabsController {
     func releaseNativePagesBeforeMutation(_ ids: [UUID], then action: @escaping @MainActor () -> Void) -> Bool {
         let pages = ids.compactMap { session(for: $0) }.filter(\.requiresNativeResourceRelease)
         guard !pages.isEmpty else { return false }
+        let handoffs = selectLiveSuccessors(leaving: Set(ids))
         let profiles = pages.map { $0.profile?.id }
         var remaining = pages.count
         var allAdmitted = true
+        var refused = false
         for page in pages {
             page.requestNativeRelease { [weak self] outcome in
                 allAdmitted = allAdmitted && outcome == .closed
+                refused = refused || outcome == .cancelled
                 remaining -= 1
-                guard remaining == 0, allAdmitted, let self else { return }
+                guard remaining == 0, let self else { return }
+                if refused { self.returnFromSuccessors(handoffs) }
+                guard allAdmitted else { return }
                 guard zip(pages, profiles).allSatisfy({ page, id in
                     self.session(for: page.itemID) === page && page.profile?.id == id
                 }) else { return }
@@ -832,6 +837,29 @@ public final class TabsController {
             }
         }
         return true
+    }
+
+    /// Chromium shows a tab of its own choosing while a selected page closes, until Nook
+    /// selects the next one. A successor whose page is live is selected before the close.
+    private func selectLiveSuccessors(leaving ids: Set<UUID>) -> [(window: BrowserWindowState, left: UUID, successor: UUID)] {
+        var handoffs: [(window: BrowserWindowState, left: UUID, successor: UUID)] = []
+        for window in allWindows {
+            guard let selected = window.selectedItemID, ids.contains(selected),
+                  window.split?.contains(selected) != true,
+                  let next = successor(in: window, leaving: ids),
+                  let page = session(for: next), page.navigation != nil, !page.nativeIsEnding else { continue }
+            select(next, in: window)
+            if window.selectedItemID == next { handoffs.append((window, selected, next)) }
+        }
+        return handoffs
+    }
+
+    /// A page that refused to close is shown again where Nook moved on from it.
+    private func returnFromSuccessors(_ handoffs: [(window: BrowserWindowState, left: UUID, successor: UUID)]) {
+        for handoff in handoffs where windowRegistry.windows[handoff.window.id] === handoff.window &&
+            handoff.window.selectedItemID == handoff.successor && item(handoff.left) != nil {
+            select(handoff.left, in: handoff.window)
+        }
     }
 
     /// With nothing selected, Chromium is showing some other client: the shell covers it.
@@ -1492,8 +1520,7 @@ public final class TabsController {
     }
 
     /// Nook is deciding this window's selection: its page is closing, a successor is being
-    /// prepared, or it shows an empty space. A client Chromium falls back to meanwhile is no one's
-    /// choice, so reflecting it would carry the window into another space.
+    /// prepared, or it shows an empty space. A tab Chromium activates meanwhile is no one's choice.
     public func nativeSelectionIsSettling(in window: BrowserWindowState) -> Bool {
         window.nativeSelectionGeneration != nil || window.nativeSplitPreparation != nil
             || selectedSession(in: window)?.nativeIsEnding == true || window.showsNativeEmptySpace

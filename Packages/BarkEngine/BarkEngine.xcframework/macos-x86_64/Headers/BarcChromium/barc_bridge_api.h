@@ -11,10 +11,11 @@
 extern "C" {
 #endif
 #define BARC_API __attribute__((visibility("default")))
-// Version 7 presents every split as app-positioned independent tabs and makes
-// barc_tab_enable_peek's argument a mask. Structs cross this boundary without
-// size arguments; the app requires this exact ABI.
-#define BARC_BRIDGE_VERSION 7
+// Version 8 lets the app own a window's lifetime: an emptied client stays open
+// and selected (barc_window_set_app_lifetime), and barc_tab_select refuses
+// bridge callbacks. Structs cross this boundary without size arguments; the
+// app requires this exact ABI.
+#define BARC_BRIDGE_VERSION 8
 BARC_API uint32_t barc_bridge_version(void);
 // Lowercase hex SHA-256 of the lines "<SHA-256 of header>  <header name>\n" for
 // barc_bridge_api.h, barc_runtime_startup_api.h and barc_page_tweaks.h, in that
@@ -25,8 +26,8 @@ BARC_API const char* barc_public_headers_sha256(void);
 // version renames it, so an app and framework built for different versions fail
 // at dlsym, as Chromium's ChromeAppModeStart_v<N> does. Update the name in
 // chrome/app/framework.exports and framework.order with it.
-#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v7"
-BARC_API int barc_engine_main_v7(int argc, const char** argv);
+#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v8"
+BARC_API int barc_engine_main_v8(int argc, const char** argv);
 // Static NUL-terminated engine version, valid for the process lifetime.
 BARC_API const char* barc_chromium_version(void);
 // Creates an empty same-profile peer for immediate page insertion/transfer.
@@ -40,11 +41,21 @@ BARC_API int32_t barc_window_new_peer_in_native_window(int32_t source_window,
                                                         int32_t physical_owner);
 // Returns whether a valid request was dispatched; Chrome may delay/deny close.
 BARC_API int barc_window_close(int32_t window);
+// Hands the physical window holding this client to the app, for every client it
+// holds now or later. A client whose last tab closes or moves out then stays
+// open, keeps its selection and reports BARC_DISCOVERY_EMPTY_STRIP. The window
+// closes only through barc_window_close of its last client, its close button or
+// quit, each with the usual prompts. Closing the selected client while others
+// remain still selects another one, so select first. Zero for an unknown,
+// closing or non-normal client.
+BARC_API int barc_window_set_app_lifetime(int32_t window);
 BARC_API size_t barc_window_tab_count(int32_t window);
 BARC_API int32_t barc_window_tab_at(int32_t window, size_t index);
 BARC_API int32_t barc_tab_create(int32_t window,
                                  const char* url,
                                  int foreground);
+// Refused (0) during bridge callbacks: they can run inside a tab strip change,
+// where Chromium's activation CHECKs. Callers may post a browser UI task.
 BARC_API int barc_tab_select(int32_t window, int32_t tab);
 BARC_API int barc_tab_search(int32_t window, int32_t tab, const char* query,
     const char* kagi_session_token);
@@ -492,7 +503,9 @@ enum BarcDiscoveryWindowFlags {
   BARC_DISCOVERY_WINDOW_APP_FACTORY = 8,
   BARC_DISCOVERY_AWAITING_ADMISSION = 16,
   BARC_DISCOVERY_OWNER_ENDING = 32,
-  BARC_DISCOVERY_COMPACT_MINI = 64
+  BARC_DISCOVERY_COMPACT_MINI = 64,
+  BARC_DISCOVERY_EMPTY_STRIP = 128,
+  BARC_DISCOVERY_APP_LIFETIME = 256
 };
 enum BarcDiscoveryTabFlags {
   BARC_DISCOVERY_ACTIVE_TAB = 1,

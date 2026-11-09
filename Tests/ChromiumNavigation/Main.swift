@@ -203,6 +203,10 @@ private enum SearchNative {
     }
 }
 
+@MainActor private func drainMain() async {
+    for _ in 0..<4 { await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } } }
+}
+
 @main
 private enum NavigationChecks {
     @MainActor static func main() async throws {
@@ -297,6 +301,8 @@ private enum NavigationChecks {
         precondition((error as NSError).code == -105 && committed?.path == "/committed")
 
         Native.emit(7, window: 11)
+        precondition(events.count == 3 && page!.isClosed, "CLOSED reaches the app after the native callback returns")
+        await drainMain()
         precondition(events.count == 4)
         guard case .closed = events.last else { preconditionFailure("Missing close notification") }
         precondition(!page!.goBack())
@@ -382,6 +388,8 @@ private enum NavigationChecks {
         precondition(outcomes == [.cancelled] && page!.goBack())
         precondition(page!.requestNativeClose())
         Native.emit(7, window: 12)
+        precondition(outcomes == [.cancelled] && page!.isClosed)
+        await drainMain()
         precondition(outcomes == [.cancelled, .closed] && order == ["host", "page"])
         precondition(page!.isClosed && !page!.requestNativeClose())
         Native.emit(7, window: 12)

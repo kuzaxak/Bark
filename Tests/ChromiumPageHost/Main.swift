@@ -17,6 +17,7 @@ private enum Native {
     static var groups: [Int32: UInt64] = [11: 2]
     static var activeTabs: [Int32: Int32] = [:]
     static var ending: Set<Int32> = []
+    static var appLifetime: Set<Int32> = []
     static var nextTab: Int32 = 200
     static var pending: (ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)?
     static var openedFrom: [Int32] = []
@@ -30,6 +31,7 @@ private enum Native {
         set { lastAttached = newValue; headerOwners = newValue == 0 ? [] : [newValue] }
     }
     static var selectionCalls = 0
+    static var windowCloses: [Int32] = []
     static var attachmentCalls = 0
     static var nativeCloses: [(Int32, Int32)] = []
     static var onObserve: ((Int32, Int32) -> Void)?
@@ -63,7 +65,13 @@ private enum Native {
             selectWindow: { window in MainActor.assumeIsolated {
                 Native.selectionCalls += 1; Native.selected = window; return 1
             } },
-            closeWindow: { window in MainActor.assumeIsolated { Native.tabs[window] = nil; Native.profiles[window] = nil; return 1 } },
+            closeWindow: { window in MainActor.assumeIsolated {
+                Native.windowCloses.append(window); Native.tabs[window] = nil; Native.profiles[window] = nil; return 1
+            } },
+            setAppLifetime: { window in MainActor.assumeIsolated {
+                guard Native.profiles[window] != nil else { return 0 }
+                Native.appLifetime.insert(window); return 1
+            } },
             attach: { window, view in MainActor.assumeIsolated {
                 Native.attachmentCalls += 1
                 if let callback = Native.onAttach { return callback(window) }
@@ -82,12 +90,14 @@ private enum Native {
     }
 
     static func row(_ window: Int32) -> BarcDiscoveryWindow? {
-        guard let profile = profiles[window], let list = tabs[window], !list.isEmpty else { return nil }
+        let group = groups[window] ?? 1
+        let retained = appLifetime.contains { (groups[$0] ?? 1) == group }
+        guard let profile = profiles[window], let list = tabs[window], !list.isEmpty || retained else { return nil }
         var row = BarcDiscoveryWindow()
-        row.window = window; row.physical_group = groups[window] ?? 1
-        row.active_tab = activeTabs[window].flatMap { list.contains($0) ? $0 : nil } ?? list[0]
+        row.window = window; row.physical_group = group
+        row.active_tab = activeTabs[window].flatMap { list.contains($0) ? $0 : nil } ?? list.first ?? 0
         row.selected_client = selected; row.profile_kind = 0
-        row.flags = ending.contains(window) ? 32 : 0
+        row.flags = (ending.contains(window) ? 32 : 0) | (list.isEmpty ? 128 : 0) | (retained ? 256 : 0)
         withUnsafeMutableBytes(of: &row.regular_profile_uuid) { buffer in
             for (i, byte) in profile.uuidString.utf8CString.enumerated() { buffer[i] = UInt8(bitPattern: byte) }
         }
@@ -163,12 +173,14 @@ private enum Native {
     let profile = Profile(id: Native.first, engine: .chromium)
     let session = { PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil) }
     var shells: [NSView] = []
+    func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     func mounted(client: Int32, tab: Int32, pages count: Int = 1, group: UInt64) -> (ChromiumNativePageHost, BrowserWindowState, [ChromiumPageNavigation]) {
         Native.profiles[client] = Native.first; Native.tabs[client] = [tab]; Native.groups[client] = group; Native.selected = client
         let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
         let window = BrowserWindowState(), shell = NSView()
         shells.append(shell)
         precondition(host.registerWindow(window, nativeOwner: client, shell: shell, initialBlankTab: tab))
+        precondition(Native.appLifetime.contains(client), "A registered window belongs to the app")
         var pages: [ChromiumPageNavigation] = []
         for _ in 0..<count {
             _ = host.createPage(for: session(), profile: profile, in: window) { pages.append(try! $0.get() as! ChromiumPageNavigation) }
@@ -181,37 +193,56 @@ private enum Native {
     }
 
     let (only, window, onlyPages) = mounted(client: 70, tab: 700, group: 70)
-    let before = Native.creates
+    let before = Native.creates, opens = Native.opens
     var outcomes: [PageCloseOutcome] = []
     only.closePage(onlyPages[0]) { outcomes.append($0) }
-    precondition(Native.tabs[70]?.count == 2 && Native.creates == before + 1, "The window's last tab closes with a blank to hold the window")
-    let held = Native.tabs[70]!.last!
+    precondition(Native.creates == before, "Closing the last page reserves no blank")
     close(onlyPages[0], client: 70)
+    precondition(outcomes.isEmpty, "The close is answered after the native callback returns")
+    drain()
     precondition(outcomes == [.closed])
+    precondition((Native.row(70)?.flags ?? 0) & 128 != 0, "The emptied client stays")
     var next: ChromiumPageNavigation!
     _ = only.createPage(for: session(), profile: profile, in: window) { next = try! $0.get() as? ChromiumPageNavigation }
-    precondition(next.nativeTabID == held && Native.creates == before + 1, "The next page takes the held tab")
+    precondition(next.nativeWindowID == 70 && Native.creates == before + 1 && Native.opens == opens,
+                 "The next page goes into the emptied client")
 
     let (refusing, _, refusingPages) = mounted(client: 71, tab: 710, group: 71)
     let beforeRefused = Native.creates
-    refusing.closePage(refusingPages[0]) { _ in }
+    var refused: [PageCloseOutcome] = []
+    refusing.closePage(refusingPages[0]) { refused.append($0) }
     close(refusingPages[0], client: 71, event: 8)
-    refusing.closePage(refusingPages[0]) { _ in }
-    precondition(Native.creates == beforeRefused + 1, "A refused close does not stack up blanks")
+    precondition(refused == [.cancelled] && Native.creates == beforeRefused, "A refused close keeps its page and adds none")
 
-    let (siblings, _, siblingPages) = mounted(client: 72, tab: 720, pages: 2, group: 72)
+    // Every page closing leaves the client for the app's next page.
+    let (siblings, siblingWindow, siblingPages) = mounted(client: 72, tab: 720, pages: 2, group: 72)
     let beforeSiblings = Native.creates
     siblings.closePage(siblingPages[0]) { _ in }
-    precondition(Native.creates == beforeSiblings, "A sibling already holds the window")
     siblings.closePage(siblingPages[1]) { _ in }
-    precondition(Native.creates == beforeSiblings + 1, "Closing every tab at once still leaves the window a tab")
+    close(siblingPages[0], client: 72); close(siblingPages[1], client: 72); drain()
+    precondition(Native.creates == beforeSiblings && Native.row(72) != nil)
+    var refill: ChromiumPageNavigation!
+    _ = siblings.createPage(for: session(), profile: profile, in: siblingWindow) { refill = try! $0.get() as? ChromiumPageNavigation }
+    precondition(refill.nativeWindowID == 72)
 
-    let (shared, _, sharedPages) = mounted(client: 73, tab: 730, group: 73)
-    Native.profiles[74] = Native.second; Native.tabs[74] = [740]; Native.groups[74] = 73
-    let beforeShared = Native.creates
-    shared.closePage(sharedPages[0]) { _ in }
-    precondition(Native.creates == beforeShared, "Another client holds the window")
-    for client: Int32 in [70, 71, 72, 73, 74] { Native.profiles[client] = nil; Native.tabs[client] = nil }
+    // Surplus empty clients close; one client per profile, and the selected one, stay.
+    Native.profiles[75] = Native.first; Native.tabs[75] = []; Native.groups[75] = 70
+    Native.profiles[76] = Native.second; Native.tabs[76] = []; Native.groups[76] = 70
+    Native.profiles[77] = Native.second; Native.tabs[77] = []; Native.groups[77] = 70
+    Native.selected = 77
+    Native.windowCloses = []
+    let stale = Native.discovery.readSnapshot()!
+    Native.tabs[75] = [750]
+    only.closeSurplusClients(in: window, snapshot: stale)
+    precondition(Native.windowCloses == [76], "A client that gained a tab since the snapshot stays")
+    Native.tabs[75] = []
+    Native.windowCloses = []
+    only.closeSurplusClients(in: window, snapshot: Native.discovery.readSnapshot()!)
+    precondition(Native.windowCloses == [75], "Only unselected empty duplicates close")
+    precondition(Native.row(70) != nil && Native.row(77) != nil)
+
+    for client: Int32 in [70, 71, 72, 75, 76, 77] { Native.profiles[client] = nil; Native.tabs[client] = nil }
+    Native.appLifetime = []
     Native.selected = 10
     print("Chromium last-page checks PASS")
 }
@@ -396,6 +427,7 @@ private enum HostChecks {
         precondition(host.canAdoptPage(first, in: window))
         host.closePage(first) { outcomes.append($0) }
         Native.emit(7, page: first)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         precondition(outcomes == [.cancelled, .closed] && first.isClosed)
         precondition(!host.selectPage(first, in: window))
         host.closePage(first) { outcomes.append($0) }
@@ -414,6 +446,7 @@ private enum HostChecks {
         host.closePage(late) { lateClosed = $0 == .closed }
         precondition(!lateClosed)
         Native.emit(7, page: late)
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         precondition(lateClosed)
 
         // A dead original logical Browser is not reused as the shared root.
@@ -652,7 +685,8 @@ private func checkAuthoritativeGroups() throws {
     }, policy: { value, required, _, _ in MainActor.assumeIsolated { BlockerNative.enabled = value == 1; BlockerNative.required = required; return 1 } },
     prepare: { window, callback, context in MainActor.assumeIsolated {
         guard Native.profiles[window] != nil, let callback else { return 0 }
-        if window == 20 || (BlockerNative.enabled && BlockerNative.generation != BlockerNative.required) {
+        if (window == 20 && !BlockerNative.prepared.contains(20)) ||
+            (BlockerNative.enabled && BlockerNative.generation != BlockerNative.required) {
             BlockerNative.work.append(Work(window: window, generation: 0, callback: callback, context: context))
         } else {
             BlockerNative.prepared.insert(window)
@@ -778,11 +812,11 @@ private func checkAuthoritativeGroups() throws {
         }
         precondition(Native.opens == opens && successes == 0)
         manager.setEnabled(false); precondition(blocker.synchronize())
-        BlockerNative.emit(7, window: 20, tab: 200)
-        precondition(Native.opens == opens + 1 && successes == 0)
-        Native.opened(profile: profile.id, window: 21, blank: 210); await blockerDrain()
+        BlockerNative.emit(7, window: 20, tab: 200); await blockerDrain()
+        precondition(Native.opens == opens && BlockerNative.work.map(\.window) == [20], "The retry reuses the emptied client")
+        BlockerNative.finish(BARC_BLOCKER_READY); await blockerDrain()
         precondition(successes == 1 && failures == 1 && loads.count == 2)
-        precondition(loads[1].0 == 21 && loads[1].2 == "https://ads.test/retry")
+        precondition(loads[1].0 == 20 && loads[1].2 == "https://ads.test/retry")
         // Cancellation before readiness never allocates or returns a page,
         // including the disabled-policy path.
         let beforeCancelCreates = Native.creates
@@ -796,7 +830,7 @@ private func checkAuthoritativeGroups() throws {
 
         // Every makePage can fail observation. Keep the exact factory blank
         // reserved instead of dropping its Batch or claiming dispatched close.
-        Native.ending.insert(21)
+        Native.ending.insert(20)
         Native.rejectsObservation = true
         var observeFailures = 0
         _ = host.createPage(for: retrySession, profile: profile, in: window) { result in

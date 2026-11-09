@@ -3030,6 +3030,41 @@ struct NativePageLifecycleTests {
         #expect(fixture.window.selectedItemID == id && !fixture.window.showsNativeEmptySpace)
     }
 
+    @Test func closingSelectedPageShowsLiveSuccessorBeforeNativeClose() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let first = try #require(fixture.window.selectedItemID)
+        let work = try #require(fixture.window.spaceID)
+        fixture.host.finishCreate(0)
+        let second = try #require(fixture.tabs.open(url: URL(string: "about:blank#second")!,
+            in: fixture.window, placement: .newTab, parent: .tabs(spaceID: work)))
+        fixture.host.finishCreate(fixture.host.creates.count - 1)
+        fixture.tabs.select(first, in: fixture.window)
+        #expect(fixture.window.selectedItemID == first)
+        var selectedAtClose: UUID?
+        fixture.host.onClose = { selectedAtClose = fixture.window.selectedItemID }
+        fixture.tabs.close(first)
+        #expect(selectedAtClose == second, "Chromium never shows its own neighbour first")
+        fixture.host.finishClose(fixture.host.closes.count - 1, admitted: true)
+        #expect(fixture.window.selectedItemID == second && fixture.tabs.item(first) == nil)
+    }
+
+    @Test func refusedCloseReturnsToThePageThatStayed() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let first = try #require(fixture.window.selectedItemID)
+        let work = try #require(fixture.window.spaceID)
+        fixture.host.finishCreate(0)
+        let second = try #require(fixture.tabs.open(url: URL(string: "about:blank#second")!,
+            in: fixture.window, placement: .newTab, parent: .tabs(spaceID: work)))
+        fixture.host.finishCreate(fixture.host.creates.count - 1)
+        fixture.tabs.select(first, in: fixture.window)
+        fixture.tabs.close(first)
+        #expect(fixture.window.selectedItemID == second)
+        fixture.host.finishClose(fixture.host.closes.count - 1, admitted: false)
+        #expect(fixture.window.selectedItemID == first && fixture.tabs.item(first) != nil)
+    }
+
     @Test func refusedCloseEndsSettlingOnTheSamePage() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -4173,8 +4208,10 @@ private final class ControlledNativeHost: NativePageHost {
                  activeItemID: UUID?, in window: BrowserWindowState) -> Bool {
         actualSplit == record && actualSplitActive == activeItemID
     }
+    var onClose: (() -> Void)?
     func closePage(_ page: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         closes.append(Closing(page: page as! NativeTestPage, completion: completion))
+        onClose?()
     }
     @discardableResult func finishCreate(_ index: Int, loading: Bool = false) -> NativeTestPage {
         let request = creates[index]

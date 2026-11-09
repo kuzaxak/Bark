@@ -170,15 +170,13 @@ import NookWeb
                       tab.tab == id && Native.windows[tab.window]?.physical_group == group
                   } }) else { return 0 }
             let owners = Set(members.compactMap { id in Native.tabs.first { $0.tab == id }?.window })
-            layout.kind = owners.count == 1 ? 0 : 1
-            if layout.kind == 1 {
-                guard owners.allSatisfy({ Native.windows[$0]?.profile_kind == BARC_DISCOVERY_REGULAR.rawValue }) else { return 0 }
-                Native.splitGeneration += 1
-                layout.generation = Native.splitGeneration; layout.collection = 0
-                for key in Array(Native.splitLayouts.keys) where Native.windows[key]?.physical_group == group {
-                    Native.splitLayouts[key] = nil
-                }
-            } else { layout.collection = 1; layout.generation = 0 }
+            // Bridge v7: every split is the app-positioned presentation of independent tabs.
+            guard owners.count == 1 || owners.allSatisfy({ Native.windows[$0]?.profile_kind == BARC_DISCOVERY_REGULAR.rawValue }) else { return 0 }
+            Native.splitGeneration += 1
+            layout.kind = 1; layout.generation = Native.splitGeneration; layout.collection = 0
+            for key in Array(Native.splitLayouts.keys) where Native.windows[key]?.physical_group == group {
+                Native.splitLayouts[key] = nil
+            }
             Native.splitLayouts[owner] = layout
             Native.windows[owner]?.active_tab = layout.active_tab
             return 1
@@ -506,6 +504,9 @@ private struct NoTokens: KagiTokenStore {
         for window in Array(Native.windows.keys) { Native.end(window) }
         tabs.saveNow()
         try checkOnlySourceTransfer()
+        try checkClosingSelectionStaysWithNook()
+        try checkSelfClosingPageKeepsNooksSpace()
+        try checkLinkReachesEmptySpaceOfAnotherProfile()
         try checkPrivateSessions()
         try checkSavedWindowRestoration()
         try checkPendingInitialPageRestoration()
@@ -515,6 +516,196 @@ private struct NoTokens: KagiTokenStore {
         try checkNativePeekAdmission()
         print("Chromium catalog admission checks passed")
     }
+}
+
+/// Chromium activates a neighbour once Nook's selected page closes. That is not
+/// mirrored: Nook's own pick wins, and a page Chromium opens on an empty space shows.
+@MainActor private func checkClosingSelectionStaysWithNook() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcClosingSelection-\(UUID())")
+    let suite = "BarcClosingSelection-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    tabs.nativePageHost = host
+    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    func item(_ tab: Int32) -> UUID {
+        tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == tab }!.itemID
+    }
+    Native.windows[601] = Native.window(601, group: 601, profile: Native.work, active: 6010)
+    Native.tabs = [Native.tab(6010, window: 601), Native.tab(6011, window: 601), Native.tab(6012, window: 601)]
+    admission.apply(Native.discovery.readSnapshot()!)
+    let window = registry.allWindows.first!
+    let closing = item(6010), neighbour = item(6011), recent = item(6012)
+    precondition(window.selectedItemID == closing)
+    Native.restoring = true
+    tabs.select(recent, in: window); tabs.select(closing, in: window)
+    precondition(window.selectedItemID == closing && Native.windows[601]?.active_tab == 6010)
+    tabs.close(closing)
+    precondition(window.selectedItemID == recent && Native.windows[601]?.active_tab == 6012,
+                 "Nook's live successor shows before the close")
+    func endTab(_ tab: Int32) {
+        Native.tabs.removeAll { $0.tab == tab }
+        for (token, observation) in Native.observers.filter({ $0.value.3 == tab }) {
+            Native.observers[token] = nil
+            observation.0?(observation.1, token, 7, 601, tab, nil, nil, 0, 0)
+        }
+    }
+    endTab(6010)
+    admission.apply(Native.discovery.readSnapshot()!)
+    drain()
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(tabs.item(closing) == nil && window.selectedItemID == recent && window.spaceID == Native.work)
+    precondition(Native.windows[601]?.active_tab == 6012)
+
+    // A cold successor loads after the close, so Chromium's neighbour is active meanwhile.
+    let cold = tabs.open(url: URL(string: "https://fixture.invalid/cold")!, in: window, placement: .background,
+                         parent: .tabs(spaceID: Native.work))!
+    precondition(tabs.session(for: cold)?.navigation == nil)
+    tabs.move(cold, to: .tabs(spaceID: Native.work), after: recent)
+    tabs.select(recent, in: window)
+    tabs.close(recent)
+    precondition(window.selectedItemID == recent, "No live successor to show first")
+    endTab(6012)
+    Native.windows[601]?.active_tab = 6011
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(window.selectedItemID != neighbour, "Chromium's neighbour was mirrored while Nook chose")
+    drain()
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(tabs.item(recent) == nil && window.selectedItemID == cold && window.spaceID == Native.work)
+
+    // A page Chromium opens while the window shows an empty space takes the selection.
+    let empty = tabs.createSpace(name: "Empty", icon: "", accentHex: "#123456", after: Native.work, sharingLoginsWith: Native.work)!
+    tabs.setSpace(empty, in: window)
+    precondition(window.showsNativeEmptySpace && tabs.nativeSelectionIsSettling(in: window))
+    // Links and Dock actions reach the empty space through its retained client.
+    registry.setActive(window)
+    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == 601)
+    precondition(admission.browserTarget(kind: 1, regularProfile: Native.work)?.window == 601)
+    let route = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
+    precondition(route?.window == 601 && route?.profile == Native.work && route?.space == empty)
+    Native.tabs.append(Native.tab(6013, window: 601))
+    Native.windows[601]?.active_tab = 6013
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(window.selectedItemID == item(6013) && !window.showsNativeEmptySpace)
+    Native.restoring = false
+    Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
+    Native.end(601); tabs.saveNow()
+}
+
+/// A page that closes itself, such as window.close(), reaches Nook after Chromium has
+/// activated a neighbour, here from another space on the same profile. The window stays.
+@MainActor private func checkSelfClosingPageKeepsNooksSpace() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcSelfClosing-\(UUID())")
+    let suite = "BarcSelfClosing-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    tabs.nativePageHost = host
+    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    Native.windows[621] = Native.window(621, group: 621, profile: Native.work, active: 6210)
+    Native.tabs = [Native.tab(6210, window: 621)]
+    admission.apply(Native.discovery.readSnapshot()!)
+    let window = registry.allWindows.first!
+    let closing = window.selectedItemID!
+    let shared = tabs.createSpace(name: "Shared", icon: "", accentHex: "#123456", after: Native.work, sharingLoginsWith: Native.work)!
+    Native.restoring = true
+    let other = tabs.open(url: URL(string: "https://fixture.invalid/shared")!, in: window, placement: .newTab,
+                          parent: .tabs(spaceID: shared))!
+    let otherTab = (tabs.session(for: other)!.navigation as! ChromiumPageNavigation).nativeTabID
+    tabs.select(closing, in: window)
+    precondition(window.spaceID == Native.work && window.selectedItemID == closing)
+    Native.tabs.removeAll { $0.tab == 6210 }
+    for (token, observation) in Native.observers.filter({ $0.value.3 == 6210 }) {
+        Native.observers[token] = nil
+        observation.0?(observation.1, token, 7, 621, 6210, nil, nil, 0, 0)
+    }
+    Native.windows[621]?.active_tab = otherTab
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(window.spaceID == Native.work && window.selectedItemID != other,
+                 "Chromium's neighbour carried the window into another space")
+    drain()
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(tabs.item(closing) == nil && window.spaceID == Native.work && window.showsNativeEmptySpace)
+    Native.restoring = false
+    Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
+    Native.end(621); tabs.saveNow()
+}
+
+/// An empty space whose profile has no client in the window gets one, selected, before an
+/// incoming link resolves; the link waits instead of being refused.
+@MainActor private func checkLinkReachesEmptySpaceOfAnotherProfile() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcEmptyRoute-\(UUID())")
+    let suite = "BarcEmptyRoute-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    tree.createSpace(id: Native.personal, name: "Personal", icon: "house", accentHex: "#123456", after: Native.work)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    tabs.nativePageHost = host
+    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    Native.windows[631] = Native.window(631, group: 631, profile: Native.work, active: 6310)
+    Native.tabs = [Native.tab(6310, window: 631)]
+    admission.apply(Native.discovery.readSnapshot()!)
+    let window = registry.allWindows.first!
+    registry.setActive(window)
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.showsNativeEmptySpace && window.spaceID == Native.personal)
+    var opened: [(Int32, ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)] = []
+    Native.onOpen = { owner, callback, pointer in opened.append((owner, callback, pointer)) }
+    Native.onSelectWindow = { owner in
+        guard let group = Native.windows[owner]?.physical_group else { return 0 }
+        for key in Array(Native.windows.keys) where Native.windows[key]?.physical_group == group {
+            Native.windows[key]?.selected_client = owner
+        }
+        return 1
+    }
+    Native.restoring = true
+    defer { Native.restoring = false; Native.onOpen = nil; Native.onSelectWindow = nil }
+    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1, "The link waits")
+    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1 && opened.count == 1,
+                 "One client is opened for the empty space's profile")
+    precondition(opened[0].0 == 631)
+    Native.windows[632] = Native.window(632, group: 631, profile: Native.personal, flags: 0, active: 6320)
+    Native.windows[632]?.selected_client = 631
+    Native.tabs.append(Native.tab(6320, window: 632))
+    opened[0].1?(0, 632, opened[0].2)
+    precondition(!Native.tabs.contains { $0.window == 632 }, "The new client's blank is closed")
+    Native.windows[632]?.active_tab = 0
+    Native.windows[632]?.flags |= UInt32(BARC_DISCOVERY_EMPTY_STRIP.rawValue)
+    let route = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
+    precondition(route?.window == 632 && route?.profile == Native.personal && route?.space == Native.personal)
+    precondition(Native.windows[631]?.selected_client == 632 && Native.shells[632] != nil,
+                 "The empty space's client is selected with the sidebar")
+    Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
+    Native.end(632); Native.end(631); tabs.saveNow()
 }
 
 /// Source was the sole product window: admission must register the destination
@@ -1589,6 +1780,7 @@ private struct NoTokens: KagiTokenStore {
         Native.observers[token] = nil
         observation.0?(observation.1, token, 7, 7002, 70029, nil, nil, 0, 0)
     }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     Native.onAttach = nil
     // A borrowed pane closing returns ALL physical containers. Keep and remount
     // the model's live remainder instead of interpreting a restored owner-local
@@ -1615,6 +1807,7 @@ private struct NoTokens: KagiTokenStore {
             Native.observers[token] = nil
             observation.0?(observation.1, token, 7, 7002, handle, nil, nil, 0, 0)
         }
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         record = expanded.removing(removed.itemID)!
         precondition(tabs.item(removed.itemID) == nil && state.split == record)
         admission.apply(Native.discovery.readSnapshot()!)
@@ -1673,6 +1866,7 @@ private struct NoTokens: KagiTokenStore {
         Native.observers[token] = nil
         observation.0?(observation.1, token, 7, 7002, lastPage.nativeTabID, nil, nil, 0, 0)
     }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     let liveRecord = state.split!
     let remainder = host.nativeSplitUpdate(in: state, selected: Native.windows[7001]!,
         sessions: [70010: work, 70020: personal], savedPages: [work, personal])!

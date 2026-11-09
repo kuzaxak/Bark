@@ -93,7 +93,7 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 55 ordered patches and 30 copied
+procedure. The complete reviewed candidate has 56 ordered patches and 30 copied
 sources (the BRANDING file, 16 bridge sources, the existing translation script, two cosmetic resources
 the Boost picker resource, the native matcher header, the fixed-tweaks header, three tweak resources
 and the header digest script). Copies precede `lifecycle-close.patch`; the Swift overlay follows those
@@ -105,7 +105,7 @@ set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
     cp "$runtime/BRANDING" chrome/app/theme/chromium/BRANDING; or return 1
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings native-app-controlled-splits native-header-hash
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings native-app-controlled-splits native-header-hash native-app-lifetime
         if test "$patch" = lifecycle-close
             for source in barc_bridge_api.h barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup_api.h barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -371,7 +371,7 @@ import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
 `--barc-app-profile` remains temporary-root verification with mock keychain and
 isolated preferences; neither mode enables cloud sync.
 
-Normal startup requires bridge version 7 before ChromeMain. Native registration
+Normal startup requires bridge version 8 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default
@@ -391,6 +391,16 @@ flushes saved windows before native session/window teardown; a later veto resume
 model operations and window admission. This is distinct from the first quit
 attempt, which may still fail beforeunload/download consent. Source/fixture
 checks do not qualify real multiwindow quit cancellation until engine execution.
+
+### App-owned window lifetime
+
+The app hands each product window to itself with `barc_window_set_app_lifetime`. From then
+on a client whose last tab closes or moves out stays open and selected, reports
+`BARC_DISCOVERY_EMPTY_STRIP` and takes new tabs: `native-app-lifetime.patch` keeps its
+`UnloadController` idle and returns from `Browser::TabStripEmpty` before the close. The window
+still closes through `barc_window_close` of its last client, its close button or quit, with
+their prompts. `barc_tab_select` refuses bridge callbacks, because `TabStripModel::ActivateTab`
+CHECKs reentrancy in every build type and those callbacks can run inside a strip change.
 
 ### Native launch routing
 
