@@ -45,6 +45,7 @@
 #include "components/performance_manager/public/performance_manager.h"
 #include "content/public/common/content_features.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/common/drop_data.h"
 #include "chrome/browser/ui/browser_live_tab_context.h"
 #include "base/run_loop.h"
 #include "base/synchronization/waitable_event.h"
@@ -138,6 +139,9 @@
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/views/frame/multi_contents_view_mini_toolbar.h"
+#include "chrome/browser/ui/views/status_bubble_views.h"
+#include "ui/compositor/layer.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -5423,31 +5427,10 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
   EXPECT_EQ(1, CountURL(GURL("data:text/plain,during-opening")));
 }
 
-namespace {
-class ReentrantSplitObserver final : public TabStripModelObserver {
- public:
-  ReentrantSplitObserver(TabStripModel* strip, int32_t window,
-                         BarcSplitLayout replacement)
-      : window_(window), replacement_(replacement) {
-    strip->AddObserver(this);
-  }
-  void OnSplitTabChanged(const SplitTabChange& change) override {
-    if (attempted || change.type != SplitTabChange::Type::kAdded)
-      return;
-    attempted = true;
-    EXPECT_EQ(0, barc_window_set_split(window_, &replacement_));
-  }
-  bool attempted = false;
- private:
-  const int32_t window_;
-  const BarcSplitLayout replacement_;
-};
-}  // namespace
-
-class BarcFourPaneBrowserTest : public BarcSharedNativeWindowBrowserTest {
+class BarcFourPaneBrowserTest : public BarcDiscoveryBrowserTest {
  protected:
   void SetUpOnMainThread() override {
-    BarcSharedNativeWindowBrowserTest::SetUpOnMainThread();
+    BarcDiscoveryBrowserTest::SetUpOnMainThread();
     // Zoom is host-scoped by default. Give each pane its own real host so the
     // command-routing assertion does not mistake site zoom for a foreign target.
     for (size_t i = 0; i < 4; ++i) {
@@ -5502,6 +5485,7 @@ IN_PROC_BROWSER_TEST_F(BarcFourPaneBrowserTest,
   }
   BarcSplitLayout request{4, 0, {handles[2], handles[0], handles[3], handles[1]},
                            {0.2, 0.45, 0.75}, handles[3]};
+  ASSERT_EQ(1, barc_tab_select(window, handles[3]));
   ASSERT_EQ(1, barc_window_set_split(window, &request));
   view->DeprecatedLayoutImmediately();
   ExpectPageBelowOnlyNativeTop(view, 0);
@@ -5536,14 +5520,14 @@ IN_PROC_BROWSER_TEST_F(BarcFourPaneBrowserTest,
   EXPECT_EQ(0, zoom::ZoomController::FromWebContents(pages[0])->GetZoomLevel());
   EXPECT_EQ(0, barc_tab_execute_command(window, handles[0], BARC_PAGE_ZOOM_IN));
 
-  // Reorder exactly the same four pages and change orientation. Native content
-  // containers, documents, form data and controller histories remain their own.
+  // Reorder exactly the same four pages and change orientation. Documents, form
+  // data and controller histories remain their own.
   request = {4, 1, {handles[1], handles[3], handles[0], handles[2]},
                    {0.15, 0.55, 0.8}, handles[0]};
+  ASSERT_EQ(1, barc_tab_select(window, handles[0]));
   ASSERT_EQ(1, barc_window_set_split(window, &request));
   view->DeprecatedLayoutImmediately();
   for (size_t i = 0; i < pages.size(); ++i) {
-    EXPECT_EQ(containers[i], multi->GetContentsContainerViewFor(pages[i]));
     EXPECT_EQ(histories[i], pages[i]->GetController().GetEntryCount());
     EXPECT_EQ("retained-" + std::to_string(i),
               content::EvalJs(pages[i], "document.querySelector('#draft').value"));
@@ -5555,43 +5539,25 @@ IN_PROC_BROWSER_TEST_F(BarcFourPaneBrowserTest,
         tabs::TabHandle(base::span(request.tabs)[i]).Get()->GetContents());
     EXPECT_LE(previous->bounds().bottom(), next->bounds().y());
   }
-  multi->OnResizeDivider(1, 25, true);
+  views::AsViewClass<MultiContentsView>(
+      multi->GetContentsContainerViewFor(pages[0])->parent())
+      ->OnResizeDivider(1, 25, true);
   ASSERT_EQ(1, barc_window_get_split(window, 0, &actual));
   EXPECT_DOUBLE_EQ(0.15, base::span(actual.dividers)[0]);
   EXPECT_NE(0.55, base::span(actual.dividers)[1]);
   EXPECT_DOUBLE_EQ(0.8, base::span(actual.dividers)[2]);
-  const BarcSplitLayout resized = actual;
   ASSERT_EQ(1, barc_window_clear_split(window, 0, &actual));
   EXPECT_EQ(0, barc_window_get_split(window, 0, &actual));
   EXPECT_EQ(4u, barc_window_tab_count(window));
   EXPECT_EQ(handles[0], browser()->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
-  EXPECT_EQ(containers[0], multi->GetActiveContentsContainerView());
+  EXPECT_EQ(pages[0], multi->GetActiveContentsContainerView()->contents_view()->web_contents());
   ASSERT_EQ(1, barc_tab_go_back(window, handles[0]));
   ASSERT_TRUE(base::test::RunUntil([&] {
     return pages[0]->GetLastCommittedURL().ref() == "one";
   }));
-  // The real desktop session-restoration seam accepts the whole ordered set,
-  // not a truncated leading/trailing pair, and preserves all divider metadata.
-  auto* context = BrowserLiveTabContext::From(browser());
-  ASSERT_TRUE(context);
-  std::vector<sessions::LiveTab*> restored;
-  for (int32_t handle : base::span(request.tabs)) {
-    restored.push_back(context->GetLiveTabAt(
-        browser()->GetTabStripModel()->GetIndexOfTab(tabs::TabHandle(handle).Get())));
-  }
-  const auto restored_id = split_tabs::SplitTabId::GenerateNew();
-  const split_tabs::SplitTabVisualData restored_data(
-      split_tabs::SplitTabLayout::kStacked, base::span(resized.dividers));
-  context->ReconstructSplitTabs(restored, restored_id, restored_data);
-  EXPECT_EQ(restored_id, browser()->GetTabStripModel()->GetActiveTab()->GetSplit());
-  ASSERT_EQ(1, barc_window_get_split(window, 0, &actual));
-  EXPECT_EQ(4u, actual.count);
-  EXPECT_TRUE(std::ranges::equal(base::span(actual.tabs), base::span(request.tabs)));
-  EXPECT_TRUE(std::ranges::equal(base::span(actual.dividers),
-                                restored_data.split_dividers()));
 }
 
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
                        SplitRemovalTransferAndAdmissionKeepExactOwners) {
   const int32_t window = browser()->GetSessionID().id();
   std::array<int32_t, 4> handles{barc_window_tab_at(window, 0)};
@@ -5601,8 +5567,8 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   }
   BarcSplitLayout request{4, 0, {handles[0], handles[1], handles[2], handles[3]},
                            {0.25, 0.5, 0.75}, handles[1]};
+  ASSERT_EQ(1, barc_tab_select(window, handles[1]));
   ASSERT_EQ(1, barc_window_set_split(window, &request));
-  const auto original_split = browser()->GetTabStripModel()->GetActiveTab()->GetSplit();
   auto* transferred = tabs::TabHandle(handles[3]).Get()->GetContents();
   ASSERT_TRUE(content::ExecJs(transferred, "window.marker = {live: 1};"));
   const int32_t peer_id = barc_window_new_peer(window);
@@ -5610,32 +5576,27 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   ASSERT_EQ(1, barc_tab_transfer(window, handles[3], peer_id));
   EXPECT_EQ(transferred, tabs::TabHandle(handles[3]).Get()->GetContents());
   EXPECT_EQ(1, content::EvalJs(transferred, "window.marker.live"));
-  EXPECT_EQ(original_split, browser()->GetTabStripModel()->GetActiveTab()->GetSplit());
   BarcSplitLayout state{};
+  // Leaving a pane ends the presentation; the app decides what to present next.
+  EXPECT_EQ(0, barc_window_get_split(window, 0, &state));
+  EXPECT_EQ(handles[1], browser()->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
+  ASSERT_EQ(1, barc_window_select(window));
+  request = {3, 0, {handles[0], handles[1], handles[2]}, {1.0 / 3, 2.0 / 3}, handles[1]};
+  ASSERT_EQ(1, barc_window_set_split(window, &request));
   ASSERT_EQ(1, barc_window_get_split(window, 0, &state));
   EXPECT_EQ(3u, state.count);
-  EXPECT_DOUBLE_EQ(1.0 / 3, base::span(state.dividers)[0]);
-  EXPECT_DOUBLE_EQ(2.0 / 3, base::span(state.dividers)[1]);
-  ASSERT_EQ(1, barc_window_select(window));
-  // Exercise the real Cmd-W command: selection includes all three panes,
-  // but this command must close only the active pane.
+  // Exercise the real Cmd-W command: it closes only the active pane.
   chrome::CloseTab(browser());
   ASSERT_TRUE(base::test::RunUntil([&] { return !tabs::TabHandle(handles[1]).Get(); }));
-  ASSERT_EQ(1, barc_window_get_split(window, 0, &state));
-  EXPECT_EQ(2u, state.count);
-  EXPECT_EQ(handles[2], state.active_tab);
-  auto* multi = BrowserView::GetBrowserViewForBrowser(browser())->multi_contents_view();
-  EXPECT_EQ(multi->GetContentsContainerViewFor(
-                tabs::TabHandle(handles[2]).Get()->GetContents()),
-            multi->GetActiveContentsContainerView());
-  EXPECT_EQ(original_split, browser()->GetTabStripModel()->GetActiveTab()->GetSplit());
+  EXPECT_EQ(0, barc_window_get_split(window, 0, &state));
+  EXPECT_TRUE(tabs::TabHandle(handles[0]).Get());
+  EXPECT_TRUE(tabs::TabHandle(handles[2]).Get());
   ASSERT_EQ(1, barc_tab_close(window, handles[2]));
   ASSERT_TRUE(base::test::RunUntil([&] { return !tabs::TabHandle(handles[2]).Get(); }));
-  EXPECT_EQ(0, barc_window_get_split(window, 0, &state));
   EXPECT_EQ(1u, barc_window_tab_count(window));
   EXPECT_EQ(handles[0], browser()->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
 
-  // A different profile or a stale/duplicate handle is refused before mutation.
+  // Another native window, a stale handle or a duplicate is refused before mutation.
   const int32_t personal = Open(kSharedPersonal, 0, BARC_PROFILE_BLANK);
   const int32_t foreign = barc_window_tab_at(personal, 0);
   request = {2, 0, {handles[0], foreign}, {0.5}, handles[0]};
@@ -5657,6 +5618,7 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
     ASSERT_NE(0, handles[i]);
     ASSERT_TRUE(content::WaitForLoadStop(tabs::TabHandle(handles[i]).Get()->GetContents()));
   }
+  ASSERT_EQ(1, barc_tab_select(window, handles[0]));
   DiscoveryEvents events;
   const auto token = barc_discovery_observe(DiscoveryEvents::Receive, &events);
   ASSERT_NE(0u, token);
@@ -5665,13 +5627,7 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
   events.revisions.clear();
   BarcSplitLayout request{4, 0, {handles[0], handles[1], handles[2], handles[3]},
                            {0.25, 0.5, 0.75}, handles[0]};
-  auto replacement = request;
-  replacement.orientation = 1;
-  replacement.dividers[1] = 0.6;
-  ReentrantSplitObserver reentrant(browser()->GetTabStripModel(), window,
-                                    replacement);
   ASSERT_EQ(1, barc_window_set_split(window, &request));
-  EXPECT_TRUE(reentrant.attempted);
   EXPECT_TRUE(events.revisions.empty());
   base::RunLoop().RunUntilIdle();
   ASSERT_EQ(1u, events.revisions.size());
@@ -5680,28 +5636,33 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(settled, events.revisions.size());
 
-  auto* strip = browser()->GetTabStripModel();
-  const auto split = strip->GetActiveTab()->GetSplit();
-  ASSERT_TRUE(split);
-  const std::array<double, 3> resized{0.25, 0.6, 0.75};
-  strip->UpdateSplitDividers(*split, resized, /*is_intermediate=*/true);
+  auto* physical = views::AsViewClass<MultiContentsView>(
+      BrowserView::GetBrowserViewForBrowser(browser())
+          ->GetContentsContainerViewFor(tabs::TabHandle(handles[0]).Get()->GetContents())
+          ->parent());
+  ASSERT_TRUE(physical);
+  physical->DeprecatedLayoutImmediately();
+  physical->OnResizeDivider(1, 30, /*done_resizing=*/false);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(settled, events.revisions.size());
+  BarcSplitLayout dragged{};
+  ASSERT_EQ(1, barc_window_get_split(window, 0, &dragged));
   // Finalization must notify even when its values equal the last drag update.
-  strip->UpdateSplitDividers(*split, resized, /*is_intermediate=*/false);
+  physical->OnResizeDivider(1, 30, /*done_resizing=*/true);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(settled + 1, events.revisions.size());
   BarcSplitLayout actual{};
   ASSERT_EQ(1, barc_window_get_split(window, 0, &actual));
-  EXPECT_DOUBLE_EQ(0.6, base::span(actual.dividers)[1]);
+  EXPECT_DOUBLE_EQ(base::span(dragged.dividers)[1], base::span(actual.dividers)[1]);
+  EXPECT_GT(base::span(actual.dividers)[1], 0.5);
   const auto final_count = events.revisions.size();
   barc_discovery_unobserve(token);
-  strip->UpdateSplitDividers(*split, base::span(request.dividers), false);
+  physical->OnResizeDivider(1, -30, /*done_resizing=*/true);
   base::RunLoop().RunUntilIdle();
   EXPECT_EQ(final_count, events.revisions.size());
 }
 
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
                        FailedSplitTransferRestoresGeometryWithoutReselectingOwner) {
   const int32_t window = browser()->GetSessionID().id();
   std::array<int32_t, 4> handles{barc_window_tab_at(window, 0)};
@@ -5721,10 +5682,9 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   const BarcSplitLayout request{4, 1,
       {handles[0], handles[1], handles[2], handles[3]},
       {0.18, 0.43, 0.78}, handles[1]};
+  ASSERT_EQ(1, barc_tab_select(window, handles[1]));
   ASSERT_EQ(1, barc_window_set_split(window, &request));
   auto* strip = browser()->GetTabStripModel();
-  const auto split_id = strip->GetActiveTab()->GetSplit();
-  ASSERT_TRUE(split_id);
   auto* const source_widget =
       BrowserView::GetBrowserViewForBrowser(browser())->browser_widget();
   const int32_t personal = Open(kSharedPersonal, window, BARC_PROFILE_BLANK);
@@ -5732,6 +5692,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   for (size_t moving : {3u, 1u, 0u}) {
     SCOPED_TRACE(moving);
     ASSERT_EQ(1, barc_window_select(window));
+    ASSERT_EQ(1, barc_window_set_split(window, &request));
     const int32_t destination = barc_window_new_peer(window);
     ASSERT_NE(0, destination);
     CloseTransferDestination cancel(strip, destination, personal);
@@ -5740,15 +5701,8 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
     EXPECT_FALSE(browser()->IsDeleteScheduled());
     EXPECT_EQ(4, strip->count());
     EXPECT_FALSE(UnloadController::From(browser())->is_attempting_to_close_browser());
-    EXPECT_EQ(split_id, strip->GetActiveTab()->GetSplit());
     EXPECT_EQ(handles[1], strip->GetActiveTab()->GetHandle().raw_value());
     EXPECT_EQ(SharedWindow(personal), source_widget->selected_browser_view()->browser());
-    BarcSplitLayout actual{};
-    ASSERT_EQ(1, barc_window_get_split(window, 0, &actual));
-    EXPECT_EQ(request.count, actual.count);
-    EXPECT_EQ(request.orientation, actual.orientation);
-    EXPECT_TRUE(std::ranges::equal(base::span(request.tabs), base::span(actual.tabs)));
-    EXPECT_TRUE(std::ranges::equal(base::span(request.dividers), base::span(actual.dividers)));
     for (size_t i = 0; i < handles.size(); ++i) {
       auto* tab = tabs::TabHandle(handles[i]).Get();
       ASSERT_TRUE(tab);
@@ -5762,7 +5716,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
 }
 
 #if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
                        SplitCapturePolicyFollowsPresentedPanes) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t window = browser()->GetSessionID().id();
@@ -5793,6 +5747,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   // Preserve the existing two-pane path as well as the extra enrolled panes.
   BarcSplitLayout actual{};
   BarcSplitLayout request{2, 0, {handles[0], handles[3]}, {0.5}, handles[0]};
+  ASSERT_EQ(1, barc_tab_select(window, handles[0]));
   ASSERT_EQ(1, barc_window_set_split(window, &request));
   EXPECT_FALSE(widget->AreScreenshotsAllowed());
   ASSERT_EQ(1, barc_window_get_split(window, 0, &actual));
@@ -5874,8 +5829,8 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
   }
 }
 
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
-                       SplitReplacementClearsOnlyExactInactiveCollection) {
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
+                       SplitIdentityIsThePresentationGeneration) {
   const int32_t work = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   ASSERT_NE(0, work);
   const int32_t first = barc_window_tab_at(work, 0);
@@ -5893,14 +5848,16 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   ASSERT_EQ(1, barc_window_set_split(work, &old_request));
   BarcSplitLayout old{};
   ASSERT_EQ(1, barc_window_get_split(work, first, &old));
-  ASSERT_GT(old.collection, 0);
+  EXPECT_EQ(1u, old.kind);
+  EXPECT_EQ(0, old.collection);
+  ASSERT_NE(0u, old.generation);
   ASSERT_EQ(1, barc_tab_select(work, unrelated));
   BarcSplitLayout untouched{};
   untouched.count = 99;
   EXPECT_EQ(0, barc_window_get_split(work, 0, &untouched));
+  EXPECT_EQ(0, barc_window_get_split(work, first, &untouched));
   EXPECT_EQ(99u, untouched.count);
-  ASSERT_EQ(1, barc_window_get_split(work, first, &old));
-  EXPECT_EQ(0, old.active_tab);
+  EXPECT_EQ(0, barc_window_clear_split(work, first, &old));
 
   const int32_t personal = Open(kSharedPersonal, work, BARC_PROFILE_BLANK);
   const int32_t personal_first = barc_window_tab_at(personal, 0);
@@ -5915,9 +5872,9 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   BarcDiscoveryWindow before{};
   ASSERT_EQ(1, barc_window_discovery_state(personal, &before));
   ASSERT_EQ(personal, before.selected_client);
-  ASSERT_EQ(1, barc_window_clear_split(work, first, &old));
+  // The former split's expectation cannot clear the current one.
+  EXPECT_EQ(0, barc_window_clear_split(work, first, &old));
   EXPECT_EQ(unrelated, SharedWindow(work)->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
-  EXPECT_EQ(0, barc_window_get_split(work, first, &untouched));
   EXPECT_EQ(page, tabs::TabHandle(first).Get()->GetContents());
   EXPECT_EQ(1, content::EvalJs(page, "marker.live"));
   EXPECT_EQ("old-pane", content::EvalJs(page, "draft.value"));
@@ -5929,38 +5886,28 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(before.flags & (BARC_DISCOVERY_PHYSICAL_ACTIVE | BARC_DISCOVERY_PHYSICAL_VISIBLE),
             after.flags & (BARC_DISCOVERY_PHYSICAL_ACTIVE | BARC_DISCOVERY_PHYSICAL_VISIBLE));
 
-  // Equal geometry after remove/recreate is a different existing collection.
+  // Equal geometry after remove and recreate is a different presentation.
+  ASSERT_EQ(1, barc_window_clear_split(personal, 0, &new_layout));
+  ASSERT_EQ(1, barc_window_select(work));
   ASSERT_EQ(1, barc_tab_select(work, first));
-  ASSERT_EQ(1, barc_window_set_split(work, &old_request));
-  ASSERT_EQ(1, barc_window_get_split(work, first, &old));
-  ASSERT_EQ(1, barc_window_clear_split(work, first, &old));
   ASSERT_EQ(1, barc_window_set_split(work, &old_request));
   BarcSplitLayout recreated{};
   ASSERT_EQ(1, barc_window_get_split(work, first, &recreated));
-  EXPECT_NE(old.collection, recreated.collection);
-  ASSERT_EQ(1, barc_tab_select(personal, personal_first));
+  EXPECT_NE(old.generation, recreated.generation);
   EXPECT_EQ(0, barc_window_clear_split(work, first, &old));
-  // A later background native resize likewise wins over the old expectation.
-  auto* strip = SharedWindow(work)->GetTabStripModel();
-  const auto split = tabs::TabHandle(first).Get()->GetSplit();
-  ASSERT_TRUE(split);
-  const std::array<double, 1> resized{0.7};
-  strip->UpdateSplitDividers(*split, resized, false);
+  // A later native resize likewise wins over the old expectation.
+  views::AsViewClass<MultiContentsView>(
+      BrowserView::GetBrowserViewForBrowser(SharedWindow(work))
+          ->GetContentsContainerViewFor(page)->parent())
+      ->OnResizeDivider(0, 40, true);
   EXPECT_EQ(0, barc_window_clear_split(work, first, &recreated));
   BarcSplitLayout current{};
   ASSERT_EQ(1, barc_window_get_split(work, first, &current));
-  EXPECT_EQ(recreated.collection, current.collection);
-  EXPECT_DOUBLE_EQ(0.7, base::span(current.dividers)[0]);
-  BarcSplitLayout still_new{};
-  ASSERT_EQ(1, barc_window_get_split(personal, 0, &still_new));
-  EXPECT_EQ(new_layout.collection, still_new.collection);
-  EXPECT_EQ(new_layout.active_tab, still_new.active_tab);
-  ASSERT_EQ(1, barc_window_discovery_state(personal, &after));
-  EXPECT_EQ(personal, after.selected_client);
-  EXPECT_EQ(personal_first, after.active_tab);
+  EXPECT_EQ(recreated.generation, current.generation);
+  EXPECT_NE(base::span(recreated.dividers)[0], base::span(current.dividers)[0]);
 }
 
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
                        DisjointSplitReplacementWithinClientKeepsNewSelection) {
   const int32_t window = browser()->GetSessionID().id();
   std::array<int32_t, 4> handles{barc_window_tab_at(window, 0)};
@@ -5968,24 +5915,23 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
     handles[i] = barc_tab_create(window, "about:blank", 0);
     ASSERT_NE(0, handles[i]);
   }
+  ASSERT_EQ(1, barc_tab_select(window, handles[0]));
   const BarcSplitLayout initial{2, 0, {handles[0], handles[1]}, {0.4}, handles[0], 0};
   ASSERT_EQ(1, barc_window_set_split(window, &initial));
   BarcSplitLayout old{};
   ASSERT_EQ(1, barc_window_get_split(window, handles[0], &old));
   EXPECT_EQ(handles[0], old.active_tab);
+  ASSERT_EQ(1, barc_tab_select(window, handles[3]));
   const BarcSplitLayout replacement{2, 1, {handles[2], handles[3]}, {0.6}, handles[3], 0};
   ASSERT_EQ(1, barc_window_set_split(window, &replacement));
   BarcSplitLayout selected{};
   ASSERT_EQ(1, barc_window_get_split(window, 0, &selected));
-  ASSERT_NE(old.collection, selected.collection);
+  ASSERT_NE(old.generation, selected.generation);
   EXPECT_EQ(handles[3], selected.active_tab);
-  // Only the new Set's own active-member change is normalized for cleanup.
   EXPECT_EQ(0, barc_window_clear_split(window, handles[0], &old));
-  old.active_tab = 0;
-  ASSERT_EQ(1, barc_window_clear_split(window, handles[0], &old));
   BarcSplitLayout current{};
   ASSERT_EQ(1, barc_window_get_split(window, 0, &current));
-  EXPECT_EQ(selected.collection, current.collection);
+  EXPECT_EQ(selected.generation, current.generation);
   EXPECT_EQ(selected.active_tab, current.active_tab);
   EXPECT_EQ(selected.orientation, current.orientation);
   EXPECT_DOUBLE_EQ(selected.dividers[0], current.dividers[0]);
@@ -6043,71 +5989,6 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   ASSERT_GT(peer, 0);
   ASSERT_EQ(1, barc_tab_transfer(work_id, tab_id, peer));
   EXPECT_EQ(0, barc_tab_execute_command(work_id, tab_id, BARC_PAGE_VIDEO_PIP_TOGGLE));
-}
-
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
-                       SplitMiddlePaneUpdateKeepsOrderAndAccessibleLabels) {
-  const int32_t window = browser()->GetSessionID().id();
-  auto* strip = browser()->GetTabStripModel();
-  for (auto update : {TabStripModel::SplitUpdateType::kReplace,
-                      TabStripModel::SplitUpdateType::kSwap}) {
-    for (uint32_t orientation : {0u, 1u}) {
-      std::array<int32_t, 5> handles{};
-      for (auto& handle : handles) {
-        handle = barc_tab_create(window, "about:blank", 0);
-        ASSERT_NE(0, handle);
-      }
-      BarcSplitLayout request{4, orientation,
-          {handles[0], handles[1], handles[2], handles[3]},
-          {0.2, 0.45, 0.75}, handles[0]};
-      ASSERT_EQ(1, barc_window_set_split(window, &request));
-      const auto id = tabs::TabHandle(handles[0]).Get()->GetSplit();
-      ASSERT_TRUE(id);
-      auto check_labels = [&](const BarcSplitLayout& layout) {
-        for (size_t i = 0; i < layout.count; ++i) {
-          const auto suffix = l10n_util::GetStringFUTF16(
-              layout.orientation == 0
-                  ? IDS_TAB_AX_LABEL_SPLIT_TAB_HORIZONTAL_PANE_FORMAT
-                  : IDS_TAB_AX_LABEL_SPLIT_TAB_VERTICAL_PANE_FORMAT,
-              u"", base::NumberToString16(i + 1),
-              base::NumberToString16(layout.count));
-          EXPECT_NE(std::u16string::npos,
-                    tabs::GetAccessibleTabLabel(
-                        tabs::TabHandle(base::span(layout.tabs)[i]).Get(), true)
-                        .find(suffix));
-        }
-      };
-      check_labels(request);
-      strip->ReverseTabsInSplit(*id);
-      BarcSplitLayout reversed{};
-      ASSERT_EQ(1, barc_window_get_split(window, handles[0], &reversed));
-      EXPECT_EQ(handles[3], base::span(reversed.tabs)[0]);
-      check_labels(reversed);
-      strip->ReverseTabsInSplit(*id);
-      strip->UpdateTabInSplit(tabs::TabHandle(handles[1]).Get(),
-          strip->GetIndexOfTab(tabs::TabHandle(handles[4]).Get()), update);
-      BarcSplitLayout actual{};
-      ASSERT_EQ(1, barc_window_get_split(window, handles[0], &actual));
-      EXPECT_EQ(4u, actual.count);
-      EXPECT_EQ(handles[0], actual.active_tab);
-      EXPECT_EQ(id, tabs::TabHandle(handles[4]).Get()->GetSplit());
-      const std::array<int32_t, 4> expected{
-          handles[0], handles[4], handles[2], handles[3]};
-      EXPECT_TRUE(std::ranges::equal(base::span(actual.tabs), expected));
-      EXPECT_TRUE(std::ranges::equal(base::span(actual.dividers),
-                                    base::span(request.dividers)));
-      check_labels(actual);
-      // Removing the third pane must update every remaining ordinal/count.
-      ASSERT_EQ(1, barc_tab_close(window, handles[2]));
-      ASSERT_TRUE(base::test::RunUntil([&] {
-        return !tabs::TabHandle(handles[2]).Get();
-      }));
-      ASSERT_EQ(1, barc_window_get_split(window, handles[0], &actual));
-      EXPECT_EQ(3u, actual.count);
-      check_labels(actual);
-      ASSERT_EQ(1, barc_window_clear_split(window, handles[0], &actual));
-    }
-  }
 }
 
 IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
@@ -6436,21 +6317,15 @@ IN_PROC_BROWSER_TEST_F(BarcPresentedPaneCommandsBrowserTest,
     ASSERT_EQ(url, contents->GetLastCommittedURL());
     ASSERT_TRUE(contents->GetPrimaryMainFrame()->IsRenderFrameLive());
   }
-  BarcSplitLayout local{};
-  local.count = 2; local.orientation = 0; local.dividers[0] = .5;
-  local.tabs[0] = a1; local.tabs[1] = a2; local.active_tab = a1;
+  ASSERT_EQ(1, barc_tab_select(personal_id, b1));
   ASSERT_EQ(1, barc_window_select(work_id));
-  ASSERT_EQ(1, barc_window_set_split(work_id, &local));
-  local.tabs[0] = b1; local.tabs[1] = b2; local.active_tab = b1;
-  ASSERT_EQ(1, barc_window_select(personal_id));
-  ASSERT_EQ(1, barc_window_set_split(personal_id, &local));
-  ASSERT_EQ(1, barc_window_select(work_id));
+  ASSERT_EQ(1, barc_tab_select(work_id, a1));
   auto* widget = BrowserView::GetBrowserViewForBrowser(work)->browser_widget();
   NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
   ASSERT_EQ(1, barc_window_attach_native_shell(work_id, (__bridge void*)header));
   ASSERT_EQ(1, barc_window_show(work_id));
   widget->LayoutRootViewIfNecessary();
-  ASSERT_TRUE(widget->PresentBarcTabs(panes,
+  ASSERT_TRUE(widget->SetBarcPresentedTabs(panes,
       split_tabs::SplitTabVisualData::EqualSplit(split_tabs::SplitTabLayout::kSideBySide, 4), panes[0]));
   for (size_t i : {2u, 3u, 0u, 1u}) {
     SCOPED_TRACE("pane=" + std::to_string(i));
@@ -6974,85 +6849,38 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
-                       ExplicitMixedClearDissolvesOnlyUnchangedSelectedLocalCollection) {
+                       ExplicitClearReturnsPanesAndKeepsTheSelectedPage) {
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
-  auto* personal = SharedWindow(personal_id);
-  ASSERT_TRUE(work && personal);
+  ASSERT_TRUE(work);
   auto* work_view = BrowserView::GetBrowserViewForBrowser(work);
   auto* widget = work_view->browser_widget();
   const int32_t a = barc_window_tab_at(work_id, 0);
   const int32_t b = barc_window_tab_at(personal_id, 0);
-  const int32_t a2 = barc_tab_create(work_id, "about:blank", 0);
-  const int32_t b2 = barc_tab_create(personal_id, "about:blank", 0);
-  ASSERT_TRUE(a2 && b2);
   auto* contents = tabs::TabHandle(a).Get()->GetContents();
   ASSERT_TRUE(content::NavigateToURL(contents, GURL("data:text/html,owned-draft")));
   ASSERT_TRUE(content::ExecJs(contents, "window.ownedDraft={value:'kept'};"));
-  ASSERT_EQ(1, barc_window_select(work_id));
-  BarcSplitLayout local_work{2, 0, {a, a2}, {.4}, a};
-  ASSERT_EQ(1, barc_window_set_split(work_id, &local_work));
-  BarcSplitLayout work_before{};
-  ASSERT_EQ(1, barc_window_get_split(work_id, 0, &work_before));
-  ASSERT_EQ(1, barc_window_select(personal_id));
-  BarcSplitLayout local_personal{2, 0, {b, b2}, {.6}, b};
-  ASSERT_EQ(1, barc_window_set_split(personal_id, &local_personal));
-  BarcSplitLayout personal_before{};
-  ASSERT_EQ(1, barc_window_get_split(personal_id, 0, &personal_before));
   ASSERT_EQ(1, barc_window_select(work_id));
   NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
   ASSERT_EQ(1, barc_window_attach_native_shell(work_id, (__bridge void*)header));
   ASSERT_EQ(1, barc_window_show(work_id));
   BarcSplitLayout mixed{2, 0, {a, b}, {.5}, a};
   ASSERT_EQ(1, barc_window_set_split(work_id, &mixed));
-  widget->ClearBarcPresentedTabs(); // Automatic return is strictly view-only.
+  widget->ClearBarcPresentedTabs();
   BarcSplitLayout restored{};
-  ASSERT_EQ(1, barc_window_get_split(work_id, 0, &restored));
-  EXPECT_EQ(0u, restored.kind);
-  EXPECT_EQ(work_before.collection, restored.collection);
-  ASSERT_EQ(1, barc_window_get_split(personal_id, 0, &restored));
-  EXPECT_EQ(personal_before.collection, restored.collection);
-  auto* secondary = work_view->GetContentsContainerViewFor(tabs::TabHandle(a2).Get()->GetContents());
-  ASSERT_TRUE(secondary);
+  EXPECT_EQ(0, barc_window_get_split(work_id, 0, &restored));
   ASSERT_EQ(1, barc_window_set_split(work_id, &mixed));
   BarcSplitLayout mounted{};
   ASSERT_EQ(1, barc_window_get_split(work_id, 0, &mounted));
-  bool reconfigured = false;
-  {
-    TryPresentationDuringOwnerReconcile observed(secondary,
-        base::BindLambdaForTesting([&] {
-          reconfigured = true;
-          work->GetTabStripModel()->SetSplit(
-              {tabs::TabHandle(a).Get(), tabs::TabHandle(a2).Get()},
-              tabs::TabHandle(a).Get(),
-              split_tabs::SplitTabVisualData(split_tabs::SplitTabLayout::kStacked, .7));
-        }), true);
-    EXPECT_EQ(0, barc_window_clear_split(work_id, a, &mounted));
-  }
-  EXPECT_TRUE(reconfigured);
-  ASSERT_EQ(1, barc_window_get_split(work_id, 0, &restored));
-  EXPECT_EQ(work_before.collection, restored.collection);
-  EXPECT_EQ(1u, restored.orientation);
-  EXPECT_DOUBLE_EQ(.7, restored.dividers[0]);
-  EXPECT_EQ(a, restored.active_tab);
-  ASSERT_EQ(1, barc_window_set_split(work_id, &mixed));
-  ASSERT_EQ(1, barc_window_get_split(work_id, 0, &mounted));
   ASSERT_EQ(1, barc_window_clear_split(work_id, a, &mounted));
   EXPECT_EQ(0, barc_window_get_split(work_id, 0, &restored));
-  EXPECT_FALSE(tabs::TabHandle(a).Get()->GetSplit());
-  EXPECT_FALSE(tabs::TabHandle(a2).Get()->GetSplit());
-  ASSERT_EQ(1, barc_window_get_split(personal_id, 0, &restored));
-  EXPECT_EQ(personal_before.collection, restored.collection);
-  EXPECT_EQ(2u, restored.count);
   EXPECT_EQ(a, work->GetTabStripModel()->GetActiveTab()->GetHandle().raw_value());
   EXPECT_EQ(contents, work_view->GetActiveContentsContainerView()->contents_view()->web_contents());
   EXPECT_EQ("kept", content::EvalJs(contents, "ownedDraft.value"));
   EXPECT_EQ(1, barc_window_native_shell_is_owned(work_id, (__bridge void*)header));
 }
 
-// Real menu -> observed document intent -> one untouched admitted page. No
-// synthetic event replay or direct role injection is used by these cases.
 class BarcPeekBrowserTest : public BarcPromotionDiscoveryBrowserTest {
  public:
   void SetUpCommandLine(base::CommandLine* command_line) override {
@@ -7141,7 +6969,7 @@ IN_PROC_BROWSER_TEST_F(BarcPeekBrowserTest, MenuIntentIsDocumentBoundAndConsumed
   TestRenderViewContextMenu utility_menu(*original->GetPrimaryMainFrame(), utility_params);
   utility_menu.Init();
   EXPECT_FALSE(utility_menu.IsItemPresent(IDC_CONTENT_CONTEXT_OPENLINKINPEEK));
-  EXPECT_EQ(0, barc_tab_enable_peek(source_events.token, 2));
+  EXPECT_EQ(0, barc_tab_enable_peek(source_events.token, 4));
   const int32_t first = Request(source, embedded_test_server()->GetURL("/title1.html?old"), source_events);
   const GURL target = embedded_test_server()->GetURL("/title2.html");
   const int32_t latest = Request(source, target, source_events);
@@ -7274,6 +7102,7 @@ IN_PROC_BROWSER_TEST_F(BarcPeekBrowserTest, CardReturnsExactContainerBeforeHideA
   const int32_t fourth = barc_tab_create(source_id, "about:blank", 0);
   ASSERT_TRUE(second && third && fourth);
   BarcSplitLayout local{4, 0, {source_tab_id, second, third, fourth}, {.2, .5, .8}, source_tab_id};
+  ASSERT_EQ(1, barc_tab_select(source_id, source_tab_id));
   ASSERT_EQ(1, barc_window_set_split(source_id, &local));
   BarcSplitLayout original_split{};
   ASSERT_EQ(1, barc_window_get_split(source_id, 0, &original_split));
@@ -7307,6 +7136,7 @@ IN_PROC_BROWSER_TEST_F(BarcPeekBrowserTest, CardReturnsExactContainerBeforeHideA
   EXPECT_EQ(1, barc_window_set_native_header(source_id, (__bridge void*)sidebar,
       (__bridge void*)page_bar, (__bridge void*)page_bar, 40));
   ASSERT_EQ(1, barc_window_select(source_id));
+  ASSERT_EQ(1, barc_window_set_split(source_id, &local));
   auto* original = peek->GetContents();
   NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 400, 32)];
   NSView* actions = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 28, 96)];
@@ -7370,9 +7200,10 @@ IN_PROC_BROWSER_TEST_F(BarcPeekBrowserTest, CardReturnsExactContainerBeforeHideA
   EXPECT_FALSE(actions.superview);
   EXPECT_FALSE(source_tab->GetContents()->ShouldIgnoreInputEventsForTesting());
   EXPECT_TRUE(ordinary);
+  ASSERT_EQ(1, barc_window_set_split(source_id, &local));
   BarcSplitLayout restored{};
   ASSERT_EQ(1, barc_window_get_split(source_id, 0, &restored));
-  EXPECT_EQ(original_split.collection, restored.collection);
+  EXPECT_NE(0u, restored.generation);
   EXPECT_EQ(4u, restored.count);
   EXPECT_EQ(original_split.tabs[3], restored.tabs[3]);
 }
@@ -7876,6 +7707,785 @@ IN_PROC_BROWSER_TEST_F(BarcPeekBrowserTest, PrivatePairYieldsToPhysicalCloseWith
   EXPECT_FALSE(peek_before.PopMessage(&peek_message));
 }
 
+class BarcAppSplitBrowserTest : public BarcPeekBrowserTest {
+ protected:
+  void SetUpOnMainThread() override {
+    BarcPeekBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*.test", "127.0.0.1");
+  }
+  int32_t OpenShown(const char* profile, int32_t owner = 0) {
+    const int32_t window = Open(profile, owner, BARC_PROFILE_BLANK);
+    EXPECT_NE(0, window);
+    if (!owner) {
+      sidebar_ = Attach(window);
+      EXPECT_EQ(1, barc_window_show(window));
+    }
+    return window;
+  }
+  // Script state, draft and scroll position survive only while the same document stays live.
+  void MakeLive(int32_t window, int32_t tab, int pane) {
+    auto* contents = tabs::TabHandle(tab).Get()->GetContents();
+    const GURL url = embedded_test_server()->GetURL(
+        "app-split-" + std::to_string(pane) + ".test", "/title1.html");
+    content::TestNavigationObserver navigated(contents);
+    ASSERT_EQ(1, barc_tab_navigate(window, tab, url.spec().c_str()));
+    navigated.Wait();
+    ASSERT_TRUE(content::WaitForLoadStop(contents));
+    ASSERT_TRUE(content::ExecJs(contents, content::JsReplace(R"(
+      document.body.innerHTML = '<input id="draft"><div style="height:5000px"></div>';
+      window.marker = {pane: $1};
+      window.visibilityChanges = 0;
+      document.addEventListener('visibilitychange', () => window.visibilityChanges++);
+      document.querySelector('#draft').value = 'retained-' + $1;
+      window.scrollTo(0, 400);
+    )", pane)));
+  }
+  void ExpectLive(int32_t tab, int pane) {
+    auto* contents = tabs::TabHandle(tab).Get()->GetContents();
+    EXPECT_EQ(pane, content::EvalJs(contents, "window.marker.pane"));
+    EXPECT_EQ("retained-" + std::to_string(pane),
+              content::EvalJs(contents, "document.querySelector('#draft').value"));
+    EXPECT_EQ(400, content::EvalJs(contents, "window.scrollY"));
+  }
+  static ContentsContainerView* Container(int32_t tab) {
+    auto* page = tabs::TabHandle(tab).Get();
+    return BrowserView::GetBrowserViewForBrowser(page->GetBrowserWindowInterface())
+        ->GetContentsContainerViewFor(page->GetContents());
+  }
+  static MultiContentsView* Physical(int32_t tab) {
+    return views::AsViewClass<MultiContentsView>(Container(tab)->parent());
+  }
+  // A pane is only its page, and the panes and their dividers cover the content area.
+  void ExpectPanesFill(const BarcSplitLayout& layout) {
+    const auto tabs = base::span(layout.tabs).first(layout.count);
+    auto* physical = Physical(tabs.front());
+    ASSERT_TRUE(physical);
+    ASSERT_TRUE(physical->is_physical_presentation());
+    physical->GetWidget()->LayoutRootViewIfNecessary();
+    physical->DeprecatedLayoutImmediately();
+    const bool side_by_side = layout.orientation == 0;
+    for (int32_t tab : tabs) {
+      auto* container = Container(tab);
+      EXPECT_EQ(physical, container->parent());
+      EXPECT_TRUE(container->GetVisible());
+      EXPECT_TRUE(container->GetInsets().IsEmpty()) << container->GetInsets().ToString();
+      EXPECT_FALSE(container->mini_toolbar()->GetVisible());
+      EXPECT_EQ(container->GetLocalBounds(), container->contents_view()->bounds());
+      const gfx::Rect pane = container->bounds();
+      if (side_by_side) {
+        EXPECT_EQ(0, pane.y());
+        EXPECT_EQ(physical->height(), pane.height());
+      } else {
+        EXPECT_EQ(0, pane.x());
+        EXPECT_EQ(physical->width(), pane.width());
+      }
+      ExpectViewportHeight(tabs::TabHandle(tab).Get()->GetContents(), pane.height());
+    }
+    const gfx::Rect first = Container(tabs.front())->bounds();
+    const gfx::Rect last = Container(tabs.back())->bounds();
+    EXPECT_EQ(0, side_by_side ? first.x() : first.y());
+    EXPECT_EQ(side_by_side ? physical->width() : physical->height(),
+              side_by_side ? last.right() : last.bottom());
+  }
+  void ExpectVisible(int32_t tab) {
+    auto* contents = tabs::TabHandle(tab).Get()->GetContents();
+    EXPECT_TRUE(base::test::RunUntil([&] {
+      return content::EvalJs(contents, "document.visibilityState").ExtractString() == "visible";
+    })) << tab;
+  }
+  void ClickLink(int32_t tab, int modifiers) {
+    auto* contents = tabs::TabHandle(tab).Get()->GetContents();
+    content::SimulateMouseClickAt(contents, modifiers,
+                                  blink::WebMouseEvent::Button::kLeft, gfx::Point(30, 20));
+  }
+  void LoadLinkPage(BrowserWindowInterface* owner) {
+    Navigate(owner, embedded_test_server()->GetURL("/title1.html"));
+    auto* contents = owner->GetTabStripModel()->GetActiveWebContents();
+    ASSERT_TRUE(content::ExecJs(contents, content::JsReplace(R"(
+      document.body.innerHTML = '<a id="link" href=' + JSON.stringify($1) +
+          ' style="position:fixed;left:0;top:0;width:200px;height:60px;display:block">link</a>';
+    )", embedded_test_server()->GetURL("/title2.html").spec())));
+    content::WaitForHitTestData(contents->GetPrimaryMainFrame());
+  }
+  static void CollectLayers(ui::Layer* layer, std::vector<ui::Layer*>* all) {
+    all->push_back(layer);
+    for (ui::Layer* child : layer->children()) CollectLayers(child, all);
+  }
+  // Pages draw in the window's compositor below every NSView, so a dimming NSView
+  // would also dim the card's own page. The wash is a layer between the two.
+  void ExpectWashBetween(const std::vector<int32_t>& below, int32_t peek_tab, const gfx::Size& area) {
+    auto* page = Container(peek_tab)->contents_view()->layer();
+    ui::Layer* root = page;
+    while (root->parent()) root = root->parent();
+    std::vector<ui::Layer*> all;
+    CollectLayers(root, &all);
+    const auto wash = std::ranges::find_if(all, [](ui::Layer* layer) {
+      return layer->name() == "BarcPeekWash";
+    });
+    ASSERT_NE(all.end(), wash);
+    EXPECT_TRUE((*wash)->IsVisible());
+    EXPECT_EQ(area, (*wash)->size());
+    EXPECT_LT(wash - all.begin(), std::ranges::find(all, page) - all.begin());
+    for (int32_t tab : below) {
+      EXPECT_LT(std::ranges::find(all, Container(tab)->contents_view()->layer()) - all.begin(),
+                wash - all.begin());
+    }
+  }
+  int32_t RequestFromPane(content::WebContents* contents, const GURL& url, NavigationEvents& events) {
+    EXPECT_EQ(1, barc_tab_enable_peek(events.token, 1));
+    content::ContextMenuParams params;
+    params.page_url = contents->GetLastCommittedURL();
+    params.frame_url = params.page_url;
+    params.frame_origin = contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+    params.link_url = params.unfiltered_link_url = url;
+    TestRenderViewContextMenu menu(*contents->GetPrimaryMainFrame(), params);
+    menu.Init();
+    EXPECT_TRUE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_OPENLINKINPEEK));
+    if (!menu.IsItemPresent(IDC_CONTENT_CONTEXT_OPENLINKINPEEK)) return 0;
+    menu.ExecuteCommand(IDC_CONTENT_CONTEXT_OPENLINKINPEEK, 0);
+    return events.events.empty() || events.events.back().kind != BARC_TAB_PEEK_REQUESTED
+        ? 0 : events.events.back().error;
+  }
+  NSView* sidebar_ = nullptr;
+};
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, SameProfileSplitIsIndependentPositionedTabs) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  std::array<int32_t, 4> tabs{barc_window_tab_at(work, 0)};
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    if (i) tabs[i] = barc_tab_create(work, "about:blank", 0);
+    ASSERT_NE(0, tabs[i]);
+    MakeLive(work, tabs[i], static_cast<int>(i));
+  }
+  ASSERT_EQ(1, barc_tab_select(work, tabs[1]));
+  const BarcSplitLayout request{4, 0, {tabs[0], tabs[1], tabs[2], tabs[3]},
+                                {.25, .5, .75}, tabs[1]};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  BarcSplitLayout actual{};
+  ASSERT_EQ(1, barc_window_get_split(work, 0, &actual));
+  EXPECT_EQ(1u, actual.kind);
+  EXPECT_EQ(0, actual.collection);
+  EXPECT_NE(0u, actual.generation);
+  EXPECT_EQ(tabs[1], actual.active_tab);
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_FALSE(tabs::TabHandle(tabs[i]).Get()->IsSplit());
+    EXPECT_EQ(SharedWindow(work), tabs::TabHandle(tabs[i]).Get()->GetBrowserWindowInterface());
+    ExpectVisible(tabs[i]);
+    ExpectLive(tabs[i], static_cast<int>(i));
+  }
+  ExpectPanesFill(request);
+  ASSERT_EQ(1, barc_window_clear_split(work, 0, &actual));
+  EXPECT_EQ(0, barc_window_get_split(work, 0, &actual));
+  EXPECT_EQ(4u, barc_window_tab_count(work));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, PanesAreOnlyTheirPagesInEveryOrientationAndCount) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  const int32_t personal = OpenShown(kSharedPersonal, work);
+  std::array<int32_t, 4> same{barc_window_tab_at(work, 0)};
+  std::array<int32_t, 4> mixed{same[0], barc_window_tab_at(personal, 0)};
+  for (size_t i = 1; i < same.size(); ++i) {
+    same[i] = barc_tab_create(work, "about:blank", 0);
+    ASSERT_NE(0, same[i]);
+  }
+  mixed[2] = same[1];
+  mixed[3] = barc_tab_create(personal, "about:blank", 0);
+  ASSERT_NE(0, mixed[3]);
+  int pane = 0;
+  for (int32_t tab : {same[0], same[1], same[2], same[3], mixed[1], mixed[3]}) {
+    MakeLive(tabs::TabHandle(tab).Get()->GetBrowserWindowInterface()->GetSessionID().id(),
+             tab, pane++);
+  }
+  ASSERT_EQ(1, barc_window_select(work));
+  for (const auto& members : {same, mixed}) {
+    for (uint32_t count : {2u, 3u, 4u}) {
+      for (uint32_t orientation : {0u, 1u}) {
+        SCOPED_TRACE(testing::Message() << count << "/" << orientation << "/"
+                                        << (&members == &same ? "same" : "mixed"));
+        BarcSplitLayout request{count, orientation, {members[0], members[1], members[2], members[3]},
+                                {count == 2 ? .5 : (count == 3 ? 1.0 / 3 : .25),
+                                 count == 3 ? 2.0 / 3 : .5, .75}, members[0]};
+        ASSERT_EQ(1, barc_tab_select(work, members[0]));
+        ASSERT_EQ(1, barc_window_set_split(work, &request));
+        ExpectPanesFill(request);
+        BarcSplitLayout actual{};
+        ASSERT_EQ(1, barc_window_get_split(work, 0, &actual));
+        ASSERT_EQ(1, barc_window_clear_split(work, 0, &actual));
+      }
+    }
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, OrientationAndDividerChangesKeepPanesInPlace) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  std::array<int32_t, 3> tabs{barc_window_tab_at(work, 0)};
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    if (i) tabs[i] = barc_tab_create(work, "about:blank", 0);
+    ASSERT_NE(0, tabs[i]);
+    MakeLive(work, tabs[i], static_cast<int>(i));
+  }
+  ASSERT_EQ(1, barc_tab_select(work, tabs[0]));
+  BarcSplitLayout request{3, 0, {tabs[0], tabs[1], tabs[2]}, {.3, .6}, tabs[0]};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  for (int32_t tab : tabs) ExpectVisible(tab);
+  BarcSplitLayout before{};
+  ASSERT_EQ(1, barc_window_get_split(work, 0, &before));
+  auto* physical = Physical(tabs[0]);
+  ASSERT_TRUE(physical);
+  std::vector<content::RenderWidgetHostView*> surfaces;
+  for (int32_t tab : tabs) {
+    surfaces.push_back(tabs::TabHandle(tab).Get()->GetContents()->GetRenderWidgetHostView());
+    ASSERT_TRUE(content::ExecJs(tabs::TabHandle(tab).Get()->GetContents(),
+                                "window.visibilityChanges = 0"));
+  }
+  DiscoveryEvents events;
+  const auto token = barc_discovery_observe(DiscoveryEvents::Receive, &events);
+  ASSERT_NE(0u, token);
+  base::ScopedClosureRunner unsubscribe(base::BindOnce(barc_discovery_unobserve, token));
+
+  request.orientation = 1;
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  request.dividers[0] = .2;
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  BarcSplitLayout actual{};
+  ASSERT_EQ(1, barc_window_get_split(work, 0, &actual));
+  EXPECT_EQ(before.generation, actual.generation);
+  EXPECT_EQ(1u, actual.orientation);
+  EXPECT_DOUBLE_EQ(.2, base::span(actual.dividers)[0]);
+  EXPECT_EQ(physical, Physical(tabs[0]));
+  ExpectPanesFill(request);
+  const int stacked_first = Container(tabs[0])->height();
+  EXPECT_LT(stacked_first, Container(tabs[1])->height());
+
+  base::RunLoop().RunUntilIdle();
+  events.revisions.clear();
+  physical->OnResizeDivider(1, 40, true);
+  base::RunLoop().RunUntilIdle();
+  EXPECT_FALSE(events.revisions.empty());
+  ASSERT_EQ(1, barc_window_get_split(work, 0, &actual));
+  EXPECT_EQ(before.generation, actual.generation);
+  EXPECT_DOUBLE_EQ(.2, base::span(actual.dividers)[0]);
+  EXPECT_GT(base::span(actual.dividers)[1], .6);
+  physical->DeprecatedLayoutImmediately();
+  ExpectPanesFill(actual);
+
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    SCOPED_TRACE(i);
+    auto* contents = tabs::TabHandle(tabs[i]).Get()->GetContents();
+    EXPECT_EQ(surfaces[i], contents->GetRenderWidgetHostView());
+    EXPECT_EQ(0, content::EvalJs(contents, "window.visibilityChanges"));
+    ExpectLive(tabs[i], static_cast<int>(i));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, LeavingASameProfileSplitKeepsPanesAndCanReturn) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  std::array<int32_t, 3> tabs{barc_window_tab_at(work, 0)};
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    if (i) tabs[i] = barc_tab_create(work, "about:blank", 0);
+    ASSERT_NE(0, tabs[i]);
+    MakeLive(work, tabs[i], static_cast<int>(i));
+  }
+  const int32_t other = barc_tab_create(work, "about:blank", 0);
+  ASSERT_NE(0, other);
+  ASSERT_EQ(1, barc_tab_select(work, tabs[0]));
+  const BarcSplitLayout request{3, 1, {tabs[0], tabs[1], tabs[2]}, {.3, .6}, tabs[0]};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  BarcSplitLayout first{};
+  ASSERT_EQ(1, barc_window_get_split(work, 0, &first));
+
+  ASSERT_EQ(1, barc_tab_select(work, other));
+  BarcSplitLayout absent{};
+  EXPECT_EQ(0, barc_window_get_split(work, 0, &absent));
+  auto* owner = BrowserView::GetBrowserViewForBrowser(SharedWindow(work));
+  EXPECT_EQ(owner->multi_contents_view(), Container(other)->parent());
+  ExpectVisible(other);
+  EXPECT_EQ(owner->multi_contents_view()->bounds().height(),
+            owner->GetContentsContainerViewFor(tabs::TabHandle(other).Get()->GetContents())->height());
+  for (size_t i = 0; i < tabs.size(); ++i) ExpectLive(tabs[i], static_cast<int>(i));
+
+  ASSERT_EQ(1, barc_tab_select(work, tabs[0]));
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  BarcSplitLayout second{};
+  ASSERT_EQ(1, barc_window_get_split(work, 0, &second));
+  EXPECT_NE(first.generation, second.generation);
+  ExpectPanesFill(request);
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    ExpectVisible(tabs[i]);
+    ExpectLive(tabs[i], static_cast<int>(i));
+  }
+
+  ASSERT_EQ(1, barc_tab_close(work, tabs[1]));
+  ASSERT_TRUE(base::test::RunUntil([&] { return !tabs::TabHandle(tabs[1]).Get(); }));
+  EXPECT_EQ(0, barc_window_get_split(work, 0, &absent));
+  ExpectLive(tabs[0], 0);
+  ExpectLive(tabs[2], 2);
+  const BarcSplitLayout remainder{2, 1, {tabs[0], tabs[2]}, {.5}, tabs[0]};
+  ASSERT_EQ(1, barc_tab_select(work, tabs[0]));
+  ASSERT_EQ(1, barc_window_set_split(work, &remainder));
+  ExpectPanesFill(remainder);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, PrivateSessionSplitsButNeverWithARegularTab) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  SharedProfileResult opened;
+  barc_private_session_open_window(SharedProfileCompleted, &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t private_id = opened.Get<1>();
+  sidebar_ = Attach(private_id);
+  ASSERT_EQ(1, barc_window_show(private_id));
+  std::array<int32_t, 3> tabs{barc_window_tab_at(private_id, 0)};
+  for (size_t i = 0; i < tabs.size(); ++i) {
+    if (i) tabs[i] = barc_tab_create(private_id, "about:blank", 0);
+    ASSERT_NE(0, tabs[i]);
+    MakeLive(private_id, tabs[i], static_cast<int>(i));
+  }
+  ASSERT_EQ(1, barc_tab_select(private_id, tabs[0]));
+  for (uint32_t orientation : {0u, 1u}) {
+    SCOPED_TRACE(orientation);
+    const BarcSplitLayout request{3, orientation, {tabs[0], tabs[1], tabs[2]}, {.3, .6}, tabs[0]};
+    ASSERT_EQ(1, barc_window_set_split(private_id, &request));
+    BarcSplitLayout actual{};
+    ASSERT_EQ(1, barc_window_get_split(private_id, 0, &actual));
+    EXPECT_EQ(1u, actual.kind);
+    ExpectPanesFill(request);
+    for (size_t i = 0; i < tabs.size(); ++i) {
+      ExpectVisible(tabs[i]);
+      ExpectLive(tabs[i], static_cast<int>(i));
+    }
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, PrivateTabNeverSplitsWithARegularTab) {
+  SharedProfileResult opened;
+  barc_private_session_open_window(SharedProfileCompleted, &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t private_id = opened.Get<1>();
+  sidebar_ = Attach(private_id);
+  ASSERT_EQ(1, barc_window_show(private_id));
+  const std::array<int32_t, 1> tabs{barc_window_tab_at(private_id, 0)};
+  BarcSplitLayout actual{};
+  // A regular profile opened into the private window's native window must never
+  // share a split with it, whichever side asks.
+  const int32_t regular = Open(kSharedWork, private_id, BARC_PROFILE_BLANK);
+  ASSERT_NE(0, regular);
+  const int32_t regular_tab = barc_window_tab_at(regular, 0);
+  ASSERT_EQ(1, barc_window_select(private_id));
+  ASSERT_EQ(1, barc_tab_select(private_id, tabs[0]));
+  const BarcSplitLayout from_private{2, 0, {tabs[0], regular_tab}, {.5}, tabs[0]};
+  EXPECT_EQ(0, barc_window_set_split(private_id, &from_private));
+  ASSERT_EQ(1, barc_window_select(regular));
+  const BarcSplitLayout from_regular{2, 0, {regular_tab, tabs[0]}, {.5}, regular_tab};
+  EXPECT_EQ(0, barc_window_set_split(regular, &from_regular));
+  EXPECT_EQ(0, barc_window_get_split(regular, 0, &actual));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, PeekCoversTheWholeSplitAndReturnsFocusToItsPane) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  const int32_t personal = OpenShown(kSharedPersonal, work);
+  const int32_t a = barc_window_tab_at(work, 0);
+  const int32_t b = barc_window_tab_at(personal, 0);
+  const int32_t c = barc_tab_create(work, "about:blank", 0);
+  ASSERT_NE(0, c);
+  MakeLive(work, a, 0);
+  MakeLive(personal, b, 1);
+  MakeLive(work, c, 2);
+  ASSERT_EQ(1, barc_window_select(work));
+  ASSERT_EQ(1, barc_tab_select(work, a));
+  for (uint32_t orientation : {0u, 1u}) {
+    SCOPED_TRACE(orientation);
+    BarcSplitLayout request{3, orientation, {a, b, c}, {.3, .6}, a};
+    ASSERT_EQ(1, barc_window_select(work));
+    ASSERT_EQ(1, barc_tab_select(work, a));
+    ASSERT_EQ(1, barc_window_set_split(work, &request));
+    auto* physical = Physical(a);
+    physical->DeprecatedLayoutImmediately();
+    const std::array<gfx::Rect, 3> panes{Container(a)->bounds(), Container(b)->bounds(),
+                                         Container(c)->bounds()};
+    auto* source = SharedWindow(personal);
+    auto* source_contents = tabs::TabHandle(b).Get()->GetContents();
+    auto* widget = BrowserView::GetBrowserViewForBrowser(source)->browser_widget();
+    widget->SelectBarcPresentedContents(source_contents);
+    ASSERT_EQ(source, widget->selected_browser_view()->browser());
+    BarcSplitLayout live{};
+    ASSERT_EQ(1, barc_window_get_split(personal, 0, &live));
+
+    NavigationEvents source_events, peek_events;
+    source_events.token = barc_tab_observe(personal, b, NavigationEvents::Receive, &source_events);
+    const int32_t requested = Request(source,
+        embedded_test_server()->GetURL("/title2.html"), source_events);
+    ASSERT_GT(requested, 0);
+    const auto [peer, peek_id] = Create(source_events.token, requested, peek_events);
+    auto* peek = tabs::TabHandle(peek_id).Get();
+    ASSERT_TRUE(peek);
+    ASSERT_TRUE(content::WaitForLoadStop(peek->GetContents()));
+    EXPECT_EQ(source->GetProfile(), peek->GetContents()->GetBrowserContext());
+    NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
+    NSView* actions = [[NSView alloc] initWithFrame:NSZeroRect];
+    ASSERT_EQ(1, barc_window_attach_native_shell(personal, (__bridge void*)sidebar_));
+    const uint64_t card = barc_tab_present_peek(personal, b, peer, peek_id,
+        (__bridge void*)sidebar_, (__bridge void*)header, (__bridge void*)actions);
+    ASSERT_NE(0u, card);
+    EXPECT_TRUE(widget->IsBarcPeekVisible(peek));
+    ExpectWashBetween({a, b, c}, peek_id, physical->size());
+    physical->DeprecatedLayoutImmediately();
+    for (size_t i = 0; i < panes.size(); ++i) {
+      const int32_t tab = base::span(request.tabs)[i];
+      SCOPED_TRACE(i);
+      EXPECT_EQ(physical, Container(tab)->parent());
+      EXPECT_EQ(panes[i], Container(tab)->bounds());
+      ExpectVisible(tab);
+      ExpectLive(tab, static_cast<int>(i));
+    }
+    peek->GetContents()->Focus();
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return peek->GetContents()->GetRenderWidgetHostView()->HasFocus();
+    }));
+    ASSERT_FALSE(source_contents->GetRenderWidgetHostView()->HasFocus());
+    ASSERT_EQ(1, barc_tab_hide_peek(personal, b, peer, peek_id, card,
+        (__bridge void*)header, (__bridge void*)actions));
+    EXPECT_EQ(source, widget->selected_browser_view()->browser());
+    EXPECT_TRUE(base::test::RunUntil([&] {
+      return source_contents->GetRenderWidgetHostView()->HasFocus();
+    }));
+    BarcSplitLayout after{};
+    ASSERT_EQ(1, barc_window_get_split(personal, 0, &after));
+    EXPECT_EQ(live.generation, after.generation);
+    EXPECT_EQ(b, after.active_tab);
+    ASSERT_EQ(1, barc_tab_close(peer, peek_id));
+    ASSERT_TRUE(base::test::RunUntil([&] { return !tabs::TabHandle(peek_id).Get(); }));
+    barc_tab_unobserve(source_events.token);
+    ASSERT_EQ(1, barc_window_get_split(personal, 0, &after));
+    ASSERT_EQ(1, barc_window_clear_split(personal, 0, &after));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, ShiftAndOptionClickRequestPeekInsteadOfWindowOrDownload) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  auto* owner = SharedWindow(work);
+  const int32_t tab = barc_window_tab_at(work, 0);
+  auto* contents = tabs::TabHandle(tab).Get()->GetContents();
+  LoadLinkPage(owner);
+  const GURL target = embedded_test_server()->GetURL("/title2.html");
+  const GURL page = contents->GetLastCommittedURL();
+  const size_t windows = GlobalBrowserCollection::GetInstance()->GetSize();
+  NavigationEvents events, peek_events;
+  events.token = barc_tab_observe(work, tab, NavigationEvents::Receive, &events);
+  ASSERT_EQ(1, barc_tab_enable_peek(events.token, 3));
+  auto peek_requests = [&] {
+    return std::ranges::count_if(events.events, [](const auto& event) {
+      return event.kind == BARC_TAB_PEEK_REQUESTED;
+    });
+  };
+  auto* downloads = owner->GetProfile()->GetDownloadManager();
+  auto download_count = [&] {
+    std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> items;
+    downloads->GetAllDownloads(&items);
+    return items.size();
+  };
+  const size_t downloads_before = download_count();
+
+  ClickLink(tab, blink::WebInputEvent::kShiftKey);
+  ASSERT_TRUE(base::test::RunUntil([&] { return peek_requests() == 1; }));
+  EXPECT_EQ(target.spec(), events.events.back().url);
+  EXPECT_EQ(windows, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_EQ(page, contents->GetLastCommittedURL());
+
+  ClickLink(tab, blink::WebInputEvent::kAltKey);
+  ASSERT_TRUE(base::test::RunUntil([&] { return peek_requests() == 2; }));
+  EXPECT_EQ(target.spec(), events.events.back().url);
+  const int32_t request = events.events.back().error;
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(downloads_before, download_count());
+  EXPECT_EQ(windows, GlobalBrowserCollection::GetInstance()->GetSize());
+
+  // The captured Option-click parameters load through the normal Peek admission.
+  const auto [peer, peek_id] = Create(events.token, request, peek_events);
+  auto* peek = tabs::TabHandle(peek_id).Get();
+  ASSERT_TRUE(peek);
+  ASSERT_TRUE(content::WaitForLoadStop(peek->GetContents()));
+  EXPECT_EQ(target, peek->GetContents()->GetLastCommittedURL());
+  EXPECT_EQ(owner->GetProfile(), peek->GetContents()->GetBrowserContext());
+  ASSERT_EQ(1, barc_tab_close(peer, peek_id));
+  ASSERT_TRUE(base::test::RunUntil([&] { return !tabs::TabHandle(peek_id).Get(); }));
+
+  // With the setting off a Shift-click stays Chromium's, and Option still peeks.
+  ASSERT_EQ(1, barc_tab_enable_peek(events.token, 1));
+  const auto before_setting = peek_requests();
+  ClickLink(tab, blink::WebInputEvent::kAltKey);
+  ASSERT_TRUE(base::test::RunUntil([&] { return peek_requests() == before_setting + 1; }));
+  ClickLink(tab, blink::WebInputEvent::kShiftKey);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return GlobalBrowserCollection::GetInstance()->GetSize() == windows + 1;
+  }));
+  EXPECT_EQ(before_setting + 1, peek_requests());
+
+  // Without the capability, Option-click is Chromium's download again.
+  ASSERT_EQ(1, barc_tab_enable_peek(events.token, 0));
+  ClickLink(tab, blink::WebInputEvent::kAltKey);
+  ASSERT_TRUE(base::test::RunUntil([&] { return download_count() == downloads_before + 1; }));
+  EXPECT_EQ(before_setting + 1, peek_requests());
+
+  // The menu's Open Link in New Window opens a window even when Shift-click peeks.
+  ASSERT_EQ(1, barc_tab_enable_peek(events.token, 3));
+  content::ContextMenuParams menu_params;
+  menu_params.page_url = page;
+  menu_params.frame_url = page;
+  menu_params.frame_origin = contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  menu_params.link_url = menu_params.unfiltered_link_url = target;
+  TestRenderViewContextMenu menu(*contents->GetPrimaryMainFrame(), menu_params);
+  menu.Init();
+  ASSERT_TRUE(menu.IsCommandIdEnabled(IDC_CONTENT_CONTEXT_OPENLINKNEWWINDOW));
+  menu.ExecuteCommand(IDC_CONTENT_CONTEXT_OPENLINKNEWWINDOW, 0);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return GlobalBrowserCollection::GetInstance()->GetSize() == windows + 2;
+  }));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(before_setting + 1, peek_requests());
+  barc_tab_unobserve(events.token);
+  std::vector<raw_ptr<download::DownloadItem, VectorExperimental>> items;
+  downloads->GetAllDownloads(&items);
+  for (auto& item : items) item->Cancel(/*user_cancel=*/true);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, PresentedSplitFollowsTheContentAreaWhenChromeChanges) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  ASSERT_EQ(1, barc_window_show(work));
+  const int32_t a = barc_window_tab_at(work, 0);
+  const int32_t b = barc_tab_create(work, "about:blank", 0);
+  ASSERT_NE(0, b);
+  MakeLive(work, a, 0);
+  MakeLive(work, b, 1);
+  ASSERT_EQ(1, barc_tab_select(work, a));
+  // Startup can mount a saved split before the sidebar and header attach.
+  const BarcSplitLayout request{2, 1, {a, b}, {.5}, a};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  auto* view = BrowserView::GetBrowserViewForBrowser(SharedWindow(work));
+  auto* widget = view->browser_widget();
+  auto* logical = view->multi_contents_view();
+  auto expect_following = [&] {
+    widget->LayoutRootViewIfNecessary();
+    EXPECT_EQ(views::View::ConvertRectToTarget(logical, widget->non_client_view(),
+                                               logical->GetLocalBounds()),
+              Physical(a)->bounds());
+    ExpectPanesFill(request);
+  };
+  expect_following();
+  const int full_width = Physical(a)->width();
+  sidebar_ = Attach(work);
+  expect_following();
+  EXPECT_LT(Physical(a)->width(), full_width);
+  NSView* page_bar = [[NSView alloc] init];
+  ASSERT_EQ(1, barc_window_set_native_header(work, (__bridge void*)sidebar_, nullptr,
+                                             (__bridge void*)page_bar, 40));
+  expect_following();
+  EXPECT_EQ(40, Physical(a)->y());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, SinglePagePeekSitsAboveItsWash) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  auto* source = SharedWindow(work);
+  const int32_t tab = barc_window_tab_at(work, 0);
+  Navigate(source, embedded_test_server()->GetURL("/title1.html"));
+  NavigationEvents source_events, peek_events;
+  source_events.token = barc_tab_observe(work, tab, NavigationEvents::Receive, &source_events);
+  const auto [peer, peek_id] = Create(source_events.token,
+      Request(source, embedded_test_server()->GetURL("/title2.html"), source_events), peek_events);
+  auto* peek = tabs::TabHandle(peek_id).Get();
+  ASSERT_TRUE(peek);
+  ASSERT_TRUE(content::WaitForLoadStop(peek->GetContents()));
+  NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
+  NSView* actions = [[NSView alloc] initWithFrame:NSZeroRect];
+  ASSERT_NE(0u, barc_tab_present_peek(work, tab, peer, peek_id, (__bridge void*)sidebar_,
+                                      (__bridge void*)header, (__bridge void*)actions));
+  auto* view = BrowserView::GetBrowserViewForBrowser(source);
+  ExpectWashBetween({tab}, peek_id, view->multi_contents_view()->size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, PeekFromAnInactivePaneSelectsThatPaneFirst) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  const int32_t personal = OpenShown(kSharedPersonal, work);
+  const int32_t a = barc_window_tab_at(work, 0);
+  const int32_t other_profile = barc_window_tab_at(personal, 0);
+  const int32_t same_profile = barc_tab_create(work, "about:blank", 0);
+  ASSERT_NE(0, same_profile);
+  MakeLive(work, a, 0);
+  MakeLive(personal, other_profile, 1);
+  MakeLive(work, same_profile, 2);
+  ASSERT_EQ(1, barc_window_select(work));
+  ASSERT_EQ(1, barc_tab_select(work, a));
+  const BarcSplitLayout request{3, 0, {a, other_profile, same_profile}, {.3, .6}, a};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  auto* widget = BrowserView::GetBrowserViewForBrowser(SharedWindow(work))->browser_widget();
+  widget->Activate();
+  ASSERT_TRUE(base::test::RunUntil([&] { return widget->IsActive(); }));
+  for (const auto [owner, pane] : {std::pair{work, same_profile}, std::pair{personal, other_profile}}) {
+    SCOPED_TRACE(pane);
+    ASSERT_EQ(1, barc_window_select(work));
+    ASSERT_EQ(1, barc_window_attach_native_shell(work, (__bridge void*)sidebar_));
+    ASSERT_EQ(1, barc_tab_select(work, a));
+    ASSERT_EQ(1, barc_window_set_split(work, &request));
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return tabs::TabHandle(a).Get()->GetContents()->GetRenderWidgetHostView()->HasFocus();
+    }));
+    NavigationEvents events, peek_events;
+    events.token = barc_tab_observe(owner, pane, NavigationEvents::Receive, &events);
+    const int32_t requested = RequestFromPane(tabs::TabHandle(pane).Get()->GetContents(),
+        embedded_test_server()->GetURL("/title2.html"), events);
+    ASSERT_GT(requested, 0);
+    EXPECT_EQ(SharedWindow(owner), widget->selected_browser_view()->browser());
+    EXPECT_TRUE(tabs::TabHandle(pane).Get()->IsActivated());
+    const auto [peer, peek_id] = Create(events.token, requested, peek_events);
+    ASSERT_NE(0, peek_id);
+    EXPECT_EQ(SharedWindow(owner)->GetProfile(),
+              tabs::TabHandle(peek_id).Get()->GetContents()->GetBrowserContext());
+    ASSERT_TRUE(content::WaitForLoadStop(tabs::TabHandle(peek_id).Get()->GetContents()));
+    ASSERT_EQ(1, barc_window_attach_native_shell(owner, (__bridge void*)sidebar_));
+    NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
+    NSView* actions = [[NSView alloc] initWithFrame:NSZeroRect];
+    const uint64_t card = barc_tab_present_peek(owner, pane, peer, peek_id, (__bridge void*)sidebar_,
+                                                (__bridge void*)header, (__bridge void*)actions);
+    ASSERT_NE(0u, card);
+    tabs::TabHandle(peek_id).Get()->GetContents()->Focus();
+    ASSERT_EQ(1, barc_tab_hide_peek(owner, pane, peer, peek_id, card, (__bridge void*)header,
+                                    (__bridge void*)actions));
+    auto* pane_contents = tabs::TabHandle(pane).Get()->GetContents();
+    EXPECT_TRUE(base::test::RunUntil([&] { return pane_contents->GetRenderWidgetHostView()->HasFocus(); }));
+    barc_tab_unobserve(events.token);
+    ASSERT_EQ(1, barc_tab_close(peer, peek_id));
+    ASSERT_TRUE(base::test::RunUntil([&, peek_id = peek_id] { return !tabs::TabHandle(peek_id).Get(); }));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, SwitchingPaneOwnerNeverMovesThePanes) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  const int32_t personal = OpenShown(kSharedPersonal, work);
+  const int32_t a = barc_window_tab_at(work, 0);
+  const int32_t b = barc_window_tab_at(personal, 0);
+  MakeLive(work, a, 0);
+  MakeLive(personal, b, 1);
+  ASSERT_EQ(1, barc_window_select(work));
+  ASSERT_EQ(1, barc_tab_select(work, a));
+  NSView* page_bar = [[NSView alloc] init];
+  ASSERT_EQ(1, barc_window_set_native_header(work, (__bridge void*)sidebar_, nullptr,
+                                             (__bridge void*)page_bar, 40));
+  const BarcSplitLayout request{2, 1, {a, b}, {.5}, a};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  auto* widget = BrowserView::GetBrowserViewForBrowser(SharedWindow(work))->browser_widget();
+  widget->LayoutRootViewIfNecessary();
+  const gfx::Rect before = Physical(a)->bounds();
+  ASSERT_EQ(240, before.x());
+  ASSERT_EQ(40, before.y());
+  // The app moves the sidebar and header to the newly selected client afterwards.
+  widget->SelectBarcPresentedContents(tabs::TabHandle(b).Get()->GetContents());
+  ASSERT_EQ(SharedWindow(personal), widget->selected_browser_view()->browser());
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_EQ(before, Physical(a)->bounds());
+  ASSERT_EQ(1, barc_window_detach_native_shell_if_owned(work, (__bridge void*)sidebar_));
+  ASSERT_EQ(1, barc_window_attach_native_shell(personal, (__bridge void*)sidebar_));
+  widget->LayoutRootViewIfNecessary();
+  EXPECT_EQ(before, Physical(a)->bounds());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, LinkHoverBubbleDoesNotBlockPaneSelectionOrPeek) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  const int32_t personal = OpenShown(kSharedPersonal, work);
+  const int32_t a = barc_window_tab_at(work, 0);
+  const int32_t b = barc_window_tab_at(personal, 0);
+  MakeLive(work, a, 0);
+  MakeLive(personal, b, 1);
+  ASSERT_EQ(1, barc_window_select(work));
+  ASSERT_EQ(1, barc_tab_select(work, a));
+  const BarcSplitLayout request{2, 0, {a, b}, {.5}, a};
+  ASSERT_EQ(1, barc_window_set_split(work, &request));
+  auto* widget = Container(a)->GetWidget();
+  auto hover = [&](int32_t tab) {
+    Container(tab)->contents_view()->GetStatusBubble()->SetURL(
+        embedded_test_server()->GetURL("/hovered-link"));
+    return base::test::RunUntil([&] {
+      for (views::Widget* child : views::Widget::GetAllOwnedWidgets(widget->GetNativeView())) {
+        if (child->GetName() == "StatusBubble" && child->IsVisible()) return true;
+      }
+      return false;
+    });
+  };
+  ASSERT_TRUE(hover(a));
+  auto* browser_widget = BrowserView::GetBrowserViewForBrowser(SharedWindow(work))->browser_widget();
+  browser_widget->SelectBarcPresentedContents(tabs::TabHandle(b).Get()->GetContents());
+  EXPECT_EQ(SharedWindow(personal), browser_widget->selected_browser_view()->browser());
+
+  ASSERT_TRUE(hover(b));
+  NavigationEvents source_events, peek_events;
+  source_events.token = barc_tab_observe(personal, b, NavigationEvents::Receive, &source_events);
+  const int32_t requested = Request(SharedWindow(personal),
+      embedded_test_server()->GetURL("/title2.html"), source_events);
+  ASSERT_GT(requested, 0);
+  const auto [peer, peek_id] = Create(source_events.token, requested, peek_events);
+  ASSERT_NE(0, peek_id);
+  ASSERT_TRUE(content::WaitForLoadStop(tabs::TabHandle(peek_id).Get()->GetContents()));
+  ASSERT_EQ(1, barc_window_attach_native_shell(personal, (__bridge void*)sidebar_));
+  NSView* header = [[NSView alloc] initWithFrame:NSZeroRect];
+  NSView* actions = [[NSView alloc] initWithFrame:NSZeroRect];
+  EXPECT_NE(0u, barc_tab_present_peek(personal, b, peer, peek_id, (__bridge void*)sidebar_,
+                                      (__bridge void*)header, (__bridge void*)actions));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, StockSplitEntryPointsAreGoneFromNativeWindows) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenShown(kSharedWork);
+  auto* owner = SharedWindow(work);
+  const int32_t tab = barc_window_tab_at(work, 0);
+  auto* contents = tabs::TabHandle(tab).Get()->GetContents();
+  LoadLinkPage(owner);
+  content::ContextMenuParams params;
+  params.page_url = contents->GetLastCommittedURL();
+  params.frame_url = params.page_url;
+  params.frame_origin = contents->GetPrimaryMainFrame()->GetLastCommittedOrigin();
+  params.link_url = params.unfiltered_link_url = embedded_test_server()->GetURL("/title2.html");
+  TestRenderViewContextMenu menu(*contents->GetPrimaryMainFrame(), params);
+  menu.Init();
+  EXPECT_FALSE(menu.IsItemPresent(IDC_CONTENT_CONTEXT_OPENLINKSPLITVIEW));
+  EXPECT_FALSE(chrome::IsCommandEnabled(owner, IDC_NEW_SPLIT_TAB));
+
+  // Cmd+Option+click is Chromium's "open in split"; it opens a plain tab here.
+  const int count = owner->GetTabStripModel()->count();
+  ClickLink(tab, blink::WebInputEvent::kMetaKey | blink::WebInputEvent::kAltKey);
+  ASSERT_TRUE(base::test::RunUntil([&] { return owner->GetTabStripModel()->count() == count + 1; }));
+  for (int i = 0; i < owner->GetTabStripModel()->count(); ++i) {
+    EXPECT_FALSE(owner->GetTabStripModel()->GetTabAtIndex(i)->IsSplit());
+  }
+
+  // Dragging a link or a tab onto the page edge is Chromium's drop-to-split.
+  ASSERT_EQ(1, barc_tab_select(work, tab));
+  auto* view = BrowserView::GetBrowserViewForBrowser(owner);
+  EXPECT_FALSE(view->multi_contents_view()->IsDragAndDropEnabled());
+  const gfx::Rect page = view->GetActiveContentsContainerView()->GetLocalBounds();
+  const gfx::Point edge(page.right() - 4, page.CenterPoint().y());
+  gfx::Point edge_in_screen = edge;
+  views::View::ConvertPointToScreen(view->GetActiveContentsContainerView(), &edge_in_screen);
+  EXPECT_EQ(nullptr, view->GetTabDragTarget(edge_in_screen));
+  content::DropData link;
+  link.url_infos.push_back({embedded_test_server()->GetURL("/title3.html"), u"link"});
+  view->PreHandleDragUpdate(link, gfx::PointF(edge));
+  view->HandleDragEnded();
+  base::RunLoop().RunUntilIdle();
+  for (int i = 0; i < owner->GetTabStripModel()->count(); ++i) {
+    EXPECT_FALSE(owner->GetTabStripModel()->GetTabAtIndex(i)->IsSplit());
+  }
+}
+
 class BarcBackForwardCacheBrowserTest : public BarcDiscoveryBrowserTest {
  public:
   BarcBackForwardCacheBrowserTest() {
@@ -8111,7 +8721,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
 }
 
 
-IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
                        BoostPickerRetiresWhenVisibleSplitPaneLosesSelection) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
@@ -8123,6 +8733,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   const int32_t second = barc_tab_create(id, "about:blank", 0);
   ASSERT_GT(second, 0);
   BarcSplitLayout layout{2, 0, {first, second}, {0.5}, first};
+  ASSERT_EQ(1, barc_tab_select(id, first));
   ASSERT_EQ(1, barc_window_set_split(id, &layout));
   NavigationEvents events;
   events.token = barc_tab_observe(id, first, NavigationEvents::Receive, &events);

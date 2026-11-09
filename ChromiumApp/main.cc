@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "BarcChromium/barc_bridge_api.h"
+#include "BarcChromium/barc_public_headers_sha256.h"
 #include "early_zone_registration_apple.h"
 
 extern "C" {
@@ -77,6 +78,14 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   if (!dlsym(library, BARC_ENGINE_MAIN_SYMBOL)) {
     FatalError("dlsym %s: %s. Bark Framework was built for another bridge version; this app needs version %d.",
                BARC_ENGINE_MAIN_SYMBOL, dlerror(), BARC_BRIDGE_VERSION);
+  }
+  using HeadersDigestPtr = const char* (*)();
+  const auto headers_digest =
+      reinterpret_cast<HeadersDigestPtr>(dlsym(library, "barc_public_headers_sha256"));
+  const char* engine_digest = headers_digest ? headers_digest() : "none";
+  if (strcmp(engine_digest, BARC_PUBLIC_HEADERS_SHA256) != 0) {
+    FatalError("Bark Framework was built from other public headers: its digest is %s; this app was compiled against %s.",
+               engine_digest, BARC_PUBLIC_HEADERS_SHA256);
   }
 
   char* native_path = JoinPath(

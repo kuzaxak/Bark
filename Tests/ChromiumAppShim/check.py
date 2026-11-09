@@ -24,6 +24,7 @@ SLICE = XCFRAMEWORK / SLICE_NAME
 PUBLIC_HEADERS = SLICE / 'Headers'
 MODULE = PUBLIC_HEADERS / 'BarcChromium'
 HEADER_NAMES = ['barc_bridge_api.h', 'barc_runtime_startup_api.h', 'barc_page_tweaks.h']
+DIGEST_HEADER = 'barc_public_headers_sha256.h'
 ENGINE_HEADER_DIRECTORIES = {'barc_bridge_api.h': 'chrome/browser/ui/views/frame', 'barc_runtime_startup_api.h': 'chrome/browser/ui/views/frame',
                              'barc_page_tweaks.h': 'chrome/browser/content_blocking'}
 STARTUP = ROOT / 'App/Chromium/ChromiumStartup.swift'
@@ -31,7 +32,7 @@ VERSION = '156.0.8078.80'
 FRAMEWORK = 'Bark Framework.framework'
 BUNDLE_ID = 'ee.qdo.bark'
 DELEGATING_ZONE = 'DelegatingDefaultZoneForPartitionAlloc'
-BRIDGE_VERSION = 6
+BRIDGE_VERSION = 7
 ENTRY = f'barc_engine_main_v{BRIDGE_VERSION}'
 ABORT_STATUS = 134
 
@@ -71,6 +72,9 @@ int ChromeMain(int argc, const char** argv) {
   record("chrome-main");
   return 23;
 }
+#ifdef HEADERS_SHA256
+const char* barc_public_headers_sha256(void) { return HEADERS_SHA256; }
+#endif
 #ifdef ENTRY_FUNCTION
 int ENTRY_FUNCTION(int argc, const char** argv) {
   record("engine-main");
@@ -123,10 +127,22 @@ def compile_c(source, output, *extra):
     subprocess.run(['xcrun', 'clang', '-arch', 'x86_64', str(source_file), '-o', str(output), *extra], check=True)
 
 
-def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x86_64')):
+def headers_digest():
+    lines = ''.join(f'{hashlib.sha256((RUNTIME / name).read_bytes()).hexdigest()}  {name}\n' for name in HEADER_NAMES)
+    return hashlib.sha256(lines.encode()).hexdigest()
+
+
+def digest_in(header):
+    found = re.fullmatch(r'#define BARC_PUBLIC_HEADERS_SHA256 "([0-9a-f]{64})"\n', header.read_text()) if header.is_file() else None
+    return found and found[1]
+
+
+def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x86_64'), digest=headers_digest()):
     extra = ['-dynamiclib', f'-DZONE_NAME="{zone}"', *arch]
     if entry:
         extra.append(f'-DENTRY_FUNCTION={entry}')
+    if digest:
+        extra.append(f'-DHEADERS_SHA256="{digest}"')
     compile_c(FAKE_FRAMEWORK, output, *extra)
 
 
@@ -203,6 +219,9 @@ def header_cases(work):
     check('entry symbol names the bridge version', bool(version and symbol) and int(version[1]) == BRIDGE_VERSION and symbol[1] == ENTRY,
           (version, symbol))
     check('entry is declared with the bridge\'s visibility', f'BARC_API int {ENTRY}(int argc, const char** argv);' in header)
+    check('the bridge declares the digest of its public headers', 'BARC_API const char* barc_public_headers_sha256(void);' in header)
+    check('the package holds the digest of exactly these public headers', digest_in(MODULE / DIGEST_HEADER) == headers_digest(),
+          (digest_in(MODULE / DIGEST_HEADER), headers_digest()))
 
     source = work / 'linkage.cc'
     source.write_text(f'#include "BarcChromium/barc_bridge_api.h"\nint {ENTRY}(int argc, const char** argv) {{ return argc; }}\n')
@@ -242,9 +261,9 @@ def startup_version_cases(work):
     bumped = work / 'bumped-headers/BarcChromium'
     shutil.copytree(MODULE, bumped)
     header = bumped / 'barc_bridge_api.h'
-    header.write_text(header.read_text().replace(f'BARC_BRIDGE_VERSION {BRIDGE_VERSION}', 'BARC_BRIDGE_VERSION 7'))
+    header.write_text(header.read_text().replace(f'BARC_BRIDGE_VERSION {BRIDGE_VERSION}', f'BARC_BRIDGE_VERSION {BRIDGE_VERSION + 1}'))
     result = required_version('startup-bumped', work / 'bumped-headers')
-    check('a bumped header changes the version the app requires', result == '7', result)
+    check('a bumped header changes the version the app requires', result == str(BRIDGE_VERSION + 1), result)
 
 
 def package_cases(work):
@@ -310,6 +329,15 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     check('an engine without the versioned entry aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
     check('that error names the missing entry', ENTRY in run.stderr, run.stderr)
+
+    for name, digest, why in [('engine-without-digest', None, 'an engine that exports no header digest'),
+                              ('engine-other-digest', '0' * 64, 'an engine built from other public headers')]:
+        engine = work / f'{name}.dylib'
+        fake_framework(engine, digest=digest)
+        run, lines = launch(name, framework=engine)
+        check(f'{why} aborts before the shell loads', run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
+        check(f'that error names both digests', 'other public headers' in run.stderr and headers_digest() in run.stderr and
+              (digest or 'none') in run.stderr, run.stderr)
 
     other_headers = work / 'other-headers/BarcChromium'
     shutil.copytree(MODULE, other_headers)
@@ -458,6 +486,9 @@ def publish_cases(work, framework_lib):
     listed = (artifact / 'SHA256SUMS').read_text()
     check('checksums cover the versioned framework executable', f'{FRAMEWORK}/Versions/{VERSION}/Bark Framework' in listed, listed)
     check('checksums cover the public headers', all(f'./Headers/{n}' in listed for n in HEADER_NAMES), listed)
+    check('publishing writes the digest of the headers it publishes beside them',
+          digest_in(artifact / 'Headers' / DIGEST_HEADER) == headers_digest() and digest_in(published / DIGEST_HEADER) == headers_digest() and
+          f'./Headers/{DIGEST_HEADER}' in listed)
     check('a published artifact cannot be written to', not os.access(artifact, os.W_OK) and not os.access(artifact / 'Bark Packaging/signing', os.W_OK) and
           not os.access(artifact / 'engine-Info.plist', os.W_OK))
     executable = artifact / FRAMEWORK / f'Versions/{VERSION}/Bark Framework'
@@ -479,6 +510,10 @@ def publish_cases(work, framework_lib):
     no_entry = work / 'publish-no-entry.dylib'
     fake_framework(no_entry, entry=None)
     refused('publish-no-entry', 'an engine that does not export the header\'s entry', f'does not export {ENTRY}', framework=no_entry)
+    no_digest = work / 'publish-no-digest-export.dylib'
+    fake_framework(no_digest, digest=None)
+    refused('publish-no-digest-export', 'an engine that does not export its header digest', 'does not export barc_public_headers_sha256',
+            framework=no_digest)
     fat = work / 'publish-fat.dylib'
     fake_framework(fat, arch=('-arch', 'x86_64', '-arch', 'arm64'))
     refused('publish-fat', 'an engine that is not exactly x86_64', 'must be exactly x86_64', framework=fat)
@@ -582,7 +617,7 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('other-pin', 'an app built against another engine artifact', 'built against another engine artifact', other_pin, sealed=False)
     refused('no-pin', 'app products without an engine pin', 'built against another engine artifact',
             lambda a, e, p: (p / 'include/BarcChromium/engine-artifact.sha256').unlink(), sealed=False)
-    for name in HEADER_NAMES:
+    for name in HEADER_NAMES + [DIGEST_HEADER]:
         reason = f'App was compiled against another {name} than the engine\'s'
         refused('app-header-' + name, f'an app compiled against another {name}', reason,
                 lambda a, e, p, n=name: (p / 'include/BarcChromium' / n).write_text('// another layout\n'))

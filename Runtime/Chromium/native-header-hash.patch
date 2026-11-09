@@ -1,0 +1,47 @@
+--- a/chrome/app/framework.exports
++++ b/chrome/app/framework.exports
+@@ -32,6 +32,7 @@
+ _barc_engine_main_v7
+ _ChromeWebAppShortcutCopierMain
+ _barc_bridge_version
++_barc_public_headers_sha256
+ _barc_chromium_version
+ _barc_window_new_peer
+ _barc_window_new_peer_in_native_window
+--- a/chrome/app/framework.order
++++ b/chrome/app/framework.order
+@@ -36,6 +36,7 @@
+ _barc_blocker_set_tab_policy
+ _barc_blocker_state
+ _barc_bridge_version
++_barc_public_headers_sha256
+ _barc_chromium_version
+ _barc_window_new_peer
+ _barc_window_new_peer_in_native_window
+--- a/chrome/browser/ui/BUILD.gn
++++ b/chrome/browser/ui/BUILD.gn
+@@ -3451,6 +3451,7 @@
+     deps += [
+       "//components/os_crypt/common:keychain_password_mac",
+       "//chrome/browser/content_blocking:native_content_blocker",
++      ":barc_public_headers_sha256",
+     ]
+     frameworks = [
+       "AppKit.framework",
+@@ -5849,3 +5850,16 @@
+     ]
+   }
+ }
++
++if (is_mac) {
++  action("barc_public_headers_sha256") {
++    script = "views/frame/barc_public_headers_sha256.py"
++    inputs = [
++      "views/frame/barc_bridge_api.h",
++      "views/frame/barc_runtime_startup_api.h",
++      "//chrome/browser/content_blocking/barc_page_tweaks.h",
++    ]
++    outputs = [ "$target_gen_dir/views/frame/barc_public_headers_sha256.h" ]
++    args = rebase_path(outputs + inputs, root_build_dir)
++  }
++}

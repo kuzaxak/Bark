@@ -25,6 +25,15 @@ public struct SplitContextMenu: View {
             } label: {
                 Label("Separate All Tabs", systemImage: "rectangle.split.2x1.slash")
             }
+            Button {
+                actions?.convertSplit(in: windowState)
+            } label: {
+                if split.orientation == .vertical {
+                    Label("Convert to Horizontal Split View", systemImage: "rectangle.split.2x1")
+                } else {
+                    Label("Convert to Vertical Split View", systemImage: "rectangle.split.1x2")
+                }
+            }
             Divider()
             Section("Tab Options") {
                 ForEach(ids, id: \.self) { id in

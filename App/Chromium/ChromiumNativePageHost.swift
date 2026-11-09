@@ -207,6 +207,14 @@ final class ChromiumNativePageHost: NativePageHost {
     private var blankTabs: [Int32: BlankReservation] = [:]
     private var opening: [CreationKey: Batch] = [:]
     private var pages: [ObjectIdentifier: Binding] = [:]
+    var peekOnShiftClick = true {
+        didSet {
+            guard peekOnShiftClick != oldValue else { return }
+            for binding in pages.values where binding.owned {
+                binding.page.setNativePeekCapability(true, onShiftClick: peekOnShiftClick)
+            }
+        }
+    }
     private var closing: [ObjectIdentifier: [@MainActor (PageCloseOutcome) -> Void]] = [:]
 
     init(api: ChromiumPageHostAPI, navigationAPI: ChromiumNavigationAPI, discoveryAPI: ChromiumDiscoveryAPI,
@@ -585,7 +593,7 @@ final class ChromiumNativePageHost: NativePageHost {
         let id = ObjectIdentifier(page)
         pages[id] = Binding(window: windowID, page: page, owned: owned,
                             invalidatesUnclaimed: invalidatesUnclaimed)
-        if owned { page.setNativePeekCapability(true) }
+        if owned { page.setNativePeekCapability(true, onShiftClick: peekOnShiftClick) }
         page.onNativeCloseOutcome = { [weak self, weak page] outcome in
             guard let self, let page else { return }
             let cleanup = self.pages[id]?.cleanupBatch
@@ -712,7 +720,7 @@ final class ChromiumNativePageHost: NativePageHost {
             binding.attempts += 1
             let admitted = commit()
             binding.attempts -= 1
-            if admitted { binding.owned = true; binding.page.setNativePeekCapability(true) }
+            if admitted { binding.owned = true; binding.page.setNativePeekCapability(true, onShiftClick: peekOnShiftClick) }
             return existingBinding == nil ? binding.owned : admitted
         }
         let result = withExtendedLifetime(request) {
@@ -768,7 +776,7 @@ final class ChromiumNativePageHost: NativePageHost {
             guard let self, let binding, self.pages[ObjectIdentifier(binding.page)] === binding else { return }
             binding.attempts -= 1
             if adopted {
-                binding.owned = true; binding.page.setNativePeekCapability(true)
+                binding.owned = true; binding.page.setNativePeekCapability(true, onShiftClick: peekOnShiftClick)
                 if let cleanup = binding.cleanupBatch {
                     binding.cleanupBatch = nil
                     self.cleanupEnded(cleanup, page: binding.page)
@@ -985,13 +993,11 @@ final class ChromiumNativePageHost: NativePageHost {
         return BarcSplitLayout(count: UInt32(pages.count), orientation: record.orientation == .horizontal ? 0 : 1,
             tabs: (handles[0], handles[1], handles.count > 2 ? handles[2] : 0, handles.count > 3 ? handles[3] : 0),
             dividers: (cuts[0], cuts.count > 1 ? cuts[1] : 0, cuts.count > 2 ? cuts[2] : 0),
-            active_tab: handles[index], collection: 0,
-            kind: Set(pages.map(\.nativeWindowID)).count == 1 ? 0 : 1, generation: 0)
+            active_tab: handles[index], collection: 0, kind: 1, generation: 0)
     }
 
     private func validSplitIdentity(_ value: BarcSplitLayout) -> Bool {
-        value.kind == 0 ? value.collection > 0 && value.generation == 0 :
-            value.kind == 1 && value.collection == 0 && value.generation > 0
+        value.kind == 1 && value.collection == 0 && value.generation > 0
     }
 
     private func sameLayout(_ actual: BarcSplitLayout, _ requested: BarcSplitLayout,
@@ -1226,14 +1232,13 @@ final class ChromiumNativePageHost: NativePageHost {
             var value = BarcSplitLayout()
             return splitAPI.get(client, member, &value) == 1 ? value : nil
         }
-        func decode(_ value: BarcSplitLayout, client: Int32) -> SplitRecord? {
-            guard (2...4).contains(value.count), validSplitIdentity(value), value.orientation <= 1,
-                  !window.isIncognito || value.kind == 0 else { return nil }
+        func decode(_ value: BarcSplitLayout) -> SplitRecord? {
+            guard (2...4).contains(value.count), validSplitIdentity(value), value.orientation <= 1 else { return nil }
             let ids = Array([value.tabs.0, value.tabs.1, value.tabs.2, value.tabs.3].prefix(Int(value.count)))
             let pages = ids.compactMap { sessions[$0] }
             guard pages.count == ids.count, pages.allSatisfy({ session in
                 guard let page = session.navigation as? ChromiumPageNavigation else { return false }
-                return (value.kind == 1 || page.nativeWindowID == client) && admission(page, in: window) != nil
+                return admission(page, in: window) != nil
             }) else { return nil }
             let cuts = Array([value.dividers.0, value.dividers.1, value.dividers.2].prefix(Int(value.count) - 1))
             return SplitRecord(pages.map(\.itemID), orientation: value.orientation == 0 ? .horizontal : .vertical,
@@ -1241,7 +1246,7 @@ final class ChromiumNativePageHost: NativePageHost {
         }
         func snapshot(_ value: BarcSplitLayout, client: Int32, member: Int32)
             -> (record: SplitRecord?, validate: () -> Bool, remountLive: Bool)? {
-            guard let record = decode(value, client: client), currentSelection() else { return nil }
+            guard let record = decode(value), currentSelection() else { return nil }
             mount.presentedSplit = (client, member, value.collection, value.kind, value.generation, value.count)
             return (record, {
                 guard currentSelection(), let actual = read(client, member) else { return false }

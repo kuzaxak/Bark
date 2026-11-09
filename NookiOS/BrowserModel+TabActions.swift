@@ -26,6 +26,8 @@ extension BrowserModel: TabActions {
 
     func separateSplit(in window: BrowserWindowState) {}
 
+    func convertSplit(in window: BrowserWindowState) {}
+
     func editPinnedURL(url: URL, title: String, onSave: @escaping (URL) -> Void) {
         present(.editPinnedURL(url: url, title: title, onSave: onSave))
     }

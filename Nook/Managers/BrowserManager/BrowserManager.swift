@@ -570,9 +570,9 @@ class BrowserManager: ObservableObject {
         }
         // Note: tracking protection will be configured after settingsManager injection
 
+        self.peekManager.attach(browserManager: self)
         if engine == .webKit {
             self.externalMiniWindowManager.attach(browserManager: self)
-            self.peekManager.attach(browserManager: self)
             self.authenticationManager.attach(browserManager: self)
         }
         // Migrate legacy history entries (with nil profile) to default profile to avoid cross-profile leakage

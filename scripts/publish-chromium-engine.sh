@@ -28,7 +28,9 @@ BINARY="$FRAMEWORK/Versions/$VERSION/Bark Framework"
 [[ -f "$BINARY" ]] || refuse 'Missing versioned engine executable'
 [[ $(/usr/bin/lipo -archs "$BINARY") == x86_64 ]] || refuse "Engine must be exactly x86_64: $BINARY"
 ENTRY=$(/usr/bin/sed -nE 's/^#define BARC_ENGINE_MAIN_SYMBOL "(.*)"$/\1/p' "$RUNTIME/barc_bridge_api.h")
-/usr/bin/nm -gjU "$BINARY" | /usr/bin/grep -x "_$ENTRY" > /dev/null || refuse "Engine does not export $ENTRY"
+EXPORTS=$(/usr/bin/nm -gjU "$BINARY")
+/usr/bin/grep -x "_$ENTRY" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $ENTRY"
+/usr/bin/grep -x _barc_public_headers_sha256 <<<"$EXPORTS" > /dev/null || refuse 'Engine does not export barc_public_headers_sha256'
 # The source tree can move on after a build, so siso's record of each input is the evidence of what the
 # engine compiled. It keeps the digest from the last build that read the file.
 BUILD_RECORD=$(/usr/bin/mktemp)
@@ -61,6 +63,8 @@ for header in "${PUBLIC_HEADERS[@]}"; do
   /bin/cp "$RUNTIME/$header" "$ARTIFACT/Headers/$header"
   /bin/cp "$RUNTIME/$header" "$SLICE/Headers/BarcChromium/$header"
 done
+python3 "$RUNTIME/barc_public_headers_sha256.py" "$ARTIFACT/Headers/barc_public_headers_sha256.h" "${PUBLIC_HEADERS[@]/#/$RUNTIME/}"
+/bin/cp "$ARTIFACT/Headers/barc_public_headers_sha256.h" "$SLICE/Headers/BarcChromium/barc_public_headers_sha256.h"
 (cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS -print0 | /usr/bin/sort -z | /usr/bin/xargs -0 /usr/bin/shasum -a 256 > SHA256SUMS)
 (cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1) > "$SLICE/Headers/BarcChromium/engine-artifact.sha256"
 # Python writes bytecode beside the signing tools, and any new file fails the checksums at the next staging.

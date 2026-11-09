@@ -30,8 +30,10 @@
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "extensions/browser/disable_reason.h"
+#include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_builder.h"
@@ -71,16 +73,18 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
   }
 
  protected:
-  void OpenPair(int32_t& work_id, int32_t& personal_id) {
+  void OpenPair(int32_t& work_id,
+                int32_t& personal_id,
+                barc_profile_destination destination = BARC_PROFILE_SETTINGS) {
     Result first;
     barc_profile_open_window("057ae26c-6119-4bd8-8c51-04a22edc5a7e",
-                             BARC_PROFILE_SETTINGS, Opened, &first);
+                             destination, Opened, &first);
     ASSERT_EQ(BARC_PROFILE_OK, first.Get<0>());
     work_id = first.Get<1>();
     Result second;
     barc_profile_open_in_native_window(work_id,
                                        "c4eda6be-411a-4d70-80f7-1317e2802463",
-                                       BARC_PROFILE_SETTINGS, Opened, &second);
+                                       destination, Opened, &second);
     ASSERT_EQ(BARC_PROFILE_OK, second.Get<0>());
     personal_id = second.Get<1>();
     auto* work = Window(work_id);
@@ -94,7 +98,9 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
   void CheckCancellation(bool destroy_owner) {
     int32_t work_id = 0;
     int32_t personal_id = 0;
-    ASSERT_NO_FATAL_FAILURE(OpenPair(work_id, personal_id));
+    // Settings pages register pagehide listeners as their scripts load, and
+    // Chromium closes a page with unload-time listeners asynchronously.
+    ASSERT_NO_FATAL_FAILURE(OpenPair(work_id, personal_id, BARC_PROFILE_BLANK));
     auto* work = Window(work_id);
     auto* personal = Window(personal_id);
     ASSERT_TRUE(work);
@@ -119,6 +125,8 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
         auto host_alive = BrowserView::GetBrowserViewForBrowser(work)
                               ->GetWidget()
                               ->GetWeakPtr();
+        ASSERT_FALSE(work->GetTabStripModel()->GetActiveWebContents()
+                         ->NeedToFireBeforeUnloadOrUnloadEvents());
         ASSERT_EQ(1, barc_window_close(work_id));
         ASSERT_TRUE(owner_alive);
         ASSERT_TRUE(owner_alive->IsDeleteScheduled());
@@ -264,6 +272,44 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
 IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
                        DestroyedLogicalOwnerCancelsBeforePresentation) {
   CheckCancellation(true);
+}
+IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
+                       ClosingLogicalOwnerCancelsWhileItsPageUnloads) {
+  int32_t work_id = 0;
+  int32_t personal_id = 0;
+  ASSERT_NO_FATAL_FAILURE(OpenPair(work_id, personal_id, BARC_PROFILE_BLANK));
+  ASSERT_EQ(1, barc_window_select(work_id));
+  auto* work = Window(work_id);
+  auto* page = work->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(page, "addEventListener('pagehide', () => {})"));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return page->NeedToFireBeforeUnloadOrUnloadEvents(); }));
+  auto extension = extensions::ExtensionBuilder("Closing owner").Build();
+  extensions::ExtensionRegistrar::Get(work->GetProfile())
+      ->AddExtension(extension.get());
+  auto* registry = extensions::ExtensionRegistry::Get(work->GetProfile());
+  Cancellation canceled;
+  auto dialog = extensions::ExtensionUninstallDialog::CreateForBrowser(
+      work->GetProfile(), work, &canceled);
+  extensions::ScopedTestDialogAutoConfirm accept(
+      extensions::ScopedTestDialogAutoConfirm::ACCEPT);
+  bool owner_was_unloading = false;
+  auto hook = base::BindLambdaForTesting([&] {
+    ASSERT_EQ(1, barc_window_close(work_id));
+    owner_was_unloading = Window(work_id) && !Window(work_id)->IsDeleteScheduled();
+  });
+  extensions::ExtensionUninstallDialog::SetOnShownCallbackForTesting(&hook);
+  base::ScopedClosureRunner reset_hook(base::BindLambdaForTesting([] {
+    extensions::ExtensionUninstallDialog::SetOnShownCallbackForTesting(nullptr);
+  }));
+  dialog->ConfirmUninstall(extension, extensions::UNINSTALL_REASON_FOR_TESTING,
+                           extensions::UNINSTALL_SOURCE_FOR_TESTING);
+  EXPECT_FALSE(canceled.result.Get());
+  EXPECT_EQ(1, canceled.calls);
+  EXPECT_TRUE(owner_was_unloading);
+  EXPECT_TRUE(registry->enabled_extensions().Contains(extension->id()));
+  dialog.reset();
+  EXPECT_TRUE(base::test::RunUntil([&] { return !Window(work_id); }));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,

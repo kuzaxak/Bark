@@ -15,6 +15,7 @@
 #include <objc/runtime.h>
 
 #include "chrome/browser/webauthn/barc_vault_authenticator.h"
+#include "chrome/browser/ui/views/frame/barc_public_headers_sha256.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "net/base/url_util.h"
 #include "components/search_engines/template_url_service.h"
@@ -3540,6 +3541,9 @@ int barc_tab_stop(int32_t window, int32_t tab_id) {
 }
 uint32_t barc_bridge_version() {
   return BARC_BRIDGE_VERSION;
+}
+const char* barc_public_headers_sha256() {
+  return BARC_PUBLIC_HEADERS_SHA256;
 }
 const char* barc_chromium_version() {
   return version_info::GetVersionNumber().data();

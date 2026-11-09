@@ -1,0 +1,878 @@
+diff --git a/chrome/browser/download/chrome_download_manager_delegate.cc b/chrome/browser/download/chrome_download_manager_delegate.cc
+index 0cfc34d1e0..e3f05a21d2 100644
+--- a/chrome/browser/download/chrome_download_manager_delegate.cc
++++ b/chrome/browser/download/chrome_download_manager_delegate.cc
+@@ -32,6 +32,9 @@
+ #include "base/task/thread_pool.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_bridge.h"
++#endif
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/download/download_core_service.h"
+ #include "chrome/browser/download/download_core_service_factory.h"
+@@ -2469,6 +2472,14 @@ void ChromeDownloadManagerDelegate::CheckDownloadAllowed(
+     return;
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (content_initiated &&
++      barc::RequestPeekForOptionClick(web_contents, url, request_initiator)) {
++    OnCheckDownloadAllowedFailed(std::move(check_download_allowed_cb));
++    return;
++  }
++#endif
++
+   // Check whether download is restricted for saved tab groups.
+   if (tab_groups::RestrictDownloadOnSyncedTabs() &&
+       TabGroupSyncTabState::FromWebContents(web_contents)) {
+diff --git a/chrome/browser/renderer_context_menu/render_view_context_menu.cc b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+index 48b513b697..5c4132afb5 100644
+--- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
++++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+@@ -2189,7 +2189,11 @@ void RenderViewContextMenu::AppendLinkItems() {
+       // Opening a link in split view should also go through the same
+       // constraints as opening a link in a new tab since a split view tab is a
+       // new tab that is then joined with the current active tab.
+-      if (IsNormalBrowser()) {
++      if (IsNormalBrowser()
++#if BUILDFLAG(IS_MAC)
++          && !barc::IsNativeApplicationMode()
++#endif
++      ) {
+         tabs::TabInterface* tab =
+             tabs::TabInterface::MaybeGetFromContents(GetWebContents());
+         auto [string_id, icon] =
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+index 921461b9e9..0f0ec728d2 100644
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -24,6 +24,9 @@
+ #include "base/time/time.h"
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
+ #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+@@ -2771,7 +2774,11 @@ void BrowserCommandController::UpdateCommandsForTabStripStateChanged() {
+                                          CanMoveActiveTabToNewWindow(browser_));
+   command_updater_->UpdateCommandEnabled(
+       IDC_NEW_SPLIT_TAB,
+-      browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL);
++      browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL
++#if BUILDFLAG(IS_MAC)
++          && !barc::IsNativeApplicationMode()
++#endif
++  );
+   command_updater_->UpdateCommandEnabled(IDC_GROUP_UNGROUPED_TABS,
+                                          CanGroupAllUngroupedTabs(browser_));
+ 
+diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+index 3bc40bcc91..b5570dfceb 100644
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -118,6 +118,7 @@
+ #endif
+ 
+ #if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_bridge.h"
+ #include "ui/display/display.h"
+ #include "ui/display/screen.h"
+ #include "ui/display/types/display_constants.h"
+@@ -568,6 +569,13 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
+     }
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (params.disposition == WindowOpenDisposition::NEW_WINDOW &&
++      barc::RequestPeekForShiftClick(source, params)) {
++    return nullptr;
++  }
++#endif
++
+   NavigateParams nav_params(&*browser_, params.url, params.transition);
+   nav_params.FillNavigateParamsFromOpenURLParams(params);
+   nav_params.source_contents = source;
+diff --git a/chrome/browser/ui/navigator/browser_navigator.cc b/chrome/browser/ui/navigator/browser_navigator.cc
+index c590635773..77b7b03ab4 100644
+--- a/chrome/browser/ui/navigator/browser_navigator.cc
++++ b/chrome/browser/ui/navigator/browser_navigator.cc
+@@ -1026,6 +1026,9 @@ base::WeakPtr<content::NavigationHandle> NavigateImpl(
+     // "already split" case is handled in
+     // BrowserWebContentsDelegate::OpenURLFromTab().
+     if (params->disposition == WindowOpenDisposition::NEW_SPLIT_VIEW &&
++#if BUILDFLAG(IS_MAC)
++        !barc::IsNativeApplicationMode() &&
++#endif
+         contents_to_navigate_or_insert) {
+       TabStripModel* const tab_strip_model =
+           params->browser->GetTabStripModel();
+diff --git a/chrome/browser/ui/views/frame/barc_bridge.h b/chrome/browser/ui/views/frame/barc_bridge.h
+index f2c95e6324..670b5819ca 100644
+--- a/chrome/browser/ui/views/frame/barc_bridge.h
++++ b/chrome/browser/ui/views/frame/barc_bridge.h
+@@ -10,6 +10,9 @@ class View;
+ namespace base { class ScopedClosureRunner; class FilePath; }
+ class BrowserView;
+ class BrowserWindowInterface;
++#include <optional>
++class GURL;
++namespace url { class Origin; }
+ namespace content { class RenderFrameHost; class WebContents; struct OpenURLParams; }
+ namespace tabs { class TabInterface; }
+ namespace barc {
+@@ -30,6 +33,11 @@ bool MovePeekNativeShell(BrowserWindowInterface* from, BrowserWindowInterface* t
+ void AttachPeekBackdrop(views::NativeViewHost* host, tabs::TabInterface* source,
+                         tabs::TabInterface* peek);
+ void RequestPeek(content::RenderFrameHost* frame, const content::OpenURLParams& params);
++// Shift-click reaches OpenURLFromTab and Option-click reaches the download check;
++// true means the observed page's Peek request replaces that stock action.
++bool RequestPeekForShiftClick(content::WebContents* source, const content::OpenURLParams& params);
++bool RequestPeekForOptionClick(content::WebContents* source, const GURL& url,
++                               const std::optional<url::Origin>& initiator);
+ // Reuses the existing UI-only bridge callback guard: closes post non-nestable
+ // exact-ID requests, transfer/other structural commands refuse during mutation.
+ base::ScopedClosureRunner ProtectNativeViewMutation();
+diff --git a/chrome/browser/ui/views/frame/barc_bridge.mm b/chrome/browser/ui/views/frame/barc_bridge.mm
+index b84d4674e9..9459cf16d5 100644
+--- a/chrome/browser/ui/views/frame/barc_bridge.mm
++++ b/chrome/browser/ui/views/frame/barc_bridge.mm
+@@ -1108,12 +1108,15 @@ class TabObservation : public content::WebContentsObserver,
+           self->Emit(BARC_TAB_CONTINUE_NATIVE_BLOCK, 0, 0, &url);
+         }, weak_from_this(), navigation, url))), true);
+   }
+-  bool EnablePeek(bool enabled) {
++  bool EnablePeek(int capability) {
+     if (!active_ || closing_) return false;
+-    peek_enabled_ = enabled;
+-    if (!enabled) { peek_request_.reset(); peek_current_serial_ = 0; }
++    peek_enabled_ = capability & BARC_TAB_PEEK_CAPABLE;
++    peek_on_shift_click_ = capability & BARC_TAB_PEEK_ON_SHIFT_CLICK;
++    if (!peek_enabled_) { peek_request_.reset(); peek_current_serial_ = 0; }
+     return true;
+   }
++  bool PeeksOnShiftClick() const { return peek_on_shift_click_; }
++  bool TakeOptionClick() { return std::exchange(option_click_, false); }
+   struct PeekRequest {
+     PeekRequest(content::RenderFrameHost* frame, content::WebContents* contents,
+                 BrowserWindowInterface* owner, const content::OpenURLParams& params)
+@@ -1134,7 +1137,8 @@ class TabObservation : public content::WebContentsObserver,
+         (barc_window_profile_uuid(owner->GetSessionID().id(), identity.data(), identity.size()) == identity.size() ||
+          barc_window_private_session_uuid(owner->GetSessionID().id(), identity.data(), identity.size()) == identity.size());
+     return managed && owner->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+-        owner->IsSelectedForNativeWindow() && owner->GetTabStripModel()->GetActiveTab() == tab &&
++        ((owner->IsSelectedForNativeWindow() && owner->GetTabStripModel()->GetActiveTab() == tab) ||
++         view->browser_widget()->IsBarcPresentedPane(tab)) &&
+         active_ && !closing_ && peek_enabled_ && !PeekRoleFor(tab) &&
+         !barc::IsPeekCloseCommitted(tab) && frame && frame->IsActive() && web_contents() &&
+         content::WebContents::FromRenderFrameHost(frame) == web_contents() &&
+@@ -1151,8 +1155,22 @@ class TabObservation : public content::WebContentsObserver,
+         peek_serial_ == std::numeric_limits<int32_t>::max())
+       return;
+     auto keep_alive = shared_from_this();
+-    peek_request_.emplace(frame, web_contents(),
+-                         tab_.Get()->GetBrowserWindowInterface(), params);
++    auto* owner = tab_.Get()->GetBrowserWindowInterface();
++    if (!owner->IsSelectedForNativeWindow() ||
++        owner->GetTabStripModel()->GetActiveTab() != tab_.Get()) {
++      const auto document = frame->GetWeakDocumentPtr();
++      BrowserView::GetBrowserViewForBrowser(owner)->browser_widget()
++          ->SelectBarcPresentedContents(web_contents());
++      frame = document.AsRenderFrameHostIfValid();
++      auto* tab = tab_.Get();
++      owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
++      if (!frame || !owner || !owner->IsSelectedForNativeWindow() ||
++          owner->GetTabStripModel()->GetActiveTab() != tab || !CanRequestPeek(frame)) {
++        return;
++      }
++      web_contents()->Focus();
++    }
++    peek_request_.emplace(frame, web_contents(), owner, params);
+     ++peek_serial_;
+     peek_current_serial_ = peek_serial_;
+     Emit(BARC_TAB_PEEK_REQUESTED, peek_serial_, 0, &params.url);
+@@ -2154,6 +2172,12 @@ class TabObservation : public content::WebContentsObserver,
+                             : 0;
+     Emit(BARC_TAB_STARTED, 0, navigation_flags_, &handle->GetURL());
+   }
++  void DidGetUserInteraction(const blink::WebInputEvent& event) override {
++    const int modifiers = blink::WebInputEvent::kAltKey | blink::WebInputEvent::kShiftKey |
++        blink::WebInputEvent::kMetaKey | blink::WebInputEvent::kControlKey;
++    option_click_ = event.GetType() == blink::WebInputEvent::Type::kMouseDown &&
++        (event.GetModifiers() & modifiers) == blink::WebInputEvent::kAltKey;
++  }
+   void DidFinishNavigation(content::NavigationHandle* handle) override {
+     auto keep_alive = shared_from_this();
+     if (!handle->IsInPrimaryMainFrame())
+@@ -2550,6 +2574,8 @@ class TabObservation : public content::WebContentsObserver,
+   content::WeakDocumentPtr media_document_;
+   bool media_refresh_pending_ = false;
+   bool peek_enabled_ = false;
++  bool peek_on_shift_click_ = false;
++  bool option_click_ = false;
+   int32_t peek_serial_ = 0;
+   int32_t peek_current_serial_ = 0;
+   std::optional<PeekRequest> peek_request_;
+@@ -2610,9 +2636,9 @@ int barc_tab_cancel_script(uint64_t observation, uint64_t request) {
+ 
+ int barc_tab_enable_peek(uint64_t observation, int enabled) {
+   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+-      (enabled != 0 && enabled != 1)) return 0;
++      enabled < 0 || enabled > (BARC_TAB_PEEK_CAPABLE | BARC_TAB_PEEK_ON_SHIFT_CLICK)) return 0;
+   auto found = ObservationTable().find(observation);
+-  return found != ObservationTable().end() && found->second->EnablePeek(enabled != 0);
++  return found != ObservationTable().end() && found->second->EnablePeek(enabled);
+ }
+ 
+ uint64_t barc_discovery_observe(BarcDiscoveryCallback callback, void* context) {
+@@ -3172,44 +3198,17 @@ int barc_window_get_split(int32_t id, int32_t member, BarcSplitLayout* layout) {
+   uint64_t generation = 0;
+   const bool mounted = widget && widget->GetBarcPresentedTabs(
+       &presented, &visual, &presented_active, &generation);
+-  if (widget && widget->HasBarcPresentedTabs() && !mounted)
+-    return 0;
+-  if (mounted && std::ranges::contains(presented, target)) {
+-    BarcSplitLayout result{};
+-    result.count = presented.size();
+-    result.orientation = visual.split_layout() == split_tabs::SplitTabLayout::kSideBySide ? 0 : 1;
+-    result.active_tab = presented_active->GetHandle().raw_value();
+-    result.kind = 1;
+-    result.generation = generation;
+-    for (size_t i = 0; i < presented.size(); ++i)
+-      base::span(result.tabs)[i] = presented[i]->GetHandle().raw_value();
+-    base::span(result.dividers).first(presented.size() - 1).copy_from(visual.split_dividers());
+-    *layout = result;
+-    return 1;
+-  }
+-  if (target->GetBrowserWindowInterface() != window || !target->GetSplit())
+-    return 0;
+-  const auto split = *target->GetSplit();
+-  const auto* data = strip->GetSplitData(split);
+-  const auto tabs = data->ListTabs();
+-  if (tabs.size() < 2 || tabs.size() > 4 ||
+-      data->visual_data()->pane_count() != tabs.size())
++  if (!mounted || !std::ranges::contains(presented, target))
+     return 0;
+   BarcSplitLayout result{};
+-  result.count = tabs.size();
+-  result.orientation = data->visual_data()->split_layout() ==
+-      split_tabs::SplitTabLayout::kSideBySide ? 0 : 1;
+-  result.active_tab = active && active->GetSplit() == split
+-      ? active->GetHandle().raw_value() : 0;
+-  result.collection = data->GetCollectionHandle().raw_value();
+-  for (size_t i = 0; i < tabs.size(); ++i) {
+-    if (tabs[i]->GetBrowserWindowInterface() != window ||
+-        tabs[i]->GetContents()->GetBrowserContext() != window->GetProfile())
+-      return 0;
+-    base::span(result.tabs)[i] = tabs[i]->GetHandle().raw_value();
+-  }
+-  base::span(result.dividers).first(tabs.size() - 1)
+-      .copy_from(data->visual_data()->split_dividers());
++  result.count = presented.size();
++  result.orientation = visual.split_layout() == split_tabs::SplitTabLayout::kSideBySide ? 0 : 1;
++  result.active_tab = presented_active->GetHandle().raw_value();
++  result.kind = 1;
++  result.generation = generation;
++  for (size_t i = 0; i < presented.size(); ++i)
++    base::span(result.tabs)[i] = presented[i]->GetHandle().raw_value();
++  base::span(result.dividers).first(presented.size() - 1).copy_from(visual.split_dividers());
+   *layout = result;
+   return 1;
+ }
+@@ -3230,7 +3229,6 @@ int barc_window_set_split(int32_t id, const BarcSplitLayout* layout) {
+   if (!view || !view->GetIsNormalType() || !window->IsSelectedForNativeWindow())
+     return 0;
+   std::vector<tabs::TabInterface*> tabs;
+-  bool mixed = false;
+   for (int32_t handle : handles) {
+     auto* tab = handle ? tabs::TabHandle(handle).Get() : nullptr;
+     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+@@ -3241,66 +3239,21 @@ int barc_window_set_split(int32_t id, const BarcSplitLayout* layout) {
+         tab->GetContents()->GetBrowserContext() != owner->GetProfile() ||
+         std::ranges::contains(tabs, tab))
+       return 0;
+-    mixed |= owner != window;
+     tabs.push_back(tab);
+   }
+-  if (mixed) {
+-    if (window->GetProfile()->IsOffTheRecord() ||
+-        std::ranges::any_of(tabs, [](auto* tab) {
+-          return tab->GetBrowserWindowInterface()->GetProfile()->IsOffTheRecord();
+-        }) || !LookupTab(window, request.active_tab))
+-      return 0;
+-    base::AutoReset callback_depth(&navigation_callback_depth, navigation_callback_depth + 1);
+-    return view->browser_widget()->SetBarcPresentedTabs(
+-        tabs, split_tabs::SplitTabVisualData(request.orientation == 0
+-            ? split_tabs::SplitTabLayout::kSideBySide : split_tabs::SplitTabLayout::kStacked, dividers),
+-        LookupTab(window, request.active_tab));
+-  }
+-  auto owner = window->GetWeakPtr();
+-  auto* widget = view->browser_widget();
+-  auto widget_alive = widget->GetWeakPtr();
+-  const uint64_t selection_before = widget->barc_selection_epoch();
+-  base::WeakPtr<tabs::TabInterface> active_before;
+-  if (auto* active = window->GetTabStripModel()->GetActiveTab())
+-    active_before = active->GetWeakPtr();
+-  if (widget->HasBarcPresentedTabs()) {
+-    if (!active_before)
+-      return 0;
+-    // All new members have already passed exact owner/profile admission. Return
+-    // borrowed containers before the normal same-owner collection mutation.
+-    base::AutoReset clearing_depth(&navigation_callback_depth, navigation_callback_depth + 1);
+-    widget->ClearBarcPresentedTabs();
+-    if (!widget_alive || !owner || Window(id) != owner.get() ||
+-        widget->barc_selection_epoch() != selection_before || !active_before ||
+-        owner->GetTabStripModel()->GetActiveTab() != active_before.get() ||
+-        !owner->IsSelectedForNativeWindow() || widget->HasBarcPresentedTabs())
+-      return 0;
+-    for (int32_t handle : handles) {
+-      if (!LookupTab(owner.get(), handle))
+-        return 0;
+-    }
+-  }
+-  // Selection/close observers can call the C boundary. Defer destructive close
+-  // until this model operation returns; split mutations refuse nested callbacks.
+-  base::AutoReset callback_depth(&navigation_callback_depth,
+-                                 navigation_callback_depth + 1);
+-  const auto orientation = request.orientation == 0
+-      ? split_tabs::SplitTabLayout::kSideBySide
+-      : split_tabs::SplitTabLayout::kStacked;
+-  window->GetTabStripModel()->SetSplit(
+-      tabs, LookupTab(window, request.active_tab),
+-      split_tabs::SplitTabVisualData(orientation, dividers));
+-  if (!owner || Window(id) != owner.get() ||
+-      !owner->IsSelectedForNativeWindow())
++  const bool any_private = window->GetProfile()->IsOffTheRecord() ||
++      std::ranges::any_of(tabs, [](auto* tab) {
++        return tab->GetBrowserWindowInterface()->GetProfile()->IsOffTheRecord();
++      });
++  if ((any_private && !std::ranges::all_of(tabs, [window](auto* tab) {
++        return tab->GetBrowserWindowInterface()->GetProfile() == window->GetProfile();
++      })) || !LookupTab(window, request.active_tab))
+     return 0;
+-  BarcSplitLayout actual{};
+-  return barc_window_get_split(id, 0, &actual) &&
+-         actual.count == request.count &&
+-         actual.active_tab == request.active_tab &&
+-         actual.orientation == request.orientation &&
+-         std::ranges::equal(base::span(actual.tabs).first(actual.count), handles) &&
+-         std::ranges::equal(base::span(actual.dividers).first(actual.count - 1),
+-                            dividers);
++  base::AutoReset callback_depth(&navigation_callback_depth, navigation_callback_depth + 1);
++  return view->browser_widget()->SetBarcPresentedTabs(
++      tabs, split_tabs::SplitTabVisualData(request.orientation == 0
++          ? split_tabs::SplitTabLayout::kSideBySide : split_tabs::SplitTabLayout::kStacked, dividers),
++      LookupTab(window, request.active_tab));
+ }
+ int barc_window_clear_split(int32_t id, int32_t member,
+                             const BarcSplitLayout* expected) {
+@@ -3309,9 +3262,8 @@ int barc_window_clear_split(int32_t id, int32_t member,
+   const BarcSplitLayout request = *expected;
+   BarcSplitLayout actual{};
+   if (!barc_window_get_split(id, member, &actual) ||
+-      actual.kind != request.kind || actual.generation != request.generation ||
+-      (actual.kind == 0 ? request.collection <= 0 || actual.collection != request.collection
+-                        : request.generation == 0 || actual.generation != request.generation) ||
++      actual.kind != request.kind || request.generation == 0 ||
++      actual.generation != request.generation ||
+       actual.count != request.count || actual.orientation != request.orientation ||
+       actual.active_tab != request.active_tab ||
+       !std::ranges::equal(base::span(actual.tabs).first(actual.count),
+@@ -3324,78 +3276,26 @@ int barc_window_clear_split(int32_t id, int32_t member,
+   auto* view = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
+   if (!view || !view->GetIsNormalType())
+     return 0;
+-  if (actual.kind == 1) {
+-    auto* widget = view->browser_widget();
+-    auto alive = widget->GetWeakPtr();
+-    auto* selected = tabs::TabHandle(actual.active_tab).Get();
+-    auto* selected_owner = selected ? selected->GetBrowserWindowInterface() : nullptr;
+-    if (!selected_owner || Window(selected_owner->GetSessionID().id()) != selected_owner ||
+-        !selected_owner->IsSelectedForNativeWindow() ||
+-        UnloadController::From(selected_owner)->owner_close_admitted())
+-      return 0;
+-    auto selected_tab = selected->GetWeakPtr();
+-    auto owner_alive = selected_owner->GetWeakPtr();
+-    const uint64_t epoch = widget->barc_selection_epoch();
+-    const auto local_split = selected->GetSplit();
+-    std::optional<tabs::TabCollection::Handle> local_collection;
+-    std::optional<split_tabs::SplitTabVisualData> local_visual;
+-    std::vector<int32_t> local_members;
+-    if (local_split) {
+-      const auto* data = selected_owner->GetTabStripModel()->GetSplitData(*local_split);
+-      local_collection = data->GetCollectionHandle();
+-      local_visual = *data->visual_data();
+-      for (auto* local_tab : data->ListTabs())
+-        local_members.push_back(local_tab->GetHandle().raw_value());
+-    }
+-    base::AutoReset callback_depth(&navigation_callback_depth, navigation_callback_depth + 1);
+-    widget->ClearBarcPresentedTabs();
+-    const auto current = [&] {
+-      return alive && owner_alive && selected_tab &&
+-          Window(owner_alive->GetSessionID().id()) == owner_alive.get() &&
+-          owner_alive->IsSelectedForNativeWindow() &&
+-          !UnloadController::From(owner_alive.get())->owner_close_admitted() &&
+-          widget->barc_selection_epoch() == epoch && !widget->HasBarcPresentedTabs() &&
+-          selected_tab->GetBrowserWindowInterface() == owner_alive.get() &&
+-          owner_alive->GetTabStripModel()->GetActiveTab() == selected_tab.get();
+-    };
+-    if (!current() || selected_tab->GetSplit() != local_split)
+-      return 0;
+-    if (local_split) {
+-      auto* strip = owner_alive->GetTabStripModel();
+-      const auto* data = strip->GetSplitData(*local_split);
+-      std::vector<int32_t> members;
+-      for (auto* local_tab : data->ListTabs())
+-        members.push_back(local_tab->GetHandle().raw_value());
+-      if (data->GetCollectionHandle() != *local_collection ||
+-          *data->visual_data() != *local_visual || members != local_members)
+-        return 0;
+-      // Explicit product separation leaves its selected page singly displayed.
+-      // Automatic detach/rollback remain view-only and never dissolve groups.
+-      strip->RemoveSplit(*local_split);
+-      if (!current() || local_collection->Get() || selected_tab->GetSplit())
+-        return 0;
+-    }
+-    return current() && !selected_tab->GetSplit();
+-  }
+-  auto* strip = window->GetTabStripModel();
+-  auto* target = LookupTab(window, base::span(actual.tabs).front());
+-  auto* active = strip->GetActiveTab();
+-  if (!target || !target->GetSplit() || !active)
++  auto* widget = view->browser_widget();
++  auto alive = widget->GetWeakPtr();
++  auto* selected = tabs::TabHandle(actual.active_tab).Get();
++  auto* selected_owner = selected ? selected->GetBrowserWindowInterface() : nullptr;
++  if (!selected_owner || Window(selected_owner->GetSessionID().id()) != selected_owner ||
++      !selected_owner->IsSelectedForNativeWindow() ||
++      UnloadController::From(selected_owner)->owner_close_admitted())
+     return 0;
+-  const auto split = *target->GetSplit();
+-  const auto collection = strip->GetSplitData(split)->GetCollectionHandle();
+-  const int32_t active_before = active->GetHandle().raw_value();
+-  auto owner = window->GetWeakPtr();
+-  base::AutoReset callback_depth(&navigation_callback_depth,
+-                                 navigation_callback_depth + 1);
+-  // This changes only the existing tab collection. Never select a retained
+-  // logical client or focus an inactive/background native window to dissolve it.
+-  strip->RemoveSplit(split);
+-  window = Window(id);
+-  if (!owner || window != owner.get() || collection.Get())
+-    return 0;
+-  active = window->GetTabStripModel()->GetActiveTab();
+-  return active && active->GetHandle().raw_value() == active_before;
++  auto selected_tab = selected->GetWeakPtr();
++  auto owner_alive = selected_owner->GetWeakPtr();
++  const uint64_t epoch = widget->barc_selection_epoch();
++  base::AutoReset callback_depth(&navigation_callback_depth, navigation_callback_depth + 1);
++  widget->ClearBarcPresentedTabs();
++  return alive && owner_alive && selected_tab &&
++      Window(owner_alive->GetSessionID().id()) == owner_alive.get() &&
++      owner_alive->IsSelectedForNativeWindow() &&
++      !UnloadController::From(owner_alive.get())->owner_close_admitted() &&
++      widget->barc_selection_epoch() == epoch && !widget->HasBarcPresentedTabs() &&
++      selected_tab->GetBrowserWindowInterface() == owner_alive.get() &&
++      owner_alive->GetTabStripModel()->GetActiveTab() == selected_tab.get();
+ }
+ 
+ int barc_tab_observe_media(uint64_t observation, BarcMediaCallback callback) {
+@@ -4396,10 +4296,6 @@ int barc_window_detach_native_shell_if_owned(int32_t id, void* expected_view) {
+   }
+   return self;
+ }
+-- (void)drawRect:(NSRect)dirty {
+-  [[NSColor colorWithWhite:0.5 alpha:0.45] setFill];
+-  NSRectFillUsingOperation(dirty, NSCompositingOperationSourceOver);
+-}
+ - (void)mouseDown:(NSEvent*)event {
+   if (!source_ || !peek_ || !barc::IsPeekPair(source_.get(), peek_.get())) return;
+   auto* owner = peek_->GetBrowserWindowInterface();
+@@ -4653,6 +4549,41 @@ bool CanRequestPeek(content::RenderFrameHost* frame) {
+   }
+   return false;
+ }
++bool RequestPeekForShiftClick(content::WebContents* source,
++                              const content::OpenURLParams& params) {
++  auto* frame = content::RenderFrameHost::FromID(params.source_render_process_id,
++                                                 params.source_render_frame_id);
++  if (!source || !frame || !params.user_gesture || !params.is_renderer_initiated ||
++      params.started_from_context_menu || !IsNativeApplicationRegistered() ||
++      content::WebContents::FromRenderFrameHost(frame) != source) return false;
++  for (const auto& [token, observation] : ObservationTable()) {
++    if (observation->PeeksOnShiftClick() && observation->CanRequestPeek(frame)) {
++      auto retained = observation;
++      retained->RequestPeek(frame, params);
++      return true;
++    }
++  }
++  return false;
++}
++bool RequestPeekForOptionClick(content::WebContents* source, const GURL& url,
++                               const std::optional<url::Origin>& initiator) {
++  auto* frame = source ? source->GetPrimaryMainFrame() : nullptr;
++  if (!frame || !IsNativeApplicationRegistered()) return false;
++  for (const auto& [token, observation] : ObservationTable()) {
++    if (observation->CanRequestPeek(frame) && observation->TakeOptionClick()) {
++      content::OpenURLParams params(url, content::Referrer(frame->GetLastCommittedURL(),
++                                                           network::mojom::ReferrerPolicy::kDefault),
++                                    WindowOpenDisposition::NEW_BACKGROUND_TAB,
++                                    ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/true);
++      params.initiator_origin = initiator;
++      params.user_gesture = true;
++      auto retained = observation;
++      retained->RequestPeek(frame, params);
++      return true;
++    }
++  }
++  return false;
++}
+ void RequestPeek(content::RenderFrameHost* frame,
+                  const content::OpenURLParams& params) {
+   if (!frame || !IsNativeApplicationRegistered()) return;
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+index b4c0dcdd27..039d2eaa2f 100644
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -5233,6 +5233,9 @@ void BrowserView::Layout(PassKey) {
+   LayoutSuperclass<views::View>(this);
+ #if BUILDFLAG(IS_MAC)
+   barc::LayoutNativeShell(barc_native_shell_, this);
++  if (IsSelectedForNativeWindow()) {
++    browser_widget_->SyncBarcPresentedBounds();
++  }
+ #endif
+ 
+   // TODO(jamescook): Why was this in the middle of layout code?
+@@ -5801,7 +5804,7 @@ bool BrowserView::MaybeUpdateDevtools(content::WebContents* contents) {
+   }
+ 
+   bool devtools_layout_updated = false;
+-  if (IsInSplitView()) {
++  if (IsInSplitView() && new_tab && new_tab->IsSplit()) {
+     std::optional<split_tabs::SplitTabId> split_tab_id = new_tab->GetSplit();
+     CHECK(split_tab_id.has_value());
+     split_tabs::SplitTabData* split_data =
+diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
+index b514114adb..c5369e5826 100644
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -13,7 +13,11 @@
+ #include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
+ #include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+ #include "chrome/browser/ui/views/frame/contents_container_view.h"
++#include "chrome/browser/ui/status_bubble.h"
+ #include "chrome/browser/ui/views/frame/contents_web_view.h"
++#include "chrome/browser/ui/views/status_bubble_views.h"
++#include "ui/compositor/layer.h"
++#include "ui/compositor/layer_solid_color.h"
+ #include "chrome/browser/ui/views/frame/multi_contents_view.h"
+ #include "chrome/browser/ui/views/frame/multi_contents_view_delegate.h"
+ #include "chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h"
+@@ -105,6 +109,7 @@ struct BarcPeekPresentation {
+   raw_ptr<MultiContentsView> contents = nullptr;
+   raw_ptr<MultiContentsView> underlay = nullptr;
+   raw_ptr<views::NativeViewHost> shade_host = nullptr;
++  raw_ptr<views::View> wash = nullptr;
+   raw_ptr<views::NativeViewHost> header_host = nullptr;
+   raw_ptr<views::NativeViewHost> actions_host = nullptr;
+   std::vector<base::WeakPtr<tabs::TabInterface>> base_tabs;
+@@ -183,7 +188,7 @@ class BarcPresentedContentsDelegate final : public MultiContentsViewDelegate {
+   }
+   void ResizeDividers(base::span<const double> cuts, bool done_resizing) override {
+     if (widget_) {
+-      static_cast<BrowserWidget*>(widget_.get())->ResizeBarcPresentedContents(cuts);
++      static_cast<BrowserWidget*>(widget_.get())->ResizeBarcPresentedContents(cuts, done_resizing);
+     }
+   }
+   void ReverseWebContents() override {
+@@ -291,6 +296,12 @@ uint64_t BrowserWidget::PresentBarcPeek(tabs::TabInterface* source,
+   state->root = root.get();
+   views::ViewTracker tracked_root(root.get());
+   state->shade_host = root->AddChildView(std::make_unique<views::NativeViewHost>());
++  // Pages draw in this compositor below every NSView, so only a layer can dim
++  // the panes without dimming the card's page. The NSView backdrop takes clicks.
++  state->wash = root->AddChildView(std::make_unique<views::View>());
++  state->wash->SetPaintToLayer(ui::LAYER_SOLID_COLOR);
++  state->wash->layer()->SetName("BarcPeekWash");
++  state->wash->layer()->AsSolidColor()->SetColor(SkColor4f::FromColor(SkColorSetARGB(115, 128, 128, 128)));
+   state->contents = root->AddChildView(std::make_unique<MultiContentsView>(
+       std::make_unique<BarcPresentedContentsDelegate>(this)));
+   state->header_host = root->AddChildView(std::make_unique<views::NativeViewHost>());
+@@ -425,6 +436,8 @@ uint64_t BrowserWidget::PresentBarcPeek(tabs::TabInterface* source,
+   if (!current()) return fail();
+   LayoutBarcPeek();
+   if (!current()) return fail();
++  LayoutBarcPresentedContents();
++  if (!current()) return fail();
+   barc_peek_->root->SetVisible(true);
+   if (!current()) return fail();
+   peek_alive->GetContents()->WasShown();
+@@ -498,6 +511,7 @@ void BrowserWidget::ClearBarcPeek(bool native_destroying, bool restore_source) {
+   state->contents = nullptr;
+   state->underlay = nullptr;
+   state->shade_host = nullptr;
++  state->wash = nullptr;
+   state->header_host = nullptr;
+   state->actions_host = nullptr;
+   if (root) retirement->push_back(non_client_view()->RemoveChildViewT(physical_root));
+@@ -565,6 +579,8 @@ void BrowserWidget::LayoutBarcPeek() {
+   if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
+   barc_peek_->shade_host->SetBoundsRect(gfx::Rect(bounds.size()));
+   if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  barc_peek_->wash->SetBoundsRect(gfx::Rect(bounds.size()));
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
+   const int width = std::max(0, std::min(static_cast<int>(bounds.width() * .82), bounds.width() - 88));
+   const int x = (bounds.width() - width) / 2;
+   const int height = std::max(0, bounds.height() - 16);
+@@ -610,7 +626,6 @@ bool BrowserWidget::PresentBarcTabsImpl(
+     }
+     auto* owner = BrowserView::GetBrowserViewForBrowser(tab->GetBrowserWindowInterface());
+     if (!owner || owner->browser_widget() != this ||
+-        owner->GetProfile()->IsOffTheRecord() ||
+         owner->browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL ||
+         owner->browser()->IsDeleteScheduled()) {
+       return false;
+@@ -824,7 +839,7 @@ bool BrowserWidget::SetBarcPresentedTabs(
+   std::vector<base::WeakPtr<tabs::TabInterface>> owner_active_before;
+   for (auto* tab : panes) {
+     auto* owner = tab ? BrowserView::GetBrowserViewForBrowser(tab->GetBrowserWindowInterface()) : nullptr;
+-    if (!owner || owner->browser_widget() != this || owner->GetProfile()->IsOffTheRecord() ||
++    if (!owner || owner->browser_widget() != this ||
+         owner->browser()->IsDeleteScheduled() ||
+         owner->browser()->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL ||
+         std::ranges::any_of(requested, [tab](const auto& existing) { return existing.get() == tab; })) {
+@@ -848,8 +863,16 @@ bool BrowserWidget::SetBarcPresentedTabs(
+   base::WeakPtr<tabs::TabInterface> old_active_weak;
+   if (GetBarcPresentedTabs(&old_tabs, &old_visual, &old_active, &old_generation)) {
+     if (old_tabs.size() == panes.size() && std::ranges::equal(old_tabs, panes) &&
+-        old_visual == visual_data && old_active == active) {
+-      return true;
++        old_active == active) {
++      if (old_visual != visual_data) {
++        barc_presented_contents_->UpdateSplitVisualData(visual_data);
++        LayoutBarcPresentedContents();
++        if (!alive) {
++          return false;
++        }
++        barc::BrowserDiscoveryChanged();
++      }
++      return alive && barc_presented_contents_;
+     }
+     for (auto* tab : old_tabs) {
+       old.push_back(tab->GetWeakPtr());
+@@ -1010,7 +1033,7 @@ bool BrowserWidget::GetBarcPresentedTabs(
+     auto* owner = tab ? BrowserView::GetBrowserViewForBrowser(
+         tab->GetBrowserWindowInterface()) : nullptr;
+     auto* container = owner ? owner->GetContentsContainerViewFor(tab->GetContents()) : nullptr;
+-    if (!owner || owner->browser_widget() != this || owner->GetProfile()->IsOffTheRecord() ||
++    if (!owner || owner->browser_widget() != this ||
+         !container || container->parent() != barc_presented_contents_ ||
+         container->contents_view()->web_contents() != tab->GetContents()) {
+       return false;
+@@ -1148,7 +1171,7 @@ void BrowserWidget::ClearBarcPresentedTabsImpl(bool native_destroying) {
+ }
+ 
+ void BrowserWidget::SelectBarcPresentedContents(content::WebContents* contents) {
+-  if (!barc_presented_contents_ || changing_barc_presentation_) {
++  if (!barc_presented_contents_ || changing_barc_presentation_ || selecting_logical_view_) {
+     return;
+   }
+ #if BUILDFLAG(IS_MAC)
+@@ -1210,7 +1233,10 @@ void BrowserWidget::ReconcileBarcActiveTab(BrowserView* owner,
+       if (!alive) return;
+     }
+   }
+-  if (!barc_presented_contents_ || !HasBarcPresentedContents(owner)) {
++  if (!barc_presented_contents_ ||
++      !std::ranges::any_of(barc_presented_tabs_, [owner](const auto& tab) {
++        return tab && tab->GetBrowserWindowInterface() == owner->browser();
++      })) {
+     return;
+   }
+   const auto shown = std::ranges::find_if(barc_presented_tabs_, [contents](const auto& tab) {
+@@ -1226,7 +1252,8 @@ void BrowserWidget::ReconcileBarcActiveTab(BrowserView* owner,
+   }
+ }
+ 
+-void BrowserWidget::ResizeBarcPresentedContents(base::span<const double> dividers) {
++void BrowserWidget::ResizeBarcPresentedContents(base::span<const double> dividers,
++                                                bool done_resizing) {
+   if (!barc_presented_contents_ || dividers.size() + 1 != barc_presented_tabs_.size() ||
+       !split_tabs::SplitTabVisualData::AreValidDividers(dividers)) {
+     return;
+@@ -1237,7 +1264,9 @@ void BrowserWidget::ResizeBarcPresentedContents(base::span<const double> divider
+   barc_presented_contents_->UpdateSplitVisualData(split_tabs::SplitTabVisualData(
+       barc_presented_contents_->GetSplitLayout(), dividers));
+ #if BUILDFLAG(IS_MAC)
+-  barc::BrowserDiscoveryChanged();
++  if (done_resizing) {
++    barc::BrowserDiscoveryChanged();
++  }
+ #endif
+ }
+ 
+@@ -1282,10 +1311,7 @@ void BrowserWidget::LayoutBarcPresentedContents() {
+     finished();
+     return;
+   }
+-  auto* logical = selected_browser_view()->multi_contents_view();
+-  const gfx::Rect bounds = views::View::ConvertRectToTarget(
+-      logical, non_client_view(), logical->GetLocalBounds());
+-  barc_presented_contents_->SetBoundsRect(bounds);
++  SyncBarcPresentedBounds();
+   if (!alive || !presentation || barc_presented_contents_ != presentation.view()) {
+     finished();
+     return;
+@@ -1294,6 +1320,26 @@ void BrowserWidget::LayoutBarcPresentedContents() {
+   finished();
+ }
+ 
++bool BrowserWidget::IsBarcPresentedPane(const tabs::TabInterface* tab) const {
++  return barc_presented_contents_ && !barc_peek_ &&
++      std::ranges::any_of(barc_presented_tabs_, [tab](const auto& pane) { return pane.get() == tab; });
++}
++
++void BrowserWidget::SyncBarcPresentedBounds() {
++  if (!barc_presented_contents_ || !selected_browser_view()) {
++    return;
++  }
++  // The app moves the sidebar and header to a newly selected client afterwards.
++  // Until then its content area is not where the panes belong.
++  auto* shell = selected_browser_view()->barc_native_shell();
++  if (!barc_presented_contents_->bounds().IsEmpty() && (!shell || !shell->native_view())) {
++    return;
++  }
++  auto* logical = selected_browser_view()->multi_contents_view();
++  barc_presented_contents_->SetBoundsRect(views::View::ConvertRectToTarget(
++      logical, non_client_view(), logical->GetLocalBounds()));
++}
++
+ void BrowserWidget::OnNativeWidgetSizeChanged(const gfx::Size& new_size) {
+   auto alive = GetWeakPtr();
+   Widget::OnNativeWidgetSizeChanged(new_size);
+@@ -2191,6 +2237,13 @@ void BrowserWidget::CommitPhysicalClose() {
+   }
+ }
+ 
++namespace {
++// A link's status hint takes no input and belongs to whichever page is hovered.
++bool BlocksLogicalSwitch(const views::Widget* host, const views::Widget* child) {
++  return child != host && child->IsVisible() && child->GetName() != "StatusBubble";
++}
++}  // namespace
++
+ bool BrowserWidget::CanAcceptLogicalBrowser() {
+ #if BUILDFLAG(IS_MAC)
+   if (IsClosed() || HasPhysicalClosePending() || changing_barc_peek_ ||
+@@ -2203,7 +2256,7 @@ bool BrowserWidget::CanAcceptLogicalBrowser() {
+     return false;
+   }
+   for (views::Widget* child : GetAllOwnedWidgets(GetNativeView())) {
+-    if (child != this && child->IsVisible()) {
++    if (BlocksLogicalSwitch(this, child)) {
+       return false;
+     }
+   }
+@@ -2318,7 +2371,7 @@ bool BrowserWidget::SelectLogicalBrowserViewInternal(BrowserView* view,
+     }
+   }
+   for (views::Widget* child : GetAllOwnedWidgets(GetNativeView())) {
+-    if (!closing_current && child != this && child->IsVisible()) {
++    if (!closing_current && BlocksLogicalSwitch(this, child)) {
+       return false;
+     }
+   }
+@@ -2343,6 +2396,13 @@ bool BrowserWidget::SelectLogicalBrowserViewInternal(BrowserView* view,
+       return false;
+     }
+   }
++  if (!closing_current) {
++    for (auto* contents_view : browser_view_->GetAllVisibleContentsWebViews()) {
++      if (auto* bubble = contents_view->GetStatusBubble()) {
++        bubble->Hide();
++      }
++    }
++  }
+   selecting_logical_view_ = true;
+   auto alive = GetWeakPtr();
+   BrowserView* previous = browser_view_;
+diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
+index 74f733f0d2..c161816466 100644
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -116,7 +116,10 @@ class BrowserWidget : public views::Widget,
+   bool IsChangingBarcPresentation() const { return changing_barc_presentation_; }
+   void SelectBarcPresentedContents(content::WebContents* contents);
+   void ReconcileBarcActiveTab(BrowserView* owner, content::WebContents* contents);
+-  void ResizeBarcPresentedContents(base::span<const double> dividers);
++  void ResizeBarcPresentedContents(base::span<const double> dividers, bool done_resizing);
++  // Called from BrowserView::Layout, so it must not lay out the root view again.
++  void SyncBarcPresentedBounds();
++  bool IsBarcPresentedPane(const tabs::TabInterface* tab) const;
+   void ReverseBarcPresentedContents();
+   void UpdateBarcPresentedScreenshotPolicy();
+ 
+diff --git a/chrome/browser/ui/views/frame/multi_contents_view.cc b/chrome/browser/ui/views/frame/multi_contents_view.cc
+index 8a96b621fd..79ed9d8f40 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
+@@ -10,6 +10,7 @@
+ 
+ #include "base/check_deref.h"
+ #include "base/notreached.h"
++#include "build/build_config.h"
+ #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -19,6 +20,9 @@
+ #include "chrome/browser/ui/sad_tab_helper.h"
+ #include "chrome/browser/ui/tabs/tab_strip_model.h"
+ #include "chrome/browser/ui/view_ids.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/contents_container_view.h"
+ #include "chrome/browser/ui/views/frame/contents_separator.h"
+@@ -71,10 +75,12 @@ MultiContentsView::MultiContentsView(
+     std::unique_ptr<MultiContentsViewDelegate> delegate)
+     : browser_view_(browser_view),
+       delegate_(std::move(delegate)),
+-      split_view_insets_(gfx::Insets::TLBR(0,
+-                                           kSplitViewContentInset,
+-                                           kSplitViewContentInset,
+-                                           kSplitViewContentInset)) {
++      split_view_insets_(browser_view
++                             ? gfx::Insets::TLBR(0,
++                                                 kSplitViewContentInset,
++                                                 kSplitViewContentInset,
++                                                 kSplitViewContentInset)
++                             : gfx::Insets()) {
+   SetLayoutManager(std::make_unique<views::DelegatingLayoutManager>(this));
+   SetProperty(views::kElementIdentifierKey, kMultiContentsViewElementId);
+ 
+@@ -1208,7 +1214,7 @@ void MultiContentsView::UpdateContentsBorderAndOverlay() {
+   if (HasBorrowedContainers()) {
+     return;
+   }
+-  const bool is_in_split = IsInSplitView();
++  const bool is_in_split = IsInSplitView() && !is_physical_presentation();
+   for (auto& contents_container_view : contents_container_views_) {
+     const bool is_active =
+         contents_container_view->contents_view() == GetActiveContentsView();
+@@ -1233,6 +1239,11 @@ bool MultiContentsView::IsDragAndDropEnabled() const {
+       !is_drag_drop_pref_enabled_) {
+     return false;
+   }
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationMode()) {
++    return false;
++  }
++#endif
+ 
+   const auto* active_contents_view = GetActiveContentsView();
+   if (!active_contents_view) {

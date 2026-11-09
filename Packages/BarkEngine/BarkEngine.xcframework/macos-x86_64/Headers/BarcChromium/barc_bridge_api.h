@@ -11,16 +11,22 @@
 extern "C" {
 #endif
 #define BARC_API __attribute__((visibility("default")))
-// Version 6 adds document-bound Peek request and discovery fields. Structs cross
-// this boundary without size arguments; the app requires this exact ABI.
-#define BARC_BRIDGE_VERSION 6
+// Version 7 presents every split as app-positioned independent tabs and makes
+// barc_tab_enable_peek's argument a mask. Structs cross this boundary without
+// size arguments; the app requires this exact ABI.
+#define BARC_BRIDGE_VERSION 7
 BARC_API uint32_t barc_bridge_version(void);
+// Lowercase hex SHA-256 of the lines "<SHA-256 of header>  <header name>\n" for
+// barc_bridge_api.h, barc_runtime_startup_api.h and barc_page_tweaks.h, in that
+// order, as this engine compiled them. The app's main compares it with
+// BARC_PUBLIC_HEADERS_SHA256 from the headers it compiled.
+BARC_API const char* barc_public_headers_sha256(void);
 // The app enters the engine through this symbol, not ChromeMain. A new bridge
 // version renames it, so an app and framework built for different versions fail
 // at dlsym, as Chromium's ChromeAppModeStart_v<N> does. Update the name in
 // chrome/app/framework.exports and framework.order with it.
-#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v6"
-BARC_API int barc_engine_main_v6(int argc, const char** argv);
+#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v7"
+BARC_API int barc_engine_main_v7(int argc, const char** argv);
 // Static NUL-terminated engine version, valid for the process lifetime.
 BARC_API const char* barc_chromium_version(void);
 // Creates an empty same-profile peer for immediate page insertion/transfer.
@@ -164,9 +170,9 @@ typedef struct BarcSplitLayout {
   double dividers[3];
   int32_t active_tab;
   int32_t collection;
-  // 0: native TabStrip collection, 1: borrowed physical presentation.
-  // Set ignores identities; Get returns the actual kind and identity. Clear
-  // compares both. A mounted presentation never impersonates a collection.
+  // Always 1: the app-positioned physical presentation of independent tabs;
+  // `collection` is always 0. Set ignores identities; Get returns the actual
+  // generation; Clear compares it.
   uint32_t kind;
   uint64_t generation;
 } BarcSplitLayout;
@@ -269,6 +275,9 @@ BARC_API int barc_tab_complete_vault_passkey(uint64_t observation, uint64_t requ
 // binding enables the explicit menu; utility-only observers leave it disabled.
 // Independent of intrinsic Peek role: promotion can clear that role without
 // rebinding. Disable/unobserve cancels the outstanding document intent.
+// `enabled` is a mask: BARC_TAB_PEEK_CAPABLE allows the link menu and Option-click;
+// with BARC_TAB_PEEK_ON_SHIFT_CLICK a Shift-click on a link requests Peek too.
+enum { BARC_TAB_PEEK_CAPABLE = 1, BARC_TAB_PEEK_ON_SHIFT_CLICK = 2 };
 BARC_API int barc_tab_enable_peek(uint64_t observation, int enabled);
 
 // Bounded PNG capture of an already-presented tab. One in flight per existing

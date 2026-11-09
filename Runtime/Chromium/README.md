@@ -93,9 +93,10 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 53 ordered patches and 29 copied
+procedure. The complete reviewed candidate has 55 ordered patches and 30 copied
 sources (the BRANDING file, 16 bridge sources, the existing translation script, two cosmetic resources
-the Boost picker resource, the native matcher header, the fixed-tweaks header and three tweak resources). Copies precede `lifecycle-close.patch`; the Swift overlay follows those
+the Boost picker resource, the native matcher header, the fixed-tweaks header, three tweak resources
+and the header digest script). Copies precede `lifecycle-close.patch`; the Swift overlay follows those
 copies. Do not recopy sources or reapply an overlay afterward. Start from the
 pinned unmodified source, not a partially patched checkout.
 
@@ -104,7 +105,7 @@ set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
     cp "$runtime/BRANDING" chrome/app/theme/chromium/BRANDING; or return 1
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings native-app-controlled-splits native-header-hash
         if test "$patch" = lifecycle-close
             for source in barc_bridge_api.h barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup_api.h barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -128,6 +129,9 @@ function prepare_native_candidate
             cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/youtube-tweaks.js" chrome/common/resources/nook_tweaks/; or return 1
             cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/reddit-tweaks.js" chrome/common/resources/nook_tweaks/; or return 1
             cp "$argv[1]/Packages/NookBlocker/Sources/NookBlocker/Resources/facebook-feed-prune.js" chrome/common/resources/nook_tweaks/; or return 1
+        end
+        if test "$patch" = native-header-hash
+            cp "$runtime/barc_public_headers_sha256.py" chrome/browser/ui/views/frame/; or return 1
         end
         if test "$patch" = native-tweaks-continuations
             cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/youtube-sponsorblock.js" chrome/common/resources/nook_tweaks/; or return 1
@@ -203,9 +207,11 @@ would otherwise start fine and read the wrong layout. Publishing therefore refus
 unless siso's record of the last build (`siso fs export`) shows it compiled the same three
 headers as `Runtime/Chromium`, and no later change to them. It reads that record, not the
 source tree, because the tree may have moved on since the build. Staging refuses an app
-compiled against headers other than the ones in `Engine/`. A stronger check goes with the next
-engine build: export a hash of the public headers from the engine and compare it in `main.cc`,
-so the mismatch also fails at launch.
+compiled against headers other than the ones in `Engine/`. The engine also exports
+`barc_public_headers_sha256`, a digest of the three headers it compiled that a GN action computes
+with `barc_public_headers_sha256.py`. Publishing writes the same digest from `Runtime/Chromium` as
+`barc_public_headers_sha256.h` beside the published headers, and `main.cc` aborts before the shell
+loads when the engine's digest differs from the one it was compiled with.
 
 The outer app's own resources (`app.icns`, `Assets.car`, `scripting.sdef`, the policy
 manifest and the `.lproj` strings) are committed in `ChromiumApp/Resources` and copied by
@@ -365,7 +371,7 @@ import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
 `--barc-app-profile` remains temporary-root verification with mock keychain and
 isolated preferences; neither mode enables cloud sync.
 
-Normal startup requires bridge version 4 before ChromeMain. Native registration
+Normal startup requires bridge version 7 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default
@@ -484,9 +490,14 @@ collections without selection; cleanup requires the exact opaque collection
 identity, member order and geometry, so a recreated group wins over stale cleanup. All four container views are constructed
 before feature-controller enrollment; unused panes stay hidden and unbound. This
 adds two empty view trees, not extra pages; its allocation cost is unmeasured.
-Cross-profile split composition and
-Peek/promotion remain separate integration work; this source draft has no runtime
-qualification until the focused browser and session regressions execute.
+`native-app-controlled-splits.patch`
+then replaces that collection in native windows: every split, same-profile, cross-profile or
+private, is the app-positioned presentation of independent tabs, which `BarcSplitLayout`
+reports as kind 1 with a generation and no collection. Its public-header hunks live in
+`barc_bridge_api.h`. Peek covers the whole split and dims its panes with a compositor layer;
+an inactive pane's link selects that pane first. `barc_tab_enable_peek` takes a mask, so
+Option-click, and Shift-click when the app setting allows it, request Peek instead of a
+download or a window. Chromium's own split commands and menu items are gone from native windows.
 
 `native-profile-reassignment.patch` extends the existing profile deletion helper
 with a close-admitted pause before data cleanup. The application commits the

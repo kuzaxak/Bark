@@ -30,6 +30,10 @@ extension BrowserManager: TabActions {
         splitManager.separateAll(in: window)
     }
 
+    func convertSplit(in window: BrowserWindowState) {
+        splitManager.convert(in: window)
+    }
+
     func editPinnedURL(url: URL, title: String, onSave: @escaping (URL) -> Void) {
         dialogManager.showDialog(
             EditPinnedURLDialog(

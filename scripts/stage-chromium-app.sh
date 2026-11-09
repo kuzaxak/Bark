@@ -32,8 +32,8 @@ PRESENT=$(cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS | /usr/bi
   refuse "Engine artifact does not match its SHA256SUMS: $ARTIFACT"
 ARTIFACT_SHA=$(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1)
 [[ -f "$ENGINE_PIN" && $(<"$ENGINE_PIN") == "$ARTIFACT_SHA" ]] || refuse 'App was built against another engine artifact'
-# The bridge's structs cross without a size argument, so a layout change with no version bump only shows here.
-for header in barc_bridge_api.h barc_runtime_startup_api.h barc_page_tweaks.h; do
+# The bridge's structs cross without a size argument, so a layout change with no version bump shows only here and in main's digest check.
+for header in barc_bridge_api.h barc_runtime_startup_api.h barc_page_tweaks.h barc_public_headers_sha256.h; do
   /usr/bin/cmp -s "$ARTIFACT/Headers/$header" "$PRODUCTS/include/BarcChromium/$header" ||
     refuse "App was compiled against another $header than the engine's: $ARTIFACT/Headers/$header"
 done

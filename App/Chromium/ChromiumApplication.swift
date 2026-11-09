@@ -152,6 +152,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
     }
 
+    private func observePeekSettings() {
+        guard let storage else { return }
+        pageHost.peekOnShiftClick = withObservationTracking {
+            storage.settings.peekOnShiftClick
+        } onChange: { [weak self] in
+            Task { @MainActor in self?.observePeekSettings() }
+        }
+    }
+
     private func observeDevMCPSettings() {
         guard acceptsWindows, let storage, let manager = browserManager else { return }
         devMCPSettingsGeneration &+= 1
@@ -420,6 +429,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             guard DevMCPServer.shared.setConfiguration(storage.devMCP) else { completion(nil); return }
             DevMCPServer.shared.configure(browserManager: manager, enabled: false)
             observeDevMCPSettings()
+            observePeekSettings()
             let aiService = AIService(configService: storage.aiConfig)
             aiService.browserManager = manager
             aiService.mcpManager = mcpManager

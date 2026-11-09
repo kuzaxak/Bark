@@ -338,10 +338,11 @@ final class ChromiumPageNavigation: PageNavigation {
     }
 
     @discardableResult
-    func setNativePeekCapability(_ enabled: Bool) -> Bool {
+    func setNativePeekCapability(_ enabled: Bool, onShiftClick: Bool = false) -> Bool {
         if !enabled { peekEnabled = false; pendingPeekRequest = 0 }
+        let capability: Int32 = enabled ? (onShiftClick ? 3 : 1) : 0
         guard !invalidated, !isClosed, observation != 0, let enable = api.enablePeek,
-              enable(observation, enabled ? 1 : 0) == 1 else { return false }
+              enable(observation, capability) == 1 else { return false }
         peekEnabled = enabled
         return true
     }
