@@ -36,4 +36,4 @@ Primary areas: `Packages/NookWeb` (especially `PageSession`, `Profile`, `Browser
 
 Required platform scope is macOS on both Intel (x86_64) and Apple Silicon (arm64), as confirmed by the user; retain the current 15.5 deployment target unless separately agreed. Keep the existing iOS WebKit backend building; broad desktop Chromium extensions are not promised on iOS. Other platform expansion, Google account browser sync, universal extension compatibility, and new AI features are out of scope.
 
-The companion change `rebrand-nook-to-barc` owns the Barc name, visual identity, and public-facing rebrand. Ship that identity before public distribution of the independent Chromium product; it can be validated on WebKit first.
+The companion change `rebrand-nook-to-bark` owns the Bark name, visual identity, and public-facing rebrand. Ship that identity before public distribution of the independent Chromium product; it can be validated on WebKit first.

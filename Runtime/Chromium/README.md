@@ -93,8 +93,8 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 52 ordered patches and 26 copied
-sources (14 bridge sources, the existing translation script, two cosmetic resources
+procedure. The complete reviewed candidate has 51 ordered patches and 27 copied
+sources (the BRANDING file, 14 bridge sources, the existing translation script, two cosmetic resources
 the Boost picker resource, the native matcher header, the fixed-tweaks header and three tweak resources). Copies precede `lifecycle-close.patch`; the Swift overlay follows those
 copies. Do not recopy sources or reapply an overlay afterward. Start from the
 pinned unmodified source, not a partially patched checkout.
@@ -103,7 +103,8 @@ pinned unmodified source, not a partially patched checkout.
 set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown runtime-native-bootstrap native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome
+    cp "$runtime/BRANDING" chrome/app/theme/chromium/BRANDING; or return 1
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome
         if test "$patch" = lifecycle-close
             for source in barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -159,18 +160,27 @@ functions -e prepare_native_candidate
 On failure, stop and inspect the checkout; this is not an idempotent resume
 command. No intermediate core-only full build is needed. Keep separate scratch
 outputs for GN-only configuration checks, not duplicate complete engines.
-The installer target generates `Chromium Packaging/` from the same source and
+The installer target generates `Bark Packaging/` from the same source and
 build properties, including the pinned signer and per-process entitlements.
 Compilation does not sign or notarize the app.
 
 ### Native application and experimental smoke
 
-Application launch requires the native bootstrap, runtime-ready/lifecycle hooks
-and `NookNativeShell.framework`. The stock executable initializes Chromium's
-allocator and loads the fixed bundle-local framework entry; `ChromeMain` owns
-the sole application loop. There is no core-only application launch path or
-WebKit fallback. Build the Intel native framework from the same reviewed app
-revision, using its existing source/package/resource references:
+`Bark.app` is the outer bundle: the `NookChromiumApp` target owns its executable
+and `Info.plist`, and `Bark Framework.framework` is nested inside it. `BRANDING`
+sets the product name and the `ee.qdo.bark` bundle identifier in the engine's bundle,
+framework and helper names. It does not reach `chromium_strings.grd`, so product
+strings such as `IDS_PRODUCT_NAME` still say Chromium.
+
+Application launch requires runtime-ready/lifecycle hooks and
+`NookNativeShell.framework`. `ChromiumApp/main.cc` links only libSystem. It registers
+the early malloc zone, loads the engine framework, then the shell's fixed bundle-local
+entry; `ChromeMain` owns the sole application loop. Helpers keep Chromium's own main.
+There is no core-only application launch path or WebKit fallback. Its copy of the
+zone registration must match the pinned revision, and `CHROMIUM_ENGINE_VERSION` in the
+target's build settings must match `chrome/VERSION`. Build the Intel app target and
+native framework from the same reviewed app revision, using their existing
+source/package/resource references. The scheme builds both:
 
 ```fish
 set native_derived "$barc_repo/build/native-derived"
@@ -181,17 +191,19 @@ xcodebuild -project "$barc_repo/Nook.xcodeproj" -scheme NookNativeShell \
 ```
 
 Stage only after both builds succeed, preserving engine inputs and using a new
-output directory. The staging script copies the complete versioned framework,
-Sparkle and SPM resource bundles, and preserves Chromium's Assets.car. Do not
-copy a loose native dylib, Assets.car or metallib into Chromium resources.
+output directory. The staging script starts from the app target's `Bark.app` and
+adds the complete versioned engine framework, the engine's outer resources, Sparkle
+and SPM resource bundles. It does not ship the engine's own `Contents/MacOS/Bark`.
+Do not copy a loose native dylib, Assets.car or metallib into Chromium resources.
 
 ```fish
 set engine_out "$PWD/out/Barc-x64"
 set staging_input "$barc_repo/build/native-signing-input"
 mkdir "$staging_input"; and \
-    bash "$barc_repo/scripts/stage-chromium-app.sh" "$engine_out/Chromium.app" \
-        "$native_derived/Build/Products/Release" "$staging_input/Chromium.app"; and \
-    ditto "$engine_out/Chromium Packaging" "$staging_input/Chromium Packaging"
+    bash "$barc_repo/scripts/stage-chromium-app.sh" \
+        "$native_derived/Build/Products/Release/Bark.app" "$engine_out/Bark.app" \
+        "$native_derived/Build/Products/Release" "$staging_input/Bark.app"; and \
+    ditto "$engine_out/Bark Packaging" "$staging_input/Bark Packaging"
 ```
 
 Do not sign or launch a partially staged bundle. The framework requires its
@@ -357,14 +369,14 @@ the new browser cases remain unqualified by source/fixture checks.
 ### Installed signing proof
 
 The native product is a standard versioned
-`Contents/Frameworks/NookNativeShell.framework` bundle. The stock loader opens
-`Versions/A/NookNativeShell` after Chromium's allocator initialization. Keep its
+`Contents/Frameworks/NookNativeShell.framework` bundle. The app's main opens
+`Versions/A/NookNativeShell` after loading the engine framework. Keep its
 Info.plist and native resources (including Assets.car) inside that framework's
 Resources, separate from Chromium's resources. The explicit native signing part
 signs the framework container and infers `ee.qdo.nook.NativeShell` from its
 Info.plist; it supplies no bare-library identifier override.
 
-After the candidate build succeeds, use its generated `Chromium Packaging`
+After the candidate build succeeds, use its generated `Bark Packaging`
 tools with Python 3.11 or newer. Set `signing_identity` to the existing Developer
 ID Application identity and `notary_profile` to the existing notarytool Keychain
 profile. Keep credentials out of arguments and logs; the profile name is enough.
@@ -372,7 +384,7 @@ From the engine source root, after successful complete staging above:
 
 ```fish
 set signed_out "$PWD/out/Barc-x64-signed"
-python3 "$engine_out/Chromium Packaging/sign_chrome.py" \
+python3 "$engine_out/Bark Packaging/sign_chrome.py" \
     --identity "$signing_identity" --input "$staging_input" --output "$signed_out" \
     --notarize staple --notary-arg=--keychain-profile --notary-arg="$notary_profile"
 ```
@@ -380,8 +392,8 @@ python3 "$engine_out/Chromium Packaging/sign_chrome.py" \
 Use normal Developer ID signing for this gate. The upstream `--development`
 option injects `get-task-allow` and skips Gatekeeper assessment, so it cannot
 qualify the installed proof. Preserve the generated helper entitlements and
-complete versioned framework layout. The prototype still has Chromium's
-identity; production Barc provisioning and CloudKit are separate work.
+complete versioned framework layout. Production provisioning for `ee.qdo.bark` and
+CloudKit are separate work.
 
 Verify the produced DMG, install its complete app in an isolated location
 outside the build tree, and require strict signature checks, stapler validation

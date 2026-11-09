@@ -33,12 +33,20 @@
 		105000000000000000000204 /* NookTweaks in Frameworks */ = {isa = PBXBuildFile; productRef = 105000000000000000000104 /* NookTweaks */; };
 		105000000000000000000205 /* NookWeb in Frameworks */ = {isa = PBXBuildFile; productRef = 105000000000000000000105 /* NookWeb */; };
 		105000000000000000000206 /* NookUI in Frameworks */ = {isa = PBXBuildFile; productRef = 105000000000000000000106 /* NookUI */; };
+		C1B000000000000000000015 /* main.cc in Sources */ = {isa = PBXBuildFile; fileRef = C1B000000000000000000010 /* main.cc */; };
+		C1B000000000000000000016 /* early_zone_registration_apple.cc in Sources */ = {isa = PBXBuildFile; fileRef = C1B000000000000000000011 /* early_zone_registration_apple.cc */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		7F8340FC2E37F39400674A5D /* Nook.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Nook.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		105000000000000000000009 /* NookiOS.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NookiOS.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		C1A000000000000000000002 /* NookNativeShell.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; path = NookNativeShell.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1B000000000000000000002 /* Bark.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Bark.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C1B000000000000000000010 /* main.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = main.cc; sourceTree = "<group>"; };
+		C1B000000000000000000011 /* early_zone_registration_apple.cc */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.cpp; path = early_zone_registration_apple.cc; sourceTree = "<group>"; };
+		C1B000000000000000000012 /* early_zone_registration_apple.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = early_zone_registration_apple.h; sourceTree = "<group>"; };
+		C1B000000000000000000013 /* early_zone_registration_utils_apple.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = early_zone_registration_utils_apple.h; sourceTree = "<group>"; };
+		C1B000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -245,6 +253,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C1B000000000000000000005 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -256,6 +271,7 @@
 				2D0834C72EC8D90400C302AC /* Settings */,
 				2D0834CF2EC8E0AD00C302AC /* Navigation */,
 				2D0834BE2EC8CE0C00C302AC /* CommandPalette */,
+				C1B000000000000000000003 /* ChromiumApp */,
 				7F8340FD2E37F39400674A5D /* Products */,
 				564997D02E9B125200D89F78 /* UI */,
 				2CAC4D282E82457B00870189 /* Nook */,
@@ -268,9 +284,22 @@
 			children = (
 				105000000000000000000009 /* NookiOS.app */,
 				7F8340FC2E37F39400674A5D /* Nook.app */,
+				C1B000000000000000000002 /* Bark.app */,
 				C1A000000000000000000002 /* NookNativeShell.framework */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		C1B000000000000000000003 /* ChromiumApp */ = {
+			isa = PBXGroup;
+			children = (
+				C1B000000000000000000010 /* main.cc */,
+				C1B000000000000000000011 /* early_zone_registration_apple.cc */,
+				C1B000000000000000000012 /* early_zone_registration_apple.h */,
+				C1B000000000000000000013 /* early_zone_registration_utils_apple.h */,
+				C1B000000000000000000014 /* Info.plist */,
+			);
+			path = ChromiumApp;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -377,6 +406,22 @@
 			productReference = C1A000000000000000000002 /* NookNativeShell.framework */;
 			productType = "com.apple.product-type.framework";
 		};
+		C1B000000000000000000001 /* NookChromiumApp */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C1B000000000000000000008 /* Build configuration list for PBXNativeTarget "NookChromiumApp" */;
+			buildPhases = (
+				C1B000000000000000000004 /* Sources */,
+				C1B000000000000000000005 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = NookChromiumApp;
+			productName = Bark;
+			productReference = C1B000000000000000000002 /* Bark.app */;
+			productType = "com.apple.product-type.application";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -420,6 +465,7 @@
 			targets = (
 				7F8340FB2E37F39400674A5D /* Nook */,
 				C1A000000000000000000001 /* NookNativeShell */,
+				C1B000000000000000000001 /* NookChromiumApp */,
 				105000000000000000000001 /* NookiOS */,
 			);
 		};
@@ -468,6 +514,15 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C1B000000000000000000004 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				C1B000000000000000000015 /* main.cc in Sources */,
+				C1B000000000000000000016 /* early_zone_registration_apple.cc in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -849,6 +904,58 @@
 			};
 			name = Release;
 		};
+		C1B000000000000000000006 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CHROMIUM_ENGINE_BUILD = 8078.80;
+				CHROMIUM_ENGINE_VERSION = 156.0.8078.80;
+				CLANG_CXX_STANDARD_LIBRARY_HARDENING = none;
+				CLANG_ENABLE_MODULES = NO;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = NO;
+				GCC_ENABLE_CPP_EXCEPTIONS = NO;
+				GCC_ENABLE_CPP_RTTI = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = "ENGINE_VERSION_STRING=\\\"$(CHROMIUM_ENGINE_VERSION)\\\"";
+				GENERATE_INFOPLIST_FILE = NO;
+				GENERATE_PKGINFO_FILE = YES;
+				INFOPLIST_FILE = ChromiumApp/Info.plist;
+				OTHER_LDFLAGS = "-nostdlib++";
+				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.bark;
+				PRODUCT_NAME = Bark;
+				SDKROOT = macosx;
+			};
+			name = Debug;
+		};
+		C1B000000000000000000007 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CHROMIUM_ENGINE_BUILD = 8078.80;
+				CHROMIUM_ENGINE_VERSION = 156.0.8078.80;
+				CLANG_CXX_STANDARD_LIBRARY_HARDENING = none;
+				CLANG_ENABLE_MODULES = NO;
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_DEBUG_DYLIB = NO;
+				ENABLE_HARDENED_RUNTIME = NO;
+				ENABLE_PREVIEWS = NO;
+				GCC_ENABLE_CPP_EXCEPTIONS = NO;
+				GCC_ENABLE_CPP_RTTI = NO;
+				GCC_PREPROCESSOR_DEFINITIONS = "ENGINE_VERSION_STRING=\\\"$(CHROMIUM_ENGINE_VERSION)\\\"";
+				GENERATE_INFOPLIST_FILE = NO;
+				GENERATE_PKGINFO_FILE = YES;
+				INFOPLIST_FILE = ChromiumApp/Info.plist;
+				OTHER_LDFLAGS = "-nostdlib++";
+				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.bark;
+				PRODUCT_NAME = Bark;
+				SDKROOT = macosx;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -884,6 +991,15 @@
 			buildConfigurations = (
 				C1A000000000000000000004 /* Debug */,
 				C1A000000000000000000005 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C1B000000000000000000008 /* Build configuration list for PBXNativeTarget "NookChromiumApp" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C1B000000000000000000006 /* Debug */,
+				C1B000000000000000000007 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
