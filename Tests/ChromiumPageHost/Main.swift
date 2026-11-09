@@ -2,6 +2,7 @@
 import AppKit
 import BarcChromium
 import NookWeb
+import NookTabsCore
 import NookBlocker
 import NookSettings
 import NookTweaks
@@ -36,6 +37,10 @@ private enum Native {
     static var onAttach: ((Int32) -> Int32)?
     static var observations: [UInt64: (ChromiumNavigationAPI.Callback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var nextObservation: UInt64 = 1
+    static var blankSnapshots = false
+    static var rejectsObservation = false
+    static var catalogAvailable = true
+    static var onNavigate: ((Int32, Int32, String) -> Int32)?
 
     static var api: ChromiumPageHostAPI {
         ChromiumPageHostAPI(
@@ -90,6 +95,7 @@ private enum Native {
     }
     static var discovery: ChromiumDiscoveryAPI {
         ChromiumDiscoveryAPI(read: { windows, capacity, _, _, output in MainActor.assumeIsolated {
+            guard Native.catalogAvailable else { return 2 }
             let rows = Native.profiles.keys.sorted().compactMap { Native.row($0) }
             output?.pointee.window_count = rows.count; output?.pointee.tab_count = 0
             output?.pointee.revision = 1
@@ -104,17 +110,21 @@ private enum Native {
     static var navigation: ChromiumNavigationAPI {
         ChromiumNavigationAPI(
             observe: { window, tab, callback, context in MainActor.assumeIsolated {
+                guard !Native.rejectsObservation else { return 0 }
                 guard !Native.observations.values.contains(where: { $0.3 == tab }) else { return 0 }
                 let token = Native.nextObservation; Native.nextObservation += 1
                 Native.observations[token] = (callback, context, window, tab)
-                "https://fixture.invalid/page-\(tab)".withCString {
+                (Native.blankSnapshots ? "about:blank" : "https://fixture.invalid/page-\(tab)").withCString {
                     callback?(context, token, 0, window, tab, $0, nil, 0, 0)
                 }
                 Native.onObserve?(window, tab)
                 return token
             } },
             unobserve: { token in MainActor.assumeIsolated { Native.observations[token] = nil } },
-            navigate: { _, _, _ in preconditionFailure("Host must not navigate during construction") },
+            navigate: { window, tab, url in MainActor.assumeIsolated {
+                guard let onNavigate = Native.onNavigate else { preconditionFailure("Host must not navigate during construction") }
+                return onNavigate(window, tab, String(cString: url!))
+            } },
             back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in 1 }, stop: { _, _ in 1 },
             select: { window, tab in MainActor.assumeIsolated {
                 Native.selectionCalls += 1
@@ -148,6 +158,66 @@ private enum Native {
     }
 }
 
+#if !BLOCKER_HOST_CHECKS
+@MainActor private func lastPageKeepsItsWindow() throws {
+    let profile = Profile(id: Native.first, engine: .chromium)
+    let session = { PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil) }
+    var shells: [NSView] = []
+    func mounted(client: Int32, tab: Int32, pages count: Int = 1, group: UInt64) -> (ChromiumNativePageHost, BrowserWindowState, [ChromiumPageNavigation]) {
+        Native.profiles[client] = Native.first; Native.tabs[client] = [tab]; Native.groups[client] = group; Native.selected = client
+        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        let window = BrowserWindowState(), shell = NSView()
+        shells.append(shell)
+        precondition(host.registerWindow(window, nativeOwner: client, shell: shell, initialBlankTab: tab))
+        var pages: [ChromiumPageNavigation] = []
+        for _ in 0..<count {
+            _ = host.createPage(for: session(), profile: profile, in: window) { pages.append(try! $0.get() as! ChromiumPageNavigation) }
+        }
+        return (host, window, pages)
+    }
+    func close(_ page: ChromiumPageNavigation, client: Int32, event: Int32 = 7) {
+        if event == 7 { Native.tabs[client]?.removeAll { $0 == page.nativeTabID } }
+        Native.emit(event, page: page)
+    }
+
+    let (only, window, onlyPages) = mounted(client: 70, tab: 700, group: 70)
+    let before = Native.creates
+    var outcomes: [PageCloseOutcome] = []
+    only.closePage(onlyPages[0]) { outcomes.append($0) }
+    precondition(Native.tabs[70]?.count == 2 && Native.creates == before + 1, "The window's last tab closes with a blank to hold the window")
+    let held = Native.tabs[70]!.last!
+    close(onlyPages[0], client: 70)
+    precondition(outcomes == [.closed])
+    var next: ChromiumPageNavigation!
+    _ = only.createPage(for: session(), profile: profile, in: window) { next = try! $0.get() as? ChromiumPageNavigation }
+    precondition(next.nativeTabID == held && Native.creates == before + 1, "The next page takes the held tab")
+
+    let (refusing, _, refusingPages) = mounted(client: 71, tab: 710, group: 71)
+    let beforeRefused = Native.creates
+    refusing.closePage(refusingPages[0]) { _ in }
+    close(refusingPages[0], client: 71, event: 8)
+    refusing.closePage(refusingPages[0]) { _ in }
+    precondition(Native.creates == beforeRefused + 1, "A refused close does not stack up blanks")
+
+    let (siblings, _, siblingPages) = mounted(client: 72, tab: 720, pages: 2, group: 72)
+    let beforeSiblings = Native.creates
+    siblings.closePage(siblingPages[0]) { _ in }
+    precondition(Native.creates == beforeSiblings, "A sibling already holds the window")
+    siblings.closePage(siblingPages[1]) { _ in }
+    precondition(Native.creates == beforeSiblings + 1, "Closing every tab at once still leaves the window a tab")
+
+    let (shared, _, sharedPages) = mounted(client: 73, tab: 730, group: 73)
+    Native.profiles[74] = Native.second; Native.tabs[74] = [740]; Native.groups[74] = 73
+    let beforeShared = Native.creates
+    shared.closePage(sharedPages[0]) { _ in }
+    precondition(Native.creates == beforeShared, "Another client holds the window")
+    for client: Int32 in [70, 71, 72, 73, 74] { Native.profiles[client] = nil; Native.tabs[client] = nil }
+    Native.selected = 10
+    print("Chromium last-page checks PASS")
+}
+#endif
+
+#if !BLOCKER_HOST_CHECKS
 @main
 private enum HostChecks {
     @MainActor static func main() throws {
@@ -372,9 +442,12 @@ private enum HostChecks {
         try checkAuthoritativeGroups()
         try checkActualModelAdoption()
         print("Chromium page host checks passed")
+        try lastPageKeepsItsWindow()
     }
 }
 
+
+#endif
 
 private struct AdoptionNoTokenStore: KagiTokenStore {
     func load() -> String? { nil }
@@ -562,3 +635,223 @@ private func checkAuthoritativeGroups() throws {
     Native.emit(7, page: page, flags: 128)
     precondition(page.isClosed)
 }
+
+#if BLOCKER_HOST_CHECKS
+@MainActor private enum BlockerNative {
+    struct Work { let window: Int32; let generation: UInt64; let callback: ChromiumBlockerAPI.Callback; let context: UnsafeMutableRawPointer? }
+    static var work: [Work] = []
+    static var revision: UInt64 = 0, generation: UInt64 = 0, required: UInt64 = 0
+    static var enabled = false
+    static var prepared: Set<Int32> = []
+    static var policy: [(Int32, Int32, Int32)] = []
+    static var api: ChromiumBlockerAPI { ChromiumBlockerAPI(publish: { _, _, generation, callback, context in
+        MainActor.assumeIsolated {
+            guard let callback else { return 0 }
+            BlockerNative.work.append(Work(window: 0, generation: generation, callback: callback, context: context)); return 1
+        }
+    }, policy: { value, required, _, _ in MainActor.assumeIsolated { BlockerNative.enabled = value == 1; BlockerNative.required = required; return 1 } },
+    prepare: { window, callback, context in MainActor.assumeIsolated {
+        guard Native.profiles[window] != nil, let callback else { return 0 }
+        if window == 20 || (BlockerNative.enabled && BlockerNative.generation != BlockerNative.required) {
+            BlockerNative.work.append(Work(window: window, generation: 0, callback: callback, context: context))
+        } else {
+            BlockerNative.prepared.insert(window)
+            callback(context, BlockerNative.enabled ? BlockerNative.revision : 0, Int32(BARC_BLOCKER_READY.rawValue))
+        }
+        return 1
+    } }, tabPolicy: { window, tab, oauth, _, _ in MainActor.assumeIsolated {
+        BlockerNative.policy.append((window, tab, oauth)); return Native.tabs[window]?.contains(tab) == true ? 1 : 0
+    } }, state: { window, output in MainActor.assumeIsolated {
+        guard let output, Native.profiles[window] != nil else { return 0 }
+        output.pointee = BarcBlockerState(); output.pointee.context_id = UInt64(window)
+        output.pointee.publication_revision = BlockerNative.revision
+        output.pointee.installed_revision = BlockerNative.prepared.contains(window) ? BlockerNative.revision : 0
+        output.pointee.source_generation = BlockerNative.generation
+        output.pointee.required_source_generation = BlockerNative.required
+        output.pointee.ready = !BlockerNative.enabled || (BlockerNative.generation == BlockerNative.required && BlockerNative.prepared.contains(window)) ? 1 : 0
+        output.pointee.requested_policy = BlockerNative.enabled ? 1 : 0
+        return 1
+    } }) }
+    static func finish(_ result: BarcBlockerResult) {
+        let next = work.removeFirst()
+        if result == BARC_BLOCKER_READY {
+            if next.window == 0 { revision += 1; generation = next.generation }
+            else { prepared.insert(next.window) }
+        }
+        next.callback(next.context, revision, Int32(result.rawValue))
+        if next.window == 0, result == BARC_BLOCKER_READY {
+            let ready = work.filter { $0.window != 0 && $0.window != 20 }
+            work.removeAll { $0.window != 0 && $0.window != 20 }
+            for request in ready {
+                prepared.insert(request.window)
+                request.callback(request.context, revision, Int32(BARC_BLOCKER_READY.rawValue))
+            }
+        }
+    }
+    static func emit(_ event: Int32, window: Int32, tab: Int32) {
+        let entry = Native.observations.first { $0.value.2 == window && $0.value.3 == tab }!
+        if event == 7 { Native.tabs[window]?.removeAll { $0 == tab } }
+        entry.value.0?(entry.value.1, entry.key, event, window, tab, nil, nil, 0, 0)
+    }
+}
+
+@MainActor private func blockerDrain() async {
+    for _ in 0..<8 { await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } } }
+}
+
+@main private enum BlockerHostChecks {
+    @MainActor static func main() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("BlockerHost-\(UUID())")
+        let suite = "BlockerHost-\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
+        let filters = directory.appendingPathComponent("Filters")
+        try FileManager.default.createDirectory(at: filters.appendingPathComponent(".etags"), withIntermediateDirectories: true)
+        for (index, list) in FilterListManager.defaultLists.enumerated() {
+            try (index == 0 ? "||ads.test^$script" : "! synthetic").write(to: filters.appendingPathComponent(list.filename), atomically: true, encoding: .utf8)
+        }
+        for list in FilterListManager.defaultLists + FilterListManager.optionalLists {
+            try String(Date().timeIntervalSince1970).write(to: filters.appendingPathComponent(".etags/\(list.filename).checked"), atomically: true, encoding: .utf8)
+        }
+        let settings = NookSettingsService(kagiTokenStore: AdoptionNoTokenStore(), userDefaults: defaults,
+            boostStore: .init(fileURL: directory.appendingPathComponent("Boosts.json")))
+        settings.adBlockerEnabled = true; settings.adBlockerWhitelist = []; settings.enabledOptionalFilterLists = []
+        let manager = ContentBlockerManager(settings: settings, storageDirectory: filters, nativeNetworkBlocking: true)
+        defer { manager.setEnabled(false); settings.flushBoosts() }
+        manager.setEnabled(true); await manager.activationTask?.value
+        precondition(manager.networkRules != nil)
+        let registry = WindowRegistry(), window = BrowserWindowState(), shell = NSView()
+        let tabsDirectory = directory.appendingPathComponent("Tabs")
+        var tree = TabTree(); tree.createSpace(id: Native.first, name: "Work", icon: "house", accentHex: "#123456", after: nil)
+        tree.createSpace(id: Native.second, name: "Personal", icon: "house", accentHex: "#654321", after: Native.first)
+        var device = DeviceState(); device.firstLaunchCompleted = true
+        let store = TabStore(directory: tabsDirectory); store.save(tree, device); store.flush()
+        let tabs = TabsController(settings: settings, windowRegistry: registry, blocker: manager,
+            sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
+            profileEngine: .chromium, directory: tabsDirectory)
+        registry.register(window); registry.setActive(window); window.spaceID = Native.first
+        tabs.attach(window: window, restoringSavedState: false)
+        Native.profiles = [10: Native.first]; Native.tabs = [10: [100]]; Native.groups = [:]
+        Native.selected = 10; Native.attached = 10; Native.ending = []; Native.observations = [:]
+        Native.blankSnapshots = true; Native.onObserve = nil; Native.onSelect = nil; Native.onAttach = nil
+        let blocker = ChromiumContentBlocker(api: BlockerNative.api, manager: manager)
+        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation,
+            discoveryAPI: Native.discovery)
+        precondition(host.configureBlocker(blocker))
+        precondition(!host.configureBlocker(blocker))
+        let occupied = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation,
+            discoveryAPI: Native.discovery)
+        precondition(occupied.registerWindow(window, nativeOwner: 10, shell: shell))
+        precondition(!occupied.configureBlocker(blocker))
+        tabs.nativePageHost = host
+        precondition(host.registerWindow(window, nativeOwner: 10, shell: shell, initialBlankTab: 100))
+        var loads: [(Int32, Int32, String)] = []
+        Native.onNavigate = { loads.append(($0, $1, $2)); return 1 }
+        let creates = Native.creates
+        let id = tabs.open(url: URL(string: "https://ads.test/first")!, in: window, placement: .newTab)!
+        await blockerDrain()
+        let session = tabs.session(for: id)!
+        precondition(loads.isEmpty && Native.creates == creates && session.navigation == nil && BlockerNative.work.filter({ $0.window == 0 }).count == 1)
+        session.isOAuthFlow = true
+        BlockerNative.finish(BARC_BLOCKER_READY); await blockerDrain()
+        precondition(loads.count == 1 && loads[0].2 == "https://ads.test/first")
+        precondition(BlockerNative.policy.last?.2 == 1 && session.navigation != nil)
+
+        // Fresh-profile failure owns its untouched blank through a cancelled close.
+        window.spaceID = Native.second
+        let retryID = tabs.open(url: URL(string: "https://ads.test/second")!, in: window, placement: .background)!
+        let retrySession = tabs.ensureSession(for: retryID)!, profile = tabs.profile(forSpace: Native.second)!
+        var failures = 0, successes = 0
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            if case .failure = result { failures += 1 } else { successes += 1 }
+        }
+        precondition(Native.pending != nil)
+        Native.opened(profile: profile.id, window: 20, blank: 200); await blockerDrain()
+        precondition(BlockerNative.work.count == 1 && successes == 0 && loads.count == 1)
+        BlockerNative.finish(BARC_BLOCKER_INVALID_RULES); await blockerDrain()
+        precondition(failures == 1 && successes == 0 && Native.nativeCloses.last?.1 == 200)
+        BlockerNative.emit(8, window: 20, tab: 200)
+        let opens = Native.opens
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            if case .success(let page) = result { successes += 1; page.load(URL(string: "https://ads.test/retry")!) }
+            else { failures += 1 }
+        }
+        precondition(Native.opens == opens && successes == 0)
+        manager.setEnabled(false); precondition(blocker.synchronize())
+        BlockerNative.emit(7, window: 20, tab: 200)
+        precondition(Native.opens == opens + 1 && successes == 0)
+        Native.opened(profile: profile.id, window: 21, blank: 210); await blockerDrain()
+        precondition(successes == 1 && failures == 1 && loads.count == 2)
+        precondition(loads[1].0 == 21 && loads[1].2 == "https://ads.test/retry")
+        // Cancellation before readiness never allocates or returns a page,
+        // including the disabled-policy path.
+        let beforeCancelCreates = Native.creates
+        var cancelledCompletions = 0
+        let cancel = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            guard case .failure = result else { preconditionFailure("Cancelled request escaped") }
+            cancelledCompletions += 1
+        }
+        cancel(); await blockerDrain()
+        precondition(cancelledCompletions == 1 && Native.creates == beforeCancelCreates && loads.count == 2)
+
+        // Every makePage can fail observation. Keep the exact factory blank
+        // reserved instead of dropping its Batch or claiming dispatched close.
+        Native.ending.insert(21)
+        Native.rejectsObservation = true
+        var observeFailures = 0
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            guard case .failure = result else { preconditionFailure("Observation unexpectedly admitted") }
+            observeFailures += 1
+        }
+        Native.opened(profile: profile.id, window: 22, blank: 220); await blockerDrain()
+        precondition(observeFailures == 1 && Native.tabs[22] == [220] && loads.count == 2)
+        let beforeRetry = Native.opens
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { _ in observeFailures += 1 }
+        precondition(Native.opens == beforeRetry && observeFailures == 1)
+        // Authoritative disappearance settles the old ownership claim; an
+        // explicit request can proceed, with no timer or replacement factory.
+        Native.profiles[22] = nil; Native.tabs[22] = nil
+        Native.catalogAvailable = false
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { _ in observeFailures += 1 }
+        precondition(Native.opens == beforeRetry && observeFailures == 1)
+        Native.catalogAvailable = true
+        Native.rejectsObservation = false
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            guard case .success = result else { preconditionFailure("Retry failed") }
+            successes += 1
+        }
+        precondition(Native.opens == beforeRetry + 1)
+        Native.opened(profile: profile.id, window: 23, blank: 230); await blockerDrain()
+        precondition(successes == 2 && observeFailures == 3 && loads.count == 2)
+        // A coalesced cohort owns every blank before its first callback. A
+        // reentrant cancellation of its peer cannot return or load that page.
+        let beforeBatchCreates = Native.creates
+        var firstBatch = 0, secondBatch = 0
+        var cancelSecond: (() -> Void)?
+        _ = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            guard case .success = result else { preconditionFailure("First cohort page failed") }
+            precondition(Native.creates == beforeBatchCreates + 2)
+            firstBatch += 1; cancelSecond?()
+        }
+        cancelSecond = host.createPage(for: retrySession, profile: profile, in: window) { result in
+            guard case .failure = result else { preconditionFailure("Cancelled cohort page escaped") }
+            secondBatch += 1
+        }
+        await blockerDrain()
+        precondition(firstBatch == 1 && secondBatch == 1 && loads.count == 2)
+        // Even disabled blocking revalidates the actual registered model after
+        // the async boundary; removing it cannot create or return a late page.
+        let beforeRetirementCreates = Native.creates
+        var retiredFailures = 0
+        let firstProfile = tabs.profile(forSpace: Native.first)!
+        _ = host.createPage(for: session, profile: firstProfile, in: window) { result in
+            guard case .failure = result else { preconditionFailure("Retired model received a page") }
+            retiredFailures += 1
+        }
+        registry.unregister(window.id)
+        await blockerDrain()
+        precondition(retiredFailures == 1 && Native.creates == beforeRetirementCreates && loads.count == 2)
+        print("Chromium blocker host gate checks PASS")
+    }
+}
+#endif

@@ -24,6 +24,7 @@ extension BrowserManager {
     private static let agentCloseDelay: Duration = .seconds(30 * 60)
 
     func installAgentPageHost() {
+        guard engine == .webKit else { return }
         tabs.onAgentPage = { [weak self] session in
             guard let self, !agentParked || self.tabs.agentCallsInFlight > 0 else { return }
             agentParked = false
@@ -35,6 +36,7 @@ extension BrowserManager {
     /// The agent's page, loaded, in a window and counted as used. Nil without an Agent space tab;
     /// throws when the tab's page cannot be made.
     func agentWebView() throws -> WKWebView? {
+        guard engine == .webKit else { throw AgentPageError.nativeUnsupported }
         guard let id = tabs.agentItem else { return nil }
         guard let session = tabs.ensureSession(for: id) else { throw AgentPageError.noPage }
         session.loadWebViewIfNeeded()
@@ -49,6 +51,7 @@ extension BrowserManager {
     /// Puts the agent's page in the active window's hidden host when no open window holds it; a
     /// window that shows the Agent space takes it from there itself.
     func hostAgentPage(_ session: PageSession) {
+        guard engine == .webKit else { return }
         guard tabs.agentItem == session.itemID, let view = session.webView,
               let window = ((windowRegistry?.activeWindow).flatMap { $0.isIncognito ? nil : $0 } ?? tabs.regularWindows.first)?.window,
               let content = window.contentView else { return }
@@ -98,8 +101,13 @@ extension BrowserManager {
 }
 
 enum AgentPageError: LocalizedError {
-    case noPage
-    var errorDescription: String? { "The Agent space's tab has no page" }
+    case noPage, nativeUnsupported
+    var errorDescription: String? {
+        switch self {
+        case .noPage: return "The Agent space's tab has no page"
+        case .nativeUnsupported: return "This tool is not available for Chromium pages yet"
+        }
+    }
 }
 
 /// Holds the agent's page out of sight: transparent, outside the content area, never the target

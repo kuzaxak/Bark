@@ -97,22 +97,12 @@ struct PeekOverlayView: View {
 
     /// Close, open as a tab and open in split view: one round floating button each, as in Arc.
     private var actionButtons: some View {
-        VStack(spacing: NookDesign.Spacing.sm) {
-            peekButton("Close", systemImage: "xmark") { peek.dismissPeek(in: windowState) }
-            peekButton("Open as Tab", systemImage: "arrow.up.left.and.arrow.down.right") { peek.moveToNewTab(in: windowState) }
-            peekButton("Open in Split View", systemImage: "square.split.2x1") { peek.moveToSplitView(in: windowState) }
-                .disabled(!peek.canEnterSplitView(in: windowState))
-        }
-    }
-
-    private func peekButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
-        Button(title, systemImage: systemImage, action: action)
-            .labelStyle(.iconOnly)
-            .font(.system(size: NookDesign.Size.rowGlyph, weight: .semibold))
-            .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.iconButton, radius: NookDesign.Size.iconButton / 2))
-            .foregroundStyle(.secondary)
-            .nookFloatingSurface(in: Circle())
-            .help(title)
+        PeekActionButtons(
+            canEnterSplit: peek.canEnterSplitView(in: windowState),
+            dismiss: { peek.dismissPeek(in: windowState) },
+            openAsTab: { peek.moveToNewTab(in: windowState) },
+            openInSplit: { peek.moveToSplitView(in: windowState) }
+        )
     }
 
     // MARK: - Layout Calculation
@@ -137,9 +127,36 @@ struct PeekOverlayView: View {
     }
 }
 
+/// Shared controls for the SwiftUI overlay and Chromium's native Peek card.
+struct PeekActionButtons: View {
+    let canEnterSplit: Bool
+    let dismiss: () -> Void
+    let openAsTab: () -> Void
+    let openInSplit: () -> Void
+
+    var body: some View {
+        VStack(spacing: NookDesign.Spacing.sm) {
+            peekButton("Close", systemImage: "xmark", action: dismiss)
+            peekButton("Open as Tab", systemImage: "arrow.up.left.and.arrow.down.right", action: openAsTab)
+            peekButton("Open in Split View", systemImage: "square.split.2x1", action: openInSplit)
+                .disabled(!canEnterSplit)
+        }
+    }
+
+    private func peekButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
+        Button(title, systemImage: systemImage, action: action)
+            .labelStyle(.iconOnly)
+            .font(.system(size: NookDesign.Size.rowGlyph, weight: .semibold))
+            .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.iconButton, radius: NookDesign.Size.iconButton / 2))
+            .foregroundStyle(.secondary)
+            .nookFloatingSurface(in: Circle())
+            .help(title)
+    }
+}
+
 /// Arc's Peek bar: back, forward and reload at the leading edge and the site in the middle, which
 /// copies the link. It takes the page's colour, as the top bar does.
-private struct PeekNavigationBar: View {
+struct PeekNavigationBar: View {
     let page: PageSession
     let cornerRadius: CGFloat
     @EnvironmentObject private var browserManager: BrowserManager

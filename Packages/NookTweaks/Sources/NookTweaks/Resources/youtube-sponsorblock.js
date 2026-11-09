@@ -1,12 +1,20 @@
 // Nook SponsorBlock — YouTube segment skipper
 // Uses community-submitted data from SponsorBlock (sponsor.ajay.app)
 // Mirrors the official SponsorBlock extension behavior.
-(function() {
+(function(native) {
   'use strict';
 
   if (window.__nookSponsorBlockLoaded) return;
   window.__nookSponsorBlockLoaded = true;
 
+  var stopped = false;
+  var timers = new Set();
+  function later(fn, ms) {
+    if (stopped) return;
+    var timer = setTimeout(function() { timers.delete(timer); if (!stopped) fn(); }, ms);
+    timers.add(timer); return timer;
+  }
+  function cancelLater(timer) { timers.delete(timer); clearTimeout(timer); }
   var TAG = '[NookSB]';
 
   // === Category colors — exact match to SponsorBlock's official palette ===
@@ -63,7 +71,8 @@
 
   // === Public API for Swift ===
   window.__nookSponsorBlock = {
-    receiveSegments: function(segs, options) {
+    receiveSegments: function(segs, options, expectedVideo) {
+      if (stopped || (expectedVideo && expectedVideo !== currentVideoID)) return;
       segments = segs || [];
       categoryOptions = options || {};
       console.log(TAG, 'Received', segments.length, 'segments for', currentVideoID);
@@ -77,7 +86,24 @@
         removeVideoListeners();
       }
     },
-    updateSettings: function() {}
+    updateSettings: function() {},
+    stop: function() {
+      if (stopped) return;
+      stopped = true;
+      timers.forEach(cancelLater); timers.clear();
+      cancelSponsorSchedule(); removeVideoListeners();
+      if (unmuteCleanup) unmuteCleanup();
+      if (manualEndCleanup) manualEndCleanup();
+      removeProgressBarMarkers(); removeManualSkipButton(); removeToast();
+      document.removeEventListener('DOMContentLoaded', init);
+      document.removeEventListener('yt-navigate-finish', onVideoChange);
+      window.removeEventListener('popstate', onPopState);
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('loadedmetadata', onLoadedMetadata, true);
+      segments = []; currentVideoID = null;
+      delete window.__nookSponsorBlock;
+      delete window.__nookSponsorBlockLoaded;
+    }
   };
 
   // === Video ID Extraction ===
@@ -208,7 +234,7 @@
 
     if (timeUntilSkip > 750) {
       var delay = Math.max(0, timeUntilSkip - 150);
-      currentSkipSchedule = setTimeout(function() {
+      currentSkipSchedule = later(function() {
         currentSkipSchedule = null;
         startSponsorSchedule();
       }, delay);
@@ -241,7 +267,7 @@
 
   function cancelSponsorSchedule() {
     if (currentSkipSchedule) {
-      clearTimeout(currentSkipSchedule);
+      cancelLater(currentSkipSchedule);
       currentSkipSchedule = null;
     }
     if (currentSkipInterval) {
@@ -284,7 +310,7 @@
 
     showSkipToast(seg, currentTime);
     reportSegmentSkipped(seg.UUID);
-    setTimeout(startSponsorSchedule, 100);
+    later(startSponsorSchedule, 100);
   }
 
   // Playback events stop naturally while paused; no timers remain running in
@@ -444,7 +470,7 @@
         video.currentTime = originalTime;
       }
       removeToast();
-      setTimeout(startSponsorSchedule, 2000);
+      later(startSponsorSchedule, 2000);
     });
 
     toast.appendChild(dot);
@@ -452,17 +478,17 @@
     toast.appendChild(undoBtn);
     player.appendChild(toast);
 
-    toastTimeout = setTimeout(function() {
+    toastTimeout = later(function() {
       if (toast.parentNode) {
         toast.style.opacity = '0';
-        setTimeout(function() { removeToast(); }, 300);
+        later(function() { removeToast(); }, 300);
       }
     }, SKIP_NOTICE_DURATION);
   }
 
   function removeToast() {
     if (toastTimeout) {
-      clearTimeout(toastTimeout);
+      cancelLater(toastTimeout);
       toastTimeout = null;
     }
     var existing = document.querySelector('#nook-sb-toast');
@@ -554,6 +580,7 @@
 
   // === SPA Navigation ===
   function onVideoChange() {
+    if (stopped) return;
     var newID = extractVideoID(location.href);
     if (newID === currentVideoID) return;
 
@@ -571,6 +598,12 @@
   }
 
   function postToNative(msg) {
+    if (stopped) return;
+    if (native) {
+      if (msg.type === 'video-changed') native(msg.videoID, '');
+      else if (msg.type === 'segment-skipped') native(currentVideoID, msg.uuid);
+      return;
+    }
     try {
       if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.nookSponsorBlock) {
         window.webkit.messageHandlers.nookSponsorBlock.postMessage(msg);
@@ -580,28 +613,21 @@
     }
   }
 
+  function onPopState() { later(onVideoChange, 100); }
+  function onFullscreenChange() { if (segments.length) later(renderProgressBarMarkers, 300); }
+  function onLoadedMetadata(event) {
+    if (stopped || !event.target.matches?.('#movie_player video') || !segments.length) return;
+    setupVideoListeners(); updateTimeReference(); renderProgressBarMarkers(); startSponsorSchedule();
+  }
+
   // === Initialization ===
   function init() {
+    if (stopped) return;
     document.addEventListener('yt-navigate-finish', onVideoChange);
 
-    window.addEventListener('popstate', function() {
-      setTimeout(onVideoChange, 100);
-    });
-
-    document.addEventListener('fullscreenchange', function() {
-      if (segments.length > 0) {
-        setTimeout(renderProgressBarMarkers, 300);
-      }
-    });
-
-    // Discover a late/replaced player from media lifecycle events, without polling.
-    document.addEventListener('loadedmetadata', function(event) {
-      if (!event.target.matches?.('#movie_player video') || !segments.length) return;
-      setupVideoListeners();
-      updateTimeReference();
-      renderProgressBarMarkers();
-      startSponsorSchedule();
-    }, true);
+    window.addEventListener('popstate', onPopState);
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('loadedmetadata', onLoadedMetadata, true);
 
     var id = extractVideoID(location.href);
     if (id) {
@@ -615,4 +641,5 @@
   } else {
     init();
   }
-})();
+  return window.__nookSponsorBlock;
+})(typeof nookSponsorBlockNative === 'undefined' ? null : nookSponsorBlockNative);

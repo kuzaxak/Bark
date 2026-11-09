@@ -438,8 +438,7 @@ struct NookCommands: Commands {
                 .modifier(dynamicShortcut(.installExtension))
 
                 Button("Manage Extensions...") {
-                    SettingsNavigation.shared.currentSettingsTab = .extensions
-                    openSettings()
+                    browserManager.manageExtensions()
                 }
 
                 Divider()

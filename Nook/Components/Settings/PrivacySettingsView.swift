@@ -13,23 +13,15 @@ import NookDesign
 import NookSettings
 import NookWeb
 
-struct PrivacySettingsView: View {
+/// The sections both engines share. Only WebKit pages read fingerprinting, link cleaning and the HTTP warning.
+private struct PrivacyPreferenceSections: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(\.nookSettings) var nookSettings
-    @Environment(\.showSettingsSubPane) private var showSettingsSubPane
-    @ObservedObject var cookieManager: CookieManager
-    @ObservedObject var cacheManager: CacheManager
-    @State private var isClearing = false
-
-    init(cookieManager: CookieManager, cacheManager: CacheManager) {
-        self.cookieManager = cookieManager
-        self.cacheManager = cacheManager
-    }
 
     var body: some View {
         @Bindable var settings = nookSettings
 
-        Form {
+        if browserManager.engine == .webKit {
             Section("Tracking") {
                 scopePicker(
                     "Enhanced fingerprinting protection",
@@ -45,89 +37,66 @@ struct PrivacySettingsView: View {
                     browserManager.contentBlockerManager.prepareLinkCleaning()
                 }
             }
+        }
 
-            Section("Security") {
+        Section("Security") {
+            if browserManager.engine == .webKit {
                 settingToggle(
                     "Warn before opening a site over HTTP",
                     detail: "Nook always tries HTTPS first. Ask before opening a site that only works over HTTP.",
                     isOn: $settings.warnBeforeHTTP
                 )
-                settingToggle(
-                    "Security keys (USB)",
-                    detail: "Sign in and create passkeys with a hardware key, such as a YubiKey, plugged into this Mac.",
-                    isOn: $settings.securityKeysEnabled
-                )
             }
+            settingToggle(
+                "Security keys (USB)",
+                detail: "Sign in and create passkeys with a hardware key, such as a YubiKey, plugged into this Mac.",
+                isOn: $settings.securityKeysEnabled
+            )
+        }
 
-            Section("Passwords") {
-                settingToggle(
-                    "Use Pawl Vault for passwords and passkeys",
-                    detail: "Fill and save passwords and sign in with passkeys from the Pawl Vault app. Nook keeps no copy of them.",
-                    isOn: $settings.pawlVaultEnabled
-                )
-                if nookSettings.pawlVaultEnabled, let vault = browserManager.tabs.vault {
-                    LabeledContent("Status") {
-                        vaultStatus(vault.status)
-                    }
-                    // While this pane shows, follow the vault: unlocking happens there.
-                    .task {
-                        while !Task.isCancelled {
-                            await vault.refresh()
-                            try? await Task.sleep(for: .seconds(3))
-                        }
-                    }
+        Section("Passwords") {
+            settingToggle(
+                "Use Pawl Vault for passwords and passkeys",
+                detail: "Fill and save passwords and sign in with passkeys from the Pawl Vault app. Nook keeps no copy of them.",
+                isOn: $settings.pawlVaultEnabled
+            )
+            if nookSettings.pawlVaultEnabled, let vault = browserManager.tabs.vault {
+                LabeledContent("Status") {
+                    vaultStatus(vault.status)
                 }
-            }
-
-            Section("History") {
-                settingToggle(
-                    "Search page text in history",
-                    detail: "Turning this off erases saved page text.",
-                    isOn: $settings.searchPageTextInHistory
-                )
-                .onChange(of: nookSettings.searchPageTextInHistory) { _, enabled in
-                    if !enabled { browserManager.historyManager.erasePageText() }
-                }
-                Picker(selection: $settings.historyHalfLifeDays) {
-                    ForEach(Set(NookSettingsService.historyHalfLifeDaysChoices + [nookSettings.historyHalfLifeDays]).sorted(), id: \.self) { days in
-                        Text(days == 7 ? "1 week" : days == 14 ? "2 weeks" : days == 30 ? "1 month" : days == 60 ? "2 months" : "\(days) days").tag(days)
-                    }
-                } label: {
-                    VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                        Text("Rank recent visits higher")
-                        Text("A visit counts half as much in command bar results after this long.")
-                            .font(NookDesign.Font.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-                .onChange(of: nookSettings.historyHalfLifeDays) { _, days in
-                    browserManager.historyManager.setHalfLife(days: days)
-                }
-            }
-
-            Section {
-                cookiesRow
-                cacheRow
-                LabeledContent("Browsing history") {
-                    Button("Clear History") {
-                        clearBrowsingHistory()
-                    }
-                }
-            } header: {
-                HStack(spacing: NookDesign.Spacing.md) {
-                    Text("Website Data")
-                    if isClearing {
-                        ProgressView()
-                            .controlSize(.mini)
+                // While this pane shows, follow the vault: unlocking happens there.
+                .task {
+                    while !Task.isCancelled {
+                        await vault.refresh()
+                        try? await Task.sleep(for: .seconds(3))
                     }
                 }
             }
         }
-        .formStyle(.grouped)
-        .onAppear {
-            Task {
-                await cookieManager.loadCookies()
-                await cacheManager.loadCacheData()
+
+        Section("History") {
+            settingToggle(
+                "Search page text in history",
+                detail: "Turning this off erases saved page text.",
+                isOn: $settings.searchPageTextInHistory
+            )
+            .onChange(of: nookSettings.searchPageTextInHistory) { _, enabled in
+                if !enabled { browserManager.historyManager.erasePageText() }
+            }
+            Picker(selection: $settings.historyHalfLifeDays) {
+                ForEach(Set(NookSettingsService.historyHalfLifeDaysChoices + [nookSettings.historyHalfLifeDays]).sorted(), id: \.self) { days in
+                    Text(days == 7 ? "1 week" : days == 14 ? "2 weeks" : days == 30 ? "1 month" : days == 60 ? "2 months" : "\(days) days").tag(days)
+                }
+            } label: {
+                VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
+                    Text("Rank recent visits higher")
+                    Text("A visit counts half as much in command bar results after this long.")
+                        .font(NookDesign.Font.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .onChange(of: nookSettings.historyHalfLifeDays) { _, days in
+                browserManager.historyManager.setHalfLife(days: days)
             }
         }
     }
@@ -187,6 +156,72 @@ struct PrivacySettingsView: View {
             Text(detail)
                 .font(NookDesign.Font.caption)
                 .foregroundStyle(.secondary)
+        }
+    }
+}
+
+/// Chromium keeps cookies and cache per profile, so they are cleared from the Profiles tab.
+struct ChromiumPrivacySettingsView: View {
+    @EnvironmentObject var browserManager: BrowserManager
+
+    var body: some View {
+        Form {
+            PrivacyPreferenceSections()
+
+            Section("Website Data") {
+                LabeledContent("Browsing history") {
+                    Button("Clear History") { browserManager.historyManager.clearHistory() }
+                }
+                LabeledContent("Cookies and cache") {
+                    Button("Open Profiles") { SettingsNavigation.shared.currentSettingsTab = .profiles }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+struct PrivacySettingsView: View {
+    @EnvironmentObject var browserManager: BrowserManager
+    @Environment(\.nookSettings) var nookSettings
+    @Environment(\.showSettingsSubPane) private var showSettingsSubPane
+    @ObservedObject var cookieManager: CookieManager
+    @ObservedObject var cacheManager: CacheManager
+    @State private var isClearing = false
+
+    init(cookieManager: CookieManager, cacheManager: CacheManager) {
+        self.cookieManager = cookieManager
+        self.cacheManager = cacheManager
+    }
+
+    var body: some View {
+        Form {
+            PrivacyPreferenceSections()
+
+            Section {
+                cookiesRow
+                cacheRow
+                LabeledContent("Browsing history") {
+                    Button("Clear History") {
+                        clearBrowsingHistory()
+                    }
+                }
+            } header: {
+                HStack(spacing: NookDesign.Spacing.md) {
+                    Text("Website Data")
+                    if isClearing {
+                        ProgressView()
+                            .controlSize(.mini)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            Task {
+                await cookieManager.loadCookies()
+                await cacheManager.loadCacheData()
+            }
         }
     }
 

@@ -50,6 +50,37 @@ extension TabsController {
         }
     }
 
+    private func fetchNative(_ source: LiveSource, profileID: UUID, spaceID: UUID,
+                             while current: @escaping @MainActor () -> Bool) async throws -> [LivePage] {
+        func read(_ route: ProfileLiveSource) async throws -> ProfileLiveResponse {
+            try await nativeLiveResponse(route, profileID: profileID, spaceID: spaceID, while: current)
+        }
+        switch source {
+        case .githubPulls:
+            let response = try await read(.githubPulls)
+            return try GitHubPulls.response(data: response.data, status: response.status)
+        case .githubIssues:
+            let response = try await read(.githubIssues)
+            return try LiveFetch.githubIssues(data: response.data, status: response.status)
+        case .githubNotifications:
+            let response = try await read(.githubNotifications)
+            return try LiveFetch.githubNotifications(data: response.data, status: response.status)
+        case .asanaTasks:
+            func json(_ route: ProfileLiveSource) async throws -> Data {
+                let response = try await read(route)
+                if (300..<400).contains(response.status) || response.status == 401 || response.status == 403 {
+                    throw LiveFetch.Failure.signedOut
+                }
+                guard response.status == 200 else { throw LiveFetch.Failure.failed }
+                return response.data
+            }
+            return try await LiveFetch.asanaTasks(workspaces: try await json(.asanaWorkspaces)) { workspace in
+                try await json(.asanaTasks(workspace: workspace))
+            }
+        default: throw ProfileLiveFailure.unavailable
+        }
+    }
+
     /// Which tabs in the folder the source manages. A feed owns its own host and the hosts of
     /// `pages`, or of the folder's tabs when no pages are given.
     private func owns(_ source: LiveSource, folderID: UUID, pages: [LivePage]? = nil) -> (URL) -> Bool {
@@ -97,22 +128,46 @@ extension TabsController {
     }
 
     /// `force` skips the interval, for the folder's Refresh menu item.
-    public func refreshLiveFolder(_ folderID: UUID, force: Bool = false) {
-        guard let source = tree.item(folderID)?.live, Self.isKnown(source), !liveRefreshing.contains(folderID),
+    @discardableResult
+    public func refreshLiveFolder(_ folderID: UUID, force: Bool = false) -> Task<Void, Never>? {
+        if let pending = liveRefreshTasks[folderID] { return pending }
+        guard let source = tree.item(folderID)?.live, Self.isKnown(source), !isTerminating,
               force || Date().timeIntervalSince(liveRefreshed[folderID] ?? .distantPast) >= Self.liveRefreshInterval,
-              let spaceID = tree.spaceID(of: folderID), let profile = profile(forSpace: spaceID) else { return }
+              let spaceID = tree.spaceID(of: folderID), let profile = profile(forSpace: spaceID) else { return nil }
         let store = profile.webKitDataStore
-        guard source.feedURL != nil || store != nil else {
+        let native = source.feedURL == nil && profile.engine == .chromium && !profile.isEphemeral
+        guard source.feedURL != nil || store != nil || (native && nativeLiveFetch != nil) else {
             liveStatus[folderID] = .unavailable
-            return
+            return nil
         }
-        liveRefreshing.insert(folderID)
-        liveRefreshed[folderID] = Date()
-        Task {
-            let cookies = source.feedURL == nil ? await store?.httpCookieStore.allCookies() ?? [] : []
-            let result = await Result { try await Self.fetch(source, cookies: cookies) }
-            liveRefreshing.remove(folderID)
-            guard tree.item(folderID)?.live == source else { return }
+        // Each source owns one task. Native folder requests await the previous
+        // source, including individual refreshes; another space is never lost
+        // behind an already-running batch. No transport queue or retry timer.
+        let previous = native ? liveNativeRefreshTail : nil
+        let task = Task { @MainActor in
+            defer {
+                liveRefreshTasks[folderID] = nil
+                if liveRefreshTasks.isEmpty { liveNativeRefreshTail = nil }
+            }
+            if let previous { await previous.value }
+            guard !Task.isCancelled, !isTerminating,
+                  tree.item(folderID)?.live == source, tree.spaceID(of: folderID) == spaceID,
+                  self.profile(forSpace: spaceID)?.id == profile.id,
+                  isProfileAvailable(profile.id) else { return }
+            liveRefreshed[folderID] = Date()
+            let result = await Result {
+                if native {
+                    let pages = try await fetchNative(source, profileID: profile.id, spaceID: spaceID) {
+                        self.tree.item(folderID)?.live == source && self.tree.spaceID(of: folderID) == spaceID
+                    }
+                    return (pages: pages, title: Optional<String>.none)
+                }
+                let cookies = source.feedURL == nil ? await store?.httpCookieStore.allCookies() ?? [] : []
+                return try await Self.fetch(source, cookies: cookies)
+            }
+            guard !Task.isCancelled, tree.item(folderID)?.live == source,
+                  tree.spaceID(of: folderID) == spaceID, self.profile(forSpace: spaceID)?.id == profile.id,
+                  isProfileAvailable(profile.id) else { liveRefreshed[folderID] = nil; return }
             switch result {
             case .success(let fetched):
                 applyLivePages(fetched.pages, to: folderID, source: source)
@@ -125,6 +180,9 @@ extension TabsController {
                 log.info("Live folder refresh failed: \(String(describing: error), privacy: .public)")
             }
         }
+        liveRefreshTasks[folderID] = task
+        if native { liveNativeRefreshTail = task }
+        return task
     }
 
     private func applyLivePages(_ pages: [LivePage], to folderID: UUID, source: LiveSource) {
@@ -142,7 +200,12 @@ extension TabsController {
     /// The open pull requests of a space's github.com login, for a favorite's hover card. Empty
     /// when signed out or when the list could not be read.
     public func pullRequests(inSpace spaceID: UUID) async -> [LivePage] {
-        guard let store = profile(forSpace: spaceID)?.webKitDataStore else { return [] }
+        guard let profile = profile(forSpace: spaceID) else { return [] }
+        if profile.engine == .chromium {
+            guard !profile.isEphemeral else { return [] }
+            return (try? await fetchNative(.githubPulls, profileID: profile.id, spaceID: spaceID) { true }) ?? []
+        }
+        guard let store = profile.webKitDataStore else { return [] }
         let cookies = await store.httpCookieStore.allCookies()
         return (try? await GitHubPulls.fetch(cookies: cookies)) ?? []
     }

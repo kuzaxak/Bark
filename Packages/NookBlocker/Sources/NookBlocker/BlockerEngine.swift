@@ -27,29 +27,72 @@ private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", cate
 @MainActor
 public final class BlockerEngine {
 
+    /// Raw adblock-rust serialization for the native network matcher. This is
+    /// not WK rule-list JSON and has no app-cache prefix or scriptlet bodies.
+    /// The consumer must use the same pinned Rust implementation.
+    public struct NetworkRules: Sendable {
+        public let generation: UInt64
+        public let bytes: Data
+    }
+
     private var engine: UnsafeMutableRawPointer?
+    private let cacheFile: URL?
+    private var buildGeneration: UInt64 = 0
+
+    /// Nil until a build explicitly requests an export. WebKit retains no
+    /// extra serialized rules; native consumers receive one immutable value.
+    public private(set) var networkRules: NetworkRules?
 
     public var isLoaded: Bool { engine != nil }
+
+    init() {
+        self.cacheFile = Self.defaultCacheFile
+    }
+
+    init(cacheFile: URL?) {
+        self.cacheFile = cacheFile
+    }
+
+    deinit {
+        if let engine { nook_adblock_engine_free(engine) }
+    }
 
     /// Build or rebuild from the filter lists, replacing any previous engine.
     /// Per list rather than one blob: `ParseOptions.permissions` is applied at
     /// parse time and is what gates `trusted-*` scriptlets.
-    /// Construction runs off the main actor; only the finished pointer crosses back.
-    func build(sources: [FilterListManager.Source]) async {
-        guard !sources.isEmpty else {
+    /// Construction and serialization run off the main actor. A failed,
+    /// cancelled or superseded build leaves the last accepted policy intact.
+    @discardableResult
+    func build(sources: [FilterListManager.Source], exportingNetworkRules: Bool = false,
+               accepting: (@MainActor () -> Bool)? = nil) async -> Bool {
+        guard !Task.isCancelled else { return false }
+        guard !sources.isEmpty || exportingNetworkRules else {
             clear()
             log.info("No filter rules; blocker engine cleared")
-            return
+            return true
         }
+        precondition(buildGeneration < UInt64.max)
+        buildGeneration += 1
+        let generation = buildGeneration
         let start = CFAbsoluteTimeGetCurrent()
         let resources = ScriptletResources.json()
-        let (built, restored) = await Task.detached(priority: .userInitiated) { () -> (UnsafeMutableRawPointer?, Bool) in
+        let cacheFile = self.cacheFile
+        let (built, restored, serialized) = await Task.detached(priority: .userInitiated) { () -> (UnsafeMutableRawPointer?, Bool, Data?) in
             let key = Self.cacheKey(for: sources)
-            var engine = Self.restore(matching: key)
+            let cached = Self.restore(matching: key, from: cacheFile, exportingBytes: exportingNetworkRules)
+            var engine = cached?.engine
+            var bytes = cached?.bytes
             let restored = engine != nil
             if engine == nil {
                 engine = Self.parse(sources)
-                if let engine { Self.save(engine, key: key) }
+                if let engine, exportingNetworkRules || cacheFile != nil {
+                    bytes = Self.serialize(engine)
+                    if let bytes { Self.save(bytes, key: key, to: cacheFile) }
+                }
+            }
+            if exportingNetworkRules && bytes == nil {
+                if let engine { nook_adblock_engine_free(engine) }
+                return (nil, restored, nil)
             }
             // Resources are not part of the saved bytes, so both paths install them.
             if let engine, var resources {
@@ -57,20 +100,31 @@ public final class BlockerEngine {
                     nook_adblock_engine_use_resources(
                         engine, UnsafeRawPointer(buf.baseAddress)?.assumingMemoryBound(to: CChar.self), buf.count)
                 }
-                if !ok { log.error("Scriptlet resource set rejected by the engine") }
+                if !ok {
+                    log.error("Scriptlet resource set rejected by the engine")
+                    nook_adblock_engine_free(engine)
+                    return (nil, restored, nil)
+                }
             }
-            return (engine, restored)
+            return (engine, restored, exportingNetworkRules ? bytes : nil)
         }.value
 
-        clear()
-        engine = built
-        guard built != nil else {
-            log.error("Failed to build the blocker engine")
-            return
+        let ownerAccepts = accepting?() ?? true
+        guard ownerAccepts, generation == buildGeneration, !Task.isCancelled else {
+            if let built { nook_adblock_engine_free(built) }
+            return false
         }
+        guard let built else {
+            log.error("Failed to build the blocker engine")
+            return false
+        }
+        if let engine { nook_adblock_engine_free(engine) }
+        engine = built
+        networkRules = serialized.map { NetworkRules(generation: generation, bytes: $0) }
         let trusted = sources.filter(\.isTrusted).count
         log.info("Engine sources: \(sources.count, privacy: .public) list(s), \(trusted, privacy: .public) trusted, resources: \(resources != nil ? "yes" : "no", privacy: .public)")
         log.info("Blocker engine \(restored ? "restored" : "built", privacy: .public) in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start), privacy: .public)s")
+        return true
     }
 
     nonisolated private static func parse(_ sources: [FilterListManager.Source]) -> UnsafeMutableRawPointer? {
@@ -92,7 +146,7 @@ public final class BlockerEngine {
 
     /// The parsed engine, saved so a launch with unchanged lists skips the parse (0.3 s).
     /// One file: a 32-byte key, then `Engine::serialize` bytes.
-    nonisolated private static var cacheFile: URL {
+    nonisolated private static var defaultCacheFile: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         return appSupport.appendingPathComponent("\(Bundle.main.bundleIdentifier ?? "Nook")/ContentBlocker/Cache/engine.dat")
     }
@@ -112,21 +166,29 @@ public final class BlockerEngine {
         return Data(hasher.finalize())
     }
 
-    nonisolated private static func restore(matching key: Data) -> UnsafeMutableRawPointer? {
-        guard let saved = try? Data(contentsOf: cacheFile, options: .mappedIfSafe),
+    nonisolated private static func restore(matching key: Data, from cacheFile: URL?,
+                                           exportingBytes: Bool) -> (engine: UnsafeMutableRawPointer, bytes: Data?)? {
+        guard let cacheFile, let saved = try? Data(contentsOf: cacheFile, options: .mappedIfSafe),
               saved.count > key.count, saved.prefix(key.count) == key else { return nil }
         // A file the Rust side cannot read comes back nil, and the caller parses.
-        return saved.dropFirst(key.count).withUnsafeBytes { bytes in
-            nook_adblock_engine_deserialize(bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count)
-        }
+        guard let engine = saved.withUnsafeBytes({ bytes in
+            nook_adblock_engine_deserialize(
+                bytes.bindMemory(to: UInt8.self).baseAddress?.advanced(by: key.count), bytes.count - key.count)
+        }) else { return nil }
+        return (engine, exportingBytes ? Data(saved.dropFirst(key.count)) : nil)
     }
 
-    nonisolated private static func save(_ engine: UnsafeMutableRawPointer, key: Data) {
+    nonisolated private static func serialize(_ engine: UnsafeMutableRawPointer) -> Data? {
         var length = 0
-        guard let bytes = nook_adblock_engine_serialize(engine, &length) else { return }
+        guard let bytes = nook_adblock_engine_serialize(engine, &length) else { return nil }
         defer { nook_adblock_buffer_free(bytes, length) }
+        return Data(bytes: bytes, count: length)
+    }
+
+    nonisolated private static func save(_ bytes: Data, key: Data, to cacheFile: URL?) {
+        guard let cacheFile else { return }
         var file = key
-        file.append(bytes, count: length)
+        file.append(bytes)
         do {
             try FileManager.default.createDirectory(at: cacheFile.deletingLastPathComponent(), withIntermediateDirectories: true)
             try file.write(to: cacheFile, options: .atomic)
@@ -136,8 +198,11 @@ public final class BlockerEngine {
     }
 
     func clear() {
+        precondition(buildGeneration < UInt64.max)
+        buildGeneration += 1
         if let engine { nook_adblock_engine_free(engine) }
         engine = nil
+        networkRules = nil
     }
 
     /// Cosmetic configuration for a frame, or nil when nothing applies.

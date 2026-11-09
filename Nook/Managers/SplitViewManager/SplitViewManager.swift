@@ -77,17 +77,20 @@ final class SplitViewManager: ObservableObject {
         case .split(let edge):
             guard let current = window.selectedItemID,
                   let record = SplitRecord(edge == .leading ? [itemID, current] : [current, itemID]) else { return }
+            if presentNative(record, selecting: current, in: window) { return }
             window.split = record
             loadPanes(of: window)
             // Selecting again saves the window record with its new split.
             tabs.select(current, in: window)
         case .insert(let pane, let edge):
             guard let record = shownSplit(in: window)?.inserting(itemID, beside: pane, after: edge == .trailing) else { return }
+            if presentNative(record, selecting: itemID, in: window) { return }
             window.split = record
             loadPanes(of: window)
             tabs.select(itemID, in: window)
         case .replace(let pane):
             guard let record = shownSplit(in: window)?.replacing(pane, with: itemID) else { return }
+            if presentNative(record, selecting: itemID, in: window) { return }
             window.split = record
             loadPanes(of: window)
             tabs.select(itemID, in: window)
@@ -136,6 +139,7 @@ final class SplitViewManager: ObservableObject {
         guard let tabs, let filled = addSplit.filling(choosing: itemID, selectedItemID: window.selectedItemID, split: window.splitLayout),
               let record = shownSplit(in: window).map({ $0.inserting(filled, at: addSplit.index) }) ?? SplitRecord(addSplit.panes + [filled])
         else { return }
+        if presentNative(record, selecting: filled, in: window) { return }
         window.split = record
         loadPanes(of: window)
         tabs.select(filled, in: window)
@@ -161,8 +165,10 @@ final class SplitViewManager: ObservableObject {
         guard let tabs, let split = shownSplit(in: window), let index = split.itemIDs.firstIndex(of: itemID) else { return }
         let remaining = split.removing(itemID)
         guard window.selectedItemID == itemID else { return update(window, to: remaining) }
+        let next = split.itemIDs[index + 1 < split.itemIDs.count ? index + 1 : index - 1]
+        if presentNative(remaining, selecting: next, in: window) { return }
         window.split = remaining
-        tabs.select(split.itemIDs[index + 1 < split.itemIDs.count ? index + 1 : index - 1], in: window)
+        tabs.select(next, in: window)
     }
 
     /// Ends the split and keeps all its tabs open. The active pane stays selected.
@@ -173,6 +179,8 @@ final class SplitViewManager: ObservableObject {
 
     /// Divider `index` dragged to `position`, a fraction of the page's width or height.
     func moveDivider(_ index: Int, to position: CGFloat, length: CGFloat, in window: BrowserWindowState) {
+        // Chromium's own resize areas publish their final geometry via catalog.
+        guard tabs?.profileEngine != .chromium else { return }
         guard var record = window.split, length > 0 else { return }
         record.moveDivider(index, to: Double(position), minimum: min(0.9 / Double(record.itemIDs.count), 160 / Double(length)))
         window.split = record
@@ -184,14 +192,24 @@ final class SplitViewManager: ObservableObject {
     }
 
     private func update(_ window: BrowserWindowState, to record: SplitRecord?) {
+        if presentNative(record, selecting: window.selectedItemID, in: window) { return }
         window.split = record
         tabs?.mirror(window)
         window.refreshCompositor()
     }
 
+    /// Native refusal is handled without falling through to WebKit presentation.
+    private func presentNative(_ record: SplitRecord?, selecting active: UUID?,
+                               in window: BrowserWindowState) -> Bool {
+        guard let tabs, tabs.profileEngine == .chromium else { return false }
+        tabs.presentNativeSplit(record, activeItemID: active, in: window)
+        return true
+    }
+
     /// A pane shows its page, so the sidebar gives it back first.
     private func loadPanes(of window: BrowserWindowState) {
-        guard let bm = browserManager, let split = window.split else { return }
+        guard let bm = browserManager, bm.tabs.profileEngine != .chromium,
+              let split = window.split else { return }
         for id in split.itemIDs {
             bm.exitSidebarPiP(showing: id)
             if let session = bm.tabs.ensureSession(for: id) {

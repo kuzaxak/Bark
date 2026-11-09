@@ -29,7 +29,7 @@ The macOS browser SHALL complete the release qualification suite of website work
 - **AND** the popup preserves the initiating profile and opener relationship
 
 ### Requirement: Native navigation continuity
-The browser SHALL preserve navigation and live page state when switching spaces or moving a tab between native windows.
+The browser SHALL preserve navigation and live page state when switching spaces, composing split and Peek surfaces, or moving a tab between native windows.
 
 #### Scenario: Switch profiles within one window
 - **GIVEN** one browser window has Work and Personal spaces whose live pages contain unsaved drafts
@@ -46,7 +46,146 @@ The browser SHALL preserve navigation and live page state when switching spaces 
 #### Scenario: Use split views and Peek
 - **WHEN** the user opens two pages in a split and a link in Peek
 - **THEN** each surface navigates and receives focus independently
-- **AND** promoting Peek to a tab preserves its profile and live page
+- **AND** promoting Peek to a tab or split preserves its profile, opener and live document without reloading
+
+#### Scenario: Stack a split vertically
+- **GIVEN** a window showing two to four panes from the same profile, or from different regular profiles, or from one private session
+- **WHEN** the user switches the split between side-by-side and top-to-bottom and resizes a divider
+- **THEN** every pane keeps its own live page, form input and scroll position without reloading
+- **AND** each pane fills the size the layout gives it
+
+#### Scenario: Open Peek over a split
+- **GIVEN** a window showing a split in either orientation
+- **WHEN** the user opens a link from one pane in Peek
+- **THEN** Peek appears above the whole split, bound to that pane's profile, while the panes beneath stay live and keep their layout
+- **AND** dismissing Peek returns keyboard focus to that pane
+
+#### Scenario: Compose regular profiles in a split
+- **GIVEN** four live tabs alternate between Work and Personal profiles and contain different unsaved drafts
+- **WHEN** the user arranges them in a split, changes its orientation and size, and focuses each pane
+- **THEN** all four panes retain their documents, drafts and original profile sessions
+- **AND** focusing a pane leaves the other displayed panes visible
+- **AND** permission prompts and extension commands use the initiating pane's profile
+
+#### Scenario: Preserve protection on an unfocused pane
+- **GIVEN** a displayed split pane has a screenshot restriction
+- **WHEN** the user focuses another profile's pane or opens Peek over it
+- **THEN** the restricted pane's capture protection remains enforced for as long as it is displayed
+
+#### Scenario: Supersede a pending split restoration
+- **GIVEN** a saved window is preparing its split and the user selects another tab before preparation finishes
+- **WHEN** the older restoration fails or finishes later
+- **THEN** the newer selection and its live document remain intact
+- **AND** the older request does not close the window or replace the newer layout
+
+### Requirement: Native navigation controls
+The browser SHALL provide working address editing, command-palette actions and back/forward history menus in the Chromium window, preserving the requested page and profile.
+
+#### Scenario: Edit an address in either placement
+- **GIVEN** the address control is in the sidebar or the optional top bar
+- **WHEN** the user opens it by click or focus-address shortcut
+- **THEN** its field and suggestions remain visible and interactive within the owning window
+- **AND** submitting navigates the page being edited, including Peek, without targeting another selected page after a selection change
+- **AND** input-method composition is not treated as a submitted address
+
+#### Scenario: Submit an internal address
+- **WHEN** the user submits `chrome://version` or `about:blank` in the address control or command palette
+- **THEN** that page opens
+- **AND** the text is not sent to the search provider
+
+#### Scenario: Search in a new tab from the command palette
+- **GIVEN** the destination space's profile has a default search provider
+- **WHEN** the user submits text that is not an address to open in a new tab
+- **THEN** the new tab shows that provider's results, and the provider receives the query once
+- **AND** the tab does not remain on a blank page
+
+#### Scenario: Use and dismiss the command palette
+- **WHEN** the user opens the command palette to create a tab or fill an empty split pane
+- **THEN** typing, suggestion selection and submission operate in that window and complete the requested action
+- **AND** Escape or an outside click dismisses it without leaving an invisible input surface
+- **AND** resizing or closing the window does not leave an orphaned panel
+
+#### Scenario: Select a history entry after intervening navigation
+- **GIVEN** the history menu contains multiple visits to the same URL
+- **WHEN** the same page navigates again before the user chooses an entry that remains in its history
+- **THEN** the chosen visit is restored rather than a different visit occupying its former position
+
+#### Scenario: Reject a stale history choice
+- **GIVEN** a history menu is open
+- **WHEN** its page or profile is replaced, its window closes, or the chosen visit is removed before selection
+- **THEN** selecting the old entry does not navigate another page or a different visit
+
+### Requirement: Spaces without a live page
+A Chromium window SHALL show any space the person selects, including one with no tabs, and SHALL keep showing it when its last tab closes, without displaying another profile's page there.
+
+#### Scenario: Enter a new space
+- **WHEN** the person creates or selects a space with no tabs
+- **THEN** the window shows that space with its empty page area
+- **AND** no page of any other space remains visible or receives typing
+- **AND** a tab opened from there loads in that space's profile
+
+#### Scenario: Close a space's last tab
+- **GIVEN** another space keeps a live page
+- **WHEN** the person closes the last tab of the current space
+- **THEN** the window stays on the current space, now empty
+
+#### Scenario: Close a selected tab with another space retained
+- **GIVEN** another space keeps a live page and the current space has more tabs
+- **WHEN** the person closes the selected tab
+- **THEN** the window stays on the current space and selects its next tab
+
+### Requirement: Moving a tab between profiles
+A tab moved to a space with another profile SHALL close its page in the old profile before it moves, and SHALL load in the new profile when next selected.
+
+#### Scenario: Move a loaded tab to another profile's space
+- **WHEN** the person moves a loaded tab to a space that uses another profile
+- **THEN** the tab appears in that space and the window stays on its current space
+- **AND** the page loads with the new profile's data when selected
+
+#### Scenario: The page refuses to close
+- **WHEN** the page's leave prompt keeps it open
+- **THEN** the tab stays in its space with its page
+
+### Requirement: Single native browser interface
+The browser SHALL show tabs and navigation state only in its native sidebar and optional top bar, and SHALL NOT render Chromium's tab strip or toolbar in a browser window.
+
+#### Scenario: Every window state shows one set of controls
+- **GIVEN** a regular or private window showing one page, a split of two to four panes, or Peek
+- **WHEN** the window is displayed, resized, changes space, enters or leaves full screen, or is restored after relaunch
+- **THEN** no Chromium tab strip, address field, back, forward or reload button, profile button or app menu is visible
+- **AND** page content begins directly below the top bar, or at the top of the window when the top bar is off, with no empty band
+
+#### Scenario: Removed controls cannot take focus
+- **WHEN** the user moves keyboard focus through the window or inspects it with assistive technology
+- **THEN** focus does not enter the removed Chromium controls and they are not exposed as interface elements
+
+#### Scenario: Browser features outlive the toolbar
+- **WHEN** the user finds in page, answers a site permission request, saves a password, starts a download or runs an extension action
+- **THEN** the feature stays reachable from the native interface and its prompt appears within the window
+
+### Requirement: Copy the current page screenshot
+The browser SHALL copy an image of the requested page's rendered viewport through the screenshot command while respecting capture restrictions and current page ownership.
+
+#### Scenario: Copy a Chromium page
+- **GIVEN** the current page permits capture and has a rendered viewport
+- **WHEN** the user invokes Copy Screenshot through its menu or shortcut
+- **THEN** the clipboard contains an image of that page's viewport
+- **AND** no replacement page is loaded or selected to perform the capture
+
+#### Scenario: Document changes during capture
+- **GIVEN** a screenshot is pending
+- **WHEN** its document, profile or owning window changes before the result is delivered
+- **THEN** the old result does not update the clipboard or report success
+
+#### Scenario: A newer copy takes priority
+- **GIVEN** a screenshot is pending and the user copies another item
+- **WHEN** the older screenshot finishes
+- **THEN** the newer clipboard content remains intact
+
+#### Scenario: Capture is unavailable
+- **GIVEN** the current page disallows capture or has no rendered viewport
+- **WHEN** the user invokes Copy Screenshot
+- **THEN** the clipboard remains unchanged and the browser reports that the screenshot is unavailable
 
 ### Requirement: Profile isolation
 The browser SHALL isolate persistent website data and site permissions by profile.
@@ -56,6 +195,32 @@ The browser SHALL isolate persistent website data and site permissions by profil
 - **WHEN** a user signs in to a site in one space using A
 - **THEN** the other space using A can use that session
 - **AND** B receives neither the session nor A's permission grants
+
+### Requirement: Profile reassignment continuity
+The browser SHALL retain a space's tabs and saved windows while changing their website-data ownership to the selected destination profile.
+
+#### Scenario: Move a space between profiles
+- **GIVEN** two spaces share Work and Personal has a different signed-in session
+- **WHEN** the user moves one Work space to Personal and accepts closing its affected pages
+- **THEN** the moved space retains its tab and saved-window identities and reloads its pages using Personal
+- **AND** the other Work space remains usable with Work's existing session
+- **AND** Work's cookies, extension state and credentials are not copied to Personal
+
+### Requirement: Interrupted profile operation recovery
+The browser SHALL keep an interrupted profile deletion or reassignment recoverable through its profile settings.
+
+#### Scenario: Assignment cannot be saved before deletion
+- **GIVEN** the user requests deletion of Work and reassignment of its spaces to Personal
+- **WHEN** saving the reassignment fails after page closure was accepted
+- **THEN** Work's source data is retained and the incomplete operation is shown for retry
+- **AND** relaunch does not silently erase that data or substitute another destination profile
+
+#### Scenario: Relaunch with only an unavailable saved window
+- **GIVEN** a pending deletion makes the only saved window's profile unavailable and the chosen survivor has no space
+- **WHEN** the browser relaunches
+- **THEN** the user can reach profile settings and retry the existing operation
+- **AND** the unavailable saved window is preserved without creating a persistent recovery space or tab
+- **AND** a successful retry restores its original tab and window identities under the chosen survivor
 
 ### Requirement: Independent private sessions
 The browser SHALL isolate website data and site-permission grants between independently opened private sessions.
@@ -74,6 +239,25 @@ The browser SHALL discard private-session browsing data when the private session
 - **WHEN** all windows belonging to that private session close and a new private session begins
 - **THEN** the new session has none of those cookies, history entries, or permission grants
 - **AND** regular profiles contain none of the private session's browsing data
+
+### Requirement: Opt-in page-text history
+The browser SHALL preserve the existing opt-in page-text history search for eligible Chromium pages.
+
+#### Scenario: Search a visited page's text
+- **GIVEN** page-text history search is enabled and a regular-profile page has finished loading
+- **WHEN** the browser captures its text and the user searches for a phrase from that page
+- **THEN** the existing history search can return the visited page
+- **AND** capture does not create a WebKit page, reload the document, or change the selected tab
+
+#### Scenario: Exclude private and Agent documents
+- **GIVEN** page-text history search is enabled
+- **WHEN** a private, ephemeral-profile or Agent page finishes loading
+- **THEN** its text is not captured for the history index
+
+#### Scenario: Reject a stale history capture
+- **GIVEN** a page-text capture is pending
+- **WHEN** its document or profile changes, its owner ends, or the setting is disabled before the result returns
+- **THEN** that result is not written to history search
 
 ### Requirement: Page failure recovery
 The browser SHALL allow recovery from a page-process failure without terminating unrelated browser windows.
@@ -94,6 +278,40 @@ The browser SHALL enforce the initiating profile's permission decision before ex
 #### Scenario: Untrusted certificate
 - **WHEN** navigation encounters an untrusted certificate without an applicable user exception
 - **THEN** the browser displays a warning before permitting access to the page
+
+### Requirement: Profile-bound Pawl Vault integration
+When enabled, the Chromium browser SHALL preserve Pawl password/one-time-code selection, user-approved password saving and supported Pawl passkeys. Operations SHALL retain the initiating origin/profile and their valid request or submission identity. Secret filling SHALL require the user's credential choice and the original field's current foreground ownership.
+
+#### Scenario: Fill a field inside another origin
+- **GIVEN** the user focuses a supported field inside a cross-origin frame
+- **WHEN** the user chooses a Pawl credential
+- **THEN** credential lookup uses that frame's origin and the page's profile
+- **AND** filling targets only the original field, never a field in the parent or a replacement document
+
+#### Scenario: A late credential result loses its target
+- **GIVEN** a credential lookup or fill request is pending
+- **WHEN** its document, profile, field or owning foreground window changes
+- **THEN** the old result does not fill a field or move focus back
+- **AND** cleanup of the old request does not cancel a newer credential request
+- **AND** a cancelled user choice can be retried from the current field
+
+#### Scenario: Pawl becomes available after browser startup
+- **GIVEN** Pawl integration is enabled and Pawl was locked or unavailable when the browser started
+- **WHEN** Pawl becomes available and the user focuses a supported field again
+- **THEN** credential selection can resume without relaunching the browser or toggling the setting
+- **AND** disabling the integration prevents further field-triggered Pawl requests
+
+#### Scenario: Saving and passkeys retain their consent boundaries
+- **WHEN** a site offers a password save or requests a Pawl passkey operation
+- **THEN** the corresponding existing user-consent flow remains available for the initiating origin and profile
+- **AND** neither operation silently substitutes another profile's credentials
+- **AND** working stock Chromium security keys alone do not qualify Pawl passkey parity
+
+#### Scenario: Save after a successful login redirect
+- **GIVEN** Chromium has validated a password submission and the site redirects after login
+- **WHEN** the user accepts the save offer
+- **THEN** the saved credential retains the submission's origin and profile
+- **AND** retiring its owner/profile or superseding the submission cancels the old offer
 
 ### Requirement: Measured release qualification
 The Chromium release SHALL satisfy a documented compatibility and performance acceptance matrix measured against the supported WebKit release on matched hardware and workloads.
@@ -124,3 +342,31 @@ The browser SHALL support the mandatory playback, streaming, media-control and c
 - **WHEN** a release claims support for a format or protected streaming service
 - **THEN** playback and seeking pass the corresponding installed-build tests on Intel and Apple Silicon
 - **AND** required codec, acceleration and service availability is documented without inferring support solely from the Chromium version
+
+### Requirement: Window look follows Arc
+The browser window SHALL present the same layout as Arc, judged by comparing the real windows side by side, and SHALL NOT show any Chromium bookmark interface.
+
+#### Scenario: Window controls share one row
+- **WHEN** a browser window is displayed with the sidebar visible
+- **THEN** the window buttons, sidebar toggle, back, forward and reload controls appear on one row at the top of the sidebar
+- **AND** the address control appears directly below that row
+
+#### Scenario: The page is framed
+- **GIVEN** a window showing one page, a split, Peek or an empty space
+- **WHEN** the window is displayed or resized
+- **THEN** the page area has rounded corners and is inset from the top, right and bottom window edges
+- **AND** the sidebar colour fills the gap between the page area and the window edge
+
+#### Scenario: The address control at rest
+- **GIVEN** a loaded page and no pointer over the address control
+- **WHEN** the sidebar is displayed
+- **THEN** the address control shows the page's host name without permanent trailing controls
+
+#### Scenario: The Library is not squeezed into the sidebar
+- **WHEN** the user opens the Library
+- **THEN** it presents the same layout as in Arc rather than fitting inside the sidebar's width
+
+#### Scenario: Bookmarking keeps to the sidebar
+- **WHEN** the user presses the Bookmark Tab shortcut on a page
+- **THEN** the tab moves to the space's pinned section, or back to its tabs if it is already there
+- **AND** no Chromium bookmark dialog or bubble appears

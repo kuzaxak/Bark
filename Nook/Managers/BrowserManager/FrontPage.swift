@@ -32,13 +32,14 @@ enum PageCommand: CaseIterable {
     case find, zoomIn, zoomOut, actualSize
     case copyURL, print
     case webInspector, pickElement, copyScreenshot, developerMode
+    case developerConsole, developerNetwork, developerPerformance
     case pictureInPicture, mute, translate
     case clearSiteCookies, clearSiteCache, boost
 }
 
 extension ShortcutAction {
     /// The page command this shortcut runs; nil for one on the window, a tab in the sidebar or the
-    /// app. The command bar, the developer columns and portrait capture open on the window, with
+    /// app. The command bar and portrait capture open on the window, with
     /// no page too, and work on its page in front.
     var pageCommand: PageCommand? {
         switch self {
@@ -53,6 +54,9 @@ extension ShortcutAction {
         case .actualSize: .actualSize
         case .copyCurrentURL: .copyURL
         case .printPage: .print
+        case .openDevPanel: .developerConsole
+        case .openNetworkPanel: .developerNetwork
+        case .openPerformancePanel: .developerPerformance
         case .openDevTools: .webInspector
         case .pickElement: .pickElement
         case .copyScreenshot: .copyScreenshot
@@ -66,7 +70,7 @@ extension ShortcutAction {
              .toggleTopBarAddressView, .nextSpace, .previousSpace,
              .goToSpace1, .goToSpace2, .goToSpace3, .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8, .goToSpace9,
              .newWindow, .closeWindow, .closeBrowser, .toggleFullScreen, .addSplitView, .openCommandPalette, .focusAddressBar,
-             .openDevPanel, .openNetworkPanel, .openPerformancePanel, .capturePortrait,
+             .capturePortrait,
              .viewDownloads, .viewHistory, .expandAllFolders, .toggleSidebar, .toggleAIAssistant, .installExtension,
              .customizeSpaceGradient, .organizeTabs, .toggleExtensionLibrary, .manageExtensions, .toggleDarkMode:
             nil

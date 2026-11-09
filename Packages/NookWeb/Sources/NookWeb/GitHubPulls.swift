@@ -33,6 +33,9 @@ enum GitHubPulls {
     /// The first page of the list (25), which is all a sidebar folder shows.
     static func fetch(cookies: [HTTPCookie]) async throws -> [LivePage] {
         let (data, status) = try await LiveFetch.get(listURL, cookies: cookies, domains: ["github.com", ".github.com"], headers: LiveFetch.gitHubJSONHeaders)
+        return try response(data: data, status: status)
+    }
+    static func response(data: Data, status: Int) throws -> [LivePage] {
         // Signed out, the JSON list answers 404 and the HTML one redirects to the login page.
         if (300..<400).contains(status) || status == 401 || status == 404 { throw Failure.signedOut }
         guard status == 200, let decoded = try? JSONDecoder().decode(Response.self, from: data) else { throw Failure.failed }

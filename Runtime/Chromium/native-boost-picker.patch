@@ -1,0 +1,280 @@
+--- a/chrome/app/framework.exports
++++ b/chrome/app/framework.exports
+@@ -99,3 +99,5 @@
+ _barc_tab_go_forward
+ _barc_tab_reload
+ _barc_tab_stop
++_barc_tab_start_boost_picker
++_barc_tab_cancel_boost_picker
+--- a/chrome/app/framework.order
++++ b/chrome/app/framework.order
+@@ -113,4 +113,6 @@
+ # _ChromeMain must be listed last.  That's the whole point of this file.
+ _barc_profile_search_state
+ _barc_tab_search
++_barc_tab_start_boost_picker
++_barc_tab_cancel_boost_picker
+ _ChromeMain
+--- a/chrome/browser/actor/execution_engine_unittest.cc
++++ b/chrome/browser/actor/execution_engine_unittest.cc
+@@ -157,6 +157,9 @@
+     std::move(callback).Run(chrome::mojom::NookScriptResult::New(
+         chrome::mojom::NookScriptStatus::kUnavailable, "", "", false));
+   }
++  void NookStartBoostPicker(const blink::DocumentToken&, uint64_t, uint64_t,
++      NookStartBoostPickerCallback callback) override { std::move(callback).Run(""); }
++  void NookCancelBoostPicker(const blink::DocumentToken&, uint64_t, uint64_t) override {}
+   void NookCancelScript(const blink::DocumentToken&, uint64_t, uint64_t) override {}
+   void NookTranslate(const blink::DocumentToken&, uint64_t, int32_t,
+                      std::vector<chrome::mojom::NookTranslationNodePtr>,
+--- a/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
++++ b/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
+@@ -84,6 +84,10 @@
+   MOCK_METHOD(void, NookEvaluateScript,
+       (const blink::DocumentToken&, uint64_t, uint64_t, int32_t, int32_t,
+        const std::string&, NookEvaluateScriptCallback), (override));
++  MOCK_METHOD(void, NookStartBoostPicker,
++      (const blink::DocumentToken&, uint64_t, uint64_t, NookStartBoostPickerCallback), (override));
++  MOCK_METHOD(void, NookCancelBoostPicker,
++      (const blink::DocumentToken&, uint64_t, uint64_t), (override));
+   MOCK_METHOD(void, NookCancelScript,
+       (const blink::DocumentToken&, uint64_t, uint64_t), (override));
+   MOCK_METHOD(void, NookTranslate,
+--- a/chrome/browser/password_manager/password_change/password_change_page_stability_waiter_unittest.cc
++++ b/chrome/browser/password_manager/password_change/password_change_page_stability_waiter_unittest.cc
+@@ -73,6 +73,10 @@
+   MOCK_METHOD(void, NookEvaluateScript,
+       (const blink::DocumentToken&, uint64_t, uint64_t, int32_t, int32_t,
+        const std::string&, NookEvaluateScriptCallback), (override));
++  MOCK_METHOD(void, NookStartBoostPicker,
++      (const blink::DocumentToken&, uint64_t, uint64_t, NookStartBoostPickerCallback), (override));
++  MOCK_METHOD(void, NookCancelBoostPicker,
++      (const blink::DocumentToken&, uint64_t, uint64_t), (override));
+   MOCK_METHOD(void, NookCancelScript,
+       (const blink::DocumentToken&, uint64_t, uint64_t), (override));
+   MOCK_METHOD(void, NookTranslate,
+--- a/chrome/common/chrome_isolated_world_ids.h
++++ b/chrome/common/chrome_isolated_world_ids.h
+@@ -31,6 +31,7 @@
+ 
+   // Native generic cosmetic DOM observation; never page-world globals.
+   ISOLATED_WORLD_ID_NOOK_COSMETICS,
++  ISOLATED_WORLD_ID_NOOK_BOOST_PICKER,
+ #endif  // BUILDFLAG(IS_MAC)
+ 
+   // Numbers for isolated worlds for extensions are set in
+--- a/chrome/common/chrome_render_frame.mojom
++++ b/chrome/common/chrome_render_frame.mojom
+@@ -241,6 +241,10 @@
+   NookEvaluateScript(blink.mojom.DocumentToken document, uint64 owner,
+                      uint64 request, int32 mode, int32 world, string source)
+       => (NookScriptResult result);
++  // Fixed product picker, never caller-supplied JavaScript. Empty means cancelled.
++  NookStartBoostPicker(blink.mojom.DocumentToken document, uint64 owner, uint64 request)
++      => (string selector);
++  NookCancelBoostPicker(blink.mojom.DocumentToken document, uint64 owner, uint64 request);
+   NookCancelScript(blink.mojom.DocumentToken document, uint64 owner,
+                    uint64 request);
+ };
+--- a/chrome/common/common_resources.grd
++++ b/chrome/common/common_resources.grd
+@@ -14,6 +14,7 @@
+       <include name="IDR_CHROME_CONTROLLED_FRAME_API_FEATURES" file="controlled_frame\api\_api_features.json" type="BINDATA" compress="gzip"/>
+       <if expr="is_macosx">
+         <include name="IDR_NOOK_COSMETIC_SCRIPTLETS" file="resources/nook_cosmetics/scriptlets.json" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_BOOST_PICKER" file="resources/nook_boost_picker.js" type="BINDATA" compress="gzip" />
+         <include name="IDR_NOOK_COSMETIC_OBSERVER" file="resources/nook_cosmetics/observer.js" type="BINDATA" compress="gzip" />
+       </if>
+     </includes>
+--- a/chrome/renderer/chrome_render_frame_observer.cc
++++ b/chrome/renderer/chrome_render_frame_observer.cc
+@@ -341,6 +341,7 @@
+ }
+ 
+ void ChromeRenderFrameObserver::DidCreateNewDocument() {
++  ResetNookBoostPicker();
+   ResetNookScript();
+   ResetNookTranslation();
+   nook_translation_cleanup_document_.reset();
+@@ -429,11 +430,14 @@
+ }
+ 
+ void ChromeRenderFrameObserver::OnDestruct() {
++  // FrameDetached already closed/cleared the Blink frame before deleting us.
++  ResetNookBoostPicker(false);
+   ResetNookScript();
+   delete this;
+ }
+ 
+ void ChromeRenderFrameObserver::WillDetach(blink::DetachReason detach_reason) {
++  ResetNookBoostPicker();
+   ResetNookScript();
+ #if BUILDFLAG(IS_ANDROID)
+   base::AutoLock auto_lock(GetFrameHeaderMapLock());
+@@ -1254,6 +1258,135 @@
+     chrome::mojom::NookScriptStatus status) {
+   return chrome::mojom::NookScriptResult::New(status, "", "", false);
+ }
++}
++
++
++void ChromeRenderFrameObserver::ResetNookBoostPicker(bool cleanup_document) {
++  nook_boost_picker_weak_.InvalidateWeakPtrs();
++  auto pending = std::move(nook_boost_picker_);
++  nook_boost_picker_.reset();
++  v8::Global<v8::Object> controller = std::move(nook_boost_picker_controller_);
++#if BUILDFLAG(IS_MAC)
++  // OnDestruct has no Blink frame; idle resets need no frame access either.
++  // Retire native ownership before Blink execution or the reply can reenter us.
++  if (cleanup_document && pending && !controller.IsEmpty()) {
++    auto* frame = render_frame()->GetWebFrame();
++    if (frame && frame->GetDocument().Token() == pending->document) {
++      auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++      v8::HandleScope handles(isolate);
++      const auto frame_token = frame->GetLocalFrameToken();
++      auto context = frame->GetScriptContextFromWorldId(
++          isolate, ISOLATED_WORLD_ID_NOOK_BOOST_PICKER);
++      if (!context.IsEmpty()) {
++        v8::Context::Scope entered(context);
++        auto object = controller.Get(isolate);
++        v8::Local<v8::Value> stop;
++        if (object->Get(context, v8::String::NewFromUtf8Literal(isolate, "stop"))
++                .ToLocal(&stop) && stop->IsFunction()) {
++          frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++          if (frame && frame->GetDocument().Token() == pending->document)
++            frame->RequestExecuteV8Function(context, stop.As<v8::Function>(),
++                                            object, 0, nullptr, {});
++        }
++      }
++    }
++  }
++#endif
++  if (pending) std::move(pending->callback).Run("");
++}
++
++void ChromeRenderFrameObserver::FinishNookBoostPicker(const std::string& selector) {
++  if (!nook_boost_picker_) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const bool current = frame && frame->GetDocument().Token() == nook_boost_picker_->document;
++  auto callback = std::move(nook_boost_picker_->callback);
++  nook_boost_picker_.reset();
++  nook_boost_picker_controller_.Reset();
++  nook_boost_picker_weak_.InvalidateWeakPtrs();
++  std::move(callback).Run(current && selector.size() <= 2048 ? selector : "");
++}
++
++void ChromeRenderFrameObserver::NookCancelBoostPicker(
++    const blink::DocumentToken& document, uint64_t owner, uint64_t request) {
++  if (nook_boost_picker_ && nook_boost_picker_->document == document &&
++      nook_boost_picker_->owner == owner && nook_boost_picker_->request == request)
++    ResetNookBoostPicker();
++}
++
++void ChromeRenderFrameObserver::NookStartBoostPicker(
++    const blink::DocumentToken& document, uint64_t owner, uint64_t request,
++    NookStartBoostPickerCallback callback) {
++#if !BUILDFLAG(IS_MAC)
++  std::move(callback).Run("");
++#else
++  auto* frame = render_frame()->GetWebFrame();
++  if (nook_boost_picker_ || !frame || !render_frame()->IsMainFrame() || !owner || !request ||
++      frame->GetDocument().Token() != document ||
++      !GURL(frame->GetDocument().Url()).SchemeIsHTTPOrHTTPS() ||
++      !render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) {
++    std::move(callback).Run(""); return;
++  }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  v8::TryCatch errors(isolate);
++  const auto frame_token = frame->GetLocalFrameToken();
++  auto alive = nook_boost_picker_weak_.GetWeakPtr();
++  // The ordinary Blink path enforces sandbox/script policy; no policy bypass.
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive) { std::move(callback).Run(""); return; }
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document || allowed.IsEmpty() || !allowed->IsTrue()) {
++    std::move(callback).Run(""); return;
++  }
++  const auto source = ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(IDR_NOOK_BOOST_PICKER);
++  auto factory = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++      ISOLATED_WORLD_ID_NOOK_BOOST_PICKER,
++      blink::WebScriptSource(blink::WebString::FromUtf8(source)),
++      blink::BackForwardCacheAware::kAllow);
++  if (!alive) { std::move(callback).Run(""); return; }
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document || factory.IsEmpty() || !factory->IsFunction()) {
++    std::move(callback).Run(""); return;
++  }
++  auto context = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_BOOST_PICKER);
++  if (context.IsEmpty()) { std::move(callback).Run(""); return; }
++  v8::Context::Scope entered(context);
++  nook_boost_picker_.emplace(NookBoostPicker{document, owner, request, std::move(callback)});
++  v8::Local<v8::Function> send, install;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++         const std::string& selector) {
++        if (self && self->nook_boost_picker_ && self->nook_boost_picker_->document == document)
++          self->FinishNookBoostPicker(selector);
++      }, alive, document))->GetFunction(context).ToLocal(&send) ||
++      !gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++         gin::Arguments* args) {
++        if (!self || !self->nook_boost_picker_ || self->nook_boost_picker_->document != document) {
++          args->Return(false); return;
++        }
++        auto* frame = self->render_frame()->GetWebFrame();
++        if (!frame || frame->GetDocument().Token() != document ||
++            !self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++            (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script) ||
++            frame->GetScriptContextFromWorldId(args->isolate(), ISOLATED_WORLD_ID_NOOK_BOOST_PICKER)
++                != args->isolate()->GetCurrentContext()) { args->Return(false); return; }
++        v8::Local<v8::Value> object;
++        if (args->Length() && args->GetNext(&object) && object->IsObject())
++          self->nook_boost_picker_controller_.Reset(args->isolate(), object.As<v8::Object>());
++        args->Return(true);
++      }, alive, document))->GetFunction(context).ToLocal(&install)) {
++    ResetNookBoostPicker(); return;
++  }
++  v8::Local<v8::Value> args[] = {send, install};
++  frame->RequestExecuteV8Function(context, factory.As<v8::Function>(),
++      v8::Undefined(isolate), 2, args, base::BindOnce(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, std::optional<base::Value>, base::TimeTicks) {
++        if (self && self->nook_boost_picker_controller_.IsEmpty()) self->ResetNookBoostPicker();
++      }, alive));
++#endif
+ }
+ 
+ void ChromeRenderFrameObserver::ResetNookScript() {
+--- a/chrome/renderer/chrome_render_frame_observer.h
++++ b/chrome/renderer/chrome_render_frame_observer.h
+@@ -238,6 +238,20 @@
+   void NookScriptComplete(chrome::mojom::NookScriptStatus status,
+                           v8::Local<v8::Value> value = {});
+   void ResetNookScript();
++  void NookStartBoostPicker(const blink::DocumentToken& document, uint64_t owner,
++      uint64_t request, NookStartBoostPickerCallback callback) override;
++  void NookCancelBoostPicker(const blink::DocumentToken& document,
++      uint64_t owner, uint64_t request) override;
++  void ResetNookBoostPicker(bool cleanup_document = true);
++  void FinishNookBoostPicker(const std::string& selector);
++  struct NookBoostPicker {
++    blink::DocumentToken document;
++    uint64_t owner;
++    uint64_t request;
++    NookStartBoostPickerCallback callback;
++  };
++  std::optional<NookBoostPicker> nook_boost_picker_;
++  v8::Global<v8::Object> nook_boost_picker_controller_;
+   static void NookScriptThunk(const v8::FunctionCallbackInfo<v8::Value>& info);
+   struct NookPendingScript {
+     blink::DocumentToken document;
+@@ -323,6 +337,7 @@
+   // FrameToken to distinguish policy reset from actual frame destruction.
+   base::WeakPtrFactory<ChromeRenderFrameObserver> nook_cosmetic_weak_{this};
+   base::WeakPtrFactory<ChromeRenderFrameObserver> nook_translation_weak_{this};
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_boost_picker_weak_{this};
+   base::WeakPtrFactory<ChromeRenderFrameObserver> nook_script_weak_{this};
+ };
+ 

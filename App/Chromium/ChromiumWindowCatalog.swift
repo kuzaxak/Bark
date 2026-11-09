@@ -17,6 +17,8 @@ struct ChromiumDiscoveryAPI {
     typealias Observe = @convention(c) (BarcDiscoveryCallback?, UnsafeMutableRawPointer?) -> UInt64
     typealias Unobserve = @convention(c) (UInt64) -> Void
     typealias PrivateUUID = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
+    typealias LaunchSpace = @convention(c) (Int32, Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
+    typealias Pending = @convention(c) (Int32, Int32) -> Int32
     typealias Admit = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Int32
     let read: Read
     let state: State
@@ -24,6 +26,8 @@ struct ChromiumDiscoveryAPI {
     let unobserve: Unobserve
     let admit: Admit
     let privateUUID: PrivateUUID
+    let launchSpace: LaunchSpace
+    let applicationPending: Pending
     let show: @convention(c) (Int32) -> Int32
 
     init(library: UnsafeMutableRawPointer) throws {
@@ -37,15 +41,20 @@ struct ChromiumDiscoveryAPI {
         unobserve = try load("barc_discovery_unobserve", Unobserve.self)
         admit = try load("barc_window_admit_discovered", Admit.self)
         privateUUID = try load("barc_window_private_session_uuid", PrivateUUID.self)
+        launchSpace = try load("barc_tab_copy_launch_space", LaunchSpace.self)
+        applicationPending = try load("barc_tab_application_pending", Pending.self)
         show = try load("barc_window_show", (@convention(c) (Int32) -> Int32).self)
     }
 
     init(read: @escaping Read, state: @escaping State, observe: @escaping Observe,
          unobserve: @escaping Unobserve, admit: @escaping Admit,
          privateUUID: @escaping PrivateUUID = { _, _, _ in 0 },
+         launchSpace: @escaping LaunchSpace = { _, _, _, _ in 0 },
+         applicationPending: @escaping Pending = { _, _ in 0 },
          show: @escaping @convention(c) (Int32) -> Int32 = { _ in 0 }) {
         self.read = read; self.state = state; self.observe = observe
         self.unobserve = unobserve; self.admit = admit; self.privateUUID = privateUUID; self.show = show
+        self.launchSpace = launchSpace; self.applicationPending = applicationPending
     }
 
     func readSnapshot() -> ChromiumDiscoverySnapshot? {
@@ -64,6 +73,19 @@ struct ChromiumDiscoveryAPI {
         guard result == BARC_DISCOVERY_READ_OK.rawValue, revision == size.revision,
               windows.count == size.window_count, tabs.count == size.tab_count else { return nil }
         return ChromiumDiscoverySnapshot(revision: size.revision, windows: windows, tabs: tabs)
+    }
+
+    /// A one-shot native request hint, read only for newly unmodeled pages.
+    /// Missing and malformed are distinct: a supplied stale target cannot fall
+    /// back to an unrelated profile/space.
+    func requestedSpace(window: Int32, tab: Int32) -> (supplied: Bool, id: UUID?) {
+        var bytes = [CChar](repeating: 0, count: 37)
+        let count = launchSpace(window, tab, &bytes, bytes.count)
+        guard count != 0 else { return (false, nil) }
+        guard count == 37, bytes[36] == 0, !bytes[..<36].contains(0) else { return (true, nil) }
+        let text = String(cString: bytes)
+        guard let id = UUID(uuidString: text), id.uuidString.lowercased() == text else { return (true, nil) }
+        return (true, id)
     }
 
     func windowState(_ window: Int32) -> BarcDiscoveryWindow? {

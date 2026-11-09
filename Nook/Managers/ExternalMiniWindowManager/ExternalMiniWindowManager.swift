@@ -17,10 +17,48 @@ import NookWeb
 @MainActor
 final class ExternalMiniWindowManager {
     private weak var browserManager: BrowserManager?
-    private var controllers: [UUID: MiniBrowserWindowController] = [:]
+    private var controllers: [UUID: any DetachedPageWindowController] = [:]
 
     func attach(browserManager: BrowserManager) {
         self.browserManager = browserManager
+    }
+
+    /// Native presenters share this existing lifetime authority. Registration
+    /// never creates a page or another browser/model window.
+    func retainNative(_ controller: any DetachedPageWindowController) -> Bool {
+        guard controller.nativeWindowID != nil, controller.nativeTabID != nil,
+              controller.page.isDetached, controllers[controller.page.itemID] == nil else { return false }
+        controllers[controller.page.itemID] = controller
+        return true
+    }
+
+    func releaseNative(_ controller: any DetachedPageWindowController) {
+        let id = controller.page.itemID
+        if controllers[id] === controller { controllers[id] = nil }
+    }
+
+    func nativeController(tab: Int32) -> (any DetachedPageWindowController)? {
+        controllers.values.first { $0.nativeTabID == tab }
+    }
+
+    func relinquishNativeHeader(window: Int32, except tab: Int32) {
+        for controller in Array(controllers.values) where controller.nativeWindowID == window && controller.nativeTabID != tab {
+            controller.relinquishNativeHeader()
+        }
+    }
+
+    func nativePage(tab: Int32) -> PageSession? {
+        controllers.values.first { $0.nativeTabID == tab }?.page
+    }
+
+    func completeNativeAdoption(tab: Int32) {
+        guard let controller = controllers.values.first(where: { $0.nativeTabID == tab }),
+              !controller.page.isDetached else { return }
+        controller.releaseAfterAdoption()
+    }
+
+    func ownsNativeWindow(_ window: Int32) -> Bool {
+        controllers.values.contains { $0.nativeWindowID == window }
     }
 
     /// A link from another app, in the data store of the active window's space.
@@ -106,8 +144,8 @@ final class MiniBrowserWindow: NSWindow {
 }
 
 @MainActor
-final class MiniBrowserWindowController: NSWindowController, NSWindowDelegate {
-    private let page: PageSession
+final class MiniBrowserWindowController: NSWindowController, NSWindowDelegate, DetachedPageWindowController {
+    let page: PageSession
     private let targetSpaceName: String
     private let otherSpaces: [(id: UUID, name: String)]
     private let adoptAction: (UUID?) -> Void

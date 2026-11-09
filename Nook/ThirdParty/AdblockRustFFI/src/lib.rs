@@ -160,15 +160,30 @@ pub unsafe extern "C" fn nook_adblock_engine_matches(
     source_url: *const c_char,
     request_type: *const c_char,
 ) -> bool {
+    nook_adblock_engine_matches_request(
+        engine, url, source_url, request_type, b"GET\0".as_ptr().cast(),
+    )
+}
+
+/// Method-aware network matching; preserves the existing serialized format.
+#[no_mangle]
+pub unsafe extern "C" fn nook_adblock_engine_matches_request(
+    engine: *mut Engine,
+    url: *const c_char,
+    source_url: *const c_char,
+    request_type: *const c_char,
+    method: *const c_char,
+) -> bool {
     if engine.is_null() {
         return false;
     }
-    let (Some(url), Some(source), Some(kind)) = (cstr(url), cstr(source_url), cstr(request_type)) else {
+    let (Some(url), Some(source), Some(kind), Some(method)) =
+        (cstr(url), cstr(source_url), cstr(request_type), cstr(method)) else {
         return false;
     };
     let engine = &*engine;
     guard(
-        || match Request::new(url, source, kind, "GET") {
+        || match Request::new(url, source, kind, method) {
             Ok(req) => engine.check_network_request(&req).should_block(),
             Err(_) => false,
         },
@@ -190,6 +205,40 @@ mod tests {
 
     fn c(s: &str) -> CString {
         CString::new(s).unwrap()
+    }
+
+    #[test]
+    fn ffi_network_methods_preserve_get_and_serialized_rules() {
+        unsafe {
+            let engine = engine_from_test_rules(
+                "||method.test/only-post$method=post\n\
+                 ||method.test/both$method=get|post\n\
+                 @@||method.test/both$method=post\n",
+            );
+            assert!(!engine.is_null());
+            let source = c("https://source.test/");
+            let kind = c("xmlhttprequest");
+            let post_only = c("https://method.test/only-post");
+            let except_post = c("https://method.test/both");
+            let post = c("POST");
+            let get = c("GET");
+            assert!(!nook_adblock_engine_matches(engine, post_only.as_ptr(), source.as_ptr(), kind.as_ptr()));
+            assert!(nook_adblock_engine_matches_request(engine, post_only.as_ptr(), source.as_ptr(), kind.as_ptr(), post.as_ptr()));
+            assert!(!nook_adblock_engine_matches_request(engine, post_only.as_ptr(), source.as_ptr(), kind.as_ptr(), get.as_ptr()));
+            assert!(nook_adblock_engine_matches(engine, except_post.as_ptr(), source.as_ptr(), kind.as_ptr()));
+            assert!(!nook_adblock_engine_matches_request(engine, except_post.as_ptr(), source.as_ptr(), kind.as_ptr(), post.as_ptr()));
+            assert!(!nook_adblock_engine_matches_request(engine, post_only.as_ptr(), source.as_ptr(), kind.as_ptr(), ptr::null()));
+            let mut len = 0;
+            let bytes = nook_adblock_engine_serialize(engine, &mut len);
+            assert!(!bytes.is_null());
+            let restored = nook_adblock_engine_deserialize(bytes, len);
+            assert!(!restored.is_null());
+            assert!(nook_adblock_engine_matches_request(restored, post_only.as_ptr(), source.as_ptr(), kind.as_ptr(), post.as_ptr()));
+            assert!(nook_adblock_engine_matches(restored, except_post.as_ptr(), source.as_ptr(), kind.as_ptr()));
+            nook_adblock_engine_free(restored);
+            nook_adblock_buffer_free(bytes, len);
+            nook_adblock_engine_free(engine);
+        }
     }
 
     #[test]

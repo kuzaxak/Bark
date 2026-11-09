@@ -9,6 +9,19 @@
 
 import Foundation
 import NookTabsCore
+import Observation
+
+public enum ProfileLiveSource: Equatable, Sendable {
+    case githubPulls, githubIssues, githubNotifications, asanaWorkspaces
+    case asanaTasks(workspace: String), gmail(account: Int)
+}
+public struct ProfileLiveResponse: Sendable {
+    public let data: Data
+    public let status: Int
+    public init(data: Data, status: Int) { self.data = data; self.status = status }
+}
+public enum ProfileLiveFailure: Error { case unavailable, cancelled, failed }
+public typealias ProfileLiveFetch = @MainActor (UUID, ProfileLiveSource) async throws -> ProfileLiveResponse
 
 enum LiveFetch {
     enum Failure: Error { case signedOut, failed }
@@ -68,6 +81,9 @@ enum LiveFetch {
         var components = URLComponents(string: "https://github.com/issues")!
         components.queryItems = [URLQueryItem(name: "q", value: "is:issue is:open assignee:@me sort:updated-desc")]
         let (data, status) = try await get(components.url!, cookies: cookies, domains: gitHubDomains, headers: gitHubJSONHeaders)
+        return try githubIssues(data: data, status: status)
+    }
+    static func githubIssues(data: Data, status: Int) throws -> [LivePage] {
         if (300..<400).contains(status) || status == 401 || status == 404 { throw Failure.signedOut }
         guard status == 200, let entries = LiveParse.githubIssues(data) else { throw Failure.failed }
         return entries.prefix(25).map { LivePage(url: $0.url, title: $0.title) }
@@ -77,6 +93,9 @@ enum LiveFetch {
     static func githubNotifications(cookies: [HTTPCookie]) async throws -> [LivePage] {
         let url = URL(string: "https://github.com/notifications?query=is%3Aunread")!
         let (data, status) = try await get(url, cookies: cookies, domains: gitHubDomains, headers: ["Accept": "text/html"])
+        return try githubNotifications(data: data, status: status)
+    }
+    static func githubNotifications(data: Data, status: Int) throws -> [LivePage] {
         if (300..<400).contains(status) || status == 401 || status == 404 { throw Failure.signedOut }
         guard status == 200 else { throw Failure.failed }
         return LiveParse.githubNotifications(html: String(decoding: data, as: UTF8.self))
@@ -92,10 +111,15 @@ enum LiveFetch {
             guard status == 200 else { throw Failure.failed }
             return data
         }
-        guard let workspaces = LiveParse.asanaWorkspaces(try await json("/users/me?opt_fields=workspaces")) else { throw Failure.failed }
+        return try await asanaTasks(workspaces: try await json("/users/me?opt_fields=workspaces")) { workspace in
+            try await json("/tasks?assignee=me&workspace=\(workspace)&completed_since=now&opt_fields=name,permalink_url,due_on,completed")
+        }
+    }
+    static func asanaTasks(workspaces: Data, tasksFor: (String) async throws -> Data) async throws -> [LivePage] {
+        guard let workspaces = LiveParse.asanaWorkspaces(workspaces) else { throw Failure.failed }
         var tasks: [LiveParse.AsanaTask] = []
         for workspace in workspaces {
-            let data = try await json("/tasks?assignee=me&workspace=\(workspace)&completed_since=now&opt_fields=name,permalink_url,due_on,completed")
+            let data = try await tasksFor(workspace)
             guard let more = LiveParse.asanaTasks(data) else { throw Failure.failed }
             tasks += more
         }
@@ -111,5 +135,37 @@ enum LiveFetch {
               (response as? HTTPURLResponse)?.statusCode == 200,
               let parsed = LiveParse.feed(data, base: response.url ?? url) else { throw Failure.failed }
         return (parsed.title, parsed.items.map { LivePage(url: $0.url, title: $0.title) })
+    }
+}
+
+extension TabsController {
+    /// Request-local observation of existing model ownership. Zero polling and
+    /// no transport/session registry; cancellation ends this request's task.
+    func nativeLiveResponse(_ source: ProfileLiveSource, profileID: UUID, spaceID: UUID,
+                            while ownsSource: @escaping @MainActor () -> Bool) async throws -> ProfileLiveResponse {
+        guard let fetch = nativeLiveFetch else { throw ProfileLiveFailure.unavailable }
+        func current() -> Bool {
+            profileEngine == .chromium && !isTerminating && isProfileAvailable(profileID) &&
+                tree.space(spaceID) != nil && profile(forSpace: spaceID)?.id == profileID && ownsSource()
+        }
+        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        func watch() -> Bool {
+            withObservationTracking { current() } onChange: {
+                DispatchQueue.main.async { changes.continuation.yield(()) }
+            }
+        }
+        guard watch(), !Task.isCancelled else { throw ProfileLiveFailure.cancelled }
+        var result: Result<ProfileLiveResponse, Error>?
+        let work = Task { @MainActor in
+            do { result = .success(try await fetch(profileID, source)) }
+            catch { result = .failure(error) }
+            changes.continuation.yield(())
+        }
+        defer { changes.continuation.finish(); work.cancel() }
+        for await _ in changes.stream {
+            guard watch(), !Task.isCancelled else { throw ProfileLiveFailure.cancelled }
+            if let result { return try result.get() }
+        }
+        throw ProfileLiveFailure.cancelled
     }
 }

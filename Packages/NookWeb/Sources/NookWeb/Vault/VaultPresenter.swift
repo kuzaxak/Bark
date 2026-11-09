@@ -52,19 +52,55 @@ public struct VaultPickerItem: Identifiable, Sendable {
     }
 }
 
+public enum VaultNativePickerResult {
+    case selected(VaultPickerItem), cancelled, focusUnavailable
+}
+
 @MainActor
 public protocol VaultPresenter: AnyObject {
     /// Lists `items` in a popover pointing at `anchor`, in `webView`'s coordinates. `host` names
     /// the site asking. An empty list shows that the vault has nothing for it. `completion` gets
     /// the pick, or nil when the popover closes without one.
-    func presentPicker(host: String, items: [VaultPickerItem], anchor: CGRect, in webView: WKWebView,
+    func presentPicker(host: String, items: [VaultPickerItem], anchor: CGRect, in webView: NSView,
                        completion: @escaping (VaultPickerItem?) -> Void)
+    /// Native picker selection may restore only its original owned view, at
+    /// the user's direct action and while this exact request remains valid.
+    func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
+                             validateSelection: @escaping @MainActor () -> Bool,
+                             completion: @escaping (VaultNativePickerResult) -> Void)
+    func ownsNativePicker(in view: NSView) -> Bool
     /// Closes a picker shown over `webView`, calling its completion with nil.
-    func dismissPicker(in webView: WKWebView)
+    func dismissPicker(in webView: NSView)
     /// The non-modal "Save password to Pawl Vault?" offer. `completion(true)` means Save.
-    func offerSave(host: String, username: String, in webView: WKWebView, completion: @escaping (Bool) -> Void)
+    func offerSave(host: String, username: String, in webView: NSView, completion: @escaping (Bool) -> Void)
+    /// Exact model page identity for a Chromium-owned submission (no WK view cast).
+    func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
+                         completion: @escaping (Bool) -> Void)
+    func dismissSave(in view: NSView)
+    /// Request-owned native creation consent; cancellation ends only this view's sheet/picker.
+    func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView,
+                                      completion: @escaping (Bool) -> Void)
+    func dismissNativePasskey(in view: NSView)
     /// Asks before the vault creates a passkey. `completion(true)` means go ahead.
-    func confirmPasskeyCreation(rpId: String, userName: String, in webView: WKWebView,
+    func confirmPasskeyCreation(rpId: String, userName: String, in webView: NSView,
                                 completion: @escaping (Bool) -> Void)
+}
+#endif
+
+#if os(macOS)
+extension VaultPresenter {
+    public func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView,
+                                             completion: @escaping (Bool) -> Void) { completion(false) }
+    public func dismissNativePasskey(in view: NSView) { dismissPicker(in:view) }
+    public func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
+                                completion: @escaping (Bool) -> Void) { completion(false) }
+    public func dismissSave(in view: NSView) {}
+    public func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
+                                    validateSelection: @escaping @MainActor () -> Bool,
+                                    completion: @escaping (VaultNativePickerResult) -> Void) {
+        // An implementation without native focus restoration must fail closed.
+        completion(.focusUnavailable)
+    }
+    public func ownsNativePicker(in view: NSView) -> Bool { false }
 }
 #endif

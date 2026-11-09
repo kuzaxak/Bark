@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import NookSettings
 
@@ -10,26 +9,30 @@ final class ChromiumAppStorage {
     let defaults: UserDefaults
     let settings: NookSettingsService
     let downloads: DownloadManager
+    let devMCP: DevMCPConfiguration
     let tabsDirectory: URL
+    let aiConfig: AIConfigService
 
     init(configuration: ChromiumStartupConfiguration) throws {
         let app = configuration.root.appendingPathComponent("App", isDirectory: true)
         persistence = try Persistence(directory: app)
         // A separate stable preferences domain; never reset or merge the
         // installed app's domain. The root/profile select verification inputs.
-        let digest = SHA256.hash(data: Data(configuration.root.path.utf8))
-            .map { String(format: "%02x", $0) }.joined()
-        let domain = configuration.isVerification
-            ? "ee.qdo.nook.chromium-verification." + digest : "ee.qdo.nook.chromium"
-        guard let isolated = UserDefaults(suiteName: domain) else {
+        guard let isolated = UserDefaults(suiteName: configuration.preferencesDomain) else {
             throw StorageError.preferencesUnavailable
         }
         defaults = isolated
+        let port = configuration.isVerification ? isolated.string(forKey: "NookDevMCPPort").flatMap(UInt16.init) : nil
+        devMCP = try DevMCPConfiguration.native(appRoot: app, port: port ?? 47823)
         let tokens: any KagiTokenStore = configuration.isVerification
             ? VerificationKagiTokenStore() : KeychainKagiTokenStore(service: "NookChromium Kagi Session Link")
-        settings = NookSettingsService(kagiTokenStore: tokens, userDefaults: isolated)
+        settings = NookSettingsService(kagiTokenStore: tokens, userDefaults: isolated,
+                                       boostStore: BoostStore(fileURL: app.appendingPathComponent("Boosts.json")))
         downloads = DownloadManager(historyFileURL: app.appendingPathComponent("Downloads.json"), usesNativeDownloads: true)
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)
+        aiConfig = AIConfigService(configURL: configuration.aiConfigURL,
+                                   keychainService: configuration.aiKeychainService,
+                                   migratesLegacySettings: false)
     }
 
     enum StorageError: Error { case preferencesUnavailable }

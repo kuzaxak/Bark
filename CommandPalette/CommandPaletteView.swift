@@ -21,6 +21,7 @@ struct CommandPaletteView: View {
     @EnvironmentObject var gradientColorManager: GradientColorManager
     @State private var searchManager = SearchManager()
     @Environment(\.nookSettings) var nookSettings
+    @Environment(\.colorScheme) private var colorScheme
 
     @FocusState private var isSearchFocused: Bool
     @State private var text: String = ""
@@ -84,7 +85,8 @@ struct CommandPaletteView: View {
     /// than submitting, and the arrow keys pick candidates rather than moving through
     /// suggestions. Handlers return `.ignored` while this is true so the IME gets them.
     private var isComposing: Bool {
-        (NSApp.keyWindow?.firstResponder as? NSTextInputClient)?.hasMarkedText() ?? false
+        let responder = isNative ? windowState.window?.firstResponder : NSApp.keyWindow?.firstResponder
+        return (responder as? NSTextInputClient)?.hasMarkedText() ?? false
     }
 
     /// The Return row first, then what the search found. Index -1 means the Return row, or the
@@ -181,6 +183,7 @@ struct CommandPaletteView: View {
     
     /// Active window width
     private var currentWindowWidth: CGFloat {
+        if isNative { return paletteFrame.width > 0 ? paletteFrame.width : windowState.window?.contentView?.bounds.width ?? 0 }
         return NSApplication.shared.keyWindow?.frame.width ?? 0
     }
     
@@ -204,7 +207,8 @@ struct CommandPaletteView: View {
 
     /// Add Split View's empty pane in global coordinates; nil while the bar is not filling one.
     private var emptyPane: CGRect? {
-        guard let addSplit = commandPalette.addSplit else { return nil }
+        guard let addSplit = commandPalette.addSplit,
+              !isNative || !commandPalette.pageFrame.isEmpty else { return nil }
         let layout = SplitViewManager.PageLayout(slots: addSplit.slots, vertical: addSplit.vertical,
                                                  dividers: SplitDrop.equalDividers(addSplit.slots.count))
         return SplitViewManager.paneFrames(in: commandPalette.pageFrame, of: layout)[addSplit.index]
@@ -212,201 +216,83 @@ struct CommandPaletteView: View {
 
     var body: some View {
         let isVisible = commandPalette.isVisible
-        let textFieldColor: Color = text.isEmpty ? .secondary : .primary
         let pane = emptyPane
         let barWidth = pane.map { max(200, min(effectiveCommandPaletteWidth, $0.width - commandPaletteHorizontalPadding * 2)) }
             ?? effectiveCommandPaletteWidth
 
-        return ZStack {
-            Color.clear
-                .ignoresSafeArea()
-                .contentShape(Rectangle())
-                .backgroundDraggable(onClick: {
-                    commandPalette.close()
-                })
-
-            VStack {
-                // A pane below the others takes the bar near its top; one beside them, at the middle.
-                if let pane, commandPalette.addSplit?.vertical == true {
-                    Spacer().frame(height: max(0, pane.minY - paletteFrame.minY + NookDesign.Size.navRow + NookDesign.Spacing.sm * 2))
-                } else {
-                    Spacer()
-                }
-                HStack(spacing: 0) {
-                    if let pane {
-                        Spacer().frame(width: max(0, pane.midX - barWidth / 2 - paletteFrame.minX))
-                    } else {
-                        Spacer()
+        return Group {
+            if isNative {
+                AddressAnchoredPanel(width: barWidth, centered: true, isPresented: isVisible,
+                    canPresent: { nativeWindow in
+                        windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState
+                    }, onWindowBounds: { bounds in if paletteFrame != bounds { paletteFrame = bounds } },
+                    onRetire: { commandPalette.close() }) {
+                    VStack(spacing: 4) {
+                        if commandPalette.addSplit != nil {
+                            HStack {
+                                Spacer()
+                                SplitPaneButton(systemImage: "xmark", help: "Close Split View") { commandPalette.close() }
+                            }
+                        }
+                        paletteCard(width: barWidth)
                     }
+                        .environmentObject(browserManager).environmentObject(gradientColorManager)
+                        .environment(browserManager.tabs).environment(windowState).environment(commandPalette)
+                        .environment(nookSettings).environment(\.nookSettings, nookSettings)
+                        .environment(\.tabActions, browserManager).environment(\.colorScheme, colorScheme)
+                        .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
+                        .background(AddressOutsideClickRegion(onOutsideClick: { commandPalette.close() }))
+                }
+            } else {
+                ZStack {
+                    Color.clear
+                        .ignoresSafeArea()
+                        .contentShape(Rectangle())
+                        .backgroundDraggable(onClick: {
+                            commandPalette.close()
+                        })
+
                     VStack {
-                        VStack(alignment: .center,spacing: 6) {
-                            HStack(spacing: 15) {
-                                Image(systemName: leadingIconName)
-                                .id(leadingIconName)
-                                .transition(.blur(intensity: 2, scale: 0.6).animation(NookDesign.Motion.standard))
-                                .font(NookDesign.Font.bodyRegular)
-                                .foregroundStyle(Color.primary)
-                                .frame(width: 15)
-
-                                if let scope {
-                                    Text(scope.label)
-                                        .font(NookDesign.Font.label)
-                                        .foregroundStyle(Color.primary)
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 4)
-                                        .background(NookDesign.Surface.fillPressed)
-                                        .clipShape(Capsule())
-                                        .transition(.blur(intensity: 8, scale: 0.6).animation(NookDesign.Motion.spring))
-                                }
-
-                                if let site = activeSiteSearch {
-                                    Text(site.name)
-                                        .font(NookDesign.Font.label)
-                                        .foregroundStyle(Garnish.contrastingShade(of: site.color, targetRatio: 4.5, blendStyle: .strong) ?? .white)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 4)
-                                        .background(site.color)
-                                        .clipShape(Capsule())
-                                        .transition(
-                                            .blur(intensity: 8, scale: 0.6)
-                                            .animation(NookDesign.Motion.spring)
-                                        )
-                                }
-
-                                ZStack(alignment: .trailing) {
-                                    TextField(
-                                        activeSiteSearch.map { "Search \($0.name)..." }
-                                            ?? scope.map { "Search \($0.label)..." }
-                                            ?? Self.placeholder,
-                                        text: $text
-                                    )
-                                    .textFieldStyle(.plain)
-                                    .font(NookDesign.Font.heading)
-                                    .foregroundColor(textFieldColor)
-                                    .tint(gradientColorManager.accentColor)
-                                    .overlay(alignment: .leading) {
-                                        if let suffix = ghostSuffix {
-                                            (Text(text).foregroundColor(.clear) + Text(suffix).foregroundColor(.secondary))
-                                                .font(NookDesign.Font.heading)
-                                                .lineLimit(1)
-                                                .allowsHitTesting(false)
-                                        }
-                                    }
-                                    .focused($isSearchFocused)
-                                    .onKeyPress(phases: .down) { press in handleKey(press) }
-                                    .onChange(of: text) { oldValue, newValue in
-                                        completionSuppressed = newValue.count < oldValue.count
-                                        if prefixChipSuppressed, !(newValue.hasPrefix("t") || newValue.hasPrefix("h")) {
-                                            prefixChipSuppressed = false
-                                        }
-                                        if scope == nil, activeSiteSearch == nil, !prefixChipSuppressed,
-                                           let prefixScope = Self.prefixScopes[newValue] {
-                                            withAnimation(NookDesign.Motion.spring) { scope = prefixScope }
-                                            text = ""
-                                            return
-                                        }
-                                        if scope == nil, activeSiteSearch == nil, newValue.hasPrefix(Self.actionsPrefix) {
-                                            withAnimation(NookDesign.Motion.spring) { scope = .actions }
-                                            text = String(newValue.dropFirst(Self.actionsPrefix.count))
-                                            return
-                                        }
-                                        search(newValue)
-                                        selectedSuggestionIndex = -1
-                                    }
-
-                                    if activeSiteSearch == nil, let match = siteSearchMatch {
-                                        HStack(spacing: 6) {
-                                            Text("Search \(match.name)")
-                                                .font(NookDesign.Font.body)
-                                                .foregroundStyle(Color.secondary)
-
-                                            Text("Tab")
-                                                .font(NookDesign.Font.caption)
-                                                .foregroundStyle(Color.secondary)
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(
-                                                    NookDesign.Radius.shape(NookDesign.Radius.xs)
-                                                        .fill(NookDesign.Surface.fill)
-                                                )
-                                                .overlay(
-                                                    NookDesign.Radius.shape(NookDesign.Radius.xs)
-                                                        .stroke(NookDesign.Surface.hairline, lineWidth: 0.5)
-                                                )
-                                        }
-                                        .allowsHitTesting(false)
-                                        .transition(
-                                            .blur(intensity: 4, scale: 0.92)
-                                            .animation(NookDesign.Motion.standard)
-                                        )
-                                    }
-                                }
-                            }
-                            .animation(NookDesign.Motion.spring, value: activeSiteSearch != nil)
-                            .padding(.vertical, 8)
-                            .padding(.horizontal, 8)
-
-                            if !visibleSuggestions.isEmpty {
-                                Capsule()
-                                    .fill(NookDesign.Surface.hairline)
-                                    .frame(height: 0.5)
-                                    .frame(maxWidth: .infinity)
-                            }
-
-                            if !visibleSuggestions.isEmpty {
-                                CommandPaletteSuggestionsListView(
-                                    suggestions: visibleSuggestions,
-                                    selectedIndex: max(selectedSuggestionIndex, 0),
-                                    revealsFullURL: commandHeld,
-                                    returnPlacement: returnPlacement,
-                                    hoveredIndex: $hoveredSuggestionIndex,
-                                    onSelect: { suggestion in
-                                        selectSuggestion(suggestion)
-                                    }
-                                )
-                            }
+                        // A pane below the others takes the bar near its top; one beside them, at the middle.
+                        if let pane, commandPalette.addSplit?.vertical == true {
+                            Spacer().frame(height: max(0, pane.minY - paletteFrame.minY + NookDesign.Size.navRow + NookDesign.Spacing.sm * 2))
+                        } else {
+                            Spacer()
                         }
-                        .padding(10)
-                        .frame(maxWidth: .infinity)
-                        .frame(width: barWidth)
-                        .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.xxl))
-                        // Arc's glow: grey that fades out a short way past the bar, not over the window.
-                        .background {
-                            NookDesign.Radius.shape(NookDesign.Radius.xxl)
-                                .fill(NookDesign.Surface.paletteHalo)
-                                .padding(-NookDesign.Spacing.xxxl * 2)
-                                .blur(radius: NookDesign.Spacing.xxxl * 2)
-                                .allowsHitTesting(false)
+                        HStack(spacing: 0) {
+                            if let pane {
+                                Spacer().frame(width: max(0, pane.midX - barWidth / 2 - paletteFrame.minX))
+                            } else {
+                                Spacer()
+                            }
+                            VStack {
+                                paletteCard(width: barWidth)
+                                Spacer()
+                            }
+                            .frame(
+                                width: barWidth,
+                                height: 560
+                            )
+
+                            Spacer()
                         }
-                        .animation(
-                            NookDesign.Motion.quick,
-                            value: searchManager.suggestions.count
-                        )
                         Spacer()
                     }
-                    .frame(
-                        width: barWidth,
-                        height: 560
-                    )
 
-                    Spacer()
+                    // The empty pane's close button, above the bar's click-away background.
+                    if let pane {
+                        SplitPaneButton(systemImage: "xmark", help: "Close Split View") { commandPalette.close() }
+                            .position(x: pane.maxX - paletteFrame.minX - NookDesign.Spacing.sm - NookDesign.Size.rowButton / 2,
+                                      y: pane.minY - paletteFrame.minY + NookDesign.Spacing.sm + NookDesign.Size.navRow / 2)
+                    }
                 }
-                Spacer()
-            }
-
-            // The empty pane's close button, above the bar's click-away background.
-            if let pane {
-                SplitPaneButton(systemImage: "xmark", help: "Close Split View") { commandPalette.close() }
-                    .position(x: pane.maxX - paletteFrame.minX - NookDesign.Spacing.sm - NookDesign.Size.rowButton / 2,
-                              y: pane.minY - paletteFrame.minY + NookDesign.Spacing.sm + NookDesign.Size.navRow / 2)
             }
         }
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { paletteFrame = $0 }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if !isNative { paletteFrame = $0 } }
         .allowsHitTesting(isVisible)
         .opacity(isVisible ? 1.0 : 0.0)
         .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
-        .onChange(of: commandPalette.isVisible) { _, newVisible in
+        .onChange(of: commandPalette.isVisible, initial: isNative) { oldVisible, newVisible in
             if newVisible {
                 searchManager.setTabs(browserManager.tabs, window: windowState)
                 searchManager.setHistoryManager(browserManager.historyManager)
@@ -414,23 +300,34 @@ struct CommandPaletteView: View {
 
                 text = commandPalette.prefilledText
 
-                DispatchQueue.main.async {
-                    isSearchFocused = true
+                if !isNative {
                     DispatchQueue.main.async {
-                        NSApplication.shared.sendAction(
-                            #selector(NSText.selectAll(_:)),
-                            to: nil,
-                            from: nil
-                        )
+                        isSearchFocused = true
+                        DispatchQueue.main.async {
+                            NSApplication.shared.sendAction(
+                                #selector(NSText.selectAll(_:)),
+                                to: nil,
+                                from: nil
+                            )
+                        }
                     }
                 }
             } else {
                 isSearchFocused = false
                 // Without this the field editor keeps first responder and Space no longer scrolls the page.
-                DispatchQueue.main.async {
-                    if let itemID = windowState.selectedItemID,
-                       let webView = browserManager.getWebView(for: itemID, in: windowState.id) {
-                        webView.window?.makeFirstResponder(webView)
+                if isNative {
+                    if oldVisible, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
+                       let page = browserManager.frontPage(in: windowState),
+                       let native = page.navigation as? ChromiumPageNavigation,
+                       browserManager.tabs.nativePageHost?.isNativeSelection(native, in: windowState) == true {
+                        _ = native.selectNativePage()
+                    }
+                } else {
+                    DispatchQueue.main.async {
+                        if let itemID = windowState.selectedItemID,
+                           let webView = browserManager.getWebView(for: itemID, in: windowState.id) {
+                            webView.window?.makeFirstResponder(webView)
+                        }
                     }
                 }
                 searchManager.clearSuggestions()
@@ -474,11 +371,171 @@ struct CommandPaletteView: View {
         .onChange(of: commandPalette.prefilledText) { _, newValue in
             if isVisible {
                 text = newValue
-                DispatchQueue.main.async {
-                    isSearchFocused = true
+                if !isNative {
+                    DispatchQueue.main.async {
+                        isSearchFocused = true
+                    }
                 }
             }
         }
+    }
+
+    private var isNative: Bool { browserManager.engine == .chromium }
+    private var nativeOwnerCurrent: Bool {
+        guard let nativeWindow = windowState.window else { return false }
+        return nativeWindow.isKeyWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState &&
+            browserManager.windowRegistry?.activeWindow === windowState
+    }
+    private func paletteCard(width barWidth: CGFloat) -> some View {
+        let textFieldColor: Color = text.isEmpty ? .secondary : .primary
+        return VStack(alignment: .center,spacing: 6) {
+            HStack(spacing: 15) {
+                Image(systemName: leadingIconName)
+                .id(leadingIconName)
+                .transition(.blur(intensity: 2, scale: 0.6).animation(NookDesign.Motion.standard))
+                .font(NookDesign.Font.bodyRegular)
+                .foregroundStyle(Color.primary)
+                .frame(width: 15)
+
+                if let scope {
+                    Text(scope.label)
+                        .font(NookDesign.Font.label)
+                        .foregroundStyle(Color.primary)
+                        .lineLimit(1)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(NookDesign.Surface.fillPressed)
+                        .clipShape(Capsule())
+                        .transition(.blur(intensity: 8, scale: 0.6).animation(NookDesign.Motion.spring))
+                }
+
+                if let site = activeSiteSearch {
+                    Text(site.name)
+                        .font(NookDesign.Font.label)
+                        .foregroundStyle(Garnish.contrastingShade(of: site.color, targetRatio: 4.5, blendStyle: .strong) ?? .white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 4)
+                        .background(site.color)
+                        .clipShape(Capsule())
+                        .transition(
+                            .blur(intensity: 8, scale: 0.6)
+                            .animation(NookDesign.Motion.spring)
+                        )
+                }
+
+                ZStack(alignment: .trailing) {
+                    TextField(
+                        activeSiteSearch.map { "Search \($0.name)..." }
+                            ?? scope.map { "Search \($0.label)..." }
+                            ?? Self.placeholder,
+                        text: $text
+                    )
+                    .textFieldStyle(.plain)
+                    .font(NookDesign.Font.heading)
+                    .foregroundColor(textFieldColor)
+                    .tint(gradientColorManager.accentColor)
+                    .overlay(alignment: .leading) {
+                        if let suffix = ghostSuffix {
+                            (Text(text).foregroundColor(.clear) + Text(suffix).foregroundColor(.secondary))
+                                .font(NookDesign.Font.heading)
+                                .lineLimit(1)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .modifier(PaletteFieldFocus(native: isNative, legacy: $isSearchFocused,
+                        requested: commandPalette.isVisible, prefill: commandPalette.prefilledText,
+                        ownerWindow: { windowState.window },
+                        canFocus: { nativeOwnerCurrent && commandPalette.isVisible }))
+                    .onKeyPress(phases: .down) { press in handleKey(press) }
+                    .onChange(of: text) { oldValue, newValue in
+                        completionSuppressed = newValue.count < oldValue.count
+                        if prefixChipSuppressed, !(newValue.hasPrefix("t") || newValue.hasPrefix("h")) {
+                            prefixChipSuppressed = false
+                        }
+                        if scope == nil, activeSiteSearch == nil, !prefixChipSuppressed,
+                           let prefixScope = Self.prefixScopes[newValue] {
+                            withAnimation(NookDesign.Motion.spring) { scope = prefixScope }
+                            text = ""
+                            return
+                        }
+                        if scope == nil, activeSiteSearch == nil, newValue.hasPrefix(Self.actionsPrefix) {
+                            withAnimation(NookDesign.Motion.spring) { scope = .actions }
+                            text = String(newValue.dropFirst(Self.actionsPrefix.count))
+                            return
+                        }
+                        search(newValue)
+                        selectedSuggestionIndex = -1
+                    }
+
+                    if activeSiteSearch == nil, let match = siteSearchMatch {
+                        HStack(spacing: 6) {
+                            Text("Search \(match.name)")
+                                .font(NookDesign.Font.body)
+                                .foregroundStyle(Color.secondary)
+
+                            Text("Tab")
+                                .font(NookDesign.Font.caption)
+                                .foregroundStyle(Color.secondary)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    NookDesign.Radius.shape(NookDesign.Radius.xs)
+                                        .fill(NookDesign.Surface.fill)
+                                )
+                                .overlay(
+                                    NookDesign.Radius.shape(NookDesign.Radius.xs)
+                                        .stroke(NookDesign.Surface.hairline, lineWidth: 0.5)
+                                )
+                        }
+                        .allowsHitTesting(false)
+                        .transition(
+                            .blur(intensity: 4, scale: 0.92)
+                            .animation(NookDesign.Motion.standard)
+                        )
+                    }
+                }
+            }
+            .animation(NookDesign.Motion.spring, value: activeSiteSearch != nil)
+            .padding(.vertical, 8)
+            .padding(.horizontal, 8)
+
+            if !visibleSuggestions.isEmpty {
+                Capsule()
+                    .fill(NookDesign.Surface.hairline)
+                    .frame(height: 0.5)
+                    .frame(maxWidth: .infinity)
+            }
+
+            if !visibleSuggestions.isEmpty {
+                CommandPaletteSuggestionsListView(
+                    suggestions: visibleSuggestions,
+                    selectedIndex: max(selectedSuggestionIndex, 0),
+                    revealsFullURL: commandHeld,
+                    returnPlacement: returnPlacement,
+                    hoveredIndex: $hoveredSuggestionIndex,
+                    maximumHeight: isNative ? min(470, max(80, (paletteFrame.height > 0 ? paletteFrame.height : windowState.window?.contentView?.bounds.height ?? 600) - (commandPalette.addSplit == nil ? 100 : 140))) : 470,
+                    onSelect: { suggestion in
+                        selectSuggestion(suggestion)
+                    }
+                )
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity)
+        .frame(width: barWidth)
+        .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.xxl))
+        // Arc's glow: grey that fades out a short way past the bar, not over the window.
+        .background {
+            NookDesign.Radius.shape(NookDesign.Radius.xxl)
+                .fill(NookDesign.Surface.paletteHalo)
+                .padding(-NookDesign.Spacing.xxxl * 2)
+                .blur(radius: NookDesign.Spacing.xxxl * 2)
+                .allowsHitTesting(false)
+        }
+        .animation(
+            NookDesign.Motion.quick,
+            value: searchManager.suggestions.count
+        )
     }
 
     // MARK: - Suggestions List Subview
@@ -489,6 +546,7 @@ struct CommandPaletteView: View {
         /// Where Enter on the Return row goes, said under it: "this tab" or a new tab's place.
         let returnPlacement: String
         @Binding var hoveredIndex: Int?
+        var maximumHeight: CGFloat = 470
         let onSelect: (SearchManager.SearchSuggestion) -> Void
         /// A scroll view takes all the height it is offered, so it is sized to its rows.
         @State private var contentHeight: CGFloat = 0
@@ -541,7 +599,7 @@ struct CommandPaletteView: View {
             .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
             }
             .scrollIndicators(.hidden)
-            .frame(height: min(contentHeight, 470))
+            .frame(height: min(contentHeight, maximumHeight))
             .onChange(of: selectedIndex) { _, index in proxy.scrollTo(index) }
             }
         }
@@ -587,6 +645,7 @@ struct CommandPaletteView: View {
     }
 
     private func handleReturn() {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
         if let site = activeSiteSearch {
             let query: String
             if selectedSuggestionIndex >= 0 && selectedSuggestionIndex < visibleSuggestions.count {
@@ -617,6 +676,7 @@ struct CommandPaletteView: View {
 
     private func selectSuggestion(_ suggestion: SearchManager.SearchSuggestion)
     {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
         if case .action(let action) = suggestion.type {
             runAction(action)
             return
@@ -636,10 +696,17 @@ struct CommandPaletteView: View {
             browserManager.historyManager.recordPick(prefix: text, url: historyEntry.url)
             open(historyEntry.url)
         case .url, .search:
+            // Explicit site-search templates remain URLs, including mouse picks.
+            if activeSiteSearch != nil, case .search = suggestion.type, let url = url(for: suggestion) {
+                open(url)
             // A page another window holds is not navigated from here; the text opens a new tab.
-            if commandPalette.shouldNavigateCurrentTab, let session = browserManager.frontPage(in: windowState) {
+            } else if commandPalette.shouldNavigateCurrentTab, let session = browserManager.frontPage(in: windowState) {
                 session.typedVisitPending = true
                 session.navigate(to: suggestion.text)
+            } else if let query = nativeSearchQuery(for: suggestion) {
+                let fillsPane = commandPalette.addSplit != nil
+                let id = browserManager.tabs.openSearch(query, in: windowState, placement: fillsPane ? .background : .newTab)
+                if fillsPane, let id { fillEmptyPane(with: id) }
             } else {
                 // Normalize the URL/search query first, then create the tab with
                 // the correct URL so the webview loads it directly without a race.
@@ -686,6 +753,7 @@ struct CommandPaletteView: View {
     /// Every key the field sees, ahead of the text view. While an input method composes, all go
     /// to it. Keys left `.ignored` get the text view's own behaviour.
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return .ignored }
         if isComposing { return .ignored }
         // Arrow keys arrive flagged as keypad and function keys, and Caps Lock rides along with
         // anything, so neither counts as a modifier here.
@@ -881,6 +949,7 @@ struct CommandPaletteView: View {
     /// Runs an action row on the tab selected when the bar opened, through the same handler as
     /// its shortcut. An action that needs a choice lists the choices instead.
     private func runAction(_ match: SearchManager.ActionMatch) {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
         let parts = match.id.split(separator: ":", maxSplits: 1).map(String.init)
         guard let action = ShortcutAction(rawValue: parts[0]) else { return }
         if match.takesChoice {
@@ -962,7 +1031,9 @@ struct CommandPaletteView: View {
         }
     }
 
-    private var fieldEditor: NSTextView? { NSApp.keyWindow?.firstResponder as? NSTextView }
+    private var fieldEditor: NSTextView? {
+        (isNative ? windowState.window?.firstResponder : NSApp.keyWindow?.firstResponder) as? NSTextView
+    }
 
     /// UTF-16 range from the start of the word before the caret to the caret.
     private func wordBeforeCaret(in editor: NSTextView) -> NSRange {
@@ -995,8 +1066,13 @@ struct CommandPaletteView: View {
     /// several can be opened in a row. An open tab is switched to, as with Return. Filling Add
     /// Split View's empty pane, it does what Return does.
     private func openTargetInBackground() {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
         guard commandPalette.addSplit == nil else { return handleReturn() }
         guard let row = targetSuggestion else { return }
+        if let query = nativeSearchQuery(for: row) {
+            browserManager.tabs.openSearch(query, in: windowState, placement: .background)
+            return
+        }
         guard let url = url(for: row) else {
             selectSuggestion(row)
             return
@@ -1007,11 +1083,14 @@ struct CommandPaletteView: View {
 
     /// Shift+Return: the row opens in split view beside the current tab, unless four panes show.
     private func openTargetInSplit() {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
         guard commandPalette.addSplit != nil || browserManager.splitManager.offersAddSplitView(in: windowState),
               let row = targetSuggestion else { return }
         let itemID: UUID?
         if case .tab(let match) = row.type {
             itemID = match.itemID
+        } else if let query = nativeSearchQuery(for: row) {
+            itemID = browserManager.tabs.openSearch(query, in: windowState, placement: .background)
         } else if let url = url(for: row) {
             if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url) }
             itemID = browserManager.tabs.open(url: url, in: windowState, placement: .background)
@@ -1025,6 +1104,16 @@ struct CommandPaletteView: View {
             browserManager.enterSplit(with: itemID, placeOnRight: true, in: windowState)
         }
         commandPalette.close()
+    }
+
+    /// Explicit URLs and site-search templates keep their existing URL path.
+    /// Ordinary native queries stay text until the exact profile dispatches them.
+    private func nativeSearchQuery(for row: SearchManager.SearchSuggestion) -> String? {
+        guard isNative, activeSiteSearch == nil else { return nil }
+        switch row.type {
+        case .url, .search: return isSearchInput(row.text) ? row.text : nil
+        default: return nil
+        }
     }
 
     /// The page a row stands for; nil for an open tab, which is switched to instead.
@@ -1089,5 +1178,39 @@ struct CommandPaletteView: View {
         selectedSuggestionIndex = -1
         search(text)
         return true
+    }
+}
+
+/// The native card has a separate hosting root. Only field focus belongs here;
+/// palette text/scope/actions stay in CommandPaletteView's single existing owner.
+private struct PaletteFieldFocus: ViewModifier {
+    let native: Bool
+    var legacy: FocusState<Bool>.Binding
+    let requested: Bool
+    let prefill: String
+    let ownerWindow: () -> NSWindow?
+    let canFocus: () -> Bool
+    @FocusState private var nativeFocused: Bool
+
+    func body(content: Content) -> some View {
+        if native {
+            content.focused($nativeFocused)
+                .onAppear { requestFocus() }
+                .onChange(of: requested) { _, value in
+                    if value { requestFocus() } else { nativeFocused = false }
+                }
+                .onChange(of: prefill) { _, _ in if requested { requestFocus() } }
+                .onDisappear { nativeFocused = false }
+        } else { content.focused(legacy) }
+    }
+    private func requestFocus() {
+        DispatchQueue.main.async {
+            guard requested, canFocus(), let window = ownerWindow() else { return }
+            nativeFocused = true
+            DispatchQueue.main.async {
+                guard requested, nativeFocused, canFocus(), ownerWindow() === window else { return }
+                (window.firstResponder as? NSTextView)?.selectAll(nil)
+            }
+        }
     }
 }

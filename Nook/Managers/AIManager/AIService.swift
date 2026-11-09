@@ -480,6 +480,10 @@ class AIService {
             alert.addButton(withTitle: "Allow All This Chat")
         }
 
+        // A selectable text view holding focus would take Return away from the default button.
+        alert.layout()
+        alert.window.initialFirstResponder = alert.buttons.first
+
         let response = alert.runModal()
         switch response {
         case .alertSecondButtonReturn:
@@ -508,10 +512,16 @@ class AIService {
     }
 
     func extractPageContext(windowState: BrowserWindowState, tag: String, maxTokens: Int? = nil, canSearch: Bool = false) async -> String {
-        guard let browserManager = browserManager,
-              let itemID = windowState.selectedItemID,
-              let webView = browserManager.getWebView(for: itemID, in: windowState.id) else {
-            return ""
+        guard let browserManager = browserManager else { return "" }
+        let webView: WKWebView?
+        if browserManager.engine == .chromium {
+            webView = nil
+        } else {
+            guard let itemID = windowState.selectedItemID,
+                  let selected = browserManager.getWebView(for: itemID, in: windowState.id) else {
+                return ""
+            }
+            webView = selected
         }
 
         let script = """
@@ -544,7 +554,12 @@ class AIService {
         """
 
         do {
-            let result = try await webView.evaluateJavaScript(script)
+            let result: Any?
+            if let webView {
+                result = try await webView.evaluateJavaScript(script)
+            } else {
+                result = try await browserToolExecutor?.evaluatePageContextScript(script, browserManager: browserManager, windowState: windowState)
+            }
 
             if let dict = result as? [String: Any],
                let title = dict["title"] as? String,

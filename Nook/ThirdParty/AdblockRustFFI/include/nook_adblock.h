@@ -46,6 +46,10 @@ void nook_adblock_buffer_free(uint8_t *bytes, size_t len);
 /// Returns false on NULL engine, NULL/non-UTF-8 arguments or unparseable URLs.
 bool nook_adblock_engine_matches(void *engine, const char *url, const char *source_url, const char *request_type);
 
+/// Method-aware matching with the same engine/cache format; method is the
+/// actual HTTP token. The original entrypoint remains GET-compatible.
+bool nook_adblock_engine_matches_request(void *engine, const char *url, const char *source_url, const char *request_type, const char *method);
+
 /// Free an engine. NULL is a no-op.
 void nook_adblock_engine_free(void *engine);
 
@@ -77,11 +81,13 @@ void nook_adblock_string_free(char *s);
 /// `engine` must come from nook_adblock_engine_from_lists. The same thread
 /// safety rule applies as for matching: serialize all calls on a given engine.
 ///
-/// injected_script is empty unless the engine was given scriptlet
-/// resources, and Nook gives it none.
+/// injected_script is empty unless the engine was given scriptlet resources.
 ///
 /// Free the result with nook_adblock_string_free.
 char *nook_adblock_cosmetic_for_url(void *engine, const char *url);
+/// Batched generic CSS selectors; JSON {classes,ids,exceptions} string arrays.
+/// Serialize with other engine calls; free the JSON result with string_free.
+char *nook_adblock_cosmetic_class_id(void *engine, const char *json);
 
 /// uBlock Origin `urlskip=` rules from filter text (UTF-8, not NUL-terminated).
 /// Only lines containing "urlskip=" are read. Writes the number of usable rules

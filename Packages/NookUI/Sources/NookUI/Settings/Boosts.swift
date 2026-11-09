@@ -19,6 +19,8 @@ import NookSettings
 public struct BoostPanel: View {
     let settings: NookSettingsService
     let host: String
+    let canZap: Bool
+    let canRunScripts: Bool
     let onPreview: (Boost) -> Void
     /// Lets the person click an element on the page; returns its selector, or nil if cancelled.
     let onZap: () async -> String?
@@ -34,6 +36,8 @@ public struct BoostPanel: View {
     @State private var renaming = false
     @State private var showingLibrary = false
     @State private var zapping = false
+    @State private var zapRequest: UUID?
+    @State private var zapTask: Task<Void, Never>?
     @State private var lastZap: String?  // the selector Zap added last
     @State private var importing = false
     @State private var exporting = false
@@ -48,13 +52,15 @@ public struct BoostPanel: View {
     private let tileHeight: CGFloat = 40
 
     public init(
-        settings: NookSettingsService, host: String,
+        settings: NookSettingsService, host: String, canZap: Bool = true, canRunScripts: Bool = true,
         onPreview: @escaping (Boost) -> Void,
         onZap: @escaping () async -> String?, onCancelZap: @escaping () -> Void,
         onFinish: @escaping () -> Void
     ) {
         self.settings = settings
         self.host = host
+        self.canZap = canZap
+        self.canRunScripts = canRunScripts
         self.onPreview = onPreview
         self.onZap = onZap
         self.onCancelZap = onCancelZap
@@ -111,7 +117,7 @@ public struct BoostPanel: View {
         .onExitCommand { zapping ? cancelZap() : requestClose() }
         #endif
         .onDisappear {
-            if zapping { onCancelZap() }
+            if zapping { cancelZap() }
             if isDirty { save() }
         }
         .fileExporter(isPresented: $exporting, document: BoostFile(data: BoostBundle.export(settings.boosts) ?? Data()),
@@ -411,10 +417,12 @@ public struct BoostPanel: View {
 
             sectionTitle("Script")
             Toggle("Run this script on the site", isOn: $draft.scriptEnabled)
-                .disabled(draft.script.isEmpty)
+                .disabled(!canRunScripts || draft.script.isEmpty)
             editor($draft.script, limit: Boost.maxScriptBytes)
                 .onChange(of: draft.script) { _, new in if new.isEmpty { draft.scriptEnabled = false } }
-            Text("A script runs on the main page after it loads, apart from the page's own scripts. It can still change the page and what you see on logged-in sites, so run only code you trust. Scripts start on the next load once saved. Off by default.")
+            Text(canRunScripts
+                 ? "A script runs on the main page after it loads, apart from the page's own scripts. It can still change the page and what you see on logged-in sites, so run only code you trust. Scripts start on the next load once saved. Off by default."
+                 : "Scripts are saved, but do not run in this Chromium build yet.")
                 .font(NookDesign.Font.caption)
                 .foregroundStyle(.secondary)
         }
@@ -440,9 +448,12 @@ public struct BoostPanel: View {
     private var zapCount: Int { draft.zaps.count + draft.css.components(separatedBy: Self.zapRule).count - 1 }
 
     private var zapRow: some View {
-        rowButton(zapping ? "Click an element" : "Zap", trailing: zapping ? "esc" : "\(zapCount)") {
+        rowButton(!canZap ? "Zap unavailable" : (zapping ? "Click an element" : "Zap"),
+                  trailing: !canZap ? "—" : (zapping ? "esc" : "\(zapCount)")) {
             zapping ? cancelZap() : startZap()
         }
+        .disabled(!canZap)
+        .help(canZap ? "Click an element to hide it." : "Element picking is not available in this build yet.")
         .contextMenu {
             Button("Undo Last Zap") {
                 if let lastZap, let i = draft.zaps.lastIndex(of: lastZap) { draft.zaps.remove(at: i) }
@@ -525,7 +536,9 @@ public struct BoostPanel: View {
             } label: {
                 VStack(alignment: .leading, spacing: 0) {
                     Text(boost.name.isEmpty ? boost.host : boost.name).font(NookDesign.Font.label)
-                    Text(boost.scriptEnabled ? "\(boost.host) · runs a script" : boost.host)
+                    Text(boost.scriptEnabled
+                         ? "\(boost.host) · \(canRunScripts ? "runs a script" : "script unavailable")"
+                         : boost.host)
                         .font(NookDesign.Font.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -587,9 +600,15 @@ public struct BoostPanel: View {
     }
 
     private func startZap() {
+        guard canZap else { return }
+        let request = UUID()
+        zapRequest = request
         zapping = true
-        Task {
+        zapTask = Task {
             let selector = await onZap()
+            guard !Task.isCancelled, zapRequest == request else { return }
+            zapRequest = nil
+            zapTask = nil
             zapping = false
             guard let selector else { return }
             // Hides it on this site from now on once saved; "Undo last Zap" takes it back. A selector
@@ -601,8 +620,12 @@ public struct BoostPanel: View {
     }
 
     private func cancelZap() {
-        onCancelZap()
+        zapRequest = nil
+        let task = zapTask
+        zapTask = nil
+        task?.cancel()
         zapping = false
+        onCancelZap()
     }
 
     // MARK: - Pieces

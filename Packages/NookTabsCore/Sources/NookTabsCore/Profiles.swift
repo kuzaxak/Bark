@@ -33,6 +33,12 @@ public struct KeptProfile: Codable, Hashable, Sendable, Identifiable {
         name = profile.name
         searchEngineId = profile.searchEngineId
     }
+
+    public init(id: UUID, name: String, searchEngineId: String? = nil) {
+        self.id = id
+        self.name = name
+        self.searchEngineId = searchEngineId
+    }
 }
 
 extension TabTree {

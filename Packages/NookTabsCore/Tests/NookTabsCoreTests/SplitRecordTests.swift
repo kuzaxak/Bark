@@ -18,6 +18,17 @@ struct SplitRecordTests {
         #expect(four.isFull)
     }
 
+    @Test func acceptsExactNativeDividerSnapshotWithoutSequentialClamping() throws {
+        let record = try #require(SplitRecord([a, b, c, d], orientation: .vertical,
+                                              dividers: [0.8, 0.9, 0.95]))
+        #expect(record.dividers == [0.8, 0.9, 0.95] && record.orientation == .vertical)
+        #expect(SplitRecord([a, b, c, d], dividers: [0.5]) == nil)
+        #expect(SplitRecord([a, b], dividers: [0]) == nil)
+        #expect(SplitRecord([a, b], dividers: [1]) == nil)
+        #expect(SplitRecord([a, b], dividers: [.nan]) == nil)
+        #expect(SplitRecord([a, b, c], dividers: [0.7, 0.4]) == nil)
+    }
+
     @Test func insertsBesideAPaneUntilFull() throws {
         let pair = try #require(SplitRecord([a, b]))
         #expect(pair.inserting(c, beside: b, after: true)?.itemIDs == [a, b, c])

@@ -1,0 +1,346 @@
+--- a/chrome/browser/BUILD.gn
++++ b/chrome/browser/BUILD.gn
+@@ -1518,6 +1518,7 @@
+   }
+ 
+   if (is_mac) {
++    deps += [ "//chrome/browser/content_blocking:native_content_blocker" ]
+     sources += [
+       "app_controller_mac.mm",
+       "browser_process_platform_part_mac.mm",
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -3,6 +3,10 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/chrome_content_browser_client.h"
++
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/content_blocking/native_content_blocker.h"
++#endif
+ 
+ #include <algorithm>
+ #include <iterator>
+@@ -390,6 +394,7 @@
+ #include "content/public/common/content_features.h"
+ #include "content/public/common/content_switches.h"
+ #include "content/public/common/url_constants.h"
++#include "content/public/common/url_utils.h"
+ #include "content/public/common/window_container_type.mojom-shared.h"
+ #include "device/vr/buildflags/buildflags.h"
+ #include "extensions/browser/browser_frame_context_data.h"
+@@ -6954,6 +6959,39 @@
+   return prefetch_handler;
+ }
+ 
++void ChromeContentBrowserClient::CheckWebSocketConnection(
++    content::BrowserContext* browser_context, content::RenderFrameHost* frame,
++    const GURL& url, const url::Origin& initiator,
++    base::OnceCallback<void(int)> callback) {
++#if BUILDFLAG(IS_MAC)
++  const GURL source = initiator.GetURL();
++  const GURL document_site = frame ? frame->GetLastCommittedURL() : GURL();
++  // Match website-request scope; browser UI and extension background traffic
++  // retain upstream handling and extension filtering.
++  if (!NativeContentBlocker::RequiresInterception() ||
++      source.SchemeIs("chrome-extension") || document_site.SchemeIs("chrome-extension") ||
++      content::HasWebUIScheme(source) || content::HasWebUIScheme(document_site) ||
++      source.SchemeIs(content::kChromeDevToolsScheme) ||
++      document_site.SchemeIs(content::kChromeDevToolsScheme)) {
++    std::move(callback).Run(net::OK);
++    return;
++  }
++  auto* profile = Profile::FromBrowserContext(browser_context);
++  if (profile->ShutdownStarted()) {
++    std::move(callback).Run(net::ERR_ABORTED);
++    return;
++  }
++  auto* blocker = NativeContentBlocker::Get(profile, true);
++  auto client = NativeContentBlocker::CaptureClient(
++      frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr,
++      frame, document_site.is_empty() ? source : document_site);
++  blocker->Check(url, initiator.GetURL(), std::move(client), "websocket", "GET",
++                 std::move(callback));
++#else
++  std::move(callback).Run(net::OK);
++#endif
++}
++
+ bool ChromeContentBrowserClient::WillInterceptWebSocket(
+     content::RenderFrameHost* frame) {
+ #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+--- a/chrome/browser/chrome_content_browser_client.h
++++ b/chrome/browser/chrome_content_browser_client.h
+@@ -723,6 +723,10 @@
+       int64_t navigation_id,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner)
+       override;
++  void CheckWebSocketConnection(
++      content::BrowserContext* browser_context, content::RenderFrameHost* frame,
++      const GURL& url, const url::Origin& initiator,
++      base::OnceCallback<void(int)> callback) override;
+   bool WillInterceptWebSocket(content::RenderFrameHost* frame) override;
+   content::ContentBrowserClient::WebSocketOptions GetWebSocketOptions(
+       content::RenderFrameHost* frame) override;
+--- a/chrome/browser/content_blocking/native_content_blocker.cc
++++ b/chrome/browser/content_blocking/native_content_blocker.cc
+@@ -628,7 +628,8 @@
+     std::move(request.callback).Run(net::ERR_ABORTED); return;
+   }
+   if (!policy.registered || policy.requested == kDisabled ||
+-      !request.url.SchemeIsHTTPOrHTTPS()) {
++      !(request.url.SchemeIsHTTPOrHTTPS() ||
++        (request.type == "websocket" && request.url.SchemeIsWSOrWSS()))) {
+     std::move(request.callback).Run(net::OK); return;
+   }
+   if (!state().ready) {
+--- a/content/browser/websockets/websocket_connector_impl.cc
++++ b/content/browser/websockets/websocket_connector_impl.cc
+@@ -11,6 +11,7 @@
+ #include "content/browser/devtools/devtools_instrumentation.h"
+ #include "content/browser/renderer_host/render_frame_host_impl.h"
+ #include "content/public/browser/browser_thread.h"
++#include "content/public/browser/browser_context.h"
+ #include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/render_process_host.h"
+ #include "content/public/browser/storage_partition.h"
+@@ -19,6 +20,8 @@
+ #include "content/public/common/content_client.h"
+ #include "content/public/common/content_switches.h"
+ #include "mojo/public/cpp/bindings/message.h"
++#include "mojo/public/cpp/bindings/remote.h"
++#include "net/base/net_errors.h"
+ #include "net/base/network_handle.h"
+ #include "net/http/http_request_headers.h"
+ #include "net/storage_access_api/status.h"
+@@ -138,7 +141,7 @@
+ 
+   content::ContentBrowserClient::WebSocketFactory factory = base::BindOnce(
+       ConnectCalledByContentBrowserClient, requested_protocols,
+-      storage_access_api_status_, isolation_info_, frame_id_,
++      storage_access_api_status_, isolation_info_, frame_id_, weak_document_,
+       devtools_worker_token_, origin_, client_security_state_->Clone(),
+       options.options, std::move(throttling_profile_id),
+       network_restrictions_id_, target_address_space, target_network);
+@@ -173,6 +176,7 @@
+     net::StorageAccessApiStatus storage_access_api_status,
+     const net::IsolationInfo& isolation_info,
+     const content::GlobalRenderFrameHostId& frame_id,
++    WeakDocumentPtr weak_document,
+     std::optional<base::UnguessableToken> devtools_worker_token,
+     const url::Origin& origin,
+     network::mojom::ClientSecurityStatePtr client_security_state,
+@@ -192,7 +196,63 @@
+   CHECK(BrowserThread::CurrentlyOn(BrowserThread::UI),
+         base::NotFatalUntil::M159);
+   RenderProcessHost* process = RenderProcessHost::FromID(frame_id.child_id);
+-  if (!process) {
++  if (!handshake_client.is_valid() ||
++      handshake_client.Pipe()->QuerySignalsState().peer_closed() ||
++      !process || process->GetBrowserContext()->ShutdownStarted()) {
++    return;
++  }
++
++  auto* document = weak_document.AsRenderFrameHostIfValid();
++  if (frame_id.frame_routing_id != IPC::mojom::kRoutingIdNone &&
++      (!document || !document->IsActive() || document != RenderFrameHost::FromID(frame_id))) return;
++  GetContentClient()->browser()->CheckWebSocketConnection(
++      process->GetBrowserContext(), document, url, origin,
++      base::BindOnce(&WebSocketConnectorImpl::ConnectAfterPolicyCheck,
++          requested_protocols, storage_access_api_status, isolation_info,
++          frame_id, weak_document, devtools_worker_token, origin,
++          std::move(client_security_state), options, throttling_profile_id,
++          network_restrictions_id, target_address_space, target_network, url,
++          std::move(additional_headers), std::move(handshake_client),
++          std::move(auth_handler), std::move(trusted_header_client)));
++}
++
++void WebSocketConnectorImpl::ConnectAfterPolicyCheck(
++    const std::vector<std::string>& requested_protocols,
++    net::StorageAccessApiStatus storage_access_api_status,
++    const net::IsolationInfo& isolation_info,
++    const content::GlobalRenderFrameHostId& frame_id,
++    WeakDocumentPtr weak_document,
++    std::optional<base::UnguessableToken> devtools_worker_token,
++    const url::Origin& origin,
++    network::mojom::ClientSecurityStatePtr client_security_state,
++    uint32_t options,
++    std::optional<base::UnguessableToken> throttling_profile_id,
++    const base::UnguessableToken& network_restrictions_id,
++    network::mojom::IPAddressSpace target_address_space,
++    net::handles::NetworkHandle target_network,
++    const GURL& url,
++    std::vector<network::mojom::HttpHeaderPtr> additional_headers,
++    mojo::PendingRemote<network::mojom::WebSocketHandshakeClient>
++        handshake_client,
++    mojo::PendingRemote<network::mojom::WebSocketAuthenticationHandler>
++        auth_handler,
++    mojo::PendingRemote<network::mojom::TrustedHeaderClient>
++        trusted_header_client,
++    int error) {
++  auto* process = RenderProcessHost::FromID(frame_id.child_id);
++  auto* document = weak_document.AsRenderFrameHostIfValid();
++  if (!handshake_client.is_valid() ||
++      handshake_client.Pipe()->QuerySignalsState().peer_closed() ||
++      !process || process->GetBrowserContext()->ShutdownStarted() ||
++      (frame_id.frame_routing_id != IPC::mojom::kRoutingIdNone &&
++       (!document || !document->IsActive() ||
++        document != RenderFrameHost::FromID(frame_id)))) {
++    return;
++  }
++  if (error != net::OK) {
++    mojo::Remote<network::mojom::WebSocketHandshakeClient> client(
++        std::move(handshake_client));
++    client->OnFailure("WebSocket blocked by browser policy", error, -1);
+     return;
+   }
+ 
+--- a/content/browser/websockets/websocket_connector_impl.h
++++ b/content/browser/websockets/websocket_connector_impl.h
+@@ -64,6 +64,7 @@
+       net::StorageAccessApiStatus storage_access_api_status,
+       const net::IsolationInfo& isolation_info,
+       const content::GlobalRenderFrameHostId& frame_id,
++      WeakDocumentPtr weak_document,
+       std::optional<base::UnguessableToken> devtools_worker_token,
+       const url::Origin& origin,
+       network::mojom::ClientSecurityStatePtr client_security_state,
+@@ -81,6 +82,30 @@
+       mojo::PendingRemote<network::mojom::TrustedHeaderClient>
+           trusted_header_client);
+ 
++  static void ConnectAfterPolicyCheck(
++      const std::vector<std::string>& requested_protocols,
++      net::StorageAccessApiStatus storage_access_api_status,
++      const net::IsolationInfo& isolation_info,
++      const content::GlobalRenderFrameHostId& frame_id,
++      WeakDocumentPtr weak_document,
++      std::optional<base::UnguessableToken> devtools_worker_token,
++      const url::Origin& origin,
++      network::mojom::ClientSecurityStatePtr client_security_state,
++      uint32_t options,
++      std::optional<base::UnguessableToken> throttling_profile_id,
++      const base::UnguessableToken& network_restrictions_id,
++      network::mojom::IPAddressSpace target_address_space,
++      net::handles::NetworkHandle target_network,
++      const GURL& url,
++      std::vector<network::mojom::HttpHeaderPtr> additional_headers,
++      mojo::PendingRemote<network::mojom::WebSocketHandshakeClient>
++          handshake_client,
++      mojo::PendingRemote<network::mojom::WebSocketAuthenticationHandler>
++          auth_handler,
++      mojo::PendingRemote<network::mojom::TrustedHeaderClient>
++          trusted_header_client,
++      int error);
++
+   const content::GlobalRenderFrameHostId frame_id_;
+   const WeakDocumentPtr weak_document_;
+   const url::Origin origin_;
+--- a/content/public/browser/content_browser_client.cc
++++ b/content/public/browser/content_browser_client.cc
+@@ -69,6 +69,7 @@
+ #include "media/mojo/mojom/speech_recognizer.mojom.h"
+ #include "mojo/public/cpp/bindings/message.h"
+ #include "net/base/isolation_info.h"
++#include "net/base/net_errors.h"
+ #include "net/cookies/cookie_setting_override.h"
+ #include "net/cookies/site_for_cookies.h"
+ #include "net/ssl/client_cert_identity.h"
+@@ -1107,6 +1108,12 @@
+   DCHECK(browser_context);
+ }
+ 
++void ContentBrowserClient::CheckWebSocketConnection(
++    BrowserContext*, RenderFrameHost*, const GURL&, const url::Origin&,
++    base::OnceCallback<void(int)> callback) {
++  std::move(callback).Run(net::OK);
++}
++
+ bool ContentBrowserClient::WillInterceptWebSocket(RenderFrameHost*) {
+   return false;
+ }
+--- a/content/public/browser/content_browser_client.h
++++ b/content/public/browser/content_browser_client.h
+@@ -1991,6 +1991,16 @@
+       bool is_for_network_service,
+       std::optional<int64_t> document_navigation_id = std::nullopt);
+ 
++  // Checks the final WebSocket URL after any embedder/extension interception.
++  // The initiator is captured by the connector; frame is the exact creator
++  // document (also for dedicated workers), or null for shared/service workers.
++  // Always UI-thread. Call callback once with net::OK or a network error.
++  // Content revalidates the process/document before creating the socket.
++  virtual void CheckWebSocketConnection(
++      BrowserContext* browser_context, RenderFrameHost* frame,
++      const GURL& url, const url::Origin& initiator,
++      base::OnceCallback<void(int)> callback);
++
+   // Returns true when the embedder wants to intercept a websocket connection.
+   virtual bool WillInterceptWebSocket(RenderFrameHost* frame);
+ 
+--- a/components/performance_manager/worker_watcher.cc
++++ b/components/performance_manager/worker_watcher.cc
+@@ -366,10 +366,11 @@
+   auto it = service_worker_nodes_.find(version_id);
+   CHECK(it != service_worker_nodes_.end());
+ 
++  // Keep this node discoverable while disconnecting missing worker clients:
++  // their consistency checks use service_worker_nodes_ as the authority.
++  DisconnectAllServiceWorkerClients(it->second.get(), version_id);
++
+   auto service_worker_node = std::move(it->second);
+-
+-  // First, disconnect all current clients of this service worker.
+-  DisconnectAllServiceWorkerClients(service_worker_node.get(), version_id);
+ 
+ #if DCHECK_IS_ON()
+   DCHECK(!detached_frame_count_per_worker_.contains(service_worker_node.get()));
+--- a/components/performance_manager/worker_watcher_unittest.cc
++++ b/components/performance_manager/worker_watcher_unittest.cc
+@@ -851,6 +851,46 @@
+   EXPECT_FALSE(service_worker_node);
+ }
+ 
++TEST_F(WorkerWatcherTest, ServiceWorkerStopsBeforeDeadWorkerClientsAreRemoved) {
++  SetContents(CreateTestWebContents());
++  content::NavigationSimulator::NavigateAndCommitFromBrowser(
++      web_contents(), GURL("https://www.foo.com/"));
++  auto process_node = GetProcessNode(process());
++  auto frame_node = GetFrameNode(main_rfh());
++  ASSERT_TRUE(process_node);
++  ASSERT_TRUE(frame_node);
++
++  const auto shared_token =
++      shared_worker_factory()->CreateSharedWorker(process_node.get());
++  const auto dedicated_token = dedicated_worker_factory()->CreateDedicatedWorker(
++      process_node.get(), frame_node.get());
++  auto shared_node = GetWorkerNode(shared_token);
++  auto dedicated_node = GetWorkerNode(dedicated_token);
++  const auto version = service_worker_factory()->CreateServiceWorker();
++  const auto service_token = service_worker_factory()->StartServiceWorker(
++      version, process_node.get());
++  auto service_node = GetWorkerNode(service_token);
++  ASSERT_TRUE(service_node);
++  const auto shared_client = service_worker_factory()->AddClient(version, shared_node.get());
++  const auto dedicated_client = service_worker_factory()->AddClient(version, dedicated_node.get());
++  EXPECT_TRUE(IsWorkerClient(service_node, shared_node));
++  EXPECT_TRUE(IsWorkerClient(service_node, dedicated_node));
++
++  // The service worker retains both controllee registrations after the actual
++  // client nodes disappear, as happens during private BrowserContext shutdown.
++  shared_worker_factory()->DestroySharedWorker(shared_token);
++  dedicated_worker_factory()->DestroyDedicatedWorker(dedicated_token);
++  ASSERT_FALSE(shared_node);
++  ASSERT_FALSE(dedicated_node);
++  ASSERT_TRUE(service_node);
++  EXPECT_TRUE(service_node->GetClientWorkers().empty());
++  service_worker_factory()->StopServiceWorker(version);
++  EXPECT_FALSE(service_node);
++  service_worker_factory()->RemoveClient(version, shared_client);
++  service_worker_factory()->RemoveClient(version, dedicated_client);
++  service_worker_factory()->DestroyServiceWorker(version);
++}
++
+ TEST_F(WorkerWatcherTest, OneSharedWorkerTwoClients) {
+   SetContents(CreateTestWebContents());
+   content::NavigationSimulator::NavigateAndCommitFromBrowser(

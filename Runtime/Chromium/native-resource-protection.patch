@@ -1,0 +1,358 @@
+--- a/chrome/browser/performance_manager/policies/cannot_discard_reason.cc
++++ b/chrome/browser/performance_manager/policies/cannot_discard_reason.cc
+@@ -69,6 +69,8 @@
+       return "The user has edited the tab's content";
+     case CannotDiscardReason::kGlicShared:
+       return "Tab is currently shared with Gemini";
++    case CannotDiscardReason::kUnknownNativeActivity:
++      return "Native upload activity is not yet observable";
+     case CannotDiscardReason::kWebApp:
+       return "Tab is a web application";
+   }
+--- a/chrome/browser/performance_manager/policies/cannot_discard_reason.h
++++ b/chrome/browser/performance_manager/policies/cannot_discard_reason.h
+@@ -42,7 +42,9 @@
+   kGlicShared = 28,
+   kWebApp = 29,
+ 
+-  kMaxValue = kWebApp,
++  kUnknownNativeActivity = 30,
++
++  kMaxValue = kUnknownNativeActivity,
+ };
+ // LINT.ThenChange(//tools/metrics/histograms/enums.xml:CannotDiscardReason)
+ 
+--- a/chrome/browser/performance_manager/policies/discard_eligibility_policy.cc
++++ b/chrome/browser/performance_manager/policies/discard_eligibility_policy.cc
+@@ -11,6 +11,7 @@
+ #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
+ #include "chrome/common/buildflags.h"
+ #include "components/performance_manager/graph/page_node_impl.h"
++#include "components/performance_manager/public/features.h"
+ #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
+ #include "components/performance_manager/public/graph/node_data_describer_registry.h"
+ #include "components/tabs/public/tab_interface.h"
+@@ -217,6 +218,13 @@
+       cannot_discard_reasons->push_back(reason);
+     }
+   };
++
++  // Disallowed, rather than Protected: urgent callers may discard protected
++  // pages, and EXTERNAL/growing-memory reasons bypass normal exclusions below.
++  if (features::IsNativeResourceProtectionHeld()) {
++    add_reason(CannotDiscardReason::kUnknownNativeActivity);
++    return CanDiscardResult::kDisallowed;
++  }
+ 
+   // Don't discard pages which aren't tabs.
+   if (page_node->GetType() != PageType::kTab) {
+--- a/chrome/browser/performance_manager/policies/discard_eligibility_policy_unittest.cc
++++ b/chrome/browser/performance_manager/policies/discard_eligibility_policy_unittest.cc
+@@ -10,6 +10,7 @@
+ 
+ #include "base/strings/string_number_conversions.h"
+ #include "base/test/metrics/histogram_tester.h"
++#include "base/test/scoped_command_line.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
+@@ -122,6 +123,21 @@
+   }
+ };
+ 
++#if BUILDFLAG(IS_MAC)
++TEST_F(DiscardEligibilityPolicyTest, NativeUnknownWorkDisallowsEveryReason) {
++  base::test::ScopedCommandLine command;
++  command.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++  ExpectCanDiscardEligibleAllReasons(page_node());
++  command.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  auto* live = PageLiveStateDecorator::Data::GetOrCreateForPageNode(page_node());
++  live->SetIsActiveTabForTesting(true);
++  EXPECT_TRUE(live->IsActiveTab());
++  EXPECT_FALSE(page_node()->IsVisible());
++  ExpectCanDiscardDisallowedAllReasons(
++      page_node(), CannotDiscardReason::kUnknownNativeActivity);
++}
++#endif
++
+ TEST_F(DiscardEligibilityPolicyTest, TestCanDiscardMultipleActiveMainFrames) {
+   // Multiple main frames can transiently be marked "active" during a frame
+   // swap. Make sure CanDiscard works around it. (See comment on
+--- a/chrome/browser/resource_coordinator/tab_lifecycle_unit.cc
++++ b/chrome/browser/resource_coordinator/tab_lifecycle_unit.cc
+@@ -359,7 +359,9 @@
+ bool TabLifecycleUnitSource::TabLifecycleUnit::Discard(
+     LifecycleUnitDiscardReason reason,
+     uint64_t tab_memory_footprint_estimate) {
+-  if (IsDiscardBlockedByFeature(reason)) {
++  // Final admission also covers direct/manual callers that skip PM eligibility.
++  if (performance_manager::features::IsNativeResourceProtectionHeld() ||
++      IsDiscardBlockedByFeature(reason)) {
+     return false;
+   }
+ 
+--- a/chrome/browser/resource_coordinator/tab_lifecycle_unit_unittest.cc
++++ b/chrome/browser/resource_coordinator/tab_lifecycle_unit_unittest.cc
+@@ -14,6 +14,7 @@
+ #include "base/memory/weak_ptr.h"
+ #include "base/scoped_observation.h"
+ #include "base/test/metrics/histogram_tester.h"
++#include "base/test/scoped_command_line.h"
+ #include "base/test/simple_test_clock.h"
+ #include "base/test/simple_test_tick_clock.h"
+ #include "base/time/time.h"
+@@ -272,6 +273,28 @@
+   ExpectCanDiscardTrueAllReasons(&tab_lifecycle_unit);
+ }
+ 
++#if BUILDFLAG(IS_MAC)
++TEST_F(TabLifecycleUnitTest, NativeUnknownWorkBlocksDirectDiscard) {
++  base::test::ScopedCommandLine command;
++  command.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++  command.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  tab_strip_model_->AddObserver(GetTabLifecycleUnitSource());
++  TabLifecycleUnit* unit = AddNewHiddenLifecycleUnitToTabStrip();
++  content::WebContents* contents = unit->GetWebContents();
++  unit->SetAutoDiscardable(false);
++  for (auto reason : {LifecycleUnitDiscardReason::EXTERNAL,
++                      LifecycleUnitDiscardReason::URGENT,
++                      LifecycleUnitDiscardReason::PROACTIVE,
++                      LifecycleUnitDiscardReason::SUGGESTED,
++                      LifecycleUnitDiscardReason::FROZEN_WITH_GROWING_MEMORY}) {
++    EXPECT_FALSE(unit->DiscardTab(reason, 0));
++    EXPECT_EQ(contents, unit->GetWebContents());
++    EXPECT_FALSE(unit->IsAutoDiscardable());
++  }
++  tab_strip_model_->RemoveObserver(GetTabLifecycleUnitSource());
++}
++#endif
++
+ TEST_F(TabLifecycleUnitTest, AutoDiscardablePersistsThroughDiscard) {
+   // Start observing the TabStripModel so that TabLifecycleUnitSource will be
+   // informed when the tab is discarded. TabLifecycleUnitSource expects to fully
+--- a/components/performance_manager/features.cc
++++ b/components/performance_manager/features.cc
+@@ -7,12 +7,23 @@
+ 
+ #include "components/performance_manager/public/features.h"
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/metrics/field_trial_params.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
+ 
+ namespace performance_manager::features {
++
++bool IsNativeResourceProtectionHeld() {
++#if BUILDFLAG(IS_MAC)
++  const auto* command = base::CommandLine::ForCurrentProcess();
++  return command->HasSwitch("barc-native-shell") &&
++         command->HasSwitch("barc-shared-native-window");
++#else
++  return false;
++#endif
++}
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+ BASE_FEATURE(kPerformanceControlsPPMSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
+--- a/components/performance_manager/freezing/cannot_freeze_reason.cc
++++ b/components/performance_manager/freezing/cannot_freeze_reason.cc
+@@ -10,6 +10,8 @@
+ 
+ const char* CannotFreezeReasonToString(CannotFreezeReason reason) {
+   switch (reason) {
++    case CannotFreezeReason::kUnknownNativeActivity:
++      return "native upload activity is not yet observable";
+     case CannotFreezeReason::kVisible:
+       return "visible";
+     case CannotFreezeReason::kRecentlyVisible:
+--- a/components/performance_manager/freezing/freezing_policy.cc
++++ b/components/performance_manager/freezing/freezing_policy.cc
+@@ -608,6 +608,11 @@
+ 
+   PageLiveStateDecorator::Data::GetOrCreateForPageNode(page_node)->AddObserver(
+       this);
++
++  if (features::IsNativeResourceProtectionHeld()) {
++    page_freezing_state.cannot_freeze_reasons.Put(
++        CannotFreezeReason::kUnknownNativeActivity);
++  }
+ 
+   if (page_node->IsVisible()) {
+     page_freezing_state.cannot_freeze_reasons.Put(CannotFreezeReason::kVisible);
+--- a/components/performance_manager/freezing/freezing_policy_unittest.cc
++++ b/components/performance_manager/freezing/freezing_policy_unittest.cc
+@@ -17,6 +17,7 @@
+ #include "base/numerics/safe_conversions.h"
+ #include "base/rand_util.h"
+ #include "base/test/power_monitor_test.h"
++#include "base/test/scoped_command_line.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "base/time/time.h"
+ #include "base/unguessable_token.h"
+@@ -294,6 +295,52 @@
+ 
+ // A page with no `CannotFreezeReason` that is alone in its browsing instance is
+ // frozen when it has a freezing vote.
++#if BUILDFLAG(IS_MAC)
++class NativeUnknownWorkFreezingPolicyTest : public FreezingPolicyTest {
++ public:
++  NativeUnknownWorkFreezingPolicyTest() {
++    command_.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++    command_.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  }
++
++ private:
++  base::test::ScopedCommandLine command_;
++};
++
++TEST_F(NativeUnknownWorkFreezingPolicyTest, DoesNotFreezeOnVote) {
++  auto* live = PageLiveStateDecorator::Data::GetOrCreateForPageNode(page_node());
++  live->SetIsActiveTabForTesting(true);
++  EXPECT_TRUE(live->IsActiveTab());
++  EXPECT_FALSE(page_node()->IsVisible());
++  EXPECT_CALL(*freezer(), MaybeFreezePageNode(page_node())).Times(0);
++  policy()->AddFreezeVote(page_node());
++  VerifyFreezerExpectations();
++  for (auto type : {FreezingType::kVoting, FreezingType::kBatterySaver,
++                    FreezingType::kInfiniteTabs}) {
++    ExpectCannotFreezeReasons(
++        page_node(), type,
++        ElementsAre(CannotFreezeReason::kUnknownNativeActivity));
++  }
++}
++TEST_F(NativeUnknownWorkFreezingPolicyTest, VisibilityAndAudioRemainTruthful) {
++  page_node()->SetIsVisible(true);
++  page_node()->SetIsAudible(true);
++  EXPECT_TRUE(page_node()->IsVisible());
++  EXPECT_TRUE(page_node()->IsAudible());
++  ExpectCannotFreezeReasons(page_node(), FreezingType::kVoting,
++      testing::UnorderedElementsAre(CannotFreezeReason::kUnknownNativeActivity,
++                           CannotFreezeReason::kVisible, CannotFreezeReason::kAudible));
++  page_node()->SetIsVisible(false);
++  page_node()->SetIsAudible(false);
++  EXPECT_FALSE(page_node()->IsVisible());
++  EXPECT_FALSE(page_node()->IsAudible());
++  // Cooling-down reasons remain native policy facts; the hold stays separate.
++  EXPECT_CALL(*freezer(), MaybeFreezePageNode(page_node())).Times(0);
++  policy()->AddFreezeVote(page_node());
++  VerifyFreezerExpectations();
++}
++#endif
++
+ TEST_F(FreezingPolicyTest, Basic) {
+   EXPECT_CALL(*freezer(), MaybeFreezePageNode(page_node()));
+   policy()->AddFreezeVote(page_node());
+--- a/components/performance_manager/public/features.h
++++ b/components/performance_manager/public/features.h
+@@ -16,6 +16,11 @@
+ #include "build/build_config.h"
+ 
+ namespace performance_manager::features {
++
++// Native Barc cannot yet prove absence of document/worker/keepalive uploads.
++// Hold destructive resource actions independently of user/extension preferences.
++// Explicit user close is not a resource action and remains unaffected.
++bool IsNativeResourceProtectionHeld();
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+ 
+--- a/components/performance_manager/public/freezing/cannot_freeze_reason.h
++++ b/components/performance_manager/public/freezing/cannot_freeze_reason.h
+@@ -39,7 +39,8 @@
+   kOptedOut,
+   kMostRecentlyUsed,
+   kWebUI,
+-  kMax = kWebUI,  // Upper bound for EnumSet.
++  kUnknownNativeActivity,
++  kMax = kUnknownNativeActivity,  // Upper bound for EnumSet.
+ };
+ 
+ using CannotFreezeReasonSet = base::EnumSet<CannotFreezeReason,
+--- a/tools/metrics/histograms/metadata/performance_manager/enums.xml
++++ b/tools/metrics/histograms/metadata/performance_manager/enums.xml
+@@ -69,6 +69,7 @@
+   <int value="27" label="User Edits"/>
+   <int value="28" label="GLIC Shared"/>
+   <int value="29" label="Web App"/>
++  <int value="30" label="UnknownNativeActivity"/>
+ </enum>
+ 
+ <!-- LINT.ThenChange(//chrome/browser/performance_manager/policies/cannot_discard_reason.h:CannotDiscardReason) -->
+--- a/components/performance_manager/freezing/freezer.cc
++++ b/components/performance_manager/freezing/freezer.cc
+@@ -8,6 +8,7 @@
+ #include "base/memory/weak_ptr.h"
+ #include "base/task/task_traits.h"
+ #include "components/performance_manager/public/graph/page_node.h"
++#include "components/performance_manager/public/features.h"
+ #include "content/public/browser/visibility.h"
+ #include "content/public/browser/web_contents.h"
+ 
+@@ -15,6 +16,8 @@
+ 
+ void Freezer::MaybeFreezePageNode(const PageNode* page_node) {
+   DCHECK(page_node);
++  // Final admission protects direct callers that did not pass FreezingPolicy.
++  if (features::IsNativeResourceProtectionHeld()) return;
+ 
+   base::WeakPtr<content::WebContents> contents = page_node->GetWebContents();
+   CHECK(contents);
+--- a/components/performance_manager/freezing/freezer_unittest.cc
++++ b/components/performance_manager/freezing/freezer_unittest.cc
+@@ -3,6 +3,9 @@
+ // found in the LICENSE file.
+ 
+ #include "components/performance_manager/freezing/freezer.h"
++
++#include "base/test/scoped_command_line.h"
++#include "build/build_config.h"
+ 
+ #include "components/performance_manager/public/performance_manager.h"
+ #include "components/performance_manager/test_support/performance_manager_test_harness.h"
+@@ -11,6 +14,7 @@
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/visibility.h"
+ #include "content/public/test/mock_permission_controller.h"
+ #include "content/public/test/web_contents_tester.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+@@ -60,6 +64,25 @@
+   EXPECT_FALSE(web_contents_tester->IsPageFrozen());
+ }
+ 
++#if BUILDFLAG(IS_MAC)
++TEST_F(FreezerTest, NativeUnknownWorkBlocksDirectFreezeButAllowsUnfreeze) {
++  base::test::ScopedCommandLine command;
++  command.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++  SetContents(CreateTestWebContents());
++  auto* tester = content::WebContentsTester::For(web_contents());
++  tester->NavigateAndCommit(GURL(kUrl));
++  web_contents()->WasHidden();
++  MaybeFreezePageNode(web_contents());
++  EXPECT_TRUE(tester->IsPageFrozen());
++  command.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  UnfreezePageNode(web_contents());
++  EXPECT_FALSE(tester->IsPageFrozen());
++  MaybeFreezePageNode(web_contents());
++  EXPECT_FALSE(tester->IsPageFrozen());
++  EXPECT_EQ(content::Visibility::HIDDEN, web_contents()->GetVisibility());
++}
++#endif
++
+ TEST_F(FreezerTest, CantFreezePageWithNotificationPermission) {
+   SetContents(CreateTestWebContents());
+ 
+--- a/chrome/browser/ui/webui/discards/discards_ui.cc
++++ b/chrome/browser/ui/webui/discards/discards_ui.cc
+@@ -505,6 +505,8 @@
+   }
+ 
+   void FreezeById(int32_t id) override {
++    // This manual route bypasses FreezingPolicy/Freezer.
++    if (performance_manager::features::IsNativeResourceProtectionHeld()) return;
+     auto it = page_nodes_by_id_.find(id);
+     if (it != page_nodes_by_id_.end() && it->second) {
+       const PageNode* page_node = it->second.get();

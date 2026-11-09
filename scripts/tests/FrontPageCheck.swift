@@ -19,6 +19,7 @@ struct FrontPageCheck {
         let onPage: [ShortcutAction: PageCommand] = [
             .goBack: .goBack, .goForward: .goForward, .refresh: .reload, .clearCookiesAndRefresh: .clearCookiesAndReload,
             .hardReload: .hardReload, .findInPage: .find, .zoomIn: .zoomIn, .zoomOut: .zoomOut, .actualSize: .actualSize,
+            .openDevPanel: .developerConsole, .openNetworkPanel: .developerNetwork, .openPerformancePanel: .developerPerformance,
             .copyCurrentURL: .copyURL, .printPage: .print, .openDevTools: .webInspector,
             .pickElement: .pickElement, .copyScreenshot: .copyScreenshot, .toggleDeveloperMode: .developerMode,
             .togglePictureInPicture: .pictureInPicture, .muteUnmuteAudio: .mute, .translatePage: .translate,

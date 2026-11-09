@@ -1,0 +1,534 @@
+--- a/chrome/browser/webauthn/BUILD.gn
++++ b/chrome/browser/webauthn/BUILD.gn
+@@ -6,6 +6,7 @@
+ 
+ source_set("webauthn") {
+   public = [
++    "barc_vault_authenticator.h",
+     "credential_sorter.h",
+     "password_credential_fetcher.h",
+     "shared_types.h",
+@@ -96,6 +97,10 @@
+     ":webauthn",
+     "//chrome/browser:browser_public_dependencies",
+   ]
++
++  if (is_mac) {
++    sources += [ "barc_vault_authenticator.cc" ]
++  }
+ 
+   deps = [
+     "//base",
+--- a/chrome/browser/webauthn/authenticator_request_dialog_controller.cc
++++ b/chrome/browser/webauthn/authenticator_request_dialog_controller.cc
+@@ -395,6 +395,9 @@
+                        ? vector_icons::kPasswordManagerIcon
+                        : vector_icons::kPasswordManagerOldIcon;
+           },
++          [](const Mechanism::PawlVault&) -> const gfx::VectorIcon& {
++            return vector_icons::kPasswordManagerIcon;
++          },
+           [](const Mechanism::SignInAgain&) -> const gfx::VectorIcon& {
+             return features::IsRoundedIconsEnabled()
+                        ? vector_icons::kSyncIcon
+@@ -432,6 +435,7 @@
+           },
+           [](const Mechanism::Password&) { return false; },
+           [](const Mechanism::SignInAgain&) { return false; },
++          [](const Mechanism::PawlVault&) { return false; },
+       },
+       mech);
+ }
+@@ -1017,7 +1021,7 @@
+   if (!type.has_value()) {
+     if (std::ranges::any_of(
+             authenticators, [](const AuthenticatorReference& ref) {
+-              return ref.type == AuthenticatorType::kOther &&
++              return ref.authenticator_id != "NookPawlVault" && ref.type == AuthenticatorType::kOther &&
+                      ref.transport == device::FidoTransportProtocol::kInternal;
+             })) {
+       type = AuthenticatorType::kOther;
+@@ -1034,7 +1038,8 @@
+         if (type && *type == AuthenticatorType::kEnclave) {
+           return ref.type == *type;
+         }
+-        return ref.transport == device::FidoTransportProtocol::kInternal &&
++        return ref.authenticator_id != "NookPawlVault" &&
++               ref.transport == device::FidoTransportProtocol::kInternal &&
+                (!type || ref.type == *type);
+       });
+ 
+@@ -2125,6 +2130,31 @@
+     AddWindowsButton(windows_button_label->first, windows_button_label->second);
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (std::ranges::any_of(ephemeral_state_.saved_authenticators_,[](const auto& ref) {
++        return ref.authenticator_id == "NookPawlVault";
++      })) {
++    Mechanism::Type type = Mechanism::PawlVault();
++    model_->mechanisms.emplace_back(type,u"Pawl Vault",GetMechanismIcon(type,ui_presentation()),
++        base::BindRepeating([](base::WeakPtr<AuthenticatorRequestDialogController> self) {
++          if (!self) return;
++          auto found = std::ranges::find_if(self->ephemeral_state_.saved_authenticators_,[](const auto& ref) {
++            return ref.authenticator_id == "NookPawlVault";
++          });
++          if (found == self->ephemeral_state_.saved_authenticators_.end()) return;
++          const auto id = found->authenticator_id;
++          self->ephemeral_state_.dispatched_platform_authenticator_type_ = found->type;
++          self->SetCurrentStep(Step::kPlatformAuthenticator);
++          if (!self || self->model_->step() != Step::kPlatformAuthenticator ||
++              self->ephemeral_state_.dispatched_platform_authenticator_type_ != AuthenticatorType::kOther) return;
++          // Step observers may cancel/rebuild the saved-authenticator vector.
++          found = std::ranges::find_if(self->ephemeral_state_.saved_authenticators_,[&id](const auto& ref) {
++            return ref.authenticator_id == id;
++          });
++          if (found != self->ephemeral_state_.saved_authenticators_.end()) self->DispatchRequestAsync(&*found);
++        },weak_factory_.GetWeakPtr()));
++  }
++#endif
+   model_->mechanisms = webauthn::sorting::SortMechanisms(
+       std::move(model_->mechanisms), ui_presentation());
+ }
+--- a/chrome/browser/webauthn/authenticator_request_dialog_model.h
++++ b/chrome/browser/webauthn/authenticator_request_dialog_model.h
+@@ -349,6 +349,7 @@
+         base::StrongAlias<class iCloudKeychainTag, std::monostate>;
+     using Hybrid = base::StrongAlias<class HybridTag, std::monostate>;
+     using Enclave = base::StrongAlias<class EnclaveTag, std::monostate>;
++    using PawlVault = base::StrongAlias<class PawlVaultTag, std::monostate>;
+     using SignInAgain = base::StrongAlias<class SignInAgainTag, std::monostate>;
+     using Type = std::variant<Credential,
+                               Password,
+@@ -357,7 +358,8 @@
+                               Hybrid,
+                               ICloudKeychain,
+                               Enclave,
+-                              SignInAgain>;
++                              SignInAgain,
++                              PawlVault>;
+ 
+     Mechanism(Type type,
+               std::u16string name,
+--- /dev/null
++++ b/chrome/browser/webauthn/barc_vault_authenticator.cc
+@@ -0,0 +1,223 @@
++#include "chrome/browser/webauthn/barc_vault_authenticator.h"
++
++#include <algorithm>
++#include <utility>
++
++#include "base/base64url.h"
++#include "base/functional/bind.h"
++#include "base/json/json_reader.h"
++#include "base/memory/weak_ptr.h"
++#include "base/no_destructor.h"
++#include "base/task/single_thread_task_runner.h"
++#include "components/cbor/reader.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/weak_document_ptr.h"
++#include "content/public/browser/web_contents.h"
++#include "device/fido/attestation_object.h"
++#include "device/fido/authenticator_get_assertion_response.h"
++#include "device/fido/authenticator_make_credential_response.h"
++#include "device/fido/authenticator_supported_options.h"
++#include "device/fido/ctap_get_assertion_request.h"
++#include "device/fido/ctap_make_credential_request.h"
++#include "device/fido/fido_authenticator.h"
++#include "device/fido/fido_discovery_base.h"
++#include "url/origin.h"
++
++namespace barc {
++namespace {
++using MakeStatus = device::MakeCredentialStatus;
++using GetStatus = device::GetAssertionStatus;
++std::string Encode(base::span<const uint8_t> bytes) {
++  std::string result;
++  base::Base64UrlEncode(bytes, base::Base64UrlEncodePolicy::OMIT_PADDING, &result);
++  return result;
++}
++std::optional<std::vector<uint8_t>> Decode(const base::DictValue& value,
++                                          std::string_view key) {
++  const auto* encoded = value.FindString(key);
++  std::string bytes;
++  if (!encoded || encoded->size() > 65536 ||
++      !base::Base64UrlDecode(*encoded, base::Base64UrlDecodePolicy::DISALLOW_PADDING, &bytes))
++    return std::nullopt;
++  return std::vector<uint8_t>(bytes.begin(), bytes.end());
++}
++class PawlAuthenticator final : public device::FidoAuthenticator {
++ public:
++  PawlAuthenticator(content::RenderFrameHost* frame, url::Origin origin,
++                    std::string rp,base::RepeatingCallback<bool()> current)
++      : document_(frame->GetWeakDocumentPtr()), origin_(std::move(origin)), rp_(std::move(rp)), current_(std::move(current)) {}
++  ~PawlAuthenticator() override { Cancel(); }
++  void InitializeAuthenticator(base::OnceClosure callback) override {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,std::move(callback));
++  }
++  void MakeCredential(device::CtapMakeCredentialRequest request,
++                      device::MakeCredentialOptions options,
++                      MakeCredentialCallback callback) override {
++    Cancel();
++    make_callback_ = std::move(callback);
++    const bool es256 = std::ranges::any_of(request.public_key_credential_params.public_key_credential_params(),
++        [](const auto& parameter) { return parameter.algorithm == -7; });
++    if (!Current() || request.rp.id != rp_ || !es256 || request.hmac_secret || request.prf ||
++        request.hmac_secret_mc || request.prf_input || request.cmtg_key || request.large_blob_key ||
++        request.large_blob_support != device::LargeBlobSupport::kNotRequested ||
++        request.cred_blob || request.app_id_exclude || request.min_pin_length_requested ||
++        request.cred_protect_enforce || options.is_passkey_upgrade_request ||
++        options.authenticator_attachment == device::AuthenticatorAttachment::kCrossPlatform ||
++        options.large_blob_support != device::LargeBlobSupport::kNotRequested) {
++      FinishMake(MakeStatus::kAuthenticatorResponseInvalid,std::nullopt); return;
++    }
++    base::DictValue args;
++    args.Set("rpId",rp_); args.Set("rpName",request.rp.name.value_or(rp_));
++    args.Set("origin",origin_.Serialize()); args.Set("clientDataHash",Encode(request.client_data_hash));
++    base::DictValue user;
++    user.Set("id",Encode(request.user.id)); user.Set("name",request.user.name.value_or(""));
++    user.Set("displayName",request.user.display_name.value_or("")); args.Set("user",std::move(user));
++    base::ListValue algorithms; algorithms.Append(-7); args.Set("pubKeyCredParams",std::move(algorithms));
++    base::ListValue excluded;
++    for (const auto& credential : request.exclude_list) excluded.Append(Encode(credential.id));
++    args.Set("excludeCredentials",std::move(excluded));
++    cancel_ = StartVaultPasskeyRequest(document_.AsRenderFrameHostIfValid(),origin_,0,std::move(args),
++        base::BindOnce(&PawlAuthenticator::Made,weak_factory_.GetWeakPtr()));
++  }
++  void GetAssertion(device::CtapGetAssertionRequest request,
++                    device::CtapGetAssertionOptions options,
++                    GetAssertionCallback callback) override {
++    Cancel(); get_callback_ = std::move(callback);
++    if (!Current() || request.rp_id != rp_ || request.app_id ||
++        request.alternative_application_parameter || request.hmac_secret || request.large_blob_key ||
++        request.get_cred_blob || request.cmtg_key || !request.prf_inputs.empty() ||
++        !options.prf_inputs.empty() || options.large_blob_read || options.large_blob_write ||
++        request.large_blob_extension_read || request.large_blob_extension_write ||
++        request.cross_device_fallback_url || !request.user_presence_required) {
++      FinishGet(GetStatus::kAuthenticatorResponseInvalid,{}); return;
++    }
++    allowed_.clear(); base::ListValue allowed;
++    for (const auto& credential : request.allow_list) {
++      allowed_.push_back(credential.id); allowed.Append(Encode(credential.id));
++    }
++    base::DictValue args; args.Set("rpId",rp_);args.Set("origin",origin_.Serialize());
++    args.Set("clientDataHash",Encode(request.client_data_hash));
++    args.Set("allowCredentials",std::move(allowed));
++    // Pawl always supplies UP+UV; it never emulates a silent assertion.
++    args.Set("userVerification","required");
++    cancel_ = StartVaultPasskeyRequest(document_.AsRenderFrameHostIfValid(),origin_,1,std::move(args),
++        base::BindOnce(&PawlAuthenticator::Asserted,weak_factory_.GetWeakPtr()));
++  }
++  bool ShouldCheckPlatformCredentialStatus() const override { return false; }
++  void GetPlatformCredentialInfoForRequest(const device::CtapGetAssertionRequest&,
++      const device::CtapGetAssertionOptions&,GetPlatformCredentialInfoForRequestCallback callback) override {
++    // The current Pawl metadata has no userHandle. Do not manufacture resident
++    // metadata or expose credentials to conditional autofill in this slice.
++    std::move(callback).Run({},device::FidoRequestHandlerBase::RecognizedCredential::kUnknown);
++  }
++  void Cancel() override {
++    weak_factory_.InvalidateWeakPtrs();
++    make_callback_.Reset(); get_callback_.Reset(); allowed_.clear();
++    if (cancel_) std::move(cancel_).Run();
++  }
++  std::string GetId() const override { return kPawlAuthenticatorId; }
++  std::string GetDisplayName() const override { return "Pawl Vault"; }
++  const device::AuthenticatorSupportedOptions& Options() const override {
++    static const base::NoDestructor<device::AuthenticatorSupportedOptions> options([] {
++      device::AuthenticatorSupportedOptions o;
++      o.is_platform_device = device::AuthenticatorSupportedOptions::PlatformDevice::kYes;
++      o.supports_resident_key = true;
++      o.supports_user_presence = true;
++      o.user_verification_availability = device::AuthenticatorSupportedOptions::UserVerificationAvailability::kSupportedAndConfigured;
++      return o;
++    }());
++    return *options;
++  }
++  std::optional<device::FidoTransportProtocol> AuthenticatorTransport() const override {
++    return device::FidoTransportProtocol::kInternal;
++  }
++  base::WeakPtr<device::FidoAuthenticator> GetWeakPtr() override { return weak_factory_.GetWeakPtr(); }
++ private:
++  bool Current() const {
++    auto* frame = document_.AsRenderFrameHostIfValid();
++    return frame && frame->IsActive() && frame->GetLastCommittedOrigin() == origin_ && current_ && current_.Run();
++  }
++  void FinishMake(MakeStatus code,std::optional<device::AuthenticatorMakeCredentialResponse> response) {
++    cancel_.Reset(); auto callback = std::move(make_callback_);
++    if (callback) std::move(callback).Run(code,std::move(response));
++  }
++  void FinishGet(GetStatus code,std::vector<device::AuthenticatorGetAssertionResponse> responses) {
++    cancel_.Reset(); auto callback = std::move(get_callback_);
++    if (callback) std::move(callback).Run(code,std::move(responses));
++  }
++  void Made(std::optional<std::string> json) {
++    auto value = json ? base::JSONReader::ReadDict(*json,base::JSON_PARSE_RFC) : std::nullopt;
++    auto encoded = value ? Decode(*value,"attestationObject") : std::nullopt;
++    auto cbor = encoded ? cbor::Reader::Read(*encoded) : std::nullopt;
++    auto attestation = cbor ? device::AttestationObject::Parse(*cbor) : std::nullopt;
++    if (!Current() || !attestation) { FinishMake(MakeStatus::kUserConsentDenied,std::nullopt); return; }
++    device::AuthenticatorMakeCredentialResponse response(device::FidoTransportProtocol::kInternal,std::move(*attestation));
++    response.is_resident_key = true;
++    // Chromium's handler performs its normal RP hash, flags and algorithm checks.
++    FinishMake(MakeStatus::kSuccess,std::move(response));
++  }
++  void Asserted(std::optional<std::string> json) {
++    auto value = json ? base::JSONReader::ReadDict(*json,base::JSON_PARSE_RFC) : std::nullopt;
++    auto auth_bytes = value ? Decode(*value,"authenticatorData") : std::nullopt;
++    auto signature = value ? Decode(*value,"signature") : std::nullopt;
++    auto credential = value ? Decode(*value,"credentialId") : std::nullopt;
++    auto auth = auth_bytes ? device::AuthenticatorData::DecodeAuthenticatorData(*auth_bytes) : std::nullopt;
++    if (!Current() || !auth || !signature || signature->empty() || !credential || credential->empty() ||
++        (!allowed_.empty() && std::ranges::find(allowed_,*credential) == allowed_.end())) {
++      FinishGet(GetStatus::kUserConsentDenied,{}); return;
++    }
++    device::AuthenticatorGetAssertionResponse response(std::move(*auth),std::move(*signature),device::FidoTransportProtocol::kInternal);
++    response.credential.emplace(device::CredentialType::kPublicKey,std::move(*credential));
++    if (value->Find("userHandle") && !value->Find("userHandle")->is_none()) {
++      auto user = Decode(*value,"userHandle");
++      if (!user || user->empty() || user->size() > 64) { FinishGet(GetStatus::kUserConsentDenied,{}); return; }
++      response.user_entity.emplace(std::move(*user));
++    }
++    // A resident assertion needs the real user ID returned by Pawl, never
++    // synthetic resident metadata or a fallback to the current document.
++    if (allowed_.empty() && !response.user_entity) {
++      FinishGet(GetStatus::kAuthenticatorResponseInvalid,{}); return;
++    }
++    response.user_selected = true;
++    std::vector<device::AuthenticatorGetAssertionResponse> responses;
++    responses.push_back(std::move(response)); FinishGet(GetStatus::kSuccess,std::move(responses));
++  }
++  content::WeakDocumentPtr document_;
++  const url::Origin origin_;
++  const std::string rp_;
++  const base::RepeatingCallback<bool()> current_;
++  base::OnceClosure cancel_;
++  MakeCredentialCallback make_callback_;
++  GetAssertionCallback get_callback_;
++  std::vector<std::vector<uint8_t>> allowed_;
++  base::WeakPtrFactory<PawlAuthenticator> weak_factory_{this};
++};
++class PawlDiscovery final : public device::FidoDiscoveryBase {
++ public:
++  PawlDiscovery(content::RenderFrameHost* frame,const url::Origin& origin,const std::string& rp,base::RepeatingCallback<bool()> current)
++      : FidoDiscoveryBase(device::FidoTransportProtocol::kInternal), authenticator_(frame,origin,rp,std::move(current)) {}
++  void Start() override {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(FROM_HERE,
++        base::BindOnce([](base::WeakPtr<PawlDiscovery> self) {
++          if (self && self->observer()) self->observer()->DiscoveryStarted(self.get(),true,{&self->authenticator_});
++        },weak_factory_.GetWeakPtr()));
++  }
++  void Stop() override { weak_factory_.InvalidateWeakPtrs();authenticator_.Cancel(); }
++ private:
++  PawlAuthenticator authenticator_;
++  base::WeakPtrFactory<PawlDiscovery> weak_factory_{this};
++};
++}  // namespace
++bool IsVaultPasskeyAvailable(content::RenderFrameHost* frame) {
++  auto current = VaultPasskeyContext(frame);
++  return current && current.Run();
++}
++std::unique_ptr<device::FidoDiscoveryBase> CreateVaultPasskeyDiscovery(
++    content::RenderFrameHost* frame,const url::Origin& origin,const std::string& rp) {
++  auto current = VaultPasskeyContext(frame);
++  if (!frame || !frame->IsActive() || origin.opaque() ||
++      frame->GetLastCommittedOrigin() != origin ||
++      !current || !current.Run()) return nullptr;
++  return std::make_unique<PawlDiscovery>(frame,origin,rp,std::move(current));
++}
++}  // namespace barc
+--- /dev/null
++++ b/chrome/browser/webauthn/barc_vault_authenticator.h
+@@ -0,0 +1,32 @@
++#ifndef CHROME_BROWSER_WEBAUTHN_BARC_VAULT_AUTHENTICATOR_H_
++#define CHROME_BROWSER_WEBAUTHN_BARC_VAULT_AUTHENTICATOR_H_
++
++#include <memory>
++#include <optional>
++#include <string>
++
++#include "base/functional/callback.h"
++#include "base/values.h"
++
++namespace content { class RenderFrameHost; class WebContents; }
++namespace device { class FidoDiscoveryBase; }
++namespace url { class Origin; }
++namespace barc {
++inline constexpr char kPawlAuthenticatorId[] = "NookPawlVault";
++// Only the validated Chrome request delegate constructs this discovery. Stock
++// discoveries remain unchanged. No conditional/resident metadata is fabricated.
++std::unique_ptr<device::FidoDiscoveryBase> CreateVaultPasskeyDiscovery(
++    content::RenderFrameHost* frame, const url::Origin& origin,
++    const std::string& relying_party);
++// Read-only exact-frame readiness; never creates a service or retargets a context.
++bool IsVaultPasskeyAvailable(content::RenderFrameHost* frame);
++// Implemented by the existing exact-page observation, not a ceremony registry.
++base::RepeatingCallback<bool()> VaultPasskeyContext(content::RenderFrameHost* frame);
++// Only register(0) and explicit modal assertion(1). reply runs on UI, asynchronously,
++// at most once; nullopt means refusal. The returned closure cancels exact work.
++base::OnceClosure StartVaultPasskeyRequest(
++    content::RenderFrameHost* frame, const url::Origin& origin,
++    int operation, base::DictValue arguments,
++    base::OnceCallback<void(std::optional<std::string>)> reply);
++}  // namespace barc
++#endif
+--- a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
++++ b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
+@@ -3,6 +3,9 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/webauthn/barc_vault_authenticator.h"
++#endif
+ 
+ #include <algorithm>
+ #include <array>
+@@ -532,6 +535,9 @@
+     std::optional<std::string_view> user_name,
+     bool browser_provided_passkeys_available,
+     device::FidoDiscoveryFactory* discovery_factory) {
++#if BUILDFLAG(IS_MAC)
++  pawl_origin_.reset(); pawl_rp_.clear();
++#endif
+   DCHECK(request_type == device::FidoRequestType::kGetAssertion ||
+          resident_key_requirement.has_value());
+ 
+@@ -548,6 +554,11 @@
+     return;
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (request_source == RequestSource::kWebAuthentication &&
++      dialog_controller_->ui_presentation() == UIPresentation::kModal &&
++      !IsVirtualEnvironmentEnabled()) { pawl_origin_ = origin; pawl_rp_ = rp_id; }
++#endif
+   // Configure the enclave authenticator.
+   if (browser_provided_passkeys_available && !IsVirtualEnvironmentEnabled() &&
+       request_source == RequestSource::kWebAuthentication) {
+@@ -767,6 +778,18 @@
+   barrier_->SetTransportAvailabilityInfo(std::move(data));
+ }
+ 
++std::vector<std::unique_ptr<device::FidoDiscoveryBase>>
++ChromeAuthenticatorRequestDelegate::CreatePlatformDiscoveries() {
++  auto discoveries = content::AuthenticatorRequestClientDelegate::CreatePlatformDiscoveries();
++#if BUILDFLAG(IS_MAC)
++  if (pawl_origin_) {
++    if (auto discovery = barc::CreateVaultPasskeyDiscovery(GetRenderFrameHost(),*pawl_origin_,pawl_rp_))
++      discoveries.push_back(std::move(discovery));
++  }
++#endif
++  return discoveries;
++}
++
+ bool ChromeAuthenticatorRequestDelegate::EmbedderControlsAuthenticatorDispatch(
+     const device::FidoAuthenticator& authenticator) {
+   // Decide whether the //device/fido code should dispatch the current
+--- a/chrome/browser/webauthn/chrome_authenticator_request_delegate.h
++++ b/chrome/browser/webauthn/chrome_authenticator_request_delegate.h
+@@ -205,6 +205,7 @@
+       std::optional<std::string_view> user_name,
+       bool is_enclave_authenticator_available,
+       device::FidoDiscoveryFactory* discovery_factory) override;
++  std::vector<std::unique_ptr<device::FidoDiscoveryBase>> CreatePlatformDiscoveries() override;
+   void SetHints(const Hints& hints) override;
+   void SelectAccount(
+       std::vector<device::AuthenticatorGetAssertionResponse> responses,
+@@ -362,6 +363,10 @@
+       const device::FidoRequestHandlerBase::TransportAvailabilityInfo& tai);
+ 
+   const content::GlobalRenderFrameHostId render_frame_host_id_;
++#if BUILDFLAG(IS_MAC)
++  std::optional<url::Origin> pawl_origin_;
++  std::string pawl_rp_;
++#endif
+   const scoped_refptr<AuthenticatorRequestDialogModel> dialog_model_;
+   std::unique_ptr<AuthenticatorRequestDialogController> dialog_controller_;
+   base::OnceClosure cancel_callback_;
+--- a/chrome/browser/webauthn/chrome_web_authentication_delegate.cc
++++ b/chrome/browser/webauthn/chrome_web_authentication_delegate.cc
+@@ -3,6 +3,10 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/webauthn/chrome_web_authentication_delegate.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/webauthn/barc_vault_authenticator.h"
++#endif
++#include "content/public/browser/weak_document_ptr.h"
+ 
+ #include <algorithm>
+ #include <cstdint>
+@@ -266,6 +270,7 @@
+               [](base::WeakPtr<ChromeWebAuthenticationDelegate>
+                      web_authentication_delegate,
+                  base::WeakPtr<content::BrowserContext> browser_context,
++                 [[maybe_unused]] content::WeakDocumentPtr document,
+                  const bool is_google,
+                  base::OnceCallback<void(std::optional<bool>)> callback,
+                  std::optional<bool> testing_api_override) {
+@@ -289,6 +294,16 @@
+                   return;
+                 }
+ 
++#if BUILDFLAG(IS_MAC)
++                // The testing override and Guest rejection above retain
++                // precedence. A recreated RFH document cannot borrow readiness.
++                auto* frame = document.AsRenderFrameHostIfValid();
++                if (frame && frame->GetBrowserContext() == browser_context.get() &&
++                    barc::IsVaultPasskeyAvailable(frame)) {
++                  std::move(callback).Run(true);
++                  return;
++                }
++#endif
+                 // The enclave won't allow credentials for an account to be
+                 // stored in GPM _in_ that account. So we don't want to tell
+                 // accounts.google.com that there is a platform authenticator
+@@ -316,7 +331,8 @@
+                         std::move(callback)));
+               },
+               weak_ptr_factory_.GetWeakPtr(),
+-              render_frame_host->GetBrowserContext()->GetWeakPtr(), is_google,
++              render_frame_host->GetBrowserContext()->GetWeakPtr(),
++              render_frame_host->GetWeakDocumentPtr(), is_google,
+               std::move(callback)));
+ }
+ 
+--- a/device/fido/fido_authenticator.cc
++++ b/device/fido/fido_authenticator.cc
+@@ -184,6 +184,10 @@
+                           std::nullopt);
+ }
+ 
++bool FidoAuthenticator::ShouldCheckPlatformCredentialStatus() const {
++  return true;
++}
++
+ AuthenticatorType FidoAuthenticator::GetType() const {
+   return AuthenticatorType::kOther;
+ }
+--- a/device/fido/fido_authenticator.h
++++ b/device/fido/fido_authenticator.h
+@@ -179,6 +179,11 @@
+   virtual void GetAssertion(CtapGetAssertionRequest request,
+                             CtapGetAssertionOptions options,
+                             GetAssertionCallback callback) = 0;
++
++  // Some explicit platform providers cannot supply resident metadata. Skipping
++  // their probe must not overwrite another platform's status or hold readiness.
++  // Default true preserves all existing authenticator behavior.
++  virtual bool ShouldCheckPlatformCredentialStatus() const;
+ 
+   // GetPlatformCredentialInfoForRequest returns whether there are platform
+   // credentials applicable for |request|, and if supported, a list of the
+--- a/device/fido/fido_request_handler_base.cc
++++ b/device/fido/fido_request_handler_base.cc
+@@ -507,6 +507,9 @@
+           // implement GetPlatformCredentialStatus.
+           continue;
+         }
++        if (!platform_authenticator->ShouldCheckPlatformCredentialStatus()) {
++          continue;
++        }
+         transport_availability_info_.has_icloud_keychain |=
+             platform_authenticator->GetType() ==
+             AuthenticatorType::kICloudKeychain;

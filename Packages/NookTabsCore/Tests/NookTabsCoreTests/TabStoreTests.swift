@@ -4,6 +4,23 @@ import Testing
 @testable import NookTabsCore
 
 struct TabStoreTests {
+    @Test func pendingSearchIsOptionalDeviceLocalAndSurvivesPruneAndClosedSnapshot() throws {
+        let legacy = Data(#"{"url":"https://old.invalid/","title":"Old"}"#.utf8)
+        #expect(try JSONDecoder().decode(OpenPage.self, from: legacy).pendingSearch == nil)
+        var f = Fixture(); let id = f.tab("cold", in: .tabs(spaceID: f.spaceA))
+        let plain = f.tab("ordinary", in: .tabs(spaceID: f.spaceA))
+        let pending = OpenPage(url: URL(string: "about:blank")!, title: "query", pendingSearch: "query")
+        var device = DeviceState(); device.openPages[id] = pending
+        device.openPages[plain] = OpenPage(url: URL(string: "about:blank")!, title: "plain")
+        device.prune(against: f.tree)
+        #expect(device.openPages[id] == pending && device.openPages[plain] == nil)
+        let decoded = try JSONDecoder().decode(DeviceState.self, from: JSONEncoder().encode(device))
+        #expect(decoded.openPages[id]?.pendingSearch == "query")
+        let closed = ClosedEntry(items: [try #require(f.tree.item(id))], section: .tabs(spaceID: f.spaceA),
+            closedAt: fixedNow, pendingPages: [id: pending])
+        #expect(try JSONDecoder().decode(ClosedEntry.self, from: JSONEncoder().encode(closed)).pendingPages?[id] == pending)
+    }
+
     func tempDirectory() -> URL {
         let dir = FileManager.default.temporaryDirectory.appendingPathComponent("NookTabsCoreTests-\(UUID().uuidString)", isDirectory: true)
         try! FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)

@@ -45,8 +45,12 @@ public func normalizeURL(_ input: String, queryTemplate: String) -> String {
   if trimmed.hasPrefix("http://") || trimmed.hasPrefix("https://") ||
     trimmed.hasPrefix("file://") || trimmed.hasPrefix("chrome-extension://") ||
     trimmed.hasPrefix("moz-extension://") || trimmed.hasPrefix("webkit-extension://") ||
-    trimmed.hasPrefix("safari-web-extension://")
+    trimmed.hasPrefix("safari-web-extension://") || trimmed.hasPrefix("chrome://")
   {
+    return trimmed
+  }
+
+  if trimmed.hasPrefix("about:"), !trimmed.contains(where: \.isWhitespace) {
     return trimmed
   }
 
@@ -76,4 +80,10 @@ public func isLikelyURL(_ text: String) -> Bool {
 
   // The same test normalizeURL navigates on, so the row shown is what Return does.
   return looksLikeHost(trimmed)
+}
+
+/// Shares normalizeURL's existing classification without generating a real
+/// provider URL. A native query is expanded only by its exact profile service.
+public func isSearchInput(_ input: String) -> Bool {
+    normalizeURL(input, queryTemplate: "nook-search:%@").hasPrefix("nook-search:")
 }

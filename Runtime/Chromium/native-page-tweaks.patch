@@ -1,0 +1,749 @@
+--- a/chrome/app/framework.exports
++++ b/chrome/app/framework.exports
+@@ -106,3 +106,4 @@
+ _barc_tab_stop
+ _barc_tab_start_boost_picker
+ _barc_tab_cancel_boost_picker
++_barc_page_tweaks_publish
+--- a/chrome/app/framework.order
++++ b/chrome/app/framework.order
+@@ -120,4 +120,5 @@
+ _barc_tab_search
+ _barc_tab_start_boost_picker
+ _barc_tab_cancel_boost_picker
++_barc_page_tweaks_publish
+ _ChromeMain
+--- a/chrome/browser/actor/execution_engine_unittest.cc
++++ b/chrome/browser/actor/execution_engine_unittest.cc
+@@ -159,6 +159,7 @@
+   }
+   void NookStartBoostPicker(const blink::DocumentToken&, uint64_t, uint64_t,
+       NookStartBoostPickerCallback callback) override { std::move(callback).Run(""); }
++  void ClearNookPageTweaks(const blink::DocumentToken&) override {}
+   void NookCancelBoostPicker(const blink::DocumentToken&, uint64_t, uint64_t) override {}
+   void NookCancelScript(const blink::DocumentToken&, uint64_t, uint64_t) override {}
+   void NookTranslate(const blink::DocumentToken&, uint64_t, int32_t,
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -6114,6 +6114,13 @@
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+ 
+   std::vector<std::unique_ptr<blink::URLLoaderThrottle>> result;
++#if BUILDFLAG(IS_MAC)
++  if (navigation_id && request.is_outermost_main_frame) {
++    if (auto tweak = NativeContentBlocker::CreatePageTweaksThrottle())
++      result.push_back(std::move(tweak));
++  }
++#endif
++
+ 
+   DCHECK(browser_context);
+   Profile* profile = Profile::FromBrowserContext(browser_context);
+--- a/chrome/browser/content_blocking/BUILD.gn
++++ b/chrome/browser/content_blocking/BUILD.gn
+@@ -2,7 +2,7 @@
+ # the handoff. Other architectures remain unqualified, not silently substituted.
+ assert(is_mac)
+ source_set("native_content_blocker") {
+-  sources = [ "native_content_blocker.cc", "native_content_blocker.h" ]
++  sources = [ "native_content_blocker.cc", "native_content_blocker.h", "barc_page_tweaks.h" ]
+   public_deps = [ "//base", "//components/keyed_service/core", "//url" ]
+   deps = [
+     ":nook_adblock",
+--- a/chrome/browser/content_blocking/native_content_blocker.cc
++++ b/chrome/browser/content_blocking/native_content_blocker.cc
+@@ -2,6 +2,7 @@
+ // Use of this source code is governed by a BSD-style license that can be
+ // found in the LICENSE file.
+ #include "chrome/browser/content_blocking/native_content_blocker.h"
++#include "chrome/browser/content_blocking/barc_page_tweaks.h"
+ 
+ #include <algorithm>
+ #include <array>
+@@ -10,6 +11,7 @@
+ #include <utility>
+ 
+ #include "base/check.h"
++#include "base/compiler_specific.h"
+ #include "crypto/hash.h"
+ #include "chrome/common/chrome_render_frame.mojom.h"
+ #include "components/back_forward_cache/back_forward_cache_disable.h"
+@@ -41,6 +43,9 @@
+ #include "content/public/browser/storage_partition.h"
+ #include "content/public/browser/web_contents.h"
+ #include "net/base/net_errors.h"
++#include "base/strings/string_split.h"
++#include "third_party/blink/public/common/loader/url_loader_throttle.h"
++#include "services/network/public/cpp/resource_request.h"
+ 
+ namespace {
+ using Blocker = NativeContentBlocker;
+@@ -68,9 +73,27 @@
+   Blocker::Result::Status status = Blocker::Result::kSuperseded;
+   std::array<uint8_t, crypto::hash::kSha256Size> fingerprint{};
+ };
++struct BoostScript {
++  std::string host;
++  bool subdomains;
++  std::string source;
++  bool operator==(const BoostScript&) const = default;
++};
++struct PageTweaksSettings {
++  std::string youtube_css;
++  bool youtube_frames = false;
++  bool youtube_no_hover = false;
++  bool facebook_reels = false;
++  bool facebook_suggested = false;
++  bool reddit_hot = false;
++  std::vector<BoostScript> scripts;
++  bool operator==(const PageTweaksSettings&) const = default;
++};
+ // Passive settings storage of the existing keyed-service factory. Initial
+ // unresolved registration must not construct Profile services or task runners.
+ struct FactoryPolicy {
++  PageTweaksSettings page_tweaks;
++  base::RepeatingClosureList page_tweaks_changed;
+   bool registered = false;
+   bool stopped = false;
+   Blocker::Policy requested = Blocker::kUnresolved;
+@@ -93,6 +116,64 @@
+ FactoryPolicy& PolicyOwner() {
+   static base::NoDestructor<FactoryPolicy> policy;
+   return *policy;
++}
++chrome::mojom::NookPageTweaksPtr PageTweaksForDocument(
++    content::RenderFrameHost& frame, const GURL& url) {
++  if (!url.SchemeIsHTTPOrHTTPS() || frame.GetParentOrOuterDocument()) return nullptr;
++  auto out = chrome::mojom::NookPageTweaks::New();
++  const auto& config = PolicyOwner().page_tweaks;
++  if (url.host() == "youtube.com" || url.host() == "www.youtube.com") {
++    out->youtube_css = config.youtube_css;
++    out->youtube_frames = config.youtube_frames;
++    out->youtube_no_hover = config.youtube_no_hover;
++  }
++  if (url.DomainIs("facebook.com")) {
++    out->facebook_reels = config.facebook_reels;
++    out->facebook_suggested = config.facebook_suggested;
++  }
++  out->reddit_hot = config.reddit_hot && (url.host() == "reddit.com" || url.host() == "www.reddit.com");
++  for (const auto& script : config.scripts)
++    if (url.host() == script.host || (script.subdomains && url.DomainIs(script.host)))
++      out->boost_scripts.push_back(script.source);
++  return out;
++}
++std::optional<PageTweaksSettings> ParsePageTweaks(const uint8_t* json, size_t length) {
++  if (!json || !length || length > 16 * 1024 * 1024) return std::nullopt;
++  const auto input = UNSAFE_BUFFERS(std::string_view(reinterpret_cast<const char*>(json), length));
++  auto value = base::JSONReader::Read(input, base::JSON_PARSE_RFC);
++  if (!value || !value->is_dict()) return std::nullopt;
++  const auto& root = value->GetDict();
++  if (root.size() != 6 || root.FindInt("version") != 1) return std::nullopt;
++  auto* yt = root.FindDict("youtube");
++  auto* scripts = root.FindList("scripts");
++  if (!yt || yt->size() != 3 || !scripts || scripts->size() > 200 ||
++      !yt->FindString("css") || !yt->FindBool("frameThumbnails") || !yt->FindBool("noHoverPreview") ||
++      !root.FindBool("facebookReels") || !root.FindBool("facebookSuggested") || !root.FindBool("redditHot"))
++    return std::nullopt;
++  PageTweaksSettings out;
++  out.youtube_css = *yt->FindString("css");
++  if (out.youtube_css.size() > 65536) return std::nullopt;
++  out.youtube_frames = *yt->FindBool("frameThumbnails");
++  out.youtube_no_hover = *yt->FindBool("noHoverPreview");
++  out.facebook_reels = *root.FindBool("facebookReels");
++  out.facebook_suggested = *root.FindBool("facebookSuggested");
++  out.reddit_hot = *root.FindBool("redditHot");
++  for (const auto& item : *scripts) {
++    if (!item.is_dict() || item.GetDict().size() != 3) return std::nullopt;
++    const auto& dict = item.GetDict();
++    const auto* host = dict.FindString("host");
++    const auto* source = dict.FindString("source");
++    auto subdomains = dict.FindBool("includeSubdomains");
++    if (!host || host->empty() || host->size() > 1024 || !source || source->size() > 65536 || !subdomains)
++      return std::nullopt;
++    const GURL site("https://" + *host);
++    if (!site.is_valid() || site.host().find('.') == std::string::npos ||
++        site.host().front() == '.' || site.host().back() == '.' || site.path() != "/" ||
++        site.has_username() || site.has_password() || site.has_port() || site.has_query() || site.has_ref())
++      return std::nullopt;
++    out.scripts.push_back({std::string(site.host()), *subdomains, *source});
++  }
++  return out;
+ }
+ Validation CopyAndValidate(std::shared_ptr<Publication> publication) {
+   scoped_refptr<const base::RefCountedMemory> owned;
+@@ -346,6 +427,50 @@
+   policy.changed.Notify();
+   return true;
+ }
++extern "C" int barc_page_tweaks_publish(const uint8_t* json, size_t length) {
++  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
++      !PolicyOwner().registered || PolicyOwner().stopped) return 0;
++  auto parsed = ParsePageTweaks(json, length);
++  const bool revoked = !json && !length;
++  PageTweaksSettings wanted = parsed ? std::move(*parsed) : PageTweaksSettings{};
++  auto& policy = PolicyOwner();
++  if (policy.page_tweaks != wanted) {
++    policy.page_tweaks = std::move(wanted);
++    policy.page_tweaks_changed.Notify();
++  }
++  return parsed.has_value() || revoked;
++}
++namespace {
++class RedditHotThrottle final : public blink::URLLoaderThrottle {
++ public:
++  void WillStartRequest(network::ResourceRequest* request, bool*) override {
++    const auto& policy = PolicyOwner();
++    const auto& url = request->url;
++    if (!policy.registered || policy.stopped || !policy.page_tweaks.reddit_hot ||
++        !url.SchemeIsHTTPOrHTTPS() || request->request_body ||
++        (request->method != "GET" && request->method != "HEAD") ||
++        (url.host() != "reddit.com" && url.host() != "www.reddit.com")) return;
++    const auto parts = base::SplitStringPiece(url.path(), "/",
++        base::KEEP_WHITESPACE, base::SPLIT_WANT_NONEMPTY);
++    if (!(parts.empty() || (parts.size() == 2 && parts[0] == "r") ||
++          (parts.size() == 4 && parts[0] == "user" && parts[2] == "m"))) return;
++    std::string path = "/";
++    for (const auto part : parts) { path.append(part); path += "/"; }
++    path += "hot/";
++    GURL::Replacements change;
++    change.SetPathStr(path);
++    // ThrottlingURLLoader supplies one internal 307, preserving history,
++    // referrer/security processing and query/fragment; no extra page load.
++    request->url = url.ReplaceComponents(change);
++  }
++};
++}
++std::unique_ptr<blink::URLLoaderThrottle> NativeContentBlocker::CreatePageTweaksThrottle() {
++  const auto& policy = PolicyOwner();
++  if (!policy.registered || policy.stopped || !policy.page_tweaks.reddit_hot) return nullptr;
++  return std::make_unique<RedditHotThrottle>();
++}
++
+ bool NativeContentBlocker::IsRegistered() { return PolicyOwner().registered; }
+ bool NativeContentBlocker::RequiresInterception() {
+   const auto& policy = PolicyOwner();
+@@ -401,6 +526,8 @@
+   policy.latest->fetch_add(1);
+   auto publications = std::move(policy.publications);
+   policy.rules.reset();
++  policy.page_tweaks = {};
++  policy.page_tweaks_changed.Notify();
+   // Queued tasks need not run: cancellation drops their input here. A running
+   // copy holds this lock only through memcpy and borrowed-wrapper destruction.
+   // Validation never holds it and never observes Swift memory or callbacks.
+@@ -428,6 +555,10 @@
+     : profile_(profile), context_id_(NextNativeContextID()),
+       latest_install_(std::make_shared<std::atomic<uint64_t>>(0)) {
+   last_should_proxy_ = ShouldProxy();
++  page_tweaks_subscription_ = PolicyOwner().page_tweaks_changed.Add(base::BindRepeating(
++      [](base::WeakPtr<NativeContentBlocker> self) {
++        if (self) self->cosmetic_policy_changed_.Notify(self->policy_revision_);
++      }, weak_factory_.GetWeakPtr()));
+   policy_subscription_ = PolicyOwner().changed.Add(base::BindRepeating(
+       &NativeContentBlocker::OnPolicyChanged, weak_factory_.GetWeakPtr()));
+ }
+@@ -755,7 +886,7 @@
+     service_->GetCosmeticResources(frame_, document, *url, std::move(classes),
+         std::move(ids), generic, base::BindOnce(
+             [](base::WeakPtr<CosmeticResourcesHost> self,
+-               blink::DocumentToken document, Reply callback,
++               blink::DocumentToken document, bool generic, Reply callback,
+                chrome::mojom::NookCosmeticResourcesPtr result) {
+               if (self && self->service_ && result) {
+                 auto* frame = content::RenderFrameHost::FromID(self->frame_);
+@@ -766,18 +897,25 @@
+                     self->invalidated_ = false;
+                   self->document_ = document;
+                   self->served_policy_ = self->service_->CosmeticPolicyForDocument(*frame, *url);
++                  if (!generic) {
++                    result->page_tweaks = PageTweaksForDocument(*frame, *url);
++                    self->served_tweaks_ = result->page_tweaks.Clone();
++                  }
+                 }
+               }
+               std::move(callback).Run(std::move(result));
+-            }, alive, document, std::move(callback)));
++            }, alive, document, generic, std::move(callback)));
+   }
+   void Invalidate(uint64_t generation) {
+     auto* frame = content::RenderFrameHost::FromID(frame_);
+     const auto url = frame && document_
+         ? frame->GetCurrentOrPendingCommitDocumentURL(*document_) : std::nullopt;
+-    if (!url || !served_policy_ || !service_ ||
+-        service_->CosmeticPolicyForDocument(*frame, *url) == *served_policy_)
+-      return;
++    if (!url || !served_policy_ || !service_) return;
++    const bool cosmetics_changed =
++        service_->CosmeticPolicyForDocument(*frame, *url) != *served_policy_;
++    const auto current_tweaks = service_->shutdown_ ? nullptr : PageTweaksForDocument(*frame, *url);
++    const bool tweaks_changed = current_tweaks != served_tweaks_;
++    if (!cosmetics_changed && !tweaks_changed) return;
+     // Disable only this exact stale document. This both evicts cached copies
+     // and prevents a live, reload-vetoing document being cached afterward.
+     // Equivalent tab-policy refreshes and unchanged sources leave it eligible.
+@@ -799,7 +937,8 @@
+     if (lifecycle != content::RenderFrameHost::LifecycleState::kInBackForwardCache) {
+       mojo::AssociatedRemote<chrome::mojom::ChromeRenderFrame> remote;
+       frame->GetRemoteAssociatedInterfaces()->GetInterface(&remote);
+-      remote->ClearNookCosmetics(*document_, generation);
++      if (cosmetics_changed) remote->ClearNookCosmetics(*document_, generation);
++      if (tweaks_changed) remote->ClearNookPageTweaks(*document_);
+     }
+     // Eviction may destroy this receiver; do not touch members afterward.
+     if (disable_cache) content::BackForwardCache::DisableForRenderFrameHost(frame,
+@@ -817,6 +956,7 @@
+   const content::GlobalRenderFrameHostId frame_;
+   std::optional<blink::DocumentToken> document_;
+   std::optional<CosmeticPolicy> served_policy_;
++  chrome::mojom::NookPageTweaksPtr served_tweaks_;
+   bool initial_requested_ = false;
+   bool invalidated_ = false;
+   bool generic_in_flight_ = false;
+@@ -965,6 +1105,7 @@
+   if (!alive) return;
+   latest_install_->fetch_add(1);
+   policy_subscription_ = {};
++  page_tweaks_subscription_ = {};
+   weak_factory_.InvalidateWeakPtrs();
+   matcher_.reset();
+   tab_policies_.clear();
+--- a/chrome/browser/content_blocking/native_content_blocker.h
++++ b/chrome/browser/content_blocking/native_content_blocker.h
+@@ -26,6 +26,7 @@
+ #include "url/gurl.h"
+ 
+ class Profile;
++namespace blink { class URLLoaderThrottle; }
+ namespace tabs { class TabInterface; }
+ namespace content { class RenderFrameHost; class WebContents; }
+ 
+@@ -58,6 +59,7 @@
+   // Services, native-owned rule bytes and mutable matchers remain lazy.
+   static void EnsureFactoryBuilt();
+   static bool IsRegistered();
++  static std::unique_ptr<blink::URLLoaderThrottle> CreatePageTweaksThrottle();
+   static void BindCosmeticResources(
+       content::RenderFrameHost* frame,
+       mojo::PendingReceiver<chrome::mojom::NookCosmeticResourcesHost> receiver);
+@@ -136,6 +138,7 @@
+   // No task runner or mutable engine is allocated for disabled-only contexts.
+   std::unique_ptr<base::SequenceBound<Matcher>> matcher_;
+   base::CallbackListSubscription policy_subscription_;
++  base::CallbackListSubscription page_tweaks_subscription_;
+   base::RepeatingCallbackList<void(uint64_t)> cosmetic_policy_changed_;
+   uint64_t policy_revision_ = 0;
+   uint64_t installed_revision_ = 0;
+--- a/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
++++ b/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
+@@ -86,6 +86,7 @@
+        const std::string&, NookEvaluateScriptCallback), (override));
+   MOCK_METHOD(void, NookStartBoostPicker,
+       (const blink::DocumentToken&, uint64_t, uint64_t, NookStartBoostPickerCallback), (override));
++  MOCK_METHOD(void, ClearNookPageTweaks, (const blink::DocumentToken&), (override));
+   MOCK_METHOD(void, NookCancelBoostPicker,
+       (const blink::DocumentToken&, uint64_t, uint64_t), (override));
+   MOCK_METHOD(void, NookCancelScript,
+--- a/chrome/browser/password_manager/password_change/password_change_page_stability_waiter_unittest.cc
++++ b/chrome/browser/password_manager/password_change/password_change_page_stability_waiter_unittest.cc
+@@ -75,6 +75,7 @@
+        const std::string&, NookEvaluateScriptCallback), (override));
+   MOCK_METHOD(void, NookStartBoostPicker,
+       (const blink::DocumentToken&, uint64_t, uint64_t, NookStartBoostPickerCallback), (override));
++  MOCK_METHOD(void, ClearNookPageTweaks, (const blink::DocumentToken&), (override));
+   MOCK_METHOD(void, NookCancelBoostPicker,
+       (const blink::DocumentToken&, uint64_t, uint64_t), (override));
+   MOCK_METHOD(void, NookCancelScript,
+--- a/chrome/common/chrome_isolated_world_ids.h
++++ b/chrome/common/chrome_isolated_world_ids.h
+@@ -32,6 +32,8 @@
+   // Native generic cosmetic DOM observation; never page-world globals.
+   ISOLATED_WORLD_ID_NOOK_COSMETICS,
+   ISOLATED_WORLD_ID_NOOK_BOOST_PICKER,
++  ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS,
++  ISOLATED_WORLD_ID_NOOK_BOOST_SCRIPTS,
+ #endif  // BUILDFLAG(IS_MAC)
+ 
+   // Numbers for isolated worlds for extensions are set in
+--- a/chrome/common/chrome_render_frame.mojom
++++ b/chrome/common/chrome_render_frame.mojom
+@@ -48,7 +48,17 @@
+ // Only native matcher output is transported. No arbitrary script API or Swift
+ // request is involved. The renderer waits; browser UI dispatches asynchronously
+ // to the exact Profile's serialized matcher and revalidates before replying.
++struct NookPageTweaks {
++  string youtube_css;
++  bool youtube_frames;
++  bool youtube_no_hover;
++  bool facebook_reels;
++  bool facebook_suggested;
++  bool reddit_hot;
++  array<string> boost_scripts;
++};
+ struct NookCosmeticResources {
++  NookPageTweaks? page_tweaks;
+   bool apply;
+   uint64 revision;
+   uint64 policy_generation;
+@@ -71,6 +81,8 @@
+   // Removes native CSS/observers only. Already-executed page-world scriptlets
+   // require the existing explicit blocker reload to take effect reversibly.
+   ClearNookCosmetics(blink.mojom.DocumentToken document, uint64 policy_generation);
++  // Retires only pending fixed tweaks/Boost continuations for this document.
++  ClearNookPageTweaks(blink.mojom.DocumentToken document);
+   // Updates the window features of the main frame's render view.
+   SetWindowFeatures(blink.mojom.WindowFeatures window_features);
+ 
+--- a/chrome/common/common_resources.grd
++++ b/chrome/common/common_resources.grd
+@@ -13,6 +13,9 @@
+       <include name="IDR_CHROME_APP_API_FEATURES" file="apps\platform_apps\api\_api_features.json" type="BINDATA" compress="gzip"/>
+       <include name="IDR_CHROME_CONTROLLED_FRAME_API_FEATURES" file="controlled_frame\api\_api_features.json" type="BINDATA" compress="gzip"/>
+       <if expr="is_macosx">
++        <include name="IDR_NOOK_YOUTUBE_TWEAKS" file="resources/nook_tweaks/youtube-tweaks.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_FACEBOOK_TWEAKS" file="resources/nook_tweaks/facebook-feed-prune.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_REDDIT_TWEAKS" file="resources/nook_tweaks/reddit-tweaks.js" type="BINDATA" compress="gzip" />
+         <include name="IDR_NOOK_COSMETIC_SCRIPTLETS" file="resources/nook_cosmetics/scriptlets.json" type="BINDATA" compress="gzip" />
+         <include name="IDR_NOOK_BOOST_PICKER" file="resources/nook_boost_picker.js" type="BINDATA" compress="gzip" />
+         <include name="IDR_NOOK_COSMETIC_OBSERVER" file="resources/nook_cosmetics/observer.js" type="BINDATA" compress="gzip" />
+--- a/chrome/renderer/chrome_render_frame_observer.cc
++++ b/chrome/renderer/chrome_render_frame_observer.cc
+@@ -28,6 +28,8 @@
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/no_destructor.h"
++#include "base/json/json_writer.h"
++#include "base/containers/span.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+@@ -325,6 +327,10 @@
+ 
+ void ChromeRenderFrameObserver::DidFinishLoad() {
+   WebLocalFrame* frame = render_frame()->GetWebFrame();
++  const auto frame_token = frame->GetLocalFrameToken();
++  RunNookBoostScriptsAfterLoad();
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame) return;
+   // Don't do anything for subframes.
+   if (frame->Parent() || frame->IsInFencedFrameTree())
+     return;
+@@ -431,12 +437,14 @@
+ 
+ void ChromeRenderFrameObserver::OnDestruct() {
+   // FrameDetached already closed/cleared the Blink frame before deleting us.
++  ResetNookDocumentResources();
+   ResetNookBoostPicker(false);
+   ResetNookScript();
+   delete this;
+ }
+ 
+ void ChromeRenderFrameObserver::WillDetach(blink::DetachReason detach_reason) {
++  ResetNookDocumentResources();
+   ResetNookBoostPicker();
+   ResetNookScript();
+ #if BUILDFLAG(IS_ANDROID)
+@@ -1672,15 +1680,212 @@
+ }
+ 
+ 
++
++void ChromeRenderFrameObserver::ResetNookDocumentResources() {
++  // One document receiver also carries independent tweak invalidations. Never
++  // drop it merely because the ad blocker changed/reset its cosmetic state.
++  nook_cosmetic_weak_.InvalidateWeakPtrs();
++#if BUILDFLAG(IS_MAC)
++  nook_document_resources_.reset();
++#endif
++  ResetNookPageTweaks();
++}
++
++void ChromeRenderFrameObserver::ResetNookPageTweaks() {
++  // Pure native retirement: also safe after RenderFrameImpl cleared its frame.
++  nook_page_tweaks_weak_.InvalidateWeakPtrs();
++#if BUILDFLAG(IS_MAC)
++  nook_page_tweaks_.reset();
++  nook_page_tweaks_document_.reset();
++  nook_boost_script_next_.reset();
++#endif
++}
++
++void ChromeRenderFrameObserver::ClearNookPageTweaks(const blink::DocumentToken& document) {
++#if BUILDFLAG(IS_MAC)
++  if (nook_page_tweaks_document_ == document) ResetNookPageTweaks();
++#endif
++}
++
++bool ChromeRenderFrameObserver::RunNookPageTweaksAtDocumentStart() {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_) return true;
++  // Consume fixed document-start fields once; keep only after-load scripts.
++  const auto config = nook_page_tweaks_.Clone();
++  nook_page_tweaks_->youtube_css.clear();
++  nook_page_tweaks_->youtube_frames = nook_page_tweaks_->youtube_no_hover = false;
++  nook_page_tweaks_->facebook_reels = nook_page_tweaks_->facebook_suggested = false;
++  nook_page_tweaks_->reddit_hot = false;
++  if (config->youtube_css.empty() && !config->youtube_frames && !config->youtube_no_hover &&
++      !config->facebook_reels && !config->facebook_suggested && !config->reddit_hot) return true;
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || frame->GetDocument().Token() != *nook_page_tweaks_document_) return true;
++  const auto document = *nook_page_tweaks_document_;
++  const auto frame_token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  const auto& settings = frame->GetContentSettings();
++  if (!render_frame()->IsMainFrame() || !render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (settings && !settings->allow_script)) return true;
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return frame != nullptr;
++  if (allowed.IsEmpty() || !allowed->IsTrue()) return true;
++  auto resource = [](int id) { return ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(id); };
++  if (config->facebook_reels || config->facebook_suggested) {
++    const std::string source = "(()=>{const f=window.__nookFBFilter=window.__nookFBFilter||{};f.reels=" +
++        std::string(config->facebook_reels ? "true" : "false") + ";f.suggested=" +
++        std::string(config->facebook_suggested ? "true" : "false") + ";\n" +
++        resource(IDR_NOOK_FACEBOOK_TWEAKS) + "\n})()";
++    // Facebook's JSON.parse hook must precede the first page inline script.
++    frame->ExecuteScript(blink::WebScriptSource(blink::WebString::FromUtf8(source)));
++    if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++    frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++    if (!frame || frame->GetDocument().Token() != document) return frame != nullptr;
++  }
++  std::string source;
++  if (!config->youtube_css.empty() || config->youtube_frames || config->youtube_no_hover) {
++    base::DictValue options;
++    options.Set("css", config->youtube_css);
++    options.Set("frameThumbnails", config->youtube_frames);
++    options.Set("noHoverPreview", config->youtube_no_hover);
++    source += "(" + resource(IDR_NOOK_YOUTUBE_TWEAKS) + ")(" +
++        base::WriteJson(options).value_or("{}") + ");\n";
++  }
++  if (config->reddit_hot) source += resource(IDR_NOOK_REDDIT_TWEAKS);
++  if (!source.empty()) {
++    auto context = frame->MainWorldScriptContext();
++    if (!context.IsEmpty()) {
++      v8::Context::Scope entered(context);
++      v8::Local<v8::Function> gate;
++      if (gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++             std::string source) {
++            if (!self || self->nook_page_tweaks_document_ != document || !self->nook_page_tweaks_) return;
++            auto* frame = self->render_frame()->GetWebFrame();
++            if (!frame || frame->GetDocument().Token() != document ||
++                !self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++                (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) return;
++            const auto frame_token = frame->GetLocalFrameToken();
++            auto alive = self->nook_page_tweaks_weak_.GetWeakPtr();
++            auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++            v8::HandleScope handles(isolate);
++            auto allowed = frame->ExecuteScriptAndReturnValue(
++                blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++            if (!alive || allowed.IsEmpty() || !allowed->IsTrue()) return;
++            frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++            if (!frame || frame->GetDocument().Token() != document) return;
++            // This gate just resumed through Blink. Submit synchronously: the
++            // isolated API alone otherwise bypasses the page's script policy.
++            const blink::WebScriptSource script(blink::WebString::FromUtf8(source));
++            frame->RequestExecuteScript(ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS,
++                base::span_from_ref(script), blink::mojom::UserActivationOption::kDoNotActivate,
++                blink::mojom::EvaluationTiming::kSynchronous,
++                blink::mojom::LoadEventBlockingOption::kDoNotBlock, {}, blink::BackForwardCacheAware::kAllow,
++                blink::mojom::WantResultOption::kNoResult, blink::mojom::PromiseResultOption::kDoNotWait, {});
++          }, alive, document, source))->GetFunction(context).ToLocal(&gate))
++        frame->RequestExecuteV8Function(context, gate, v8::Undefined(isolate), 0, nullptr, {});
++    }
++  }
++  return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++#else
++  return true;
++#endif
++}
++
++void ChromeRenderFrameObserver::RunNookBoostScriptsAfterLoad() {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_ || nook_boost_script_next_.has_value() ||
++      nook_page_tweaks_->boost_scripts.empty()) return;
++  nook_boost_script_next_ = 0;
++  RunNookBoostScript(0);
++#endif
++}
++
++void ChromeRenderFrameObserver::RunNookBoostScript(size_t index) {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_ ||
++      nook_boost_script_next_ != index || index >= nook_page_tweaks_->boost_scripts.size()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_page_tweaks_document_;
++  if (!frame || frame->GetDocument().Token() != document || !render_frame()->IsMainFrame()) return;
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto context = frame->MainWorldScriptContext();
++  if (context.IsEmpty()) return;
++  v8::Context::Scope entered(context);
++  v8::Local<v8::Function> gate;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document, size_t index) {
++        if (self && self->nook_page_tweaks_document_ == document) self->ExecuteNookBoostScript(index);
++      }, nook_page_tweaks_weak_.GetWeakPtr(), document, index))->GetFunction(context).ToLocal(&gate)) return;
++  // The scoped main-world gate is never exported or passed to user code.
++  frame->RequestExecuteV8Function(context, gate, v8::Undefined(isolate), 0, nullptr, {});
++#endif
++}
++
++void ChromeRenderFrameObserver::ExecuteNookBoostScript(size_t index) {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_ ||
++      nook_boost_script_next_ != index || index >= nook_page_tweaks_->boost_scripts.size()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_page_tweaks_document_;
++  if (!frame || frame->GetDocument().Token() != document || !render_frame()->IsMainFrame()) return;
++  const auto& settings = frame->GetContentSettings();
++  if (!render_frame()->GetBlinkPreferences().javascript_enabled || (settings && !settings->allow_script)) return;
++  const auto frame_token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive || allowed.IsEmpty() || !allowed->IsTrue()) return;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return;
++  // One async body at a time, as WK callAsyncJavaScript. No native binding is
++  // installed in this separate user-code world. Blink owns the awaited reply.
++  const std::string source = "(async()=>{try{\n" + nook_page_tweaks_->boost_scripts[index] +
++      "\n}catch(e){console.error('Nook Boost script:',e)}})()";
++  const blink::WebScriptSource script(blink::WebString::FromUtf8(source));
++  nook_boost_script_next_ = index + 1;
++  frame->RequestExecuteScript(ISOLATED_WORLD_ID_NOOK_BOOST_SCRIPTS,
++      base::span_from_ref(script), blink::mojom::UserActivationOption::kDoNotActivate,
++      blink::mojom::EvaluationTiming::kSynchronous,
++      blink::mojom::LoadEventBlockingOption::kDoNotBlock,
++      base::BindOnce([](base::WeakPtr<ChromeRenderFrameObserver> self,
++          blink::DocumentToken document, size_t next, std::optional<base::Value>, base::TimeTicks) {
++        if (!self || self->nook_page_tweaks_document_ != document) return;
++        self->RunNookBoostScript(next);
++      }, nook_page_tweaks_weak_.GetWeakPtr(), document, index + 1),
++      blink::BackForwardCacheAware::kAllow, blink::mojom::WantResultOption::kNoResult,
++      blink::mojom::PromiseResultOption::kAwait, {});
++#endif
++}
++
++
+ void ChromeRenderFrameObserver::PrepareNookCosmetics() {
+ #if BUILDFLAG(IS_MAC)
++  // ReadyToCommit runs before DidCreateNewDocument. Retire old native resources
++  // here, before obtaining the incoming document's one resource receiver.
++  ResetNookDocumentResources();
++  auto current = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame) return;
++  const auto frame_token = frame->GetLocalFrameToken();
++  const auto document = frame->GetDocument().Token();
+   ResetNookCosmetics();
+-  auto* frame = render_frame()->GetWebFrame();
++  // Cleanup may execute JavaScript and reenter preparation, even with a reused
++  // document token. Both the existing weak epoch and exact frame must survive.
++  if (!current) return;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return;
+   const GURL url(frame->GetDocument().Url());
+   if (!url.SchemeIsHTTPOrHTTPS()) return;
+   // Blink has installed the incoming Document before this observer callback.
+   // Browser authority checks its pending commit token, never only this URL.
+-  const auto document = frame->GetDocument().Token();
+   auto alive = nook_cosmetic_weak_.GetWeakPtr();
+   mojo::Remote<chrome::mojom::NookCosmeticResourcesHost> host;
+   render_frame()->GetBrowserInterfaceBroker().GetInterface(
+@@ -1688,8 +1893,11 @@
+   chrome::mojom::NookCosmeticResourcesPtr resources;
+   if (!host->GetResources(document, &resources) || !alive || !resources)
+     return;
+-  if (frame->GetDocument().Token() != document) return;
+-  nook_cosmetic_host_ = std::move(host);
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return;
++  nook_page_tweaks_ = std::move(resources->page_tweaks);
++  nook_page_tweaks_document_ = document;
++  nook_document_resources_ = std::move(host);
+   nook_cosmetics_ = std::move(resources);
+   nook_cosmetic_document_ = document;
+ #endif
+@@ -1706,7 +1914,6 @@
+     nook_cosmetic_selectors_.clear();
+     nook_cosmetic_generic_css_.clear();
+     nook_cosmetic_generic_style_ = blink::WebString();
+-    nook_cosmetic_host_.reset();
+     nook_cosmetics_.reset();
+     nook_cosmetic_document_.reset();
+     nook_cosmetics_started_ = false;
+@@ -1762,6 +1969,7 @@
+ }
+ 
+ bool ChromeRenderFrameObserver::RunNookCosmeticsAtDocumentStart() {
++  if (!RunNookPageTweaksAtDocumentStart()) return false;
+ #if BUILDFLAG(IS_MAC)
+   if (!nook_cosmetics_ || nook_cosmetics_started_ || !nook_cosmetic_document_)
+     return true;
+@@ -1862,14 +2070,14 @@
+ #if BUILDFLAG(IS_MAC)
+   std::vector<std::string> classes, ids;
+   v8::Local<v8::Function> ack;
+-  if (!nook_cosmetics_ || !nook_cosmetic_document_ || !nook_cosmetic_host_ ||
++  if (!nook_cosmetics_ || !nook_cosmetic_document_ || !nook_document_resources_ ||
+       !nook_cosmetic_ack_.IsEmpty() || !arguments->GetNext(&classes) ||
+       !arguments->GetNext(&ids) || !arguments->GetNext(&ack) ||
+       classes.size() + ids.size() > 128) return;
+   const auto document = *nook_cosmetic_document_;
+   const auto source_identity = nook_cosmetics_->source_identity;
+   nook_cosmetic_ack_.Reset(arguments->isolate(), ack);
+-  nook_cosmetic_host_->GetGenericSelectors(document, classes, ids,
++  nook_document_resources_->GetGenericSelectors(document, classes, ids,
+       base::BindOnce([](base::WeakPtr<ChromeRenderFrameObserver> self,
+           blink::DocumentToken document, uint64_t source_identity,
+           chrome::mojom::NookCosmeticResourcesPtr resources) {
+--- a/chrome/renderer/chrome_render_frame_observer.h
++++ b/chrome/renderer/chrome_render_frame_observer.h
+@@ -126,6 +126,13 @@
+   void ClearNookCosmetics(const blink::DocumentToken& document,
+                            uint64_t policy_generation) override;
+   void PrepareNookCosmetics();
++  void ResetNookPageTweaks();
++  void ResetNookDocumentResources();
++  bool RunNookPageTweaksAtDocumentStart();
++  void RunNookBoostScriptsAfterLoad();
++  void RunNookBoostScript(size_t index);
++  void ExecuteNookBoostScript(size_t index);
++  void ClearNookPageTweaks(const blink::DocumentToken& document) override;
+   void ResetNookCosmetics();
+   void NookCosmeticSelectors(gin::Arguments* arguments);
+   void CompleteNookCosmeticBatch(bool more);
+@@ -322,7 +329,7 @@
+   service_manager::BinderRegistry registry_;
+   blink::AssociatedInterfaceRegistry associated_interfaces_;
+ #if BUILDFLAG(IS_MAC)
+-  mojo::Remote<chrome::mojom::NookCosmeticResourcesHost> nook_cosmetic_host_;
++  mojo::Remote<chrome::mojom::NookCosmeticResourcesHost> nook_document_resources_;
+   chrome::mojom::NookCosmeticResourcesPtr nook_cosmetics_;
+   std::optional<blink::DocumentToken> nook_cosmetic_document_;
+   std::vector<blink::WebString> nook_cosmetic_styles_;
+@@ -332,6 +339,9 @@
+   std::string nook_cosmetic_generic_css_;
+   blink::WebString nook_cosmetic_generic_style_;
+   bool nook_cosmetics_started_ = false;
++  chrome::mojom::NookPageTweaksPtr nook_page_tweaks_;
++  std::optional<blink::DocumentToken> nook_page_tweaks_document_;
++  std::optional<size_t> nook_boost_script_next_;
+ #endif
+   // Retires deferred cosmetic work on reset. Document-start uses its local
+   // FrameToken to distinguish policy reset from actual frame destruction.
+@@ -339,6 +349,7 @@
+   base::WeakPtrFactory<ChromeRenderFrameObserver> nook_translation_weak_{this};
+   base::WeakPtrFactory<ChromeRenderFrameObserver> nook_boost_picker_weak_{this};
+   base::WeakPtrFactory<ChromeRenderFrameObserver> nook_script_weak_{this};
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_page_tweaks_weak_{this};
+ };
+ 
+ #endif  // CHROME_RENDERER_CHROME_RENDER_FRAME_OBSERVER_H_

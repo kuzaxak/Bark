@@ -41,7 +41,7 @@ struct SettingsWindow: View {
         HStack(spacing: 0) {
             SettingsSidebar(selection: selection, query: $query)
             Divider()
-            if browserManager.engine == .webKit || tab == .spaces || tab == .profiles {
+            if browserManager.engine == .webKit || tab.availableInChromium {
             SettingsDetailPane(
                 tab: tab,
                 path: Binding(get: { paths[tab] ?? [] }, set: { paths[tab] = $0 }),
@@ -165,7 +165,7 @@ private struct SettingsSidebar: View {
                     ForEach(Array(SettingsTabs.sidebarGroups.enumerated()), id: \.offset) { _, group in
                         let tabs = group.tabs.filter { tab in
                             guard tab.matches(query) else { return false }
-                            if browserManager.engine == .chromium, tab != .spaces, tab != .profiles { return false }
+                            if browserManager.engine == .chromium, !tab.availableInChromium { return false }
                             return tab != .extensions || browserManager.extensionManager != nil
                         }
                         if !tabs.isEmpty {
@@ -288,7 +288,7 @@ private struct SettingsDetailPane: View {
         case .privacy:
             if let cookies = browserManager.cookieManager, let cache = browserManager.cacheManager {
                 PrivacySettingsView(cookieManager: cookies, cacheManager: cache)
-            } else { Text("Privacy controls are unavailable in this build.") }
+            } else { ChromiumPrivacySettingsView() }
         case .adBlocker:
             SettingsAdBlockerTab()
         case .tweaks:

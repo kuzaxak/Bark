@@ -377,11 +377,15 @@ public struct ClosedEntry: Codable, Hashable, Sendable {
     /// Set when only the page of a pinned tab or favorite closed and the item stayed. Reopening
     /// brings that page back; `items` holds the record in case the item is deleted later.
     public var endedPage: OpenPage?
+    /// Only unresolved searches in this closed subtree, never a live page registry.
+    public var pendingPages: [UUID: OpenPage]?
 
-    public init(items: [Item], section: Parent, closedAt: Date, endedPage: OpenPage? = nil) {
+    public init(items: [Item], section: Parent, closedAt: Date, endedPage: OpenPage? = nil,
+                pendingPages: [UUID: OpenPage]? = nil) {
         self.items = items
         self.section = section
         self.closedAt = closedAt
         self.endedPage = endedPage
+        self.pendingPages = pendingPages
     }
 }

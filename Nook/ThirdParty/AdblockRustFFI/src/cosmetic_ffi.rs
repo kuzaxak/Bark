@@ -28,7 +28,7 @@ use std::ptr;
 /// keys hide_selectors, procedural_actions, injected_script, exceptions and
 /// generichide. Returns NULL when nothing applies or on bad input.
 ///
-/// `engine` must come from nook_adblock_engine_from_lists. As with request
+/// `engine` must come from from_lists or deserialize. As with request
 /// matching, the caller must serialize all calls on a given engine.
 ///
 /// Free the result with nook_adblock_string_free.
@@ -50,6 +50,8 @@ pub unsafe extern "C" fn nook_adblock_cosmetic_for_url(
             if res.hide_selectors.is_empty()
                 && res.procedural_actions.is_empty()
                 && res.injected_script.is_empty()
+                && res.exceptions.is_empty()
+                && !res.generichide
             {
                 return ptr::null_mut();
             }
@@ -63,6 +65,36 @@ pub unsafe extern "C" fn nook_adblock_cosmetic_for_url(
         },
         ptr::null_mut(),
     )
+}
+
+/// Batched generic selectors. Input is {classes:[...],ids:[...],exceptions:[...]}
+/// from the native matcher sequence; exceptions are looked up authoritatively
+/// for the same document URL, not supplied by page script. Free with string_free.
+#[no_mangle]
+pub unsafe extern "C" fn nook_adblock_cosmetic_class_id(
+    engine: *mut Engine,
+    input: *const c_char,
+) -> *mut c_char {
+    if engine.is_null() || input.is_null() { return ptr::null_mut(); }
+    guard(|| {
+        let Ok(input) = CStr::from_ptr(input).to_str() else { return ptr::null_mut(); };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(input) else {
+            return ptr::null_mut();
+        };
+        let strings = |name: &str| -> Vec<String> {
+            value[name].as_array().into_iter().flatten()
+                .filter_map(|v| v.as_str().map(str::to_owned)).collect()
+        };
+        let classes = strings("classes");
+        let ids = strings("ids");
+        let exceptions: std::collections::HashSet<String> =
+            strings("exceptions").into_iter().collect();
+        let selectors = (&*engine).hidden_class_id_selectors(
+            &classes, &ids, &exceptions);
+        serde_json::to_string(&selectors).ok()
+            .and_then(|json| CString::new(json).ok())
+            .map_or(ptr::null_mut(), CString::into_raw)
+    }, ptr::null_mut())
 }
 
 #[cfg(test)]
@@ -104,6 +136,76 @@ mod tests {
                     .collect()
             })
             .unwrap_or_default()
+    }
+
+    #[test]
+    fn native_serialized_rules_keep_trust_and_load_packaged_scriptlets() {
+        use crate::{nook_adblock_engine_from_lists, nook_adblock_engine_serialize,
+            nook_adblock_engine_deserialize, nook_adblock_engine_use_resources,
+            nook_adblock_buffer_free};
+        let resources = include_str!("../../../../Packages/NookBlocker/Sources/NookBlocker/Resources/scriptlets.json");
+        for trusted in [false, true] {
+            let lists = serde_json::json!([{
+                "rules":"cosmetic.test##+js(trusted-set-constant, nativeBeforeInline, true)",
+                "trusted":trusted
+            }]).to_string();
+            unsafe {
+                let source = nook_adblock_engine_from_lists(lists.as_ptr().cast(), lists.len());
+                assert!(!source.is_null());
+                let mut length = 0;
+                let bytes = nook_adblock_engine_serialize(source, &mut length);
+                assert!(!bytes.is_null());
+                let engine = nook_adblock_engine_deserialize(bytes, length);
+                nook_adblock_buffer_free(bytes, length);
+                nook_adblock_engine_free(source);
+                assert!(!engine.is_null());
+                assert!(nook_adblock_engine_use_resources(engine,
+                    resources.as_ptr().cast(), resources.len()));
+                let url = CString::new("https://cosmetic.test/").unwrap();
+                let raw = nook_adblock_cosmetic_for_url(engine, url.as_ptr());
+                let script = if raw.is_null() { String::new() } else {
+                    let value: Value = serde_json::from_slice(CStr::from_ptr(raw).to_bytes()).unwrap();
+                    nook_adblock_string_free(raw);
+                    value["injected_script"].as_str().unwrap_or_default().to_owned()
+                };
+                assert_eq!(!script.is_empty(), trusted);
+                if trusted { assert!(script.contains("nativeBeforeInline")); }
+                nook_adblock_engine_free(engine);
+            }
+        }
+    }
+
+    #[test]
+    fn native_generic_batch_honors_document_exceptions() {
+        unsafe {
+            let engine = engine_from_test_rules("##.native-generic\n##.native-other\nexample.com#@#.native-generic\n");
+            assert!(!engine.is_null());
+            let url = CString::new("https://example.com/").unwrap();
+            let resources = nook_adblock_cosmetic_for_url(engine, url.as_ptr());
+            assert!(!resources.is_null(), "exceptions must survive an otherwise empty lookup");
+            let value: Value = serde_json::from_slice(CStr::from_ptr(resources).to_bytes()).unwrap();
+            nook_adblock_string_free(resources);
+            let input = serde_json::json!({"classes":["native-generic","native-other"],"ids":[],"exceptions":value["exceptions"]});
+            let input = CString::new(input.to_string()).unwrap();
+            let selectors = nook_adblock_cosmetic_class_id(engine, input.as_ptr());
+            assert!(!selectors.is_null());
+            let value: Vec<String> = serde_json::from_slice(CStr::from_ptr(selectors).to_bytes()).unwrap();
+            nook_adblock_string_free(selectors);
+            assert!(!value.contains(&".native-generic".to_owned()));
+            assert!(value.contains(&".native-other".to_owned()));
+            nook_adblock_engine_free(engine);
+        }
+    }
+
+    #[test]
+    fn native_generic_batch_rejects_bad_input() {
+        unsafe {
+            let engine = engine_from_test_rules("##.native-generic");
+            let invalid = CString::new("not json").unwrap();
+            assert!(nook_adblock_cosmetic_class_id(engine, invalid.as_ptr()).is_null());
+            assert!(nook_adblock_cosmetic_class_id(ptr::null_mut(), invalid.as_ptr()).is_null());
+            nook_adblock_engine_free(engine);
+        }
     }
 
     #[test]

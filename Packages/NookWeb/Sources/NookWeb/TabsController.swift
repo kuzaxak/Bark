@@ -60,7 +60,11 @@ public final class TabsController {
     /// Live folders whose last refresh failed, and why. No entry when it worked.
     public internal(set) var liveStatus: [UUID: LiveFolderStatus] = [:]
     @ObservationIgnored var liveRefreshed: [UUID: Date] = [:]
-    @ObservationIgnored var liveRefreshing: Set<UUID> = []
+    @ObservationIgnored var liveRefreshTasks: [UUID: Task<Void, Never>] = [:]
+    @ObservationIgnored var liveNativeRefreshTail: Task<Void, Never>?
+    var liveRefreshing: Set<UUID> { Set(liveRefreshTasks.keys) }
+    /// App-injected exact regular-profile transport. Nil is explicitly unavailable.
+    @ObservationIgnored public var nativeLiveFetch: ProfileLiveFetch?
     @ObservationIgnored private var archiveTimer: Timer?
     /// The tab DevMCP page tools act on, in the Agent space (see `TabsController+Agent.swift`).
     public internal(set) var agentItemID: UUID?
@@ -72,9 +76,12 @@ public final class TabsController {
     /// One `Profile` (website data store) per space, made on first use and kept for the session.
     @ObservationIgnored private var spaceProfiles: [UUID: Profile] = [:]
 
+    @ObservationIgnored public var onDeleteProfile: ProfileDeletionAction?
+    @ObservationIgnored public var onProfileWindowsNeedReload: (@MainActor (Set<UUID>) -> Void)?
+    @ObservationIgnored private var profileDeletionInFlight = false
     @ObservationIgnored private let store: TabStore
     @ObservationIgnored private(set) var undoStack: [Change] = []
-    @ObservationIgnored private var isTerminating = false
+    @ObservationIgnored private(set) var isTerminating = false
     @ObservationIgnored public let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "Tabs")
 
     // MARK: - Injected
@@ -122,6 +129,7 @@ public final class TabsController {
     @ObservationIgnored public var onTreeChanged: (() -> Void)?
     /// App-owned profile presentation; absent presenters report unavailability.
     @ObservationIgnored public var onOpenProfilePage: ProfilePageAction?
+    @ObservationIgnored public var onProfileSearch: ProfileSearchAction?
 
     /// Launch argument that redirects tab state, e.g. `-NookStateDir /tmp/bench`.
     /// Read from the argument domain only, never from persisted defaults, so a stray written
@@ -183,8 +191,9 @@ public final class TabsController {
         case .loaded, .restoredFromBackup:
             tree = loaded.tree
             device = loaded.device
-            // A quit ends every page, so pinned tabs and favorites start at their home URL again.
-            device.openPages = [:]
+            // A quit ends live pages, so bookmarks start at home. Cold searches
+            // have not navigated yet and retain only their device-local intent.
+            device.openPages = device.openPages.filter { $0.value.pendingSearch != nil }
         }
         log.info("Tabs loaded: \(String(describing: loaded.outcome), privacy: .public), \(self.tree.items.count) items")
         if case .readOnly(let reason) = loaded.outcome {
@@ -239,6 +248,7 @@ public final class TabsController {
     /// afterwards keep their records so they all reopen.
     public func flushSync() {
         isTerminating = true
+        for task in liveRefreshTasks.values { task.cancel() }
         for window in regularWindows { mirror(window) }
         store.save(tree, device)
         store.flush()
@@ -298,6 +308,7 @@ public final class TabsController {
             case .main:
                 var copy = tree
                 let change = try body(&copy)
+                guard profileDeletionAllows(copy, changed: change) else { return nil }
                 let ownershipChanged = nativeOwnershipChanged(by: change, in: copy)
                 guard !ownershipChanged || nativeEditIsAdmissible(copy, owner: owner) else { return nil }
                 tree = copy
@@ -513,6 +524,7 @@ public final class TabsController {
                 itemID: itemID, url: page?.url ?? homeURL, title: page?.title ?? pageTitle,
                 isPrivate: false, controller: self)
             liveSessions[itemID] = session
+            session.restorePendingNativeSearch()
             if synced, page == nil {
                 setOpenPage(itemID, OpenPage(url: homeURL, title: pageTitle))
             }
@@ -547,7 +559,8 @@ public final class TabsController {
     /// The website data store of a space, made on first use and shared by every space that uses
     /// the same store (the Agent space borrows one). Its name and icon follow the space asked for.
     public func profile(forSpace spaceID: UUID) -> Profile? {
-        guard let space = tree.space(spaceID), let storeID = tree.dataStoreID(for: spaceID) else { return nil }
+        guard let space = tree.space(spaceID), let storeID = tree.dataStoreID(for: spaceID),
+              (profileEngine != .chromium || (isProfileAvailable(storeID) && profileSpaceIsReady(spaceID))) else { return nil }
         if let existing = spaceProfiles[storeID] {
             if !space.isAgent {
                 existing.name = space.name
@@ -568,6 +581,7 @@ public final class TabsController {
 
     /// A profile's data store by profile id: the one its spaces use, or a kept profile's.
     public func profile(forStore storeID: UUID) -> Profile? {
+        guard isProfileAvailable(storeID) else { return nil }
         if let space = tree.orderedSpaces.first(where: { tree.dataStoreID(for: $0.id) == storeID }) {
             return profile(forSpace: space.id)
         }
@@ -605,6 +619,7 @@ public final class TabsController {
 
     /// Changes a kept profile; false when no kept profile has `storeID`.
     func updateKeptProfile(_ storeID: UUID, _ update: (inout KeptProfile) -> Void) -> Bool {
+        guard device.pendingProfileDeletion.map({ $0.target != storeID && $0.survivor != storeID }) ?? true else { return false }
         guard var kept = device.keptProfiles, let index = kept.firstIndex(where: { $0.id == storeID }) else { return false }
         update(&kept[index])
         device.keptProfiles = kept
@@ -618,9 +633,11 @@ public final class TabsController {
         if session.isPrivate {
             return privateWindows.first { $0.privateSessions[session.itemID] === session }?.ephemeralProfile
         }
-        if let id = tree.spaceID(of: session.itemID), let profile = profile(forSpace: id) {
-            return profile
+        if let id = tree.spaceID(of: session.itemID) {
+            if profileEngine == .chromium { return profile(forSpace: id) }
+            if let profile = profile(forSpace: id) { return profile }
         }
+        if profileEngine == .chromium { return nil }
         return sessionDelegate?.currentProfile ?? tree.orderedSpaces.first.flatMap { profile(forSpace: $0.id) }
     }
 
@@ -651,6 +668,37 @@ public final class TabsController {
                   current.dataStoreID == previous.dataStoreID else { return true }
         }
         return false
+    }
+
+    /// A pending deletion locks only its two profile identities, not unrelated
+    /// tabs/profiles. Keep the common no-deletion path constant-time.
+    func profileDeletionAllows(_ proposed: TabTree, changed: Change) -> Bool {
+        guard let intent = device.pendingProfileDeletion else { return true }
+        if changed.spaces.isEmpty, intent.change == nil { return true }
+        if let change = intent.change {
+            if change.phase != .assignmentCommitted {
+                for id in changed.items.keys {
+                    let before = tree.spaceID(of: id), after = proposed.spaceID(of: id)
+                    if before.map(change.spaceIDs.contains) == true || after.map(change.spaceIDs.contains) == true {
+                        guard let old = tree.item(id), let new = proposed.item(id), before == after,
+                              (old.url == nil) == (new.url == nil) else { return false }
+                    }
+                }
+            }
+            guard !changed.spaces.isEmpty else { return true }
+            let current = tree.profiles, next = proposed.profiles
+            guard change.spaceIDs.allSatisfy({ tree.space($0) == proposed.space($0) }),
+                  current.first(where: { $0.id == intent.survivor }) == next.first(where: { $0.id == intent.survivor }) else { return false }
+            if change.kind == .reassignSpace {
+                let source = current.first(where: { $0.id == intent.target })
+                let nextSource = next.first(where: { $0.id == intent.target })
+                return source?.name == nextSource?.name && source?.searchEngineId == nextSource?.searchEngineId
+            }
+        }
+        let current = tree.profiles, next = proposed.profiles
+        return [intent.target, intent.survivor].allSatisfy { id in
+            current.first(where: { $0.id == id }) == next.first(where: { $0.id == id })
+        }
     }
 
     /// Synchronous tree/undo edits cannot bypass actual native close admission.
@@ -702,6 +750,7 @@ public final class TabsController {
 
     func prepareNativeSelection(_ itemID: UUID, in window: BrowserWindowState,
                                 admitted: @escaping @MainActor () -> Void) {
+        guard cancelNativeSplit(in: window) else { return }
         let previous = window.nativeSelectionSession
         let generation = UUID()
         window.nativeSelectionGeneration = generation
@@ -709,7 +758,7 @@ public final class TabsController {
         if previous?.itemID != itemID { previous?.cancelNativePreparation(in: window) }
         guard window.nativeSelectionGeneration == generation else { return }
         guard let page = ensureSession(for: itemID), let profileID = page.profile?.id else {
-            window.nativeSelectionGeneration = nil
+            nativeSelectionFailed(in: window)
             return
         }
         window.nativeSelectionSession = page
@@ -719,11 +768,8 @@ public final class TabsController {
             guard prepared, self.windowRegistry.windows[window.id] === window,
                   self.session(for: itemID) === page, page.profile?.id == profileID,
                   let navigation = page.navigation,
-                  let host = page.nativeResourceHost ?? self.nativePageHost else {
-                if window.nativeSelectionGeneration == generation {
-                    window.nativeSelectionGeneration = nil
-                    window.nativeSelectionSession = nil
-                }
+                  let host = (page.nativeResourceHost as? any NativePageHost) ?? self.nativePageHost else {
+                if window.nativeSelectionGeneration == generation { self.nativeSelectionFailed(in: window) }
                 return
             }
             // Capture before the host hides the outgoing native surface. A
@@ -738,15 +784,24 @@ public final class TabsController {
                   window.nativeSelectionGeneration == generation,
                   self.windowRegistry.windows[window.id] === window,
                   self.session(for: itemID) === page, page.profile?.id == profileID else {
-                if window.nativeSelectionGeneration == generation {
-                    window.nativeSelectionGeneration = nil
-                    window.nativeSelectionSession = nil
-                }
+                if window.nativeSelectionGeneration == generation { self.nativeSelectionFailed(in: window) }
                 return
             }
             window.nativeSelectionGeneration = nil
             window.nativeSelectionSession = nil
             admitted()
+            // Reopen may stage a cold query on an already-bound pinned page.
+            // Resume only after this exact page owns the admitted selection.
+            if window.nativeSelectionGeneration == nil && !window.nativeSplitIsPreparing,
+               self.windowRegistry.windows[window.id] === window,
+               window.selectedItemID == itemID, self.session(for: itemID) === page,
+               page.navigation === navigation, page.profile?.id == profileID,
+               host.isNativeSelection(navigation, in: window) {
+                page.resumeStagedNativeSearch()
+            }
+            if window.nativeSelectionGeneration == nil && !window.nativeSplitIsPreparing {
+                window.nativePresentationDidSettle?(true)
+            }
         }
     }
 
@@ -777,6 +832,14 @@ public final class TabsController {
             }
         }
         return true
+    }
+
+    /// With nothing selected, Chromium is showing some other client: the shell covers it.
+    private func nativeSelectionFailed(in window: BrowserWindowState) {
+        window.nativeSelectionGeneration = nil
+        window.nativeSelectionSession = nil
+        if window.selectedItemID == nil { window.nativeEmptySpaceID = window.spaceID }
+        window.nativePresentationDidSettle?(false)
     }
 
     func canShow(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
@@ -906,10 +969,26 @@ public final class TabsController {
 
     /// A committed navigation or SPA URL change. Device items store it as their URL; synced items
     /// keep their home URL and store the open page instead.
-    func pageCommitted(itemID: UUID, url committed: URL) {
+    func pageCommitted(itemID: UUID, url committed: URL, resolvingPrivateSearch: Bool = false) {
         guard let owner = owner(ofItem: itemID) else { return }
         // A Kagi Session Link token stays out of tabs.json and device.json.
         let url = KagiSession.withoutToken(committed)
+        if let page = session(for: itemID), page.usesNativePageHost {
+            // Neither its factory blank nor a commit preceding newer metadata
+            // may consume a cold query. The actual target commit settles it.
+            if page.pendingNativeSearchQuery != nil || page.nativeSearchIntent != nil || resolvingPrivateSearch {
+                if url.absoluteString == "about:blank" || page.nativeSearchIntent != nil { return }
+                let resolvesColdHome = (page.pendingNativeSearchQuery != nil || resolvingPrivateSearch) && tree(owner).scope(of: itemID) == .synced
+                storePendingSearch(nil, for: page)
+                // A query pinned before first load has no home yet. Resolve that
+                // placeholder once; later searches never overwrite a real home.
+                if resolvesColdHome, let item = tree(owner).item(itemID),
+                   case .tab(let home, _) = item.kind, home.absoluteString == "about:blank" {
+                    perform(owner, "setURL", undoable: false) { try $0.setURL(itemID, url) }
+                    guard session(for: itemID) === page, page.nativeSearchIntent == nil else { return }
+                }
+            }
+        }
         if case .main = owner { livePageCommitted(url, itemID: itemID) }
         guard tree(owner).scope(of: itemID) == .synced else {
             perform(owner, "setURL", undoable: false) { try $0.setURL(itemID, url) }
@@ -1007,6 +1086,34 @@ public final class TabsController {
         save()
     }
 
+    /// Bind an existing native detached page without issuing navigation or creating
+    /// a renderer. The presenter owns its lifetime and validates native identity;
+    /// this method never adopts it into the saved tree or closes a rejected page.
+    public func bindDetachedNativePage(_ navigation: any PageNavigation, profile: Profile,
+                                       owner: any NativePageResourceOwner,
+                                       in window: BrowserWindowState?) -> PageSession? {
+        guard profileEngine == .chromium, profile.engine == .chromium,
+              navigation.profileID == profile.id, !isTerminating,
+              !sessions.contains(where: { $0.navigation === navigation }) else { return nil }
+        let state = navigation.state
+        guard !isTerminating, !sessions.contains(where: { $0.navigation === navigation }) else { return nil }
+        let url = state.url ?? URL(string: "about:blank")!
+        let session = PageSession(itemID: UUID(), url: url,
+            title: state.title ?? url.host ?? url.absoluteString,
+            isPrivate: profile.isEphemeral, controller: self)
+        // Construction needs the actual engine capability before favicon init.
+        // Seeding stays unpublished until the navigation has been installed.
+        session.controller = nil
+        session.detachedProfile = profile
+        session.detachedWindow = window
+        session.nativeResourceHost = owner
+        session.installNavigation(navigation)
+        guard !isTerminating, session.navigation === navigation,
+              !sessions.contains(where: { $0.navigation === navigation }) else { return nil }
+        session.controller = self
+        return session
+    }
+
     /// Admit an already-existing regular Chromium page. The host has bound its
     /// native resource before this call; rejection never closes that resource.
     /// No load/create command is issued and the engine's opener/document survives.
@@ -1014,15 +1121,40 @@ public final class TabsController {
     public func adoptNativePage(_ page: any PageNavigation, through host: any NativePageHost,
                                 in window: BrowserWindowState, spaceID: UUID,
                                 from opener: UUID? = nil, select: Bool) -> UUID? {
+        admitNativePage(page, detachedSession: nil, through: host, in: window,
+                        spaceID: spaceID, from: opener, select: select)
+    }
+
+    /// Promote the existing detached session after the native host has admitted
+    /// its exact live page. Refusal never closes, reloads, or replaces the source.
+    @discardableResult
+    public func adoptDetachedNativePage(_ session: PageSession, through host: any NativePageHost,
+                                        in window: BrowserWindowState, spaceID: UUID,
+                                        from opener: UUID? = nil, select: Bool) -> UUID? {
+        guard session.isDetached, !session.nativeIsEnding, session.nativeRelease == nil,
+              let page = session.navigation, session.profile?.id == page.profileID,
+              session.isPrivate == window.isIncognito else { return nil }
+        let admitted = admitNativePage(page, detachedSession: session, through: host,
+            in: window, spaceID: spaceID, from: opener, select: select)
+        // Promotion/refusal retains this document; catch a settings edit that
+        // was deferred during guarded ownership publication.
+        session.refreshNativeBoostCSS()
+        return admitted
+    }
+
+    private func admitNativePage(_ page: any PageNavigation, detachedSession: PageSession?,
+                                through host: any NativePageHost, in window: BrowserWindowState,
+                                spaceID: UUID, from opener: UUID?, select: Bool) -> UUID? {
         if window.isIncognito {
-            return adoptPrivateNativePage(page, through: host, in: window,
+            return adoptPrivateNativePage(page, detachedSession: detachedSession, through: host, in: window,
                 spaceID: spaceID, from: opener, select: select)
         }
         guard !privateWindows.contains(where: { window in
             window.privateSessions.values.contains(where: { $0.navigation === page })
         }) else { return nil }
         func isCurrent() -> Bool {
-            profileEngine == .chromium && !isTerminating && nativePageHost === host &&
+            (detachedSession == nil || (detachedSession?.navigation === page && detachedSession?.nativeIsEnding == false &&
+                detachedSession?.nativeRelease == nil)) && profileEngine == .chromium && !isTerminating && nativePageHost === host &&
             windowRegistry.windows[window.id] === window && !window.isIncognito && window.privateTree == nil &&
             tree.space(spaceID) != nil && tree.dataStoreID(for: spaceID) == page.profileID &&
             page.profileID != nil && host.canAdoptPage(page, in: window)
@@ -1053,6 +1185,7 @@ public final class TabsController {
         let state = page.state
         guard selectionIsCurrent(), isCurrent() else { return nil }
         if let existing = liveSessions.values.first(where: { $0.navigation === page }) {
+            guard detachedSession == nil || detachedSession === existing else { return nil }
             guard !existing.nativeIsEnding, existing.nativeRelease == nil,
                   existing.profile?.id == page.profileID, tree.spaceID(of: existing.itemID) == spaceID else { return nil }
             let source = pageOwners[existing.itemID].flatMap { windowRegistry.windows[$0] }
@@ -1099,30 +1232,34 @@ public final class TabsController {
         } ?? tree.newTabPosition(in: spaceID, after: window.selectedItemID, climbingFolders: settings.newTabsAtTopLevel)
         let url = state.url ?? URL(string: "about:blank")!
         let title = state.title ?? url.host ?? url.absoluteString
-        let id = UUID()
+        let id = detachedSession?.itemID ?? UUID()
         let originalTree = tree
         var proposed = originalTree
         let change: Change
         do {
             change = try proposed.createTab(id: id, url: url, title: title, in: position.0, after: position.1)
         } catch { return nil }
-        let session = PageSession(itemID: id, url: url, title: title, isPrivate: false, controller: self)
-        // Seed without publishing title/history reports before the item exists.
-        session.controller = nil
-        session.detachedProfile = profile
-        session.installNavigation(page)
-        session.nativeResourceHost = host
+        let session = detachedSession ?? PageSession(itemID: id, url: url, title: title, isPrivate: false, controller: self)
+        if detachedSession == nil {
+            // Seed without publishing title/history reports before the item exists.
+            session.controller = nil
+            session.detachedProfile = profile
+            session.installNavigation(page)
+        }
         guard selectionIsCurrent(), isCurrent(), tree == originalTree, session.navigation === page,
               !liveSessions.values.contains(where: { $0.navigation === page }) else {
             // A nested admission may now own this adapter's callbacks. Leave it
             // intact; the caller releases only its unadmitted host binding.
-            if !liveSessions.values.contains(where: { $0.navigation === page }) {
+            if detachedSession == nil, !liveSessions.values.contains(where: { $0.navigation === page }) {
                 page.onEvent = nil
                 page.onStateChanged = nil
             }
             return nil
         }
         session.detachedProfile = nil
+        session.detachedWindow = nil
+        session.onClose = nil
+        session.nativeResourceHost = host
         session.controller = self
         // Bind before the existing publication boundary: a reentrant observer
         // sees one real page and cannot bootstrap a second renderer.
@@ -1147,11 +1284,12 @@ public final class TabsController {
 
     /// Private contents stay in their existing window-owned tree/session map.
     /// Same-session transfers retain the live item/page; other sessions reject.
-    private func adoptPrivateNativePage(_ page: any PageNavigation, through host: any NativePageHost,
+    private func adoptPrivateNativePage(_ page: any PageNavigation, detachedSession: PageSession?, through host: any NativePageHost,
                                        in window: BrowserWindowState, spaceID: UUID,
                                        from opener: UUID?, select shouldSelect: Bool) -> UUID? {
         func current() -> Bool {
-            profileEngine == .chromium && !isTerminating && nativePageHost === host &&
+            (detachedSession == nil || (detachedSession?.navigation === page &&
+                detachedSession?.nativeIsEnding == false && detachedSession?.nativeRelease == nil)) && profileEngine == .chromium && !isTerminating && nativePageHost === host &&
             windowRegistry.windows[window.id] === window && window.isIncognito &&
             nativeProfileMatches(page, in: window, spaceID: spaceID) && host.canAdoptPage(page, in: window)
         }
@@ -1169,6 +1307,7 @@ public final class TabsController {
         guard !shouldSelect || host.selectPage(page, in: window), intentIsCurrent(), current(),
               window.privateTree == original else { return nil }
         if let existing = sessions.first(where: { $0.navigation === page }) {
+            guard detachedSession == nil || detachedSession === existing else { return nil }
             guard existing.isPrivate, !existing.nativeIsEnding, existing.nativeRelease == nil,
                   let source = privateWindows.first(where: { $0.privateSessions[existing.itemID] === existing }),
                   source.ephemeralProfile === profile,
@@ -1255,21 +1394,29 @@ public final class TabsController {
             original.linkTabPosition(in: spaceID, opener: $0, nest: settings.nestLinkTabsUnderOpener,
                                      openers: window.privateOpeners)
         } ?? original.newTabPosition(in: spaceID, after: window.selectedItemID, climbingFolders: settings.newTabsAtTopLevel)
-        let id = UUID(), url = state.url ?? URL(string: "about:blank")!
+        let id = detachedSession?.itemID ?? UUID(), url = state.url ?? URL(string: "about:blank")!
         let title = state.title ?? url.host ?? url.absoluteString
         var proposed = original
         guard (try? proposed.createTab(id: id, url: url, title: title, in: position.0, after: position.1)) != nil else { return nil }
-        let session = PageSession(itemID: id, url: url, title: title, isPrivate: true, controller: nil)
-        session.detachedProfile = profile
-        session.installNavigation(page)
-        session.nativeResourceHost = host
+        let session = detachedSession ?? PageSession(itemID: id, url: url, title: title, isPrivate: true, controller: nil)
+        if detachedSession == nil {
+            session.detachedProfile = profile
+            session.installNavigation(page)
+        }
         guard intentIsCurrent(), current(), window.privateTree == original,
               !sessions.contains(where: { $0.navigation === page }) else {
-            if !sessions.contains(where: { $0.navigation === page }) { page.onEvent = nil; page.onStateChanged = nil }
+            if detachedSession == nil, !sessions.contains(where: { $0.navigation === page }) { page.onEvent = nil; page.onStateChanged = nil }
             return nil
         }
+        let detachedProfile = session.detachedProfile
+        let detachedWindow = session.detachedWindow
+        let detachedOwner = session.nativeResourceHost
+        let detachedClose = session.onClose
         session.controller = self
         session.detachedProfile = nil
+        session.detachedWindow = nil
+        session.onClose = nil
+        session.nativeResourceHost = host
         window.privateSessions[id] = session
         func discardUnadmittedItem() {
             // Remove only this rejected publication. Preserve newer tree edits,
@@ -1280,7 +1427,14 @@ public final class TabsController {
             window.privateOpeners = window.privateOpeners.filter { $0.key != id && $0.value != id }
             if var latest = window.privateTree, latest.item(id) != nil,
                (try? latest.close(id, promotingChildren: true)) != nil { window.privateTree = latest }
-            if !sessions.contains(where: { $0.navigation === page }) { page.onEvent = nil; page.onStateChanged = nil }
+            if !sessions.contains(where: { $0.navigation === page }) {
+                if detachedSession != nil {
+                    session.detachedProfile = detachedProfile
+                    session.detachedWindow = detachedWindow
+                    session.nativeResourceHost = detachedOwner
+                    session.onClose = detachedClose
+                } else { page.onEvent = nil; page.onStateChanged = nil }
+            }
         }
         window.privateTree = proposed
         guard intentIsCurrent(), current(), window.privateSessions[id] === session,
@@ -1300,6 +1454,7 @@ public final class TabsController {
     /// window or bootstrapping another page. Adoption must have bound it first.
     @discardableResult
     public func reflectNativeSelection(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
+        guard cancelNativeSplit(in: window) else { return false }
         guard profileEngine == .chromium, !isTerminating,
               windowRegistry.windows[window.id] === window,
               let session = session(for: itemID), let page = session.navigation,
@@ -1334,6 +1489,14 @@ public final class TabsController {
         finishNativeAdoption(session, in: window, opener: nil, parent: nil,
                              select: true, generation: generation, validateNative: validate)
         return validate() && window.selectedItemID == itemID
+    }
+
+    /// Nook is deciding this window's selection: its page is closing, a successor is being
+    /// prepared, or it shows an empty space. A client Chromium falls back to meanwhile is no one's
+    /// choice, so reflecting it would carry the window into another space.
+    public func nativeSelectionIsSettling(in window: BrowserWindowState) -> Bool {
+        window.nativeSelectionGeneration != nil || window.nativeSplitPreparation != nil
+            || selectedSession(in: window)?.nativeIsEnding == true || window.showsNativeEmptySpace
     }
 
     func addSession(_ session: PageSession) {
@@ -1409,6 +1572,10 @@ public final class TabsController {
         }
         let others = regularWindows.filter { $0.id != window.id }
         guard !isTerminating else { return }
+        if device.pendingProfileDeletion?.change?.windowIDs.contains(window.id) == true {
+            mirror(window)
+            return
+        }
         // The last window's record stays to reopen it, at the size it had when it closed.
         guard !others.isEmpty else { return mirror(window) }
         device.windows.removeAll { $0.id == window.id }
@@ -1436,5 +1603,386 @@ public final class TabsController {
             device.windows.append(record)
         }
         save()
+    }
+}
+
+extension TabsController {
+    /// Target remains visible but unavailable until cleanup is confirmed. The survivor
+    /// must be an existing model identity, never a default profile selected by native code.
+    public func deleteKeptProfile(_ target: UUID, surviving survivor: UUID,
+                                  completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard profileEngine == .chromium, !profileDeletionInFlight, device.pendingProfileDeletion?.change == nil,
+              device.pendingProfileDeletion.map({ $0.target == target && $0.survivor == survivor }) ?? true,
+              target != survivor, let action = onDeleteProfile,
+              device.keptProfiles?.contains(where: { $0.id == target }) == true,
+              tree.profiles.contains(where: { $0.id == target }) == false,
+              profiles.contains(where: { $0.id == survivor }), !isReadOnly else {
+            completion(.failure(.unavailable)); return
+        }
+        let intent = PendingProfileDeletion(target: target, survivor: survivor)
+        let wasPending = device.pendingProfileDeletion != nil
+        device.pendingProfileDeletion = intent
+        guard persistDeletionState() else {
+            if !wasPending { device.pendingProfileDeletion = nil }
+            completion(.failure(.persistenceFailed)); return
+        }
+        dispatchProfileDeletion(intent, action: action, reconcileOnly: false, wasPending: wasPending, completion: completion)
+    }
+
+    /// Called before regular native factories can borrow a persisted target at startup.
+    public func resumePendingProfileDeletion(completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard let intent = device.pendingProfileDeletion else { completion(.success(())); return }
+        if intent.change != nil {
+            resumeProfileChange(intent, automatic: true, completion: completion)
+            return
+        }
+        guard profileEngine == .chromium, let action = onDeleteProfile, !isReadOnly else {
+            completion(.failure(.pending)); return
+        }
+        dispatchProfileDeletion(intent, action: action, reconcileOnly: true, wasPending: true, completion: completion)
+    }
+
+    public func isProfileAvailable(_ id: UUID) -> Bool {
+        guard profiles.contains(where: { $0.id == id }) else { return false }
+        guard let intent = device.pendingProfileDeletion, intent.target == id else { return true }
+        return intent.change?.kind == .reassignSpace
+    }
+
+    private func dispatchProfileDeletion(_ intent: PendingProfileDeletion, action: ProfileDeletionAction, reconcileOnly: Bool, wasPending: Bool,
+                                         completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard !profileDeletionInFlight else { completion(.failure(.pending)); return }
+        let canDelete: @MainActor () -> Bool = { [weak self] in
+            guard let self else { return false }
+            return self.device.pendingProfileDeletion == intent &&
+                self.device.keptProfiles?.contains(where: { $0.id == intent.target }) == true &&
+                !self.tree.profiles.contains(where: { $0.id == intent.target }) &&
+                self.profiles.contains(where: { $0.id == intent.survivor })
+        }
+        guard canDelete() else { completion(.failure(.pending)); return }
+        profileDeletionInFlight = true
+        var finished = false
+        action(intent, reconcileOnly, canDelete) { [weak self] result in
+            guard !finished else { return }
+            finished = true
+            guard let self else { completion(.failure(.pending)); return }
+            self.profileDeletionInFlight = false
+            guard self.device.pendingProfileDeletion == intent else { completion(.failure(.pending)); return }
+            switch result {
+            case .pending, .closeAdmitted:
+                completion(.failure(.pending))
+            case .cancelled(let acknowledge):
+                // A previous process may have marked deletion and then lost its
+                // restart cleanup marker. A fresh refusal cannot undo that history.
+                guard !wasPending else { completion(.failure(.pending)); return }
+                self.device.pendingProfileDeletion = nil
+                guard self.persistDeletionState() else {
+                    self.device.pendingProfileDeletion = intent
+                    completion(.failure(.persistenceFailed)); return
+                }
+                guard acknowledge() else {
+                    self.device.pendingProfileDeletion = intent
+                    _ = self.persistDeletionState()
+                    completion(.failure(.pending)); return
+                }
+                completion(.failure(.cancelled))
+            case .deleted:
+                // Cleanup is terminal; keep the tombstone if persisting metadata fails.
+                let previous = self.device
+                self.device.dropKeptProfile(intent.target)
+                self.device.pendingProfileDeletion = nil
+                guard self.persistDeletionState() else {
+                    self.device = previous
+                    completion(.failure(.persistenceFailed)); return
+                }
+                self.forgetProfile(intent.target)
+                completion(.success(()))
+            }
+        }
+    }
+
+    private func persistDeletionState() -> Bool {
+        guard !store.isReadOnly else { return false }
+        store.save(tree, device)
+        store.flush()
+        return store.lastError == nil
+    }
+}
+
+extension TabsController {
+    func profileChangeLocksItem(_ itemID: UUID) -> Bool {
+        guard let change = device.pendingProfileDeletion?.change,
+              change.phase != .assignmentCommitted else { return false }
+        return tree.spaceID(of: itemID).map(change.spaceIDs.contains) == true
+    }
+
+    private func profileSpaceIsReady(_ spaceID: UUID) -> Bool {
+        guard let change = device.pendingProfileDeletion?.change,
+              change.spaceIDs.contains(spaceID) else { return true }
+        return change.phase == .assignmentCommitted ||
+            (change.phase == .prepared && !profileDeletionInFlight)
+    }
+
+    public func deleteProfile(_ target: UUID, surviving survivor: UUID,
+                              completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        if let pending = device.pendingProfileDeletion, pending.change != nil {
+            guard pending.target == target, pending.survivor == survivor else { completion(.failure(.pending)); return }
+            resumeProfileChange(pending, automatic: false, completion: completion)
+            return
+        }
+        guard let summary = tree.profiles.first(where: { $0.id == target }) else {
+            deleteKeptProfile(target, surviving: survivor, completion: completion)
+            return
+        }
+        beginProfileChange(summary.spaceIDs, target: summary,
+            destination: survivor, name: nil, kind: .deleteProfile, completion: completion)
+    }
+
+    public func retryPendingProfileChange(completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard let intent = device.pendingProfileDeletion, intent.change != nil else {
+            completion(.failure(.unavailable)); return
+        }
+        resumeProfileChange(intent, automatic: false, completion: completion)
+    }
+
+    func reassignNativeSpace(_ spaceID: UUID, destination: UUID?, name: String?, keepSource: Bool,
+                             completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard let source = tree.profile(ofSpace: spaceID) else { completion(.failure(.unavailable)); return }
+        let kind: PendingProfileChange.Kind = source.spaceIDs == [spaceID] && !keepSource
+            ? .deleteProfile : .reassignSpace
+        beginProfileChange([spaceID], target: source, destination: destination,
+                           name: name, kind: kind, completion: completion)
+    }
+
+    private func beginProfileChange(_ spaces: [UUID], target: ProfileSummary, destination: UUID?, name: String?,
+                                    kind: PendingProfileChange.Kind,
+                                    completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard profileEngine == .chromium, !isReadOnly, !profileDeletionInFlight, device.pendingProfileDeletion == nil,
+              (kind == .deleteProfile ? onDeleteProfile != nil : nativePageHost != nil),
+              !spaces.isEmpty, spaces.allSatisfy({ tree.space($0)?.isAgent == false && tree.dataStoreID(for: $0) == target.id }),
+              destination != target.id, destination == nil || profiles.contains(where: { $0.id == destination }) else {
+            completion(.failure(.unavailable)); return
+        }
+        let survivor = destination ?? UUID()
+        let created = destination == nil ? KeptProfile(id: survivor,
+            name: name.flatMap { $0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : $0 } ?? tree.space(spaces[0])!.name) : nil
+        let moved = Set(spaces)
+        let windows = Set(regularWindows.filter { window in
+            window.spaceID.map(moved.contains) == true ||
+            window.selectedItemID.flatMap { tree.spaceID(of: $0) }.map(moved.contains) == true ||
+            window.split?.itemIDs.contains(where: { tree.spaceID(of: $0).map(moved.contains) == true }) == true
+        }.map(\.id)).union(device.windows.filter { $0.spaceID.map(moved.contains) == true }.map(\.id))
+        let change = PendingProfileChange(kind: kind, spaceIDs: spaces, source: KeptProfile(target),
+                                         newDestination: created, windowIDs: windows)
+        let intent = PendingProfileDeletion(target: target.id, survivor: survivor, change: change)
+        let previous = device
+        if let created { device.keptProfiles = (device.keptProfiles ?? []) + [created] }
+        device.pendingProfileDeletion = intent
+        guard persistDeletionState() else {
+            device = previous; completion(.failure(.persistenceFailed)); return
+        }
+        resumeProfileChange(intent, automatic: false, completion: completion)
+    }
+
+    private func changeIsCurrent(_ intent: PendingProfileDeletion) -> Bool {
+        guard let id = intent.change?.id, device.pendingProfileDeletion?.change?.id == id,
+              intent.target == device.pendingProfileDeletion?.target,
+              intent.survivor == device.pendingProfileDeletion?.survivor,
+              profiles.contains(where: { $0.id == intent.survivor }) else { return false }
+        return intent.change!.spaceIDs.allSatisfy {
+            tree.space($0)?.isAgent == false && [intent.target, intent.survivor].contains(tree.dataStoreID(for: $0) ?? UUID())
+        }
+    }
+
+    private func resumeProfileChange(_ intent: PendingProfileDeletion, automatic: Bool,
+                                     completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard !profileDeletionInFlight, changeIsCurrent(intent), let change = intent.change else {
+            completion(.failure(.pending)); return
+        }
+        if change.kind == .reassignSpace {
+            profileDeletionInFlight = true
+            if automatic && change.phase == .prepared &&
+                change.spaceIDs.allSatisfy({ tree.dataStoreID(for: $0) == intent.target }) {
+                // No data deletion/reservation exists for space-only moves. A
+                // new process cannot infer a fresh close/assignment from intent.
+                finishProfileChangeCancellation(intent, acknowledge: { true }, completion: completion)
+                return
+            }
+            if change.phase != .prepared || change.spaceIDs.allSatisfy({ tree.dataStoreID(for: $0) == intent.survivor }) {
+                guard commitProfileAssignment(intent) else {
+                    profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+                }
+                finishRetainedProfileChange(intent, completion: completion)
+                return
+            }
+            let ids = Set(change.spaceIDs.flatMap { items(inSpace: $0).map(\.id) })
+            let pages = ids.compactMap { session(for: $0) }.filter(\.requiresNativeResourceRelease)
+            var remaining = pages.count, accepted = true
+            func released(_ outcome: PageCloseOutcome) {
+                guard changeIsCurrent(intent) else { return }
+                accepted = accepted && outcome == .closed
+                remaining -= 1
+                guard remaining == 0 else { return }
+                guard accepted else {
+                    finishProfileChangeCancellation(intent, acknowledge: { true }, completion: completion)
+                    return
+                }
+                guard commitProfileAssignment(intent) else {
+                    profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+                }
+                finishRetainedProfileChange(intent, completion: completion)
+            }
+            if pages.isEmpty {
+                guard commitProfileAssignment(intent) else {
+                    profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+                }
+                finishRetainedProfileChange(intent, completion: completion)
+            } else {
+                for page in pages { page.requestNativeRelease(completion: released) }
+            }
+            return
+        }
+        guard let action = onDeleteProfile else { completion(.failure(.unavailable)); return }
+        profileDeletionInFlight = true
+        let canDelete: @MainActor () -> Bool = { [weak self] in self?.changeIsCurrent(intent) == true }
+        var preparationReplied = false
+        action(intent, automatic, canDelete) { [weak self] result in
+            guard !preparationReplied else { return }
+            preparationReplied = true
+            guard let self, self.changeIsCurrent(intent) else { return }
+            self.receiveProfileChangeResult(result, intent: intent, automatic: automatic, completion: completion)
+        }
+    }
+
+    private func receiveProfileChangeResult(_ result: ProfileDeletionOutcome, intent: PendingProfileDeletion,
+                                            automatic: Bool,
+                                            completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        switch result {
+        case .pending:
+            profileDeletionInFlight = false; completion(.failure(.pending))
+        case .cancelled(let acknowledge):
+            profileDeletionInFlight = false
+            // Deferred mode proves no mark/wipe occurred. Recovery may cancel
+            // an uncommitted assignment; a structure-only write is finalized
+            // with the source kept, never rolled back or followed by a wipe.
+            guard let current = device.pendingProfileDeletion?.change else { completion(.failure(.pending)); return }
+            guard current.phase == .prepared || (automatic && current.phase != .assignmentCommitted) else {
+                completion(.failure(.pending)); return
+            }
+            if current.spaceIDs.allSatisfy({ tree.dataStoreID(for: $0) == intent.survivor }) {
+                guard commitProfileAssignment(intent) else {
+                    profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+                }
+            }
+            finishProfileChangeCancellation(intent, acknowledge: acknowledge, completion: completion)
+        case .closeAdmitted(let continueCleanup):
+            // Native owner closure is authoritative even if its terminal
+            // observation delivery has not reached the model callback yet.
+            for id in intent.change!.spaceIDs.flatMap({ items(inSpace: $0).map(\.id) }) {
+                if let page = session(for: id), page.navigation?.profileID == intent.target {
+                    page.switcherSnapshot = nil
+                    page.nativeOwnerEnded()
+                }
+            }
+            guard commitProfileAssignment(intent) else {
+                profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+            }
+            var cleanupReplied = false
+            continueCleanup { [weak self] result in
+                guard !cleanupReplied else { return }
+                cleanupReplied = true
+                guard let self, self.changeIsCurrent(intent) else { return }
+                self.receiveProfileChangeResult(result, intent: intent, automatic: automatic, completion: completion)
+            }
+        case .deleted:
+            // Missing-directory reconciliation can finish without an admitted
+            // live Profile. Assignment still has to be committed durably first.
+            guard commitProfileAssignment(intent) else {
+                profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+            }
+            profileDeletionInFlight = false
+            let previous = device
+            device.dropKeptProfile(intent.target)
+            device.pendingProfileDeletion = nil
+            guard persistDeletionState() else {
+                device = previous; completion(.failure(.persistenceFailed)); return
+            }
+            forgetProfile(intent.target)
+            completion(.success(()))
+        }
+    }
+
+    private func commitProfileAssignment(_ original: PendingProfileDeletion) -> Bool {
+        guard changeIsCurrent(original), var intent = device.pendingProfileDeletion,
+              var change = intent.change else { return false }
+        if change.phase == .assignmentCommitted { return true }
+        change.phase = .closeAdmitted; intent.change = change
+        device.pendingProfileDeletion = intent
+        guard persistDeletionState() else { return false }
+        for id in change.spaceIDs.flatMap({ items(inSpace: $0).map(\.id) }) {
+            session(for: id)?.switcherSnapshot = nil
+        }
+        var proposed = tree
+        do {
+            for id in change.spaceIDs {
+                try proposed.setProfile(id, to: intent.survivor, kept: device.keptProfiles ?? [])
+            }
+        } catch { return false }
+        var next = device
+        if !proposed.profiles.contains(where: { $0.id == intent.target }) {
+            var kept = next.keptProfiles ?? []
+            kept.removeAll { $0.id == intent.target }; kept.append(change.source)
+            next.keptProfiles = kept
+        }
+        change.phase = .assignmentCommitted; intent.change = change
+        next.pendingProfileDeletion = intent
+        next.prune(against: proposed)
+        // TabStore writes structure first, device second. Publish neither in
+        // memory until both succeed; the durable close-admitted intent repairs
+        // a structure-only write without recreating IDs or erasing source data.
+        store.save(proposed, next); store.flush()
+        guard store.lastError == nil else { return false }
+        tree = proposed; device = next
+        let affected = Set(change.spaceIDs)
+        undoStack.removeAll { !$0.spaces.keys.filter(affected.contains).isEmpty }
+        for window in regularWindows {
+            if let selected = window.selectedItemID, !displayOrder(in: window).contains(selected), let space = window.spaceID {
+                window.selectedItemBySpace[space] = displayOrder(in: window).first
+                mirror(window)
+            }
+        }
+        for window in regularWindows where window.spaceID.map(change.spaceIDs.contains) == true {
+            sessionDelegate?.windowSpaceChanged(window)
+        }
+        onTreeChanged?()
+        onProfileWindowsNeedReload?(change.windowIDs)
+        return true
+    }
+
+    private func finishRetainedProfileChange(_ intent: PendingProfileDeletion,
+                                             completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard changeIsCurrent(intent) else { profileDeletionInFlight = false; completion(.failure(.pending)); return }
+        let previous = device
+        device.pendingProfileDeletion = nil
+        guard persistDeletionState() else {
+            device = previous; profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+        }
+        profileDeletionInFlight = false
+        completion(.success(()))
+    }
+
+    private func finishProfileChangeCancellation(_ intent: PendingProfileDeletion, acknowledge: @MainActor () -> Bool,
+                                                 completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
+        guard changeIsCurrent(intent) else { profileDeletionInFlight = false; completion(.failure(.pending)); return }
+        let previous = device
+        device.pendingProfileDeletion = nil
+        guard persistDeletionState() else {
+            device = previous; profileDeletionInFlight = false; completion(.failure(.persistenceFailed)); return
+        }
+        guard acknowledge() else {
+            device = previous; _ = persistDeletionState(); profileDeletionInFlight = false; completion(.failure(.pending)); return
+        }
+        profileDeletionInFlight = false
+        onProfileWindowsNeedReload?(intent.change!.windowIDs)
+        completion(.failure(.cancelled))
     }
 }

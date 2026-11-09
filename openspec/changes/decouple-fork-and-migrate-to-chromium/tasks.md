@@ -2,6 +2,8 @@
 
 Unchecked production tasks remain outstanding. Complete the replacement and its functional tests on Intel first, using the executable bridge evidence to advance application integration. Defer ARM compilation and native qualification until the integrated replacement is ready; keep its current cache. Interactive native, signing and performance qualifications remain required before release and do not block independent implementation. A failing feature must be fixed before dependent code relies on it. Complete the Barc identity/reset transition separately; this engine migration preserves the resulting Barc data.
 
+The immediate milestone is one usable integrated Intel app. Use the paired signed app and engine for startup/quit, browsing/history, drafts across tabs/spaces/splits/Peek, profile settings and isolation, extensions, downloads and screenshots. Continue fixing observed failures against that candidate and close the remaining feature gaps before starting more optimization work. Focused native tests and successful synthetic product workflows do not complete the ordinary interaction and release gates. Keep ARM and performance benchmarks deferred.
+
 ## 0. Authorized exploratory spike
 
 - [x] 0.1 Run a bounded isolated Intel CEF/AppKit embedding spike, compare a synthetic WebKit baseline, inspect required WebUI routes, and measure freeze/discard effects; record conclusions and limitations in `design.md` while keeping trial code, binaries and raw evidence outside commits. This does not qualify broad extensions, profile isolation, Apple Silicon or signed distribution.
@@ -18,18 +20,18 @@ Unchecked production tasks remain outstanding. Complete the replacement and its 
 
 ## 2. Runtime feasibility (G1)
 
-- [ ] 2.1 Pin a CEF Chrome-runtime candidate and build a minimal native host on both architectures; verify startup, clean shutdown and native focus without disabling the sandbox.
-- [ ] 2.2 Prototype profile-specific settings/extension WebUI and Work/Personal isolation; verify each shortcut operates in the selected profile even with another front window.
-- [ ] 2.3 Run the mandatory extension capability subset in that host; verify install/update, workers, action popup, native messaging and independent per-profile state.
-- [ ] 2.4 Prototype live view transfer, split panes and popup/opener behavior; verify form/history state survives transfer and keyboard/IME/accessibility work.
+- [ ] 2.1 Qualify startup, clean shutdown and native focus in the selected full Chromium runtime without disabling the sandbox. Complete Intel integration first and carry these cases to final ARM qualification; do not build another CEF host after its rejection in 2.6.
+- [ ] 2.2 Qualify profile-specific settings/extension WebUI and Work/Personal isolation in the selected runtime; verify each shortcut operates in the selected profile even with another front window.
+- [ ] 2.3 Run the mandatory extension capability subset in the selected runtime; verify install/update, workers, action popup, native messaging and independent per-profile state.
+- [ ] 2.4 Qualify live view transfer, split panes and popup/opener behavior in the selected runtime; verify form/history state survives transfer and keyboard/IME/accessibility work.
 - [ ] 2.5 At final distribution qualification (G5), sign/notarize the integrated build and launch from an installed location on both architectures; verify helper signatures, resource discovery and sandbox behavior.
 - [x] 2.6 Record CEF pass/fail against every G1 criterion; if any mandatory criterion fails, select the full Chromium path without reducing launch scope. Native multi-tab hosting failed; the gate table in `design.md` distinguishes partial profile evidence from failed or unqualified extension/lifecycle/distribution requirements. Full Chromium is selected.
-- [ ] 2.7 For the full Chromium path, pin source/toolchain/build arguments and produce the x86_64 browser-layer bridge first; verify provenance and Intel smoke launch. Produce and qualify arm64 after the integrated Intel replacement is ready. If CEF qualified, record this task as superseded in a reviewed task revision.
+- [ ] 2.7 Pin full Chromium source/toolchain/build arguments and produce the x86_64 browser-layer bridge first; verify provenance and Intel smoke launch. Produce and qualify arm64 after the integrated Intel replacement is ready.
 - [ ] 2.8 For the full Chromium path, prove browser-context/extension/WebUI ownership and native surface lifecycle through the Intel bridge, including one native product window switching profile spaces with retained live pages and correct native/extension focus, independent private sessions, private data disposal and installed-extension denial despite regular-profile incognito opt-ins. Use mechanical evidence to document the G2 integration boundary; complete remaining interactive, ARM and installed-distribution checks before release. If CEF qualified, record the alternative explicitly.
 
 ## 3. Engine-neutral seams with WebKit (G2)
 
-- [ ] 3.1 Introduce engine profile/page/event contracts and lifetime rules; add contract tests for cancellation and callbacks arriving after close.
+- [x] 3.1 Introduce engine profile/page/event contracts and lifetime rules; add contract tests for cancellation and callbacks arriving after close. `Profile`, `PageNavigation` and `NativePageHost` define the ownership boundary; `ProfileEngineTests` and `NativePageLifecycleTests` verify cancelled creation, close veto, owner teardown and rejection of late callbacks.
 - [ ] 3.2 Move `BrowserConfiguration` and profile storage access behind a WebKit adapter; verify shared-profile spaces and private-session isolation with regression tests.
 - [ ] 3.3 Adapt `PageSession`, `WebViewProvider`, and `PageSessionDelegate`; verify navigation, URL/title state and close behavior using existing package checks.
 - [ ] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
@@ -48,12 +50,12 @@ Unchecked production tasks remain outstanding. Complete the replacement and its 
 
 ## 4. Chromium pages and profiles (G3)
 
-- [ ] 4.1 Integrate runtime initialization, bridge callbacks and shutdown into the process entrypoint; verify repeated launch/quit does not leak helpers or deadlock.
+- [x] 4.1 Integrate runtime initialization, bridge callbacks and shutdown into the process entrypoint; verify repeated launch/quit does not leak helpers or deadlock. Repeated signed Intel product launches with synthetic profiles and normal quit passed, including saved-window startup and the corrected streamed-download path; helper and listener cleanup passed. Native focus, installed distribution and ARM qualification remain separate gates.
 - [ ] 4.2 Bind existing profile UUIDs to persistent Chromium contexts; test same-profile sharing, cross-profile isolation and profile renaming without storage relocation.
-- [ ] 4.3 Implement ephemeral contexts and profile deletion/reassignment lifecycle; test no private residue and no surviving extension ports after deletion.
+- [ ] 4.3 Implement ephemeral contexts and profile deletion/reassignment lifecycle; test no private residue, no surviving extension ports after deletion, assignment persistence failures, and reachable retry after relaunch even when the explicit survivor has no space. Preserve affected tab/window identities and source data until cleanup is admitted.
 - [ ] 4.4 Implement Chromium navigation and observable page state; test redirects, back/forward, authentication popups and cancelled navigation.
-- [ ] 4.5 Implement surface attach/detach and native focus routing; run window-transfer, split, Peek promotion and popup-opener checks on both architectures.
-- [ ] 4.6 Handle process failures and diagnostics; terminate a renderer in a maintained integration test and verify recoverable affected tabs plus usable unrelated windows.
+- [ ] 4.5 Implement surface attach/detach and native focus routing; run window-transfer, two-to-four-pane splits across regular profiles, Peek promotion and popup-opener checks on both architectures. Verify pane-specific permission/extension ownership, capture protection for every displayed pane, and superseded saved-layout restoration.
+- [x] 4.6 Handle process failures and diagnostics; terminate a renderer in a maintained integration test and verify recoverable affected tabs plus usable unrelated windows. The integrated Intel candidate passed `RendererFailurePreservesOtherProfileDocument`: the targeted renderer exited, its tab recovered through native navigation, and the other profile retained its renderer, live closure, draft and window ownership. ARM qualification remains in 9.1.
 
 ## 5. Profile extensions and settings (G3)
 
@@ -62,21 +64,31 @@ Unchecked production tasks remain outstanding. Complete the replacement and its 
 - [ ] 5.3 Integrate extension actions, options, workers and tab/window events; test real suite representatives and ensure no events cross profile/private boundaries.
 - [ ] 5.4 Adapt native host discovery and ports; test allowed/disallowed origins, vendor host behavior and port shutdown on profile deletion.
 - [ ] 5.5 Add typed profile-bound internal-page actions to `ProfileDetailForm`; test every quick link, inactive/no-window profiles, changed selection and deleted-profile races.
-- [ ] 5.6 Map overlapping native/Chromium preferences through one authority and refresh the native form on return; verify data deletion and preference edits affect only the selected profile.
+- [ ] 5.6 Map overlapping native/Chromium preferences through one authority and refresh the native form on return; verify data deletion and preference edits affect only the selected profile. Complete one-time search-choice import, native/WebUI consistency, controlled-provider restrictions, custom request semantics and suggestion ownership against `profile-extensions/spec.md`; retain Keychain-backed Kagi credentials without copying them into provider templates.
 - [ ] 5.7 Document supported extension APIs/service limitations and run the full frozen suite on Intel before exiting G3; repeat every mandatory entry on Apple Silicon at final qualification.
 
 ## 6. Feature parity (G4)
 
 - [ ] 6.1 Adapt downloads/uploads and file panels; test cancellation, suggested names, destination selection and download history.
 - [ ] 6.2 Adapt site permissions, certificate warnings and cookies/data deletion; test denied capture, exceptions and profile isolation.
-- [ ] 6.3 Port native navigation conveniences, find/zoom, context menus, shortcuts and drag/drop; run the corresponding existing UI checks and IME/accessibility smoke cases.
-- [ ] 6.4 Implement Chromium blocker request integration using existing filter policy; test blocking, exceptions, counters and coexistence with extension rules.
-- [ ] 6.5 Port cosmetic rules, scriptlets, tweaks and translation to isolated script contexts; test frame handling and protection against untrusted native-bridge messages.
+- [ ] 6.3 Port native navigation conveniences, back/forward history menus, find/zoom, context menus, shortcuts and drag/drop; run the corresponding existing UI checks and IME/accessibility smoke cases. Include the optional top address bar and per-site Developer bar in the actual Chromium shell; switching address placement must retain a visible, working address control, and enabling a site Developer bar must display its tools on that page.
+- [ ] 6.4 Implement Chromium blocker request integration using existing filter policy; test blocking, redirects, frame/worker ownership, exceptions, counters and coexistence with extension rules against `content-blocking/spec.md`. Preserve exact private-context ownership and qualify worker attribution separately from ordinary page requests. Verify saved whitelist/optional-list settings before first load, windowless service-worker wakes, private-menu first-request admission and superseded startup policy; ordinary-window checks alone do not qualify startup coverage.
+- [ ] 6.5 Port cosmetic rules, scriptlets, tweaks and translation using the appropriate page or isolated context; test document-start ordering, frame handling and protection against untrusted native-bridge messages. Include the existing optional YouTube/Facebook/Reddit features, SponsorBlock, social downloads and saved opt-in Boost JavaScript; filter-list scriptlets and Boost CSS alone do not complete this task. Verify Boost editing and picking through an actually mounted native product control.
 - [ ] 6.6 Port PDF/printing, snapshots and developer tools; verify embedded/docked tools and keyboard focus without an unintended second browser shell.
 - [ ] 6.7 Port media state, mute, audio routing, PiP and mini-player; verify call/screen-share/video workflows and energy metrics on both architectures.
-- [ ] 6.8 Adapt vault/autofill and WebAuthn integration; test supported hardware/security-key flows and origin-bound credential prompts.
-- [ ] 6.9 Adapt AI browser tools, DevMCP and authenticated live-fetch consumers to engine contracts; verify existing tool behavior and permission boundaries without adding new AI features.
+- [ ] 6.8 Adapt vault/autofill and WebAuthn integration; preserve Pawl password/OTP selection, password saving and passkeys, including availability after startup and exact-field cancellation. Test actual picker focus restoration, origin/profile-bound consent and supported hardware/security-key flows. Native form filling or stock Chromium WebAuthn alone does not complete this task.
+- [ ] 6.9 Adapt AI browser tools, DevMCP and authenticated live-fetch consumers to engine contracts; verify existing tool behavior and permission boundaries against `browser-automation/spec.md` without adding new AI features. Cover approval-time target changes, late asynchronous results, script restrictions and cancellation without a hidden WebKit fallback.
 - [ ] 6.10 Update maintained architecture and compatibility documentation for each migrated feature; verify no macOS feature silently falls back to a hidden WebKit page.
+- [x] 6.11 Port opt-in page-text history capture; verify searchable regular-page text, private/Agent exclusions, disabled settings and stale-result rejection without creating a WebKit page. Signed Intel product checks confirmed body-only search in the persisted index, Agent exclusion and no index when disabled. Maintained tests cover private/Agent admission, same-path coalescing and seven late-result invalidations without a WebKit page. Private product execution and palette/preference UI qualification remain in 9.1.
+- [ ] 6.12 Stop rendering Chromium's tab strip and toolbar in browser windows; verify in the real window across single, split, Peek, private, full-screen and relaunch states, plus focus, accessibility and toolbar-anchored prompts.
+- [ ] 6.13 Run Nook's tab, space, window and split shortcuts in Chromium windows, which `KeyboardShortcutManager` currently gates off; verify each acts on the sidebar's tabs rather than Chromium's hidden strip.
+- [ ] 6.14 Present every split through one app-controlled composition of independent tabs, replacing `SplitTabCollection`; verify side-by-side and top-to-bottom layouts, divider resize, same-profile, cross-profile and private splits, and Peek over a split in the real window.
+- [ ] 6.15 Expose extension actions, popups and pinning in the native sidebar now that Chromium's toolbar is not rendered; verify real extensions in the real window.
+- [ ] 6.16 Wire the AI assistant, its settings and its browser tools in Chromium windows; verify a tool call acts on the exact visible page.
+- [ ] 6.17 Show empty spaces and move loaded tabs between profiles in Chromium windows, with Chromium's fallback client never carrying a window into another space; verify creating a space, closing a space's last tab, closing with another space retained, and moving a tab in the real window.
+- [ ] 6.18 Close the app-side parity gaps from the Chromium feature audit: theme and appearance, General settings, Site Controls, space deletion, quit-time saves, palette and shortcut actions, favorite cards; verify each in the real window.
+- [ ] 6.19 Add the engine hooks the audit needs: favicons, navigation policy for link cleaning, site routing and Warn-before-HTTP, hovered link, load progress, session state after unload; verify each in the real window.
+- [ ] 6.20 Make the Chromium window match Arc: window controls on one row, framed page with rounded corners, address control at rest, Favorites tiles, Library layout, and no Chromium bookmark interface; verify by side-by-side comparison with the real Arc window, with the owner judging.
 
 ## 7. Engine data conversion and recovery (G4)
 

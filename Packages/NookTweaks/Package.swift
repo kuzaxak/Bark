@@ -22,5 +22,7 @@ let package = Package(
             resources: [.copy("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(name: "NookTweaksTests", dependencies: ["NookTweaks", .product(name: "NookSettings", package: "NookSettings")],
+            swiftSettings: [.swiftLanguageMode(.v5)]),
     ]
 )

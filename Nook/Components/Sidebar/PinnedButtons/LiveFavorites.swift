@@ -29,7 +29,14 @@ final class LiveFavorites {
     /// Join rows the person closed, until their meeting ends.
     private(set) var hiddenJoins: Set<String> = []
     /// Each Gmail favorite's last read of its feed, and when that read went out.
-    private(set) var mail: [UUID: (outcome: GmailFeed.Outcome, at: Date)] = [:]
+    private struct MailRead {
+        let outcome: GmailFeed.Outcome
+        let at: Date
+        let spaceID: UUID
+        let profileID: UUID
+        let account: Int
+    }
+    private var mail: [UUID: MailRead] = [:]
     /// When each Gmail favorite's tab title last changed.
     private(set) var titleChanges: [UUID: Date] = [:]
 
@@ -42,11 +49,16 @@ final class LiveFavorites {
     /// Bumped by every load and stop, so only the latest load lands.
     @ObservationIgnored private var calendarGeneration = 0
     @ObservationIgnored private var mailFetches: [UUID: MailFetch] = [:]
+    @ObservationIgnored private var nativeMailTail: Task<Void, Never>?
 
     private struct MailFetch {
-        var inFlight = false
         var last = Date.distantPast
         var failures = 0
+        var request: UUID?
+        var task: Task<Void, Never>?
+        var profileID: UUID?
+        var spaceID: UUID?
+        var account: Int?
     }
 
     /// A hover or a title change reads the feed again after this long, unless the last read failed.
@@ -75,8 +87,11 @@ final class LiveFavorites {
     static func kind(of item: Item, in window: BrowserWindowState, tabs: TabsController) -> GoogleFavorite? {
         guard tabs.settings.favoriteMeetingsAndMail, !window.isIncognito,
               let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false,
-              tabs.profileEngine == .webKit else { return nil }
-        return GoogleFavorite(url: item.url)
+              let kind = GoogleFavorite(url: item.url) else { return nil }
+        if tabs.profileEngine == .chromium {
+            guard case .mail = kind, tabs.nativeLiveFetch != nil else { return nil }
+        }
+        return kind
     }
 
     /// Whether the space has a Calendar favorite that shows meetings.
@@ -108,9 +123,20 @@ final class LiveFavorites {
         refresh(item, kind: kind)
     }
 
+    private func currentMail(_ itemID: UUID) -> MailRead? {
+        guard let tabs, let read = mail[itemID], tabs.spaceID(of: itemID) == read.spaceID,
+              tabs.tree.dataStoreID(for: read.spaceID) == read.profileID, tabs.isProfileAvailable(read.profileID),
+              GoogleFavorite(url: tabs.item(itemID)?.url) == .mail(account: read.account) else { return nil }
+        return read
+    }
+    func mailOutcome(_ itemID: UUID, account: Int) -> GmailFeed.Outcome? {
+        guard let read = currentMail(itemID), read.account == account else { return nil }
+        return read.outcome
+    }
+
     /// A Gmail favorite's unread count, from its feed and its loaded tab's `title`.
     func unread(_ itemID: UUID, title: String?) -> Int {
-        let feed: (count: Int, at: Date)? = mail[itemID].flatMap { read in
+        let feed: (count: Int, at: Date)? = currentMail(itemID).flatMap { read in
             guard case .inbox(let inbox) = read.outcome else { return nil }
             return (inbox.unread, read.at)
         }
@@ -199,6 +225,9 @@ final class LiveFavorites {
         return tabs.orderedSpaces.filter { !$0.isAgent }.flatMap { tabs.favorites(of: $0.id) }.compactMap { item in
             guard seen.insert(item.id).inserted, let kind = GoogleFavorite(url: item.url),
                   let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false else { return nil }
+            if tabs.profileEngine == .chromium {
+                guard case .mail = kind, tabs.nativeLiveFetch != nil else { return nil }
+            }
             return (item.id, spaceID, kind)
         }
     }
@@ -213,28 +242,62 @@ final class LiveFavorites {
 
     /// Reads a Gmail favorite's feed when due: every two minutes, waiting longer after failures.
     /// `soon` shortens a regular wait to `mailSoon`.
-    private func fetchMail(_ itemID: UUID, spaceID: UUID, account: Int, soon: Bool) {
-        guard let tabs else { return }
+    @discardableResult
+    private func fetchMail(_ itemID: UUID, spaceID: UUID, account: Int, soon: Bool) -> Task<Void, Never>? {
+        guard let tabs else { return nil }
+        let profileID = tabs.tree.dataStoreID(for: spaceID)
         var fetch = mailFetches[itemID] ?? MailFetch()
+        if fetch.profileID != profileID || fetch.spaceID != spaceID || fetch.account != account {
+            fetch.task?.cancel()
+            fetch = MailFetch(); fetch.profileID = profileID; fetch.spaceID = spaceID; fetch.account = account
+            mail[itemID] = nil
+        }
         let wait = soon && fetch.failures == 0 ? Self.mailSoon : GmailFeed.retryDelay(afterFailures: fetch.failures)
         // Minute ticks land a few milliseconds either side of the minute.
-        guard !fetch.inFlight, Date().timeIntervalSince(fetch.last).rounded() >= wait else { return }
+        if let task = fetch.task { return task }
+        guard Date().timeIntervalSince(fetch.last).rounded() >= wait else { return nil }
         let sent = Date()
-        fetch.inFlight = true
         fetch.last = sent
+        let request = UUID(), profile = profileID
+        fetch.request = request
         mailFetches[itemID] = fetch
-        Task {
-            let outcome = await tabs.gmailInbox(inSpace: spaceID, account: account)
-            guard var fetch = mailFetches[itemID] else { return }
-            fetch.inFlight = false
+        // Reuse the existing per-favorite task as its admission claim. Native
+        // mail batches (and individual refreshes) run one source at a time,
+        // leaving the other profile slot available to the folder batch.
+        let previous = tabs.profileEngine == .chromium ? nativeMailTail : nil
+        let task = Task { @MainActor in
+            if let previous { await previous.value }
+            guard !Task.isCancelled,
+                  tabs.spaceID(of: itemID) == spaceID,
+                  tabs.profile(forSpace: spaceID)?.id == profile,
+                  GoogleFavorite(url: tabs.item(itemID)?.url) == .mail(account: account) else {
+                if mailFetches[itemID]?.request == request {
+                    mailFetches[itemID]?.task = nil
+                    mailFetches[itemID]?.request = nil
+                    mailFetches[itemID]?.last = .distantPast
+                }
+                return
+            }
+            let outcome = await tabs.gmailInbox(inSpace: spaceID, account: account, forFavorite: itemID)
+            guard var fetch = mailFetches[itemID], fetch.request == request else { return }
+            fetch.task = nil; fetch.request = nil
+            mailFetches[itemID] = fetch
+            guard !Task.isCancelled, tabs.spaceID(of: itemID) == spaceID,
+                  tabs.profile(forSpace: spaceID)?.id == profile,
+                  GoogleFavorite(url: tabs.item(itemID)?.url) == .mail(account: account) else { return }
             fetch.failures = outcome == .failed ? fetch.failures + 1 : 0
             mailFetches[itemID] = fetch
-            mail[itemID] = (outcome, sent)
+            if let profile { mail[itemID] = MailRead(outcome: outcome, at: sent, spaceID: spaceID, profileID: profile, account: account) }
         }
+        mailFetches[itemID]?.task = task
+        if tabs.profileEngine == .chromium { nativeMailTail = task }
+        return task
     }
 
     /// Forgets the mail of every favorite not in `ids`.
     private func keepMail(of ids: Set<UUID>) {
+        if ids.isEmpty { nativeMailTail?.cancel() }
+        for (id, fetch) in mailFetches where !ids.contains(id) { fetch.task?.cancel() }
         mailFetches = mailFetches.filter { ids.contains($0.key) }
         if mail.keys.contains(where: { !ids.contains($0) }) {
             mail = mail.filter { ids.contains($0.key) }

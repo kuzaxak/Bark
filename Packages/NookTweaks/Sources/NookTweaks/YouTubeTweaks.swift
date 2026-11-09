@@ -102,7 +102,7 @@ public enum YouTubeTweaks {
     }
 
     /// One rule per selector: an unknown selector in a list would drop the whole rule.
-    private static func css(for settings: NookSettingsService) -> String {
+    static func css(for settings: NookSettingsService) -> String {
         var hidden: [String] = []
         if settings.youTubeHideShorts { hidden += shortsSelectors }
         hidden += settings.youTubeHiddenHomeSections

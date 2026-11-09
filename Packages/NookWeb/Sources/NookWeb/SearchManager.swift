@@ -22,6 +22,31 @@ public class SearchManager {
     public var autofillHost: String?
     
     public init() {}
+    // Focused URLProtocol tests exercise actual provider/transport admission.
+    // App consumers keep the public initializer and the credential-free session.
+    init(suggestionSession: URLSession) { suggestionSessionOverride = suggestionSession }
+    @ObservationIgnored private var suggestionSessionOverride: URLSession?
+
+    @MainActor private final class WebSuggestionTarget {
+        weak var page: PageSession?
+        let profileID: UUID?
+        let isCurrent: @MainActor () -> Bool
+        init(page: PageSession, isCurrent: @escaping @MainActor () -> Bool) {
+            self.page = page; profileID = page.profile?.id; self.isCurrent = isCurrent
+        }
+    }
+    private var webSuggestionTarget: WebSuggestionTarget?
+
+    /// Explicit native address intent. A stale/private/unknown target fails
+    /// closed; it never falls back to the window's unrelated space profile.
+    public func setWebSuggestionTarget(for page: PageSession, whileCurrent: @escaping @MainActor () -> Bool) {
+        webSuggestionTarget = WebSuggestionTarget(page: page, isCurrent: whileCurrent)
+        clearSuggestions()
+    }
+    public func clearWebSuggestionTarget() {
+        webSuggestionTarget = nil
+        clearSuggestions()
+    }
 
     // Native suggestions need no credentials, cookies or persistent cache.
     // Select from the real model engine, keeping WebKit's session unchanged.
@@ -34,7 +59,7 @@ public class SearchManager {
         return URLSession(configuration: configuration)
     }()
     private var session: URLSession {
-        tabs?.profileEngine == .chromium ? Self.nativeSuggestionSession : .shared
+        tabs?.profileEngine == .chromium ? suggestionSessionOverride ?? Self.nativeSuggestionSession : .shared
     }
     private var searchTask: Task<Void, Never>?
     private var historyTask: Task<Void, Never>?
@@ -156,6 +181,7 @@ public class SearchManager {
     
     /// The controller and window whose space's tabs the palette searches.
     public func setTabs(_ tabs: TabsController?, window: BrowserWindowState?) {
+        if self.tabs !== tabs || self.window !== window { clearWebSuggestionTarget() }
         self.tabs = tabs
         self.window = window
         updateSpaceContext()
@@ -489,7 +515,41 @@ public class SearchManager {
         // Every keystroke goes to the endpoint, so a private window sends none, and an engine
         // only hears from people who chose it. Unknown window or settings: send nothing. Kagi's
         // endpoint answers without the session token, so the token never leaves for it.
-        guard let window, !window.isIncognito, let engine = tabs?.searchEngineId(forSpace: window.spaceID) else { return [] }
+        guard let window, !window.isIncognito, let tabs else { return [] }
+        let spaceID = window.spaceID
+        let target = tabs.profileEngine == .chromium ? webSuggestionTarget : nil
+        let profileID: UUID
+        if let target {
+            guard let captured = target.profileID else { return [] }
+            profileID = captured
+        } else {
+            guard let spaceID, let captured = tabs.tree.dataStoreID(for: spaceID) else { return [] }
+            profileID = captured
+        }
+        func current() -> Bool {
+            guard !Task.isCancelled, self.window === window, !window.isIncognito,
+                  self.tabs === tabs, tabs.isProfileAvailable(profileID) else { return false }
+            if let target {
+                guard self.webSuggestionTarget === target, let page = target.page,
+                      !page.isPrivate, page.profile?.id == profileID else { return false }
+                return target.isCurrent() && self.webSuggestionTarget === target &&
+                    target.page === page && !page.isPrivate && page.profile?.id == profileID && !Task.isCancelled
+            }
+            return self.webSuggestionTarget == nil && window.spaceID == spaceID &&
+                window.spaceID.flatMap({ tabs.tree.dataStoreID(for: $0) }) == profileID
+        }
+        guard tabs.profileEngine != .chromium || current() else { return [] }
+        func effective() async -> ProfileSearchState? {
+            await withCheckedContinuation { continuation in
+                tabs.profileSearchState(profileID: profileID, includeChoices: false) { continuation.resume(returning: try? $0.get()) }
+            }
+        }
+        let nativeState = tabs.profileEngine == .chromium ? await effective() : nil
+        let engine: String
+        if tabs.profileEngine == .chromium {
+            guard current() else { return [] }
+            guard let nativeState else { return [] }; engine = nativeState.suggestions
+        } else { engine = tabs.searchEngineId(forSpace: window.spaceID) }
         var components: URLComponents
         switch engine {
         case SearchProvider.google.rawValue:
@@ -502,12 +562,17 @@ public class SearchManager {
         default:
             return []
         }
-        guard let url = components.url else { return [] }
+        guard let url = components.url,
+              tabs.profileEngine != .chromium || current() else { return [] }
         do {
             let (data, _) = try await session.data(from: url)
             try Task.checkCancellation()
             guard let jsonArray = try JSONSerialization.jsonObject(with: data) as? [Any],
                   jsonArray.count >= 2, let strings = jsonArray[1] as? [String] else { return [] }
+            if let nativeState {
+                guard current(), let state = await effective(), state == nativeState,
+                      current() else { return [] }
+            }
             return strings.prefix(5).map {
                 SearchSuggestion(text: $0, type: isLikelyURL($0) ? .url : .search, section: "Suggestions")
             }

@@ -43,7 +43,7 @@ struct MediaControlsView: View {
 
     private func bar(_ page: PageSession) -> some View {
         ViewThatFits(in: .horizontal) {
-            controls(page, showsVideoButton: page.hasVideoContent)
+            controls(page, showsVideoButton: tabs.profileEngine == .webKit && page.hasVideoContent)
             controls(page, showsVideoButton: false)
         }
         .labelStyle(.iconOnly)
@@ -74,6 +74,8 @@ struct MediaControlsView: View {
 
     private func controls(_ page: PageSession, showsVideoButton: Bool) -> some View {
         let media = page.media
+        let track = [media.title, media.artist, media.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " – ")
+        let label = track.isEmpty ? page.title : track
         return HStack(spacing: 0) {
             Button {
                 withAnimation(NookDesign.Motion.standard) { tabs.select(page.itemID, in: windowState) }
@@ -84,8 +86,8 @@ struct MediaControlsView: View {
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                     .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
             }
-            .help(page.title)
-            .accessibilityLabel("Go to \(page.title)")
+            .help(label)
+            .accessibilityLabel("Go to \(label)")
             Spacer(minLength: 0)
             Button("Previous", systemImage: "backward.end.fill") { page.skipTrack(forward: false) }
                 .help("Previous")
@@ -95,6 +97,7 @@ struct MediaControlsView: View {
                 page.togglePlayback()
             }
             .help(media.isPlaying ? "Pause" : "Play")
+            .disabled(!media.isKnown || (media.isPlaying ? !media.canPause : !media.canPlay))
             Spacer(minLength: 0)
             Button("Next", systemImage: "forward.end.fill") { page.skipTrack(forward: true) }
                 .help("Next")

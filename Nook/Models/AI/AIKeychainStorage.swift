@@ -19,11 +19,19 @@ import Security
 /// Uses internal synchronization for thread safety
 final class AIKeychainStorage: @unchecked Sendable {
     static let shared = AIKeychainStorage()
+    static let defaultService = "com.nook.aiProvider"
 
-    private let service = "com.nook.aiProvider"
+    private var service = AIKeychainStorage.defaultService
     private let lock = NSLock()
 
     private init() {}
+
+    /// The service every key in this process is filed under. `AIConfigService` sets it before any key is read.
+    func useService(_ service: String) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.service = service
+    }
 
     func apiKey(for providerId: String) -> String? {
         guard !providerId.isEmpty else { return nil }

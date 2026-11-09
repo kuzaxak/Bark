@@ -14,6 +14,17 @@ struct TabResourceSettingsTests {
         #expect(settings.idleTabUnloadingEnabled)
         // The app's existing observer uses the mode payload to reapply its live policy.
         let modes = ModeNotifications()
+        let startups = ModeNotifications()
+        let startupObserver = NotificationCenter.default.addObserver(
+            forName: .startupLoadModeChanged, object: nil, queue: nil
+        ) { notification in
+            MainActor.assumeIsolated {
+                if notification.object as? NookSettingsService === settings {
+                    startups.values.append(settings.startupLoadMode.rawValue)
+                }
+            }
+        }
+        defer { NotificationCenter.default.removeObserver(startupObserver) }
         let observer = NotificationCenter.default.addObserver(
             forName: .tabManagementModeChanged, object: nil, queue: nil
         ) { notification in
@@ -35,6 +46,9 @@ struct TabResourceSettingsTests {
         #expect(enabled.idleTabUnloadingEnabled)
         #expect(enabled.startupLoadMode == .favoritesAndSpace)
         #expect(modes.values == Array(repeating: settings.tabManagementMode.rawValue, count: 2))
+        #expect(startups.values == [StartupLoadMode.nothing.rawValue, StartupLoadMode.favoritesAndSpace.rawValue])
+        settings.startupLoadMode = .favoritesAndSpace
+        #expect(startups.values.count == 2) // No restart for an unchanged preference.
         #expect(tokenStore.loads == 0)
     }
 }

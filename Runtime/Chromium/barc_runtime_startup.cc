@@ -3,6 +3,7 @@
 #include <pthread.h>
 
 #include <utility>
+#include <algorithm>
 #include <array>
 #include <string>
 #include <optional>
@@ -25,6 +26,16 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/views/frame/barc_bridge.h"
+#include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
+#include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
+#include "chrome/browser/ui/browser_window.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
+#include "chrome/browser/ui/browser_tabstrip.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "components/tabs/public/tab_interface.h"
+#include "ui/display/screen.h"
+#include "url/url_constants.h"
+
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/os_crypt/common/keychain_password_mac.h"
 #include "components/sessions/core/session_id.h"
@@ -46,7 +57,7 @@ struct Startup {
   raw_ptr<void> user_data = nullptr;
   void (*close_callback)(int32_t, void*) = nullptr;
   raw_ptr<void> close_user_data = nullptr;
-  int32_t (*browser_target_callback)(int32_t, char*, size_t, void*) = nullptr;
+  int32_t (*browser_target_callback)(int32_t, const char*, int32_t, int32_t, BarcApplicationTarget*, void*) = nullptr;
   raw_ptr<void> browser_target_user_data = nullptr;
   base::RepeatingClosure launch_ready;
   bool launch_drain_posted = false;
@@ -129,7 +140,8 @@ void barc_set_runtime_close_callback(void (*callback)(int32_t, void*),
 }
 
 void barc_set_runtime_browser_target_callback(
-    int32_t (*callback)(int32_t, char*, size_t, void*),
+    int32_t (*callback)(int32_t, const char*, int32_t, int32_t,
+                        BarcApplicationTarget*, void*),
     void* user_data) {
   CHECK(pthread_main_np());
   auto& state = State();
@@ -215,6 +227,7 @@ void NotifyApplicationBrowserAvailable() {
         }
         auto drain = State().launch_ready;
         drain.Run();
+        if (CanResolveApplicationBrowser()) DrainApplicationPageIntents();
       }));
 }
 base::FilePath ApplicationLaunchDirectory() {
@@ -236,100 +249,237 @@ namespace {
 struct ApplicationTarget {
   base::WeakPtr<BrowserWindowInterface> browser;
   std::string regular_uuid;
+  BarcApplicationTarget value{};
   bool opening = false;
 };
-std::optional<ApplicationTarget> ResolveTarget(int32_t kind) {
-  if (!CanResolveApplicationBrowser() || kind < 0 || kind > 2) {
+std::optional<std::string> TargetUUID(const char (&value)[37]) {
+  if (value[36] != '\0') return std::nullopt;
+  if (!value[0]) return std::string();
+  const auto uuid = base::Uuid::ParseCaseInsensitive(value);
+  if (!uuid.is_valid() || uuid.AsLowercaseString() != value ||
+      uuid.AsLowercaseString() == "00000000-0000-0000-0000-000000000000")
     return std::nullopt;
-  }
-  std::array<char, 37> uuid{};
+  return uuid.AsLowercaseString();
+}
+std::optional<ApplicationTarget> ResolveTarget(int32_t kind, const std::string& url,
+                                               int32_t pending_window,
+                                               int32_t pending_tab) {
+  if (!CanResolveApplicationBrowser() || kind < 0 || kind > 3) return std::nullopt;
+  BarcApplicationTarget value{};
   auto callback = State().browser_target_callback;
-  const int32_t id = callback(kind, uuid.data(), uuid.size(),
-                              State().browser_target_user_data.get());
-  if (!CanResolveApplicationBrowser() ||
-      State().browser_target_callback != callback) {
+  const int32_t result = callback(kind, url.empty() ? nullptr : url.c_str(),
+      pending_window, pending_tab, &value, State().browser_target_user_data.get());
+  if (!CanResolveApplicationBrowser() || State().browser_target_callback != callback)
     return std::nullopt;
+  if (result == -1 && (kind == 0 || kind == 3)) {
+    ApplicationTarget target; target.opening = true; return target;
   }
-  if (id == -1 && kind == 0 && uuid.front() == '\0') {
-    return ApplicationTarget{nullptr, {}, true};
-  }
-  if (id > 0) {
+  if (result != 1 || value.presentation > BARC_APPLICATION_MINI)
+    return std::nullopt;
+  const auto regular = TargetUUID(value.regular_profile_uuid);
+  const auto space = TargetUUID(value.space_uuid);
+  if (!regular || !space || (kind == 0 && !url.empty() &&
+      value.presentation == BARC_APPLICATION_CURRENT_SPACE && space->empty()))
+    return std::nullopt;
+  if (value.window > 0) {
     auto* browser = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
-        SessionID::FromSerializedValue(id));
+        SessionID::FromSerializedValue(value.window));
     if (!browser || browser->IsDeleteScheduled() || !browser->GetWindow() ||
-        !browser->IsSelectedForNativeWindow() ||
-        browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
+        (kind != 3 && !browser->IsSelectedForNativeWindow()) ||
+        (browser->GetType() != BrowserWindowInterface::TYPE_NORMAL &&
+         !(value.presentation == BARC_APPLICATION_MINI && IsApplicationMini(browser))))
       return std::nullopt;
-    }
+    if (kind == 3 && (value.window != pending_window ||
+        !barc_tab_copy_title(pending_window, pending_tab, nullptr, 0)))
+      return std::nullopt;
     std::array<char, 37> actual{};
-    if (barc_window_profile_uuid(id, actual.data(), actual.size()) == 37) {
-      return ApplicationTarget{browser->GetWeakPtr(), actual.data()};
+    if (barc_window_profile_uuid(value.window, actual.data(), actual.size()) == 37) {
+      if (kind == 3 && !regular->empty() && *regular != actual.data())
+        return std::nullopt;
+      const auto uuid = regular->empty() ? std::string(actual.data()) : *regular;
+      if (regular->empty()) base::span(value.regular_profile_uuid).copy_from(base::span(actual));
+      return ApplicationTarget{browser->GetWeakPtr(), uuid, value};
     }
-    if (kind != 0 && barc_window_private_session_uuid(id, actual.data(),
-                                                      actual.size()) == 37) {
-      return ApplicationTarget{browser->GetWeakPtr(), {}};
-    }
+    if (regular->empty() && (kind != 0 || value.presentation == BARC_APPLICATION_MINI) &&
+        barc_window_private_session_uuid(value.window, actual.data(), actual.size()) == 37)
+      return ApplicationTarget{browser->GetWeakPtr(), {}, value};
     return std::nullopt;
   }
-  if (id != 0 || uuid.back() != '\0') {
-    return std::nullopt;
-  }
-  const auto parsed = base::Uuid::ParseCaseInsensitive(uuid.data());
-  if (!parsed.is_valid() || parsed.AsLowercaseString() != uuid.data() ||
-      parsed.AsLowercaseString() == "00000000-0000-0000-0000-000000000000") {
-    return std::nullopt;
-  }
-  return ApplicationTarget{nullptr, parsed.AsLowercaseString()};
+  if (value.window || regular->empty() || kind == 3) return std::nullopt;
+  return ApplicationTarget{nullptr, *regular, value};
 }
 }  // namespace
 void RunInApplicationBrowser(int32_t kind,
-                             base::OnceCallback<void(ApplicationBrowserResult,
-                                                     BrowserWindowInterface*,
-                                                     Profile*)> callback) {
-  CHECK(content::BrowserThread::CurrentlyOn(content::BrowserThread::UI));
-  auto target = ResolveTarget(kind);
-  if (!target) {
-    std::move(callback).Run(ApplicationBrowserResult::kUnavailable, nullptr,
-                            nullptr);
-    return;
-  }
-  if (target->opening) {
-    std::move(callback).Run(ApplicationBrowserResult::kOpening, nullptr,
-                            nullptr);
+    base::OnceCallback<void(ApplicationBrowserResult, BrowserWindowInterface*, Profile*)> callback) {
+  RunInApplicationBrowser(kind, {}, 0, 0,
+      base::BindOnce([](base::OnceCallback<void(ApplicationBrowserResult,
+                           BrowserWindowInterface*, Profile*)> callback,
+                        ApplicationBrowserResult result, BrowserWindowInterface* browser,
+                        Profile* profile, BarcApplicationTarget) {
+        std::move(callback).Run(result, browser, profile);
+      }, std::move(callback)));
+}
+void RunInApplicationBrowser(int32_t kind, std::string url,
+    int32_t pending_window, int32_t pending_tab,
+    base::OnceCallback<void(ApplicationBrowserResult, BrowserWindowInterface*,
+                            Profile*, BarcApplicationTarget)> callback) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto target = ResolveTarget(kind, url, pending_window, pending_tab);
+  if (!target || target->opening) {
+    std::move(callback).Run(target ? ApplicationBrowserResult::kOpening
+                                  : ApplicationBrowserResult::kUnavailable,
+                            nullptr, nullptr, {});
     return;
   }
   if (target->browser) {
-    std::move(callback).Run(ApplicationBrowserResult::kReady,
-                            target->browser.get(),
-                            target->browser->GetProfile());
-    return;
+    std::array<char, 37> actual{};
+    const auto id = target->browser->GetSessionID().id();
+    if (target->regular_uuid.empty() ||
+        (barc_window_profile_uuid(id, actual.data(), actual.size()) == 37 &&
+         target->regular_uuid == actual.data())) {
+      std::move(callback).Run(ApplicationBrowserResult::kReady, target->browser.get(),
+                              target->browser->GetProfile(), target->value);
+      return;
+    }
   }
-  WithRegularProfileForApplication(
-      target->regular_uuid,
-      base::BindOnce(
-          [](int32_t kind, std::string uuid,
-             base::OnceCallback<void(ApplicationBrowserResult,
-                                     BrowserWindowInterface*, Profile*)>
-                 callback,
-             Profile* profile) {
-            auto current = ResolveTarget(kind);
-            if (profile && current && current->opening) {
-              std::move(callback).Run(ApplicationBrowserResult::kOpening,
-                                      nullptr, nullptr);
-              return;
-            }
-            if (!profile || !current || current->regular_uuid != uuid ||
-                (current->browser &&
-                 current->browser->GetProfile() != profile)) {
-              std::move(callback).Run(ApplicationBrowserResult::kUnavailable,
-                                      nullptr, nullptr);
-              return;
-            }
-            std::move(callback).Run(ApplicationBrowserResult::kReady,
-                                    current->browser.get(), profile);
-          },
-          kind, target->regular_uuid, std::move(callback)));
+  WithRegularProfileForApplication(target->regular_uuid,
+      base::BindOnce([](int32_t kind, std::string url, int32_t pending_window,
+                        int32_t pending_tab, ApplicationTarget expected,
+                        base::OnceCallback<void(ApplicationBrowserResult,
+                            BrowserWindowInterface*, Profile*, BarcApplicationTarget)> callback,
+                        Profile* profile) {
+        auto current = ResolveTarget(kind, url, pending_window, pending_tab);
+        if (profile && current && current->opening) {
+          std::move(callback).Run(ApplicationBrowserResult::kOpening, nullptr, nullptr, {});
+          return;
+        }
+        if (!profile || !current || current->regular_uuid != expected.regular_uuid ||
+            current->value.presentation != expected.value.presentation ||
+            std::string(current->value.space_uuid) != expected.value.space_uuid ||
+            (expected.value.window && (!expected.browser ||
+                current->browser.get() != expected.browser.get()))) {
+          std::move(callback).Run(ApplicationBrowserResult::kUnavailable, nullptr, nullptr, {});
+          return;
+        }
+        std::move(callback).Run(ApplicationBrowserResult::kReady, current->browser.get(),
+                                profile, current->value);
+      }, kind, std::move(url), pending_window, pending_tab, *target, std::move(callback)));
 }
+
+bool IsApplicationMini(const BrowserWindowInterface* browser) {
+  const auto* view = browser && !browser->IsDeleteScheduled()
+      ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
+  return IsNativeApplicationRegistered() && view && view->barc_compact_shell() &&
+      browser->GetType() == BrowserWindowInterface::TYPE_POPUP;
+}
+ApplicationPage CreateApplicationPage(Profile* profile, BrowserWindowInterface* owner,
+    const BarcApplicationTarget& target, uint64_t request) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  if (!CanResolveApplicationBrowser() || !profile || !request ||
+      GetBrowserWindowCreationStatusForProfile(*profile) !=
+          BrowserWindowInterface::CreationStatus::kOk) return {};
+  auto profile_alive = profile->GetWeakPtr();
+  auto owner_alive = owner ? owner->GetWeakPtr() : base::WeakPtr<BrowserWindowInterface>();
+  auto keep_alive = ScopedProfileKeepAlive::TryAcquire(profile->GetOriginalProfile(),
+      ProfileKeepAliveOrigin::kProfileCreationFlow);
+  if (!keep_alive) return {};
+  const bool mini = target.presentation == BARC_APPLICATION_MINI;
+  const bool create = mini || !owner || owner->GetProfile() != profile;
+  base::WeakPtr<BrowserWindowInterface> selected_before;
+  if (!mini && owner) {
+    if (owner->IsDeleteScheduled() || !owner->GetWindow() ||
+        !BrowserWindow::CanCreateInNativeWindow(owner->GetSessionID())) return {};
+    auto* selected = GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
+        owner->GetWindow()->GetNativeWindow());
+    if (!selected) return {};
+    selected_before = selected->GetWeakPtr();
+  }
+  BrowserWindowInterface* browser = owner;
+  if (create) {
+    BrowserWindowCreateParams params(mini ? BrowserWindowInterface::TYPE_POPUP
+                                        : BrowserWindowInterface::TYPE_NORMAL, profile, true);
+    params.should_trigger_session_restore = false;
+    if (!mini && owner) params.native_window_owner = owner->GetSessionID();
+    if (mini) {
+      auto* screen = display::Screen::Get();
+      const auto display = owner && owner->GetWindow()
+          ? screen->GetDisplayNearestWindow(owner->GetWindow()->GetNativeWindow())
+          : screen->GetDisplayForNewWindows();
+      const auto area = display.work_area();
+      const int width = std::clamp(area.width() * 3 / 4, 640, 1280);
+      const int height = std::clamp(area.height() * 85 / 100, 480, 900);
+      params.initial_bounds = gfx::Rect(area.CenterPoint().x() - width / 2,
+          area.CenterPoint().y() - height / 2, width, height);
+    }
+    browser = CreateBrowserWindow(std::move(params));
+  }
+  if (!browser) return {};
+  auto alive = browser->GetWeakPtr();
+  const auto valid = [&] {
+    if (!CanResolveApplicationBrowser() || !profile_alive || !alive ||
+        alive->IsDeleteScheduled() || alive->GetProfile() != profile_alive.get() ||
+        !alive->GetWindow() || (target.window && (!owner_alive || owner_alive->IsDeleteScheduled())))
+      return false;
+    if (!mini && owner_alive) {
+      if (!owner_alive->GetWindow() || owner_alive->GetWindow()->GetNativeWindow() !=
+          alive->GetWindow()->GetNativeWindow()) return false;
+    }
+    return true;
+  };
+  const auto cancel_empty = [&] {
+    if (create && alive && !alive->IsDeleteScheduled() && alive->GetWindow() &&
+        alive->GetTabStripModel()->empty()) alive->GetWindow()->Close();
+  };
+  if (!valid() || (mini && !ConfigureNativeMini(alive.get()))) {
+    cancel_empty(); return {};
+  }
+  if (!mini && selected_before &&
+      GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
+          alive->GetWindow()->GetNativeWindow()) != selected_before.get()) {
+    cancel_empty(); return {};
+  }
+  const int32_t id = alive->GetSessionID().id();
+  if (!barc_window_select(id) || !valid()) { cancel_empty(); return {}; }
+  auto* returned = chrome::AddAndReturnTabAt(alive.get(), GURL(url::kAboutBlankURL), -1, true);
+  if (!valid() || !returned) { cancel_empty(); return {}; }
+  auto* strip = alive->GetTabStripModel();
+  const int index = strip->GetIndexOfWebContents(returned);
+  if (index == TabStripModel::kNoTab) return {};
+  const int32_t tab = strip->GetTabAtIndex(index)->GetHandle().raw_value();
+  if (!MarkApplicationPage(id, tab, request, target.space_uuid)) {
+    barc_tab_close(id, tab); return {};
+  }
+  alive->GetWindow()->Show();  // New clients defer presentation until header admission.
+  if (!valid() || !ApplicationPageMatches(id, tab, request)) {
+    // Show can transfer/close the resource. No captured pending handle will
+    // reach AppController on this path, so retire only this intrinsic request.
+    CloseUnusedApplicationPage(ApplicationPage{id, tab, request});
+    return {};
+  }
+  return ApplicationPage{id, tab, request};
+}
+bool IsPendingApplicationPage(ApplicationPage page) {
+  if (!CanResolveApplicationBrowser() || !ApplicationPageMatches(page.window, page.tab, page.request))
+    return false;
+  auto* tab = tabs::TabHandle(page.tab).Get();
+  const auto& visible_url = tab->GetContents()->GetVisibleURL();
+  return visible_url.is_empty() || visible_url == GURL(url::kAboutBlankURL);
+}
+void CloseUnusedApplicationPage(ApplicationPage page) {
+  bool close = IsPendingApplicationPage(page);
+  if (close) {
+    auto* tab = tabs::TabHandle(page.tab).Get();
+    auto* browser = tab->GetBrowserWindowInterface();
+    if (IsApplicationMini(browser)) {
+      auto* view = BrowserView::GetBrowserViewForBrowser(browser);
+      close = barc_window_native_shell_is_owned(page.window, nullptr) ||
+          view->HasConfirmedBarcCompactShell();
+    }
+  }
+  AbandonApplicationPageRequest(page.tab, page.request);
+  if (close) barc_tab_close(page.window, page.tab);
+}
+
 void PostRuntimeReady() {
   auto& state = State();
   if (state.phase != Phase::kRegistered)

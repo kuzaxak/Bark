@@ -1,0 +1,1331 @@
+--- a/chrome/app/chrome_command_ids.h
++++ b/chrome/app/chrome_command_ids.h
+@@ -330,6 +330,7 @@
+ #define IDC_CONTENT_CONTEXT_OPENLINKSPLITVIEW 50111
+ #define IDC_CONTENT_CONTEXT_ADD_LINK_TO_READING_LIST 50112
+ #define IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED 50113
++#define IDC_CONTENT_CONTEXT_OPENLINKINPEEK 50114
+ // Image items.
+ #define IDC_CONTENT_CONTEXT_SAVEIMAGEAS 50120
+ #define IDC_CONTENT_CONTEXT_COPYIMAGELOCATION 50121
+--- a/chrome/app/framework.exports
++++ b/chrome/app/framework.exports
+@@ -75,6 +75,11 @@
+ _barc_tab_clear_site_data
+ _barc_tab_set_user_css
+ _barc_tab_translate
++_barc_tab_enable_peek
++_barc_tab_create_peek
++_barc_tab_present_peek
++_barc_tab_hide_peek
++_barc_tab_is_peek_presented
+ _barc_tab_go_back
+ _barc_tab_go_forward
+ _barc_tab_reload
+--- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
++++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+@@ -39,6 +39,7 @@
+ #include "build/build_config.h"
+ #if BUILDFLAG(IS_MAC)
+ #include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#include "chrome/browser/ui/views/frame/barc_bridge.h"
+ #endif
+ 
+ #include "chrome/app/chrome_command_ids.h"
+@@ -672,13 +673,14 @@
+        {IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED, 169},
+        {IDC_CONTENT_CONTEXT_ASK_GOOGLE_ABOUT_THIS_PAGE, 170},
+        {IDC_CONTENT_CONTEXT_CONTEXTUAL_TASKS_SUBMENU, 171},
++       {IDC_CONTENT_CONTEXT_OPENLINKINPEEK, 172},
+        // To add new items:
+        //   - Add one more line above this comment block, using the UMA value
+        //     from the line below this comment block.
+        //   - Increment the UMA value in that latter line.
+        //   - Add the new item to the RenderViewContextMenuItem enum in
+        //     tools/metrics/histograms/metadata/ui/enums.xml.
+-       {kUmaMaxValueKey, 172}});
++       {kUmaMaxValueKey, 173}});
+   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:RenderViewContextMenuItem)
+ 
+   // LINT.IfChange(ContextMenuOptionDesktop)
+@@ -1994,6 +1996,12 @@
+     }
+ 
+     if (show_open_in_new_tab) {
++#if BUILDFLAG(IS_MAC)
++      if (params_.link_url.is_valid() && !params_.link_url.SchemeIs("javascript") &&
++          barc::CanRequestPeek(GetRenderFrameHost())) {
++        menu_model_.AddItem(IDC_CONTENT_CONTEXT_OPENLINKINPEEK, u"Open link in Peek");
++      }
++#endif
+       menu_model_.AddItemWithStringId(
+           IDC_CONTENT_CONTEXT_OPENLINKNEWTAB,
+           in_app ? IDS_CONTENT_CONTEXT_OPENLINKNEWTAB_INAPP
+@@ -3389,6 +3397,13 @@
+ // Menu delegate functions -----------------------------------------------------
+ 
+ bool RenderViewContextMenu::IsCommandIdEnabled(int id) const {
++#if BUILDFLAG(IS_MAC)
++  if (id == IDC_CONTENT_CONTEXT_OPENLINKINPEEK) {
++    return !params_.link_url.SchemeIs("javascript") &&
++        barc::CanRequestPeek(GetRenderFrameHost()) &&
++        IsCommandIdEnabled(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB);
++  }
++#endif
+ #if BUILDFLAG(IS_CHROMEOS)
+   // Disable context menu in locked fullscreen mode to prevent users from
+   // exiting this mode (the menu is not really disabled as the user can still
+@@ -3923,6 +3938,17 @@
+   }
+ 
+   switch (id) {
++#if BUILDFLAG(IS_MAC)
++    case IDC_CONTENT_CONTEXT_OPENLINKINPEEK: {
++      if (!IsCommandIdEnabled(id)) break;
++      auto params = GetOpenURLParamsWithExtraHeaders(
++          params_.link_url, params_.frame_url, params_.frame_origin,
++          WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
++          std::string(), /*started_from_context_menu=*/true);
++      barc::RequestPeek(GetRenderFrameHost(), params);
++      break;
++    }
++#endif
+     case IDC_CONTENT_CONTEXT_OPENLINKNEWTAB: {
+       WindowOpenDisposition new_tab_disposition =
+           WindowOpenDisposition::NEW_BACKGROUND_TAB;
+--- a/chrome/browser/ui/unload_controller.cc
++++ b/chrome/browser/ui/unload_controller.cc
+@@ -438,8 +438,10 @@
+   }
+ 
+   if (!proceed) {
++    // Cancellation calls observers: clear old gesture state before they can
++    // destroy this page or synchronously retry its close.
++    contents->SetClosedByUserGesture(false);
+     CancelWindowClose();
+-    contents->SetClosedByUserGesture(false);
+     return false;
+   }
+ 
+@@ -544,7 +546,7 @@
+ bool UnloadController::RunBeforeUnloadForShutdown(
+     bool skip_beforeunload,
+     const base::RepeatingCallback<void(bool)>& on_close_confirmed,
+-    BeforeUnloadPurpose purpose) {
++    BeforeUnloadPurpose purpose, base::span<content::WebContents* const> only_tabs) {
+   if (purpose == BeforeUnloadPurpose::kApplicationShutdown &&
+       native_window_group_preempted_) {
+     auto alive = GetWeakPtr();
+@@ -580,7 +582,7 @@
+     return false;
+   }
+ 
+-  tabs_needing_before_unload_fired_ = GetTabsNeedingBeforeUnloadFired();
++  tabs_needing_before_unload_fired_ = GetTabsNeedingBeforeUnloadFired(only_tabs);
+   if (tabs_needing_before_unload_fired_.empty()) {
+     return false;
+   }
+@@ -590,6 +592,19 @@
+ 
+   ProcessPendingTabs(skip_beforeunload);
+   return !skip_beforeunload;
++}
++
++void UnloadController::FinishNativeWindowGroupTabClose() {
++  CHECK(native_window_group_preempted_);
++  CHECK(before_unload_purpose_ == BeforeUnloadPurpose::kNativeWindowGroup);
++  CHECK(state_ == State::kIdle || state_ == State::kBeforeUnloadConfirmed);
++  native_window_group_preempted_.Reset();
++  on_close_confirmed_.Reset();
++  before_unload_purpose_.reset();
++  tabs_needing_before_unload_fired_.clear();
++  tabs_needing_unload_fired_.clear();
++  cancel_download_confirmation_state_ = CancelDownloadConfirmationState::kNotPrompted;
++  TransitionTo(State::kIdle);
+ }
+ 
+ void UnloadController::ResetBeforeUnloadForShutdown() {
+@@ -603,12 +618,12 @@
+   CancelWindowClose();
+ }
+ 
+-bool UnloadController::TabsNeedBeforeUnloadFired() const {
+-  return !GetTabsNeedingBeforeUnloadFired().empty();
++bool UnloadController::TabsNeedBeforeUnloadFired(base::span<content::WebContents* const> only_tabs) const {
++  return !GetTabsNeedingBeforeUnloadFired(only_tabs).empty();
+ }
+ 
+ UnloadController::UnloadListenerSet
+-UnloadController::GetTabsNeedingBeforeUnloadFired() const {
++UnloadController::GetTabsNeedingBeforeUnloadFired(base::span<content::WebContents* const> only_tabs) const {
+   if (!is_attempting_to_close_browser()) {
+     CHECK(tabs_needing_unload_fired_.empty());
+   }
+@@ -617,6 +632,7 @@
+   for (int i = 0; i < browser_->tab_strip_model()->count(); ++i) {
+     content::WebContents* const contents =
+         browser_->tab_strip_model()->GetWebContentsAt(i);
++    if (!only_tabs.empty() && !std::ranges::contains(only_tabs, contents)) continue;
+     const bool should_fire_beforeunload =
+         contents->NeedToFireBeforeUnloadOrUnloadEvents() ||
+         DevToolsWindow::NeedsToInterceptBeforeUnload(contents);
+--- a/chrome/browser/ui/unload_controller.h
++++ b/chrome/browser/ui/unload_controller.h
+@@ -233,11 +233,17 @@
+   bool AcquireNativeWindowGroupClose(base::OnceClosure on_preempted);
+   void CancelNativeWindowGroupClose();
+   void CommitNativeWindowGroupClose();
+-
++  // Finish a consented subset without marking the whole browser as ended.
++  // The caller closes only its admitted live targets, using ClosePage().
++  void FinishNativeWindowGroupTabClose();
++
++  // An empty subset means the whole browser; native Peek groups provide only
++  // their exact live targets while retaining unrelated tabs in the same owner.
+   bool RunBeforeUnloadForShutdown(
+       bool skip_beforeunload,
+       const base::RepeatingCallback<void(bool)>& on_close_confirmed,
+-      BeforeUnloadPurpose purpose = BeforeUnloadPurpose::kApplicationShutdown);
++      BeforeUnloadPurpose purpose = BeforeUnloadPurpose::kApplicationShutdown,
++      base::span<content::WebContents* const> only_tabs = {});
+ 
+   // Clears the results of any beforeunload confirmation dialogs triggered by a
+   // RunBeforeUnloadForShutdown() call.
+@@ -250,7 +256,7 @@
+   //             AreAllBrowsersCloseable() in application_lifetime.cc. It seems
+   //             very similar to ShouldCloseWindow() and some consolidation
+   //             could be pursued.
+-  bool TabsNeedBeforeUnloadFired() const;
++  bool TabsNeedBeforeUnloadFired(base::span<content::WebContents* const> only_tabs = {}) const;
+ 
+   // Clears all the state associated with processing tabs' beforeunload/unload
+   // events since the user cancelled closing the window.
+@@ -320,7 +326,8 @@
+   void TabAttachedImpl(content::WebContents* contents);
+   void TabDetachedImpl(content::WebContents* contents);
+ 
+-  UnloadListenerSet GetTabsNeedingBeforeUnloadFired() const;
++  UnloadListenerSet GetTabsNeedingBeforeUnloadFired(
++      base::span<content::WebContents* const> only_tabs = {}) const;
+ 
+   // Processes the next tab that needs it's beforeunload/unload event fired.
+   void ProcessPendingTabs(bool skip_beforeunload);
+--- a/chrome/browser/ui/views/frame/browser_widget.cc
++++ b/chrome/browser/ui/views/frame/browser_widget.cc
+@@ -18,6 +18,11 @@
+ #include "chrome/browser/ui/views/frame/multi_contents_view_delegate.h"
+ #include "chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h"
+ #include "ui/views/view_tracker.h"
++#include "ui/views/controls/native/native_view_host.h"
++#include "ui/views/background.h"
++#include "content/public/browser/web_contents.h"
++#include "content/public/browser/media_session.h"
++
+ #include <algorithm>
+ #include <memory>
+ #include <utility>
+@@ -87,6 +92,27 @@
+ #include "media/capture/capture_switches.h"
+ #include "ui/wm/core/window_properties.h"
+ #endif
++// Actual mounted state only. Tab/profile/slot ownership remains upstream.
++struct BarcPeekPresentation {
++  base::WeakPtr<tabs::TabInterface> source;
++  base::WeakPtr<tabs::TabInterface> peek;
++  base::WeakPtr<BrowserView> source_owner;
++  base::WeakPtr<BrowserView> peek_owner;
++  gfx::NativeView sidebar;
++  gfx::NativeView header;
++  gfx::NativeView actions;
++  raw_ptr<views::View> root = nullptr;
++  raw_ptr<MultiContentsView> contents = nullptr;
++  raw_ptr<MultiContentsView> underlay = nullptr;
++  raw_ptr<views::NativeViewHost> shade_host = nullptr;
++  raw_ptr<views::NativeViewHost> header_host = nullptr;
++  raw_ptr<views::NativeViewHost> actions_host = nullptr;
++  std::vector<base::WeakPtr<tabs::TabInterface>> base_tabs;
++  std::vector<content::WebContents::ScopedIgnoreInputEvents> input_tokens;
++  std::vector<base::CallbackListSubscription> subscriptions;
++  uint64_t generation = 0;
++  std::weak_ptr<std::vector<std::unique_ptr<views::View>>> retirement;
++};
+ namespace {
+ 
+ // Helper to track whether a ThemeChange event has been received by the widget.
+@@ -180,6 +206,377 @@
+ };
+ }  // namespace
+ 
++bool BrowserWidget::HasBarcPeek() const {
++  return barc_peek_ != nullptr;
++}
++
++bool BrowserWidget::IsBarcPeekVisible(tabs::TabInterface* peek) const {
++  return barc_peek_ && barc_peek_->peek.get() == peek &&
++      barc_peek_->root && barc_peek_->root->GetVisible() &&
++      IsBarcPeekPresented(barc_peek_->source.get(), peek, barc_peek_->generation,
++                         barc_peek_->header, barc_peek_->actions);
++}
++
++bool BrowserWidget::IsBarcPeekPresented(tabs::TabInterface* source,
++    tabs::TabInterface* peek, uint64_t generation, gfx::NativeView header,
++    gfx::NativeView actions) const {
++#if !BUILDFLAG(IS_MAC)
++  return false;
++#else
++  return barc_peek_ && barc_peek_->source.get() == source &&
++      barc_peek_->peek.get() == peek && barc_peek_->generation == generation &&
++      barc_peek_->header == header && barc_peek_->actions == actions &&
++      barc_peek_->header_host->native_view() == header &&
++      barc_peek_->actions_host->native_view() == actions &&
++      barc::IsPeekPair(source, peek) && barc_peek_->source_owner && barc_peek_->peek_owner &&
++      source->GetBrowserWindowInterface() == barc_peek_->source_owner->browser() &&
++      peek->GetBrowserWindowInterface() == barc_peek_->peek_owner->browser() &&
++      selected_browser_view() == barc_peek_->peek_owner.get() &&
++      selected_browser_view()->barc_native_shell() && barc_peek_->sidebar &&
++      selected_browser_view()->barc_native_shell()->native_view() == barc_peek_->sidebar &&
++      peek->IsActivated();
++#endif
++}
++
++uint64_t BrowserWidget::PresentBarcPeek(tabs::TabInterface* source,
++    tabs::TabInterface* peek, gfx::NativeView sidebar, gfx::NativeView header,
++    gfx::NativeView actions) {
++#if !BUILDFLAG(IS_MAC)
++  return 0;
++#else
++  if (barc_peek_) {
++    return IsBarcPeekPresented(source, peek, barc_peek_->generation, header, actions)
++        ? barc_peek_->generation : 0;
++  }
++  if (IsClosed() || changing_barc_peek_ || changing_barc_presentation_ ||
++      clearing_barc_presentation_ || !sidebar || !header || !actions ||
++      !barc::IsPeekPair(source, peek) || !source->IsActivated() ||
++      HasPhysicalClosePending() || browser_shutdown::IsTryingToQuit()) return 0;
++  auto* source_view = BrowserView::GetBrowserViewForBrowser(source->GetBrowserWindowInterface());
++  auto* peek_view = BrowserView::GetBrowserViewForBrowser(peek->GetBrowserWindowInterface());
++  if (!source_view || !peek_view || source_view == peek_view ||
++      source_view != selected_browser_view() || source_view->browser_widget() != this ||
++      peek_view->browser_widget() != this || !source_view->barc_native_shell() ||
++      !peek_view->barc_native_shell() ||
++      source_view->barc_native_shell()->native_view() != sidebar ||
++      peek_view->barc_native_shell()->native_view()) return 0;
++  auto* previous_peer_tab = peek_view->browser()->GetTabStripModel()->GetActiveTab();
++  if (!previous_peer_tab) return 0;
++  auto previous_peer_active = previous_peer_tab->GetWeakPtr();
++  auto expected_peer_active = previous_peer_active;
++  bool activated_peek = false;
++  auto mutation = barc::ProtectNativeViewMutation();
++  auto alive = GetWeakPtr();
++  auto source_alive = source->GetWeakPtr();
++  auto peek_alive = peek->GetWeakPtr();
++  auto source_view_alive = source_view->GetAsWeakPtr();
++  auto peek_view_alive = peek_view->GetAsWeakPtr();
++  const uint64_t before = barc_selection_epoch_;
++  uint64_t expected_epoch = before;
++  auto expected_owner = source_view->GetAsWeakPtr();
++  changing_barc_peek_ = true;
++  base::ScopedClosureRunner reset(base::BindOnce([](base::WeakPtr<views::Widget> widget) {
++    if (widget) static_cast<BrowserWidget*>(widget.get())->changing_barc_peek_ = false;
++  }, alive));
++  auto retirement = std::make_shared<std::vector<std::unique_ptr<views::View>>>();
++  auto state = std::make_shared<BarcPeekPresentation>();
++  state->retirement = retirement;
++  state->source = source_alive; state->peek = peek_alive;
++  state->source_owner = source_view_alive; state->peek_owner = peek_view_alive;
++  state->sidebar = sidebar; state->header = header; state->actions = actions;
++  CHECK_NE(++barc_peek_generation_, 0u);
++  state->generation = barc_peek_generation_;
++  auto root = std::make_unique<views::View>();
++  root->SetVisible(false);
++  state->root = root.get();
++  views::ViewTracker tracked_root(root.get());
++  state->shade_host = root->AddChildView(std::make_unique<views::NativeViewHost>());
++  state->contents = root->AddChildView(std::make_unique<MultiContentsView>(
++      std::make_unique<BarcPresentedContentsDelegate>(this)));
++  state->header_host = root->AddChildView(std::make_unique<views::NativeViewHost>());
++  state->actions_host = root->AddChildView(std::make_unique<views::NativeViewHost>());
++  const uint64_t generation = state->generation;
++  barc_peek_ = std::move(state);
++  non_client_view()->AddChildView(std::move(root));
++  auto current = [&] {
++    return alive && tracked_root && barc_peek_ && barc_peek_->generation == generation &&
++        expected_owner && selected_browser_view() == expected_owner.get() &&
++        barc_selection_epoch_ == expected_epoch && source_alive && peek_alive &&
++        source_view_alive && peek_view_alive &&
++        source_alive->GetBrowserWindowInterface() == source_view_alive->browser() &&
++        peek_alive->GetBrowserWindowInterface() == peek_view_alive->browser() &&
++        source_view_alive->browser_widget() == this && peek_view_alive->browser_widget() == this &&
++        !HasPhysicalClosePending() && !browser_shutdown::IsTryingToQuit() &&
++        expected_peer_active && peek_view_alive->browser()->GetTabStripModel()->GetActiveTab() == expected_peer_active.get() &&
++        barc::IsPeekPair(source_alive.get(), peek_alive.get()) && source_alive->IsActivated();
++  };
++  auto fail = [&]() -> uint64_t {
++    const bool owned = alive && expected_owner && peek_view_alive && peek_alive &&
++        selected_browser_view() == expected_owner.get() && barc_selection_epoch_ == expected_epoch &&
++        peek_alive->GetBrowserWindowInterface() == peek_view_alive->browser() && peek_alive->IsActivated();
++    if (alive && barc_peek_ && barc_peek_->generation == generation)
++      ClearBarcPeek(false, true);
++    const bool still_owned = alive && ((expected_owner &&
++        selected_browser_view() == expected_owner.get() && barc_selection_epoch_ == expected_epoch) ||
++        (source_view_alive && expected_owner.get() == peek_view_alive.get() &&
++         selected_browser_view() == source_view_alive.get() && barc_selection_epoch_ == expected_epoch + 1));
++    if (owned && still_owned && activated_peek && previous_peer_active && peek_alive && peek_view_alive &&
++        peek_alive->GetBrowserWindowInterface() == peek_view_alive->browser() && peek_alive->IsActivated() &&
++        previous_peer_active->GetBrowserWindowInterface() == peek_view_alive->browser()) {
++      auto* model = peek_view_alive->browser()->GetTabStripModel();
++      model->ActivateTabAt(model->GetIndexOfWebContents(previous_peer_active->GetContents()));
++    }
++    return 0;
++  };
++  if (!current() || before != barc_selection_epoch_ || selected_browser_view() != source_view)
++    return fail();
++  std::vector<base::WeakPtr<tabs::TabInterface>> watched;
++  auto watch = [&](base::WeakPtr<tabs::TabInterface> tab) {
++    if (!tab || std::ranges::any_of(watched, [&tab](const auto& prior) { return prior.get() == tab.get(); }))
++      return;
++    watched.push_back(tab);
++    barc_peek_->subscriptions.push_back(tab->RegisterWillDetach(base::BindRepeating(
++        [](base::WeakPtr<views::Widget> widget, tabs::TabInterface*, tabs::TabInterface::DetachReason) {
++          if (widget) static_cast<BrowserWidget*>(widget.get())->ClearBarcPeek(false, true);
++        }, alive)));
++    barc_peek_->subscriptions.push_back(tab->RegisterWillDiscardContents(base::BindRepeating(
++        [](base::WeakPtr<views::Widget> widget, tabs::TabInterface*, content::WebContents*, content::WebContents*) {
++          if (widget) static_cast<BrowserWidget*>(widget.get())->ClearBarcPeek(false, true);
++        }, alive)));
++  };
++  watch(source_alive);
++  watch(peek_alive);
++  if (previous_peer_active.get() != peek_alive.get()) {
++    auto* model = peek_view_alive->browser()->GetTabStripModel();
++    const int index = model->GetIndexOfWebContents(peek_alive->GetContents());
++    if (index == TabStripModel::kNoTab) return fail();
++    model->ActivateTabAt(index);
++    activated_peek = true;
++    expected_peer_active = peek_alive;
++    if (!current()) return fail();
++  }
++  auto* container = peek_view_alive->GetContentsContainerViewFor(peek_alive->GetContents());
++  if (!container || container->parent() != peek_view_alive->multi_contents_view()) return fail();
++  if (barc_presented_contents_) {
++    barc_peek_->base_tabs = barc_presented_tabs_;
++    for (const auto& tab : barc_peek_->base_tabs) watch(tab);
++  } else {
++    std::vector<ContentsContainerView*> base;
++    for (const auto& candidate : source_view->multi_contents_view()->contents_container_views()) {
++      if (candidate->GetVisible() && candidate->contents_view()->web_contents()) {
++        base.push_back(candidate.get());
++        auto* tab = tabs::TabInterface::GetFromContents(candidate->contents_view()->web_contents());
++        if (!tab || tab->GetBrowserWindowInterface() != source_view->browser()) return fail();
++        barc_peek_->base_tabs.push_back(tab->GetWeakPtr());
++      }
++    }
++    if (base.empty() || base.size() > 4) return fail();
++    for (const auto& tab : barc_peek_->base_tabs) watch(tab);
++    auto underlay = std::make_unique<MultiContentsView>(
++        std::make_unique<BarcPresentedContentsDelegate>(this));
++    views::ViewTracker underlay_alive(underlay.get());
++    auto* added_underlay = non_client_view()->AddChildView(std::move(underlay));
++    if (!current()) {
++      if (alive && underlay_alive && underlay_alive.view()->parent() == non_client_view())
++        retirement->push_back(non_client_view()->RemoveChildViewT(underlay_alive.view()));
++      return fail();
++    }
++    barc_peek_->underlay = added_underlay;
++    // Keep the current Chrome collection intact; only its real containers move.
++    for (auto* item : base) {
++      if (!barc_peek_->underlay->AddPresentedContainer(item) || !current()) return fail();
++    }
++    if (base.size() > 1) {
++      std::vector<double> dividers;
++      for (size_t i = 0; i + 1 < base.size(); ++i)
++        dividers.push_back(source_view->multi_contents_view()->GetDividerRatio(i));
++      barc_peek_->underlay->ShowSplitView(split_tabs::SplitTabVisualData(
++          source_view->multi_contents_view()->GetSplitLayout(), dividers));
++      if (!current()) return fail();
++    }
++    barc_peek_->underlay->SetActiveContents(source_alive->GetContents());
++    if (!current()) return fail();
++    non_client_view()->ReorderChildView(barc_peek_->root, -1);
++  }
++  for (const auto& tab : barc_peek_->base_tabs) {
++    if (!tab) return fail();
++    barc_peek_->input_tokens.push_back(tab->GetContents()->IgnoreInputEvents(std::nullopt));
++  }
++  barc::AttachPeekBackdrop(barc_peek_->shade_host, source_alive.get(), peek_alive.get());
++  if (!current()) return fail();
++  if (!barc_peek_->contents->AddPresentedContainer(container) || !current()) return fail();
++  barc_peek_->contents->SetActiveIndex(0);
++  if (!current()) return fail();
++  barc_peek_->contents->SetBackgroundRadii(gfx::RoundedCornersF(0, 0, 16, 16));
++  if (!current()) return fail();
++  UpdateBarcPresentedScreenshotPolicy();
++  if (!current()) return fail();
++  const bool selected = SelectLogicalBrowserView(peek_view);
++  if (!alive || !selected || !source_alive || !peek_alive ||
++      selected_browser_view() != peek_view || barc_selection_epoch_ != before + 1) return fail();
++  expected_owner = peek_view->GetAsWeakPtr();
++  expected_epoch = barc_selection_epoch_;
++  if (!current() || source_view->barc_native_shell()->native_view() != sidebar ||
++      !barc::MovePeekNativeShell(source_view->browser(), peek_view->browser())) return fail();
++  if (!current() || peek_view->barc_native_shell()->native_view() != sidebar) return fail();
++  barc_peek_->header_host->Attach(header);
++  if (!current()) return fail();
++  barc_peek_->actions_host->Attach(actions);
++  if (!current()) return fail();
++  LayoutBarcPeek();
++  if (!current()) return fail();
++  barc_peek_->root->SetVisible(true);
++  if (!current()) return fail();
++  peek_alive->GetContents()->WasShown();
++  if (!current()) return fail();
++  if (IsActive()) peek_alive->GetContents()->Focus();
++  if (!current()) return fail();
++  barc::BrowserDiscoveryChanged();
++  return generation;
++#endif
++}
++
++bool BrowserWidget::HideBarcPeek(tabs::TabInterface* source, tabs::TabInterface* peek,
++    uint64_t generation, gfx::NativeView header, gfx::NativeView actions) {
++  if (!barc_peek_ || barc_peek_->source.get() != source || barc_peek_->peek.get() != peek ||
++      barc_peek_->generation != generation || barc_peek_->header != header ||
++      barc_peek_->actions != actions) return false;
++  ClearBarcPeek(false, true);
++  return true;
++}
++
++void BrowserWidget::ClearBarcPeek(bool native_destroying, bool restore_source) {
++#if BUILDFLAG(IS_MAC)
++  if (!barc_peek_ || (clearing_barc_peek_ && !native_destroying)) return;
++  auto alive = GetWeakPtr();
++  // A native destruction nested in a hierarchy callback must still find and
++  // return the remaining containers. Stack trackers make the outer pass inert.
++  auto state = barc_peek_;
++  auto retirement = state->retirement.lock();
++  if (!retirement) {
++    retirement = std::make_shared<std::vector<std::unique_ptr<views::View>>>();
++    state->retirement = retirement;
++  }
++  clearing_barc_peek_ = true;
++  const bool previously_changing = changing_barc_peek_;
++  changing_barc_peek_ = true;
++  const uint64_t before = barc_selection_epoch_;
++  auto* selected = selected_browser_view();
++  auto selected_alive = selected ? selected->GetAsWeakPtr() : base::WeakPtr<BrowserView>();
++  const bool owned_selection = state->peek && state->peek_owner &&
++      selected == state->peek_owner.get() &&
++      state->peek->GetBrowserWindowInterface() == state->peek_owner->browser() && state->peek->IsActivated();
++  state->subscriptions.clear();
++  views::ViewTracker root(state->root);
++  std::vector<base::WeakPtr<BrowserView>> owners;
++  for (MultiContentsView* physical : {state->contents.get(), state->underlay.get()}) {
++    if (!physical) continue;
++    views::ViewTracker tracked(physical);
++    std::vector<std::unique_ptr<views::ViewTracker>> containers;
++    for (const auto& item : physical->contents_container_views())
++      containers.push_back(std::make_unique<views::ViewTracker>(item.get()));
++    physical->StopObservingPresentedContainers();
++    for (const auto& item : containers) {
++      if (!alive || !root || !tracked) return;
++      auto* container = static_cast<ContentsContainerView*>(item->view());
++      if (!container || container->parent() != physical) continue;
++      auto* owner = container->browser_view();
++      if (!std::ranges::any_of(owners, [owner](const auto& prior) { return prior.get() == owner; }))
++        owners.push_back(owner->GetAsWeakPtr());
++      owner->multi_contents_view()->ReturnContainerFromPresentation(container);
++      if (!alive || !root || !tracked || barc_peek_ != state) return;
++    }
++    physical->ForgetReturnedPresentedContainers();
++  }
++  if (!alive || !root || barc_peek_ != state) return;
++  barc_peek_.reset();
++  auto* physical_root = state->root.get();
++  auto* physical_underlay = state->underlay.get();
++  // Retire the exact view on this constructing/clearing stack. Hierarchy
++  // callbacks must never delete an Add/RemoveChildView receiver still in use.
++  state->root = nullptr;
++  state->contents = nullptr;
++  state->underlay = nullptr;
++  state->shade_host = nullptr;
++  state->header_host = nullptr;
++  state->actions_host = nullptr;
++  if (root) retirement->push_back(non_client_view()->RemoveChildViewT(physical_root));
++  if (!alive) return;
++  if (physical_underlay)
++    retirement->push_back(non_client_view()->RemoveChildViewT(physical_underlay));
++  if (!alive) return;
++  state->input_tokens.clear();
++  if (!native_destroying) {
++    for (const auto& owner : owners) {
++      if (owner) RestoreBarcOwnerContents(owner.get());
++      if (!alive) return;
++    }
++    if (state->peek) {
++      state->peek->GetContents()->WasHidden();
++      if (!alive) return;
++      if (state->peek) content::MediaSession::Get(state->peek->GetContents())->Suspend(
++          media_session::mojom::MediaSession::SuspendType::kUI);
++    }
++  }
++  if (!alive) return;
++  clearing_barc_peek_ = false;
++  if (!native_destroying && owned_selection &&
++      before == barc_selection_epoch_ && state->source && state->source_owner &&
++      state->source->GetBrowserWindowInterface() == state->source_owner->browser() &&
++      selected_browser_view() == selected && !barc::IsPeekCloseCommitted(state->source.get())) {
++    auto* source = BrowserView::GetBrowserViewForBrowser(state->source->GetBrowserWindowInterface());
++    if (source && source->browser_widget() == this &&
++        !UnloadController::From(source->browser())->owner_close_admitted() &&
++        selected->barc_native_shell() && selected->barc_native_shell()->native_view() == state->sidebar &&
++        source->barc_native_shell() && !source->barc_native_shell()->native_view()) {
++      auto source_alive = source->GetAsWeakPtr();
++      const bool moved = barc::MovePeekNativeShell(selected_alive->browser(), source_alive->browser());
++      if (moved && restore_source && alive && selected_alive && source_alive &&
++          before == barc_selection_epoch_ && selected_browser_view() == selected_alive.get() &&
++          state->source)
++        SelectLogicalBrowserView(source_alive.get());
++    }
++  }
++  if (!alive) return;
++  changing_barc_peek_ = previously_changing;
++  clearing_barc_peek_ = false;
++  UpdateBarcPresentedScreenshotPolicy();
++  barc::BrowserDiscoveryChanged();
++#endif
++}
++
++void BrowserWidget::LayoutBarcPeek() {
++  if (!barc_peek_ || !selected_browser_view()) return;
++  auto alive = GetWeakPtr();
++  views::ViewTracker root(barc_peek_->root);
++  const uint64_t generation = barc_peek_->generation;
++  LayoutRootViewIfNecessary();
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  auto* logical = selected_browser_view()->multi_contents_view();
++  const gfx::Rect bounds = views::View::ConvertRectToTarget(
++      logical, non_client_view(), logical->GetLocalBounds());
++  if (barc_peek_->underlay) {
++    barc_peek_->underlay->SetBoundsRect(bounds);
++    if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++    barc_peek_->underlay->DeprecatedLayoutImmediately();
++    if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  }
++  root.view()->SetBoundsRect(bounds);
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  barc_peek_->shade_host->SetBoundsRect(gfx::Rect(bounds.size()));
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  const int width = std::max(0, std::min(static_cast<int>(bounds.width() * .82), bounds.width() - 88));
++  const int x = (bounds.width() - width) / 2;
++  const int height = std::max(0, bounds.height() - 16);
++  barc_peek_->header_host->SetBounds(x, 8, width, std::min(32, height));
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  barc_peek_->contents->SetBounds(x, 40, width, std::max(0, height - 32));
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  barc_peek_->actions_host->SetBounds(x + width + 8, 14, 28, std::max(0, std::min(96, height - 6)));
++  if (!alive || !root || !barc_peek_ || barc_peek_->generation != generation) return;
++  barc_peek_->contents->DeprecatedLayoutImmediately();
++}
++
+ bool BrowserWidget::PresentBarcTabs(
+     base::span<tabs::TabInterface* const> panes,
+     const split_tabs::SplitTabVisualData& visual_data,
+@@ -200,8 +597,8 @@
+ #else
+   auto mutation = barc::ProtectNativeViewMutation();
+   if (!barc::IsNativeApplicationRegistered() || IsClosed() ||
+-      changing_barc_presentation_ || barc_presented_contents_ ||
+-      panes.size() < 2 || panes.size() > split_tabs::SplitTabVisualData::kMaxPanes ||
++      changing_barc_presentation_ || barc_presented_contents_ || barc_peek_ ||
++      changing_barc_peek_ || clearing_barc_peek_ || panes.size() < 2 || panes.size() > split_tabs::SplitTabVisualData::kMaxPanes ||
+       visual_data.pane_count() != panes.size() ||
+       !std::ranges::contains(panes, active)) {
+     return false;
+@@ -409,7 +806,8 @@
+   return false;
+ #else
+   if (!barc::IsNativeApplicationRegistered() || changing_barc_presentation_ ||
+-      clearing_barc_presentation_ || IsClosed() ||
++      clearing_barc_presentation_ || barc_peek_ || changing_barc_peek_ ||
++      clearing_barc_peek_ || IsClosed() ||
+       panes.size() < 2 || panes.size() > 4 || !selected_browser_view() ||
+       !active || !active->IsActivated() ||
+       active->GetBrowserWindowInterface() != selected_browser_view()->browser() ||
+@@ -637,7 +1035,13 @@
+ }
+ 
+ bool BrowserWidget::HasBarcPresentedContents(const BrowserView* owner) const {
+-  return owner && barc_presented_contents_ && std::ranges::any_of(
++  if (!owner) return false;
++  if (barc_peek_ && ((barc_peek_->peek &&
++      barc_peek_->peek->GetBrowserWindowInterface() == owner->browser()) ||
++      std::ranges::any_of(barc_peek_->base_tabs, [owner](const auto& tab) {
++        return tab && tab->GetBrowserWindowInterface() == owner->browser();
++      }))) return true;
++  return barc_presented_contents_ && std::ranges::any_of(
+       barc_presented_tabs_, [owner](const auto& tab) {
+         return tab && tab->GetBrowserWindowInterface() == owner->browser();
+       });
+@@ -648,6 +1052,9 @@
+ }
+ 
+ void BrowserWidget::ClearBarcPresentedTabsImpl(bool native_destroying) {
++  auto card_alive = GetWeakPtr();
++  ClearBarcPeek(native_destroying, !native_destroying);
++  if (!card_alive) return;
+   if (!barc_presented_contents_ ||
+       (clearing_barc_presentation_ && !native_destroying)) {
+     return;
+@@ -790,6 +1197,19 @@
+ 
+ void BrowserWidget::ReconcileBarcActiveTab(BrowserView* owner,
+                                            content::WebContents* contents) {
++  if (barc_peek_ && !changing_barc_peek_) {
++    const bool source_changed = barc_peek_->source &&
++        barc_peek_->source->GetBrowserWindowInterface() == owner->browser() &&
++        barc_peek_->source->GetContents() != contents;
++    const bool peek_changed = barc_peek_->peek &&
++        barc_peek_->peek->GetBrowserWindowInterface() == owner->browser() &&
++        barc_peek_->peek->GetContents() != contents;
++    if (source_changed || peek_changed) {
++      auto alive = GetWeakPtr();
++      ClearBarcPeek(false, false);
++      if (!alive) return;
++    }
++  }
+   if (!barc_presented_contents_ || !HasBarcPresentedContents(owner)) {
+     return;
+   }
+@@ -879,12 +1299,13 @@
+   Widget::OnNativeWidgetSizeChanged(new_size);
+   if (alive) {
+     LayoutBarcPresentedContents();
++    if (alive) LayoutBarcPeek();
+   }
+ }
+ 
+ void BrowserWidget::UpdateBarcPresentedScreenshotPolicy() {
+ #if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+-  if (!barc_presented_contents_) {
++  if (!barc_presented_contents_ && !barc_peek_) {
+     auto* owner = selected_browser_view();
+     if (owner && !owner->browser()->IsDeleteScheduled()) {
+       if (auto* controller = enterprise_data_protection::DataProtectionUIController::From(owner->browser())) {
+@@ -894,7 +1315,12 @@
+     return;
+   }
+   bool allowed = true;
+-  for (const auto& tab : barc_presented_tabs_) {
++  auto panes = barc_presented_tabs_;
++  if (barc_peek_) {
++    panes = barc_peek_->base_tabs;
++    panes.push_back(barc_peek_->peek);
++  }
++  for (const auto& tab : panes) {
+     if (!tab || !tab->GetBrowserWindowInterface()) {
+       allowed = false;
+       break;
+@@ -1057,10 +1483,17 @@
+   return physical_close_phase_ != PhysicalClosePhase::kIdle;
+ }
+ 
++bool BrowserWidget::IsPhysicalCloseTarget(tabs::TabInterface* tab) const {
++  return HasPhysicalClosePending() && tab &&
++      (physical_close_tabs_.empty() || std::ranges::any_of(physical_close_tabs_,
++          [tab](const auto& target) { return target.get() == tab; }));
++}
++
+ void BrowserWidget::RequestLogicalClose(BrowserView* view) {
+   CHECK(view);
+   CHECK_EQ(view->browser_widget(), this);
+-  if (changing_barc_presentation_ || clearing_barc_presentation_) {
++  if (changing_barc_presentation_ || clearing_barc_presentation_ ||
++      changing_barc_peek_ || clearing_barc_peek_) {
+     auto browser = view->browser()->GetWeakPtr();
+     base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
+         FROM_HERE, base::BindOnce([](base::WeakPtr<BrowserWindowInterface> browser) {
+@@ -1073,7 +1506,9 @@
+   if (tab_drag_kind_ != TabDragKind::kNone) {
+     return;
+   }
+-  if (HasPhysicalClosePending() && !IsPhysicalCloseCommitted()) {
++  if (physical_close_phase_ != PhysicalClosePhase::kCommitted &&
++      RequestLogicalPeekClose(view)) return;
++  if (HasPhysicalClosePending() && physical_close_phase_ != PhysicalClosePhase::kCommitted) {
+     CancelPhysicalClose();
+   }
+   // This real controller handles only this browser's warnings, beforeunload,
+@@ -1180,10 +1615,144 @@
+ }
+ 
+ bool BrowserWidget::IsPhysicalCloseCommitted() const {
+-  return physical_close_phase_ == PhysicalClosePhase::kCommitted;
++  return physical_close_phase_ == PhysicalClosePhase::kCommitted &&
++      physical_close_tabs_.empty();
++}
++
++bool BrowserWidget::RequestPeekPairClose(
++    tabs::TabInterface* source, tabs::TabInterface* peek,
++    base::OnceCallback<void(bool)> on_cancelled) {
++#if BUILDFLAG(IS_MAC)
++  if (!barc::IsPeekPair(source, peek) ||
++      source->GetBrowserWindowInterface() == peek->GetBrowserWindowInterface()) {
++    // Native movement may arrive before app-model admission. Retain both exact
++    // pages until that admission clears the old intrinsic role; never close
++    // source alone or retarget its Peek in another owner/group.
++    if (barc::PeekForSource(source) != peek) return false;
++    source->GetContents()->SetClosedByUserGesture(false);
++    barc::NotifyPeekCloseCancelled(source);
++    return true;
++  }
++  // An existing pair/physical/app close retains its own continuation. A second
++  // tab-close dispatch must neither bypass it nor issue another beforeunload.
++  if (HasPhysicalClosePending() || browser_shutdown::IsTryingToQuit()) {
++    if (!browser_shutdown::IsTryingToQuit() &&
++        (!IsPhysicalCloseTarget(source) || !IsPhysicalCloseTarget(peek))) {
++      source->GetContents()->SetClosedByUserGesture(false);
++      barc::NotifyPeekCloseCancelled(source);
++    }
++    return true;
++  }
++  if (!CanAcceptLogicalBrowser()) {
++    source->GetContents()->SetClosedByUserGesture(false);
++    barc::NotifyPeekCloseCancelled(source);
++    return true;
++  }
++  auto alive = physical_close_weak_factory_.GetWeakPtr();
++  for (auto* tab : {source, peek}) {
++    auto* browser = tab->GetBrowserWindowInterface();
++    auto* view = BrowserView::GetBrowserViewForBrowser(browser);
++    if (!view || view->browser_widget() != this ||
++        !UnloadController::From(browser)->AcquireNativeWindowGroupClose(
++            base::BindOnce(&BrowserWidget::CancelPhysicalClose,
++                           physical_close_weak_factory_.GetWeakPtr()))) {
++      source->GetContents()->SetClosedByUserGesture(false);
++      if (physical_close_participants_.empty()) {
++        barc::NotifyPeekCloseCancelled(source);
++      } else {
++        CancelPhysicalClose();
++      }
++      return true;
++    }
++    physical_close_participants_.push_back(browser->GetWeakPtr());
++    physical_close_tabs_.push_back(tab->GetWeakPtr());
++  }
++  if (!alive || !barc::IsPeekPair(source, peek)) {
++    if (alive) CancelPhysicalClose();
++    return true;
++  }
++  peek_close_cancelled_ = std::move(on_cancelled);
++  physical_close_phase_ = PhysicalClosePhase::kWarnings;
++  physical_close_index_ = 0;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&BrowserWidget::ContinuePhysicalClose,
++                                physical_close_weak_factory_.GetWeakPtr()));
++  return true;
++#else
++  return false;
++#endif
++}
++
++std::vector<content::WebContents*> BrowserWidget::PhysicalCloseContentsFor(
++    BrowserWindowInterface* owner) const {
++  std::vector<content::WebContents*> result;
++  for (const auto& tab : physical_close_tabs_) {
++    if (tab && tab->GetBrowserWindowInterface() == owner) result.push_back(tab->GetContents());
++  }
++  return result;
++}
++
++bool BrowserWidget::RequestLogicalPeekClose(BrowserView* owner) {
++#if !BUILDFLAG(IS_MAC)
++  return false;
++#else
++  if (browser_shutdown::IsTryingToQuit()) return false;
++  std::vector<base::WeakPtr<tabs::TabInterface>> targets;
++  bool has_peek = false;
++  auto* model = owner->browser()->GetTabStripModel();
++  for (int i = 0; i < model->count(); ++i) {
++    auto* tab = model->GetTabAtIndex(i);
++    targets.push_back(tab->GetWeakPtr());
++    if (auto* peek = barc::PeekForSource(tab)) {
++      has_peek = true;
++      // A moved role awaits exact model admission. Closing its old source must
++      // not close a newer ordinary owner or strand the source by partial commit.
++      if (!barc::IsPeekPair(tab, peek)) {
++        barc::NotifyPeekCloseCancelled(tab);
++        return true;
++      }
++      targets.push_back(peek->GetWeakPtr());
++    }
++  }
++  if (!has_peek) return false;
++  if (HasPhysicalClosePending() || !CanAcceptLogicalBrowser()) return true;
++  auto alive = physical_close_weak_factory_.GetWeakPtr();
++  logical_peek_close_owner_ = owner->browser()->GetWeakPtr();
++  physical_close_tabs_ = std::move(targets);
++  std::vector<base::WeakPtr<BrowserWindowInterface>> owners;
++  for (const auto& tab : physical_close_tabs_) {
++    auto browser = tab->GetBrowserWindowInterface()->GetWeakPtr();
++    if (!std::ranges::any_of(owners, [&browser](const auto& prior) { return prior.get() == browser.get(); }))
++      owners.push_back(browser);
++  }
++  for (const auto& browser : owners) {
++    if (!browser || !UnloadController::From(browser.get())->AcquireNativeWindowGroupClose(
++        base::BindOnce(&BrowserWidget::CancelPhysicalClose,
++                       physical_close_weak_factory_.GetWeakPtr()))) {
++      CancelPhysicalClose();
++      return true;
++    }
++    if (!alive) return true;
++    physical_close_participants_.push_back(browser);
++  }
++  if (!ValidatePhysicalCloseParticipants()) {
++    CancelPhysicalClose();
++    return true;
++  }
++  physical_close_phase_ = PhysicalClosePhase::kWarnings;
++  physical_close_index_ = 0;
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
++      FROM_HERE, base::BindOnce(&BrowserWidget::ContinuePhysicalClose,
++                                physical_close_weak_factory_.GetWeakPtr()));
++  return true;
++#endif
+ }
+ 
+ views::CloseRequestResult BrowserWidget::PreparePhysicalClose() {
++  if (!physical_close_tabs_.empty() &&
++      physical_close_phase_ != PhysicalClosePhase::kCommitted) {
++    CancelPhysicalClose();
++  }
+   if (physical_close_phase_ == PhysicalClosePhase::kIdle) {
+     if (browser_shutdown::IsTryingToQuit() ||
+         tab_drag_kind_ != TabDragKind::kNone) {
+@@ -1212,10 +1781,43 @@
+ 
+ bool BrowserWidget::ValidatePhysicalCloseParticipants() const {
+   const auto current = GetLogicalBrowserViews();
+-  if (current.size() != physical_close_participants_.size()) {
+-    return false;
+-  }
++  if (physical_close_tabs_.empty() && current.size() != physical_close_participants_.size()) {
++    return false;
++  }
++#if BUILDFLAG(IS_MAC)
++  if (logical_peek_close_owner_) {
++    auto* source = logical_peek_close_owner_.get();
++    const auto source_tabs = PhysicalCloseContentsFor(source);
++    if (source_tabs.size() != static_cast<size_t>(source->GetTabStripModel()->count())) return false;
++    for (const auto& tab : physical_close_tabs_) {
++      if (!tab || !tab->GetBrowserWindowInterface()) return false;
++      if (tab->GetBrowserWindowInterface() == source) {
++        auto* peek = barc::PeekForSource(tab.get());
++        if (peek && (!barc::IsPeekPair(tab.get(), peek) ||
++            !std::ranges::any_of(physical_close_tabs_, [peek](const auto& other) {
++              return other.get() == peek;
++            }))) return false;
++      } else {
++        bool linked = false;
++        for (const auto& candidate : physical_close_tabs_) {
++          linked |= candidate && candidate->GetBrowserWindowInterface() == source &&
++              barc::PeekForSource(candidate.get()) == tab.get() &&
++              barc::IsPeekPair(candidate.get(), tab.get());
++        }
++        if (!linked) return false;
++      }
++    }
++  } else if (!physical_close_tabs_.empty() &&
++      (physical_close_tabs_.size() != 2 || physical_close_participants_.size() != 2 ||
++       !barc::IsPeekPair(physical_close_tabs_[0].get(), physical_close_tabs_[1].get())))
++    return false;
++#endif
++  size_t target_index = 0;
+   for (const auto& browser : physical_close_participants_) {
++    if (!logical_peek_close_owner_ && !physical_close_tabs_.empty() &&
++        (!physical_close_tabs_[target_index] ||
++         physical_close_tabs_[target_index++]->GetBrowserWindowInterface() != browser.get()))
++      return false;
+     if (!browser || browser->IsDeleteScheduled()) {
+       return false;
+     }
+@@ -1231,10 +1833,12 @@
+ }
+ 
+ void BrowserWidget::CancelPhysicalClose() {
++  auto cancelled = std::move(peek_close_cancelled_);
+   physical_warning_observation_.Reset();
+   physical_close_weak_factory_.InvalidateWeakPtrs();
+   auto cancellation = physical_close_weak_factory_.GetWeakPtr();
+   const auto participants = physical_close_participants_;
++  const auto targets = physical_close_tabs_;
+   for (const auto& browser : participants) {
+     if (browser && !browser->IsDeleteScheduled()) {
+       UnloadController::From(browser.get())->CancelNativeWindowGroupClose();
+@@ -1244,16 +1848,37 @@
+     }
+   }
+   physical_close_participants_.clear();
++  physical_close_tabs_.clear();
++  logical_peek_close_owner_.reset();
+   physical_close_index_ = 0;
+   physical_close_waiting_ = false;
+   physical_close_phase_ = PhysicalClosePhase::kIdle;
++#if BUILDFLAG(IS_MAC)
++  barc::BrowserDiscoveryChanged();
++#endif
+   // Every participant now permits a callback-driven retry. No member group
+   // state is written after notifying consumers, which can close this host.
++  if (!targets.empty()) {
++    // Finish the old custom continuation before publishing refusal. A real
++    // transfer invalidates its original tabstrip/controller continuation.
++    if (cancelled && targets[0] && participants[0] &&
++        targets[0]->GetBrowserWindowInterface() == participants[0].get()) {
++      std::move(cancelled).Run(false);
++      if (!cancellation || physical_close_phase_ != PhysicalClosePhase::kIdle) return;
++    }
++#if BUILDFLAG(IS_MAC)
++    for (const auto& target : targets) {
++      if (target) barc::NotifyPeekCloseCancelled(target.get());
++      if (!cancellation || physical_close_phase_ != PhysicalClosePhase::kIdle) return;
++    }
++#endif
++    return;
++  }
+   for (const auto& browser : participants) {
+     if (browser && !browser->IsDeleteScheduled()) {
+       UnloadController::From(browser.get())->NotifyWindowCloseCancelled(
+           BrowserWindowInterface::ClosingStatus::kDeniedByUser);
+-      if (!cancellation) {
++      if (!cancellation || physical_close_phase_ != PhysicalClosePhase::kIdle) {
+         return;
+       }
+     }
+@@ -1287,9 +1912,16 @@
+       auto* controller = UnloadController::From(browser.get());
+       // Only this synchronous call sees raw participants. Nothing is captured.
+       std::vector<BrowserWindowInterface*> group;
+-      for (const auto& participant : physical_close_participants_) {
+-        group.push_back(participant.get());
+-      }
++      for (size_t i = 0; i < physical_close_participants_.size(); ++i) {
++        const auto& participant = physical_close_participants_[i];
++        if (physical_close_tabs_.empty() ||
++            PhysicalCloseContentsFor(participant.get()).size() ==
++                static_cast<size_t>(participant->GetTabStripModel()->count()))
++          group.push_back(participant.get());
++      }
++      if (!physical_close_tabs_.empty() &&
++          PhysicalCloseContentsFor(browser.get()).size() !=
++              static_cast<size_t>(browser->GetTabStripModel()->count())) continue;
+       bool warning_possible = !controller->force_skip_warning_user_on_close();
+ #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
+       warning_possible &= browser->GetProfile()->IsOffTheRecord();
+@@ -1337,7 +1969,8 @@
+       physical_close_waiting_ = false;
+     } else {
+       auto* controller = UnloadController::From(browser.get());
+-      if (controller->TabsNeedBeforeUnloadFired() &&
++      const auto only_tabs = PhysicalCloseContentsFor(browser.get());
++      if (controller->TabsNeedBeforeUnloadFired(only_tabs) &&
+           !SelectLogicalBrowserView(
+               BrowserView::GetBrowserViewForBrowser(browser.get()))) {
+         if (alive) {
+@@ -1359,7 +1992,7 @@
+               base::BindRepeating(&BrowserWidget::OnPhysicalBeforeUnload,
+                                   physical_close_weak_factory_.GetWeakPtr(),
+                                   index),
+-              UnloadController::BeforeUnloadPurpose::kNativeWindowGroup)) {
++              UnloadController::BeforeUnloadPurpose::kNativeWindowGroup, only_tabs)) {
+         return;
+       }
+       if (!alive) {
+@@ -1383,8 +2016,10 @@
+   }
+   // New handlers/tabs may have appeared while another profile's dialog was
+   // pending. Re-run the non-destructive phase for those handlers before commit.
+-  for (const auto& browser : physical_close_participants_) {
+-    if (UnloadController::From(browser.get())->TabsNeedBeforeUnloadFired()) {
++  for (size_t i = 0; i < physical_close_participants_.size(); ++i) {
++    const auto& browser = physical_close_participants_[i];
++    const auto only_tabs = PhysicalCloseContentsFor(browser.get());
++    if (UnloadController::From(browser.get())->TabsNeedBeforeUnloadFired(only_tabs)) {
+       physical_close_index_ = 0;
+       ContinuePhysicalClose();
+       return;
+@@ -1467,6 +2102,65 @@
+   }
+   auto alive = physical_close_weak_factory_.GetWeakPtr();
+   const auto participants = physical_close_participants_;
++  if (!physical_close_tabs_.empty()) {
++    // Keep both controllers/pages live through the final policy checks. ClosePage
++    // then commits only these already-consented pages, never all browser tabs.
++    const auto targets = physical_close_tabs_;
++    for (const auto& target : targets) {
++      if (!target || !UnloadController::From(target->GetBrowserWindowInterface())->CanCloseContents(target->GetContents())) {
++        if (alive) CancelPhysicalClose();
++        return;
++      }
++      if (!alive || !ValidatePhysicalCloseParticipants()) {
++        if (alive) CancelPhysicalClose();
++        return;
++      }
++    }
++#if BUILDFLAG(IS_MAC)
++    for (const auto& target : targets) {
++      if (auto* peek = barc::PeekForSource(target.get())) {
++        if (!barc::CommitPeekPairClose(target.get(), peek)) {
++          CancelPhysicalClose();
++          return;
++        }
++      }
++    }
++#endif
++    physical_close_phase_ = PhysicalClosePhase::kCommitted;
++    // The custom-handler continuation is obsolete: this commit closes the exact
++    // source itself. Invoking it would dispatch a second beforeunload/close.
++    peek_close_cancelled_.Reset();
++    for (const auto& browser : participants)
++      UnloadController::From(browser.get())->FinishNativeWindowGroupTabClose();
++    std::vector<base::WeakPtr<BrowserWindowInterface>> target_owners;
++    std::vector<base::WeakPtr<content::WebContents>> target_contents;
++    for (const auto& target : targets) {
++      target_owners.push_back(target->GetBrowserWindowInterface()->GetWeakPtr());
++      target_contents.push_back(target->GetContents()->GetWeakPtr());
++    }
++    for (size_t i = 0; i < targets.size(); ++i) {
++      const auto& target = targets[i];
++      // A preceding close callback can transfer or replace another target.
++      // Consent never follows that page into a newer ordinary owner/document.
++      if (target && target_owners[i] && target_contents[i] &&
++          target->GetBrowserWindowInterface() == target_owners[i].get() &&
++          target->GetContents() == target_contents[i].get()) {
++        target->GetContents()->ClosePage();
++      } else if (target && target_contents[i]) {
++#if BUILDFLAG(IS_MAC)
++        barc::ResetPeekCloseCommitted(target.get(), target_contents[i].get());
++#endif
++      }
++      if (!alive) return;
++    }
++    physical_close_tabs_.clear();
++    physical_close_participants_.clear();
++    logical_peek_close_owner_.reset();
++    physical_close_index_ = 0;
++    physical_close_waiting_ = false;
++    physical_close_phase_ = PhysicalClosePhase::kIdle;
++    return;
++  }
+   for (const auto& browser : participants) {
+     auto* view = BrowserView::GetBrowserViewForBrowser(browser.get());
+     const bool permitted =
+@@ -1499,7 +2193,8 @@
+ 
+ bool BrowserWidget::CanAcceptLogicalBrowser() {
+ #if BUILDFLAG(IS_MAC)
+-  if (IsClosed() || HasPhysicalClosePending() || !browser_view_ ||
++  if (IsClosed() || HasPhysicalClosePending() || changing_barc_peek_ ||
++      clearing_barc_peek_ || !browser_view_ ||
+       browser_view_->browser()->IsDeleteScheduled() ||
+       browser_view_->browser()->GetType() !=
+           BrowserWindowInterface::Type::TYPE_NORMAL ||
+@@ -1541,6 +2236,7 @@
+                                                      bool closing_current) {
+ #if BUILDFLAG(IS_MAC)
+   CHECK(!selecting_logical_view_);
++  if (clearing_barc_peek_ && !closing_current) return false;
+   if (!view || view->browser_widget() != this ||
+       (!closing_current &&
+        (IsClosed() || view->browser()->IsDeleteScheduled()))) {
+@@ -1550,6 +2246,14 @@
+                             browser_view_->suppress_layout_for_teardown_ ||
+                             view->suppress_layout_for_teardown_))) {
+     return false;
++  }
++  if (barc_peek_ && !changing_barc_peek_ &&
++      (!barc_peek_->peek || barc_peek_->peek->GetBrowserWindowInterface() != view->browser())) {
++    auto host_alive = GetWeakPtr();
++    auto incoming_alive = view->GetAsWeakPtr();
++    const uint64_t before = barc_selection_epoch_;
++    ClearBarcPeek(false, false);
++    if (!host_alive || !incoming_alive || before != barc_selection_epoch_) return false;
+   }
+   // Identity selection is a no-op for a singleton native popup too. Actual
+   // shared-client switching below remains restricted to normal browsers.
+@@ -1757,7 +2461,7 @@
+   auto alive = GetWeakPtr();
+   auto view_alive = view->weak_ptr_factory_.GetWeakPtr();
+   auto intact = [&] { return alive && view_alive; };
+-  if (barc_presented_contents_ && !changing_barc_presentation_) {
++  if (barc_presented_contents_ && !changing_barc_presentation_ && !barc_peek_) {
+     barc_presented_contents_->SetActiveContents(view->GetActiveWebContents());
+     if (!intact()) {
+       return false;
+@@ -1821,6 +2525,10 @@
+     if (!intact()) {
+       return false;
+     }
++  }
++  if (barc_peek_) {
++    LayoutBarcPeek();
++    if (!intact()) return false;
+   }
+   return true;
+ }
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -32,6 +32,7 @@
+ enum class BrowserThemeChangeType;
+ class BrowserView;
+ class MultiContentsView;
++struct BarcPeekPresentation;
+ namespace tabs { class TabInterface; }
+ namespace content { class WebContents; }
+ class BrowserWindowInterface;
+@@ -119,12 +120,31 @@
+   void ReverseBarcPresentedContents();
+   void UpdateBarcPresentedScreenshotPolicy();
+ 
++  // One transient card borrows the exact Peek container, never its tab/profile.
++  uint64_t PresentBarcPeek(tabs::TabInterface* source, tabs::TabInterface* peek,
++                          gfx::NativeView sidebar, gfx::NativeView header,
++                          gfx::NativeView actions);
++  bool IsBarcPeekPresented(tabs::TabInterface* source, tabs::TabInterface* peek,
++                           uint64_t generation, gfx::NativeView header,
++                           gfx::NativeView actions) const;
++  bool HideBarcPeek(tabs::TabInterface* source, tabs::TabInterface* peek,
++                    uint64_t generation, gfx::NativeView header,
++                    gfx::NativeView actions);
++  bool HasBarcPeek() const;
++  bool IsBarcPeekVisible(tabs::TabInterface* peek) const;
++
+   // Grouped physical-close preflight never unloads a participant until all
+   // warning and beforeunload decisions succeed. Ordinary one-client close
+   // remains on its existing path.
+   views::CloseRequestResult PreparePhysicalClose();
++  // The existing local close owner preflights only this exact intrinsic pair.
++  // Neither page is closed until both consent; whole-window/app close preempts.
++  bool RequestPeekPairClose(tabs::TabInterface* source,
++                            tabs::TabInterface* peek,
++                            base::OnceCallback<void(bool)> on_cancelled);
+   bool IsPhysicalCloseCommitted() const;
+   bool HasPhysicalClosePending() const;
++  bool IsPhysicalCloseTarget(tabs::TabInterface* tab) const;
+   void RequestLogicalClose(BrowserView* view);
+   void RemoveLogicalBrowserView(BrowserView* view);
+ 
+@@ -222,6 +242,13 @@
+   bool changing_barc_presentation_ = false;
+   bool clearing_barc_presentation_ = false;
+ 
++  void ClearBarcPeek(bool native_destroying, bool restore_source);
++  void LayoutBarcPeek();
++  std::shared_ptr<BarcPeekPresentation> barc_peek_;
++  uint64_t barc_peek_generation_ = 0;
++  bool changing_barc_peek_ = false;
++  bool clearing_barc_peek_ = false;
++
+   const ui::ThemeProvider* GetBaseThemeProvider() const;
+ 
+   void OnTouchUiChanged();
+@@ -258,6 +285,11 @@
+   void OnWidgetDestroying(views::Widget* widget) override;
+   void OnPhysicalBeforeUnload(size_t index, bool proceed);
+   bool ValidatePhysicalCloseParticipants() const;
++  bool RequestLogicalPeekClose(BrowserView* owner);
++  std::vector<content::WebContents*> PhysicalCloseContentsFor(
++      BrowserWindowInterface* owner) const;
++  base::WeakPtr<BrowserWindowInterface> logical_peek_close_owner_;
++
+   void CancelPhysicalClose();
+   void CommitPhysicalClose();
+ 
+@@ -266,6 +298,9 @@
+       physical_close_participants_;
+   size_t physical_close_index_ = 0;
+   bool physical_close_waiting_ = false;
++  // Empty means whole physical window; otherwise exactly source + Peek.
++  std::vector<base::WeakPtr<tabs::TabInterface>> physical_close_tabs_;
++  base::OnceCallback<void(bool)> peek_close_cancelled_;
+   base::ScopedObservation<views::Widget, views::WidgetObserver>
+       physical_warning_observation_{this};
+ 
+--- a/chrome/browser/ui/views/frame/multi_contents_view.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view.cc
+@@ -397,8 +397,8 @@
+ 
+   if (!IsInSplitView()) {
+     GetActiveContentsContainerView()->SetRoundedCorners(radii);
+-    GetInactiveContentsContainerView()->SetRoundedCorners(
+-        gfx::RoundedCornersF());
++    if (contents_container_views_.size() > 1)
++      GetInactiveContentsContainerView()->SetRoundedCorners(gfx::RoundedCornersF());
+   }
+ }
+ 
+@@ -878,6 +878,17 @@
+     layouts.host_size = gfx::Size(width, height);
+     return layouts;
+   }
++  if (!browser_view_ && contents_container_views_.size() == 1) {
++    // A native Peek or its unsplit underlay borrows one existing owner-bound
++    // container. It is not a synthetic two-pane Chrome collection.
++    layouts.child_layouts.emplace_back(contents_container_views_[0].get(),
++                                       contents_container_views_[0]->GetVisible(),
++                                       available_space);
++    layouts.child_layouts.emplace_back(lens_overlay_view_.get(),
++                                       lens_overlay_view_->GetVisible(), gfx::Rect(width, height));
++    layouts.host_size = gfx::Size(width, height);
++    return layouts;
++  }
+   ViewSizes sizes = GetViewSizes(available_space);
+ 
+   gfx::Rect start_rect, resize_rect, end_rect;
+@@ -928,7 +939,8 @@
+   if (!IsInSplitView()) {
+     const auto outsets = -target_content_bounds_->clipped_area.ToOutsets();
+     GetActiveContentsContainerView()->SetTargetContentBounds(outsets);
+-    GetInactiveContentsContainerView()->SetTargetContentBounds(std::nullopt);
++    if (contents_container_views_.size() > 1)
++      GetInactiveContentsContainerView()->SetTargetContentBounds(std::nullopt);
+     return;
+   }
+ 
+--- a/tools/metrics/histograms/metadata/ui/enums.xml
++++ b/tools/metrics/histograms/metadata/ui/enums.xml
+@@ -432,6 +432,7 @@
+   <int value="169" label="IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED"/>
+   <int value="170" label="IDC_CONTENT_CONTEXT_ASK_GOOGLE_ABOUT_THIS_PAGE"/>
+   <int value="171" label="IDC_CONTENT_CONTEXT_CONTEXTUAL_TASKS_SUBMENU"/>
++  <int value="172" label="IDC_CONTENT_CONTEXT_OPENLINKINPEEK"/>
+ </enum>
+ 
+ <!-- LINT.ThenChange(//chrome/browser/renderer_context_menu/render_view_context_menu.cc:RenderViewContextMenuItem) -->
+--- a/chrome/app/framework.order
++++ b/chrome/app/framework.order
+@@ -82,6 +82,11 @@
+ _barc_tab_clear_site_data
+ _barc_tab_set_user_css
+ _barc_tab_translate
++_barc_tab_enable_peek
++_barc_tab_create_peek
++_barc_tab_present_peek
++_barc_tab_hide_peek
++_barc_tab_is_peek_presented
+ _barc_tab_go_back
+ _barc_tab_go_forward
+ _barc_tab_reload
+--- a/chrome/browser/ui/browser.cc
++++ b/chrome/browser/ui/browser.cc
+@@ -383,6 +383,12 @@
+     // the Browser unique_ptr.
+     UnloadController::From(this)->set_force_skip_warning_user_on_close(true);
+     UnloadController::From(this)->OnWindowClosing();
++    // A hierarchy mutation may defer the window Close requested by
++    // TabStripEmpty(). Complete its stock empty-strip retirement while the
++    // window still exists, before active-browser observers can query it.
++    if (!IsDeleteScheduled() && tab_strip_model_->empty()) {
++      UnloadController::From(this)->OnWindowClosing();
++    }
+   }
+ 
+   // Stop observing notifications and destroy the tab monitor before continuing

@@ -25,6 +25,7 @@ public struct SpacesSettingsView: View {
     @State private var showIconPickerFor: UUID?
     /// A move that would leave its profile with no space, waiting on keep, delete or cancel.
     @State private var pendingMove: (space: UUID, to: UUID?, profile: String)?
+    @State private var profileChangeError: ProfileDeletionError?
     /// A space in iCloud waiting on Remove or Cancel.
     @State private var pendingRemoval: SpaceSyncCloudSpace?
     @State private var joining = false
@@ -138,15 +139,24 @@ public struct SpacesSettingsView: View {
         } message: {
             Text(Self.leaveWarning(actions?.spaceSync?.status.mode ?? .own))
         }
+        .alert("Couldn’t Change Profile", isPresented: Binding(
+            get: { profileChangeError != nil }, set: { if !$0 { profileChangeError = nil } }
+        )) {
+            Button("OK") { profileChangeError = nil }
+        } message: {
+            Text(tabs.device.pendingProfileDeletion == nil
+                ? "The profile change is unavailable right now."
+                : "The profile change is incomplete. Retry to finish it.")
+        }
         .alert(
             "Keep the \u{201C}\(pendingMove?.profile ?? "")\u{201D} profile?",
             isPresented: Binding(get: { pendingMove != nil }, set: { if !$0 { pendingMove = nil } })
         ) {
             Button("Move and Keep Profile") {
-                if let move = pendingMove { tabs.setProfile(move.space, to: move.to, keepingLeftProfile: true) }
+                if let move = pendingMove { performProfileMove(move.space, to: move.to, keepingSource: true) }
             }
             Button("Move and Delete Profile", role: .destructive) {
-                if let move = pendingMove { tabs.setProfile(move.space, to: move.to) }
+                if let move = pendingMove { performProfileMove(move.space, to: move.to, keepingSource: false) }
             }
             Button("Cancel", role: .cancel) {}
         } message: {
@@ -157,28 +167,43 @@ public struct SpacesSettingsView: View {
     private func profilePicker(_ space: SpaceRecord) -> some View {
         let current = tabs.profiles.first { $0.spaceIDs.contains(space.id) }
         // A nil selection is "New Profile"; every space is always in some profile.
-        return Picker("Profile", selection: Binding<UUID?>(
-            get: { current?.id },
-            set: { move(space.id, to: $0, from: current) }
-        )) {
-            ForEach(tabs.profiles) { profile in
-                Text(profile.name).tag(UUID?.some(profile.id))
+        return HStack {
+            Picker("Profile", selection: Binding<UUID?>(
+                get: { current?.id },
+                set: { move(space.id, to: $0, from: current) }
+            )) {
+                ForEach(tabs.profiles.filter { tabs.isProfileAvailable($0.id) || $0.id == current?.id }) { profile in
+                    Text(profile.name).tag(UUID?.some(profile.id))
+                }
+                Divider()
+                Text("New Profile").tag(UUID?.none)
             }
-            Divider()
-            Text("New Profile").tag(UUID?.none)
+            .labelsHidden()
+            .fixedSize()
+            .disabled(tabs.device.pendingProfileDeletion?.change?.spaceIDs.contains(space.id) == true)
+            if tabs.device.pendingProfileDeletion?.change?.spaceIDs.contains(space.id) == true {
+                Button("Retry Profile Change") {
+                    tabs.retryPendingProfileChange(completion: profileChangeCompleted)
+                }
+            }
         }
-        .labelsHidden()
-        .fixedSize()
-        .disabled(tabs.profileEngine != .webKit)
+    }
+
+    private func profileChangeCompleted(_ result: Result<Void, ProfileDeletionError>) {
+        if case .failure(let error) = result, error != .cancelled { profileChangeError = error }
+    }
+
+    private func performProfileMove(_ spaceID: UUID, to profile: UUID?, keepingSource: Bool) {
+        tabs.setProfile(spaceID, to: profile, keepingLeftProfile: keepingSource,
+                        completion: profileChangeCompleted)
     }
 
     private func move(_ spaceID: UUID, to storeID: UUID?, from current: ProfileSummary?) {
-        guard tabs.profileEngine == .webKit else { return }
         guard storeID != current?.id else { return }
         if let left = tabs.profileLeftEmpty(byMoving: spaceID, to: storeID) {
             pendingMove = (spaceID, storeID, left.name)
         } else {
-            tabs.setProfile(spaceID, to: storeID)
+            performProfileMove(spaceID, to: storeID, keepingSource: false)
         }
     }
 

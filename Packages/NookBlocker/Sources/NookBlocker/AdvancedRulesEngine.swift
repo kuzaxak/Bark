@@ -33,7 +33,10 @@ public final class AdvancedRulesEngine {
     /// One adblock-rust engine, shared by cosmetic lookup and the dev MCP
     /// check_urls tool. Actor-isolated because the engine pointer is Send but
     /// not Sync.
-    public let engine = BlockerEngine()
+    public let engine: BlockerEngine
+
+    init(engine: BlockerEngine) { self.engine = engine }
+    init() { self.engine = BlockerEngine() }
 
     // MARK: - Build
 
@@ -41,8 +44,10 @@ public final class AdvancedRulesEngine {
     /// adblock-rust parses filter syntax directly, so there is no intermediate
     /// "advanced rules text" of the kind SafariConverterLib produced. The parsed
     /// engine itself is saved and restored by `BlockerEngine`.
-    func build(sources: [FilterListManager.Source]) async {
-        await engine.build(sources: sources)
+    @discardableResult
+    func build(sources: [FilterListManager.Source], exportingNetworkRules: Bool = false,
+               accepting: (@MainActor () -> Bool)? = nil) async -> Bool {
+        await engine.build(sources: sources, exportingNetworkRules: exportingNetworkRules, accepting: accepting)
     }
 
     // MARK: - Lookup

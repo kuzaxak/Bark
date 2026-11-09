@@ -29,7 +29,7 @@ struct MailCard: View {
 
     @ViewBuilder
     private var content: some View {
-        switch live.mail[itemID]?.outcome {
+        switch live.mailOutcome(itemID, account: account) {
         case .inbox(let inbox)?:
             if let message = inbox.newest {
                 Button {

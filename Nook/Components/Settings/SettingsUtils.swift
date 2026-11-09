@@ -22,6 +22,13 @@ enum SettingsTabs: String, Hashable, CaseIterable {
     case extensions
     case developer
 
+    var availableInChromium: Bool {
+        switch self {
+        case .extensions: return false
+        default: return true
+        }
+    }
+
     var name: String {
         switch self {
         case .general: return "General"

@@ -16,20 +16,17 @@ import NookUI
 import NookWeb
 
 extension BrowserManager: TabActions {
-    var supportsMultipleWindows: Bool { engine == .webKit }
     var spaceSync: (any SpaceSyncControls)? { spaceSyncManager }
 
     func enterSplit(with itemID: UUID, placeOnRight: Bool, in window: BrowserWindowState) {
-        guard engine == .webKit else { return }
         splitManager.enterSplit(with: itemID, placeOn: placeOnRight ? .trailing : .leading, in: window)
     }
 
     func offersSplit(in window: BrowserWindowState) -> Bool {
-        engine == .webKit && splitManager.offersAddSplitView(in: window)
+        splitManager.offersAddSplitView(in: window)
     }
 
     func separateSplit(in window: BrowserWindowState) {
-        guard engine == .webKit else { return }
         splitManager.separateAll(in: window)
     }
 

@@ -53,20 +53,24 @@ final class ChromiumProfilePagePresenter {
         let profile: ProfileSummary
         let destination: ProfilePageDestination
         let canPresent: @MainActor () -> Bool
-        var completion: (@MainActor (Result<Void, ProfilePageOpenError>) -> Void)?
+        let recoveryAction: (@MainActor () -> Void)?
+        var cancelled = false
+        var completion: (@MainActor (Result<Int32, ProfilePageOpenError>) -> Void)?
         weak var presenter: ChromiumProfilePagePresenter?
         init(profile: ProfileSummary, destination: ProfilePageDestination,
              canPresent: @escaping @MainActor () -> Bool,
-             completion: @escaping @MainActor (Result<Void, ProfilePageOpenError>) -> Void) {
+             recoveryAction: (@MainActor () -> Void)?,
+             completion: @escaping @MainActor (Result<Int32, ProfilePageOpenError>) -> Void) {
             self.profile = profile; self.destination = destination
-            self.canPresent = canPresent; self.completion = completion
+            self.canPresent = canPresent; self.completion = completion; self.recoveryAction = recoveryAction
         }
     }
     private final class Page {
         let navigation: ChromiumPageNavigation
         var view: NSView?
         var attemptedAttach = false
-        init(navigation: ChromiumPageNavigation) { self.navigation = navigation }
+        let isRecovery: Bool
+        init(navigation: ChromiumPageNavigation, isRecovery: Bool) { self.navigation = navigation; self.isRecovery = isRecovery }
     }
     private let api: ChromiumProfilePageAPI
     private let navigationAPI: ChromiumNavigationAPI
@@ -84,8 +88,43 @@ final class ChromiumProfilePagePresenter {
     func open(_ profile: ProfileSummary, destination: ProfilePageDestination,
               canPresent: @escaping @MainActor () -> Bool,
               completion: @escaping @MainActor (Result<Void, ProfilePageOpenError>) -> Void) {
+        openPage(profile, destination: destination, canPresent: canPresent, recoveryAction: nil) {
+            completion($0.map { _ in () })
+        }
+    }
+
+    /// The already-admitted utility is startup's native owner; no model space is invented.
+    func openRecovery(_ profile: ProfileSummary, canPresent: @escaping @MainActor () -> Bool,
+                      openSettings: @escaping @MainActor () -> Void,
+                      completion: @escaping @MainActor (Result<Int32, ProfilePageOpenError>) -> Void) {
+        openPage(profile, destination: .settings, canPresent: canPresent,
+                 recoveryAction: openSettings, completion: completion)
+    }
+
+    func ownsRecoveryWindow(_ window: Int32, profile: UUID, activeTab: Int32) -> Bool {
+        guard let page = pages[window], page.isRecovery, page.navigation.profileID == profile,
+              page.navigation.nativeTabID == activeTab else { return false }
+        return ownsControls(page, window: window)
+    }
+
+    /// Revoke completion before invoking clients; keep borrowed C contexts until their callback.
+    func cancelPending() {
+        let callbacks = requests.values.compactMap { request in
+            request.cancelled = true
+            let callback = request.completion
+            request.completion = nil
+            return callback
+        }
+        callbacks.forEach { $0(.failure(.presentationUnavailable)) }
+    }
+
+    private func openPage(_ profile: ProfileSummary, destination: ProfilePageDestination,
+                          canPresent: @escaping @MainActor () -> Bool,
+                          recoveryAction: (@MainActor () -> Void)?,
+                          completion: @escaping @MainActor (Result<Int32, ProfilePageOpenError>) -> Void) {
         guard canPresent() else { completion(.failure(.profileUnavailable)); return }
-        let request = Request(profile: profile, destination: destination, canPresent: canPresent, completion: completion)
+        let request = Request(profile: profile, destination: destination, canPresent: canPresent,
+                              recoveryAction: recoveryAction, completion: completion)
         request.presenter = self
         requests[request.id] = request
         profile.id.uuidString.withCString { uuid in
@@ -106,13 +145,13 @@ final class ChromiumProfilePagePresenter {
         }
         let tab = api.tabAt(window, 0)
         guard tab > 0 else { finish(request, .failure(.presentationFailed)); return }
-        guard request.canPresent() else {
+        guard !request.cancelled, request.canPresent() else {
             if api.copyTitle(window, tab, nil, 0) > 0 { _ = api.close(window) }
             finish(request, .failure(.profileUnavailable)); return
         }
         do {
             let navigation = try ChromiumPageNavigation(profileID: request.profile.id, window: window, tab: tab, api: navigationAPI)
-            let page = Page(navigation: navigation)
+            let page = Page(navigation: navigation, isRecovery: request.recoveryAction != nil)
             let canUse: () -> Bool = { [weak self, weak page] in
                 guard let self, let page else { return false }
                 return self.ownsControls(page, window: window)
@@ -121,7 +160,7 @@ final class ChromiumProfilePagePresenter {
                 navigation: navigation, canUse: canUse, close: { [weak self, weak page] in
                     guard let self, let page, self.ownsControls(page, window: window) else { return }
                     _ = self.api.close(window)
-                }))
+                }, recoveryAction: request.recoveryAction))
             page.view = view
             pages[window] = page
             navigation.onNativeOwnerChanged = { [weak self, weak page, weak request] owner in
@@ -139,16 +178,22 @@ final class ChromiumProfilePagePresenter {
             }
             page.attemptedAttach = true
             let attached = api.attach(window, Unmanaged.passUnretained(view).toOpaque()) == 1
-            guard attached, request.canPresent(), ownsControls(page, window: window),
-                  api.select(window) == 1, request.canPresent(), ownsControls(page, window: window) else {
+            guard attached, !request.cancelled, request.canPresent(), ownsControls(page, window: window),
+                  api.select(window) == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window) else {
                 refuse(request, window: window, page: page); return
             }
             let accepted = request.destination.nativeURL.withCString { navigationAPI.navigate(window, tab, $0) }
-            guard accepted == 1, request.canPresent(), ownsControls(page, window: window),
-                  api.show(window) == 1, request.canPresent(), ownsControls(page, window: window) else {
+            guard accepted == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window) else {
                 refuse(request, window: window, page: page); return
             }
-            finish(request, .success(()))
+            // Startup owns the first Show for recovery, after it revalidates
+            // this exact attached utility. Ordinary profile links still show here.
+            if request.recoveryAction == nil {
+                guard api.show(window) == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window) else {
+                    refuse(request, window: window, page: page); return
+                }
+            }
+            finish(request, .success(window))
         } catch {
             refuse(request, window: window, tab: tab)
         }
@@ -191,7 +236,7 @@ final class ChromiumProfilePagePresenter {
         finish(request, .failure(request.canPresent() ? .presentationFailed : .profileUnavailable))
     }
 
-    private func finish(_ request: Request, _ result: Result<Void, ProfilePageOpenError>) {
+    private func finish(_ request: Request, _ result: Result<Int32, ProfilePageOpenError>) {
         guard requests.removeValue(forKey: request.id) === request else { return }
         let callback = request.completion
         request.completion = nil
@@ -214,6 +259,7 @@ private extension ProfilePageDestination {
         case .siteSettings: "chrome://settings/content"
         case .clearData: "chrome://settings/clearBrowserData"
         case .downloads: "chrome://settings/downloads"
+        case .passwords: "chrome://password-manager/passwords"
         }
     }
 }
@@ -223,6 +269,7 @@ struct ChromiumProfilePageView: View {
     let navigation: ChromiumPageNavigation
     let canUse: () -> Bool
     let close: () -> Void
+    var recoveryAction: (@MainActor () -> Void)? = nil
     @State private var state = PageNavigationState(canGoBack: false, canGoForward: false)
 
     var body: some View {
@@ -237,6 +284,10 @@ struct ChromiumProfilePageView: View {
                 Button(action: reload) { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Reload")
             }
+            if recoveryAction != nil {
+                Text("A profile change needs attention.").font(.callout)
+                Button("Open Profile Recovery", action: openRecovery)
+            }
             Text(state.title ?? "Profile Settings").lineLimit(3)
             Button("Close Window", action: close)
             Spacer()
@@ -250,6 +301,7 @@ struct ChromiumProfilePageView: View {
         }
     }
 
+    func openRecovery() { if canUse() { recoveryAction?() } }
     func goBack() { if canUse() { _ = navigation.goBack() } }
     func goForward() { if canUse() { _ = navigation.goForward() } }
     func reload() { if canUse() { _ = navigation.reload() } }

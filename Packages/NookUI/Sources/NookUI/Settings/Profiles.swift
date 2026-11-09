@@ -20,6 +20,7 @@ public struct ProfilesSettingsView: View {
     @Environment(TabsController.self) private var tabs
     @State private var selection: UUID?
     @State private var pendingDelete: ProfileSummary?
+    @State private var deletionError: ProfileDeletionError?
     @State private var profilePageError: ProfilePageOpenError?
 
     public init() {}
@@ -30,6 +31,19 @@ public struct ProfilesSettingsView: View {
 
     public var body: some View {
         content
+            .alert("Couldn’t Delete Profile", isPresented: Binding(
+                get: { deletionError != nil }, set: { if !$0 { deletionError = nil } }
+            )) {
+                Button("OK") { deletionError = nil }
+            } message: {
+                if tabs.device.pendingProfileDeletion?.change?.kind == .reassignSpace {
+                    Text("The profile change is incomplete. You can retry it.")
+                } else if tabs.device.pendingProfileDeletion != nil {
+                    Text("Deletion is incomplete. This profile is unavailable until cleanup succeeds. You can retry deletion.")
+                } else {
+                    Text("The profile could not be deleted. Its data has been kept.")
+                }
+            }
             .alert("Couldn’t Open Profile Controls", isPresented: Binding(
                 get: { profilePageError != nil },
                 set: { if !$0 { profilePageError = nil } }
@@ -116,12 +130,21 @@ public struct ProfilesSettingsView: View {
                 .help("New Profile")
                 Divider()
                     .frame(height: NookDesign.Size.favicon)
-                Button { pendingDelete = selected } label: {
-                    Image(systemName: "minus")
+                Button {
+                    if tabs.device.pendingProfileDeletion?.change != nil,
+                       tabs.device.pendingProfileDeletion?.target == selected?.id {
+                        tabs.retryPendingProfileChange { result in
+                            if case .failure(let error) = result, error != .cancelled { deletionError = error }
+                        }
+                    } else { pendingDelete = selected }
+                } label: {
+                    Image(systemName: tabs.device.pendingProfileDeletion?.change != nil &&
+                          tabs.device.pendingProfileDeletion?.target == selected?.id ? "arrow.clockwise" : "minus")
                         .frame(width: NookDesign.Size.rowButton + NookDesign.Spacing.xs, height: NookDesign.Size.rowButton)
                 }
-                .help("Delete Profile…")
-                .disabled(tabs.profiles.count < 2 || tabs.profileEngine != .webKit)
+                .help(tabs.device.pendingProfileDeletion?.change != nil ? "Retry Profile Change" : "Delete Profile…")
+                .disabled(tabs.profiles.count < 2 ||
+                          (tabs.device.pendingProfileDeletion != nil && tabs.device.pendingProfileDeletion?.target != selected?.id))
                 Spacer()
             }
             .buttonStyle(.borderless)
@@ -173,12 +196,24 @@ public struct ProfilesSettingsView: View {
     }
 
     private func heir(of profile: ProfileSummary?) -> ProfileSummary? {
-        tabs.profiles.first { $0.id != profile?.id }
+        if let intent = tabs.device.pendingProfileDeletion, intent.target == profile?.id {
+            return tabs.profiles.first { $0.id == intent.survivor }
+        }
+        return tabs.profiles.first { $0.id != profile?.id }
     }
 
     private func delete(_ profile: ProfileSummary) {
-        guard tabs.profileEngine == .webKit else { return }
         guard let heir = heir(of: profile) else { return }
+        if tabs.profileEngine == .chromium {
+            tabs.deleteProfile(profile.id, surviving: heir.id) { result in
+                switch result {
+                case .success: selection = heir.id
+                case .failure(.cancelled): break
+                case .failure(let error): deletionError = error
+                }
+            }
+            return
+        }
         if profile.spaceIDs.isEmpty {
             tabs.deleteKeptProfile(profile.id)
         } else {
@@ -195,6 +230,10 @@ struct ProfileDetailForm: View {
     @Environment(NookSettingsService.self) private var nookSettings
     @State private var dataSize: String?
     @State private var confirmingClear = false
+    @State private var nativeSearch: ProfileSearchState?
+    @State private var searchRequestID = UUID()
+    @State private var searchError: String?
+    @Environment(\.scenePhase) private var scenePhase
     @Binding var profilePageError: ProfilePageOpenError?
 
     var body: some View {
@@ -215,9 +254,29 @@ struct ProfileDetailForm: View {
             }
 
             Section {
-                searchEnginePicker
+                if tabs.profileEngine == .chromium {
+                    if let nativeSearch {
+                        if nativeSearch.selected.isEmpty {
+                            LabeledContent("Search engine", value: nativeSearch.name)
+                        } else {
+                        Picker("Search engine", selection: Binding(
+                            get: { nativeSearch.selected },
+                            set: { refreshSearch(selecting: $0) }
+                        )) {
+                            ForEach(nativeSearch.providers) { Text($0.name).tag($0.id) }
+                        }
+                        .disabled(nativeSearch.controlled)
+                        }
+                        if nativeSearch.controlled {
+                            Text(nativeSearch.managed ? "Managed by your organization" : "Controlled by an extension")
+                                .foregroundStyle(.secondary)
+                        }
+                    } else { Text(searchError ?? "Loading search preferences…") }
+                } else { searchEnginePicker }
             } footer: {
-                Text("Default follows the search engine in General.")
+                Text(tabs.profileEngine == .chromium
+                     ? "Uses this profile’s Chromium search preference. Custom engines can also be edited in Chromium Settings."
+                     : "Default follows the search engine in General.")
                     .settingsFooter()
             }
 
@@ -246,7 +305,10 @@ struct ProfileDetailForm: View {
             }
 
             Section("Website Data") {
-                if supportsWebsiteData {
+                if tabs.profileEngine == .chromium {
+                    Text("Managed in this profile’s Chromium settings. Use Clear Browsing Data above to remove cookies, cached files and other selected data.")
+                        .foregroundStyle(.secondary)
+                } else if supportsWebsiteData {
                     LabeledContent(dataSize ?? "Checking…") {
                         Button("Clear Website Data…") { confirmingClear = true }
                     }
@@ -257,12 +319,29 @@ struct ProfileDetailForm: View {
             }
         }
         .formStyle(.grouped)
+        .task(id: profile.id) { refreshSearch() }
+        #if os(macOS)
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in refreshSearch() }
+        #endif
+        .onChange(of: scenePhase) { _, phase in if phase == .active { refreshSearch() } }
         .task(id: profile.spaceIDs) { await refreshDataSize() }
         .alert("Clear website data for \u{201C}\(profile.name)\u{201D}?", isPresented: $confirmingClear) {
             Button("Clear", role: .destructive) { Task { await clearData() } }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("Its spaces are signed out of every site, and their cookies and cached files are deleted.")
+        }
+    }
+
+    private func refreshSearch(selecting: String? = nil) {
+        guard tabs.profileEngine == .chromium else { return }
+        let request = UUID(); searchRequestID = request
+        tabs.profileSearchState(profileID: profile.id, selecting: selecting) { result in
+            guard searchRequestID == request else { return }
+            switch result {
+            case .success(let state): nativeSearch = state; searchError = nil
+            case .failure: searchError = "Search preferences are unavailable."; nativeSearch = nil
+            }
         }
     }
 
@@ -360,6 +439,7 @@ private extension ProfilePageDestination {
         case .siteSettings: "Site Settings"
         case .clearData: "Clear Browsing Data"
         case .downloads: "Downloads"
+        case .passwords: "Password Manager"
         }
     }
 }

@@ -155,8 +155,20 @@ public enum GmailFeed {
 
 extension TabsController {
     /// A Gmail favorite's unread mail, read with the cookies of its space's profile.
-    public func gmailInbox(inSpace spaceID: UUID, account: Int) async -> GmailFeed.Outcome {
+    public func gmailInbox(inSpace spaceID: UUID, account: Int, forFavorite itemID: UUID? = nil) async -> GmailFeed.Outcome {
         guard let profile = profile(forSpace: spaceID) else { return .failed }
+        if profile.engine == .chromium {
+            guard !profile.isEphemeral, account >= 0, nativeLiveFetch != nil else { return .unavailable }
+            do {
+                let response = try await nativeLiveResponse(.gmail(account: account), profileID: profile.id, spaceID: spaceID) {
+                    guard let itemID else { return true }
+                    return self.tree.spaceID(of: itemID) == spaceID &&
+                        GoogleFavorite(url: self.tree.item(itemID)?.url) == .mail(account: account)
+                }
+                return GmailFeed.outcome(status: response.status, data: response.data)
+            } catch ProfileLiveFailure.unavailable { return .unavailable }
+            catch { return .failed }
+        }
         guard let store = profile.webKitDataStore else { return .unavailable }
         let cookies = await store.httpCookieStore.allCookies()
         return await GmailFeed.fetch(account: account, cookies: cookies)

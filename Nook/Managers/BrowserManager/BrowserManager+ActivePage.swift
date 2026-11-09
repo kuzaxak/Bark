@@ -82,6 +82,9 @@ extension BrowserManager {
             copyURL(of: page, in: window)
         case .print:
             webView?.nookPrint()
+        case .developerConsole: toggleDevPanel(.console)
+        case .developerNetwork: toggleDevPanel(.network)
+        case .developerPerformance: toggleDevPanel(.perf)
         case .webInspector:
             openWebInspector(on: page.activeWebView)
         case .pickElement:
@@ -117,13 +120,53 @@ extension BrowserManager {
               windowRegistry?.activeWindow === window, let keyWindow = NSApp.keyWindow,
               window.window === keyWindow,
               frontPage(in: window) === page,
-              let native = page.navigation as? ChromiumPageNavigation,
-              tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return false }
+              let native = page.navigation as? ChromiumPageNavigation else { return false }
+        // Detached Peek pages are intentionally outside the saved-session host
+        // map. frontPage above verifies their current product owner; translation
+        // itself remains bound to this exact native document/profile.
+        if command == .translate, page.isDetached {
+            guard native.supportsTranslation, page.canTranslate || page.isTranslated else { return false }
+            page.toggleTranslation(); return true
+        }
+        if command == .boost { openBoostPanel(in: window); return true }
+        guard tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return false }
+        if command == .developerMode {
+            guard let settings = nookSettings, let host = page.url.host else { return false }
+            let on = !settings.isDeveloperSite(host)
+            setDeveloperSite(host, on: on)
+            showWindowToast("Developer Mode \(on ? "on" : "off") for \(host)", in: window)
+            return true
+        }
         guard command.supportsNativePage else {
             showWindowToast("This action is not available yet", in: window)
             return false
         }
+        if nookSettings?.developerModeEnabled != true {
+            switch command {
+            case .developerConsole: toggleDevPanel(.console); return true
+            case .developerNetwork: toggleDevPanel(.network); return true
+            case .developerPerformance: toggleDevPanel(.perf); return true
+            default: break
+            }
+        }
+        // Back also owns the existing no-history return-to-opener behavior.
+        if command == .goBack { page.goBack(); return true }
         if command == .copyURL { copyURL(of: page, in: window); return true }
+        if command == .copyScreenshot {
+            let serial = page.nativeNavigationSerial
+            let owner = native.nativeWindowID, tab = native.nativeTabID
+            Task { [weak self, weak page, weak window, weak native] in
+                guard let self, let page, let window, let native,
+                      page.navigation === native, page.nativeNavigationSerial == serial,
+                      native.nativeWindowID == owner, native.nativeTabID == tab else { return }
+                await self.copyNativeScreenshot(of: page, in: window)
+            }
+            return true
+        }
+        if command == .translate {
+            guard native.supportsTranslation, page.canTranslate || page.isTranslated else { return false }
+            page.toggleTranslation(); return true
+        }
         return native.performNativePageCommand(command) { [weak self, weak window, weak page, weak native] outcome in
             guard case .failed = outcome, let self, let window, let page, let native,
                   self.windowRegistry?.windows[window.id] === window,
@@ -131,6 +174,51 @@ extension BrowserManager {
                   self.frontPage(in: window) === page, page.navigation === native else { return }
             self.showWindowToast("Could not clear site data", in: window)
         }
+    }
+
+    /// Copy the requested document only while it still owns the front surface.
+    /// A delayed screenshot must not replace a newer clipboard operation.
+    func captureNativeScreenshot(of page: PageSession, in window: BrowserWindowState) async -> (image: NSImage, isCurrent: @MainActor () -> Bool)? {
+        guard let native = page.navigation as? ChromiumPageNavigation else { return nil }
+        let serial = page.nativeNavigationSerial
+        let owner = native.nativeWindowID, tab = native.nativeTabID, profile = native.profileID
+        let current: @MainActor () -> Bool = { [weak self, weak page, weak window, weak native] in
+            guard let self, let page, let window, let native else { return false }
+            return !Task.isCancelled && self.tabs.profileEngine == .chromium &&
+                self.windowRegistry?.windows[window.id] === window &&
+                self.windowRegistry?.activeWindow === window &&
+                window.window != nil && window.window === NSApp.keyWindow &&
+                self.frontPage(in: window) === page && page.navigation === native &&
+                page.nativeNavigationSerial == serial && !native.isClosed &&
+                native.nativeWindowID == owner && native.nativeTabID == tab && native.profileID == profile &&
+                self.tabs.nativePageHost?.isNativeSelection(native, in: window) == true
+        }
+        guard current() else { return nil }
+        let image: NSImage
+        do {
+            let bytes = try await native.captureScreenshot(maxWidth: 4096)
+            guard current() else { return nil }
+            guard let captured = NSImage(data: bytes) else { throw ChromiumNavigationError.screenshotUnavailable }
+            image = captured
+        } catch {
+            if current() {
+                showWindowToast("Screenshot unavailable", in: window)
+            }
+            return nil
+        }
+        return (image, current)
+    }
+
+    @discardableResult
+    func copyNativeScreenshot(of page: PageSession, in window: BrowserWindowState) async -> Bool {
+        let clipboard = NSPasteboard.general
+        let clipboardVersion = clipboard.changeCount
+        guard let capture = await captureNativeScreenshot(of: page, in: window),
+              capture.isCurrent(), clipboard.changeCount == clipboardVersion else { return false }
+        clipboard.clearContents()
+        let copied = clipboard.writeObjects([capture.image])
+        showWindowToast(copied ? "Screenshot copied" : "Could not copy screenshot", in: window)
+        return copied
     }
 
     private func clearCookies(of page: PageSession) {

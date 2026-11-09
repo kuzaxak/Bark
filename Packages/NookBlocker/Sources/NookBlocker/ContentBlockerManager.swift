@@ -15,6 +15,7 @@
 //
 
 import Foundation
+import Observation
 import NookSettings
 import WebKit
 import OSLog
@@ -28,14 +29,68 @@ public final class ContentBlockerManager: NSObject {
     public private(set) var isEnabled = false
     public private(set) var isCompiling = false
 
-    public init(settings: NookSettingsService, storageDirectory: URL? = nil) {
+    private let nativeNetworkBlocking: Bool
+    private var nativeRequestedEnabled = false
+    private var nativePolicyGeneration: UInt64 = 0
+    private static var lastNativeSourceGeneration: UInt64 = 0
+    /// Process-monotonic source intent, allocated before its bytes exist.
+    public private(set) var networkSourceGeneration: UInt64 = 0
+    /// Producer result (nil while pending), not native acceptance/readiness.
+    public private(set) var networkSourceSucceeded: Bool?
+    /// Last accepted serialized policy, not a claim of native installation.
+    public private(set) var networkRules: BlockerEngine.NetworkRules?
+    public private(set) var lastBuildSucceeded = false
+
+    /// Requested network policy, including while its rules are still compiling.
+    /// The native adapter holds first navigation until its exact context is ready.
+    public var networkBlockingRequested: Bool {
+        nativeNetworkBlocking && nativeRequestedEnabled && settings.adBlockerEnabled
+    }
+
+    public var networkAllowedDomains: [String] { allowedDomains.sorted() }
+
+    public struct NetworkPagePolicy: Equatable, Sendable {
+        public let isOAuthFlow: Bool
+        public let continuedHost: String?
+        public let disabledUntil: Date?
+        public init(isOAuthFlow: Bool, continuedHost: String?, disabledUntil: Date?) {
+            self.isOAuthFlow = isOAuthFlow
+            self.continuedHost = continuedHost
+            self.disabledUntil = disabledUntil
+        }
+    }
+
+    /// Export existing exception authority without deciding against the old URL.
+    /// Continuing a blocked target publishes before that navigation is started.
+    public func networkPolicy(for session: any BlockablePage) -> NetworkPagePolicy {
+        let until = temporarilyDisabledTabs[session.itemID]
+        return NetworkPagePolicy(isOAuthFlow: session.isOAuthFlow,
+            continuedHost: continuedHosts[session.itemID],
+            disabledUntil: until.flatMap { $0 > Date() ? $0 : nil })
+    }
+
+    public init(settings: NookSettingsService, storageDirectory: URL? = nil,
+                nativeNetworkBlocking: Bool = false) {
+        precondition(!nativeNetworkBlocking || storageDirectory != nil,
+                     "Native blocking requires an explicit app-owned cache directory")
         self.settings = settings
+        self.nativeNetworkBlocking = nativeNetworkBlocking
         self.filterListManager = FilterListManager(directory: storageDirectory)
+        let engine = storageDirectory.map { BlockerEngine(cacheFile: $0.appendingPathComponent("Cache/engine.dat")) }
+            ?? BlockerEngine()
+        self.advancedRulesEngine = AdvancedRulesEngine(engine: engine)
         super.init()
+        if nativeNetworkBlocking {
+            // Observation handles later edits; seed persisted choices before
+            // the first native compilation or exported exception policy.
+            allowedDomains = Set(settings.adBlockerWhitelist.map { $0.lowercased() })
+            filterListManager.enabledOptionalFilterListFilenames = Set(settings.enabledOptionalFilterLists)
+            observeNativeSettings()
+        }
     }
 
     public let filterListManager: FilterListManager
-    public let advancedRulesEngine = AdvancedRulesEngine()
+    public let advancedRulesEngine: AdvancedRulesEngine
     public private(set) var trackingParamStripper = TrackingParamStripper()
     private var linkCleaningTask: Task<Void, Never>?
     private var urlSkipper: URLSkipper?
@@ -67,8 +122,9 @@ public final class ContentBlockerManager: NSObject {
     private var continuedHosts: [UUID: String] = [:]
 
     /// Lets `session` load `url`'s host unblocked until it navigates to another host.
-    public func continueToBlockedPage(_ url: URL, in session: any BlockablePage) {
+    @discardableResult public func continueToBlockedPage(_ url: URL, in session: any BlockablePage) -> Bool {
         continuedHosts[session.itemID] = url.host?.lowercased()
+        return !nativeNetworkBlocking || session.applyNetworkBlockingPolicy(networkPolicy(for: session))
     }
 
     public func isTemporarilyDisabled(tabId: UUID) -> Bool {
@@ -96,9 +152,10 @@ public final class ContentBlockerManager: NSObject {
         if allowed { allowedDomains.insert(norm) } else { allowedDomains.remove(norm) }
         settings.adBlockerWhitelist = Array(allowedDomains)
 
+        if nativeNetworkBlocking { publishPolicyChange() }
         for session in self.host?.blockablePages ?? [] {
-            guard let h = session.webView?.url?.host?.lowercased(), h == norm || h.hasSuffix("." + norm) else { continue }
-            reconcileAndReload(session)
+            guard let h = session.blockingURL?.host?.lowercased(), h == norm || h.hasSuffix("." + norm) else { continue }
+            reconcileAndReload(session, publishing: false)
         }
     }
 
@@ -115,17 +172,42 @@ public final class ContentBlockerManager: NSObject {
     }
 
     private func isExempt(_ session: any BlockablePage, host: String?) -> Bool {
-        !isEnabled || isSiteExempt(session, host: host)
+        !isEnabled || (nativeNetworkBlocking && !settings.adBlockerEnabled) || isSiteExempt(session, host: host)
     }
 
     public func shouldApplyBlocking(to session: any BlockablePage) -> Bool {
-        !isExempt(session, host: session.webView?.url?.host)
+        let host = session.blockingURL?.host
+        if nativeNetworkBlocking, let continued = continuedHosts[session.itemID], continued != host?.lowercased() {
+            continuedHosts[session.itemID] = nil
+        }
+        return !isExempt(session, host: host)
     }
 
-    private func reconcileAndReload(_ session: any BlockablePage) {
+    /// A native page start retires a continued-host exception after departure.
+    /// OAuth changes use the same exact-page seam, without a global tab sweep.
+    public func refreshNetworkPolicy(for session: any BlockablePage, navigationStarted: Bool = false) {
+        guard nativeNetworkBlocking else { return }
+        if navigationStarted {
+            let previousHost = continuedHosts[session.itemID]
+            _ = shouldApplyBlocking(to: session)
+            // Ordinary navigation retains the already-installed policy. Avoid
+            // revising it and restarting pending native matches on every load.
+            guard previousHost != continuedHosts[session.itemID] else { return }
+        }
+        session.applyNetworkBlockingPolicy(networkPolicy(for: session))
+    }
+
+    private func reconcileAndReload(_ session: any BlockablePage, publishing: Bool = true) {
+        if nativeNetworkBlocking {
+            if publishing { publishPolicyChange() }
+            if session.applyNetworkBlockingPolicy(networkPolicy(for: session)) {
+                session.reloadForBlocking()
+            }
+            return
+        }
         guard let wv = session.webView else { return }
         reconcile(wv, exempt: !shouldApplyBlocking(to: session))
-        wv.reloadFromOrigin()
+        session.reloadForBlocking()
     }
 
     // MARK: - Lifecycle
@@ -137,12 +219,30 @@ public final class ContentBlockerManager: NSObject {
         filterListManager.enabledOptionalFilterListFilenames = Set(settings.enabledOptionalFilterLists)
 
         // Every new user content controller gets the reply handler (always) and rule lists (when enabled).
+        guard !nativeNetworkBlocking else { return }
         host.onNewUserContentController { [weak self] controller in
             self?.configureNewController(controller)
         }
     }
 
     public func setEnabled(_ enabled: Bool) {
+        if nativeNetworkBlocking {
+            if enabled {
+                guard !nativeRequestedEnabled || (!isCompiling && !isEnabled) else { return }
+                nativeRequestedEnabled = true
+                startNativeBuild()
+            } else {
+                guard nativeRequestedEnabled || isEnabled || isCompiling || networkRules != nil else { return }
+                nativeRequestedEnabled = false
+                nativePolicyGeneration += 1
+                activationTask?.cancel()
+                activationTask = nil
+                isCompiling = false
+                networkRules = nil
+                deactivateBlocking()
+            }
+            return
+        }
         cbLog.info("setEnabled(\(enabled)) — current isEnabled=\(self.isEnabled)")
         guard enabled != isEnabled, !isCompiling else { return }
         if enabled {
@@ -151,6 +251,117 @@ public final class ContentBlockerManager: NSObject {
         } else {
             deactivateBlocking()
         }
+    }
+
+    private func observeNativeSettings() {
+        withObservationTracking {
+            _ = settings.adBlockerEnabled
+            _ = settings.adBlockerWhitelist
+            _ = settings.enabledOptionalFilterLists
+        } onChange: { [weak self] in
+            // Observation fires before the write. Requery once on the actor,
+            // coalescing edits without polling or another policy store.
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                self.observeNativeSettings()
+                let domains = Set(self.settings.adBlockerWhitelist.map { $0.lowercased() })
+                let lists = Set(self.settings.enabledOptionalFilterLists)
+                let domainsChanged = self.allowedDomains != domains
+                let listsChanged = self.filterListManager.enabledOptionalFilterListFilenames != lists
+                self.allowedDomains = domains
+                self.filterListManager.enabledOptionalFilterListFilenames = lists
+                let generation = self.nativePolicyGeneration
+                self.setEnabled(self.settings.adBlockerEnabled)
+                if listsChanged, self.nativeRequestedEnabled,
+                   self.nativePolicyGeneration == generation { self.startNativeBuild() }
+                if domainsChanged { self.publishPolicyChange() }
+            }
+        }
+    }
+
+    private func publishPolicyChange() {
+        NotificationCenter.default.post(name: .adBlockerStateChanged, object: self)
+    }
+
+    // Same activation task owns native enable/rebuild. A replacement invalidates
+    // publication before any disk/network/engine await, including disable.
+    private func beginNativeSource() {
+        precondition(Self.lastNativeSourceGeneration < UInt64.max)
+        Self.lastNativeSourceGeneration += 1
+        networkSourceGeneration = Self.lastNativeSourceGeneration
+        networkSourceSucceeded = nil
+    }
+
+    func startNativeBuild(refresh: Bool? = nil) {
+        guard nativeNetworkBlocking, nativeRequestedEnabled else { return }
+        nativePolicyGeneration += 1
+        let generation = nativePolicyGeneration
+        activationTask?.cancel()
+        isCompiling = true
+        let lists = Set(settings.enabledOptionalFilterLists)
+        // A routine update check retains its accepted source. Explicit source
+        // edits announce before production, even when downloads later no-op.
+        let announceImmediately = refresh != false || networkSourceSucceeded != true ||
+            lists != filterListManager.enabledOptionalFilterListFilenames
+        filterListManager.enabledOptionalFilterListFilenames = lists
+        if announceImmediately { beginNativeSource() }
+        activationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            var announced = announceImmediately
+            defer {
+                if self.nativePolicyGeneration == generation {
+                    self.isCompiling = false
+                    // A changed saved intent is superseded; its existing
+                    // observation will announce the replacement. Cancellation
+                    // alone still fails a source that remains wanted.
+                    if announced && self.networkSourceSucceeded == nil && self.networkBlockingRequested &&
+                        Set(self.settings.enabledOptionalFilterLists) == lists {
+                        self.networkSourceSucceeded = false
+                        self.publishPolicyChange()
+                    }
+                }
+            }
+            guard self.nativeBuildIsCurrent(generation, lists: lists) else { return }
+            if let refresh {
+                let updated = await self.filterListManager.downloadAllLists(force: refresh)
+                guard self.nativeBuildIsCurrent(generation, lists: lists) else { return }
+                self.settings.adBlockerLastUpdate = Date()
+                if !refresh, !updated, !announced {
+                    self.isCompiling = false
+                    self.publishPolicyChange()
+                    return
+                }
+                if !announced {
+                    self.beginNativeSource()
+                    announced = true
+                    self.publishPolicyChange()
+                }
+            }
+            let built = await self.rebuild(nativeGeneration: generation, nativeLists: lists)
+            guard self.nativeBuildIsCurrent(generation, lists: lists) else { return }
+            self.isCompiling = false
+            self.lastBuildSucceeded = built
+            guard built, let rules = self.advancedRulesEngine.engine.networkRules else {
+                self.networkSourceSucceeded = false
+                self.publishPolicyChange()
+                return
+            }
+            let firstActivation = !self.hasActivated
+            self.networkRules = rules
+            self.networkSourceSucceeded = true
+            self.isEnabled = true
+            self.hasActivated = true
+            self.publishPolicyChange()
+            guard self.nativeBuildIsCurrent(generation, lists: lists), self.isEnabled,
+                  self.networkRules?.generation == rules.generation else { return }
+            if firstActivation || refresh == nil { self.scheduleAutoUpdate() }
+        }
+        if announceImmediately { publishPolicyChange() }
+    }
+
+    private func nativeBuildIsCurrent(_ generation: UInt64, lists: Set<String>? = nil) -> Bool {
+        nativeRequestedEnabled && settings.adBlockerEnabled && generation == nativePolicyGeneration &&
+            !Task.isCancelled && (lists == nil || lists == Set(settings.enabledOptionalFilterLists))
     }
 
     // MARK: - Activation
@@ -188,19 +399,22 @@ public final class ContentBlockerManager: NSObject {
         isEnabled = false
         removeFromSharedConfiguration()
         removeFromExistingWebViews()
-        NotificationCenter.default.post(name: .adBlockerStateChanged, object: nil)
+        if nativeNetworkBlocking { publishPolicyChange() }
+        else { NotificationCenter.default.post(name: .adBlockerStateChanged, object: nil) }
         cbLog.info("Deactivated")
     }
 
     /// Load rules (disk cache, else bundled snapshot), compile rule lists, build the advanced engine.
-    private func rebuild() async {
+    @discardableResult
+    private func rebuild(nativeGeneration: UInt64? = nil, nativeLists: Set<String>? = nil) async -> Bool {
         let loadStart = CFAbsoluteTimeGetCurrent()
-        let enabledFilenames = filterListManager.enabledOptionalFilterListFilenames
+        let enabledFilenames = nativeLists ?? filterListManager.enabledOptionalFilterListFilenames
+        let native = nativeNetworkBlocking
         let (sources, rules) = await Task.detached(priority: .userInitiated) { [filterListManager] in
             let sources = filterListManager.loadFilterSources(enabledFilenames: enabledFilenames)
-            return (sources, FilterListManager.lines(from: sources))
+            return (sources, native ? [] : FilterListManager.lines(from: sources))
         }.value
-        cbLog.info("Loaded \(rules.count) filter rules in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - loadStart), privacy: .public)s")
+        cbLog.info("Loaded \(sources.count) filter sources in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - loadStart), privacy: .public)s")
 
         // The four consumers share nothing but the input, and launch waits on all of them.
         let compileStart = CFAbsoluteTimeGetCurrent()
@@ -211,16 +425,26 @@ public final class ContentBlockerManager: NSObject {
         let skipper = Task.detached(priority: .userInitiated) {
             URLSkipper(rules: FilterLineSearch.lines(containing: "urlskip=", in: texts))
         }
-        async let engineBuilt: Void = advancedRulesEngine.build(sources: sources)
-        let result = await ContentRuleListCompiler.compile(rules: rules)
-        compiledRuleLists = result.ruleLists
+        if let nativeGeneration, !nativeBuildIsCurrent(nativeGeneration, lists: nativeLists) { return false }
+        let accept: (@MainActor () -> Bool)? = nativeGeneration.map { generation in
+            { [weak self] in self?.nativeBuildIsCurrent(generation, lists: nativeLists) == true }
+        }
+        async let engineBuilt = advancedRulesEngine.build(sources: sources,
+            exportingNetworkRules: native, accepting: accept)
+        let result = native ? nil : await ContentRuleListCompiler.compile(rules: rules)
         cbLog.info("Compile completed in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - compileStart), privacy: .public)s")
 
-        await engineBuilt
-        trackingParamStripper = await stripper.value
-        urlSkipper = await skipper.value
+        let built = await engineBuilt
+        let acceptedStripper = await stripper.value
+        let acceptedSkipper = await skipper.value
+        if let nativeGeneration, !nativeBuildIsCurrent(nativeGeneration, lists: nativeLists) { return false }
+        if native, !built { return false }
+        if let result { compiledRuleLists = result.ruleLists }
+        trackingParamStripper = acceptedStripper
+        urlSkipper = acceptedSkipper
         cbLog.info("urlskip: \(self.urlSkipper?.ruleCount ?? 0, privacy: .public) rules")
-        lastRulesHash = result.rulesHash
+        lastRulesHash = result?.rulesHash
+        return true
     }
 
     // MARK: - Filter List Updates
@@ -228,6 +452,13 @@ public final class ContentBlockerManager: NSObject {
     /// Update filter lists from remote sources. Returns true if lists were updated and recompiled.
     @discardableResult
     public func updateFilterLists() async -> Bool {
+        if nativeNetworkBlocking {
+            guard isEnabled, !isCompiling else { return false }
+            let previous = networkRules?.generation
+            startNativeBuild(refresh: false)
+            await activationTask?.value
+            return networkRules?.generation != previous
+        }
         guard isEnabled, !isCompiling else { return false }
         isCompiling = true
         defer { isCompiling = false }
@@ -245,6 +476,12 @@ public final class ContentBlockerManager: NSObject {
 
     /// Force recompile (e.g. after enabling/disabling an optional list).
     public func recompileFilterLists() async {
+        if nativeNetworkBlocking {
+            guard nativeRequestedEnabled else { return }
+            startNativeBuild(refresh: true)
+            await activationTask?.value
+            return
+        }
         guard isEnabled, !isCompiling else { return }
         isCompiling = true
         defer { isCompiling = false }
@@ -278,6 +515,9 @@ public final class ContentBlockerManager: NSObject {
     /// newer one changes nothing.
     @discardableResult
     public func setUserCosmeticRules(_ lines: [String]) async -> Bool {
+        // Native cosmetic/scriptlet transport is separate; never invoke a WK
+        // compiler or pretend a native cosmetic replacement was installed.
+        guard !nativeNetworkBlocking else { return lines.isEmpty }
         // Empty to empty: nothing in the store, nothing to apply.
         if userRuleList == nil, ContentRuleListCompiler.userListIsAbsent(for: lines) { return true }
         let key = ContentRuleListCompiler.userKey(lines)
@@ -334,6 +574,7 @@ public final class ContentBlockerManager: NSObject {
     // MARK: - Per-Navigation (main frame, from PageSession.decidePolicyFor)
 
     public func setupContentBlockerScripts(for url: URL, in webView: WKWebView, tab session: any BlockablePage) {
+        guard !nativeNetworkBlocking else { return }
         if let continued = continuedHosts[session.itemID], continued != url.host?.lowercased() {
             continuedHosts[session.itemID] = nil
         }
@@ -385,6 +626,7 @@ public final class ContentBlockerManager: NSObject {
     // MARK: - Shared Configuration
 
     private func applyToSharedConfiguration() {
+        guard !nativeNetworkBlocking else { return }
         guard let ucc = self.host?.sharedUserContentController else { return }
         ucc.removeAllContentRuleLists()
         for list in activeRuleLists { ucc.add(list) }
@@ -392,6 +634,7 @@ public final class ContentBlockerManager: NSObject {
     }
 
     private func removeFromSharedConfiguration() {
+        guard !nativeNetworkBlocking else { return }
         guard let ucc = self.host?.sharedUserContentController else { return }
         ucc.removeAllContentRuleLists()
         removeOwnScripts(from: ucc)
@@ -426,6 +669,7 @@ public final class ContentBlockerManager: NSObject {
     /// A page that committed before blocking was ready can only be fixed by reloading it:
     /// rule lists are evaluated at navigation time and document-start scripts have already run.
     private func applyToExistingWebViews(reloadingPagesLoadedWithoutBlocking reloading: Bool = false) {
+        guard !nativeNetworkBlocking else { return }
         for session in self.host?.blockablePages ?? [] {
             guard let wv = session.webView else { continue }
             // Exempt pages (allowlist, per-tab off, OAuth) loaded as intended; never reload them.
@@ -437,6 +681,7 @@ public final class ContentBlockerManager: NSObject {
     }
 
     private func removeFromExistingWebViews() {
+        guard !nativeNetworkBlocking else { return }
         for session in self.host?.blockablePages ?? [] {
             guard let wv = session.webView else { continue }
             removeBlocking(from: wv)

@@ -275,6 +275,26 @@ enum ShortcutCategory: String, CaseIterable, Hashable, Codable {
     }
 }
 
+extension ShortcutAction {
+    /// Actions on the sidebar and its windows. Chromium's accelerators for these keys would act on its
+    /// own hidden tab order, or have no equivalent. Undo Close Tab stays out: its default Command-Z must
+    /// keep undoing text in pages and fields.
+    var runsInChromiumSidebar: Bool {
+        switch self {
+        case .closeTab, .nextTab, .previousTab, .goToLastTab, .nextSpace, .previousSpace, .addSplitView,
+             .goToTab1, .goToTab2, .goToTab3, .goToTab4, .goToTab5, .goToTab6, .goToTab7, .goToTab8,
+             .goToSpace1, .goToSpace2, .goToSpace3, .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8, .goToSpace9,
+             .toggleSidebar, .toggleAIAssistant, .viewDownloads, .viewHistory, .expandAllFolders, .duplicateTab,
+             .toggleTopBarAddressView, .toggleDarkMode, .pinToSpace, .addToFavorites, .addToFolder, .moveToSpace,
+             .renameTab, .organizeTabs, .customizeSpaceGradient, .manageExtensions, .toggleExtensionLibrary, .installExtension,
+             .closeBrowser, .toggleBookmark:
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 // MARK: - Key Combination
 struct KeyCombination: Hashable, Codable {
     let key: String

@@ -1,4 +1,6 @@
 module BarcChromium {
   header "../../../Runtime/Chromium/barc_bridge.h"
+  header "../../../Runtime/Chromium/barc_runtime_startup.h"
+  header "../../../Runtime/Chromium/barc_page_tweaks.h"
   export *
 }

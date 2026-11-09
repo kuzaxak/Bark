@@ -25,6 +25,23 @@ public protocol BlockablePage: AnyObject {
     var isOAuthFlow: Bool { get }
     /// The page's web view, once it has one.
     var webView: WKWebView? { get }
+    /// Current engine-owned page URL; querying it must not create a web view.
+    var blockingURL: URL? { get }
+    /// Publish exceptions to this existing engine page before a reload/retry.
+    /// False leaves the requested policy pending for its next admission.
+    @discardableResult func applyNetworkBlockingPolicy(_ policy: ContentBlockerManager.NetworkPagePolicy) -> Bool
+    /// Explicit exemption changes retain their existing reload behavior.
+    @discardableResult func reloadForBlocking() -> Bool
+}
+
+public extension BlockablePage {
+    var blockingURL: URL? { webView?.url }
+    @discardableResult func applyNetworkBlockingPolicy(_ policy: ContentBlockerManager.NetworkPagePolicy) -> Bool { false }
+    @discardableResult func reloadForBlocking() -> Bool {
+        guard let webView else { return false }
+        webView.reloadFromOrigin()
+        return true
+    }
 }
 
 /// What the blocker needs from the app that hosts it.

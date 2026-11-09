@@ -68,7 +68,7 @@ final class LinkPreviewService {
         let url = link
         guard states[url] == nil else { return }
         var target = link
-        if let skipped = blocker.urlSkipTarget(for: target, from: session.webView?.url, tab: session) { target = skipped }
+        if let skipped = blocker.urlSkipTarget(for: target, from: session.blockingURL, tab: session) { target = skipped }
         if session.removesTrackingFromLinks, let stripped = blocker.strippedTrackingParams(for: target, tab: session) {
             target = stripped
         }
@@ -76,7 +76,7 @@ final class LinkPreviewService {
         // An enabled blocker with no engine yet cannot vouch for the link; an allowlisted site is exempt from the check.
         let blocked = blocker.isEnabled && !blocker.isDomainAllowed(target.host)
             && (!engine.isLoaded
-                || engine.matches(url: target.absoluteString, sourceURL: session.webView?.url?.absoluteString ?? "", type: "document"))
+                || engine.matches(url: target.absoluteString, sourceURL: session.blockingURL?.absoluteString ?? "", type: "document"))
         guard Self.mayFetch(url: target, isPrivate: session.isPrivate, isAgent: session.isAgentPage, blocked: blocked) else {
             set(.failed, for: url)
             return

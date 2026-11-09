@@ -479,7 +479,8 @@ class BrowserManager: ObservableObject {
         self.userDefaults = userDefaults ?? .standard
         self.extensionManager = engine == .webKit ? ExtensionManager.shared : nil
         let blocker = ContentBlockerManager(settings: settings, storageDirectory: engine == .chromium
-            ? tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists") : nil)
+            ? tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists") : nil,
+            nativeNetworkBlocking: engine == .chromium)
         let sponsorBlock = SponsorBlockManager(settings: settings)
         let siteRouting = SiteRoutingManager(settings: settings)
         self.contentBlockerManager = blocker
@@ -540,12 +541,11 @@ class BrowserManager: ObservableObject {
                 self?.historyManager.setWordStops(PaletteText.stops(from: settings.paletteWordStops))
             }
         }
-        if engine == .webKit {
-            let vault = VaultService(settings: settings)
-            vault.presenter = autofillManager
-            vault.securityKeyPresenter = securityKeySheets
-            self.tabs.vault = vault
-        }
+        let vault = VaultService(settings: settings)
+        vault.presenter = autofillManager
+        // Native Chromium retains its stock WebAuthn/security-key implementation.
+        if engine == .webKit { vault.securityKeyPresenter = securityKeySheets }
+        self.tabs.vault = vault
         if case .readOnly(let reason) = tabs.loadOutcome {
             TabsController.presentReadOnlyAlert(reason: reason, directory: tabs.directory)
         }
@@ -559,12 +559,12 @@ class BrowserManager: ObservableObject {
                 .assign(to: &$isExtensionPopupActive)
         }
         self.gradientColorManager.setImmediate(.default)
+        self.contentBlockerManager.attach(host: self)
+        self.contentBlockerManager.prepareLinkCleaning()
         if engine == .webKit {
-            self.contentBlockerManager.attach(host: self)
             // Launch waits on the blocker, so it starts here and not when the first window appears,
             // about 190 ms later. NookApp's own call then finds it already under way.
             self.contentBlockerManager.setEnabled(settings.adBlockerEnabled)
-            self.contentBlockerManager.prepareLinkCleaning()
             self.siteRoutingManager.host = self
             SocialImageTweaks.downloader = self
         }
@@ -585,16 +585,17 @@ class BrowserManager: ObservableObject {
             object: nil
         )
 
-        if engine == .webKit {
-            NotificationCenter.default.addObserver(
-                forName: .adBlockerEnabledChanged,
-                object: nil,
-                queue: .main
-            ) { [weak self] note in
-                guard let enabled = note.userInfo?["enabled"] as? Bool else { return }
-                Task { @MainActor [weak self] in
-                    self?.contentBlockerManager.setEnabled(enabled)
-                }
+        NotificationCenter.default.addObserver(self,
+            selector: #selector(handleTabManagementModeChange), name: .startupLoadModeChanged, object: nil)
+
+        NotificationCenter.default.addObserver(
+            forName: .adBlockerEnabledChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] note in
+            guard let enabled = note.userInfo?["enabled"] as? Bool else { return }
+            Task { @MainActor [weak self] in
+                self?.contentBlockerManager.setEnabled(enabled)
             }
         }
 
@@ -604,6 +605,38 @@ class BrowserManager: ObservableObject {
 
     private var startupWaitedForContentBlocker = false
     private var startupWarmTasks: [UUID: Task<Void, Never>] = [:]
+    private var nativeWarmAttempt: UUID?
+
+    func cancelNativeStartupWarming() {
+        guard engine == .chromium else { return }
+        // Every close affects the global displayed-page barrier, even when
+        // the optional task belongs to a different window.
+        nativeWarmAttempt = nil
+        let tasks = startupWarmTasks.values
+        startupWarmTasks.removeAll()
+        for task in tasks { task.cancel() }
+    }
+
+    func nativeStartupWindowPresented(_ window: BrowserWindowState) {
+        guard engine == .chromium, startupWarmTasks.isEmpty, !window.isIncognito,
+              windowRegistry?.windows[window.id] === window,
+              tabs.settings.startupLoadMode != .nothing else { return }
+        let attempt = UUID()
+        nativeWarmAttempt = attempt
+        let tabs = self.tabs
+        startupWarmTasks[window.id] = Task { @MainActor [weak self, weak window] in
+            guard let window else { return }
+            defer {
+                if self?.nativeWarmAttempt == attempt {
+                    self?.nativeWarmAttempt = nil
+                    self?.startupWarmTasks[window.id] = nil
+                }
+            }
+            await tabs.warmNativeStartupPages(in: window, while: { [weak self] in
+                self?.nativeWarmAttempt == attempt
+            })
+        }
+    }
     /// Runs once the next regular window is set up: one `createNewWindow(then:)` opened, or the
     /// window restored at launch for a link that arrived before it.
     private var nextWindowSetup: ((BrowserWindowState) -> Void)?
@@ -686,6 +719,10 @@ class BrowserManager: ObservableObject {
     /// A window changed space. A space owns its login context, so cookies, cache and history
     /// follow it. Only the active window's space sets the app-wide managers.
     func windowSpaceChanged(_ windowState: BrowserWindowState) {
+        if engine == .chromium {
+            cancelNativeStartupWarming()
+            nativeStartupWindowPresented(windowState)
+        }
         guard !windowState.isIncognito else { return }
         guard windowRegistry?.activeWindow == nil || windowRegistry?.activeWindow?.id == windowState.id else { return }
         guard let spaceID = windowState.spaceID, let profile = tabs.profile(forSpace: spaceID),
@@ -769,6 +806,30 @@ class BrowserManager: ObservableObject {
 
     /// Opens the right column on a dev tab, or closes it when that tab is already showing.
     func toggleDevPanel(_ tab: DevPanelTab) {
+        if tabs.profileEngine == .chromium {
+            guard let window = windowRegistry?.activeWindow,
+                  windowRegistry?.windows[window.id] === window,
+                  let keyWindow = NSApp.keyWindow, window.window === keyWindow,
+                  let page = frontPage(in: window),
+                  let native = page.navigation as? ChromiumPageNavigation,
+                  tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return }
+            let command: PageCommand
+            switch tab {
+            case .console: command = .developerConsole
+            case .network: command = .developerNetwork
+            case .perf: command = .developerPerformance
+            default: return
+            }
+            let serial = page.nativeNavigationSerial
+            let owner = native.nativeWindowID, tabID = native.nativeTabID
+            withDeveloperCapture { [weak self, weak window, weak page, weak native] in
+                guard let self, let window, let page, let native,
+                      page.navigation === native, page.nativeNavigationSerial == serial,
+                      native.nativeWindowID == owner, native.nativeTabID == tabID else { return }
+                _ = self.performNativePageCommand(command, in: window, page: page)
+            }
+            return
+        }
         withDeveloperCapture { [weak self] in self?.showDevPanel(tab) }
     }
 
@@ -803,6 +864,7 @@ class BrowserManager: ObservableObject {
     /// Toggles the extension library for the active window via keyboard shortcut. The overlay in
     /// WindowView watches this flag; there is no panel to drive.
     func toggleExtensionLibrary() {
+        if engine == .chromium { openNativeExtensionControls(); return }
         guard let windowState = windowRegistry?.activeWindow else { return }
         windowState.isExtensionLibraryVisible.toggle()
     }
@@ -829,9 +891,9 @@ class BrowserManager: ObservableObject {
     // MARK: - Dialog Methods
 
     func showQuitDialog() {
-        if self.nookSettings?.askBeforeQuit == true {
-            // The dialog draws inside browser windows, so one must be in front of Settings.
-            windowRegistry?.activeWindow?.windowHandle?.bringToFront()
+        // The dialog draws inside a browser window, so one must exist and be in front of Settings.
+        if self.nookSettings?.askBeforeQuit == true, let front = windowRegistry?.activeWindow {
+            front.windowHandle?.bringToFront()
             dialogManager.showQuitDialog(
                 onAlwaysQuit: {
                     self.nookSettings?.askBeforeQuit = false
@@ -939,6 +1001,12 @@ class BrowserManager: ObservableObject {
     }
 
     @objc private func handleTabManagementModeChange(_ notification: Notification) {
+        if engine == .chromium {
+            guard notification.object as? NookSettingsService === tabs.settings else { return }
+            cancelNativeStartupWarming()
+            if let window = windowRegistry?.activeWindow { nativeStartupWindowPresented(window) }
+            return
+        }
         if let modeRaw = notification.userInfo?["mode"] as? String,
            let mode = TabManagementMode(rawValue: modeRaw) {
             compositorManager?.setMode(mode)
@@ -946,6 +1014,7 @@ class BrowserManager: ObservableObject {
     }
 
     deinit {
+        for task in startupWarmTasks.values { task.cancel() }
         NotificationCenter.default.removeObserver(self)
     }
 
@@ -1010,7 +1079,25 @@ class BrowserManager: ObservableObject {
 
     // MARK: - Extension Management
 
+    func manageExtensions() {
+        if engine == .chromium { openNativeExtensionControls(); return }
+        openSettings(tab: .extensions)
+    }
+
+    /// Utility/settings windows must not borrow a stale active product identity.
+    private func openNativeExtensionControls() {
+        guard let window = windowRegistry?.activeWindow, let key = NSApp.keyWindow,
+              window.window === key else { return }
+        tabs.openExtensionControls(in: window) { [weak window] result in
+            if case .failure(let error) = result {
+                window?.copyToastText = error.localizedDescription
+                window?.isShowingCopyURLToast = true
+            }
+        }
+    }
+
     func showExtensionInstallDialog() {
+        if engine == .chromium { openNativeExtensionControls(); return }
         extensionManager?.showExtensionInstallDialog()
     }
 
@@ -1290,6 +1377,15 @@ class BrowserManager: ObservableObject {
     /// Shows History as a page over the web content, as Arc does; again hides it.
     func showHistory() {
         guard let windowState = windowRegistry?.activeWindow else { return }
+        if engine == .chromium {
+            if windowState.isSidebarMenuVisible, windowState.sidebarMenuSelectedTab == .history {
+                LibraryMotion.close(windowState)
+            } else {
+                windowState.sidebarMenuSelectedTab = .history
+                LibraryMotion.present(windowState)
+            }
+            return
+        }
         withAnimation(NookDesign.Motion.standard) {
             windowState.isHistoryPageVisible.toggle()
         }

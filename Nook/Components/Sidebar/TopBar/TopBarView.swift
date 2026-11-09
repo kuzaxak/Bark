@@ -37,7 +37,11 @@ struct TopBarView: View {
                 HStack(spacing: 8) {
                     navigationControls
 
-                    urlBar
+                    if browserManager.engine == .chromium {
+                        URLBarView(isSidebarHovered: isHovering, nativeTopBar: true)
+                    } else {
+                        urlBar
+                    }
 
                     Spacer()
 
@@ -217,7 +221,9 @@ struct TopBarView: View {
 
     /// Nil while another window holds the page: its controls stay inert until Move Here.
     private var session: PageSession? {
-        browserManager.tabs.controllableSession(in: windowState)
+        browserManager.engine == .chromium
+            ? browserManager.frontPage(in: windowState)
+            : browserManager.tabs.controllableSession(in: windowState)
     }
 
     /// This window's own view of the page, so a clone navigates in its window.
@@ -226,15 +232,21 @@ struct TopBarView: View {
     }
 
     private func goBack() {
-        session?.goBack(in: windowWebView)
+        if browserManager.engine == .chromium {
+            if let session { _ = browserManager.performNativePageCommand(.goBack, in: windowState, page: session) }
+        } else { session?.goBack(in: windowWebView) }
     }
 
     private func goForward() {
-        if let webView = windowWebView { webView.goForward() } else { session?.goForward() }
+        if browserManager.engine == .chromium {
+            if let session { _ = browserManager.performNativePageCommand(.goForward, in: windowState, page: session) }
+        } else if let webView = windowWebView { webView.goForward() } else { session?.goForward() }
     }
 
     private func refreshCurrentTab() {
-        session?.refresh()
+        if browserManager.engine == .chromium {
+            if let session { _ = browserManager.performNativePageCommand(.reload, in: windowState, page: session) }
+        } else { session?.refresh() }
     }
 
     // Determine if we should animate color changes (within same tab) or snap (tab switch)

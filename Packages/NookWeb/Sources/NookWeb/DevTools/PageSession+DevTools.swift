@@ -59,6 +59,16 @@ extension PageSession {
             arguments: ["selector": selector], in: nil, in: DevPickerScript.world)
     }
 
+    /// The existing dormant snapshot controller for a native isolated-world
+    /// request. This installs no picker listeners and exposes no native handler.
+    public func nativeDevSnapshotScript(_ selector: String, maxDepth: Int, maxNodes: Int) -> String? {
+        guard developerModeOn, usesNativePageHost, navigation != nil, !nativeIsEnding,
+              let data = try? JSONSerialization.data(withJSONObject: selector, options: .fragmentsAllowed),
+              let literal = String(data: data, encoding: .utf8) else { return nil }
+        let depth = min(max(maxDepth, 1), 40), nodes = min(max(maxNodes, 1), 2_000)
+        return DevPickerScript.source + "\nreturn window.__nookDevPicker.snapshot(\(literal), \(depth), \(nodes));"
+    }
+
     /// Accessibility outline of the element at `selector` (the body when empty), one line per role.
     public func devSnapshot(_ selector: String, maxDepth: Int, maxNodes: Int) async throws -> String? {
         guard developerModeOn, let webView = primaryWebView else { return nil }

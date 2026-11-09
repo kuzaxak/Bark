@@ -17,6 +17,10 @@ import OSLog
 class AIConfigService {
     private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "AIConfig")
 
+    nonisolated static let defaultConfigURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        .appendingPathComponent("Nook")
+        .appendingPathComponent("ai_config.json")
+
     private(set) var config: AIConfiguration
     private let configURL: URL
 
@@ -64,10 +68,11 @@ class AIConfigService {
     var anthropicModels: [AIModelConfig] = []
     var isFetchingModels: Bool = false
 
-    init() {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        let nookDir = appSupport.appendingPathComponent("Nook")
-        self.configURL = nookDir.appendingPathComponent("ai_config.json")
+    init(configURL: URL = AIConfigService.defaultConfigURL,
+         keychainService: String = AIKeychainStorage.defaultService,
+         migratesLegacySettings: Bool = true) {
+        AIKeychainStorage.shared.useService(keychainService)
+        self.configURL = configURL
 
         // Load or create default config
         if let loaded = AIConfigService.load(from: configURL) {
@@ -77,7 +82,7 @@ class AIConfigService {
         }
 
         // Migrate from UserDefaults if this is a fresh config
-        migrateFromUserDefaultsIfNeeded()
+        if migratesLegacySettings { migrateFromUserDefaultsIfNeeded() }
         if config.addMissingProviders([.openAI, .anthropic]) {
             save()
         }

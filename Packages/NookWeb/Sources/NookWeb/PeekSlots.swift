@@ -22,6 +22,8 @@ public struct PeekSlots<Page> {
 
     public var isEmpty: Bool { pages.isEmpty }
 
+    public var values: [Page] { Array(pages.values) }
+
     public func page(tab: UUID, window: UUID) -> Page? {
         pages[Key(tab: tab, window: window)]
     }

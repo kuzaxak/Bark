@@ -25,12 +25,16 @@ public struct SplitRecord: Hashable, Sendable {
     /// Where each divider sits, as a fraction of the page from its leading or top edge.
     public private(set) var dividers: [Double]
 
-    /// nil unless 2 to `maxPanes` different tabs. The panes start out the same size.
-    public init?(_ itemIDs: [UUID], orientation: Orientation = .horizontal) {
+    /// nil unless 2 to `maxPanes` different tabs and valid divider boundaries.
+    /// Without explicit boundaries the panes start out the same size.
+    public init?(_ itemIDs: [UUID], orientation: Orientation = .horizontal, dividers: [Double]? = nil) {
         guard (2...Self.maxPanes).contains(itemIDs.count), Set(itemIDs).count == itemIDs.count else { return nil }
+        let boundaries = dividers ?? (1..<itemIDs.count).map { Double($0) / Double(itemIDs.count) }
+        guard boundaries.count + 1 == itemIDs.count, boundaries.allSatisfy(\.isFinite),
+              zip([0] + boundaries, boundaries + [1]).allSatisfy({ $0 < $1 }) else { return nil }
         self.itemIDs = itemIDs
         self.orientation = orientation
-        dividers = (1..<itemIDs.count).map { Double($0) / Double(itemIDs.count) }
+        self.dividers = boundaries
     }
 
     public var isFull: Bool { itemIDs.count == Self.maxPanes }

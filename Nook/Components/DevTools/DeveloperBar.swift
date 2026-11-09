@@ -19,7 +19,8 @@ extension BrowserManager {
     /// Whether the window's page is on a site with Developer Mode on.
     func showsDeveloperBar(in windowState: BrowserWindowState) -> Bool {
         guard !windowState.isIncognito, let settings = nookSettings,
-              let host = tabs.selectedSession(in: windowState)?.url.host else { return false }
+              let host = (engine == .chromium ? frontPage(in: windowState)
+                           : tabs.selectedSession(in: windowState))?.url.host else { return false }
         return settings.isDeveloperSite(host)
     }
 
@@ -107,14 +108,24 @@ struct DeveloperBar: View {
 
     @State private var copied = false
 
-    private let height: CGFloat = 38
+    static let height: CGFloat = 38
 
     var body: some View {
         HStack(spacing: NookDesign.Spacing.md) {
             // Arc's lock opens the site's controls, as the sidebar's site controls button does.
             Button {
-                withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
-                    windowState.isExtensionLibraryVisible.toggle()
+                if browserManager.engine == .chromium {
+                    guard nativeCurrent, !session.isPrivate, let profile = session.profile else { return }
+                    browserManager.tabs.openProfilePage(profileID: profile.id, destination: .siteSettings) { [weak windowState] result in
+                        if case .failure(let error) = result {
+                            windowState?.copyToastText = error.localizedDescription
+                            windowState?.isShowingCopyURLToast = true
+                        }
+                    }
+                } else {
+                    withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
+                        windowState.isExtensionLibraryVisible.toggle()
+                    }
                 }
             } label: {
                 Image(systemName: session.url.scheme == "https" ? "lock.fill" : "lock.open.fill")
@@ -134,6 +145,7 @@ struct DeveloperBar: View {
 
             HStack(spacing: NookDesign.Spacing.xxs) {
                 tool(copied ? "checkmark" : "link", "Copy Link", shortcut: .copyCurrentURL) {
+                    guard nativeCurrent else { return }
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(session.url.absoluteString, forType: .string)
                     withAnimation(NookDesign.Motion.quick) { copied = true }
@@ -144,19 +156,19 @@ struct DeveloperBar: View {
                 }
                 separator
                 tool("photo.on.rectangle.angled", "Capture in Portrait Mode", shortcut: .capturePortrait,
-                     isOn: windowState.isPortraitCaptureVisible) { browserManager.togglePortraitCapture(in: windowState) }
-                tool("camera", "Copy Screenshot", shortcut: .copyScreenshot) { browserManager.perform(.copyScreenshot) }
+                     isOn: windowState.isPortraitCaptureVisible) { if nativeCurrent { browserManager.togglePortraitCapture(in: windowState) } }
+                tool("camera", "Copy Screenshot", shortcut: .copyScreenshot) { perform(.copyScreenshot) }
                 separator
-                tool("terminal", "Console", shortcut: .openDevPanel, isOn: devTabShowing(.console)) { browserManager.toggleDevPanel(.console) }
-                tool("network", "Network", shortcut: .openNetworkPanel, isOn: devTabShowing(.network)) { browserManager.toggleDevPanel(.network) }
-                tool("scope", "Pick Element", shortcut: .pickElement) { browserManager.perform(.pickElement) }
+                tool("terminal", "Console", shortcut: .openDevPanel, isOn: devTabShowing(.console)) { openPanel(.console) }
+                tool("network", "Network", shortcut: .openNetworkPanel, isOn: devTabShowing(.network)) { openPanel(.network) }
+                tool("scope", "Pick Element", shortcut: .pickElement) { perform(.pickElement) }
                 separator
-                tool("hammer", "Web Inspector", shortcut: .openDevTools) { browserManager.perform(.webInspector) }
-                tool("gauge.with.needle", "Performance", shortcut: .openPerformancePanel, isOn: devTabShowing(.perf)) { browserManager.toggleDevPanel(.perf) }
+                tool("hammer", "Web Inspector", shortcut: .openDevTools) { perform(.webInspector) }
+                tool("gauge.with.needle", "Performance", shortcut: .openPerformancePanel, isOn: devTabShowing(.perf)) { openPanel(.perf) }
             }
         }
         .padding(.horizontal, NookDesign.Spacing.lg)
-        .frame(height: height)
+        .frame(height: Self.height)
         .background(NookDesign.Surface.raised)
         .overlay(alignment: .bottom) { Rectangle().fill(NookDesign.Surface.hairline).frame(height: 1) }
         .transition(.move(edge: .top).combined(with: .opacity))
@@ -169,8 +181,32 @@ struct DeveloperBar: View {
             .padding(.horizontal, NookDesign.Spacing.xs)
     }
 
+    private var nativeCurrent: Bool {
+        browserManager.engine != .chromium ||
+            (browserManager.windowRegistry?.windows[windowState.id] === windowState &&
+             browserManager.windowRegistry?.activeWindow === windowState &&
+             windowState.window != nil && windowState.window === NSApp.keyWindow &&
+             browserManager.frontPage(in: windowState) === session &&
+             (session.navigation.map { browserManager.tabs.nativePageHost?.isNativeSelection($0, in: windowState) == true } ?? false))
+    }
+    private func perform(_ command: PageCommand) {
+        if browserManager.engine == .chromium {
+            _ = browserManager.performNativePageCommand(command, in: windowState, page: session)
+        } else { browserManager.perform(command) }
+    }
+    private func openPanel(_ tab: DevPanelTab) {
+        if browserManager.engine == .chromium {
+            switch tab {
+            case .console: perform(.developerConsole)
+            case .network: perform(.developerNetwork)
+            case .perf: perform(.developerPerformance)
+            default: break
+            }
+        } else { browserManager.toggleDevPanel(tab) }
+    }
+
     private func devTabShowing(_ tab: DevPanelTab) -> Bool {
-        windowState.isSidebarAIChatVisible && windowState.devPanelTab == tab
+        browserManager.engine != .chromium && windowState.isSidebarAIChatVisible && windowState.devPanelTab == tab
     }
 
     private func tool(_ symbol: String, _ help: String, shortcut: ShortcutAction, isOn: Bool = false, action: @escaping () -> Void) -> some View {

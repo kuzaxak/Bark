@@ -25,5 +25,11 @@ let package = Package(
             resources: [.copy("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
+        .testTarget(
+            name: "NookBlockerTests",
+            dependencies: ["NookBlocker", "NookAdblockFFI",
+                           .product(name: "NookSettings", package: "NookSettings")],
+            swiftSettings: [.swiftLanguageMode(.v5)]
+        ),
     ]
 )

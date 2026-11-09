@@ -29,7 +29,15 @@ public final class PageSession: NSObject, Identifiable {
     /// A session in a private window: ephemeral profile, never saved, no extensions.
     public let isPrivate: Bool
 
-    @ObservationIgnored public weak var controller: TabsController?
+    @ObservationIgnored public weak var controller: TabsController? {
+        didSet {
+            if controller !== oldValue {
+                cancelNativePageTextCapture()
+                resetNativeBoostCSS()
+                if controller != nil { refreshNativeBoostCSS() }
+            }
+        }
+    }
 
     /// The profile whose data store this page uses.
     public var profile: Profile? {
@@ -170,6 +178,7 @@ public final class PageSession: NSObject, Identifiable {
 
     /// The last page whose text went to history search, so a re-commit does not read it again.
     @ObservationIgnored var lastTextCapture: (url: URL, at: Date)?
+    @ObservationIgnored var nativePageTextTask: Task<Void, Never>?
 
     // MARK: - Media State
 
@@ -218,7 +227,11 @@ public final class PageSession: NSObject, Identifiable {
     // MARK: - OAuth Flow State
 
     /// Whether this page hosts an OAuth/sign-in flow popup.
-    public var isOAuthFlow: Bool = false
+    public var isOAuthFlow: Bool = false {
+        didSet {
+            if isOAuthFlow != oldValue { controller?.blocker.refreshNetworkPolicy(for: self) }
+        }
+    }
     /// The item whose page started this OAuth flow.
     @ObservationIgnored var oauthParentItemID: UUID?
     /// The OAuth provider host (e.g., "accounts.google.com") for tracking protection exemption.
@@ -267,15 +280,28 @@ public final class PageSession: NSObject, Identifiable {
 
     // MARK: - Web View Ownership
 
+    @ObservationIgnored private var nativeBoostTask: Task<Void, Never>?
+    @ObservationIgnored private var nativeBoostObserver: NSObjectProtocol?
+    @ObservationIgnored private var nativeBoostDocument: UInt64 = 0
+    @ObservationIgnored private var nativeBoostRequest: UInt64 = 0
+    @ObservationIgnored private var nativeBoostCSS: String?
+    @ObservationIgnored private var nativeBoostPreview: (id: UUID, document: UInt64, draft: Boost?)?
     private var navigationDocumentURL: URL?
     private var navigationHasCommittedPage = false
     private var navigationVisitRecorded = false
     private var navigationFinishedReported = false
     private var navigationCancelled = false
+    var nativeAgentPreparationID: UUID?
+    var nativeAgentWaitID: UUID?
+    public private(set) var nativeNavigationSerial: UInt64 = 0
+    var nativeNavigationPendingStart = false
+    var nativeNavigationFinishedWasReload = false
     @ObservationIgnored var nativeCreation: NativePageCreation?
     @ObservationIgnored var nativeRelease: NativePageRelease?
-    @ObservationIgnored weak var nativeResourceHost: (any NativePageHost)?
+    @ObservationIgnored weak var nativeResourceHost: (any NativePageResourceOwner)?
     @ObservationIgnored var nativeRequestedURL: URL?
+    @ObservationIgnored var nativePrivatePendingSearch: String?
+    @ObservationIgnored var nativeSearchIntent: (id: UUID, query: String, serial: UInt64?)?
     @ObservationIgnored weak var nativePreparationWindow: BrowserWindowState?
     @ObservationIgnored var nativePreparationCompletions: [@MainActor (Bool) -> Void] = []
     /// Only the synchronous private-tree ownership handoff owns this token.
@@ -283,12 +309,30 @@ public final class PageSession: NSObject, Identifiable {
     @ObservationIgnored var nativeIsEnding = false
     @ObservationIgnored var nativeUnloadPending = false
     /// Reading the bound engine page never creates or loads a resource.
-    public internal(set) var navigation: (any PageNavigation)?
+    public var nativeVaultNotice: String?
+    @ObservationIgnored private var nativeVaultDetach: (@MainActor () -> Void)?
+    public internal(set) var navigation: (any PageNavigation)? {
+        didSet {
+            guard oldValue !== navigation else { return }
+            nativeVaultNotice = nil
+            #if os(macOS)
+            nativeVaultDetach?()
+            nativeVaultDetach = nil
+            if !isAgentPage, let page = navigation as? any VaultNativePage, let vault = controller?.vault {
+                nativeVaultDetach = vault.attach(to: page, session: self)
+            }
+            #endif
+            cancelNativePageTextCapture()
+            oldValue?.onTranslationNodes = nil
+            resetTranslation()
+        }
+    }
     var primaryWebView: WKWebView? {
         didSet {
             guard primaryWebView !== oldValue else { return }
             navigation?.invalidate()
             navigation = nil
+            resetNativeBoostCSS()
             guard let primaryWebView else { return }
             let adapter = WebKitPageNavigation(webView: primaryWebView, profileID: profile?.id)
             navigation = adapter
@@ -313,6 +357,7 @@ public final class PageSession: NSObject, Identifiable {
         navigation?.stop()
         navigation?.invalidate()
         navigation = page
+        if usesNativePageHost { nativeNavigationPendingStart = false }
         page.onEvent = { [weak self, weak page] event in
             guard let self, let page, self.navigation === page else { return }
             self.navigationChanged(event)
@@ -320,8 +365,9 @@ public final class PageSession: NSObject, Identifiable {
         page.onStateChanged = { [weak self, weak page] state in
             guard let self, let page, self.navigation === page else { return }
             self.applyNavigationState(state)
+            self.settleStagedNativeSearch()
         }
-        applyNavigationState(page.state)
+        applyNavigationState(page.state, applyingInitialMedia: true)
         if let url = page.state.url { self.url = url }
         navigationDocumentURL = page.state.isLoading ? nil : page.state.url
         navigationHasCommittedPage = page.state.url != nil && !page.state.isLoading
@@ -330,16 +376,178 @@ public final class PageSession: NSObject, Identifiable {
         navigationCancelled = false
         loadingState = page.state.isLoading ? .didStartProvisionalNavigation :
             (page.state.url == nil ? .idle : .didFinish)
+        resetNativeBoostCSS()
+        refreshNativeBoostCSS()
     }
 
-    private func applyNavigationState(_ state: PageNavigationState) {
+    /// A bound factory blank is not completion of its requested target load.
+    /// This reuses actual navigation events, including dispatch failure/cancel.
+    var nativeStartupNavigationHasSettled: Bool {
+        guard navigation != nil, nativeCreation == nil, !nativeIsEnding, nativeSearchIntent == nil else { return false }
+        switch loadingState {
+        case .didFinish: return navigationFinishedReported
+        case .didFail, .didFailProvisionalNavigation: return true
+        default: return navigationCancelled
+        }
+    }
+
+    func loadNativeTarget(_ target: URL, through page: any PageNavigation) {
+        if let intent = nativeSearchIntent {
+            performNativeSearch(intent, through: page)
+            return
+        }
+        nativeNavigationPendingStart = true
+        navigationFinishedReported = false
+        navigationCancelled = false
+        loadingState = .didStartProvisionalNavigation
+        page.load(target)
+    }
+
+    func resetNativeBoostCSS() {
+        navigation?.cancelElementPicker()
+        if let observer = nativeBoostObserver {
+            NotificationCenter.default.removeObserver(observer)
+            nativeBoostObserver = nil
+        }
+        nativeBoostTask?.cancel()
+        nativeBoostTask = nil
+        nativeBoostDocument &+= 1
+        nativeBoostPreview = nil
+        nativeBoostCSS = nil
+    }
+
+    /// An editor lease belongs to one existing native document. It never
+    /// creates a page or writes the draft to persisted Boost settings.
+    public func beginNativeBoostPreview() -> UUID? {
+        let document = nativeBoostDocument, previous = nativeBoostPreview?.id
+        guard usesNativePageHost, let page = navigation, page.supportsUserCSS,
+              !page.state.isLoading, !nativeIsEnding,
+              let controller, !controller.isTerminating, controller.settings.boostsLoaded,
+              profile?.id == page.profileID,
+              let url = navigationDocumentURL ?? page.state.url,
+              url.scheme == "http" || url.scheme == "https",
+              navigation === page, nativeBoostDocument == document,
+              nativeBoostPreview?.id == previous else { return nil }
+        let id = UUID()
+        page.cancelElementPicker()
+        guard navigation === page, nativeBoostDocument == document, nativeBoostPreview?.id == previous else { return nil }
+        nativeBoostPreview = (id, document, nil)
+        // A replaced preview may already be applied with its acknowledgement pending.
+        nativeBoostCSS = nil
+        refreshNativeBoostCSS()
+        return id
+    }
+
+    public func pickNativeBoostElement(token: UUID) async -> String? {
+        guard let preview = nativeBoostPreview, preview.id == token,
+              preview.document == nativeBoostDocument, !nativeIsEnding,
+              let page = navigation, page.supportsElementPicker,
+              !page.state.isLoading, profile?.id == page.profileID,
+              nativeBoostPreview?.id == token, navigation === page else { return nil }
+        let result = await page.pickElement()
+        guard !Task.isCancelled, !nativeIsEnding, navigation === page,
+              nativeBoostPreview?.id == token, nativeBoostDocument == preview.document,
+              profile?.id == page.profileID, let result, result.utf8.count <= 2048 else { return nil }
+        return result
+    }
+    public func cancelNativeBoostElementPicker(token: UUID) {
+        guard nativeBoostPreview?.id == token else { return }
+        navigation?.cancelElementPicker()
+    }
+
+    @discardableResult public func previewNativeBoost(_ draft: Boost, token: UUID) -> Bool {
+        guard var preview = nativeBoostPreview, preview.id == token,
+              preview.document == nativeBoostDocument, !nativeIsEnding,
+              let page = navigation, !page.state.isLoading,
+              profile?.id == page.profileID, navigation === page,
+              preview.document == nativeBoostDocument,
+              nativeBoostPreview?.id == token else { return false }
+        preview.draft = draft
+        nativeBoostPreview = preview
+        refreshNativeBoostCSS()
+        return true
+    }
+
+    public func endNativeBoostPreview(_ token: UUID) {
+        guard let preview = nativeBoostPreview, preview.id == token else { return }
+        nativeBoostPreview = nil
+        navigation?.cancelElementPicker()
+        guard preview.document == nativeBoostDocument else { return }
+        // Force a saved-state reapply even if the last preview acknowledgement
+        // has not arrived. Existing request/document guards reject late replies.
+        nativeBoostCSS = nil
+        refreshNativeBoostCSS()
+    }
+
+    /// Reuses global Boost matching; no script execution, frame walk or page creation.
+    func refreshNativeBoostCSS() {
+        guard usesNativePageHost, let page = navigation, page.supportsUserCSS,
+              let controller, !controller.isTerminating, !nativeIsEnding else { return }
+        let settings = controller.settings
+        if nativeBoostObserver == nil {
+            nativeBoostObserver = NotificationCenter.default.addObserver(
+                forName: .boostsChanged, object: nil, queue: .main
+            ) { [weak self, weak settings] notice in
+                MainActor.assumeIsolated {
+                    guard let self, let settings,
+                          let source = notice.object as? NookSettingsService,
+                          source === settings, self.controller?.settings === settings else { return }
+                    self.refreshNativeBoostCSS()
+                }
+            }
+        }
+        guard let url = navigationDocumentURL ?? page.state.url,
+              url.scheme == "http" || url.scheme == "https" else { return }
+        nativeBoostTask?.cancel()
+        let document = nativeBoostDocument
+        nativeBoostTask = Task { @MainActor [weak self, weak page, weak controller] in
+            await settings.waitForBoosts()
+            guard !Task.isCancelled, let self, let page, let controller,
+                  self.navigation === page, self.controller === controller,
+                  !controller.isTerminating, !self.nativeIsEnding,
+                  (controller.session(for: self.itemID) === self ||
+                   (self.detachedProfile?.engine == .chromium && self.nativeResourceHost != nil)),
+                  self.nativeBoostDocument == document,
+                  (self.navigationDocumentURL ?? page.state.url) == url,
+                  self.profile?.id == page.profileID else { return }
+            var boosts = settings.boosts
+            if let preview = self.nativeBoostPreview, preview.document == document,
+               let draft = preview.draft {
+                if let index = boosts.firstIndex(where: { $0.id == draft.id }) { boosts[index] = draft }
+                else { boosts.append(draft) }
+            }
+            let css = Boost.css(for: url, in: boosts)
+            guard self.nativeBoostCSS != css else { return }
+            self.nativeBoostRequest &+= 1
+            let request = self.nativeBoostRequest
+            self.nativeBoostCSS = css
+            let accepted = page.setUserCSS(css, for: url) { [weak self, weak page] applied in
+                guard let self, let page, self.navigation === page,
+                      self.nativeBoostDocument == document,
+                      self.nativeBoostRequest == request else { return }
+                if !applied { self.nativeBoostCSS = nil }
+            }
+            if !accepted, self.nativeBoostRequest == request {
+                self.nativeBoostCSS = nil
+            }
+        }
+    }
+
+    private func applyNavigationState(_ state: PageNavigationState, applyingInitialMedia: Bool = false) {
         canGoBack = state.canGoBack
         canGoForward = state.canGoForward
-        if let muted = state.isAudioMuted { isAudioMuted = muted }
+        if let muted = state.isAudioMuted, isAudioMuted != muted { isAudioMuted = muted }
         if let audible = state.isAudible {
-            hasAudioContent = audible
-            hasPlayingAudio = audible
+            if hasAudioContent != audible { hasAudioContent = audible }
+            if hasPlayingAudio != audible { hasPlayingAudio = audible }
+            if navigation != nil, !(navigation is WebKitPageNavigation), media.isAudible != audible {
+                var observed = media; observed.isAudible = audible; media = observed
+            }
         }
+        if let video = state.hasVideoPictureInPicture, let document = state.hasDocumentPictureInPicture {
+            if hasPiPActive != (video || document) { hasPiPActive = video || document }
+        }
+        if applyingInitialMedia { applyNativeMedia(state.media) }
         if let title = state.title, !title.isEmpty { updateTitle(title) }
         // A displayed pending URL is not a committed URL to persist. Only
         // lifecycle events notify the tree or append a history visit.
@@ -352,9 +560,65 @@ public final class PageSession: NSObject, Identifiable {
         // A nonloading snapshot must not erase an explicit failure/cancellation.
     }
 
+    private func applyNativeMedia(_ snapshot: PageMedia?) {
+        guard navigation != nil, !(navigation is WebKitPageNavigation) else { return }
+        let known = snapshot.flatMap { $0.isKnown ? $0 : nil }
+        var observed = known ?? media
+        if known == nil {
+            // Retain presence/playback so a paused player's existing rank
+            // survives transient unknown ownership. No stale track or commands.
+            observed.isKnown = false; observed.canPlay = false; observed.canPause = false
+            observed.handlesPreviousTrack = false; observed.handlesNextTrack = false
+            observed.title = nil; observed.artist = nil; observed.album = nil
+            observed.isAudible = hasAudioContent
+        }
+        if media != observed { media = observed }
+        if let snapshot = known {
+            if hasAudioContent != snapshot.isAudible { hasAudioContent = snapshot.isAudible }
+            if hasPlayingAudio != snapshot.isAudible { hasPlayingAudio = snapshot.isAudible }
+            if hasVideoContent != snapshot.hasVideo { hasVideoContent = snapshot.hasVideo }
+            if hasPlayingVideo != snapshot.isPlayingVideo { hasPlayingVideo = snapshot.isPlayingVideo }
+        }
+        // Unknown clears stale controls/track metadata, but never declares old
+        // audio/video protection inactive. Required native activity stays held.
+    }
+
+    private func clearNativeMediaForDocumentEnd() {
+        guard navigation != nil, !(navigation is WebKitPageNavigation) else { return }
+        let empty = PageMedia(isKnown: false, canPlay: false, canPause: false)
+        if media != empty { media = empty }
+    }
+
+    @ObservationIgnored private var navigationPeekIntent: UInt64 = 0
+
+    private func settleStagedNativeSearch() {
+        guard let intent = nativeSearchIntent else { return }
+        nativeNavigationPendingStart = true
+        loadingState = .didStartProvisionalNavigation
+        guard intent.serial == nil, let page = navigation, !page.state.isLoading else { return }
+        Task { @MainActor [weak self, weak page] in
+            guard let self, let page, self.navigation === page,
+                  self.nativeSearchIntent?.id == intent.id else { return }
+            self.performNativeSearch(intent, through: page)
+        }
+    }
+
     func navigationChanged(_ event: PageNavigationEvent) {
+        defer { settleStagedNativeSearch() }
         switch event {
         case .started(let newURL):
+            nativeVaultNotice = nil
+            #if os(macOS)
+            if usesNativePageHost { controller?.vault?.navigationStarted() }
+            #endif
+            if nativeSearchIntent?.serial != nil { nativeSearchIntent = nil }
+            cancelNativePageTextCapture()
+            navigationPeekIntent &+= 1
+            if usesNativePageHost {
+                nativeNavigationSerial &+= 1
+                nativeNavigationPendingStart = false
+                nativeNavigationFinishedWasReload = false
+            }
             switcherSnapshot = nil
             navigationVisitRecorded = false
             navigationFinishedReported = false
@@ -374,10 +638,24 @@ public final class PageSession: NSObject, Identifiable {
                 }
                 url = newURL
             }
+            if usesNativePageHost { controller?.blocker.refreshNetworkPolicy(for: self, navigationStarted: true) }
         case .committed(let newURL, let sameDocument):
+            cancelNativePageTextCapture()
+            if !sameDocument { navigationPeekIntent &+= 1 }
+            if sameDocument, usesNativePageHost {
+                // Chromium emits no started/finished pair for same-document
+                // navigation: its committed event is the terminal fact.
+                nativeNavigationSerial &+= 1
+                nativeNavigationPendingStart = false
+                nativeNavigationFinishedWasReload = false
+                navigationFinishedReported = true
+                loadingState = .didFinish
+            }
+            if !sameDocument { resetTranslation(); clearNativeMediaForDocumentEnd(); resetNativeBoostCSS() }
             switcherSnapshot = nil
             if let newURL { navigationDocumentURL = newURL }
             if newURL != nil { navigationHasCommittedPage = true }
+            refreshNativeBoostCSS()
             if !sameDocument {
                 navigationVisitRecorded = false
                 navigationFinishedReported = false
@@ -389,19 +667,28 @@ public final class PageSession: NSObject, Identifiable {
             }
             if let newURL {
                 url = newURL
-                controller?.pageCommitted(itemID: itemID, url: newURL)
+                let privateSearchCommit = usesNativePageHost && isPrivate && nativePrivatePendingSearch != nil &&
+                    nativeSearchIntent == nil && newURL.absoluteString != "about:blank"
+                // Detached private pages have no saved-item registration, but
+                // an actual commit still settles their page-local cold query.
+                if privateSearchCommit { nativePrivatePendingSearch = nil }
+                controller?.pageCommitted(itemID: itemID, url: newURL, resolvingPrivateSearch: privateSearchCommit)
                 controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
                 if !isDetached { controller?.sessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
                 controller?.tabEvents?.grantAccess(to: newURL)
                 controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
             }
+            if sameDocument { scheduleNativePageTextCapture(sameDocument: true) }
         case .finished(let newURL, let finalTitle, let isReload):
             guard !navigationCancelled else { return }
+            if usesNativePageHost { nativeNavigationFinishedWasReload = isReload }
             if let newURL { navigationDocumentURL = newURL }
             if newURL != nil { navigationHasCommittedPage = true }
             loadingState = .didFinish
             if !navigationFinishedReported {
                 navigationFinishedReported = true
+                scheduleNativePageTextCapture(sameDocument: false)
+                if usesNativePageHost { offerTranslationIfNeeded() }
                 controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
                 if let newURL {
                     url = newURL
@@ -425,6 +712,8 @@ public final class PageSession: NSObject, Identifiable {
                     tabId: id, profileId: profileID, isEphemeral: ephemeral, weight: weight)
             }
         case .failed(let error, let provisional, let committedURL):
+            cancelNativePageTextCapture()
+            if !provisional { clearNativeMediaForDocumentEnd() }
             if let committedURL { navigationDocumentURL = committedURL }
             if let committedURL, committedURL != url {
                 url = committedURL
@@ -433,7 +722,9 @@ public final class PageSession: NSObject, Identifiable {
             }
             loadingState = provisional ? .didFailProvisionalNavigation(error) : .didFail(error)
         case .cancelled(let committedURL):
+            cancelNativePageTextCapture()
             if let committedURL { navigationDocumentURL = committedURL }
+            refreshNativeBoostCSS()
             navigationCancelled = true
             navigationVisitRecorded = true
             typedVisitPending = false
@@ -444,6 +735,39 @@ public final class PageSession: NSObject, Identifiable {
                 controller?.pageCommitted(itemID: itemID, url: committedURL)
             }
             controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+        case .nativeBlocked(let target):
+            guard usesNativePageHost, !nativeIsEnding, !nativeNavigationPendingStart,
+                  navigation?.profileID == profile?.id else { return }
+            blockedURL = target
+        case .continueNativeBlock(let target):
+            guard usesNativePageHost, let navigation, let controller,
+                  blockedURL == target, !nativeIsEnding, !nativeNavigationPendingStart else { return }
+            let serial = nativeNavigationSerial
+            let profileID = profile?.id
+            Task { @MainActor [weak self, weak navigation, weak controller] in
+                guard let self, let navigation, let controller,
+                      self.navigation === navigation, self.controller === controller,
+                      !controller.isTerminating, !self.nativeIsEnding,
+                      !self.nativeNavigationPendingStart, self.nativeNavigationSerial == serial,
+                      self.profile?.id == profileID, navigation.profileID == profileID,
+                      self.blockedURL == target,
+                      controller.session(for: self.itemID) === self ||
+                        (self.isDetached && self.nativeResourceHost != nil) else { return }
+                self.continueToBlockedPage()
+            }
+        case .peekRequested(let target):
+            guard let navigation, !nativeIsEnding else { return }
+            navigationPeekIntent &+= 1
+            let intent = navigationPeekIntent
+            // Leave the native observer stack before creating a page. A newer
+            // request/document or terminal event invalidates this exact intent.
+            Task { @MainActor [weak self, weak navigation] in
+                guard let self, let navigation, self.navigation === navigation,
+                      !self.nativeIsEnding, self.navigationPeekIntent == intent else { return }
+                self.controller?.sessionDelegate?.presentPeek(url: target, from: self)
+            }
+        case .mediaChanged(let media):
+            applyNativeMedia(media)
         case .titleChanged(let title):
             if !title.isEmpty { updateTitle(title) }
         case .ownerEnded:
@@ -459,6 +783,7 @@ public final class PageSession: NSObject, Identifiable {
             // never call stop/close back into the deleted native page.
             let ended = navigation
             navigation = nil
+            resetNativeBoostCSS()
             ended?.invalidate()
             navigationHasCommittedPage = false
             loadingState = .idle
@@ -496,9 +821,16 @@ public final class PageSession: NSObject, Identifiable {
     /// The existing web view. Never creates one.
     public var webView: WKWebView? { primaryWebView }
 
-    /// Ends the suspended pages WebKit keeps for instant Back and Forward, each a whole
-    /// WebContent process. History stays; Back loads the page again.
-    public func clearPageCache() { primaryWebView?.nookClearBackForwardCache() }
+    /// Drop cached history documents, preserving history and the current live page.
+    /// Returns acceptance, not a cached-entry count or reclaimed-memory claim.
+    @discardableResult public func clearPageCache() -> Bool {
+        if usesNativePageHost {
+            guard !nativeIsEnding, let navigation, let profile,
+                  navigation.profileID == profile.id else { return false }
+            return navigation.clearBackForwardCache()
+        }
+        return primaryWebView?.nookClearBackForwardCache() ?? false
+    }
 
     /// The web view, created on first access.
     public var activeWebView: WKWebView {
@@ -533,6 +865,9 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     deinit {
+        nativePageTextTask?.cancel()
+        nativeBoostTask?.cancel()
+        if let nativeBoostObserver { NotificationCenter.default.removeObserver(nativeBoostObserver) }
         profileAwaitCancellable?.cancel()
         themeColorObservedWebViews.removeAllObjects()
     }
@@ -740,6 +1075,7 @@ public final class PageSession: NSObject, Identifiable {
         navigation?.stop()
         navigation?.invalidate()
         navigation = nil
+        resetNativeBoostCSS()
         navigationHasCommittedPage = false
         let coordinator = controller?.webViews
         let primaryIsPooled = primary.map { view in
@@ -833,6 +1169,13 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     public func load(_ newURL: URL) {
+        nativePrivatePendingSearch = nil
+        controller?.storePendingSearch(nil, for: self)
+        nativeSearchIntent = nil
+        if usesNativePageHost {
+            nativeAgentPreparationID = nil
+            nativeAgentWaitID = nil
+        }
         url = newURL
         // A new page on an unloaded session starts fresh instead of restoring, then leaving, the old one.
         savedHistory = nil
@@ -850,7 +1193,7 @@ public final class PageSession: NSObject, Identifiable {
 
         if usesNativePageHost {
             if let navigation, navigation.profileID == profile?.id {
-                navigation.load(newURL)
+                loadNativeTarget(newURL, through: navigation)
             } else {
                 nativeRequestedURL = newURL
                 ensureNativePage()
@@ -870,8 +1213,85 @@ public final class PageSession: NSObject, Identifiable {
         }
     }
 
+    private func performNativeSearch(_ intent: (id: UUID, query: String, serial: UInt64?), through page: any PageNavigation) {
+        guard let controller, let profileID = profile?.id else { return }
+        // Cold factory documents settle through the same lifecycle events.
+        // Do not weaken ownership to a URL match while metadata is loading.
+        guard !page.state.isLoading, nativeSearchIntent?.id == intent.id,
+              nativeSearchIntent?.serial == nil else { return }
+        let serial = nativeNavigationSerial
+        nativeSearchIntent?.serial = serial
+        controller.profileSearchState(profileID: profileID, page: self, includeChoices: false) { [weak self, weak page] result in
+            guard let self, let page, self.navigation === page,
+                  self.nativeSearchIntent?.id == intent.id, !self.nativeIsEnding,
+                  self.profile?.id == profileID, self.nativeNavigationSerial == serial else { return }
+            self.nativeSearchIntent = nil
+            self.nativeRequestedURL = nil
+            if case .success(let effective) = result {
+                self.nativeNavigationPendingStart = true
+                self.navigationFinishedReported = false
+                self.navigationCancelled = false
+                self.loadingState = .didStartProvisionalNavigation
+                let token = effective.kagiSession ? controller.settings.kagiSessionToken : nil
+                if page.search(intent.query, kagiSessionToken: token) { return }
+                guard self.navigation === page, !self.nativeIsEnding,
+                      self.nativeSearchIntent == nil, self.profile?.id == profileID else { return }
+            }
+            self.nativeNavigationPendingStart = false
+            self.loadingState = .didFailProvisionalNavigation(ProfileSearchError.refused)
+        }
+    }
+
+    /// Stages the existing intent without requesting a native page. A regular
+    /// cold tab survives quit; a private tab holds only this in-memory tuple.
+    func stageNativeSearch(_ query: String, persist: Bool = true) {
+        if isPrivate { nativePrivatePendingSearch = query }
+        nativeSearchIntent = (UUID(), query, nil)
+        nativeRequestedURL = URL(string: "about:blank")!
+        if navigation != nil {
+            nativeNavigationPendingStart = true
+            loadingState = .didStartProvisionalNavigation
+        }
+        if persist { controller?.storePendingSearch(query, for: self) }
+    }
+
+    func resumeStagedNativeSearch() {
+        guard let page = navigation, let intent = nativeSearchIntent else { return }
+        performNativeSearch(intent, through: page)
+    }
+
+    var pendingNativeSearchQuery: String? {
+        isPrivate ? nativePrivatePendingSearch : controller?.device.openPages[itemID]?.pendingSearch
+    }
+
+    func restorePendingNativeSearch() {
+        guard usesNativePageHost, navigation == nil, nativeSearchIntent == nil,
+              let query = pendingNativeSearchQuery else { return }
+        stageNativeSearch(query, persist: false)
+    }
+
     /// Navigates to typed input with search engine normalization.
     public func navigate(to input: String) {
+        if usesNativePageHost && isSearchInput(input) {
+            nativeAgentPreparationID = nil
+            nativeAgentWaitID = nil
+            navigation?.stop()
+            stageNativeSearch(input)
+            nativeNavigationPendingStart = true
+            loadingState = .didStartProvisionalNavigation
+            nativeRequestedURL = URL(string: "about:blank")!
+            savedHistory = nil
+            if let page = navigation, let intent = nativeSearchIntent {
+                performNativeSearch(intent, through: page)
+            } else {
+                ensureNativePage()
+            }
+            return
+        }
+        if usesNativePageHost {
+            if let target = URL(string: normalizeURL(input, queryTemplate: "nook-search:%@")) { load(target) }
+            return
+        }
         let template = controller.map { $0.searchTemplate(forSpace: $0.spaceID(of: itemID)) } ?? SearchProvider.google.queryTemplate
         guard let validURL = URL(string: normalizeURL(input, queryTemplate: template)) else { return }
         load(validURL)
@@ -926,14 +1346,19 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     public func stop() {
+        nativePrivatePendingSearch = nil
+        controller?.storePendingSearch(nil, for: self)
+        nativeSearchIntent = nil
         navigation?.stop()
+        if usesNativePageHost { nativeNavigationPendingStart = false; navigationCancelled = true }
         loadingState = .idle
     }
 
     /// Loads the page the ad blocker stopped, unblocked until this page moves to another host.
     public func continueToBlockedPage() {
-        guard let blockedURL else { return }
-        controller?.blocker.continueToBlockedPage(blockedURL, in: self)
+        guard let blockedURL, let controller,
+              controller.blocker.continueToBlockedPage(blockedURL, in: self) else { return }
+        self.blockedURL = nil
         load(blockedURL)
     }
 
@@ -1252,11 +1677,12 @@ private extension WKWebView {
     }
 
     /// `_clearBackForwardCache`, private on both platforms.
-    func nookClearBackForwardCache() {
+    func nookClearBackForwardCache() -> Bool {
         let selector = NSSelectorFromString("_clearBackForwardCache")
-        guard responds(to: selector) else { return }
+        guard responds(to: selector) else { return false }
         typealias Call = @convention(c) (AnyObject, Selector) -> Void
         unsafeBitCast(method(for: selector), to: Call.self)(self, selector)
+        return true
     }
 }
 
@@ -1271,7 +1697,14 @@ extension PageSession {
         cancelNativeCreation()
         let ended = navigation
         navigation = nil
+        resetNativeBoostCSS()
         nativeResourceHost = nil
+        if media != PageMedia() { media = PageMedia() }
+        if hasAudioContent { hasAudioContent = false }
+        if hasPlayingAudio { hasPlayingAudio = false }
+        if hasVideoContent { hasVideoContent = false }
+        if hasPlayingVideo { hasPlayingVideo = false }
+        hasPiPActive = false
         ended?.invalidate()
         navigationHasCommittedPage = false
         loadingState = .idle

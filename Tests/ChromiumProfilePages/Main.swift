@@ -114,7 +114,7 @@ private enum ProfileChecks {
 
         let routes: [(ProfilePageDestination, String)] = [(.settings, "chrome://settings/"),
             (.extensions, "chrome://extensions/"), (.privacy, "chrome://settings/privacy"),
-            (.siteSettings, "chrome://settings/content"), (.clearData, "chrome://settings/clearBrowserData"), (.downloads, "chrome://settings/downloads")]
+            (.siteSettings, "chrome://settings/content"), (.clearData, "chrome://settings/clearBrowserData"), (.downloads, "chrome://settings/downloads"), (.passwords, "chrome://password-manager/passwords")]
         for (index, route) in routes.enumerated() {
             Native.calls = []
             presenter.open(profile, destination: route.0, canPresent: { true }) { outcomes.append($0) }
@@ -133,14 +133,14 @@ private enum ProfileChecks {
         let kept = TabTree().profiles(keeping: [KeptProfile(profile)]).first!
         precondition(kept.spaceIDs.isEmpty && kept.id == profile.id)
         Native.calls = []
-        presenter.open(kept, destination: .siteSettings, canPresent: { true }) { outcomes.append($0) }
+        presenter.open(kept, destination: .passwords, canPresent: { true }) { outcomes.append($0) }
         Native.opened(30)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.first == "open:" + kept.id.uuidString)
         Native.close(30)
         var available = true
         Native.calls = []
-        presenter.open(kept, destination: .privacy, canPresent: { available }) { outcomes.append($0) }
+        presenter.open(kept, destination: .passwords, canPresent: { available }) { outcomes.append($0) }
         available = false
         Native.opened(20)
         guard case .failure(.profileUnavailable) = outcomes.removeLast() else { preconditionFailure() }
@@ -286,6 +286,88 @@ private enum ProfileChecks {
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.suffix(2) == ["show", "detach"] && !Native.calls.contains("close"))
         precondition(Native.members[47]?.contains(460) == true && outcomes.isEmpty && Native.observers.isEmpty)
+        // Kept-only recovery returns only its admitted, still-owned native handle.
+        var recovery: [Result<Int32, ProfilePageOpenError>] = []
+        var settingsOpened = 0
+        Native.calls = []
+        presenter.openRecovery(kept, canPresent: { true }, openSettings: { settingsOpened += 1 }) { recovery.append($0) }
+        precondition(recovery.isEmpty)
+        Native.opened(70)
+        let recoveryWindow = try recovery.removeLast().get()
+        precondition(recoveryWindow == 70 && !Native.calls.contains("show"))
+        precondition(presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 700))
+        precondition(!presenter.ownsRecoveryWindow(70, profile: UUID(), activeTab: 700))
+        precondition(!presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 701))
+        let recoveryHeader = Native.headers[70] as! NSHostingView<ChromiumProfilePageView>
+        recoveryHeader.rootView.openRecovery()
+        precondition(settingsOpened == 1)
+        Native.headers[70] = NSView()
+        recoveryHeader.rootView.openRecovery()
+        precondition(settingsOpened == 1 && !presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 700))
+        Native.transfer(70, to: 71)
+        precondition(!presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 700))
+
+        // The exact pending operation can disappear during attachment (e.g.
+        // successful retry); no stale utility startup owner may be returned.
+        available = true; Native.calls = []
+        Native.onAttach = { available = false }
+        presenter.openRecovery(kept, canPresent: { available }, openSettings: {}) { recovery.append($0) }
+        Native.opened(72); Native.onAttach = nil
+        guard case .failure(.profileUnavailable) = recovery.removeLast() else { preconditionFailure() }
+        precondition(!Native.calls.contains("show") && Native.calls.last == "close")
+        Native.close(72)
+
+        // Shutdown cancels completion immediately but retains the borrowed C
+        // request until its late open callback, which closes only that exact UUID.
+        Native.calls = []
+        presenter.openRecovery(kept, canPresent: { true }, openSettings: {}) { recovery.append($0) }
+        presenter.cancelPending()
+        guard case .failure(.presentationUnavailable) = recovery.removeLast() else { preconditionFailure() }
+        Native.opened(74)
+        precondition(recovery.isEmpty && Native.calls.suffix(1) == ["close"] && !Native.calls.contains("attach"))
+        precondition(!presenter.ownsRecoveryWindow(74, profile: kept.id, activeTab: 740))
+        // Cancellation can reenter from native attachment; completion is
+        // cleared first, so unwinding the old request cannot publish success.
+        Native.calls = []
+        Native.onAttach = { presenter.cancelPending() }
+        presenter.openRecovery(kept, canPresent: { true }, openSettings: {}) { recovery.append($0) }
+        Native.opened(76); Native.onAttach = nil
+        precondition(recovery.count == 1)
+        guard case .failure(.presentationUnavailable) = recovery.removeLast() else { preconditionFailure() }
+        precondition(!Native.calls.contains("show") && Native.calls.last == "close")
+        Native.close(76)
+        // A failed native factory has no handle to publish and no owned window to close.
+        presenter.openRecovery(kept, canPresent: { true }, openSettings: {}) { recovery.append($0) }
+        let failedCallback = Native.callback, failedContext = Native.context
+        Native.callback = nil; Native.context = nil
+        failedCallback?(4, 0, failedContext)
+        guard case .failure(.presentationFailed) = recovery.removeLast() else { preconditionFailure() }
+        // One cancellation callback can deliver another request's factory result.
+        // Both requests must already be revoked before the first callout.
+        var pendingFactories: [(ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)] = []
+        var delivered = false
+        Native.calls = []
+        for _ in 0..<2 {
+            presenter.openRecovery(kept, canPresent: { true }, openSettings: {}) { result in
+                recovery.append(result)
+                if !delivered {
+                    delivered = true
+                    for (index, pending) in pendingFactories.enumerated() {
+                        let window = Int32(78 + index)
+                        Native.members[window] = [window * 10]
+                        pending.0?(0, window, pending.1)
+                    }
+                }
+            }
+            pendingFactories.append((Native.callback, Native.context))
+            Native.callback = nil; Native.context = nil
+        }
+        presenter.cancelPending()
+        precondition(recovery.count == 2 && !Native.calls.contains("attach"))
+        for result in recovery {
+            guard case .failure(.presentationUnavailable) = result else { preconditionFailure() }
+        }
+        precondition(Native.observers.isEmpty)
         print("Chromium profile page checks passed")
     }
 }

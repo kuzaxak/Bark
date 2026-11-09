@@ -4,7 +4,7 @@ import NookTabsCore
 
 /// Chromium-owned controls for an explicitly selected persistent profile.
 public enum ProfilePageDestination: CaseIterable, Hashable, Sendable {
-    case settings, extensions, privacy, siteSettings, clearData, downloads
+    case settings, extensions, privacy, siteSettings, clearData, downloads, passwords
 }
 
 public enum ProfilePageOpenError: Error, Equatable, LocalizedError {
@@ -30,9 +30,32 @@ public typealias ProfilePageAction = @MainActor (
 ) -> Void
 
 extension TabsController {
+    /// Product commands capture the selected regular profile once. Its controls
+    /// then remain independent of the source window's subsequent selection.
+    public func openExtensionControls(in window: BrowserWindowState?,
+                                      completion: @escaping @MainActor (Result<Void, ProfilePageOpenError>) -> Void) {
+        guard let window, windowRegistry.windows[window.id] === window,
+              windowRegistry.activeWindow === window, !window.isIncognito,
+              window.privateTree == nil else {
+            completion(.failure(.presentationUnavailable))
+            return
+        }
+        let spaceID: UUID?
+        if let selected = window.selectedItemID {
+            spaceID = tree.spaceID(of: selected)
+        } else {
+            spaceID = window.spaceID
+        }
+        guard let spaceID, let profileID = tree.dataStoreID(for: spaceID) else {
+            completion(.failure(.profileUnavailable))
+            return
+        }
+        openProfilePage(profileID: profileID, destination: .extensions, completion: completion)
+    }
+
     public func openProfilePage(profileID: UUID, destination: ProfilePageDestination,
                                 completion: @escaping @MainActor (Result<Void, ProfilePageOpenError>) -> Void) {
-        guard let profile = profiles.first(where: { $0.id == profileID }) else {
+        guard isProfileAvailable(profileID), let profile = profiles.first(where: { $0.id == profileID }) else {
             completion(.failure(.profileUnavailable))
             return
         }
@@ -41,7 +64,7 @@ extension TabsController {
             return
         }
         let canPresent: @MainActor () -> Bool = { [weak self] in
-            self?.profiles.contains(where: { $0.id == profileID }) == true
+            self?.isProfileAvailable(profileID) == true
         }
         var completed = false
         action(profile, destination, canPresent) { result in

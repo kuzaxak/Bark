@@ -1,0 +1,273 @@
+diff --git a/chrome/browser/lifetime/application_lifetime_desktop.cc b/chrome/browser/lifetime/application_lifetime_desktop.cc
+index 7f3b371..e358989 100644
+--- a/chrome/browser/lifetime/application_lifetime_desktop.cc
++++ b/chrome/browser/lifetime/application_lifetime_desktop.cc
+@@ -29,6 +29,7 @@
+ #include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/lifetime/termination_notification.h"
+ #include "chrome/browser/metrics/shutdown_watcher_helper.h"
++#include "chrome/browser/profiles/delete_profile_helper.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/sessions/app_session_service_factory.h"
+@@ -565,8 +566,13 @@ void CloseAllBrowsersWithProfile(
+     bool skip_beforeunload,
+     const ProfileBrowsersCloseCallback& on_close_success,
+     const ProfileBrowsersCloseCallback& on_close_aborted) {
+-  SessionServiceFactory::ShutdownForProfile(profile);
+-  AppSessionServiceFactory::ShutdownForProfile(profile);
++  auto* manager = g_browser_process->profile_manager();
++  if (!manager ||
++      !manager->GetDeleteProfileHelper()
++           .ShouldPreserveSessionDataForExplicitDeletion(profile->GetPath())) {
++    SessionServiceFactory::ShutdownForProfile(profile);
++    AppSessionServiceFactory::ShutdownForProfile(profile);
++  }
+ 
+   TryToCloseBrowsersForProfile(profile->GetOriginalProfile(),
+                                /*match_original_profile=*/true,
+diff --git a/chrome/browser/profiles/delete_profile_helper.cc b/chrome/browser/profiles/delete_profile_helper.cc
+index 4b97192..d805036 100644
+--- a/chrome/browser/profiles/delete_profile_helper.cc
++++ b/chrome/browser/profiles/delete_profile_helper.cc
+@@ -137,12 +137,14 @@ struct DeleteProfileHelper::ExplicitDeletion
+   }
+   base::FilePath target;
+   base::FilePath survivor;
+-  enum class Phase { kRunning, kAwaitingRetry, kAwaitingCancellationCommit };
++  enum class Phase { kRunning, kAwaitingRetry, kAwaitingCancellationCommit,
++                     kAwaitingAssignmentCommit };
+   Phase phase = Phase::kRunning;
+   bool marked = false;
+   bool reconcile_only = false;
+   bool disk_cleanup_started = false;
+   bool loaded_survivor_for_request = false;
++  bool defer_wipe = false;
+   ExplicitDeletionCallback callback;
+   base::OnceCallback<void(uint64_t)> wipe_done;
+   std::unique_ptr<ScopedKeepAlive> process_keep_alive;
+@@ -532,10 +534,19 @@ void DeleteProfileHelper::DeleteProfileWithExplicitSurvivor(
+     const base::FilePath& profile_dir,
+     const base::FilePath& survivor_dir,
+     bool reconcile_only,
+-    ExplicitDeletionCallback callback) {
++    ExplicitDeletionCallback callback,
++    bool defer_wipe) {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (defer_wipe && explicit_deletion_ &&
++      explicit_deletion_->phase == ExplicitDeletion::Phase::kAwaitingAssignmentCommit &&
++      explicit_deletion_->target == profile_dir && explicit_deletion_->survivor == survivor_dir) {
++    explicit_deletion_->callback = std::move(callback);
++    FinishExplicitDeletion(ExplicitDeletionResult::kCloseAdmitted);
++    return;
++  }
+   const bool reclaims_reservation = explicit_deletion_ &&
+       explicit_deletion_->phase != ExplicitDeletion::Phase::kRunning &&
++      explicit_deletion_->phase != ExplicitDeletion::Phase::kAwaitingAssignmentCommit &&
+       explicit_deletion_->target == profile_dir &&
+       explicit_deletion_->survivor == survivor_dir &&
+       (!reconcile_only || explicit_deletion_->marked);
+@@ -563,6 +574,7 @@ void DeleteProfileHelper::DeleteProfileWithExplicitSurvivor(
+       profile_dir, survivor_dir, std::move(callback));
+   request->marked = WasMarkedForDeletion(profile_dir);
+   request->reconcile_only = reconcile_only;
++  request->defer_wipe = defer_wipe;
+   if (!request->marked && !owns_scheduling &&
+       !ScheduleProfileDirectoryForDeletion(profile_dir)) {
+     // Another deletion owns this path. Never steal its reservation.
+@@ -585,7 +597,11 @@ void DeleteProfileHelper::DeleteProfileWithExplicitSurvivor(
+     }
+   }
+   if (profile_manager_->IsProfilePendingDestruction(survivor_dir)) {
+-    FinishExplicitDeletion(ExplicitDeletionResult::kPending);
++    if (explicit_deletion_->defer_wipe && !explicit_deletion_->marked) {
++      ExplicitCloseCancelled(profile_dir);
++    } else {
++      FinishExplicitDeletion(ExplicitDeletionResult::kPending);
++    }
+     return;
+   }
+   if (survivor) {
+@@ -631,7 +647,9 @@ void DeleteProfileHelper::ExplicitSurvivorLoaded(Profile* survivor) {
+   if (explicit_deletion_->reconcile_only && !explicit_deletion_->marked &&
+       (profile_manager_->IsProfileLoadedOrLoading(path) ||
+        profile_manager_->GetProfileAttributesStorage().GetProfileAttributesWithPath(path))) {
+-    FinishExplicitDeletion(ExplicitDeletionResult::kPending);
++    FinishExplicitDeletion(explicit_deletion_->defer_wipe
++                               ? ExplicitDeletionResult::kCancelled
++                               : ExplicitDeletionResult::kPending);
+     return;
+   }
+   if (profile) {
+@@ -681,7 +699,11 @@ void DeleteProfileHelper::ExplicitBrowsersClosed(const base::FilePath& path) {
+   if (profile_manager_->IsProfilePendingDestruction(path)) {
+     // Joining here would queue a NEW target after destruction. Preserve the
+     // intent/reservation until the old context and services are actually gone.
+-    FinishExplicitDeletion(ExplicitDeletionResult::kPending);
++    if (explicit_deletion_->defer_wipe && !explicit_deletion_->marked) {
++      ExplicitCloseCancelled(path);
++    } else {
++      FinishExplicitDeletion(ExplicitDeletionResult::kPending);
++    }
+     return;
+   }
+   if (profile_manager_->IsProfileLoadedOrLoading(path)) {
+@@ -728,6 +750,10 @@ void DeleteProfileHelper::ExplicitMissingChecked(bool absent) {
+     if (storage.GetProfileAttributesWithPath(path)) { storage.RemoveProfile(path); }
+     if (!explicit_deletion_->marked) { CancelProfileDeletion(path); }
+     FinishExplicitDeletion(ExplicitDeletionResult::kDeleted);
++  } else if (explicit_deletion_->defer_wipe && !explicit_deletion_->marked) {
++    // Orphaned bytes are still source data. Without a live Profile there is no
++    // close-admitted continuation, so do not erase them before model commit.
++    FinishExplicitDeletion(ExplicitDeletionResult::kPending);
+   } else if (!profile_manager_->IsProfileLoadedOrLoading(path) &&
+              !profile_manager_->IsProfilePendingDestruction(path) &&
+              !profile_manager_->GetProfileAttributesStorage().GetProfileAttributesWithPath(path) &&
+@@ -736,8 +762,14 @@ void DeleteProfileHelper::ExplicitMissingChecked(bool absent) {
+     // No live services remain. Reuse Chromium's bounded disk cleanup; its
+     // callback does not report success, so verify absence separately afterward.
+     explicit_deletion_->disk_cleanup_started = true;
+-    NukeProfileFromDisk(path, base::BindOnce(&DeleteProfileHelper::CheckExplicitMissing,
+-                                           weak_factory_.GetWeakPtr()));
++    base::ThreadPool::PostTask(
++        FROM_HERE,
++        {base::MayBlock(), base::TaskPriority::USER_VISIBLE,
++         base::TaskShutdownBehavior::SKIP_ON_SHUTDOWN},
++        base::BindOnce(
++            &NukeProfileFromDisk, path,
++            base::BindOnce(&DeleteProfileHelper::CheckExplicitMissing,
++                           weak_factory_.GetWeakPtr())));
+   } else {
+     // Retain the durable intent even when native restart cleanup was incomplete.
+     FinishExplicitDeletion(ExplicitDeletionResult::kPending);
+@@ -765,6 +797,10 @@ void DeleteProfileHelper::ExplicitProfileLoaded(Profile* profile) {
+       return;
+     }
+   }
++  if (explicit_deletion_->defer_wipe) {
++    FinishExplicitDeletion(ExplicitDeletionResult::kCloseAdmitted);
++    return;
++  }
+   // Set before notifying arbitrary profile/extension observers.
+   if (!explicit_deletion_->marked) {
+     explicit_deletion_->marked = true;
+@@ -816,10 +852,20 @@ void DeleteProfileHelper::ExplicitPortsReleased() {
+   FinishExplicitDeletion(ExplicitDeletionResult::kDeleted);
+ }
+ 
++bool DeleteProfileHelper::ShouldPreserveSessionDataForExplicitDeletion(
++    const base::FilePath& profile_dir) const {
++  return explicit_deletion_ && explicit_deletion_->target == profile_dir &&
++         !explicit_deletion_->marked;
++}
++
+ void DeleteProfileHelper::FinishExplicitDeletion(ExplicitDeletionResult result) {
+   auto callback = std::move(explicit_deletion_->callback);
+   if (result == ExplicitDeletionResult::kDeleted) {
+     explicit_deletion_.reset();
++  } else if (result == ExplicitDeletionResult::kCloseAdmitted) {
++    // No mark, download cancellation or data wipe has occurred. Retain the
++    // exact live contexts until the caller durably commits its model assignment.
++    explicit_deletion_->phase = ExplicitDeletion::Phase::kAwaitingAssignmentCommit;
+   } else {
+     explicit_deletion_->phase = result == ExplicitDeletionResult::kCancelled
+         ? ExplicitDeletion::Phase::kAwaitingCancellationCommit
+@@ -846,3 +892,19 @@ bool DeleteProfileHelper::AcknowledgeExplicitDeletionCancellation(
+   explicit_deletion_.reset();
+   return true;
+ }
++
++void DeleteProfileHelper::ContinueExplicitDeletion(
++    const base::FilePath& profile_dir, const base::FilePath& survivor_dir,
++    ExplicitDeletionCallback callback) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (!explicit_deletion_ ||
++      explicit_deletion_->phase != ExplicitDeletion::Phase::kAwaitingAssignmentCommit ||
++      explicit_deletion_->target != profile_dir || explicit_deletion_->survivor != survivor_dir) {
++    std::move(callback).Run(ExplicitDeletionResult::kPending);
++    return;
++  }
++  explicit_deletion_->callback = std::move(callback);
++  explicit_deletion_->phase = ExplicitDeletion::Phase::kRunning;
++  explicit_deletion_->defer_wipe = false;
++  ExplicitProfileLoaded(profile_manager_->GetProfileByPath(profile_dir));
++}
+diff --git a/chrome/browser/profiles/delete_profile_helper.h b/chrome/browser/profiles/delete_profile_helper.h
+index 3ff9402..08e79d7 100644
+--- a/chrome/browser/profiles/delete_profile_helper.h
++++ b/chrome/browser/profiles/delete_profile_helper.h
+@@ -81,7 +81,7 @@ class DeleteProfileHelper {
+       ProfileLoadedCallback callback,
+       ProfileMetrics::ProfileDelete deletion_source);
+ 
+-  enum class ExplicitDeletionResult { kDeleted, kCancelled, kPending };
++  enum class ExplicitDeletionResult { kDeleted, kCancelled, kPending, kCloseAdmitted };
+   using ExplicitDeletionCallback =
+       base::OnceCallback<void(ExplicitDeletionResult)>;
+   // Barc's model supplies an existing, distinct regular survivor. No fallback
+@@ -91,13 +91,24 @@ class DeleteProfileHelper {
+       const base::FilePath& profile_dir,
+       const base::FilePath& survivor_dir,
+       bool reconcile_only,
+-      ExplicitDeletionCallback callback);
++      ExplicitDeletionCallback callback,
++      bool defer_wipe = false);
++  // Only the exact suspended request can continue after model assignment is
++  // durable. The retained source Profile is never re-created or retargeted.
++  void ContinueExplicitDeletion(const base::FilePath& profile_dir,
++                               const base::FilePath& survivor_dir,
++                               ExplicitDeletionCallback callback);
+ 
+   // Clears only this operation's pre-mark cancellation reservation after the
+   // application has durably committed the cancellation. Never steals ownership.
+   bool AcknowledgeExplicitDeletionCancellation(
+       const base::FilePath& profile_dir, const base::FilePath& survivor_dir);
+ 
++  // Before explicit deletion is committed, closing or vetoing its windows
++  // must not discard session data owned by the existing reservation.
++  bool ShouldPreserveSessionDataForExplicitDeletion(
++      const base::FilePath& profile_dir) const;
++
+   // Schedules an ephemeral profile at `profile_dir` for deletion. No new
+   // profiles are created.
+   void ScheduleEphemeralProfileForDeletion(
+diff --git a/chrome/browser/sessions/session_data_service.cc b/chrome/browser/sessions/session_data_service.cc
+index a36b043..38f688e 100644
+--- a/chrome/browser/sessions/session_data_service.cc
++++ b/chrome/browser/sessions/session_data_service.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
++#include "build/build_config.h"
+ #include "chrome/browser/defaults.h"
+ #include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -20,6 +21,12 @@
+ #include "components/prefs/pref_service.h"
+ #include "storage/browser/quota/special_storage_policy.h"
+ 
++#if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/browser_process.h"
++#include "chrome/browser/profiles/delete_profile_helper.h"
++#include "chrome/browser/profiles/profile_manager.h"
++#endif
++
+ namespace {
+ // Pref name for Status preference.
+ extern const char kSessionDataStatusPref[] = "sessions.session_data_status";
+@@ -146,6 +153,14 @@ void SessionDataService::StartCleanup() {
+ }
+ 
+ void SessionDataService::StartCleanupInternal(bool skip_session_cookies) {
++#if !BUILDFLAG(IS_ANDROID)
++  auto* manager = g_browser_process->profile_manager();
++  if (manager &&
++      manager->GetDeleteProfileHelper()
++          .ShouldPreserveSessionDataForExplicitDeletion(profile_->GetPath())) {
++    return;
++  }
++#endif
+   if (cleanup_started_)
+     return;
+ 

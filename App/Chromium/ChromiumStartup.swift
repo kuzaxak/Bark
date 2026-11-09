@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Native stores are separate from legacy Nook. Explicit verification inputs
@@ -7,7 +8,23 @@ struct ChromiumStartupConfiguration {
     let profileID: UUID?
     let isVerification: Bool
     let launchArguments: [String]
-    var minimumBridgeVersion: UInt32 { isVerification ? 2 : 3 }
+    let legacySupport: URL?
+    // C structs cross this boundary without a size argument. Require the exact
+    // paired ABI so a newer engine cannot write into an older app's layout.
+    var requiredBridgeVersion: UInt32 { 6 }
+
+    var rootDigest: String {
+        SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+    var aiConfigURL: URL {
+        root.appendingPathComponent("App", isDirectory: true).appendingPathComponent("ai_config.json")
+    }
+    var preferencesDomain: String {
+        isVerification ? "ee.qdo.nook.chromium-verification." + rootDigest : "ee.qdo.nook.chromium"
+    }
+    var aiKeychainService: String {
+        isVerification ? "ee.qdo.nook.chromium-verification.aiProvider." + rootDigest : "ee.qdo.nook.chromium.aiProvider"
+    }
 
     init(arguments: [String], applicationSupportDirectory: URL? = nil) throws {
         func value(_ name: String) throws -> String? {
@@ -29,6 +46,7 @@ struct ChromiumStartupConfiguration {
         }
         launchArguments = positional
         let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
+        let source = try value("--barc-conversion-source")
         if path != nil || hint != nil {
             guard let path, path.hasPrefix("/private/tmp/"), let id = hint.flatMap(UUID.init(uuidString:)) else {
                 throw StartupError.invalidConfiguration
@@ -38,8 +56,10 @@ struct ChromiumStartupConfiguration {
                 throw StartupError.invalidConfiguration
             }
             root = canonical; profileID = id; isVerification = true
+            let synthetic = try source.map(Self.syntheticSource)
+            legacySupport = synthetic?.appendingPathComponent("Application Support", isDirectory: true)
         } else {
-            guard let support = applicationSupportDirectory ?? FileManager.default.urls(
+            guard source == nil, let support = applicationSupportDirectory ?? FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask).first else {
                 throw StartupError.invalidConfiguration
             }
@@ -49,8 +69,17 @@ struct ChromiumStartupConfiguration {
             // startup into an installed browser's store.
             guard canonical.path == expected.standardizedFileURL.path else { throw StartupError.invalidConfiguration }
             root = canonical; profileID = nil; isVerification = false
+            legacySupport = Self.canonicalURL(support)
         }
         try validateChildDirectories()
+    }
+
+    private static func syntheticSource(_ path: String) throws -> URL {
+        let canonical = canonicalURL(URL(fileURLWithPath: path, isDirectory: true))
+        guard path.hasPrefix("/private/tmp/"), canonical.path.hasPrefix("/private/tmp/"), canonical.path != "/private/tmp" else {
+            throw StartupError.invalidConfiguration
+        }
+        return canonical
     }
 
     private static func canonicalURL(_ url: URL) -> URL {
@@ -94,7 +123,7 @@ struct ChromiumStartupConfiguration {
 protocol ChromiumStartupBridge: AnyObject {
     func registerReady(_ callback: @escaping @MainActor () -> Void)
     func openProfile(_ id: UUID?, completion: @escaping @MainActor (Int32?) -> Void)
-    func attachShell(to window: Int32) -> Bool
+    func attachShell(to window: Int32, completion: @escaping @MainActor (Int32?) -> Void)
     func completeStartup(_ window: Int32)
 }
 
@@ -102,6 +131,7 @@ protocol ChromiumStartupBridge: AnyObject {
 final class ChromiumStartup {
     private unowned let bridge: any ChromiumStartupBridge
     private let profile: UUID?
+    private let prepareData: @MainActor (@escaping @MainActor () -> Void) -> Void
     private let failure: (String) -> Void
     private var started = false
     private var ready = false
@@ -110,9 +140,12 @@ final class ChromiumStartup {
     private(set) var window: Int32?
     private(set) var failed = false
 
-    init(bridge: any ChromiumStartupBridge, profile: UUID?, failure: @escaping (String) -> Void) {
+    init(bridge: any ChromiumStartupBridge, profile: UUID?,
+         prepareData: @escaping @MainActor (@escaping @MainActor () -> Void) -> Void = { $0() },
+         failure: @escaping (String) -> Void) {
         self.bridge = bridge
         self.profile = profile
+        self.prepareData = prepareData
         self.failure = failure
     }
 
@@ -134,13 +167,23 @@ final class ChromiumStartup {
         bridge.registerReady { [weak self] in
             guard let self, !self.ready, !self.returned else { return }
             self.ready = true
-            self.bridge.openProfile(self.profile) { [weak self] window in
-                guard let self, !self.returned, !self.failed, !self.completed else { return }
-                self.completed = true
-                guard let window, window > 0 else { self.fail("Chromium profile startup failed"); return }
-                guard self.bridge.attachShell(to: window) else { self.fail("Chromium native hosting failed"); return }
-                self.window = window
-                self.bridge.completeStartup(window)
+            self.prepareData { [weak self] in
+                guard let self, !self.returned, !self.failed else { return }
+                self.openDestination()
+            }
+        }
+    }
+
+    private func openDestination() {
+        bridge.openProfile(profile) { [weak self] window in
+            guard let self, !self.returned, !self.failed, !self.completed else { return }
+            self.completed = true
+            guard let window, window > 0 else { self.fail("Chromium profile startup failed"); return }
+            self.bridge.attachShell(to: window) { [weak self] admitted in
+                guard let self, !self.returned, !self.failed, self.window == nil else { return }
+                guard let admitted, admitted > 0 else { self.fail("Chromium native hosting failed"); return }
+                self.window = admitted
+                self.bridge.completeStartup(admitted)
             }
         }
     }

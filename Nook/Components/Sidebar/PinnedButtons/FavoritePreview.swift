@@ -36,7 +36,28 @@ final class FavoritePreview {
     @ObservationIgnored private var pending: Task<Void, Never>?
     @ObservationIgnored private var tileUnderPointer: UUID?
     @ObservationIgnored private var pointerOverCard = false
-    @ObservationIgnored private var cache: [UUID: (at: Date, rows: [Row])] = [:]
+    fileprivate struct Source: Equatable {
+        let itemID: UUID
+        let spaceID: UUID
+        let profileID: UUID
+        let url: URL
+    }
+    fileprivate var source: Source?
+    @ObservationIgnored private var cache: [UUID: (at: Date, rows: [Row], source: Source)] = [:]
+
+    fileprivate static func source(for item: Item, tabs: TabsController) -> Source? {
+        guard let url = item.url, tabs.item(item.id)?.url == url,
+              let space = tabs.spaceID(of: item.id), let profile = tabs.tree.dataStoreID(for: space),
+              tabs.isProfileAvailable(profile) else { return nil }
+        return Source(itemID: item.id, spaceID: space, profileID: profile, url: url)
+    }
+    fileprivate func isCurrent(in window: BrowserWindowState, tabs: TabsController) -> Bool {
+        guard tabs.windowRegistry.windows[window.id] === window, windowID == window.id,
+              let itemID, let item = tabs.item(itemID),
+              let source, window.spaceID == source.spaceID,
+              !(tabs.profileEngine == .chromium && window.isIncognito) else { return false }
+        return Self.source(for: item, tabs: tabs) == source
+    }
 
     private static let restDelay: Duration = .milliseconds(600)
     /// Gmail and Calendar cards come sooner, as in Arc.
@@ -49,6 +70,8 @@ final class FavoritePreview {
     private static let rowLimit = 8
 
     func tileHover(_ item: Item, hovering: Bool, in window: BrowserWindowState, tabs: TabsController) {
+        if tabs.profileEngine == .chromium && window.isIncognito { if hovering { dismiss() }; return }
+        if itemID != nil && !isCurrent(in: window, tabs: tabs) { dismiss() }
         // The card lies over other tiles, whose tracking areas still report the pointer.
         guard !pointerOverCard || item.id == itemID else { return }
         guard hovering else {
@@ -64,13 +87,17 @@ final class FavoritePreview {
         guard itemID != item.id, tabs.settings.favoritePreviews, !NookDragSessionManager.shared.isDragging else { return }
         pending?.cancel()
         let delay = itemID != nil ? Self.switchDelay : live == nil ? Self.restDelay : Self.liveRestDelay
+        let expected = Self.source(for: item, tabs: tabs)
         pending = Task {
             try? await Task.sleep(for: delay)
-            guard !Task.isCancelled, tileUnderPointer == item.id else { return }
+            guard !Task.isCancelled, tileUnderPointer == item.id, let expected,
+                  Self.source(for: item, tabs: tabs) == expected else { return }
             let rows = live == nil ? await load(item, tabs: tabs) : []
-            guard !Task.isCancelled, tileUnderPointer == item.id else { return }
+            guard !Task.isCancelled, tileUnderPointer == item.id,
+                  Self.source(for: item, tabs: tabs) == expected else { return }
             guard live != nil || !rows.isEmpty else { return dismiss() }
             self.rows = rows
+            self.source = expected
             self.live = live
             itemID = item.id
             windowID = window.id
@@ -97,6 +124,7 @@ final class FavoritePreview {
         windowID = nil
         rows = []
         live = nil
+        source = nil
     }
 
     private func closeSoon() {
@@ -109,12 +137,15 @@ final class FavoritePreview {
     }
 
     private func load(_ item: Item, tabs: TabsController) async -> [Row] {
-        if let cached = cache[item.id], Date().timeIntervalSince(cached.at) < Self.cacheAge { return cached.rows }
+        guard let expected = Self.source(for: item, tabs: tabs) else { return [] }
+        if let cached = cache[item.id], cached.source == expected,
+           Date().timeIntervalSince(cached.at) < Self.cacheAge { return cached.rows }
         // Only sites with something of their own to show get a card. github.com is the one so far.
-        guard item.url?.host == "github.com", let spaceID = tabs.spaceID(of: item.id) else { return [] }
-        let pulls = await tabs.pullRequests(inSpace: spaceID)
+        guard item.url?.host == "github.com" else { return [] }
+        let pulls = await tabs.pullRequests(inSpace: expected.spaceID)
+        guard !Task.isCancelled, Self.source(for: item, tabs: tabs) == expected else { return [] }
         let rows = pulls.prefix(Self.rowLimit).map { Row(url: $0.url, title: $0.title) }
-        cache[item.id] = (Date(), rows)
+        cache[item.id] = (Date(), rows, expected)
         return rows
     }
 }
@@ -140,7 +171,7 @@ struct FavoritePreviewOverlay: View {
 
     var body: some View {
         GeometryReader { proxy in
-            if let anchor, let itemID = preview.itemID, preview.windowID == windowState.id {
+            if let anchor, let itemID = preview.itemID, preview.isCurrent(in: windowState, tabs: tabs) {
                 let tile = proxy[anchor]
                 if let live = preview.live {
                     liveCard(live, itemID: itemID)
@@ -224,8 +255,11 @@ struct FavoritePreviewOverlay: View {
     }
 
     private func open(_ url: URL, in itemID: UUID) {
+        guard preview.isCurrent(in: windowState, tabs: tabs), let expected = preview.source else { return }
         preview.dismiss()
         tabs.select(itemID, in: windowState)
+        guard let item = tabs.item(itemID), FavoritePreview.source(for: item, tabs: tabs) == expected,
+              windowState.spaceID == expected.spaceID else { return }
         tabs.session(for: itemID)?.load(url)
     }
 }

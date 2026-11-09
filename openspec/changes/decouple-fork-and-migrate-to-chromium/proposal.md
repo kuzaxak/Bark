@@ -24,6 +24,7 @@ The fork needs its own release direction and Chromium compatibility while retain
 - `profile-extensions`: Broad extension behavior and profile-bound Chromium settings entry points.
 - `engine-data-transition`: Recoverable migration of application data and explicit treatment of nonportable site data.
 - `tab-resource-lifecycle`: Predictable background-tab resource management that preserves media continuity and user work.
+- `content-blocking`: Existing filter policy, exceptions and page protection applied by Chromium without crossing profile boundaries or overriding extension decisions.
 
 ### Modified Capabilities
 

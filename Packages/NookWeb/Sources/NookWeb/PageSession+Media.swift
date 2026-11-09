@@ -147,6 +147,12 @@ extension PageSession {
     /// Pauses every frame's player, or resumes what last played with sound. With no frame known to
     /// play, WebKit pauses everything on the page.
     public func togglePlayback() {
+        if let navigation, !(navigation is WebKitPageNavigation) {
+            guard media.isKnown, media.hasMedia else { return }
+            _ = navigation.setPlaybackPaused(media.isPlaying)
+            return
+        }
+        guard !usesNativePageHost else { return }
         let play = !media.isPlaying
         let frames = play ? [mediaFrames.resumeTarget ?? nil] : mediaFrames.pauseTargets
         logMediaControl(play ? "play" : "pause", frames: frames.count, fallback: frames.isEmpty)
@@ -162,6 +168,12 @@ extension PageSession {
 
     /// Previous or Next, in the frame whose player can (`media.handlesPreviousTrack`, `handlesNextTrack`).
     public func skipTrack(forward: Bool) {
+        if let navigation, !(navigation is WebKitPageNavigation) {
+            guard media.isKnown, forward ? media.handlesNextTrack : media.handlesPreviousTrack else { return }
+            _ = navigation.skipTrack(forward: forward)
+            return
+        }
+        guard !usesNativePageHost else { return }
         let frame = mediaFrames.trackTarget(forward: forward)
         logMediaControl(forward ? "next" : "previous", frames: frame == nil ? 0 : 1, fallback: false)
         guard let frame else { return }
@@ -170,6 +182,12 @@ extension PageSession {
 
     /// The mini player's mute button: undoes Nook's tab mute, else the page's own, else mutes the tab.
     public func toggleSound() {
+        if let navigation, !(navigation is WebKitPageNavigation) {
+            guard let muted = navigation.state.isAudioMuted else { return }
+            _ = navigation.setAudioMuted(!muted)
+            return
+        }
+        guard !usesNativePageHost else { return }
         let action = MuteAction.next(tabMuted: isAudioMuted, pageMuted: media.isMuted)
         let frames = action == .unmutePage ? mediaFrames.mutedTargets : []
         logMediaControl("\(action)", frames: frames.count, fallback: false)
@@ -469,6 +487,11 @@ extension PageSession {
     }
 
     public func requestPictureInPicture() {
+        if let navigation, !(navigation is WebKitPageNavigation) {
+            _ = navigation.requestPictureInPicture()
+            return
+        }
+        guard !usesNativePageHost else { return }
         // In multi-window setup, we need to work with the WebView that's actually visible
         // in the current window, not just the first WebView created
         let activeWindowID = controller?.windowRegistry.activeWindow?.id

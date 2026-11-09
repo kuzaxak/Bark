@@ -1,4 +1,3 @@
-diff --git a/chrome/browser/ui/views/frame/barc_bridge.mm b/chrome/browser/ui/views/frame/barc_bridge.mm
 --- a/chrome/browser/ui/views/frame/barc_bridge.mm
 +++ b/chrome/browser/ui/views/frame/barc_bridge.mm
 @@ -1,6 +1,9 @@
@@ -11,8 +10,8 @@ diff --git a/chrome/browser/ui/views/frame/barc_bridge.mm b/chrome/browser/ui/vi
  
  #include <algorithm>
  #include <array>
-@@ -793,8 +796,14 @@
- }
+@@ -3178,8 +3181,14 @@
+ }  // namespace
  views::NativeViewHost* CreateNativeShell(BrowserView* browser_view) {
    const bool registered = IsNativeApplicationRegistered();
 -  if ((!registered &&
@@ -27,8 +26,8 @@ diff --git a/chrome/browser/ui/views/frame/barc_bridge.mm b/chrome/browser/ui/vi
 +       !command_line->HasSwitch("barc-native-shell")) ||
        browser_view->browser()->GetType() != BrowserWindowInterface::TYPE_NORMAL)
      return nullptr;
-   auto* host =
-@@ -803,8 +812,15 @@
+   if (registered) {
+@@ -3192,8 +3201,15 @@
      host->SetVisible(false);
      return host;
    }

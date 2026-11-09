@@ -28,8 +28,12 @@ public class BrowserWindowState {
     public let id: UUID
     /// Latest native selection intent; selected item/space changes only after
     /// actual native admission. Scoped here, never in a parallel item registry.
+    /// A pending initial product may join actual preparation outcomes. This is
+    /// a terminal notification, not presentation ownership or a retry scheduler.
+    @ObservationIgnored public var nativePresentationDidSettle: (@MainActor (Bool) -> Void)?
     @ObservationIgnored var nativeSelectionGeneration: UUID?
     @ObservationIgnored weak var nativeSelectionSession: PageSession?
+    @ObservationIgnored var nativeSplitPreparation: NativeSplitPreparation?
 
 
     /// Sidebar width for this window
@@ -197,6 +201,13 @@ public class BrowserWindowState {
     /// Spaces whose last open tab was closed in this window. Returning to one shows the empty
     /// space instead of selecting its first tab. In memory only.
     var emptiedSpaces: Set<UUID> = []
+
+    /// The space a Chromium window last entered or left empty. Chromium keeps showing some other
+    /// client's page there, which the shell covers while this holds.
+    var nativeEmptySpaceID: UUID?
+    public var showsNativeEmptySpace: Bool {
+        spaceID != nil && nativeEmptySpaceID == spaceID && selectedItemID == nil
+    }
 
     /// The selected item in the current space. There is no global current tab.
     public var selectedItemID: UUID? {

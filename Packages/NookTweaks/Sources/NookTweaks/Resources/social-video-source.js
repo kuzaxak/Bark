@@ -73,7 +73,7 @@
         }
     }
 
-    document.addEventListener('nook-social-video-url', event => {
+    function onVideoSource(event) {
         const video = event.target;
         const seen = new Set();
         let fiber = fiberOf(video), best = null, level = 0;
@@ -86,5 +86,7 @@
         if (!best) return;
         const size = best.parent?.width ? ` ${best.parent.width}x${best.parent.height}` : '';
         video.setAttribute('data-nook-video-url', JSON.stringify({ url: best.url, note: `${best.key}${size} level ${level - 1}` }));
-    }, true);
+    }
+    document.addEventListener('nook-social-video-url', onVideoSource, true);
+    return { stop() { document.removeEventListener('nook-social-video-url', onVideoSource, true); } };
 })();

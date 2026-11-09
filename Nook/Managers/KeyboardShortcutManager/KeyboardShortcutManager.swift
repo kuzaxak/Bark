@@ -216,17 +216,17 @@ class KeyboardShortcutManager {
             return false
         }
 
-        if browserManager?.tabs.profileEngine == .chromium {
-            guard let key = NSApp.keyWindow,
-                  windowRegistry?.activeWindow?.window === key else { return false }
-        }
-
         // A window that is not a browser window (Settings, a mini window) keeps its own keys.
         if let keyWindow = NSApp.keyWindow,
            !(windowRegistry?.windows.values.contains(where: { $0.window === keyWindow }) ?? false) {
             guard CloseShortcut.closesOtherWindow(lookupKey: KeyCombination(from: event)?.lookupKey) else { return false }
             closeTab(isRepeat: event.isARepeat)
             return true
+        }
+
+        if browserManager?.tabs.profileEngine == .chromium {
+            guard let key = NSApp.keyWindow,
+                  windowRegistry?.activeWindow?.window === key else { return false }
         }
 
         let keyCode = event.keyCode
@@ -272,7 +272,7 @@ class KeyboardShortcutManager {
 
         guard let shortcut = KeyCombination.lookupKeys(for: event).lazy.compactMap({ self.shortcutMap[$0] }).first,
               shortcut.isEnabled else {
-            return false
+            return reopenClosedTabInChromium(for: keyCombination)
         }
         
 
@@ -282,7 +282,7 @@ class KeyboardShortcutManager {
             } else {
                 switch shortcut.action {
                 case .newTab, .focusAddressBar, .openCommandPalette: break
-                default: return false
+                default: guard shortcut.action.runsInChromiumSidebar else { return false }
                 }
             }
         }
@@ -309,6 +309,19 @@ class KeyboardShortcutManager {
         lastShortcutWasRepeat = event.isARepeat
         executeAction(shortcut.action)
         return true
+    }
+
+    /// The WebKit app binds Command-Shift-T in its menu commands, outside the shortcut table.
+    private func reopenClosedTabInChromium(for key: KeyCombination) -> Bool {
+        guard let browserManager, browserManager.tabs.profileEngine == .chromium,
+              key == KeyCombination(key: "t", modifiers: [.command, .shift]) else { return false }
+        reopenClosedTab()
+        return true
+    }
+
+    func reopenClosedTab() {
+        guard let browserManager, let window = windowRegistry?.activeWindow else { return }
+        DispatchQueue.main.async { browserManager.tabs.reopenLastClosed(in: window) }
     }
 
     /// Whether the shortcut being run came from Control-Tab, which opens the tab switcher.
@@ -548,12 +561,13 @@ class KeyboardShortcutManager {
                       self.windowRegistry?.windows[window.id] === window, window.selectedItemID == selected,
                       let keyWindow = NSApp.keyWindow, window.window === keyWindow else { return }
                 if let address { window.commandPalette?.open(prefill: address, navigateCurrentTab: true) }
+                else if action == .focusAddressBar { window.commandPalette?.open(navigateCurrentTab: true) }
                 else { window.commandPalette?.open() }
             }
             return
         }
         // Other native keyboard actions remain Chromium's existing accelerators.
-        if browserManager.tabs.profileEngine == .chromium {
+        if browserManager.tabs.profileEngine == .chromium, !action.runsInChromiumSidebar {
             if let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow, window.window === keyWindow {
                 browserManager.showWindowToast("This action is not available yet", in: window)
             }
@@ -670,8 +684,7 @@ class KeyboardShortcutManager {
             case .toggleExtensionLibrary:
                 browserManager.toggleExtensionLibrary()
             case .manageExtensions:
-                SettingsNavigation.shared.currentSettingsTab = .extensions
-                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+                browserManager.manageExtensions()
             case .toggleDarkMode:
                 guard let settings = browserManager.nookSettings else { break }
                 let isDark = settings.appearanceMode == .dark

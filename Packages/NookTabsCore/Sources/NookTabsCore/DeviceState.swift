@@ -9,7 +9,7 @@ public struct DeviceState: Codable, Equatable, Sendable {
     public static let archivedLimit = 200
 
     public var openFolders: Set<UUID> = []
-    /// Live pages of synced tabs (pinned and favorites), by item id.
+    /// Live pages of synced tabs, plus unresolved device-local searches for cold tabs.
     public var openPages: [UUID: OpenPage] = [:]
     public var windows: [WindowRecord] = []
     /// Newest last.
@@ -28,6 +28,9 @@ public struct DeviceState: Codable, Equatable, Sendable {
     /// Profiles no space uses, kept with their website data, oldest first. Optional because files
     /// written before kept profiles have no such key.
     public var keptProfiles: [KeptProfile]?
+    /// A single regular-profile deletion, durable before native cleanup starts.
+    /// Retained after interruption or post-mark failure so the identity cannot be reused.
+    public var pendingProfileDeletion: PendingProfileDeletion?
 
     public init() {}
 
@@ -78,7 +81,7 @@ public struct DeviceState: Codable, Equatable, Sendable {
     /// Drops references to items and spaces that no longer exist.
     public mutating func prune(against tree: TabTree) {
         openFolders = openFolders.filter { tree.item($0)?.isFolder == true || tree.hasChildren($0) }
-        openPages = openPages.filter { tree.item($0.key) != nil && tree.scope(of: $0.key) == .synced }
+        openPages = openPages.filter { tree.item($0.key) != nil && (tree.scope(of: $0.key) == .synced || $0.value.pendingSearch != nil) }
         liveDismissed = liveDismissed?.filter { tree.item($0.key)?.live != nil }
         openers = openers?.filter { tree.item($0.key) != nil && tree.item($0.value) != nil }
         lastSeen = lastSeen?.filter { tree.item($0.key) != nil }
@@ -94,13 +97,58 @@ public struct DeviceState: Codable, Equatable, Sendable {
     }
 }
 
+public struct PendingProfileDeletion: Codable, Equatable, Sendable {
+    public let target: UUID
+    public let survivor: UUID
+    /// Nil is the original kept-profile deletion protocol.
+    public var change: PendingProfileChange?
+
+    public init(target: UUID, survivor: UUID, change: PendingProfileChange? = nil) {
+        self.target = target
+        self.survivor = survivor
+        self.change = change
+    }
+}
+
+/// The existing single profile intent also carries a bounded assignment change.
+/// No tab contents are serialized or cloned; item and saved-window IDs survive.
+public struct PendingProfileChange: Codable, Equatable, Sendable {
+    public enum Kind: String, Codable, Sendable { case deleteProfile, reassignSpace }
+    public enum Phase: String, Codable, Sendable {
+        case prepared, closeAdmitted, assignmentCommitted
+    }
+
+    public let id: UUID
+    public let kind: Kind
+    public let spaceIDs: [UUID]
+    public let source: KeptProfile
+    public let newDestination: KeptProfile?
+    public let windowIDs: Set<UUID>
+    public var phase: Phase
+
+    public init(kind: Kind, spaceIDs: [UUID], source: KeptProfile,
+                newDestination: KeptProfile? = nil, windowIDs: Set<UUID>,
+                phase: Phase = .prepared) {
+        id = UUID()
+        self.kind = kind
+        self.spaceIDs = spaceIDs
+        self.source = source
+        self.newDestination = newDestination
+        self.windowIDs = windowIDs
+        self.phase = phase
+    }
+}
+
 public struct OpenPage: Codable, Hashable, Sendable {
     public var url: URL
     public var title: String
+    /// Unresolved native query, device-local and credential-free. Nil on older records.
+    public var pendingSearch: String?
 
-    public init(url: URL, title: String) {
+    public init(url: URL, title: String, pendingSearch: String? = nil) {
         self.url = url
         self.title = title
+        self.pendingSearch = pendingSearch
     }
 }
 

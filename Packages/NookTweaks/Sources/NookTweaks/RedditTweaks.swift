@@ -20,22 +20,11 @@ public enum RedditTweaks {
     private static let world = WKContentWorld.world(name: "NookRedditTweaks")
 
     // Mirrors hotURL(for:settings:).
-    private static let script = #"""
-    // Nook Reddit Tweaks
-    (() => {
-      if (!/^(www\.)?reddit\.com$/.test(location.hostname)) return;
-      const feed = /^\/(r\/[^/]+\/|user\/[^/]+\/m\/[^/]+\/)?$/;
-      document.addEventListener('click', (e) => {
-        const a = e.composedPath().find((n) => n instanceof HTMLAnchorElement && n.href);
-        if (!a) return;
-        const u = new URL(a.href);
-        const path = u.pathname.endsWith('/') ? u.pathname : u.pathname + '/';
-        if (u.host !== location.host || !feed.test(path)) return;
-        u.pathname = path + 'hot/';
-        a.href = u.href;
-      }, true);
-    })();
-    """#
+    private static let script: String = {
+        guard let url = Bundle.module.url(forResource: "reddit-tweaks", withExtension: "js", subdirectory: "Resources"),
+              let source = try? String(contentsOf: url, encoding: .utf8) else { return "" }
+        return source
+    }()
 
     /// The Hot version of a sortless Reddit feed URL: home, a subreddit, or a custom feed.
     public static func hotURL(for url: URL, settings: NookSettingsService) -> URL? {
@@ -63,7 +52,7 @@ public enum RedditTweaks {
         let others = all.nookOwned.filter { !$0.source.hasPrefix(marker) }
         ucc.removeAllUserScripts()
         others.forEach { ucc.addUserScript($0) }
-        if settings.redditSortHot {
+        if settings.redditSortHot, !script.isEmpty {
             ucc.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
         }
     }

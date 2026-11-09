@@ -6,6 +6,17 @@ import Testing
 /// Moving a space off a profile no other space uses asks to keep or delete it. A kept profile
 /// stays listed with no space, keeps its name and engine, and can be picked for a space again.
 struct KeptProfileTests {
+    @Test func deletionIntentDecodesOldStateAndRoundTripsWithoutPruning() throws {
+        let encoded = try JSONEncoder().encode(DeviceState())
+        #expect(try JSONDecoder().decode(DeviceState.self, from: encoded).pendingProfileDeletion == nil)
+        var state = DeviceState()
+        state.pendingProfileDeletion = PendingProfileDeletion(target: UUID(), survivor: UUID())
+        let roundTrip = try JSONDecoder().decode(DeviceState.self, from: JSONEncoder().encode(state))
+        #expect(roundTrip.pendingProfileDeletion == state.pendingProfileDeletion)
+        state.prune(against: TabTree())
+        #expect(state.pendingProfileDeletion == roundTrip.pendingProfileDeletion)
+    }
+
     @Test func movingTheLastSpaceOffAProfileLeavesItEmpty() throws {
         var f = Fixture()
         #expect(f.tree.profileLeftEmpty(byMoving: f.spaceB, to: f.spaceA)?.id == f.spaceB)

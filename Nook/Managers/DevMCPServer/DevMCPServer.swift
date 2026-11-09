@@ -22,12 +22,32 @@ import NookWeb
 @MainActor
 final class DevMCPServer {
     static let shared = DevMCPServer()
-    /// `-NookDevMCPPort 47900` moves the server so a second copy can run beside the installed app.
-    static let port: NWEndpoint.Port = {
-        let arguments = UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)
-        let override = (arguments["NookDevMCPPort"] as? String).flatMap { UInt16($0) }
-        return override.flatMap { NWEndpoint.Port(rawValue: $0) } ?? 47823
-    }()
+    private var configuration: DevMCPConfiguration?
+    private var generation: UInt64 = 0
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
+    private var downloads: [UUID: DevMCPDownload] = [:]
+    private var requests: [UUID: Request] = [:]
+    @MainActor private final class Request {
+        var task: Task<Void, Never>?
+        var cancelTool: (() -> Void)?
+        func cancel() { cancelTool?(); task?.cancel() }
+    }
+    private var isPermitted: Bool {
+        guard let settings = browserManager?.nookSettings else { return false }
+        return DevMCPConfiguration.isEnabled(developerMode: settings.developerModeEnabled,
+                                             browserControl: settings.browserControlServerEnabled)
+    }
+
+    /// Native startup installs isolated destinations before settings can enable the singleton.
+    @discardableResult
+    func setConfiguration(_ value: DevMCPConfiguration) -> Bool {
+        // Once installed, roots are immutable for this server lifetime, including abandoned
+        // asynchronous WebKit calls that may outlive their cancelled HTTP request.
+        guard configuration == nil || configuration == value else { return false }
+        guard listener == nil, requests.isEmpty, connections.isEmpty else { return configuration == value }
+        configuration = value
+        return true
+    }
 
     nonisolated private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "DevMCP")
     nonisolated private static let maxBody = 8 * 1024 * 1024
@@ -40,10 +60,16 @@ final class DevMCPServer {
     private weak var browserManager: BrowserManager?
     private var listener: NWListener?
     /// Last snapshot per page and selector, so the next call can answer with a diff.
-    private var snapshots: [String: String] = [:]
+    private struct StoredSnapshot {
+        let outline: String
+        weak var navigation: ChromiumPageNavigation? = nil
+        var documentSerial: UInt64? = nil
+    }
+    private var snapshots: [String: StoredSnapshot] = [:]
     private var token = ""
     /// Each session's open GET stream, which carries nothing but keep-alives.
     private var streams: [String: NWConnection] = [:]
+    private var reconnectTask: Task<Void, Never>?
     private var keepAlive: Task<Void, Never>?
     private let queue = DispatchQueue(label: "com.gstudios.nook.devmcp")
 
@@ -62,78 +88,111 @@ final class DevMCPServer {
     }
 
     func stop() {
-        guard listener != nil else { return }
+        // Revoke every callback before cancellation can reenter this instance.
+        generation &+= 1
         listener?.cancel()
         listener = nil
-        let open = streams.values
+        token = ""
+        let ownedRequests = Array(requests.values)
+        let ownedConnections = Array(connections.values)
+        connections = [:]
         streams = [:]
-        open.forEach { $0.cancel() }
-        Self.log.notice("listener stopped")
+        reconnectTask?.cancel()
+        reconnectTask = nil
+        keepAlive?.cancel()
+        keepAlive = nil
+        snapshots = [:]
+        let ownedDownloads = Array(downloads.values)
+        downloads = [:]
+        ownedDownloads.forEach { $0.cancel() }
+        ownedRequests.forEach { $0.cancel() }
+        ownedConnections.forEach { $0.cancel() }
     }
 
-    func start(browserManager: BrowserManager) {
+    func shutdown() {
+        stop()
+        browserManager = nil
+    }
+
+    private func start(browserManager: BrowserManager) {
+        guard let settings = browserManager.nookSettings,
+              DevMCPConfiguration.isEnabled(developerMode: settings.developerModeEnabled,
+                                            browserControl: settings.browserControlServerEnabled) else { stop(); return }
         guard listener == nil else { return }
         self.browserManager = browserManager
         do {
-            token = try Self.loadOrCreateToken()
+            let configuration = configuration ?? DevMCPConfiguration.legacy()
+            self.configuration = configuration
+            token = try configuration.loadOrCreateToken()
+            guard let port = NWEndpoint.Port(rawValue: configuration.port) else { throw DevMCPConfiguration.ConfigurationError.unsafePath }
             let params = NWParameters.tcp
-            params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: Self.port)
+            params.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: port)
             params.allowLocalEndpointReuse = true
             let listener = try NWListener(using: params)
+            generation &+= 1
+            let expected = generation
             listener.newConnectionHandler = { [weak self] conn in
-                Task { @MainActor in self?.accept(conn) }
+                Task { @MainActor in
+                    guard let self, self.generation == expected, self.listener != nil else { conn.cancel(); return }
+                    self.accept(conn)
+                }
             }
             listener.stateUpdateHandler = { state in
                 Self.log.notice("listener \(String(describing: state), privacy: .public)")
             }
-            listener.start(queue: queue)
             self.listener = listener
+            listener.start(queue: queue)
         } catch {
+            token = ""
             Self.log.error("start failed: \(error.localizedDescription, privacy: .public)")
         }
-    }
-
-    private static func loadOrCreateToken() throws -> String {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent(Bundle.main.bundleIdentifier ?? "Nook", isDirectory: true)
-        let file = dir.appendingPathComponent("dev-mcp-token")
-        if let existing = try? String(contentsOf: file, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines),
-           existing.count >= 32 {
-            return existing
-        }
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        let fresh = UUID().uuidString + UUID().uuidString
-        try Data(fresh.utf8).write(to: file, options: .atomic)
-        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
-        return fresh
     }
 
     // MARK: - HTTP
 
     private func accept(_ conn: NWConnection) {
+        connections[ObjectIdentifier(conn)] = conn
+        let expected = generation
+        conn.stateUpdateHandler = { [weak self, weak conn] state in
+            guard case .cancelled = state else { return }
+            Task { @MainActor in
+                guard let self, let conn, self.generation == expected else { return }
+                self.connections.removeValue(forKey: ObjectIdentifier(conn))
+            }
+        }
         conn.start(queue: queue)
-        receive(conn, buffer: Data())
+        receive(conn, buffer: Data(), generation: expected)
     }
 
-    private nonisolated func receive(_ conn: NWConnection, buffer: Data) {
+    private nonisolated func receive(_ conn: NWConnection, buffer: Data, generation expected: UInt64) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, isComplete, error in
-            guard let self else { conn.cancel(); return }
             var buffer = buffer
             if let data { buffer.append(data) }
-            if let request = HTTPRequest(buffer) {
-                Task { @MainActor in
+            let received = buffer
+            let parsed = HTTPRequest(received)
+            Task { @MainActor in
+                guard let self, self.generation == expected, self.listener != nil,
+                      self.connections[ObjectIdentifier(conn)] === conn else { conn.cancel(); return }
+                if let request = parsed {
                     if request.method == "GET", self.rejection(request) == nil, let session = request.headers["mcp-session-id"] {
                         self.openStream(conn, session: session)
                         return
                     }
-                    let (status, body) = await self.handle(request)
-                    // A request without a session starts one; clients send it back on every later request.
-                    self.send(conn, status: status, body: body, session: request.headers["mcp-session-id"] ?? UUID().uuidString)
+                    let id = UUID()
+                    let owned = Request()
+                    self.requests[id] = owned
+                    owned.task = Task { @MainActor in
+                        defer { owned.task = nil; self.requests.removeValue(forKey: id) }
+                        guard !Task.isCancelled, self.generation == expected else { return }
+                        let (status, body) = await self.handle(request, owned: owned)
+                        guard !Task.isCancelled, self.generation == expected else { conn.cancel(); return }
+                        self.send(conn, status: status, body: body, session: request.headers["mcp-session-id"] ?? UUID().uuidString)
+                    }
+                } else if error != nil || isComplete || received.count > Self.maxBody {
+                    conn.cancel()
+                } else {
+                    self.receive(conn, buffer: received, generation: expected)
                 }
-            } else if error != nil || isComplete || buffer.count > Self.maxBody {
-                conn.cancel()
-            } else {
-                self.receive(conn, buffer: buffer)
             }
         }
     }
@@ -150,17 +209,21 @@ final class DevMCPServer {
     // MARK: - Sessions
 
     private func openStream(_ conn: NWConnection, session: String) {
+        reconnectTask?.cancel()
+        reconnectTask = nil
         streams.updateValue(conn, forKey: session)?.cancel()
         let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n"
         conn.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
         watchClose(conn, session: session)
         guard keepAlive == nil else { return }
+        let expected = generation
         keepAlive = Task {
-            while !streams.isEmpty {
-                try? await Task.sleep(for: Self.keepAliveInterval)
+            while !streams.isEmpty, generation == expected, !Task.isCancelled {
+                do { try await Task.sleep(for: Self.keepAliveInterval) } catch { return }
+                guard generation == expected, !Task.isCancelled else { return }
                 for stream in streams.values { stream.send(content: Data(":\n\n".utf8), completion: .contentProcessed { _ in }) }
             }
-            keepAlive = nil
+            if generation == expected { keepAlive = nil }
         }
     }
 
@@ -182,8 +245,12 @@ final class DevMCPServer {
         guard let session else { return }
         streams.removeValue(forKey: session)?.cancel()
         guard streams.isEmpty else { return }
-        Task {
-            try? await Task.sleep(for: Self.reconnectGrace)
+        reconnectTask?.cancel()
+        let expected = generation
+        reconnectTask = Task {
+            do { try await Task.sleep(for: Self.reconnectGrace) } catch { return }
+            guard generation == expected else { return }
+            reconnectTask = nil
             guard streams.isEmpty, listener != nil else { return }
             Self.log.notice("last agent disconnected")
             browserManager?.closeIdleAgentTabs()
@@ -192,6 +259,7 @@ final class DevMCPServer {
 
     /// The status refusing `req`, or nil when it may go ahead.
     private func rejection(_ req: HTTPRequest) -> Int? {
+        guard isPermitted else { return 403 }
         // Web pages cannot reach us: they would send an Origin, and could not know the token.
         // Compare the parsed host, not a string prefix: http://localhost.attacker.example passed.
         if let origin = req.headers["origin"] {
@@ -203,7 +271,8 @@ final class DevMCPServer {
         return nil
     }
 
-    private func handle(_ req: HTTPRequest) async -> (Int, Data?) {
+    private func handle(_ req: HTTPRequest, owned: Request) async -> (Int, Data?) {
+        guard listener != nil, !Task.isCancelled else { return (503, nil) }
         if let status = rejection(req) { return (status, nil) }
         switch req.method {
         case "POST": break
@@ -236,11 +305,15 @@ final class DevMCPServer {
             let name = params["name"] as? String ?? ""
             let args = params["arguments"] as? [String: Any] ?? [:]
             // Counted here, not in callTool, so a call the deadline abandons stops the pulse.
-            browserManager?.tabs.agentCallsInFlight += 1
-            let called = await withTimeout(Self.toolTimeout, operation: { await self.callTool(name, args) })
-            browserManager?.tabs.agentCallsInFlight -= 1
+            let callManager = browserManager
+            callManager?.tabs.agentCallsInFlight += 1
+            let requestedTimeout = (args["timeout"] as? NSNumber)?.doubleValue ?? 20
+            let nativeWait = browserManager?.engine == .chromium && (name == "reload" || name == "wait_for_load")
+            let timeout = nativeWait ? (requestedTimeout.isFinite ? max(0, min(requestedTimeout, Self.toolTimeout - 5)) : 20) : Self.toolTimeout
+            let called = await withTimeout(timeout, owned: owned, operation: { await self.callTool(name, args) })
+            callManager?.tabs.agentCallsInFlight -= 1
             guard let called else {
-                return (200, rpcError(id: id, code: -32001, message: "Tool \(name) did not answer within \(Int(Self.toolTimeout))s"))
+                return (200, rpcError(id: id, code: -32001, message: "Tool \(name) did not answer within \(Int(timeout))s"))
             }
             result = called
         default:
@@ -252,37 +325,60 @@ final class DevMCPServer {
     /// A tool that never returns must not hold its connection open for ever, so
     /// every call races a deadline and nil means the deadline won. The losing work
     /// is cancelled but may not notice: `evaluateJavaScript` cannot be cancelled.
-    private func withTimeout<T: Sendable>(_ seconds: Double, operation: @escaping @MainActor () async -> T) async -> T? {
+    private func withTimeout<T: Sendable>(_ seconds: Double, owned: Request, operation: @escaping @MainActor () async -> T) async -> T? {
         // Not a task group: a group waits for its children even after cancelAll(),
         // so an abandoned evaluateJavaScript would still hold the connection open
         // for as long as it took. These two tasks race and the loser is dropped.
         let latch = Latch()
-        return await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
-            // The deadline task is made first so the work task can cancel it: a tool that
-            // answers in a millisecond otherwise leaves a sleeper on the main actor for the
-            // full timeout, one per request.
-            let deadline = Task { @MainActor in
-                try? await Task.sleep(for: .seconds(seconds))
-                guard !latch.done else { return }
-                latch.done = true
-                latch.work?.cancel()
-                cont.resume(returning: nil)
+        owned.cancelTool = { latch.finishCancellation() }
+        defer { owned.cancelTool = nil }
+        return await withTaskCancellationHandler {
+            await withCheckedContinuation { (cont: CheckedContinuation<T?, Never>) in
+                latch.cancel = { cont.resume(returning: nil) }
+                if latch.done {
+                    latch.cancel = nil
+                    cont.resume(returning: nil)
+                    return
+                }
+                guard !Task.isCancelled else { latch.finishCancellation(); return }
+                let deadline = Task { @MainActor in
+                    do { try await Task.sleep(for: .seconds(seconds)) } catch { return }
+                    latch.finishCancellation()
+                }
+                latch.deadline = deadline
+                latch.work = Task { @MainActor in
+                    guard !Task.isCancelled, !latch.done else { return }
+                    let value = await operation()
+                    guard !latch.done else { return }
+                    latch.done = true
+                    latch.cancel = nil
+                    latch.deadline?.cancel()
+                    latch.deadline = nil
+                    latch.work = nil
+                    cont.resume(returning: value)
+                }
             }
-            latch.work = Task { @MainActor in
-                let value = await operation()
-                guard !latch.done else { return }
-                latch.done = true
-                deadline.cancel()
-                cont.resume(returning: value)
-            }
+        } onCancel: {
+            Task { @MainActor in latch.finishCancellation() }
         }
     }
 
-    /// Whether the race above has already been decided, and the work task the deadline
-    /// branch cancels (assigned after the deadline task is made, so it is passed this way).
     @MainActor private final class Latch {
         var done = false
         var work: Task<Void, Never>?
+        var deadline: Task<Void, Never>?
+        var cancel: (() -> Void)?
+        func finishCancellation() {
+            guard !done else { return }
+            done = true
+            work?.cancel()
+            deadline?.cancel()
+            work = nil
+            deadline = nil
+            let completion = cancel
+            cancel = nil
+            completion?()
+        }
     }
 
     private func rpcError(id: Any, code: Int, message: String) -> Data? {
@@ -294,7 +390,7 @@ final class DevMCPServer {
     private static let devTools: [AIToolDefinition] = [
         AIToolDefinition(
             name: "evaluate",
-            description: "Run JavaScript as an async function body in the selected tab and return the JSON of its return value. Use `return` and `await` freely. world: 'page' (default) or 'isolated'. saveTo: a path relative to ~/Downloads/Nook MCP; the result is written there instead of returned (a string as is, anything else as JSON), and append: true adds it to the end of the file.",
+            description: "Run JavaScript as an async function body in the selected tab and return the JSON of its return value. Use `return` and `await` freely. world: 'page' (default) or 'isolated'. saveTo: a path relative to the configured DevMCP file root; the result is written there instead of returned (a string as is, anything else as JSON), and append: true adds it to the end of the file.",
             parameters: ["type": "object", "properties": [
                 "code": ["type": "string"],
                 "world": ["type": "string", "enum": ["page", "isolated"]],
@@ -304,7 +400,7 @@ final class DevMCPServer {
         ),
         AIToolDefinition(
             name: "download",
-            description: "Save https URLs (plain http fails App Transport Security) as files in dir, a path relative to ~/Downloads/Nook MCP, fetched with the selected tab's cookies and user agent and its URL as Referer. urls: a list, and/or urlsFile: a file under the same root with one URL per line (write one with evaluate saveTo). Files are named <hash>-<last path component>; ones already there are skipped. Each URL adds a line to dir/manifest.jsonl (url, file, status ok|exists|http|error|tooLarge, httpStatus, contentType, bytes). Answers when all are done or after 20 s; the rest keep downloading, so read the manifest for the outcome.",
+            description: "Save https URLs (plain http fails App Transport Security) as files in dir, a path relative to the configured DevMCP file root, fetched with the selected tab's cookies and user agent and its URL as Referer. urls: a list, and/or urlsFile: a file under the same root with one URL per line (write one with evaluate saveTo). Files are named <hash>-<last path component>; ones already there are skipped. Each URL adds a line to dir/manifest.jsonl (url, file, status ok|exists|http|error|tooLarge, httpStatus, contentType, bytes). Answers when all are done or after 20 s; the rest keep downloading, so read the manifest for the outcome.",
             parameters: ["type": "object", "properties": [
                 "urls": ["type": "array", "items": ["type": "string"]],
                 "urlsFile": ["type": "string"],
@@ -408,7 +504,7 @@ final class DevMCPServer {
         ),
         AIToolDefinition(
             name: "clear_page_cache",
-            description: "Drop the back/forward page cache of every live page that is not on screen (hidden: false for all). Returns how many views were cleared.",
+            description: "Request eviction of cached Back/Forward documents for loaded pages not on screen (all: true also includes displayed pages). Preserves history, live documents and site data. Returns accepted page-request counts, not entries or reclaimed memory.",
             parameters: ["type": "object", "properties": ["all": ["type": "boolean"]]]
         )
     ]
@@ -423,7 +519,7 @@ final class DevMCPServer {
     /// About the person's own page, so they act on the active window's tab, not the Agent space.
     private static let humanTools: Set<String> = ["pick", "selection"]
     /// Need no Agent page, so they neither create the Agent space nor load its tab.
-    private static let readOnlyTools: Set<String> = ["pages", "clear_page_cache", "check_urls", "getTabList"]
+    private static let toolsWithoutAgentPage: Set<String> = ["pages", "clear_page_cache", "check_urls", "getTabList", "closeTabs", "pinTab"]
 
     private var humanWindow: BrowserWindowState? {
         guard let registry = browserManager?.windowRegistry else { return nil }
@@ -448,7 +544,257 @@ final class DevMCPServer {
         return value == value.rounded() && abs(value) < 1e9 ? Int(value) : nil
     }
 
+    /// These operations inspect the existing model policy, not native request installation.
+    private func nativeBlockerTool(_ name: String, _ args: [String: Any],
+                                   browserManager bm: BrowserManager, window: BrowserWindowState) -> [String: Any]? {
+        guard ["blocker_status", "set_blocking", "check_urls"].contains(name) else { return nil }
+        guard let page = bm.tabs.existingNativeAgentPage(in: window) else {
+            return text("No current live Agent page in this window/profile", error: true)
+        }
+        let blocker = bm.contentBlockerManager
+        let host = page.url.host
+        switch name {
+        case "blocker_status":
+            return text(json([
+                "scope": "modelPolicyAndBuildReadiness", "nativeInstallation": "notVerifiedByThisTool",
+                "enabled": blocker.isEnabled, "compiling": blocker.isCompiling,
+                "lastBuildSucceeded": blocker.lastBuildSucceeded, "hasExportedRules": blocker.networkRules != nil,
+                "networkBlockingRequested": blocker.networkBlockingRequested,
+                "host": host ?? "", "hostAllowlisted": blocker.isDomainAllowed(host),
+                "policyShouldApply": blocker.shouldApplyBlocking(to: page),
+                "oauthFlow": page.isOAuthFlow, "temporarilyDisabled": blocker.isTemporarilyDisabled(tabId: page.itemID)
+            ]))
+        case "set_blocking":
+            guard let host else { return text("Agent page has no host", error: true) }
+            let enabled = args["enabled"] as? Bool ?? true
+            blocker.allowDomain(host, allowed: !enabled)
+            guard bm.tabs.existingNativeAgentPage(in: window) === page else {
+                return text("Policy updated, but Agent page ownership changed", error: true)
+            }
+            return text("Blocking policy \(enabled ? "on" : "off") for \(host). Native installation is not verified by this tool.")
+        default:
+            let source = args["sourceURL"] as? String ?? page.url.absoluteString
+            let type = args["type"] as? String ?? "script"
+            var matches: [String: Bool] = [:]
+            for url in args["urls"] as? [String] ?? [] {
+                matches[url] = blocker.advancedRulesEngine.engine.matches(url: url, sourceURL: source, type: type)
+            }
+            return text(json(["scope": "inProcessRuleMatcher", "nativeInstallation": "notVerifiedByThisTool",
+                              "compiling": blocker.isCompiling, "lastBuildSucceeded": blocker.lastBuildSucceeded,
+                              "hasExportedRules": blocker.networkRules != nil, "sourceURL": source, "matches": matches]))
+        }
+    }
+
+    private func nativeEvaluate(_ args: [String: Any], browserManager bm: BrowserManager,
+        window: BrowserWindowState) async throws -> [String: Any] {
+        var saveURL: URL?
+        if let saveTo = args["saveTo"] as? String {
+            guard let configuration, let url = configuration.resolve(saveTo) else {
+                return text("saveTo must be a relative path inside the configured files directory", error: true)
+            }
+            saveURL = url
+        }
+        guard let page = await bm.tabs.prepareNativeAgentPage(in: window),
+              let navigation = page.navigation as? ChromiumPageNavigation else {
+            return text("Agent page preparation was cancelled or unavailable", error: true)
+        }
+        let owner = navigation.nativeWindowID, tab = navigation.nativeTabID
+        let profile = navigation.profileID
+        let current: @MainActor () -> Bool = { [weak bm, weak window, weak page, weak navigation] in
+            guard let bm, let window, let page, let navigation else { return false }
+            return bm.windowRegistry?.windows[window.id] === window &&
+                bm.tabs.existingNativeAgentPage(in: window) === page &&
+                page.navigation === navigation && navigation.nativeWindowID == owner &&
+                navigation.nativeTabID == tab && navigation.profileID == profile && !navigation.isClosed
+        }
+        if page.nativeAgentNavigationIsPending,
+           !(await page.waitForNativeAgentNavigation(in: window, reload: false, while: current)) {
+            return text("Agent navigation failed or ownership changed", error: true)
+        }
+        guard current(), isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Agent request cancelled or ownership changed", error: true)
+        }
+        let result = try await navigation.evaluateScript(args["code"] as? String ?? "",
+            mode: .asyncBody, world: args["world"] as? String == "isolated" ? .isolated : .page)
+        guard current(), isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Agent request cancelled or ownership changed", error: true)
+        }
+        let output = saveURL != nil && result.isString ? result.text : result.devMCPText
+        guard let saveURL else { return text(output) }
+        try FileManager.default.createDirectory(at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let data = Data(output.utf8)
+        if args["append"] as? Bool == true, let handle = try? FileHandle(forWritingTo: saveURL) {
+            defer { try? handle.close() }
+            handle.seekToEndOfFile(); handle.write(data)
+        } else { try data.write(to: saveURL) }
+        return text("Saved \(data.count) bytes to \(saveURL.path)")
+    }
+
+    private func nativeDownload(_ args: [String: Any], browserManager bm: BrowserManager,
+                                window: BrowserWindowState) async throws -> [String: Any] {
+        let requestGeneration = generation
+        guard isPermitted, listener != nil, !Task.isCancelled, let configuration,
+              let relative = args["dir"] as? String, let dir = configuration.resolve(relative) else {
+            return text("Download requires authorization and a relative directory inside the configured file root.",error:true)
+        }
+        var list = args["urls"] as? [String] ?? []
+        if let file = args["urlsFile"] as? String {
+            guard let source = configuration.resolve(file), let body = try? String(contentsOf:source,encoding:.utf8) else {
+                return text("urlsFile must be readable inside the configured file root.",error:true)
+            }
+            list += body.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in:.whitespaces) }
+        }
+        var seen = Set<URL>()
+        let urls = list.compactMap(URL.init(string:)).filter { ["http","https"].contains($0.scheme) && seen.insert($0).inserted }
+        guard !urls.isEmpty else { return text("No http(s) URLs given",error:true) }
+        guard let page = await bm.tabs.prepareNativeAgentPage(in:window),
+              let navigation = page.navigation as? ChromiumPageNavigation else {
+            return text("Agent page preparation was cancelled or unavailable",error:true)
+        }
+        let owner = navigation.nativeWindowID, tab = navigation.nativeTabID, profile = navigation.profileID
+        let current: @MainActor @Sendable () -> Bool = { [weak self,weak bm,weak window,weak page,weak navigation] in
+            guard let self,let bm,let window,let page,let navigation else { return false }
+            return self.generation == requestGeneration && self.isPermitted && self.listener != nil &&
+                self.configuration == configuration && configuration.resolve(relative)?.path == dir.path &&
+                bm.windowRegistry?.windows[window.id] === window &&
+                bm.tabs.existingNativeAgentPage(in:window) === page && page.navigation === navigation &&
+                navigation.nativeWindowID == owner && navigation.nativeTabID == tab &&
+                navigation.profileID == profile && !navigation.isClosed
+        }
+        if page.nativeAgentNavigationIsPending,
+           !(await page.waitForNativeAgentNavigation(in:window,reload:false,while:current)) {
+            return text("Agent navigation failed or ownership changed",error:true)
+        }
+        guard current(), !Task.isCancelled else { return text("Download ownership changed",error:true) }
+        let serial = page.nativeNavigationSerial
+        let canPublish: @MainActor @Sendable () -> Bool = { [weak page] in
+            current() && page?.nativeNavigationSerial == serial
+        }
+        try await Task.detached(priority:.utility) { try FileManager.default.createDirectory(at:dir,withIntermediateDirectories:true) }.value
+        guard canPublish(), !Task.isCancelled else { return text("Download ownership changed",error:true) }
+        let job = try DevMCPDownload(urls:urls,dir:dir,filesRoot:configuration.filesRoot,owner:navigation,canPublish:canPublish) { [weak navigation] url,directory in
+            guard let navigation, await MainActor.run(body:canPublish) else { throw CancellationError() }
+            let file = try await navigation.downloadFile(url,directory:directory)
+            let status: String
+            switch file.result { case 0:status="ok";case 3:status="tooLarge";case 4:status="http";default:status="error" }
+            return .init(temporary:file.temporary,status:status,httpStatus:Int(file.status),contentType:file.contentType,bytes:file.bytes)
+        }
+        // Existing jobs provide ordering for this exact adapter; there is no
+        // second queue. A second six-item job cannot consume rejected slots.
+        let prior=downloads.values.filter{$0.nativeOwner === navigation}.compactMap(\.batchTask)
+        let id = UUID();downloads[id] = job
+        let running=job.start(after:prior)
+        Task { [weak self] in await running.value;self?.downloads.removeValue(forKey:id) }
+        await job.waitForCompletion(seconds:20)
+        guard !Task.isCancelled, !job.isCancelled, canPublish() else { job.cancel();return text("Download cancelled, directory replaced, or ownership changed",error:true) }
+        let progress = job.progress
+        return text(json(["dir":dir.path,"manifest":dir.appendingPathComponent("manifest.jsonl").path,
+            "total":urls.count,"done":progress.counts.values.reduce(0,+),"finished":progress.finished,"counts":progress.counts]))
+    }
+
+    private func nativeScreenshot(_ args: [String: Any], browserManager bm: BrowserManager,
+                                  window: BrowserWindowState) async throws -> [String: Any] {
+        let width: Double
+        if let supplied = args["maxWidth"] {
+            guard let number = supplied as? NSNumber, CFGetTypeID(number) != CFBooleanGetTypeID(),
+                  let value = Self.wholeNumber(number), (1...4096).contains(value) else {
+                return text("maxWidth must be an integer from 1 to 4096 pixels.", error: true)
+            }
+            width = number.doubleValue
+        } else { width = 1200 }
+        let requestGeneration = generation
+        guard isPermitted, listener != nil, !Task.isCancelled,
+              let page = await bm.tabs.prepareNativeAgentPage(in: window),
+              let navigation = page.navigation as? ChromiumPageNavigation else {
+            return text("Agent page preparation was cancelled or unavailable", error: true)
+        }
+        let owner = navigation.nativeWindowID, tab = navigation.nativeTabID
+        let profile = navigation.profileID
+        let current: @MainActor () -> Bool = { [weak bm, weak window, weak page, weak navigation] in
+            guard let bm, let window, let page, let navigation else { return false }
+            return bm.windowRegistry?.windows[window.id] === window &&
+                bm.tabs.existingNativeAgentPage(in: window) === page && page.navigation === navigation &&
+                navigation.nativeWindowID == owner && navigation.nativeTabID == tab &&
+                navigation.profileID == profile && !navigation.isClosed
+        }
+        if page.nativeAgentNavigationIsPending,
+           !(await page.waitForNativeAgentNavigation(in: window, reload: false, while: current)) {
+            return text("Agent navigation failed or ownership changed", error: true)
+        }
+        guard current(), requestGeneration == generation, isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Agent request cancelled or ownership changed", error: true)
+        }
+        let serial = page.nativeNavigationSerial
+        let jpeg: Data
+        do { jpeg = try await navigation.captureScreenshot(maxWidth: width) }
+        catch {
+            return text("Screenshot unavailable or cancelled: no retained viewport, capture restricted, unsupported output dimensions, or page ownership changed.", error: true)
+        }
+        guard current(), page.nativeNavigationSerial == serial, requestGeneration == generation,
+              isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Screenshot cancelled or its document changed", error: true)
+        }
+        return ["content": [
+            ["type": "text", "text": "Last rendered viewport; hidden-page DOM changes may not be rendered."],
+            ["type": "image", "data": jpeg.base64EncodedString(), "mimeType": "image/jpeg"]
+        ]]
+    }
+
+    private func nativeSnapshot(_ args: [String: Any], browserManager bm: BrowserManager,
+        window: BrowserWindowState) async throws -> [String: Any] {
+        let requestGeneration = generation
+        guard isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Tool request was cancelled", error: true)
+        }
+        guard let page = await bm.tabs.prepareNativeAgentPage(in: window),
+              let navigation = page.navigation as? ChromiumPageNavigation else {
+            return text("Agent page preparation was cancelled or unavailable", error: true)
+        }
+        let owner = navigation.nativeWindowID, tab = navigation.nativeTabID, profile = navigation.profileID
+        let current: @MainActor () -> Bool = { [weak bm, weak window, weak page, weak navigation] in
+            guard let bm, let window, let page, let navigation else { return false }
+            return bm.windowRegistry?.windows[window.id] === window &&
+                bm.tabs.existingNativeAgentPage(in: window) === page && page.navigation === navigation &&
+                navigation.nativeWindowID == owner && navigation.nativeTabID == tab &&
+                navigation.profileID == profile && !navigation.isClosed
+        }
+        if page.nativeAgentNavigationIsPending,
+           !(await page.waitForNativeAgentNavigation(in: window, reload: false, while: current)) {
+            return text("Agent navigation failed or ownership changed", error: true)
+        }
+        guard current(), requestGeneration == generation, isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Agent request cancelled or ownership changed", error: true)
+        }
+        let selector = args["selector"] as? String ?? ""
+        let nodes = (args["maxNodes"] as? NSNumber).flatMap(Self.wholeNumber).map { min(max($0, 1), 2_000) } ?? 300
+        let depth = (args["maxDepth"] as? NSNumber).flatMap(Self.wholeNumber).map { min(max($0, 1), 40) } ?? 12
+        guard let script = page.nativeDevSnapshotScript(selector, maxDepth: depth, maxNodes: nodes) else {
+            return text("Developer Mode is off or this page is unavailable.", error: true)
+        }
+        let documentSerial = page.nativeNavigationSerial
+        let result = try await navigation.evaluateScript(script, mode: .asyncBody, world: .isolated)
+        guard current(), requestGeneration == generation, isPermitted, listener != nil, !Task.isCancelled,
+              page.nativeNavigationSerial == documentSerial else {
+            return text("Snapshot cancelled or its document changed", error: true)
+        }
+        guard result.isString else {
+            return text(result.json == "null" ? "Nothing matches \(selector)." : "Snapshot did not return an outline.", error: true)
+        }
+        let outline = result.text
+        // One slot per existing page/selector, replaced across navigations;
+        // weak adapter identity and the document revision prevent cross-document diffs.
+        let key = "native|\(page.itemID)|\(selector)"
+        let previous = snapshots[key]
+        snapshots[key] = StoredSnapshot(outline: outline, navigation: navigation, documentSerial: documentSerial)
+        if args["full"] as? Bool != true, let previous,
+           previous.navigation === navigation, previous.documentSerial == documentSerial {
+            return text(DevHandoff.snapshotDiff(old: previous.outline, new: outline))
+        }
+        return text(outline)
+    }
+
     private func callTool(_ rawName: String, _ args: [String: Any]) async -> [String: Any] {
+        guard isPermitted, listener != nil, !Task.isCancelled else { return text("Tool request was cancelled", error: true) }
         // The chat's executeJavaScript evaluates an expression, so `return` (which
         // every agent writes) is a syntax error. Here it is another name for
         // `evaluate`, which runs the code as an async function body.
@@ -460,24 +806,88 @@ final class DevMCPServer {
         guard let bm = browserManager,
               let window = forPerson ? active : (active?.privateTree == nil ? active : bm.tabs.regularWindows.first)
         else { return text("No browser window", error: true) }
-        // Tools that only read never create the Agent space; with none yet, it has no tabs.
+        if bm.engine == .chromium,
+           let result = nativeBlockerTool(name, args, browserManager: bm, window: window) { return result }
+        // Model-only tools never create an Agent space or materialize a page.
         let agentSpace = forPerson ? nil
-            : Self.readOnlyTools.contains(name) ? bm.tabs.agentSpaceID : bm.tabs.ensureAgentSpace(loginsFrom: window)
+            : Self.toolsWithoutAgentPage.contains(name) ? bm.tabs.agentSpaceID : bm.tabs.ensureAgentSpace(loginsFrom: window)
         if agentSpace == nil, !forPerson {
             if name == "getTabList" { return text("No tabs available") }
-            if !Self.readOnlyTools.contains(name) { return text("No space to borrow logins from", error: true) }
+            if !Self.toolsWithoutAgentPage.contains(name) { return text("No space to borrow logins from", error: true) }
         }
         let space = forPerson ? window.spaceID : agentSpace
         let order = space.map(bm.tabs.displayOrder(inSpace:)) ?? []
 
         do {
+            if bm.engine == .chromium, name == "download" {
+                return try await nativeDownload(args,browserManager:bm,window:window)
+            }
+            if bm.engine == .chromium, name == "screenshot" {
+                return try await nativeScreenshot(args, browserManager: bm, window: window)
+            }
+            if bm.engine == .chromium, name == "snapshot" {
+                return try await nativeSnapshot(args, browserManager: bm, window: window)
+            }
+            if bm.engine == .chromium, name == "evaluate" {
+                return try await nativeEvaluate(args, browserManager: bm, window: window)
+            }
+            if bm.engine == .chromium, name == "reload" || name == "wait_for_load" {
+                guard let page = await bm.tabs.prepareNativeAgentPage(in: window),
+                      let navigation = page.navigation as? ChromiumPageNavigation else {
+                    return text("Agent page preparation was cancelled or unavailable", error: true)
+                }
+                let owner = navigation.nativeWindowID, tab = navigation.nativeTabID
+                let profile = navigation.profileID
+                let current: @MainActor () -> Bool = { [weak bm, weak window, weak page, weak navigation] in
+                    guard let bm, let window, let page, let navigation else { return false }
+                    return bm.windowRegistry?.windows[window.id] === window &&
+                        bm.tabs.agentItem == page.itemID && page.navigation === navigation &&
+                        navigation.nativeWindowID == owner && navigation.nativeTabID == tab &&
+                        navigation.profileID == profile && !navigation.isClosed
+                }
+                // The existing outer tool deadline cancels these event-driven
+                // waits. No native timer/polling or replacement callback exists.
+                if name == "reload", page.nativeAgentNavigationIsPending,
+                   !(await page.waitForNativeAgentNavigation(in: window, reload: false, while: current)) {
+                    return text("Agent navigation failed or ownership changed", error: true)
+                }
+                let loaded = await page.waitForNativeAgentNavigation(in: window, reload: name == "reload", while: current)
+                guard loaded, current() else { return text("Agent navigation failed or ownership changed", error: true) }
+                return text("Loaded: \(page.url.absoluteString) | \(page.title)")
+            }
             if BrowserTools.toolsByName[name] != nil {
                 let executor = BrowserToolExecutor(browserManager: bm, windowState: window, agentSpace: agentSpace)
                 let r = try await executor.execute(AIToolCall(name: name, arguments: args))
                 return text(r.content, error: r.isError)
             }
+            // Tab-tree commands do not need a renderer or a WebKit view.
+            switch name {
+            case "closeTabs":
+                if args["regular"] as? Bool == true {
+                    guard let spaceID = space else { return text("Window has no space", error: true) }
+                    let roots = bm.tabs.children(of: .tabs(spaceID: spaceID))
+                    for item in roots { bm.tabs.remove(item.id) }
+                    return text("Removed \(roots.count) items from the regular tabs section")
+                }
+                let indices = (args["indices"] as? [NSNumber] ?? []).compactMap(Self.wholeNumber)
+                guard !indices.isEmpty, indices.count == (args["indices"] as? [Any])?.count,
+                      indices.allSatisfy(order.indices.contains) else {
+                    return text("indices must be positions from getTabList (0-\(order.count - 1))", error: true)
+                }
+                bm.tabs.close(indices.map { order[$0] })
+                return text("Requested closure of \(indices.count) tabs")
+
+            case "pinTab":
+                guard let index = (args["index"] as? NSNumber).flatMap(Self.wholeNumber), order.indices.contains(index),
+                      let spaceID = space else { return text("index must be a position from getTabList", error: true) }
+                bm.tabs.pin(order[index], to: .pinned(spaceID: spaceID))
+                return text("Pinned: \(bm.tabs.item(order[index])?.displayTitle ?? "")")
+
+            default: break
+            }
+
             // The agent's page, loaded and hosted once for this call; a read-only tool loads nothing.
-            let agentView: WKWebView? = forPerson || Self.readOnlyTools.contains(name) || agentSpace == nil
+            let agentView: WKWebView? = forPerson || Self.toolsWithoutAgentPage.contains(name) || agentSpace == nil
                 ? nil : try bm.agentWebView()
             var webView: WKWebView? {
                 if !forPerson { return agentView }
@@ -496,8 +906,8 @@ final class DevMCPServer {
                 let world: WKContentWorld = args["world"] as? String == "isolated" ? .defaultClient : .page
                 var saveURL: URL?
                 if let saveTo = args["saveTo"] as? String {
-                    guard let url = DevMCPFiles.resolve(saveTo) else {
-                        return text("saveTo must be a relative path inside \(DevMCPFiles.root.path)", error: true)
+                    guard let url = configuration!.resolve(saveTo) else {
+                        return text("saveTo must be a relative path inside \(configuration!.filesRoot.path)", error: true)
                     }
                     saveURL = url
                 }
@@ -512,6 +922,7 @@ final class DevMCPServer {
                 catch (e) { return String(__v); }
                 """
                 let result = try await wv.callAsyncJavaScript(wrapped, contentWorld: world)
+                guard !Task.isCancelled else { return text("Request cancelled", error: true) }
                 let output = result as? String ?? String(describing: result)
                 guard let saveURL else { return text(output) }
                 try FileManager.default.createDirectory(at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -527,13 +938,13 @@ final class DevMCPServer {
 
             case "download":
                 guard let wv = webView else { return text("No active tab", error: true) }
-                guard let dir = (args["dir"] as? String).flatMap({ DevMCPFiles.resolve($0) }) else {
-                    return text("dir must be a relative path inside \(DevMCPFiles.root.path)", error: true)
+                guard let dir = (args["dir"] as? String).flatMap({ configuration!.resolve($0) }) else {
+                    return text("dir must be a relative path inside \(configuration!.filesRoot.path)", error: true)
                 }
                 var list = args["urls"] as? [String] ?? []
                 if let file = args["urlsFile"] as? String {
-                    guard let source = DevMCPFiles.resolve(file), let body = try? String(contentsOf: source, encoding: .utf8) else {
-                        return text("urlsFile must be a readable file inside \(DevMCPFiles.root.path)", error: true)
+                    guard let source = configuration!.resolve(file), let body = try? String(contentsOf: source, encoding: .utf8) else {
+                        return text("urlsFile must be a readable file inside \(configuration!.filesRoot.path)", error: true)
                     }
                     list += body.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
                 }
@@ -547,10 +958,15 @@ final class DevMCPServer {
                     userAgent: (try? await wv.evaluateJavaScript("navigator.userAgent")) as? String,
                     referer: wv.url?.absoluteString
                 )
-                Task.detached { await job.run() }
-                let deadline = Date().addingTimeInterval(20)
-                // ponytail: 250 ms poll bounded by 20 s; the job itself keeps running past it.
-                while !job.progress.finished, Date() < deadline { try await Task.sleep(for: .milliseconds(250)) }
+                guard !Task.isCancelled else { job.cancel(); return text("Request cancelled", error: true) }
+                let downloadID = UUID()
+                downloads[downloadID] = job
+                Task { [weak self] in
+                    await job.run()
+                    self?.downloads.removeValue(forKey: downloadID)
+                }
+                await job.waitForCompletion(seconds:20)
+                guard !Task.isCancelled else { job.cancel();return text("Request cancelled",error:true) }
                 let progress = job.progress
                 let done = progress.counts.values.reduce(0, +)
                 return text(json([
@@ -607,9 +1023,9 @@ final class DevMCPServer {
                     return text(session.devCapture == nil ? "Developer Mode is off." : "Nothing matches \(selector).", error: true)
                 }
                 let key = "\(session.itemID)|\(session.url.absoluteString)|\(selector)"
-                defer { snapshots[key] = outline }
+                defer { snapshots[key] = StoredSnapshot(outline: outline) }
                 if args["full"] as? Bool != true, let previous = snapshots[key] {
-                    return text(DevHandoff.snapshotDiff(old: previous, new: outline))
+                    return text(DevHandoff.snapshotDiff(old: previous.outline, new: outline))
                 }
                 return text(outline)
 
@@ -726,27 +1142,6 @@ final class DevMCPServer {
                 }
                 return text(json(out))
 
-            case "closeTabs":
-                if args["regular"] as? Bool == true {
-                    guard let spaceID = space else { return text("Window has no space", error: true) }
-                    let roots = bm.tabs.children(of: .tabs(spaceID: spaceID))
-                    for item in roots { bm.tabs.remove(item.id) }
-                    return text("Removed \(roots.count) items from the regular tabs section")
-                }
-                let indices = (args["indices"] as? [NSNumber] ?? []).compactMap(Self.wholeNumber)
-                guard !indices.isEmpty, indices.count == (args["indices"] as? [Any])?.count,
-                      indices.allSatisfy(order.indices.contains) else {
-                    return text("indices must be positions from getTabList (0-\(order.count - 1))", error: true)
-                }
-                bm.tabs.close(indices.map { order[$0] })
-                return text("Closed \(indices.count) tabs")
-
-            case "pinTab":
-                guard let index = (args["index"] as? NSNumber).flatMap(Self.wholeNumber), order.indices.contains(index),
-                      let spaceID = space else { return text("index must be a position from getTabList", error: true) }
-                bm.tabs.pin(order[index], to: .pinned(spaceID: spaceID))
-                return text("Pinned: \(bm.tabs.item(order[index])?.displayTitle ?? "")")
-
             case "user_scripts":
                 guard let wv = webView else { return text("No active tab", error: true) }
                 let scripts = wv.configuration.userContentController.userScripts.map { s -> [String: Any] in
@@ -780,8 +1175,8 @@ final class DevMCPServer {
             case "clear_page_cache":
                 let all = args["all"] as? Bool ?? false
                 let views = bm.tabs.sessions.filter { !$0.isUnloaded && (all || !bm.tabs.isOnScreen($0.itemID)) }
-                views.forEach { $0.clearPageCache() }
-                return text("Cleared \(views.count)")
+                let accepted = views.reduce(0) { $0 + ($1.clearPageCache() ? 1 : 0) }
+                return text("Accepted BFCache flush for \(accepted) of \(views.count) live pages; no reload or site-data deletion.")
 
             default:
                 return text("Unknown tool: \(name)", error: true)

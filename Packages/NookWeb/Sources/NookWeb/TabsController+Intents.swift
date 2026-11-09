@@ -215,7 +215,8 @@ extension TabsController {
 
     /// `previous` is what the window showed before; a space switch has already moved on from it.
     private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?,
-                        nativeAdmitted: Bool = false, adoptionGeneration: UUID? = nil,
+                        nativeAdmitted: Bool = false, showingAgentSpace: Bool = false,
+                        adoptionGeneration: UUID? = nil,
                         validateNative: (() -> Bool)? = nil) {
         func admissionIsCurrent() -> Bool {
             (adoptionGeneration == nil || (window.nativeSelectionGeneration == adoptionGeneration &&
@@ -230,16 +231,21 @@ extension TabsController {
             toggleFolder(itemID)
             return
         }
+        if isInAgentSpace(itemID), window.spaceID != agentSpaceID, !showingAgentSpace {
+            return selectForAgent(itemID)
+        }
         if profileEngine == .chromium && !nativeAdmitted {
             prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
                 guard let self, let window else { return }
-                self.select(itemID, in: window, leaving: self.selectedSession(in: window), nativeAdmitted: true)
+                self.select(itemID, in: window, leaving: self.selectedSession(in: window),
+                            nativeAdmitted: true, showingAgentSpace: showingAgentSpace)
+                if window.selectedItemID == itemID { self.restoreSavedNativeSplitIfNeeded(in: window) }
             }
             return
         }
         // An agent tab never pulls a window into the Agent space; the person opens it to watch.
         if isInAgentSpace(itemID) {
-            guard window.spaceID == agentSpaceID else { return selectForAgent(itemID) }
+            guard window.spaceID == agentSpaceID || showingAgentSpace else { return selectForAgent(itemID) }
             agentItemID = itemID
         }
         // A favorite shared with the window's space opens there, without switching spaces.
@@ -350,15 +356,20 @@ extension TabsController {
         if profileEngine == .chromium {
             let order = displayOrder(inSpace: spaceID)
             if let remembered = window.selectedItemBySpace[spaceID], order.contains(remembered) {
-                select(remembered, in: window)
+                select(remembered, in: window, leaving: selectedSession(in: window), showingAgentSpace: true)
             } else if !window.emptiedSpaces.contains(spaceID), let first = order.first {
-                select(first, in: window)
+                select(first, in: window, leaving: selectedSession(in: window), showingAgentSpace: true)
             } else {
-                // Empty-space native presentation is not this ordinary-page
-                // slice. Keep the prior admitted document/profile truthful.
                 window.nativeSelectionGeneration = nil
                 window.nativeSelectionSession?.cancelNativePreparation(in: window)
                 window.nativeSelectionSession = nil
+                window.nativeEmptySpaceID = spaceID
+                let changed = window.spaceID != spaceID
+                window.spaceID = spaceID
+                window.selectedItemBySpace[spaceID] = nil
+                if changed { sessionDelegate?.windowSpaceChanged(window) }
+                mirror(window)
+                window.refreshCompositor()
             }
             return
         }
@@ -415,6 +426,7 @@ extension TabsController {
     /// A bookmark (a pinned tab, a favorite, or a tab inside a folder) ends its page and keeps
     /// the item. A normal tab, and any folder, is removed into the reopen history.
     public func close(_ itemID: UUID) {
+        guard !profileChangeLocksItem(itemID) else { return }
         guard let owner = owner(ofItem: itemID) else { return }
         let source = tree(owner)
         guard let item = source.item(itemID) else { return }
@@ -426,7 +438,8 @@ extension TabsController {
         }) { return }
         if source.keepsItemOnClose(itemID) {
             // The page it showed, so Reopen Closed Tab can bring it back in place.
-            var page = session(for: itemID).map { OpenPage(url: $0.storableURL, title: $0.title) }
+            var page = pendingSearchPage(for: itemID)
+                ?? session(for: itemID).map { OpenPage(url: $0.storableURL, title: $0.title) }
             if page == nil, case .main = owner { page = device.openPages[itemID] }
             moveSelectionOff([itemID])
             endSession(itemID)
@@ -465,13 +478,17 @@ extension TabsController {
         }) { return }
         if let item = tree(owner).item(itemID) { dismissFromLiveFolder(item) }
         moveSelectionOff(Set(ids))
+        let pendingPages = Dictionary(uniqueKeysWithValues: ids.compactMap { id in
+            pendingSearchPage(for: id).map { (id, $0) }
+        })
         var closedEntry: ClosedEntry?
         let change = perform(owner, "remove") { tree in
             let result = try tree.close(itemID, promotingChildren: promotingChildren)
             closedEntry = result.closed
             return result.change
         }
-        guard change != nil, let closedEntry else { return }
+        guard change != nil, var closedEntry else { return }
+        closedEntry.pendingPages = pendingPages.isEmpty ? nil : pendingPages
         for id in ids { endSession(id) }
         switch owner {
         case .main:
@@ -483,6 +500,7 @@ extension TabsController {
     }
 
     public func close(_ itemIDs: [UUID]) {
+        guard !itemIDs.contains(where: profileChangeLocksItem) else { return }
         for id in itemIDs { close(id) }
     }
 
@@ -520,7 +538,10 @@ extension TabsController {
             } else {
                 dropLastClosed()
                 // A tab in a Tabs-section folder keeps its page as its own URL.
-                if tree.scope(of: root.id) == .synced { setOpenPage(root.id, page) }
+                if tree.scope(of: root.id) == .synced || page.pendingSearch != nil { setOpenPage(root.id, page) }
+            }
+            if let query = page.pendingSearch {
+                ensureSession(for: root.id)?.stageNativeSearch(query, persist: false)
             }
             select(root.id, in: window)
             save()
@@ -533,6 +554,11 @@ extension TabsController {
             dropLastClosed()
         }
         let restored = entry.items.map(\.id)
+        for (id, page) in entry.pendingPages ?? [:] where restored.contains(id) {
+            if isPrivate {
+                if let query = page.pendingSearch { ensureSession(for: id)?.stageNativeSearch(query, persist: false) }
+            } else if page.pendingSearch != nil { setOpenPage(id, page) }
+        }
         // Older entries for the same items (a page close, then a delete) must not restore them twice.
         if !isPrivate { dropClosed(containing: Set(restored)) }
         for host in entry.items where host.isFolder || entry.items.contains(where: { $0.parent == .folder(itemID: host.id) }) {
@@ -599,6 +625,7 @@ extension TabsController {
             } else {
                 window.selectedItemBySpace[spaceID] = nil
                 window.emptiedSpaces.insert(spaceID)
+                if profileEngine == .chromium { window.nativeEmptySpaceID = spaceID }
                 mirror(window)
                 window.refreshCompositor()
             }
@@ -615,6 +642,10 @@ extension TabsController {
             if case .folder(let hostID) = parent { return source.spaceID(of: hostID) }
             return parent.spaceID
         }()
+        if case .main = owner, let newSpace, let profile = source.dataStoreID(for: newSpace),
+           releaseNativePages(of: itemID, leavingFor: profile, then: { [weak self] in
+               self?.move(itemID, to: parent, after: after)
+           }) { return }
         if let oldSpace = source.spaceID(of: itemID), let newSpace, oldSpace != newSpace {
             moveSelectionOff(Set(source.subtree(of: itemID)))
         }
@@ -634,11 +665,11 @@ extension TabsController {
             tabEvents?.tabMoved(itemID: itemID, from: oldIndex, in: oldWindow, pinnedChanged: wasSynced != isSynced)
         }
         if wasSynced, !isSynced {
-            for id in tree.subtree(of: itemID) { setOpenPage(id, nil) }
+            for id in tree.subtree(of: itemID) where device.openPages[id]?.pendingSearch == nil { setOpenPage(id, nil) }
         } else if !wasSynced, isSynced {
             for id in tree.subtree(of: itemID) {
                 guard let page = session(for: id), tree.item(id)?.isFolder == false else { continue }
-                setOpenPage(id, OpenPage(url: page.storableURL, title: page.title))
+                setOpenPage(id, pendingSearchPage(for: id) ?? OpenPage(url: page.storableURL, title: page.title))
             }
             if case .pinned = tree.section(of: itemID) {
                 onTabsPinned?(tree.subtree(of: itemID).filter { tree.item($0)?.isFolder == false })
@@ -856,11 +887,11 @@ extension TabsController {
     public func importSpace(_ file: SpaceFile, intoProfile storeID: UUID) -> SpaceImportReport? {
         var report: SpaceImportReport?
         let kept = device.keptProfiles ?? []
-        perform(.main, "importSpace") { tree in
+        guard perform(.main, "importSpace", { tree in
             let result = try tree.importSpace(file.space, intoProfile: storeID, kept: kept)
             report = result.report
             return result.change
-        }
+        }) != nil else { return nil }
         return report
     }
 
@@ -877,15 +908,18 @@ extension TabsController {
     /// Moves a space into the profile with store `storeID`, or a new one when nil. Its pages
     /// reload on the new store. The profile it leaves, once no space uses it, is kept with its
     /// website data and history when `keepingLeftProfile`, else deleted with them.
-    public func setProfile(_ spaceID: UUID, to storeID: UUID?, name: String? = nil, keepingLeftProfile: Bool = false) {
-        // Native live-page reassignment must recreate pages in the new native
-        // Profile before changing ownership. Preserve metadata until wired.
-        guard profileEngine == .webKit else { return }
+    public func setProfile(_ spaceID: UUID, to storeID: UUID?, name: String? = nil, keepingLeftProfile: Bool = false,
+                           completion: (@MainActor (Result<Void, ProfileDeletionError>) -> Void)? = nil) {
+        if profileEngine == .chromium {
+            reassignNativeSpace(spaceID, destination: storeID, name: name, keepSource: keepingLeftProfile,
+                                completion: completion ?? { _ in })
+            return
+        }
         let kept = device.keptProfiles ?? []
         guard case .main? = owner(ofSpace: spaceID), let old = profile(forSpace: spaceID),
               let left = tree.profile(ofSpace: spaceID),
               perform(.main, "setProfile", { try $0.setProfile(spaceID, to: storeID, name: name, kept: kept) }) != nil
-        else { return }
+        else { completion?(.failure(.unavailable)); return }
         unloadPagesOnWrongDataStore(items(inSpace: spaceID).map(\.id))
         if let agent = agentSpaceID { unloadPagesOnWrongDataStore(items(inSpace: agent).map(\.id)) }
         for window in regularWindows where window.spaceID == spaceID { sessionDelegate?.windowSpaceChanged(window) }
@@ -897,6 +931,7 @@ extension TabsController {
                 Task { await clearData(of: old) }
             }
         }
+        completion?(.success(()))
     }
 
     /// Deletes a kept profile with its logins, cookies and history.
@@ -918,6 +953,19 @@ extension TabsController {
     public func setSearchEngine(_ engineId: String?, forProfile storeID: UUID) {
         if updateKeptProfile(storeID, { $0.searchEngineId = engineId }) { return }
         perform(.main, "setSearchEngine") { try $0.setSearchEngine(profile: storeID, engineId: engineId) }
+    }
+
+    /// A native page cannot change profile: it closes, then the move runs, and it loads in the
+    /// new profile when next selected. A close the page refuses leaves the tab where it was.
+    private func releaseNativePages(of itemID: UUID, leavingFor profile: UUID,
+                                    then move: @escaping @MainActor () -> Void) -> Bool {
+        guard profileEngine == .chromium, !profileChangeLocksItem(itemID) else { return false }
+        let leaving = tree.subtree(of: itemID).filter { session(for: $0)?.profile?.id != profile }
+        return releaseNativePagesBeforeMutation(leaving) { [weak self] in
+            guard let self else { return }
+            for id in leaving { self.session(for: id)?.unload() }
+            move()
+        }
     }
 
     /// Pages whose item now belongs to another space reload on that space's data store.
@@ -1007,6 +1055,7 @@ extension TabsController {
 
     /// Releases an item's web views; selection first moves off windows showing it.
     public func unload(_ itemID: UUID) {
+        guard !profileChangeLocksItem(itemID) else { return }
         guard let page = session(for: itemID) else { return }
         if isVisibleInAnyWindow(itemID) { moveSelectionOff([itemID]) }
         page.unload()
@@ -1047,6 +1096,7 @@ extension TabsController {
         if profileEngine == .chromium {
             var proposed = tree
             let touched = proposed.apply(change)
+            guard profileDeletionAllows(proposed, changed: touched) else { return }
             guard !nativeOwnershipChanged(by: touched, in: proposed) || nativeEditIsAdmissible(proposed, owner: .main) else { return }
         }
         let before = Set(tree.items.keys.filter { tree.item($0) != nil })

@@ -29,7 +29,7 @@ public struct SettingsGeneralTab: View {
     @ViewBuilder
     private func searchEnginePicker(_ settings: NookSettingsService) -> some View {
         @Bindable var settings = settings
-        Picker("Default search engine", selection: $settings.searchEngineId) {
+        Picker(tabs.profileEngine == .chromium ? "Initial search engine for new profiles" : "Default search engine", selection: $settings.searchEngineId) {
             ForEach(SearchProvider.allCases) { provider in
                 Text(provider.displayName).tag(provider.rawValue)
             }
@@ -40,6 +40,58 @@ public struct SettingsGeneralTab: View {
     }
 
     public var body: some View {
+        if tabs.profileEngine == .chromium {
+            Form { performanceSection }
+                .formStyle(.grouped)
+        } else {
+            webKitSettings
+        }
+    }
+
+    @ViewBuilder
+    private var performanceSection: some View {
+        @Bindable var settings = nookSettings
+        Section {
+            Picker("Tab Management", selection: $settings.tabManagementMode) {
+                ForEach(TabManagementMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            Picker("On Startup", selection: $settings.startupLoadMode) {
+                ForEach(StartupLoadMode.allCases) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            if tabs.profileEngine == .webKit {
+                #if os(macOS)
+                Toggle("Unload inactive tabs automatically", isOn: $settings.idleTabUnloadingEnabled)
+                Text("Tab Management sets the inactivity delay. Memory pressure and Power Saving limits still apply.")
+                    .font(NookDesign.Font.caption)
+                    .foregroundStyle(.secondary)
+                #endif
+                Button("Unload All Inactive Tabs") {
+                    tabs.unloadAllHidden()
+                }
+            }
+        } header: {
+            Text("Performance")
+        } footer: {
+            if tabs.profileEngine == .chromium {
+                Text("Selected tabs load first. On Startup permits background loading; Last Tab Only turns it off. Tab Management limits background loading without unloading tabs. Other tabs load when selected.")
+                    .settingsFooter()
+            } else {
+                VStack(alignment: .leading, spacing: NookDesign.Spacing.xs) {
+                    Label(nookSettings.tabManagementMode.description,
+                          systemImage: nookSettings.tabManagementMode.icon)
+                    Label(nookSettings.startupLoadMode.description, systemImage: "power")
+                }
+                .settingsFooter()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var webKitSettings: some View {
         @Bindable var settings = nookSettings
         Form {
             #if os(macOS)
@@ -91,51 +143,11 @@ public struct SettingsGeneralTab: View {
                     .settingsFooter()
             }
 
-            Section {
-                Picker("Tab Management", selection: Binding(
-                    get: { nookSettings.tabManagementMode },
-                    set: { nookSettings.tabManagementMode = $0 }
-                )) {
-                    ForEach(TabManagementMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-
-                Picker("On Startup", selection: Binding(
-                    get: { nookSettings.startupLoadMode },
-                    set: { nookSettings.startupLoadMode = $0 }
-                )) {
-                    ForEach(StartupLoadMode.allCases) { mode in
-                        Text(mode.displayName).tag(mode)
-                    }
-                }
-
-                #if os(macOS)
-                Toggle("Unload inactive tabs automatically", isOn: $settings.idleTabUnloadingEnabled)
-                Text("Tab Management sets the inactivity delay. Memory pressure and Power Saving limits still apply.")
-                    .font(NookDesign.Font.caption)
-                    .foregroundStyle(.secondary)
-                #endif
-
-                Button("Unload All Inactive Tabs") {
-                    tabs.unloadAllHidden()
-                }
-            } header: {
-                Text("Performance")
-            } footer: {
-                VStack(alignment: .leading, spacing: NookDesign.Spacing.xs) {
-                    Label(
-                        nookSettings.tabManagementMode.description,
-                        systemImage: nookSettings.tabManagementMode.icon
-                    )
-                    Label(nookSettings.startupLoadMode.description, systemImage: "power")
-                }
-                .settingsFooter()
-            }
+            performanceSection
 
             Section {
                 #if os(macOS)
-                LabeledContent("Default search engine") {
+                LabeledContent(tabs.profileEngine == .chromium ? "Initial search engine for new profiles" : "Default search engine") {
                     HStack(spacing: NookDesign.Spacing.md) {
                         searchEnginePicker(settings)
                             .labelsHidden()
@@ -157,8 +169,8 @@ public struct SettingsGeneralTab: View {
                 Button("Add Search Engine…") { showingAddEngine = true }
                 #endif
 
-                if nookSettings.searchEngineId == SearchProvider.kagi.rawValue
-                    || tabs.profiles.contains(where: { $0.searchEngineId == SearchProvider.kagi.rawValue }) {
+                if tabs.profileEngine == .chromium || (nookSettings.searchEngineId == SearchProvider.kagi.rawValue
+                    || tabs.profiles.contains(where: { $0.searchEngineId == SearchProvider.kagi.rawValue })) {
                     if nookSettings.kagiSessionToken != nil {
                         LabeledContent("Kagi Session Link") {
                             HStack(spacing: NookDesign.Spacing.md) {

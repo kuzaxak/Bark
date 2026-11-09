@@ -452,6 +452,8 @@ final class RecordingCertificateDelegate: PageSessionDelegate {
     var certificateExceptions = CertificateExceptions()
     private(set) var visits: [CertificateWarning] = []
     var onSpaceChanged: ((BrowserWindowState) -> Void)?
+    var onPeek: ((URL, PageSession) -> Void)?
+    private(set) var pictureInPictureRequests = 0
 
     func confirmVisit(despite warning: CertificateWarning, in session: PageSession) { visits.append(warning) }
 
@@ -462,7 +464,7 @@ final class RecordingCertificateDelegate: PageSessionDelegate {
     func addDownload(_ download: WKDownload, originalURL: URL, suggestedFilename: String) {}
     func saveFile(_ data: Data, suggestedFilename: String, originalURL: URL, from webView: WKWebView) {}
     func toggleFullScreen(for webView: WKWebView) -> Bool { false }
-    func presentPeek(url: URL, from session: PageSession) {}
+    func presentPeek(url: URL, from session: PageSession) { onPeek?(url, session) }
     func presentPopupWindow(_ session: PageSession) {}
     func handleAuthenticationChallenge(
         _ challenge: URLAuthenticationChallenge, for session: PageSession,
@@ -471,7 +473,7 @@ final class RecordingCertificateDelegate: PageSessionDelegate {
     func loadZoom(for itemID: UUID) {}
     func cleanupZoom(for itemID: UUID) {}
     func setMuteState(_ muted: Bool, for itemID: UUID) {}
-    func requestPictureInPicture(for session: PageSession, webView: WKWebView?) {}
+    func requestPictureInPicture(for session: PageSession, webView: WKWebView?) { pictureInPictureRequests += 1 }
     func configureShortcutDetection(in webView: WKWebView) {}
     func shortcutDetectorDidNavigate(to url: URL) {}
     func updateDetectedShortcuts(for url: String, shortcuts: Set<String>) {}

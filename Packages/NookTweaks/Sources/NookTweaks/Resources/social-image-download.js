@@ -4,10 +4,11 @@
 // Sites obfuscate class names and cover media with transparent overlays, so media is
 // found by what is under the pointer, not by selector or event target. Any https media
 // counts: a whitelisted site may serve from any CDN.
-(function () {
+(function (native) {
     const HOST = location.hostname.toLowerCase();
     if (!NOOK_DOWNLOAD_SITES.some(d => HOST === d || HOST.endsWith('.' + d))) return;
 
+    let stopped = false;
     const MIN_SIZE = 120;       // skips avatars and icons
     const INSET = 8;
     const HANDLER = 'nookSocialImageDownload';
@@ -131,13 +132,15 @@
         button.appendChild(svg);
         root.append(style, button);
         button.addEventListener('click', event => {
+            if (stopped || (native && !event.isTrusted)) return;
             event.preventDefault();
             event.stopPropagation();
             // A carousel can slide while the pointer rests on its arrow; take the media under the click.
             const element = mediaAt(event.clientX, event.clientY) || current;
             const source = element && sourceFor(element);
             if (!source) return;
-            window.webkit.messageHandlers[HANDLER].postMessage(source);
+            if (native) { if (!native(source.url)) return; }
+            else window.webkit.messageHandlers[HANDLER].postMessage(source);
             icon.setAttribute('d', DONE_ICON);
         });
         document.documentElement.appendChild(host);
@@ -168,19 +171,32 @@
     // mouseover fires only when the element under the pointer changes, so this does no work while
     // the pointer moves within one element.
     let pointer = null, settle = 0;
-    document.addEventListener('mouseover', event => {
+    function onOver(event) {
+        if (stopped) return;
         pointer = { x: event.clientX, y: event.clientY };
         if (host && event.target === host) return;
         update(pointer.x, pointer.y);
-    }, { capture: true, passive: true });
-    document.addEventListener('mousemove', event => { pointer = { x: event.clientX, y: event.clientY }; }, { capture: true, passive: true });
-    document.addEventListener('mouseout', event => { if (!event.relatedTarget) { pointer = null; hide(); } }, { capture: true, passive: true });
-
-    // WebKit sends no mouseover when content scrolls under a still pointer. Hide while the hovered media
-    // moves, then look again once scrolling pauses.
-    window.addEventListener('scroll', event => {
+    }
+    function onMove(event) { if (!stopped) pointer = { x: event.clientX, y: event.clientY }; }
+    function onOut(event) { if (!event.relatedTarget) { pointer = null; hide(); } }
+    function onScroll(event) {
+        if (stopped) return;
         if (current && (event.target === document || event.target.contains?.(current))) hide();
         clearTimeout(settle);
-        if (pointer) settle = setTimeout(() => pointer && update(pointer.x, pointer.y), 150);
-    }, { capture: true, passive: true });
-})();
+        if (pointer) settle = setTimeout(() => !stopped && pointer && update(pointer.x, pointer.y), 150);
+    }
+    document.addEventListener('mouseover', onOver, { capture: true, passive: true });
+    document.addEventListener('mousemove', onMove, { capture: true, passive: true });
+    document.addEventListener('mouseout', onOut, { capture: true, passive: true });
+    window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+    return { stop() {
+        if (stopped) return;
+        stopped = true; clearTimeout(settle); pointer = current = null;
+        document.removeEventListener('mouseover', onOver, true);
+        document.removeEventListener('mousemove', onMove, true);
+        document.removeEventListener('mouseout', onOut, true);
+        window.removeEventListener('scroll', onScroll, true);
+        const old = host; host = button = icon = null;
+        old?.remove();
+    } };
+})(typeof nookSocialDownloadNative === 'undefined' ? null : nookSocialDownloadNative);

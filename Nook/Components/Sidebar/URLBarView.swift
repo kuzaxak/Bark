@@ -29,6 +29,12 @@ struct URLBarView: View {
     @FocusState private var addressFocused: Bool
     var isSidebarHovered: Bool
     var splitItemID: UUID? = nil
+    var nativeTopBar: Bool = false
+    private var usesNativeEditor: Bool { nativeTopBar || (browserManager.engine == .chromium && splitItemID == nil) }
+    @State private var nativeEditPage: PageSession?
+    @State private var nativeEditProfile: UUID?
+    @State private var nativeEditSpace: UUID?
+    @State private var nativeEditSelected: UUID?
 
     var body: some View {
         addressPresentation
@@ -55,6 +61,7 @@ struct URLBarView: View {
             }
         }
         .onChange(of: windowState.selectedItemID) { _, _ in cancelEditing() }
+        .onChange(of: usesNativeEditor ? browserManager.frontPage(in: windowState)?.itemID : nil) { _, _ in cancelEditing() }
         .onChange(of: windowState.split) { _, split in
             if let splitItemID, split?.contains(splitItemID) != true {
                 cancelEditing()
@@ -62,7 +69,15 @@ struct URLBarView: View {
         }
         .onChange(of: windowState.spaceID) { _, _ in cancelEditing() }
         .onChange(of: windowState.commandPalette?.isVisible) { _, visible in
-            if visible == true { cancelEditing() }
+            guard visible == true else { return }
+            if usesNativeEditor, let palette = windowState.commandPalette,
+               palette.shouldNavigateCurrentTab, palette.addSplit == nil {
+                let text = palette.prefilledText
+                let page = browserManager.frontPage(in: windowState)
+                palette.close()
+                guard page?.url.absoluteString == text || (page == nil && text.isEmpty) else { return }
+                beginEditing(text)
+            } else { cancelEditing() }
         }
         .onDisappear { cancelEditing() }
         .onHoverTracking { hovering in
@@ -75,9 +90,9 @@ struct URLBarView: View {
     
     @ViewBuilder
     private var addressPresentation: some View {
-        let session = splitItemID == nil
-            ? browserManager.tabs.selectedSession(in: windowState)
-            : splitItemID.flatMap { browserManager.tabs.session(for: $0) }
+        let session = usesNativeEditor ? browserManager.frontPage(in: windowState)
+            : (splitItemID == nil ? browserManager.tabs.selectedSession(in: windowState)
+               : splitItemID.flatMap { browserManager.tabs.session(for: $0) })
         collapsedAddress(session: session)
         .frame(maxWidth: .infinity, minHeight: controlHeight, maxHeight: controlHeight)
         .overlay(alignment: .bottom) {
@@ -102,7 +117,7 @@ struct URLBarView: View {
             }
         }
         .overlay(alignment: nookSettings.sidebarPosition == .right ? .topTrailing : .topLeading) {
-            if isEditing, splitItemID == nil {
+            if isEditing, splitItemID == nil, !usesNativeEditor {
                 expandedAddressPanel
                     .frame(width: expandedPanelWidth)
                     .fixedSize(horizontal: false, vertical: true)
@@ -110,8 +125,11 @@ struct URLBarView: View {
             }
         }
         .background {
-            if isEditing, splitItemID != nil {
-                AddressAnchoredPanel(width: expandedPanelWidth) {
+            if isEditing, splitItemID != nil || usesNativeEditor {
+                AddressAnchoredPanel(width: expandedPanelWidth, canPresent: { nativeWindow in
+                    browserManager.engine != .chromium ||
+                        (windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState)
+                }, onRetire: cancelEditing) {
                     expandedAddressPanel
                         .frame(width: expandedPanelWidth)
                         .fixedSize(horizontal: false, vertical: true)
@@ -228,6 +246,12 @@ struct URLBarView: View {
                 // Copy link button (show on hover when tab is selected)
                 if !isEditing, isHovering, let session {
                     Button("Copy URL", systemImage: showCheckmark ? "checkmark" : "link") {
+                        if usesNativeEditor {
+                            guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
+                                  browserManager.frontPage(in: windowState) === session,
+                                  let navigation = session.navigation,
+                                  browserManager.tabs.nativePageHost?.isNativeSelection(navigation, in: windowState) == true else { return }
+                        }
                         copyURLToClipboard(session.url.absoluteString)
                     }
                     .help(browserManager.help("Copy URL", shortcut: .copyCurrentURL))
@@ -239,6 +263,20 @@ struct URLBarView: View {
                 }
 
                 // Pinned extension buttons + library button
+                if !isEditing, browserManager.engine == .chromium {
+                    Menu {
+                        Button("Boost This Site…") { browserManager.perform(.boost) }
+                            .disabled(session?.url.scheme != "http" && session?.url.scheme != "https")
+                        Button("Capture in Portrait Mode") { browserManager.togglePortraitCapture(in: windowState) }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Page tools")
+                    .accessibilityLabel("Page tools")
+                    .disabled(session == nil)
+                }
                 if !isEditing, let extensionManager = browserManager.extensionManager {
                     let pinnedIDs = browserManager.nookSettings?.pinnedExtensionIDs ?? []
                     let pinnedExtensions = extensionManager.installedExtensions.filter { pinnedIDs.contains($0.id) }
@@ -293,7 +331,7 @@ struct URLBarView: View {
 
     @ViewBuilder
     private var inlineAddressField: some View {
-        if splitItemID != nil {
+        if splitItemID != nil || usesNativeEditor {
             SplitAddressSearchField(text: $addressText,
                                     onSubmit: { submitAddress() },
                                     onCancel: cancelEditing,
@@ -442,8 +480,27 @@ struct URLBarView: View {
     }
 
     private func beginEditing(_ address: String) {
+        if usesNativeEditor {
+            guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
+                  browserManager.windowRegistry?.windows[windowState.id] === windowState,
+                  browserManager.windowRegistry?.activeWindow === windowState else { return }
+            let page = browserManager.frontPage(in: windowState)
+            guard page?.url.absoluteString == address || (page == nil && address.isEmpty) else { return }
+            nativeEditPage = page
+            nativeEditProfile = page?.profile?.id
+            nativeEditSpace = windowState.spaceID; nativeEditSelected = windowState.selectedItemID
+        }
         searchManager.setTabs(browserManager.tabs, window: windowState)
         searchManager.setHistoryManager(browserManager.historyManager)
+        if usesNativeEditor, let page = nativeEditPage {
+            let profileID = nativeEditProfile, spaceID = nativeEditSpace, selected = nativeEditSelected
+            searchManager.setWebSuggestionTarget(for: page) { [weak page, weak manager = browserManager, weak window = windowState] in
+                guard let page, let manager, let window else { return false }
+                return window.isAddressEditing && manager.windowRegistry?.windows[window.id] === window &&
+                    manager.frontPage(in: window) === page && page.profile?.id == profileID &&
+                    window.spaceID == spaceID && window.selectedItemID == selected
+            }
+        } else { searchManager.clearWebSuggestionTarget() }
         prefilledAddress = address
         addressText = address
         selectedSuggestion = nil
@@ -459,12 +516,26 @@ struct URLBarView: View {
         windowState.isAddressEditing = false
         hoverManager.setAddressEditing(false, in: windowState.id)
         isEditing = false
+        nativeEditPage = nil; nativeEditProfile = nil
         addressFocused = false
-        searchManager.clearSuggestions()
+        searchManager.clearWebSuggestionTarget()
     }
 
     private func submitAddress(_ chosen: SearchManager.SearchSuggestion? = nil) {
-        guard !isComposingAddress else { return }
+        // Capture before cancelEditing: retiring the editor may itself change
+        // selection. Never retarget a stale address submission to its successor.
+        let editPage = nativeEditPage, editProfile = nativeEditProfile
+        let editSpace = nativeEditSpace, editSelected = nativeEditSelected
+        let currentTarget: () -> Bool = {
+            guard usesNativeEditor else { return true }
+            guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
+                  browserManager.windowRegistry?.windows[windowState.id] === windowState,
+                  browserManager.windowRegistry?.activeWindow === windowState,
+                  windowState.spaceID == editSpace, windowState.selectedItemID == editSelected,
+                  browserManager.frontPage(in: windowState) === editPage else { return false }
+            return editPage?.profile?.id == editProfile
+        }
+        guard !usesNativeEditor || isEditing, currentTarget(), !isComposingAddress else { return }
         let suggestions = inlineSuggestions
         let selected = selectedSuggestion.flatMap { selection in suggestions.first { $0 == selection } }
         let typed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -473,6 +544,7 @@ struct URLBarView: View {
         if splitItemID == nil, case .tab(let match) = suggestion.type {
             guard browserManager.tabs.item(match.itemID) != nil else { return }
             cancelEditing()
+            guard currentTarget() else { return }
             browserManager.tabs.select(match.itemID, in: windowState)
             return
         }
@@ -480,6 +552,7 @@ struct URLBarView: View {
         switch suggestion.type {
         case .folder(let folder):
             cancelEditing()
+            guard currentTarget() else { return }
             browserManager.tabs.reveal(folder.itemID, in: windowState)
             return
         case .action:
@@ -487,17 +560,33 @@ struct URLBarView: View {
         case .history(let entry): url = entry.url
         case .tab(let match): url = match.url
         case .url, .search:
-            let template = browserManager.tabs.searchTemplate(forSpace: windowState.spaceID)
+            if browserManager.tabs.profileEngine == .chromium, isSearchInput(suggestion.text) {
+                cancelEditing()
+                guard currentTarget() else { return }
+                if usesNativeEditor, let page = editPage {
+                    page.navigate(to: suggestion.text)
+                } else {
+                    browserManager.tabs.search(suggestion.text, in: windowState, splitItemID: splitItemID)
+                }
+                return
+            }
+            let template = browserManager.tabs.profileEngine == .chromium
+                ? "nook-search:%@" : browserManager.tabs.searchTemplate(forSpace: windowState.spaceID)
             url = URL(string: normalizeURL(suggestion.text, queryTemplate: template))
         }
         guard let url else { return }
         cancelEditing()
+        guard currentTarget() else { return }
         if let splitItemID {
             guard windowState.split?.contains(splitItemID) == true,
                   !browserManager.tabs.isPageShownElsewhere(splitItemID, from: windowState),
                   let session = browserManager.tabs.ensureSession(for: splitItemID) else { return }
             session.load(url)
             browserManager.tabs.select(splitItemID, in: windowState)
+            return
+        }
+        if usesNativeEditor, let page = editPage {
+            page.load(url)
             return
         }
         // Never navigate a live page owned by another window.
@@ -636,7 +725,7 @@ private struct AddressSuggestionFavicon: View {
 
 /// A scoped local monitor dismisses the overlay without swallowing the outside click.
 /// Its view covers the panel, so field and suggestion clicks stay inside.
-private struct AddressOutsideClickRegion: NSViewRepresentable {
+struct AddressOutsideClickRegion: NSViewRepresentable {
     let onOutsideClick: () -> Void
 
     final class Region: NSView {
@@ -672,73 +761,147 @@ private struct AddressOutsideClickRegion: NSViewRepresentable {
 
 /// Mount above the web content in the same window: a pane's hosting view and mask would
 /// otherwise clip the expanded editor. Its top edge stays aligned with the title.
-private struct AddressAnchoredPanel<Content: View>: NSViewRepresentable {
+/// Existing bounded sibling host shared by address editors and the palette
+/// card. Content/state remains in its original SwiftUI owner; this owns only a
+/// native mounting view. Closed panels have no host or active event observers.
+struct AddressAnchoredPanel<Content: View>: NSViewRepresentable {
     let width: CGFloat
+    var centered = false
+    var isPresented = true
+    var canPresent: (NSWindow) -> Bool = { _ in true }
+    var onWindowBounds: ((CGRect) -> Void)?
+    var onRetire: () -> Void = {}
     @ViewBuilder let content: () -> Content
 
+    final class Hosting: NSHostingView<Content> {
+        var onLayout: (() -> Void)?
+        override func layout() { super.layout(); onLayout?() }
+    }
     final class Anchor: NSView {
         var panelContent: Content?
         var panelWidth: CGFloat = 440
-        private var hostingView: NSHostingView<Content>?
+        var centered = false
+        var isPresented = true
+        var canPresent: (NSWindow) -> Bool = { _ in true }
+        var onWindowBounds: ((CGRect) -> Void)?
+        var onRetire: (() -> Void)?
+        private var hostingView: Hosting?
+        private var updating = false
+        private var wasPresented = false
+        private weak var observedWindow: NSWindow?
+        private var resizeObserver: NSObjectProtocol?
+        private var closeObserver: NSObjectProtocol?
+        private var lastWindowBounds: CGRect?
 
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
-
         override func viewDidMoveToWindow() {
             super.viewDidMoveToWindow()
-            if window == nil { removePanel() }
-            else { updatePanel() }
+            if window == nil { retirePanel() } else { updatePanel() }
         }
-
-        override func layout() {
-            super.layout()
-            updatePanel()
+        override func viewDidMoveToSuperview() {
+            super.viewDidMoveToSuperview()
+            if superview == nil { retirePanel() }
         }
+        override func viewDidHide() { super.viewDidHide(); retirePanel() }
+        override func viewDidUnhide() { super.viewDidUnhide(); updatePanel() }
+        override func layout() { super.layout(); updatePanel() }
 
+        private func observe(_ window: NSWindow) {
+            guard observedWindow !== window else { return }
+            stopObservers()
+            observedWindow = window
+            resizeObserver = NotificationCenter.default.addObserver(forName: NSWindow.didResizeNotification,
+                object: window, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.updatePanel() } }
+            closeObserver = NotificationCenter.default.addObserver(forName: NSWindow.willCloseNotification,
+                object: window, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.retirePanel() } }
+        }
+        private func stopObservers() {
+            if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+            if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+            resizeObserver = nil; closeObserver = nil; observedWindow = nil
+        }
+        private func retirePanel() {
+            let notify = wasPresented
+            removePanel()
+            if notify { onRetire?() }
+        }
         func updatePanel() {
-            guard let root = window?.contentView, let panelContent else { return }
-            let host: NSHostingView<Content>
-            if let hostingView {
-                host = hostingView
-            } else {
-                host = NSHostingView(rootView: panelContent)
+            guard !updating else { return }
+            guard isPresented, !isHiddenOrHasHiddenAncestor, let window,
+                  canPresent(window), let root = window.contentView,
+                  let panelContent, bounds.width > 0 else { retirePanel(); return }
+            if let host = hostingView, host.superview !== root { retirePanel(); return }
+            updating = true
+            defer { updating = false }
+            observe(window)
+            let rootBounds = root.bounds
+            if rootBounds != lastWindowBounds {
+                lastWindowBounds = rootBounds
+                // Size publication only on an actual window change, never a
+                // timer or unconditional content rebuild from layout.
+                if onWindowBounds != nil {
+                    DispatchQueue.main.async { [weak self, weak window] in
+                        guard let self, let window, self.window === window,
+                              self.isPresented, self.lastWindowBounds == rootBounds,
+                              self.canPresent(window) else { return }
+                        self.onWindowBounds?(rootBounds)
+                    }
+                }
+            }
+            let host: Hosting
+            if let hostingView { host = hostingView }
+            else {
+                host = Hosting(rootView: panelContent)
                 host.safeAreaRegions = []
+                host.onLayout = { [weak self] in self?.updatePanel() }
                 hostingView = host
+            }
+            let width = min(panelWidth, max(0, rootBounds.width - 16))
+            let available = max(0, rootBounds.height - 16)
+            let height = min(host.fittingSize.height, available)
+            let anchorRect = root.convert(bounds, from: self)
+            let x = centered ? rootBounds.midX - width / 2
+                : min(max(rootBounds.minX + 8, anchorRect.minX), max(rootBounds.minX + 8, rootBounds.maxX - width - 8))
+            let top = centered ? max(8, (rootBounds.height - min(560, available)) / 2)
+                : (root.isFlipped ? anchorRect.minY - rootBounds.minY : rootBounds.maxY - anchorRect.maxY)
+            let clampedTop = min(max(8, top), max(8, rootBounds.height - height - 8))
+            let y = root.isFlipped ? rootBounds.minY + clampedTop : rootBounds.maxY - clampedTop - height
+            let frame = NSRect(x: x, y: y, width: width, height: height)
+            if host.frame != frame { host.frame = frame }
+            if host.superview == nil {
+                wasPresented = true
                 root.addSubview(host, positioned: .above, relativeTo: nil)
             }
-            let anchorRect = root.convert(bounds, from: self)
-            let height = host.fittingSize.height
-            let x = min(max(root.bounds.minX + 8, anchorRect.minX),
-                        max(root.bounds.minX + 8, root.bounds.maxX - panelWidth - 8))
-            let y = root.isFlipped ? anchorRect.minY : anchorRect.maxY - height
-            host.frame = NSRect(x: x, y: y, width: panelWidth, height: height)
+            guard self.window === window, window.contentView === root, isPresented,
+                  canPresent(window) else { retirePanel(); return }
         }
-
         func setContent(_ content: Content) {
             panelContent = content
             hostingView?.rootView = content
             updatePanel()
         }
-
         func removePanel() {
+            wasPresented = false
+            stopObservers()
+            hostingView?.onLayout = nil
             hostingView?.removeFromSuperview()
             hostingView = nil
         }
+        deinit {
+            if let resizeObserver { NotificationCenter.default.removeObserver(resizeObserver) }
+            if let closeObserver { NotificationCenter.default.removeObserver(closeObserver) }
+        }
     }
-
-    func makeNSView(context: Context) -> Anchor {
-        let anchor = Anchor()
-        anchor.panelWidth = width
-        anchor.panelContent = content()
-        return anchor
+    func makeNSView(context: Context) -> Anchor { Anchor() }
+    func updateNSView(_ anchor: Anchor, context: Context) {
+        anchor.panelWidth = width; anchor.centered = centered; anchor.isPresented = isPresented
+        anchor.canPresent = canPresent; anchor.onWindowBounds = onWindowBounds; anchor.onRetire = onRetire
+        anchor.setContent(content())
     }
-
-    func updateNSView(_ nsView: Anchor, context: Context) {
-        nsView.panelWidth = width
-        nsView.setContent(content())
-    }
-
-    static func dismantleNSView(_ nsView: Anchor, coordinator: ()) {
-        nsView.removePanel()
+    static func dismantleNSView(_ anchor: Anchor, coordinator: ()) {
+        anchor.removePanel()
+        anchor.panelContent = nil; anchor.onRetire = nil; anchor.onWindowBounds = nil
+        anchor.canPresent = { _ in false }
     }
 }
 
@@ -759,7 +922,8 @@ private struct SplitAddressSearchField: NSViewRepresentable {
             guard window != nil, !didRequestFocus else { return }
             didRequestFocus = true
             DispatchQueue.main.async { [weak self] in
-                guard let self, let window = self.window else { return }
+                guard let self, !self.isHiddenOrHasHiddenAncestor,
+                      let window = self.window, window.isKeyWindow else { return }
                 if window.makeFirstResponder(self) {
                     self.currentEditor()?.selectAll(nil)
                 }

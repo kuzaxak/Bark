@@ -140,10 +140,13 @@ public final class NookSettingsService {
     /// Empty until `waitForBoosts()` returns on a launch: the file loads off the main thread.
     public var boosts: [Boost] = [] {
         didSet {
-            if boostsLoaded { boostStore.save(boosts) }
+            if boostsLoaded {
+                boostStore.save(boosts)
+                NotificationCenter.default.post(name: .boostsChanged, object: self)
+            }
         }
     }
-    @ObservationIgnored private let boostStore = BoostStore()
+    @ObservationIgnored private let boostStore: BoostStore
     @ObservationIgnored private var boostsLoad: Task<Void, Never>?
     public private(set) var boostsLoaded = false
 
@@ -200,7 +203,7 @@ public final class NookSettingsService {
             userDefaults.set(tabManagementMode.rawValue, forKey: tabManagementModeKey)
             NotificationCenter.default.post(
                 name: .tabManagementModeChanged,
-                object: nil,
+                object: self,
                 userInfo: ["mode": tabManagementMode.rawValue]
             )
         }
@@ -211,7 +214,7 @@ public final class NookSettingsService {
         didSet {
             userDefaults.set(idleTabUnloadingEnabled, forKey: idleTabUnloadingEnabledKey)
             NotificationCenter.default.post(
-                name: .tabManagementModeChanged, object: nil,
+                name: .tabManagementModeChanged, object: self,
                 userInfo: ["mode": tabManagementMode.rawValue])
         }
     }
@@ -219,6 +222,9 @@ public final class NookSettingsService {
     public var startupLoadMode: StartupLoadMode {
         didSet {
             userDefaults.set(startupLoadMode.rawValue, forKey: startupLoadModeKey)
+            if startupLoadMode != oldValue {
+                NotificationCenter.default.post(name: .startupLoadModeChanged, object: self)
+            }
         }
     }
 
@@ -751,7 +757,8 @@ public final class NookSettingsService {
         }
     }
 
-    public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore(), userDefaults: UserDefaults = .standard) {
+    public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore(), userDefaults: UserDefaults = .standard, boostStore: BoostStore = BoostStore()) {
+        self.boostStore = boostStore
         self.userDefaults = userDefaults
         self.kagiTokenStore = kagiTokenStore
         // Register default values
@@ -1082,7 +1089,9 @@ public enum OpenRouterModel: String, CaseIterable, Identifiable {
 
 // MARK: - Notification Names
 extension Notification.Name {
+    public static let boostsChanged = Notification.Name("boostsChanged")
     public static let tabManagementModeChanged = Notification.Name("tabManagementModeChanged")
+    public static let startupLoadModeChanged = Notification.Name("startupLoadModeChanged")
     public static let appearanceModeChanged = Notification.Name("appearanceModeChanged")
     public static let adBlockerEnabledChanged = Notification.Name("adBlockerEnabledChanged")
     public static let adBlockerStateChanged = Notification.Name("adBlockerStateChanged")
@@ -1158,6 +1167,16 @@ public enum TabManagementMode: String, CaseIterable, Identifiable {
         case .powerSaving: return 300       // 5 minutes
         case .standard: return 1800         // 30 minutes
         case .performance: return 14400     // 4 hours
+        }
+    }
+
+    /// Provisional native startup admission ceiling, not an eviction/RAM budget.
+    /// Mandatory foreground/displayed pages always bypass this optional limit.
+    public var startupWarmLimit: Int {
+        switch self {
+        case .powerSaving: 8
+        case .standard: 16
+        case .performance: 32
         }
     }
 

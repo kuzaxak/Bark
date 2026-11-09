@@ -10,8 +10,10 @@ import NookSettings
 final class ChromiumProductWindow {
     let state: BrowserWindowState
     let shell: NSView
+    var didNotifyStartupWarming = false
     /// A failed restore must not erase its already-saved window record.
     var preservesSavedRecord: Bool
+    var presentationCompletion: (@MainActor (Int32?) -> Void)?
     init(state: BrowserWindowState, shell: NSView, preservesSavedRecord: Bool = false) {
         self.state = state; self.shell = shell; self.preservesSavedRecord = preservesSavedRecord
     }
@@ -27,13 +29,24 @@ final class ChromiumCreatedPageAdmission {
     private let registry: WindowRegistry
     private let isUtility: (Int32) -> Bool
     private let makeShell: (BrowserWindowState) -> NSView
+    private let detachedPage: (Int32) -> PageSession?
+    private let didAdoptDetached: (Int32) -> Void
+    private let didPresent: (BrowserWindowState) -> Void
+    private let coveredByPeek: (PageSession, BrowserWindowState) -> Bool
     private var products: [UInt64: ChromiumProductWindow] = [:]
 
     init(api: ChromiumDiscoveryAPI, host: ChromiumNativePageHost, tabs: TabsController,
          registry: WindowRegistry, isUtility: @escaping (Int32) -> Bool,
-         makeShell: @escaping (BrowserWindowState) -> NSView) {
+         makeShell: @escaping (BrowserWindowState) -> NSView,
+         detachedPage: @escaping (Int32) -> PageSession? = { _ in nil },
+         didAdoptDetached: @escaping (Int32) -> Void = { _ in },
+         coveredByPeek: @escaping (PageSession, BrowserWindowState) -> Bool = { _, _ in false },
+         didPresent: @escaping (BrowserWindowState) -> Void = { _ in }) {
         self.api = api; self.host = host; self.tabs = tabs; self.registry = registry
         self.isUtility = isUtility; self.makeShell = makeShell
+        self.detachedPage = detachedPage; self.didAdoptDetached = didAdoptDetached
+        self.didPresent = didPresent
+        self.coveredByPeek = coveredByPeek
     }
 
     func registerInitial(_ product: ChromiumProductWindow, nativeWindow: Int32) -> Bool {
@@ -43,6 +56,84 @@ final class ChromiumCreatedPageAdmission {
         return true
     }
 
+    /// Consume one document-bound menu intent. The synchronous native admission
+    /// binds the blank before Chromium performs its single captured navigation.
+    func createPeek(from source: PageSession, request: Int32, in window: BrowserWindowState)
+        -> (page: PageSession, accepted: Bool)? {
+        guard registry.windows[window.id] === window, tabs.isNativePageOwner(source, in: window),
+              let navigation = source.navigation as? ChromiumPageNavigation,
+              navigation.pendingPeekRequestID == request, let profile = source.profile,
+              let row = api.windowState(navigation.nativeWindowID),
+              products[row.physical_group]?.state === window,
+              tabs.reflectNativeSelection(source.itemID, in: window),
+              host.isNativeSelection(navigation, in: window) else { return nil }
+        let attempt = PeekAdmission { [weak self, weak source, weak window, weak navigation] nativeWindow, tab in
+            guard let self, let source, let window, let navigation,
+                  source.navigation === navigation, self.registry.windows[window.id] === window,
+                  self.tabs.isNativePageOwner(source, in: window), window.selectedItemID == source.itemID,
+                  case .success(let binding) = self.host.bindExistingPage(nativeWindow: nativeWindow,
+                      tab: tab, profile: profile, in: window) else { return nil }
+            let page = self.tabs.bindDetachedNativePage(binding.navigation, profile: profile, owner: self.host, in: window)
+            let accepted = page?.navigation === binding.navigation && self.host.canAdoptPage(binding.navigation, in: window)
+            binding.finish(adopted: accepted)
+            return accepted ? page : nil
+        }
+        let accepted = withExtendedLifetime(attempt) {
+            navigation.createNativePeek(request: request, admission: { context, nativeWindow, tab in
+                MainActor.assumeIsolated {
+                    guard let context else { return 0 }
+                    let attempt = Unmanaged<PeekAdmission>.fromOpaque(context).takeUnretainedValue()
+                    attempt.page = attempt.bind(nativeWindow, tab)
+                    return attempt.page == nil ? 0 : 1
+                }
+            }, context: Unmanaged.passUnretained(attempt).toOpaque())
+        }
+        return attempt.page.map { ($0, accepted) }
+    }
+
+    private final class PeekAdmission {
+        let bind: (Int32, Int32) -> PageSession?
+        var page: PageSession?
+        init(bind: @escaping (Int32, Int32) -> PageSession?) { self.bind = bind }
+    }
+
+    func ownsPeek(_ session: PageSession, source: PageSession, in window: BrowserWindowState) -> Bool {
+        guard session.isDetached, registry.windows[window.id] === window,
+              let page = session.navigation as? ChromiumPageNavigation,
+              let origin = source.navigation as? ChromiumPageNavigation,
+              tabs.isNativePageOwner(source, in: window), host.isBoundPage(page, in: window),
+              page.profileID == origin.profileID, let snapshot = api.readSnapshot(),
+              let sourceRow = snapshot.windows.first(where: { $0.window == origin.nativeWindowID }),
+              products[sourceRow.physical_group]?.state === window,
+              snapshot.windows.contains(where: { $0.window == page.nativeWindowID &&
+                  $0.physical_group == sourceRow.physical_group }) else { return false }
+        return snapshot.tabs.contains { $0.window == page.nativeWindowID && $0.tab == page.nativeTabID &&
+            $0.flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 && $0.peek_source_tab == origin.nativeTabID }
+    }
+
+    /// Promotion returns the same live document to its exact source owner; a
+    /// different profile or another product window is never chosen as fallback.
+    func promotePeek(_ session: PageSession, source: PageSession, in window: BrowserWindowState) -> Bool {
+        guard registry.windows[window.id] === window, window.selectedItemID == source.itemID,
+              session.isDetached, let profile = session.profile,
+              tabs.isNativePageOwner(source, in: window),
+              let origin = source.navigation as? ChromiumPageNavigation,
+              let page = session.navigation as? ChromiumPageNavigation,
+              origin.profileID == profile.id, page.profileID == profile.id,
+              let space = window.isIncognito ? window.spaceID : tabs.spaceID(of: source.itemID) else { return false }
+        return host.promoteDetachedPage(page, profile: profile, to: origin.nativeWindowID, in: window,
+                                       peekSource: origin) { [weak self, weak session, weak source, weak window] in
+            guard let self, let session, let source, let window,
+                  self.registry.windows[window.id] === window,
+                  self.tabs.isNativePageOwner(source, in: window),
+                  self.host.acceptNativeSelection(page, in: window),
+                  let id = self.tabs.adoptDetachedNativePage(session, through: self.host, in: window,
+                      spaceID: space, from: source.itemID, select: false),
+                  self.tabs.session(for: id) === session, session.navigation === page else { return false }
+            return self.tabs.reflectNativeSelection(id, in: window)
+        }
+    }
+
     /// Reuse the model's regular-profile preference for external links. A private
     /// New Window requires its still-live exact native session, never UUID replay.
     func browserTarget(kind: Int32, regularProfile: UUID?) -> (window: Int32, regularProfile: UUID?)? {
@@ -50,15 +141,17 @@ final class ChromiumCreatedPageAdmission {
         func target(_ product: ChromiumProductWindow) -> Int32? {
             let state = product.state
             guard registry.windows[state.id] === state,
-                  let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
+                  let session = tabs.selectedSession(in: state), let page = session.navigation as? ChromiumPageNavigation,
                   page.isPrivateSession == state.isIncognito,
-                  host.isNativeSelection(page, in: state),
+                  host.isNativeSelection(page, in: state) || coveredByPeek(session, state),
                   let row = api.windowState(page.nativeWindowID),
                   row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return nil }
             let expected = state.isIncognito ? state.ephemeralProfile?.id :
                 state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) }
-            guard expected == page.profileID,
-                  api.identity(row) == page.profileID else { return nil }
+            guard let profileID = page.profileID,
+                  state.isIncognito || tabs.isProfileAvailable(profileID),
+                  expected == profileID,
+                  api.identity(row) == profileID else { return nil }
             return row.window
         }
         // The ordinary selected-owner route needs only the existing O(1)
@@ -132,10 +225,228 @@ final class ChromiumCreatedPageAdmission {
         return fallback(regularProfile)
 
         func fallback(_ id: UUID?) -> (window: Int32, regularProfile: UUID?)? {
-            guard let id, tabs.tree.profiles.contains(where: { $0.id == id }),
+            guard let id, tabs.isProfileAvailable(id), tabs.tree.profiles.contains(where: { $0.id == id }),
                   tabs.orderedSpaces.contains(where: { tabs.tree.dataStoreID(for: $0.id) == id }) else { return nil }
             return (0, id)
         }
+    }
+
+    /// The existing routing policy supplies a space hint; it never mutates the
+    /// selected model space merely to decide where an incoming request belongs.
+    func incomingTarget(ruleSpace: UUID?, mini: Bool, regularProfile: UUID?)
+        -> (window: Int32, profile: UUID?, space: UUID?, mini: Bool)? {
+        if let ruleSpace, tabs.space(ruleSpace) != nil {
+            guard let id = tabs.tree.dataStoreID(for: ruleSpace), tabs.isProfileAvailable(id),
+                  let target = browserTarget(kind: 0, regularProfile: id) else { return nil }
+            return (target.window, id, ruleSpace, false)
+        }
+        if mini {
+            if let state = registry.activeWindow,
+               let product = products.values.first(where: { $0.state === state }),
+               registry.windows[state.id] === state, !product.preservesSavedRecord,
+               let session = tabs.selectedSession(in: state), let page = session.navigation as? ChromiumPageNavigation,
+               host.isNativeSelection(page, in: state) || coveredByPeek(session, state), let id = page.profileID,
+               let row = api.windowState(page.nativeWindowID), api.identity(row) == id,
+               page.isPrivateSession == state.isIncognito,
+               state.isIncognito || tabs.isProfileAvailable(id),
+               row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 {
+                return (row.window, nil, nil, true)
+            }
+            // A private source cannot be reconstructed after its owner ends.
+            guard registry.activeWindow?.isIncognito != true,
+                  let id = regularProfile, tabs.isProfileAvailable(id),
+                  tabs.tree.profiles.contains(where: { $0.id == id }) else { return nil }
+            return (0, id, nil, true)
+        }
+        guard let target = browserTarget(kind: 0, regularProfile: regularProfile) else { return nil }
+        if target.window == -1 { return (-1, nil, nil, false) }
+        let state = products.values.first { product in
+            guard let row = api.windowState(target.window) else { return false }
+            return products[row.physical_group] === product
+        }?.state
+        let showing = state?.spaceID ?? tabs.orderedSpaces.first(where: {
+            tabs.tree.dataStoreID(for: $0.id) == target.regularProfile
+        })?.id
+        guard let showing else { return nil }
+        guard let space = ExternalLinkDestination.space(showing: showing,
+            spaces: tabs.orderedSpaces.map(\.id), agentSpace: tabs.agentSpaceID) else {
+            // Existing routing uses a mini when no ordinary space is eligible.
+            return incomingTarget(ruleSpace: nil, mini: true, regularProfile: regularProfile)
+        }
+        guard let id = tabs.tree.dataStoreID(for: space), tabs.isProfileAvailable(id) else { return nil }
+        return (target.window, id, space, false)
+    }
+
+    /// A native-created pending document is ready only after exact model and
+    /// shell ownership has been published. This query never selects or loads it.
+    func admittedApplicationPage(window: Int32, tab: Int32) -> Bool {
+        admittedApplicationSession(window: window, tab: tab) != nil
+    }
+
+    func admittedApplicationSession(window: Int32, tab: Int32) -> PageSession? {
+        guard let row = api.windowState(window), let product = products[row.physical_group],
+              !isUtility(window), registry.windows[product.state.id] === product.state,
+              let session = tabs.selectedSession(in: product.state), let selected = session.navigation as? ChromiumPageNavigation,
+              host.isNativeSelection(selected, in: product.state) || coveredByPeek(session, product.state) else { return nil }
+        return tabs.sessions.first { session in
+            guard let page = session.navigation as? ChromiumPageNavigation,
+                  page.nativeWindowID == window, page.nativeTabID == tab,
+                  page.profileID == api.identity(row),
+                  page.isPrivateSession == product.state.isIncognito else { return false }
+            return tabs.isNativePageOwner(session, in: product.state) && host.canAdoptPage(page, in: product.state)
+        }
+    }
+
+    /// Promote while the native transfer retains its last-tab source. The
+    /// callback admits this exact session before Chromium can close that source.
+    func promoteDetached(_ session: PageSession, spaceID requestedSpace: UUID? = nil,
+                         peerInGroup: (Int32, Int32) -> Int32,
+                         newPeer: (Int32) -> Int32,
+                         close: (Int32) -> Int32) -> Bool {
+        guard let page = session.navigation as? ChromiumPageNavigation,
+              session.isDetached, let profile = session.profile, !page.isClosed,
+              let snapshot = api.readSnapshot() else { return false }
+        if let requestedSpace {
+            guard !session.isPrivate, tabs.space(requestedSpace) != nil,
+                  tabs.tree.dataStoreID(for: requestedSpace) == profile.id,
+                  tabs.isProfileAvailable(profile.id) else { return false }
+        }
+        let source = page.nativeWindowID
+        let matching = products.values.filter { product in
+            registry.windows[product.state.id] === product.state &&
+            product.state.isIncognito == session.isPrivate &&
+            (!session.isPrivate || product.state.ephemeralProfile?.id == profile.id)
+        }
+        var product = matching.first(where: { $0.state === registry.activeWindow }) ?? matching.first
+        var destination: Int32 = 0
+        var created = false
+        if let existing = product,
+           let group = products.first(where: { $0.value === existing })?.key,
+           let owner = snapshot.windows.first(where: { $0.physical_group == group &&
+               $0.selected_client == $0.window && $0.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 }) {
+            destination = snapshot.windows.first(where: { $0.physical_group == group &&
+                api.identity($0) == profile.id &&
+                ($0.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == session.isPrivate &&
+                $0.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 })?.window ?? 0
+            if destination == 0 { destination = peerInGroup(source, owner.window); created = destination > 0 }
+        } else {
+            destination = newPeer(source); created = destination > 0
+            guard destination > 0, let row = api.windowState(destination), api.identity(row) == profile.id else { return false }
+            let state = BrowserWindowState()
+            if session.isPrivate { state.isIncognito = true; state.ephemeralProfile = profile }
+            else {
+                guard let space = requestedSpace ?? space(for: profile.id, opener: nil, in: state), tabs.isProfileAvailable(profile.id) else {
+                    _ = close(destination); return false
+                }
+                state.spaceID = space
+            }
+            registry.register(state)
+            tabs.attach(window: state, restoringSavedState: false)
+            let shell = makeShell(state)
+            guard registry.windows[state.id] === state,
+                  host.registerWindow(state, nativeOwner: destination, shell: shell) else {
+                registry.unregister(state.id); _ = close(destination); return false
+            }
+            let newProduct = ChromiumProductWindow(state: state, shell: shell)
+            products[row.physical_group] = newProduct
+            product = newProduct
+        }
+        let selectedSpace = product?.state.spaceID.flatMap { id in
+            profile.isEphemeral || tabs.tree.dataStoreID(for: id) == profile.id ? id : nil
+        }
+        guard destination > 0, let product,
+              let space = requestedSpace ?? selectedSpace ?? space(for: profile.id, opener: nil, in: product.state),
+              session.navigation === page, page.nativeWindowID == source, session.isDetached else {
+            if created && destination > 0 { _ = close(destination) }
+            return false
+        }
+        let target = destination
+        let accepted = host.promoteDetachedPage(page, profile: profile, to: target, in: product.state) { [weak self, weak session, weak page, weak product] in
+            guard let self, let session, let page, let product,
+                  self.registry.windows[product.state.id] === product.state,
+                  self.host.acceptNativeSelection(page, in: product.state),
+                  let id = self.tabs.adoptDetachedNativePage(session, through: self.host,
+                      in: product.state, spaceID: space, select: false),
+                  self.registry.windows[product.state.id] === product.state,
+                  self.tabs.session(for: id) === session,
+                  self.tabs.isNativePageOwner(session, in: product.state),
+                  session.navigation === page, self.host.canAdoptPage(page, in: product.state) else { return false }
+            _ = self.tabs.reflectNativeSelection(id, in: product.state)
+            return self.registry.windows[product.state.id] === product.state &&
+                self.tabs.session(for: id) === session && session.navigation === page &&
+                self.tabs.isNativePageOwner(session, in: product.state) &&
+                self.host.canAdoptPage(page, in: product.state)
+        }
+        // Only the helper-created still-empty client belongs to this attempt.
+        // A newer close/transfer or publication must not be undone here.
+        if !accepted && created, api.windowState(target) != nil,
+           let current = api.readSnapshot(), !current.tabs.contains(where: { $0.window == target }) {
+            _ = close(target)
+        }
+        return accepted
+    }
+
+    /// Derived model choices only: menu rendering must not instantiate profile
+    /// stores, and a private page never offers a regular-profile destination.
+    func miniDestinations(for session: PageSession) -> [ChromiumMiniDestination] {
+        guard !session.isPrivate, let source = session.profile?.id else { return [] }
+        return tabs.orderedSpaces.compactMap { space in
+            guard let id = tabs.tree.dataStoreID(for: space.id), tabs.isProfileAvailable(id) else { return nil }
+            return ChromiumMiniDestination(id: space.id, name: space.name,
+                profileID: id, isCopy: id != source)
+        }
+    }
+
+    /// Another profile means an explicit fresh URL copy, never a claimed live
+    /// transfer. The original mini remains usable even if target startup fails.
+    func openDetachedCopy(_ session: PageSession, in space: UUID,
+                          open: SavedOpen, close: @escaping (Int32) -> Int32,
+                          canPresent: @escaping () -> Bool) -> Bool {
+        guard canPresent(), session.isDetached, !session.isPrivate,
+              let page = session.navigation as? ChromiumPageNavigation, !page.isClosed,
+              let source = session.profile?.id,
+              let target = tabs.tree.dataStoreID(for: space), target != source,
+              tabs.space(space) != nil, tabs.isProfileAvailable(target),
+              let native = api.windowState(page.nativeWindowID),
+              native.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
+              api.identity(native) == source, native.active_tab == page.nativeTabID,
+              native.selected_client == native.window,
+              native.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
+              let snapshot = api.readSnapshot() else { return false }
+        let url = session.url
+        let liveGroups = Set(snapshot.windows.filter {
+            $0.kind == BARC_DISCOVERY_NORMAL.rawValue && $0.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0
+        }.map(\.physical_group))
+        let regular = products.filter { liveGroups.contains($0.key) }.map(\.value).filter {
+            !$0.state.isIncognito && !$0.preservesSavedRecord && registry.windows[$0.state.id] === $0.state
+        }
+        if let product = regular.first(where: { $0.state === registry.activeWindow }) ?? regular.first {
+            guard canPresent(), tabs.tree.dataStoreID(for: space) == target, tabs.isProfileAvailable(target) else { return false }
+            return tabs.open(url: url, in: product.state, placement: .newTab, parent: .tabs(spaceID: space)) != nil
+        }
+        // Reuse the existing factory request/admission lifetime. No old saved
+        // window is claimed, and its reserved blank becomes the actual copy.
+        let state = BrowserWindowState(); state.spaceID = space
+        registry.register(state)
+        guard registry.windows[state.id] === state else { return false }
+        tabs.attach(window: state, restoringSavedState: false)
+        let current = { [weak self, weak state] in
+            guard let self, let state else { return false }
+            return canPresent() && self.registry.windows[state.id] === state &&
+                self.tabs.space(space) != nil && self.tabs.tree.dataStoreID(for: space) == target &&
+                self.tabs.isProfileAvailable(target)
+        }
+        let request = SavedRequest(self, state: state, profile: target, close: close,
+                                   canPresent: current, initialURL: url)
+        target.uuidString.withCString { uuid in
+            open(uuid, 5, { status, native, pointer in
+                MainActor.assumeIsolated {
+                    guard let pointer else { return }
+                    Unmanaged<SavedRequest>.fromOpaque(pointer).takeRetainedValue().complete(status, native)
+                }
+            }, Unmanaged.passRetained(request).toOpaque())
+        }
+        return registry.windows[state.id] === state
     }
 
     func shouldDetachModelWindow(_ state: BrowserWindowState) -> Bool {
@@ -143,9 +454,36 @@ final class ChromiumCreatedPageAdmission {
     }
 
     /// First and additional restores share the exact existing record identity.
-    /// A saved split remains unclaimed until native split presentation exists.
+    /// Saved panes remain cold until their selected layout is admitted natively.
     func prepareInitialWindow() -> BrowserWindowState? {
-        prepareSavedWindow(tabs.unclaimedWindowRecords().first)
+        let records = tabs.unclaimedWindowRecords()
+        // Without a deletion intent, retain attach's existing stale-record normalization.
+        guard tabs.device.pendingProfileDeletion != nil else { return prepareSavedWindow(records.first) }
+        if let eligible = records.first(where: savedProfileIsAvailable) {
+            return prepareSavedWindow(eligible)
+        }
+        guard let intent = tabs.device.pendingProfileDeletion else {
+            return records.isEmpty ? prepareSavedWindow(nil) : nil
+        }
+        // An unavailable saved target stays untouched. Recovery UI uses only
+        // the explicitly persisted survivor, never another/default identity.
+        guard tabs.isProfileAvailable(intent.survivor),
+              let space = tabs.tree.orderedSpaces.first(where: {
+                  !$0.isAgent && tabs.tree.dataStoreID(for: $0.id) == intent.survivor &&
+                  tabs.profile(forSpace: $0.id)?.id == intent.survivor
+              }) else { return nil }
+        let state = BrowserWindowState()
+        state.spaceID = space.id
+        registry.register(state)
+        guard registry.windows[state.id] === state else { return nil }
+        tabs.attach(window: state, restoringSavedState: false)
+        return state
+    }
+
+    private func savedProfileIsAvailable(_ record: WindowRecord) -> Bool {
+        guard tabs.device.pendingProfileDeletion != nil else { return true }
+        guard let space = record.spaceID else { return false }
+        return tabs.profile(forSpace: space) != nil
     }
 
     private func prepareSavedWindow(_ record: WindowRecord?) -> BrowserWindowState? {
@@ -161,24 +499,24 @@ final class ChromiumCreatedPageAdmission {
             return nil
         }
         tabs.attach(window: state)
-        guard state.split == nil else {
-            registry.unregister(state.id)
-            fputs("A saved split-view window cannot yet be restored in Chromium. Its saved state was kept.\n", stderr)
-            return nil
-        }
         return registry.windows[state.id] === state ? state : nil
     }
 
     /// Bind the factory's exact reserved blank to an existing saved model, then
-    /// present. No new tab tree, profile registry or incoming-URL replay exists.
+    /// present. True accepts the existing restore (ready or pending); completion
+    /// reports actual native presentation. No parallel tab/profile registry exists.
     func admitRestoredWindow(_ state: BrowserWindowState, native: Int32, profile: UUID,
-                             show: Bool, canPresent: () -> Bool) -> Bool {
+                             show: Bool, canPresent: @escaping () -> Bool,
+                             initialURL: URL? = nil,
+                             initialItemCreated: (@MainActor (UUID) -> Void)? = nil,
+                             completion: (@MainActor (NativeSplitOutcome) -> Void)? = nil) -> Bool {
         func current() -> Bool {
             canPresent() && registry.windows[state.id] === state && !state.isIncognito &&
-            state.privateTree == nil && state.split == nil &&
+            state.privateTree == nil &&
             state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
         }
-        guard current(), let row = api.windowState(native), eligibleRegularFactory(row, profile: profile),
+        guard current(), initialURL == nil || state.selectedItemID == nil,
+              let row = api.windowState(native), eligibleRegularFactory(row, profile: profile),
               products[row.physical_group] == nil,
               let snapshot = api.readSnapshot(),
               let blank = snapshot.tabs.first(where: {
@@ -188,30 +526,84 @@ final class ChromiumCreatedPageAdmission {
         guard current(), let checked = api.windowState(native), checked.physical_group == row.physical_group,
               eligibleRegularFactory(checked, profile: profile), products[row.physical_group] == nil,
               host.registerWindow(state, nativeOwner: native, shell: shell, initialBlankTab: blank) else { return false }
-        let product = ChromiumProductWindow(state: state, shell: shell, preservesSavedRecord: true)
+        let product = ChromiumProductWindow(state: state, shell: shell, preservesSavedRecord: initialURL == nil)
         products[row.physical_group] = product
-        if let selected = state.selectedItemID { tabs.select(selected, in: state) }
+        if let initialURL {
+            // Obtain the operation's item identity without starting a renderer.
+            // Report it before selection can call out, including a failed Show.
+            guard let item = tabs.open(url: initialURL, in: state, placement: .background) else { return false }
+            initialItemCreated?(item)
+            guard current(), state.selectedItemID == nil || state.selectedItemID == item,
+                  state.split == nil, tabs.item(item)?.url == initialURL else { return false }
+            if state.selectedItemID != item { tabs.select(item, in: state) }
+        } else if let selected = state.selectedItemID { tabs.select(selected, in: state) }
         else { _ = tabs.open(url: URL(string: "about:blank")!, in: state, placement: .newTab) }
         state.windowHandle = shell.window // Existing pending-frame authority.
-        return finishRestoredPresentation(product, native: native, profile: profile,
-                                          show: show, canPresent: canPresent)
+        if finishRestoredPresentation(product, native: native, profile: profile,
+                                      show: show, canPresent: canPresent) {
+            completion?(.admitted)
+            return true
+        }
+        if current(), state.nativePresentationIsPreparing, !state.nativeSplitIsPreparing {
+            let selected = state.selectedItemID, split = state.split
+            // The selected page may still await its exact context policy. A
+            // saved split starts only after that selection actually succeeds.
+            return whenProductPresented(state) { [weak self, weak product] presented in
+                guard let self, let product, self.products[row.physical_group] === product,
+                      self.registry.windows[state.id] === state else { completion?(.refused); return }
+                guard presented != nil else { completion?(.refused); return }
+                guard canPresent(), !state.isIncognito, state.privateTree == nil,
+                      state.spaceID.flatMap({ self.tabs.tree.dataStoreID(for: $0) }) == profile,
+                      presented == native, state.selectedItemID == selected, state.split == split else {
+                    completion?(.superseded)
+                    // Startup can join the newer owner from that completion.
+                    // Forward this actual settled event only after the join;
+                    // never eagerly admit during cancellation's transient state.
+                    if !state.nativePresentationIsPreparing {
+                        state.nativePresentationDidSettle?(true)
+                    }
+                    return
+                }
+                let ready = self.finishRestoredPresentation(product, native: native, profile: profile,
+                                                           show: show, canPresent: canPresent)
+                completion?(ready ? .admitted : .refused)
+            }
+        }
+        guard current(), state.nativeSplitIsPreparing, let record = state.split,
+              let active = state.selectedItemID, record.contains(active) else { return false }
+        // True is accepted-pending, not completed presentation. The existing
+        // model request owns this completion; no polling or second restore queue.
+        return tabs.whenNativeSplitPrepared(record, activeItemID: active, in: state) {
+            [weak self, weak product] prepared in
+            guard prepared == .admitted else { completion?(prepared); return }
+            guard let self, let product else { completion?(.refused); return }
+            let ready = self.products[row.physical_group] === product &&
+                self.finishRestoredPresentation(product, native: native, profile: profile,
+                                               show: show, canPresent: canPresent)
+            completion?(ready ? .admitted : .refused)
+        }
     }
 
     private func finishRestoredPresentation(_ product: ChromiumProductWindow, native: Int32,
                                             profile: UUID, show: Bool, canPresent: () -> Bool) -> Bool {
         let state = product.state
         func current() -> Bool {
-            canPresent() && registry.windows[state.id] === state && !state.isIncognito && state.split == nil &&
+            canPresent() && registry.windows[state.id] === state && !state.isIncognito &&
             state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
         }
         guard current(), let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
               page.nativeWindowID == native, page.profileID == profile, !page.isPrivateSession,
-              host.isNativeSelection(page, in: state) else { return false }
+              host.isNativeSelection(page, in: state), modelLayoutPresented(in: state) else { return false }
         if show, api.show(native) != 1 { return false }
         guard current(), host.isNativeSelection(page, in: state),
               tabs.selectedSession(in: state)?.navigation === page else { return false }
         product.preservesSavedRecord = false
-        return true
+        if !product.didNotifyStartupWarming {
+            product.didNotifyStartupWarming = true
+            didPresent(state)
+        }
+        return current() && host.isNativeSelection(page, in: state) &&
+            tabs.selectedSession(in: state)?.navigation === page
     }
 
     /// Cancellation can precede or follow per-page close-cancel delivery. Either
@@ -225,12 +617,98 @@ final class ChromiumCreatedPageAdmission {
         }
     }
 
+    private func modelLayoutPresented(in state: BrowserWindowState) -> Bool {
+        guard let record = state.split, let active = state.selectedItemID, record.contains(active) else { return true }
+        let pages = Dictionary(uniqueKeysWithValues: record.itemIDs.compactMap { id in
+            tabs.session(for: id).map { (id, $0) }
+        })
+        return host.isSplit(record, pages: pages, activeItemID: active, in: state)
+    }
+
+    /// Join this existing product's actual admission after an initial restore
+    /// was superseded. The selected logical client may differ from its factory.
+    func whenProductPresented(_ state: BrowserWindowState,
+                              completion: @escaping @MainActor (Int32?) -> Void) -> Bool {
+        guard let pair = products.first(where: { $0.value.state === state }),
+              registry.windows[state.id] === state, !state.isIncognito,
+              pair.value.presentationCompletion == nil else { return false }
+        var waiting = true
+        pair.value.presentationCompletion = { native in
+            waiting = false
+            completion(native)
+        }
+        let group = pair.key
+        state.nativePresentationDidSettle = { [weak self, weak state, weak product = pair.value] _ in
+            guard waiting, let self, let state, let product else { return }
+            if let page = self.tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation {
+                self.admitPreparedProduct(product, native: page.nativeWindowID, group: group)
+            }
+            if waiting, !state.nativePresentationIsPreparing, product.presentationCompletion != nil {
+                self.finishProductPresentation(product, native: nil)
+            }
+        }
+        // Called during cancellation, before the outer newer generation can be
+        // installed. Only its actual outcome/catalog mutation may admit a page.
+        return true
+    }
+
+    private func finishProductPresentation(_ product: ChromiumProductWindow, native: Int32?) {
+        let completion = product.presentationCompletion
+        product.presentationCompletion = nil
+        product.state.nativePresentationDidSettle = nil
+        completion?(native)
+    }
+
+    func cancelPendingProductPresentation() {
+        let completions = products.values.compactMap { product in
+            let completion = product.presentationCompletion
+            product.presentationCompletion = nil
+            product.state.nativePresentationDidSettle = nil
+            return completion
+        }
+        completions.forEach { $0(nil) }
+    }
+
+    private func admitPreparedProduct(_ product: ChromiumProductWindow, native: Int32, group: UInt64) {
+        guard let initial = api.windowState(native),
+              product.presentationCompletion != nil ||
+              initial.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 else { return }
+        let state = product.state
+        func current() -> Bool {
+            let expectedProfile = state.isIncognito ? state.ephemeralProfile?.id :
+                state.spaceID.flatMap { tabs.profile(forSpace: $0)?.id }
+            guard products[group] === product, registry.windows[state.id] === state,
+                  !state.nativePresentationIsPreparing, modelLayoutPresented(in: state),
+                  let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
+                  page.nativeWindowID == native, page.isPrivateSession == state.isIncognito,
+                  let expectedProfile, expectedProfile == page.profileID,
+                  host.isNativeSelection(page, in: state),
+                  let row = api.windowState(native), row.physical_group == group,
+                  api.identity(row) == expectedProfile,
+                  row.active_tab == page.nativeTabID, row.selected_client == native,
+                  row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return false }
+            return true
+        }
+        guard current(), let row = api.windowState(native) else { return }
+        if row.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
+            guard api.admit(native, Unmanaged.passUnretained(product.shell).toOpaque()) == 1,
+                  current() else { return }
+        }
+        if !product.didNotifyStartupWarming, !state.isIncognito {
+            product.didNotifyStartupWarming = true
+            didPresent(state)
+        }
+        guard current() else { return }
+        finishProductPresentation(product, native: native)
+    }
+
     private func retireEndedRestore(_ state: BrowserWindowState) -> Bool {
         guard let pair = products.first(where: { $0.value.state === state }),
               let snapshot = api.readSnapshot(), !snapshot.windows.contains(where: { $0.physical_group == pair.key }),
               host.unregisterWindow(state, absentFrom: snapshot) else { return false }
         registry.unregister(state.id)
         products.removeValue(forKey: pair.key)
+        finishProductPresentation(pair.value, native: nil)
         return true
     }
 
@@ -251,17 +729,47 @@ final class ChromiumCreatedPageAdmission {
         let host: ChromiumNativePageHost
         let close: (Int32) -> Int32
         let canPresent: () -> Bool
+        let selectedItem: UUID?
+        let split: SplitRecord?
+        var reservedTab: Int32 = 0
+        let initialURL: URL?
+        var initialItem: UUID?
         init(_ admission: ChromiumCreatedPageAdmission, state: BrowserWindowState, profile: UUID,
-             close: @escaping (Int32) -> Int32, canPresent: @escaping () -> Bool) {
+             close: @escaping (Int32) -> Int32, canPresent: @escaping () -> Bool, initialURL: URL? = nil) {
             self.admission = admission; self.state = state; self.profile = profile
             self.registry = admission.registry; self.api = admission.api; self.host = admission.host
-            self.close = close; self.canPresent = canPresent
+            self.close = close; self.canPresent = canPresent; self.initialURL = initialURL
+            selectedItem = state.selectedItemID; split = state.split
         }
         func complete(_ status: Int32, _ native: Int32) {
+            reservedTab = api.windowState(native)?.active_tab ?? 0
             if status == 0, let admission,
                admission.admitRestoredWindow(state, native: native, profile: profile,
-                                              show: true, canPresent: canPresent) { return }
+                   show: true, canPresent: canPresent, initialURL: initialURL,
+                   initialItemCreated: { [self] in initialItem = $0 }, completion: { [self] outcome in
+                       if outcome == .refused { refuse(status, native) }
+                   }) { return }
+            refuse(status, native)
+        }
+        private func refuse(_ status: Int32, _ native: Int32) {
+            guard state.split == split else { return }
+            if let initialItem {
+                // A copy can fail before native selection publishes. Claim only
+                // its exact item (or the original empty selection), never the
+                // arbitrary selection left by a newer intent.
+                guard state.selectedItemID == selectedItem || state.selectedItemID == initialItem else { return }
+                if let row = api.windowState(native), row.active_tab != reservedTab { return }
+                if let url = admission?.tabs.item(initialItem)?.url, url != initialURL { return }
+            } else {
+                guard state.selectedItemID == selectedItem else { return }
+            }
             if let admission, let product = admission.products.values.first(where: { $0.state === state }) {
+                let ownedSession = initialItem.flatMap { admission.tabs.session(for: $0) } ??
+                    admission.tabs.selectedSession(in: state)
+                if let navigation = ownedSession?.navigation {
+                    guard let page = navigation as? ChromiumPageNavigation,
+                          page.nativeWindowID == native, page.nativeTabID == reservedTab else { return }
+                }
                 // Once registered, keep model/shell ownership while close is
                 // pending or refused. Only actual group disappearance retires it.
                 if status == 0, let row = api.windowState(native), ChromiumDiscoveryAPI.profileID(row) == profile,
@@ -269,7 +777,7 @@ final class ChromiumCreatedPageAdmission {
                     let hasNativeCreatedTabs = api.readSnapshot()?.tabs.contains {
                         $0.window == native && $0.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0
                     } == true
-                    if !hasNativeCreatedTabs, let page = admission.tabs.selectedSession(in: state)?.navigation,
+                    if !hasNativeCreatedTabs, let page = ownedSession?.navigation,
                        (page as? ChromiumPageNavigation)?.nativeWindowID == native {
                         host.closeUnadmittedWindow(page) { [self, weak admission] outcome in
                             guard let admission else { return }
@@ -289,15 +797,18 @@ final class ChromiumCreatedPageAdmission {
             // No host/product was published: unregister without normal detach,
             // leaving the original saved record available for retry.
             if registry.windows[state.id] === state { registry.unregister(state.id) }
-            fputs("A saved browser window could not be restored. Its saved state was kept.\n", stderr)
+            fputs(initialURL == nil ? "A saved browser window could not be restored. Its saved state was kept.\n" :
+                  "The page copy could not be opened. Its mini window was kept.\n", stderr)
         }
     }
 
     func restoreSavedWindows(open: SavedOpen, close: @escaping (Int32) -> Int32,
+                             only windowIDs: Set<UUID>? = nil,
                              canPresent: @escaping () -> Bool) {
-        for record in tabs.unclaimedWindowRecords() {
+        for record in tabs.unclaimedWindowRecords() where windowIDs?.contains(record.id) ?? true {
             guard canPresent(), registry.windows[record.id] == nil,
-                  tabs.device.windows.contains(where: { $0.id == record.id }) else { continue }
+                  tabs.device.windows.contains(where: { $0.id == record.id }),
+                  savedProfileIsAvailable(record) else { continue }
             guard let state = prepareSavedWindow(record) else { continue }
             guard let space = state.spaceID, let profile = tabs.profile(forSpace: space) else {
                 registry.unregister(state.id)
@@ -316,6 +827,23 @@ final class ChromiumCreatedPageAdmission {
                 }, Unmanaged.passRetained(request).toOpaque())
             }
         }
+    }
+
+    /// One explicit profile operation can retire its last native group. Reuse
+    /// normal catalog retirement and saved-window admission, with exact IDs.
+    func reloadProfileWindows(_ ids: Set<UUID>, open: SavedOpen,
+                              close: @escaping (Int32) -> Int32,
+                              canPresent: @escaping () -> Bool) {
+        guard canPresent(), let snapshot = api.readSnapshot() else { return }
+        apply(snapshot)
+        guard canPresent() else { return }
+        for id in ids {
+            guard let state = registry.windows[id], !state.isIncognito,
+                  let selected = state.selectedItemID,
+                  tabs.selectedSession(in: state)?.navigation == nil else { continue }
+            tabs.select(selected, in: state)
+        }
+        restoreSavedWindows(open: open, close: close, only: ids, canPresent: canPresent)
     }
 
     /// A factory callback explicitly hands off its exact blank; ordinary
@@ -397,9 +925,13 @@ final class ChromiumCreatedPageAdmission {
             guard let page = session.navigation as? ChromiumPageNavigation, !page.isClosed else { return nil }
             return (page.nativeTabID, session)
         })
+        let groupsByTab: [Int32: UInt64] = snapshot.tabs.contains { $0.flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 }
+            ? Dictionary(uniqueKeysWithValues: snapshot.tabs.map { ($0.tab, rows[$0.window]?.physical_group ?? 0) }) : [:]
         let candidates = snapshot.tabs.filter { tab in
             guard tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY.rawValue == 0 || sessions[tab.tab] != nil || tab.tab == privateFactoryTab,
                   let row = rows[tab.window] else { return false }
+            if tab.flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0,
+               sessions[tab.tab] == nil, groupsByTab[tab.peek_source_tab] == row.physical_group { return false }
             return eligible(row) && !utilityGroups.contains(row.physical_group)
         }
         let groupsWithPages = Set(candidates.compactMap { rows[$0.window]?.physical_group })
@@ -440,7 +972,8 @@ final class ChromiumCreatedPageAdmission {
                   let space = session.isPrivate ? product.state.spaceID : tabs.spaceID(of: session.itemID),
                   identity(row) == profile.id,
                   (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == session.isPrivate else { continue }
-            if tabs.isNativePageOwner(session, in: product.state) && host.isBoundPage(page, in: product.state) { continue }
+            let isPeek = tab.flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0
+            if !isPeek, tabs.isNativePageOwner(session, in: product.state), host.isBoundPage(page, in: product.state) { continue }
             let nativeAdmitted = host.canAdoptPage(page, in: product.state)
             var binding: ChromiumExistingPageBinding?
             if !nativeAdmitted {
@@ -448,8 +981,12 @@ final class ChromiumCreatedPageAdmission {
                     tab: tab.tab, profile: profile, in: product.state) else { continue }
                 binding = admission
             }
-            let item = tabs.adoptNativePage(page, through: host, in: product.state, spaceID: space, select: false)
-            binding?.finish(adopted: item != nil)
+            let commit = { [self] in
+                tabs.adoptNativePage(page, through: host, in: product.state, spaceID: space, select: false) != nil
+            }
+            let accepted = isPeek ? host.admitMovedPeek(page, commit: commit) : commit()
+            binding?.finish(adopted: accepted)
+            if isPeek && accepted { didAdoptDetached(tab.tab) }
         }
 
         // Resolve newly created opener chains in this single callback. Each
@@ -471,16 +1008,48 @@ final class ChromiumCreatedPageAdmission {
                 let opener = sessions[tab.opener_tab].flatMap {
                     $0.profile?.id == profileID && $0.isPrivate == product.state.isIncognito ? $0 : nil
                 }
-                guard let space = space(for: profileID, opener: opener, in: product.state),
+                let requested = api.requestedSpace(window: tab.window, tab: tab.tab)
+                let targetSpace: UUID?
+                if requested.supplied {
+                    targetSpace = requested.id.flatMap { id in
+                        !product.state.isIncognito && tabs.space(id) != nil &&
+                        tabs.tree.dataStoreID(for: id) == profileID && tabs.isProfileAvailable(profileID) ? id : nil
+                    }
+                } else {
+                    targetSpace = space(for: profileID, opener: opener, in: product.state)
+                }
+                let detached = detachedPage(tab.tab)
+                guard let space = targetSpace,
                       let profile = product.state.isIncognito ? product.state.ephemeralProfile : tabs.profile(forSpace: space),
+                      detached == nil || (detached?.profile?.id == profileID && detached?.isPrivate == product.state.isIncognito &&
+                          detached?.navigation is ChromiumPageNavigation),
                       case .success(let binding) = host.bindExistingPage(nativeWindow: tab.window,
-                          tab: tab.tab, profile: profile, in: product.state) else { continue }
-                let item = tabs.adoptNativePage(binding.navigation, through: host, in: product.state,
-                    spaceID: space, from: opener.flatMap { product.state.isIncognito && !tabs.isNativePageOwner($0, in: product.state) ? nil : $0.itemID }, select: false)
-                binding.finish(adopted: item != nil)
-                if let item, let session = tabs.session(for: item) {
-                    sessions[tab.tab] = session
+                          tab: tab.tab, profile: profile, in: product.state,
+                          existingPage: detached?.navigation as? ChromiumPageNavigation) else { continue }
+                let parent = opener.flatMap { product.state.isIncognito && !tabs.isNativePageOwner($0, in: product.state) ? nil : $0.itemID }
+                var admitted: PageSession?
+                let commit = { [self] in
+                    let item: UUID?
+                    if let detached {
+                        item = tabs.adoptDetachedNativePage(detached, through: host, in: product.state,
+                            spaceID: space, from: parent, select: false)
+                    } else {
+                        item = tabs.adoptNativePage(binding.navigation, through: host, in: product.state,
+                            spaceID: space, from: parent, select: false)
+                    }
+                    admitted = item.flatMap { tabs.session(for: $0) }
+                    return registry.windows[product.state.id] === product.state &&
+                        admitted?.navigation === binding.navigation &&
+                        admitted.map { tabs.isNativePageOwner($0, in: product.state) } == true &&
+                        host.canAdoptPage(binding.navigation, in: product.state)
+                }
+                let valid = tab.flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0
+                    ? host.admitMovedPeek(binding.navigation, commit: commit) : commit()
+                binding.finish(adopted: valid)
+                if valid, let admitted {
+                    sessions[tab.tab] = admitted
                     progressed = true
+                    if detached === admitted { didAdoptDetached(tab.tab) }
                 }
             }
             if !progressed {
@@ -500,15 +1069,37 @@ final class ChromiumCreatedPageAdmission {
             // unlike ordinary selection it cannot select/focus/load in Chromium.
             let alreadyMirrored = product.state.selectedItemID == session.itemID &&
                 session.navigation.map { host.isNativeSelection($0, in: product.state) } == true
+            // The shell follows the client Chromium fell back to, or the window loses its sidebar.
+            // The selection stays Nook's to decide.
+            if tabs.spaceID(of: session.itemID) != product.state.spaceID,
+               tabs.nativeSelectionIsSettling(in: product.state) {
+                if let page = session.navigation { _ = host.acceptNativeSelection(page, in: product.state) }
+                continue
+            }
             guard alreadyMirrored || tabs.reflectNativeSelection(session.itemID, in: product.state),
                   let verified = api.windowState(selected.window), verified.physical_group == group,
                   verified.selected_client == selected.window, verified.active_tab == selected.active_tab else { continue }
             product.state.windowHandle = product.shell.window
+            if let update = host.nativeSplitUpdate(in: product.state, selected: verified, sessions: sessions,
+                savedPages: (product.state.split?.itemIDs ?? []).compactMap { tabs.session(for: $0) }) {
+                if update.remountLive {
+                    _ = tabs.presentNativeSplit(update.record, activeItemID: session.itemID,
+                        in: product.state, liveAdmission: update.validate)
+                } else {
+                    guard tabs.reflectNativeSplit(update.record, in: product.state,
+                                                   validateNative: update.validate) else { continue }
+                }
+            }
+            if host.needsInitialSplitRestore(in: product.state) {
+                tabs.restoreSavedNativeSplitIfNeeded(in: product.state) { [weak self, weak product] success in
+                    guard success, let self, let product else { return }
+                    self.admitPreparedProduct(product, native: selected.window, group: group)
+                }
+            }
+            guard !product.state.nativeSplitIsPreparing, modelLayoutPresented(in: product.state) else { continue }
             // Selection reflection is not successful restored presentation.
             // A failed Show can still have pending/refused native close.
-            if verified.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
-                _ = api.admit(selected.window, Unmanaged.passUnretained(product.shell).toOpaque())
-            }
+            admitPreparedProduct(product, native: selected.window, group: group)
         }
         // Admit any destination before retiring a last-tab source, so normal
         // detach removes its record rather than preserving a phantom last window.
@@ -517,6 +1108,7 @@ final class ChromiumCreatedPageAdmission {
             guard host.unregisterWindow(product.state, absentFrom: snapshot) else { continue }
             registry.unregister(product.state.id)
             products.removeValue(forKey: group)
+            finishProductPresentation(product, native: nil)
         }
         // Re-read only live rows after admission/header callbacks. A selected
         // tab in a background or ShowInactive window is not physical activation.

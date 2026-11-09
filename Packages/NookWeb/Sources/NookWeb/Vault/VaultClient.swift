@@ -41,6 +41,7 @@ public actor VaultClient {
     /// Sends `call` and waits up to its timeout for the reply with the same id. A transport
     /// failure drops the connection; the next call reconnects.
     public func send<C: VaultCall>(_ call: C) throws -> C.Reply {
+        try Task.checkCancellation()
         if socketFD >= 0, peerHasClosed() { disconnect() }
         if socketFD < 0 { try connect() }
         let id = nextID

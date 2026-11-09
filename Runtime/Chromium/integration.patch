@@ -213,7 +213,7 @@
    return BrowserLayoutParams();
 --- a/chrome/browser/ui/BUILD.gn
 +++ b/chrome/browser/ui/BUILD.gn
-@@ -3405,8 +3405,20 @@
+@@ -3405,8 +3405,22 @@
        "//components/remote_cocoa/browser",
      ]
      include_dirs = [ "$target_gen_dir" ]
@@ -230,6 +230,8 @@
      ]
 +    deps += [
 +      "//chrome/browser/ui/tabs:utils",
++      "//components/autofill/content/browser",
++      "//components/password_manager/content/browser",
 +      "//components/viz/common",
 +      "//ui/gfx/codec",
 +    ]
@@ -244,7 +246,7 @@
    if (enable_extensions_core) {
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
-@@ -19,3 +19,44 @@
+@@ -19,3 +19,77 @@
  _ChromeAppModeStart_v8
  _ChromeMain
  _ChromeWebAppShortcutCopierMain
@@ -264,13 +266,27 @@
 +_barc_downloads_observe
 +_barc_downloads_unobserve
 +_barc_download_action
++_barc_tab_evaluate_script
++_barc_tab_cancel_script
 +_barc_download_copy_safe_target
++_barc_window_set_split
++_barc_window_get_split
++_barc_window_clear_split
 +_barc_tab_copy_title
 +_barc_window_show
 +_barc_window_native_shell_is_owned
 +_barc_window_detach_native_shell_if_owned
 +_barc_window_attach_native_shell
++_barc_window_set_native_header
++_barc_tab_copy_history
++_barc_tab_go_to_history_entry
 +_barc_profile_open_window
++_barc_profile_delete_kept
++_barc_profile_prepare_reassignment
++_barc_profile_continue_deletion
++_barc_profile_delete_cancel_ack
++_barc_profile_live_get
++_barc_profile_live_cancel
 +_barc_profile_open_in_native_window
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
@@ -282,16 +298,35 @@
 +_barc_window_discovery_state
 +_barc_window_admit_discovered
 +_barc_tab_observe
++_barc_tab_observe_media
++_barc_tab_media_action
 +_barc_tab_unobserve
 +_barc_tab_capture_thumbnail
++_barc_tab_capture_screenshot
++_barc_tab_cancel_capture
++_barc_tab_download_file
++_barc_tab_cancel_file
++_barc_tab_observe_vault
++_barc_tab_vault_focus_is_current
++_barc_tab_vault_field_is_current
++_barc_tab_cancel_vault_focus
++_barc_tab_fill_vault
++_barc_tab_observe_vault_save
++_barc_tab_vault_save_is_current
++_barc_tab_cancel_vault_save
++_barc_tab_observe_vault_passkeys
++_barc_tab_vault_passkey_is_current
++_barc_tab_complete_vault_passkey
 +_barc_tab_clear_site_data
++_barc_tab_set_user_css
++_barc_tab_translate
 +_barc_tab_go_back
 +_barc_tab_go_forward
 +_barc_tab_reload
 +_barc_tab_stop
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
-@@ -29,5 +29,48 @@
+@@ -29,5 +29,81 @@
  # Entry point for the web app shortcut copier.
  _ChromeWebAppShortcutCopierMain
  
@@ -312,13 +347,27 @@
 +_barc_downloads_observe
 +_barc_downloads_unobserve
 +_barc_download_action
++_barc_tab_evaluate_script
++_barc_tab_cancel_script
 +_barc_download_copy_safe_target
++_barc_window_set_split
++_barc_window_get_split
++_barc_window_clear_split
 +_barc_tab_copy_title
 +_barc_window_show
 +_barc_window_native_shell_is_owned
 +_barc_window_detach_native_shell_if_owned
 +_barc_window_attach_native_shell
++_barc_window_set_native_header
++_barc_tab_copy_history
++_barc_tab_go_to_history_entry
 +_barc_profile_open_window
++_barc_profile_delete_kept
++_barc_profile_prepare_reassignment
++_barc_profile_continue_deletion
++_barc_profile_delete_cancel_ack
++_barc_profile_live_get
++_barc_profile_live_cancel
 +_barc_profile_open_in_native_window
 +_barc_private_session_open_window
 +_barc_window_profile_uuid
@@ -330,9 +379,28 @@
 +_barc_window_discovery_state
 +_barc_window_admit_discovered
 +_barc_tab_observe
++_barc_tab_observe_media
++_barc_tab_media_action
 +_barc_tab_unobserve
 +_barc_tab_capture_thumbnail
++_barc_tab_capture_screenshot
++_barc_tab_cancel_capture
++_barc_tab_download_file
++_barc_tab_cancel_file
++_barc_tab_observe_vault
++_barc_tab_vault_focus_is_current
++_barc_tab_vault_field_is_current
++_barc_tab_cancel_vault_focus
++_barc_tab_fill_vault
++_barc_tab_observe_vault_save
++_barc_tab_vault_save_is_current
++_barc_tab_cancel_vault_save
++_barc_tab_observe_vault_passkeys
++_barc_tab_vault_passkey_is_current
++_barc_tab_complete_vault_passkey
 +_barc_tab_clear_site_data
++_barc_tab_set_user_css
++_barc_tab_translate
 +_barc_tab_go_back
 +_barc_tab_go_forward
 +_barc_tab_reload
@@ -342,7 +410,7 @@
  _ChromeMain
 --- a/chrome/test/BUILD.gn
 +++ b/chrome/test/BUILD.gn
-@@ -9782,3 +9782,97 @@
+@@ -9782,3 +9782,119 @@
    ]
    public_deps = [ "//chrome/browser:browser_public_dependencies" ]
  }
@@ -372,6 +440,7 @@
 +      "//chrome/browser/content_settings:content_settings_factory",
 +      "//chrome/browser/enterprise",
 +      "//chrome/browser/enterprise:impl",
++      "//chrome/browser/devtools:devtools",
 +      "//chrome/browser/extensions:test_support",
 +      "//chrome/browser/extensions/api/messaging:test_support",
 +      "//chrome/browser/ui/browser_active_state_manager:browser_active_state_manager",
@@ -385,6 +454,7 @@
 +      "//chrome/browser/ui/views/frame:browser_widget",
 +      "//components/content_settings/core/browser",
 +      "//components/content_settings/core/common",
++      "//components/infobars/content:content",
 +      "//components/enterprise/buildflags",
 +      "//components/enterprise/data_controls/core/browser:test_support",
 +      "//components/split_tabs",
@@ -427,6 +497,19 @@
 +      "//ui/gfx/codec",
 +      "//ui/views",
 +      "//url",
++      "//chrome/browser/pdf:pdf_extension_test_utils",
++      "//chrome/browser/printing",
++      "//chrome/browser/printing:test_support",
++      "//printing/backend:test_support",
++      "//printing/buildflags",
++      "//components/web_modal",
++      "//chrome/browser/webauthn",
++      "//chrome/browser/webauthn:impl",
++      "//components/cbor",
++      "//crypto",
++      "//device/fido",
++      "//device/fido:test_support",
++      "//device/bluetooth:mocks",
 +    ]
 +    data_deps = [
 +      "//chrome",
@@ -436,7 +519,43 @@
 +      "data/native_messaging/native_hosts/echo.py",
 +      "data/title1.html",
 +      "data/title2.html",
++      "data/beforeunload.html",
++      "data/file_input.html",
++      "data/pdf/test.pdf",
++      "data/media/bigbuck.webm",
++      "data/media/pink_noise_140ms.wav",
++      "data/media/picture-in-picture/pixel_test.html",
++      "data/media/picture-in-picture/pixel_test_video.webm",
 +    ]
 +    frameworks = [ "AppKit.framework" ]
 +  }
 +}
+--- a/chrome/browser/password_manager/chrome_password_manager_client.cc
++++ b/chrome/browser/password_manager/chrome_password_manager_client.cc
+@@ -3,6 +3,10 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/password_manager/chrome_password_manager_client.h"
++
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
+ 
+ #include <memory>
+ #include <optional>
+@@ -413,6 +417,15 @@
+   if (!CanShowBubbleOnURL(web_contents()->GetLastCommittedURL())) {
+     return false;
+   }
++#if BUILDFLAG(IS_MAC)
++  // Chromium has validated a successful submission, including login redirects.
++  // A connected model-bound Pawl consumer owns the one prompt; disabled
++  // or unbound consumers leave the normal Chrome save/update path unchanged.
++  if (barc::OfferVaultPasswordSave(web_contents(),
++                                  form_to_save->GetPendingCredentials())) {
++    return true;
++  }
++#endif
+ #if BUILDFLAG(IS_ANDROID)
+   if (form_to_save->IsBlocklisted()) {
+     autofill::LogManager* log_manager = GetCurrentLogManager();

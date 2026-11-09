@@ -8,6 +8,8 @@ private final class MockBridge: ChromiumStartupBridge {
     var profiles: [UUID?] = []
     var attachments: [Int32] = []
     var attachResult = true
+    var deferAttachment = false
+    var attachmentCompletion: (@MainActor (Int32?) -> Void)?
     var completed: [Int32] = []
     func completeStartup(_ window: Int32) { completed.append(window) }
     func registerReady(_ callback: @escaping @MainActor () -> Void) {
@@ -18,9 +20,10 @@ private final class MockBridge: ChromiumStartupBridge {
         profiles.append(id)
         self.completion = completion
     }
-    func attachShell(to window: Int32) -> Bool {
+    func attachShell(to window: Int32, completion: @escaping @MainActor (Int32?) -> Void) {
         attachments.append(window)
-        return attachResult
+        if deferAttachment { attachmentCompletion = completion }
+        else { completion(attachResult ? window : nil) }
     }
 }
 
@@ -37,8 +40,15 @@ struct StartupTests {
         defer { try? FileManager.default.removeItem(at: normalRoot) }
         let normal = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: normalRoot)
         precondition(!normal.isVerification && normal.profileID == nil)
-        precondition(normal.minimumBridgeVersion == 3 && config.minimumBridgeVersion == 2)
+        precondition(normal.requiredBridgeVersion == 6 && config.requiredBridgeVersion == 6)
         precondition(normal.root == normalRoot.appendingPathComponent("NookChromium", isDirectory: true))
+        precondition(config.aiConfigURL.path == "/private/tmp/nook-startup-test/App/ai_config.json")
+        precondition(config.aiKeychainService == "ee.qdo.nook.chromium-verification.aiProvider.26edca9982aeea417df94b6de0431c4c446fa35683d1e743c65a8f42fdedf377")
+        let otherRoot = try ChromiumStartupConfiguration(arguments: [
+            "Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test-other", "--barc-app-profile=\(id.uuidString)"])
+        precondition(otherRoot.aiKeychainService != config.aiKeychainService)
+        precondition(normal.aiConfigURL == normal.root.appendingPathComponent("App/ai_config.json"))
+        precondition(normal.aiKeychainService == "ee.qdo.nook.chromium.aiProvider")
         precondition(!normal.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
         precondition(normal.engineArguments(executable: "Nook").contains("--disable-sync"))
         let withURLs = try ChromiumStartupConfiguration(arguments: ["Nook",
@@ -144,6 +154,32 @@ struct StartupTests {
         precondition(pending.runtimeReturned(0) == 1)
         pendingBridge.completion?(45)
         precondition(pendingBridge.attachments.isEmpty && pendingBridge.completed == [0])
+        let delayedBridge = MockBridge()
+        delayedBridge.deferAttachment = true
+        let delayed = ChromiumStartup(bridge: delayedBridge, profile: id) { _ in preconditionFailure() }
+        delayed.register()
+        delayedBridge.callback?()
+        delayedBridge.completion?(47)
+        precondition(delayed.window == nil && delayedBridge.completed.isEmpty)
+        delayedBridge.attachmentCompletion?(47)
+        delayedBridge.attachmentCompletion?(nil)
+        precondition(delayed.window == 47 && delayedBridge.completed == [47])
+        let supersededBridge = MockBridge()
+        supersededBridge.deferAttachment = true
+        let superseded = ChromiumStartup(bridge: supersededBridge, profile: id) { _ in preconditionFailure() }
+        superseded.register(); supersededBridge.callback?(); supersededBridge.completion?(49)
+        precondition(supersededBridge.completed.isEmpty)
+        supersededBridge.attachmentCompletion?(50)
+        precondition(superseded.window == 50 && supersededBridge.completed == [50])
+        let cancelledBridge = MockBridge()
+        cancelledBridge.deferAttachment = true
+        let cancelled = ChromiumStartup(bridge: cancelledBridge, profile: id) { _ in preconditionFailure() }
+        cancelled.register()
+        cancelledBridge.callback?()
+        cancelledBridge.completion?(48)
+        precondition(cancelled.runtimeReturned(0) == 1)
+        cancelledBridge.attachmentCompletion?(48)
+        precondition(cancelled.window == nil && cancelledBridge.completed == [0])
         precondition(startup.runtimeReturned(0) == 0)
         precondition(bridge.completed == [43, 0])
         print("Chromium startup: configuration isolation, callback ordering, duplicate readiness, profile failure and attachment failure PASS")

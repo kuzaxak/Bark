@@ -1,0 +1,133 @@
+diff --git a/chrome/browser/ui/views/frame/barc_bridge.mm b/chrome/browser/ui/views/frame/barc_bridge.mm
+--- a/chrome/browser/ui/views/frame/barc_bridge.mm
++++ b/chrome/browser/ui/views/frame/barc_bridge.mm
+@@ -150,6 +150,8 @@
+ #include "ui/gfx/codec/png_codec.h"
+ #include "ui/gfx/codec/jpeg_codec.h"
+ #include "extensions/browser/extensions_browser_client.h"
++#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
++#include "ui/views/accessibility/view_accessibility.h"
+ #include "ui/views/controls/native/native_view_host.h"
+ #include "url/gurl.h"
+ 
+@@ -4817,6 +4819,9 @@ views::NativeViewHost* CreateNativeShell(BrowserView* browser_view) {
+     UnloadController::From(browser_view->browser())->AddTabUnloadHandler(
+         std::make_unique<PeekUnloadHandler>(browser_view->browser()));
+   }
++  // A WebUI toolbar page stays in the accessibility tree while its view is
++  // hidden, so the hidden toolbar's subtree is cut off explicitly.
++  browser_view->toolbar()->GetViewAccessibility().SetIsLeaf(true);
+   auto* host =
+       browser_view->AddChildView(std::make_unique<views::NativeViewHost>());
+   if (registered) {
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -1383,6 +1383,11 @@ BrowserView::GetExclusiveAccessBubbleViewsContextForTesting() {
+ }
+ 
+ bool BrowserView::GetTabStripVisible() const {
++#if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
++#endif
+   if (!ShouldDrawTabStrip()) {
+     return false;
+   }
+@@ -3270,6 +3275,11 @@ void BrowserView::MaybeShowReadingListInSidePanelIPH() {
+ }
+ 
+ bool BrowserView::IsBookmarkBarVisible() const {
++#if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
++#endif
+   if (!WindowFeatureController::From(browser_)->SupportsWindowFeature(
+           WindowFeatureController::WindowFeature::kFeatureBookmarkBar)) {
+     return false;
+@@ -3309,6 +3319,9 @@ void BrowserView::DisableTabStripEditingForTesting() {
+ 
+ bool BrowserView::IsToolbarVisible() const {
+ #if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
+   // Immersive full screen makes it possible to display the toolbar when
+   // kShowFullscreenToolbar is not set.
+   if (!WindowFeatureController::From(browser())
+@@ -3335,6 +3348,11 @@ bool BrowserView::IsToolbarShowing() const {
+ }
+ 
+ bool BrowserView::IsLocationBarVisible() const {
++#if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
++#endif
+   return WindowFeatureController::From(browser_)->SupportsWindowFeature(
+              WindowFeatureController::WindowFeature::kFeatureLocationBar) &&
+          GetLocationBar()->IsVisible();
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_layout_delegate_impl.cc
+@@ -60,6 +60,11 @@ BrowserViewLayoutDelegateImpl::GetTabStripType() const {
+   if (!browser_view_->ShouldDrawTabStrip()) {
+     return TabStripType::kNone;
+   }
++#if BUILDFLAG(IS_MAC)
++  if (browser_view_->barc_native_shell()) {
++    return TabStripType::kNone;
++  }
++#endif
+ 
+   // Determine if there is a vertical tab strip.
+   if (browser_view_->browser()->GetType() ==
+diff --git a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+--- a/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
++++ b/chrome/browser/ui/views/frame/layout/browser_view_tabbed_layout_impl.cc
+@@ -268,6 +268,11 @@ BrowserViewTabbedLayoutImpl::CalculateSeparatorInfo() const {
+       break;
+   }
+ 
++  if (!delegate().IsToolbarVisible() && !delegate().IsBookmarkBarVisible()) {
++    info.multi_contents_separator = false;
++    info.top_container_separator = false;
++  }
++
+   return info;
+ }
+ 
+diff --git a/chrome/browser/ui/window_feature_controller/window_feature_controller.cc b/chrome/browser/ui/window_feature_controller/window_feature_controller.cc
+--- a/chrome/browser/ui/window_feature_controller/window_feature_controller.cc
++++ b/chrome/browser/ui/window_feature_controller/window_feature_controller.cc
+@@ -8,6 +8,9 @@
+ #include "base/check_deref.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
++#endif
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ 
+ DEFINE_USER_DATA(WindowFeatureController);
+@@ -62,14 +65,16 @@ bool WindowFeatureController::IsTrustedSource() const {
+ bool WindowFeatureController::UsesImmersiveFullscreenMode() const {
+   const bool is_pwa = app_controller_ != nullptr;
+   const bool is_tabbed_window =
+-      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip);
++      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip) &&
++      !barc::IsNativeApplicationMode();
+   return is_pwa || is_tabbed_window;
+ }
+ 
+ bool WindowFeatureController::UsesImmersiveFullscreenTabbedMode() const {
+   const bool is_pwa = app_controller_ != nullptr;
+   const bool is_tabbed_window =
+-      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip);
++      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip) &&
++      !barc::IsNativeApplicationMode();
+   return is_tabbed_window && !is_pwa;
+ }
+ #endif

@@ -19,8 +19,16 @@ public class WindowRegistry {
 
     public var windows: [UUID: BrowserWindowState] {
         get { _windows }
-        set { _windows = newValue }
+        set {
+            let changed = _windows.count != newValue.count ||
+                newValue.contains { _windows[$0.key] !== $0.value }
+            _windows = newValue
+            if changed { registrationRevision &+= 1 }
+        }
     }
+
+    /// Membership/identity only; page and selection updates never advance it.
+    public private(set) var registrationRevision: UInt64 = 0
 
     public init() {}
 

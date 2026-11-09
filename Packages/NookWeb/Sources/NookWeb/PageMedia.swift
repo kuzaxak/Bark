@@ -12,6 +12,14 @@ import Foundation
 
 /// What a frame's, or a whole page's, audio and video are doing.
 public struct PageMedia: Equatable, Sendable {
+    /// Native controllable-session state can be unavailable. This is not an
+    /// assertion that capture, uploads or every page player are inactive.
+    public var isKnown: Bool
+    public var canPlay: Bool
+    public var canPause: Bool
+    public var title: String?
+    public var artist: String?
+    public var album: String?
     /// Audio or video longer than a notification sound, playing or paused, or a streaming
     /// service's player.
     public var hasMedia: Bool
@@ -28,9 +36,13 @@ public struct PageMedia: Equatable, Sendable {
     public var handlesPreviousTrack: Bool
     public var handlesNextTrack: Bool
 
-    public init(hasMedia: Bool = false, isAudible: Bool = false, isPlaying: Bool = false, isMuted: Bool = false,
+    public init(isKnown: Bool = true, hasMedia: Bool = false, isAudible: Bool = false, isPlaying: Bool = false, isMuted: Bool = false,
                 hasVideo: Bool = false, isPlayingVideo: Bool = false,
-                handlesPreviousTrack: Bool = false, handlesNextTrack: Bool = false) {
+                handlesPreviousTrack: Bool = false, handlesNextTrack: Bool = false,
+                canPlay: Bool = true, canPause: Bool = true, title: String? = nil, artist: String? = nil, album: String? = nil) {
+        self.isKnown = isKnown
+        self.canPlay = canPlay; self.canPause = canPause
+        self.title = title; self.artist = artist; self.album = album
         self.hasMedia = hasMedia
         self.isAudible = isAudible
         self.isPlaying = isPlaying
