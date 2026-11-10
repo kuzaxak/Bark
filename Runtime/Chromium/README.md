@@ -142,7 +142,7 @@ function prepare_native_candidate
         git apply "$runtime/$patch.patch"; or return 1
     end
     # Isolate the pinned Rust runtime behind its fixed C ABI. Existing
-    # universal/iOS static archives remain unchanged.
+    # universal static archives remain unchanged.
     set -l blocker_target "$argv[1]/build/native-adblock-x64"
     env MACOSX_DEPLOYMENT_TARGET=13.0 cargo rustc --locked --release \
         --target x86_64-apple-darwin --target-dir "$blocker_target" \

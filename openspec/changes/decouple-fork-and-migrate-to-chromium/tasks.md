@@ -35,7 +35,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 3.2 Move `BrowserConfiguration` and profile storage access behind a WebKit adapter; verify shared-profile spaces and private-session isolation with regression tests.
 - [ ] 3.3 Adapt `PageSession`, `WebViewProvider`, and `PageSessionDelegate`; verify navigation, URL/title state and close behavior using existing package checks.
 - [ ] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
-- [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds and the existing iOS target remain buildable.
+- [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.
 
 ## 3a. Shared smart-tab policy (after G2, before G4 completion)
 
@@ -113,7 +113,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 9.1 Run the complete compatibility, extension and migration matrices on both architectures; attach concise results to the review/ticket and keep transient logs outside commits.
 - [ ] 9.2 Compare candidate measurements against the frozen per-architecture budgets; record pass/fail and any explicitly accepted change before promotion.
 - [ ] 9.3 Prepare opt-in canary/beta rollout, recovery instructions and named security ownership; verify a release candidate can use the runbook without undocumented steps.
-- [ ] 9.4 After qualification, remove transitional macOS WebKit paths and flags while retaining iOS/import support; verify both desktop builds, iOS build and final runtime suite.
+- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite.
 
 ## Workflow follow-up
 

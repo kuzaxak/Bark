@@ -16,5 +16,4 @@ left out: they exist for `$redirect`, which WebKit's content rule lists cannot
 do.
 
 Because this is GPL-3.0 code Nook does not own, the macOS build links it and
-ships as a notarized DMG. The iOS build excludes it via a single `#if os(iOS)`
-in `ScriptletResources.swift`.
+ships as a notarized DMG.

@@ -329,10 +329,6 @@ extension PageSession: WKUIDelegate {
 
 private extension WKNavigationAction {
     var isMiddleClick: Bool {
-        #if os(macOS)
         buttonNumber == 2
-        #else
-        false
-        #endif
     }
 }

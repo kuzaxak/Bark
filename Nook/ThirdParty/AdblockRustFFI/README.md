@@ -6,17 +6,13 @@ Files: `Cargo.toml` + `src/lib.rs` (crate), `include/nook_adblock.h` (hand-writt
 
 ## Consumer
 
-`build.sh` wraps the release static library and the header in `NookAdblock.xcframework` (currently one slice, `macos-arm64`). `Packages/NookBlocker/Package.swift` declares it as a `binaryTarget` named `NookAdblockFFI` and depends on it directly; there is no bridging header and no `HEADER_SEARCH_PATHS`/`LIBRARY_SEARCH_PATHS` entry in the Xcode project. Swift files import it as `import NookAdblockFFI`.
+`build.sh` wraps the release static library and the header in `NookAdblock.xcframework` (one slice, `macos-arm64_x86_64`). `Packages/NookBlocker/Package.swift` declares it as a `binaryTarget` named `NookAdblockFFI` and depends on it directly; there is no bridging header and no `HEADER_SEARCH_PATHS`/`LIBRARY_SEARCH_PATHS` entry in the Xcode project. Swift files import it as `import NookAdblockFFI`.
 
 ## Rebuild
 
     ./build.sh
 
 Requires rustup with the `aarch64-apple-darwin` target (default on Apple Silicon). The script runs `cargo test`, builds release with LTO, and re-creates `NookAdblock.xcframework` from the fresh `.a` and the header. Commit the updated xcframework. Bump the `adblock` version in `Cargo.toml` to upgrade; re-run the tests since the API moves between minor versions.
-
-## iOS slices
-
-Phase 3 of the iOS port. Uncomment the stanza in `build.sh` after `rustup target add aarch64-apple-ios aarch64-apple-ios-sim`, build for each target, and add the resulting `-library`/`-headers` pairs to the `xcodebuild -create-xcframework` invocation so the xcframework carries an iOS and iOS-simulator slice alongside macos-arm64.
 
 ## Thread safety
 

@@ -140,7 +140,6 @@ docs/*
 tasks/
 .superpowers/
 .playwright-mcp/
-build-ios/
 
 # Local maintainer notes
 CLAUDE.md

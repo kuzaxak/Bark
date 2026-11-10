@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "NookWeb",
-    platforms: [.macOS("15.5"), .iOS("26.0")],
+    platforms: [.macOS("15.5")],
     products: [
         .library(name: "NookWeb", targets: ["NookWeb"]),
     ],
@@ -20,8 +20,7 @@ let package = Package(
         .target(
             name: "NookWeb",
             dependencies: [
-                // Page muting reaches a private WebKit call through NSTask and nm; macOS only.
-                .target(name: "MuteableWKWebView", condition: .when(platforms: [.macOS])),
+                "MuteableWKWebView",
                 .product(name: "NookTabsCore", package: "NookTabsCore"),
                 .product(name: "NookSettings", package: "NookSettings"),
                 .product(name: "NookBlocker", package: "NookBlocker"),

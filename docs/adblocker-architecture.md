@@ -12,7 +12,7 @@ compiled `WKContentRuleList`s, and everything WebKit cannot express is done by N
 scripts, injected into `WKWebView` as `WKUserScript`s.
 
 The code is `Packages/NookBlocker/Sources/NookBlocker/`, Foundation and WebKit only, with
-no AppKit, so it ports to iOS unchanged. It reaches the app through two protocols in
+no AppKit. It reaches the app through two protocols in
 `BlockablePage.swift`: `BlockablePage` (one live page: `itemID`, `isOAuthFlow`, `webView`)
 and `ContentBlockerHost` (the live pages, the shared `WKUserContentController`, and a hook
 run against each freshly made controller). `PageSession` in `Packages/NookWeb` is the only

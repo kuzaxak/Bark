@@ -81,7 +81,7 @@ The media candidate must use `proprietary_codecs = true` and `ffmpeg_branding = 
 
 Run the same cases on native Intel and Apple Silicon. Do not infer ARM acceleration or latency from Intel execution or universal compilation. Preserve decoder attribution and aggregate process measurements outside commits; performance runs remain deferred.
 
-A hardware/service capability may be explicitly scoped before the published matrix is frozen; already mandatory workflows cannot silently become optional. iOS remains WebKit and is not qualified by these macOS results. Exact runtime version must appear in shipped diagnostics. Qualification is blocked until one-runtime profile binding, native surfaces and ordinary extension lifecycle exist; all outcome columns intentionally remain unqualified.
+A hardware/service capability may be explicitly scoped before the published matrix is frozen; already mandatory workflows cannot silently become optional. Exact runtime version must appear in shipped diagnostics. Qualification is blocked until one-runtime profile binding, native surfaces and ordinary extension lifecycle exist; all outcome columns intentionally remain unqualified.
 
 ## Resource policy and settings
 

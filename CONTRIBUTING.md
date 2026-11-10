@@ -33,25 +33,18 @@ You need an Apple Silicon Mac and Xcode 26 or later.
    ```
    Swift packages resolve on their own the first time the project opens.
 
-4. **Build and run**
-   - Set your Development Team under Signing & Capabilities
-   - Press `Cmd + R` to build and run
+4. **Build**
 
-   To check that your change compiles without a signing team:
+   `Bark.app` is the native shell around a pinned Chromium engine. The `NookNativeShell` scheme builds the shell framework and the outer app against the engine's committed headers:
    ```bash
-   xcodebuild -scheme Nook -configuration Debug -arch "$(uname -m)" -derivedDataPath build \
-     CODE_SIGN_IDENTITY="-" CODE_SIGNING_REQUIRED=NO CODE_SIGNING_ALLOWED=NO
+   xcodebuild -scheme NookNativeShell -configuration Release -destination 'generic/platform=macOS' \
+     -derivedDataPath build ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build
    ```
-
-   A build made this way has no iCloud entitlement, so it never touches CloudKit and Settings → Spaces says sync needs a signed build. To try space sync, make a signed test build with the team's Developer ID identity and provisioning profile; it lands in `build/release/Nook.app`, signed and not notarized:
-   ```bash
-   NOOK_PROVISIONING_PROFILE_PATH=~/Downloads/Nook_Developer_ID.provisionprofile scripts/release.sh 0.0.0 --app-only
-   ```
-   On another Mac, remove the quarantine from a copy of it (`xattr -dr com.apple.quarantine Nook.app`), since it is not notarized. Both copies use the Production CloudKit environment, as every Developer ID build does.
+   Running it needs the published engine as well; "Building the app" in `Runtime/Chromium/README.md` stages a runnable bundle from both.
 
    Space sync's record types live in `scripts/cloudkit/schema.ckdb`. CloudKit refuses a save that carries a field the Production environment lacks, so before every release run `scripts/cloudkit/check-production-schema.sh path/to/management-token` (a CloudKit management token from CloudKit Console → Settings → Tokens & Keys). It lists what Production lacks and fails; then import the schema with `scripts/cloudkit/import-schema.sh path/to/management-token`, deploy it to Production in CloudKit Console, and run the check again.
 
-There is no app test target. Logic with its own checks lives in `Checks/` folders beside each package's sources and in `scripts/tests/`; each file says how to run it. `Packages/NookTabsCore` and `Packages/NookWeb` also have `swift test` suites.
+There is no app test target. Logic with its own checks lives in `Checks/` folders beside each package's sources and in `scripts/tests/`; each file says how to run it. Every package with a `Tests/` folder has a `swift test` suite, and CI runs them on each pull request.
 
 ## Code Style & Standards
 
@@ -65,7 +58,7 @@ There is no app test target. Logic with its own checks lives in `Checks/` folder
 ### Compatibility & OS Versions
 
 - **Minimum deployment target is macOS 15.5 (Sequoia), Apple Silicon.** Do not add `#available` guards for versions below it.
-- **APIs newer than macOS 15.5** (macOS 26 and 27) need an `#available` check with a Sequoia fallback. Every pull request's build is launched on macOS 15 in CI to catch a missed guard.
+- **APIs newer than macOS 15.5** (macOS 26 and 27) need an `#available` check with a Sequoia fallback.
 
 ## Pull Request Process
 

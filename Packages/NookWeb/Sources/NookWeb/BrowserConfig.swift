@@ -50,8 +50,8 @@ public class BrowserConfiguration {
         // User agent for better compatibility with Client Hints support
         config.applicationNameForUserAgent = "Version/\(PlatformUserAgent.safariVersion) Safari/605.1.15"
 
-        // Clipboard, picture-in-picture, inline playback and the inspector are spelled differently
-        // per platform; see BrowserConfig+macOS.swift and BrowserConfig+iOS.swift.
+        // Clipboard, picture-in-picture, inline playback and the inspector; see
+        // BrowserConfig+macOS.swift.
         BrowserConfiguration.applyPlatformPreferences(to: config)
 
         // Note: webExtensionController will be set by ExtensionManager during initialization

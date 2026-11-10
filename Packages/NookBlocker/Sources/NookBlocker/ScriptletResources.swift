@@ -10,9 +10,7 @@
 //
 //  Those bodies are GPL-3.0 and Raymond Hill's, not Nook's, so Nook's App Store
 //  exception cannot reach them. macOS ships them and is distributed only as a
-//  notarized DMG. iOS, whose only channel is the App Store, must not. That is
-//  the `#if os(iOS)` below, and it is a licence boundary rather than a feature
-//  flag: do not make it conditional on anything else.
+//  notarized DMG.
 //
 
 import Foundation
@@ -24,11 +22,6 @@ enum ScriptletResources {
 
     /// JSON array of `adblock::resources::Resource`, or nil when there is none.
     static func json() -> String? {
-        #if os(iOS)
-        // See the file comment. Without a body every `##+js()` rule resolves to
-        // nothing, which is where the whole app stood before September 2026.
-        return nil
-        #else
         guard let url = Bundle.module.url(forResource: "scriptlets", withExtension: "json", subdirectory: "Resources"),
               let data = try? Data(contentsOf: url),
               let text = String(data: data, encoding: .utf8)
@@ -38,6 +31,5 @@ enum ScriptletResources {
         }
         log.info("Loaded scriptlet resources (\(data.count, privacy: .public) bytes)")
         return text
-        #endif
     }
 }

@@ -40,19 +40,17 @@ import NookWeb
     var accentColor: Color { get }
     func copyToPasteboard(_ string: String)
     func share(_ url: URL)
-    /// False on iOS, where there is one scene and no split view. Menus hide the
-    /// items that would call into either.
+    /// False where there is one scene and no split view. Menus hide the items that would
+    /// call into either.
     var supportsMultipleWindows: Bool { get }
-    /// False on iOS, which reads and writes no space files. Menus hide Export Space and
+    /// False where the app reads and writes no space files. Menus hide Export Space and
     /// Import Space.
     var supportsSpaceFiles: Bool { get }
-    /// iCloud sync of spaces; nil on iOS, where menus and Settings leave it out.
+    /// iCloud sync of spaces; when nil, menus and Settings leave it out.
     var spaceSync: (any SpaceSyncControls)? { get }
 }
 
 extension TabActions {
-    /// macOS keeps this default; iOS overrides it. A default rather than a
-    /// `#if os` so the shared protocol file stays platform-free.
     public var supportsMultipleWindows: Bool { true }
     public var supportsSpaceFiles: Bool { true }
     public var spaceSync: (any SpaceSyncControls)? { nil }

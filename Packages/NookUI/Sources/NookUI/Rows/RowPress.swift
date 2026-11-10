@@ -10,9 +10,7 @@
 //
 
 import CoreGraphics
-#if canImport(AppKit)
 import AppKit
-#endif
 
 public struct RowPress {
     public static let dragThreshold: CGFloat = 4
@@ -52,11 +50,7 @@ public struct RowPress {
 
     /// The event being handled is the left mouse button's.
     @MainActor public static var isMouseEvent: Bool {
-        #if canImport(AppKit)
         guard let type = NSApp?.currentEvent?.type else { return false }
         return [.leftMouseDown, .leftMouseDragged, .leftMouseUp].contains(type)
-        #else
-        return false
-        #endif
     }
 }

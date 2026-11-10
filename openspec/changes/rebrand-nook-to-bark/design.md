@@ -6,7 +6,7 @@ See [proposal.md](proposal.md) and the identity/continuity specs. The user confi
 
 The current target bundle ID is `ee.qdo.nook`; release entitlements specify `538SB59LX4.ee.qdo.nook` and `iCloud.ee.qdo.nook`. `SpaceSyncAvailability.containerID` in `Packages/NookTabsCore/Sources/NookTabsCore/SpaceSync.swift` hardcodes the container, and `SpaceSyncManager` explicitly creates it. Sync uses private and shared databases, zone shares, and `Sync/spaces.json` beside the tab data. Signature/profile checks in `scripts/sign-app.sh` hardcode the old App ID. These are coordinated changes, not a search-and-replace of visible strings.
 
-`App/Main.swift` runs `LegacyDataMigration` before constructing app state. That migrator automatically copies selected historical stores/defaults into the running bundle's domain. Its source list omits the current `ee.qdo.nook`, and comments mention another historical ID. It cannot be reused blindly for the new clean-start behavior.
+The WebKit app's entry, `App/Main.swift` on `develop`, runs `LegacyDataMigration` before constructing app state; Bark does not run it. That migrator automatically copies selected historical stores/defaults into the running bundle's domain. Its source list omits the current `ee.qdo.nook`, and comments mention another historical ID. It cannot be reused blindly for the new clean-start behavior.
 
 The logo is present in `Nook/logo.icon`, `Nook/logo-dev.icon`, `Nook/Assets.xcassets/nook-logo-1024.imageset`, and repository assets. Product naming also appears in project/scheme names, menus, onboarding, shared UI, plist descriptions, Sparkle appcasts, release scripts, and upstream-oriented README links.
 
@@ -42,7 +42,7 @@ Apple documents that a container [cannot be renamed or deleted after creation](h
 Implementation sequence:
 
 1. Confirm access to the existing developer team and availability of the proposed identifiers. Register the new explicit App ID and new iCloud container; associate only the intended Bark container, CloudKit service and push capability with the new identity.
-2. Generate matching development and Developer ID provisioning profiles. Update debug, CI, release and iOS entitlement/configuration files deliberately. Configure helper IDs independently; do not grant all helpers cloud access.
+2. Generate matching development and Developer ID provisioning profiles. Update debug, CI and release entitlement/configuration files deliberately. Configure helper IDs independently; do not grant all helpers cloud access.
 3. Create the required record types, fields, indexes and roles in the new container using the maintained CloudKit schema tooling under `scripts/cloudkit/`; test in development, then deploy the schema to production. Do not copy old user records, zone shares or invitations.
 4. Change the explicit runtime container configuration, entitlement validation, share acceptance validation and scripts to the new ID. Run the existing production-schema and CloudKit availability checks against the new container.
 5. Start each first-time Bark account with fresh account binding, zones, subscriptions, device registration and `CKSyncEngine` state. Never import `Sync/spaces.json`, server change tokens, share metadata, zone-owner references, deletion tombstones or old device identities from Nook.
@@ -98,12 +98,12 @@ Audit remaining `Nook`, `nook`, upstream URLs and historical bundle prefixes wit
 | B0: Identity provisioning | New App ID/container registered, required schema deployed, signed prototype launches and accesses only the new production container on both architectures |
 | B1: Transition behavior | Fresh-start and existing space-file import, account lifecycle, old-invite rejection and new-share tests pass |
 | B2: Visual identity | Selected original mark rendered in app/installer; Bark naming complete |
-| B3: Mechanical rename and documentation | Project/packages/scripts build on Intel and Apple Silicon, iOS target still builds, README rewritten |
+| B3: Mechanical rename and documentation | Project/packages/scripts build on Intel and Apple Silicon, README rewritten |
 | B4: Distribution rehearsal | Old -> Bark -> next Bark verified, fresh install and existing Bark-account cases verified, reset notice included |
 | B5: Release | Publish the identity/reset release separately before Chromium cutover, then collect limited-user feedback |
 
 Rollback uses the previous signed app with its untouched local data and old cloud service. Bark data remains in the new container and is never pushed back into Nook automatically. Once users create new Bark records, a rollback notice must explain that the two datasets remain separate. The accepted reset is a transition to a new namespace, not an instruction to destroy the old namespace now.
 
-Planning estimate: 1-3 engineer-weeks for identity/provisioning, fresh-start behavior, renaming and release rehearsals, plus logo selection and external provisioning/review time. Re-estimate if any iOS App Store replacement path or complex updater installer is required. No custom user-data or CloudKit-record migration is budgeted.
+Planning estimate: 1-3 engineer-weeks for identity/provisioning, fresh-start behavior, renaming and release rehearsals, plus logo selection and external provisioning/review time. Re-estimate if a complex updater installer is required. No custom user-data or CloudKit-record migration is budgeted.
 
 Standalone planning publication keeps this change under `openspec/changes/`. When its implementation is published with the specs, sync requirements into current specs and archive the implemented change on the feature branch; track remaining production rollout/live verification in tickets. Do not commit one-off verification snapshots or logs.

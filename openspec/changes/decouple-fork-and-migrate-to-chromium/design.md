@@ -28,13 +28,13 @@ See [proposal.md](proposal.md) for scope and the five capability specs for obser
 | Other consumers | Downloads, `DevMCPServer`, `BrowserToolExecutor`, vault/passkeys, cookie tools and native media helpers reach WebKit | Include them in parity testing and the adapter migration |
 | Distribution | Sparkle feed already points to `kuzaxak/Nook`; README links mostly point upstream | Product/release independence is partly present, documentation independence is not |
 | Repository | GitHub reports public fork of `nook-browser/Nook`, no child forks, default branch `pawl-dev`; local working branch differs | Choose the implementation base deliberately; local remote changes do not detach GitHub's fork network |
-| Platforms | README says Apple Silicon/macOS 15.5+; release and CI scripts request `arm64 x86_64`; iOS target and shared packages exist | User confirms Intel and Apple Silicon; correct README and verify both runtime/dependency slices |
+| Platforms | README says Apple Silicon/macOS 15.5+; release and CI scripts request `arm64 x86_64`; shared packages exist | User confirms Intel and Apple Silicon and removed the iOS and WebKit app targets from this branch; correct README and verify both runtime/dependency slices |
 
 ## Goals / Non-Goals
 
 **Goals:** a narrow boundary between native product logic and Chromium; one stable identity per profile; a maintainable engine update process; repeatable measurement and recoverable cutover.
 
-**Non-goals:** rewriting the UI in Electron, a new cross-platform UI, a Windows/Linux release, replacing CloudKit with Chrome Sync, recreating every Chrome service, or keeping a permanent user-facing dual-engine mode. iOS keeps WebKit behind the same product-facing seams where practical. A CEF binary or Chromium source dependency is not a replacement for independent ownership of Barc itself.
+**Non-goals:** rewriting the UI in Electron, a new cross-platform UI, a Windows/Linux release, replacing CloudKit with Chrome Sync, recreating every Chrome service, or keeping a permanent user-facing dual-engine mode. This branch builds neither an iOS app nor a WebKit macOS app; the WebKit app keeps building from `develop`. A CEF binary or Chromium source dependency is not a replacement for independent ownership of Barc itself.
 
 ## Decisions
 
@@ -76,7 +76,7 @@ Application core: tab tree, history, settings, synchronization, actions
                              |
 Browser engine contracts: profile, page, surface, events, capabilities
                   /                          \
-      Chromium adapter (macOS)       WebKit adapter (iOS/transitional)
+      Chromium adapter (macOS)       WebKit adapter (transitional)
                   |
         Objective-C++/C bridge
                   |
@@ -94,7 +94,7 @@ Chromium browser contexts / extension services / WebUI / child processes
 - The window's look is judged against the owner's running Arc. Arc comparison values, measured on 2026-11-09 from a 1920x991 window at 1x: window buttons are 12pt with centres at x=20, 40, 60 and y=24; sidebar toggle, back, forward and reload share that row at about x=87, 157, 191, 225; the address control is about 232x36pt at (8, 46); the page starts at x=247 and sits 10pt from the top, right and bottom edges with corners of about 6pt.
 - Reuse that bounded sibling host for the default sidebar address editor and command-palette card. Keep palette text, search and actions in the existing mounted owner; only field focus belongs to the card's hosting root. Remove hosts and observers when closed. History menus read a bounded snapshot from Chromium and dispatch stable navigation-entry IDs against the live controller, with page/profile/window admission at selection; do not maintain a second history cache.
 - Submit new-tab and split searches through the same profile-owned Chromium search path as address edits. Keep a cold background query in existing device-local open-page metadata and closed snapshots until it is consumed or superseded; private queries stay in memory. Persist the query only, never a credential-expanded URL or POST body, and do not start a renderer merely to resolve a background query. Address suggestions capture the edited page's profile; new-tab palette suggestions use the destination space's profile.
-- Build a WebKit adapter first and run existing behavior through it. This gives a bisectable seam extraction before changing the engine. Remove the macOS WebKit runtime only after Chromium parity; retain the iOS adapter.
+- Build a WebKit adapter first and run existing behavior through it. This gives a bisectable seam extraction before changing the engine. This branch no longer builds the WebKit app: its remaining WebKit code is removed piece by piece, and the WebKit app on `develop` is the reference for existing behavior.
 
 ### 3. A profile owns the browser context and extensions
 
@@ -351,13 +351,13 @@ An isolated Intel CEF run confirmed file-backed resource readback with live page
 | --- | --- | --- |
 | G0: Baseline and release decisions | Fixed compatibility/extension matrix, per-architecture performance budgets, Intel/Apple Silicon dependency audit, build/security ownership, data inventory | Mandatory workflows recorded before functional testing; comparison setup approved before performance qualification |
 | G1: Runtime feasibility | Intel browser-layer build and executable bridge regressions; CEF evaluated and full Chromium selected | Intel evidence establishes the integration boundary; failures block dependent features. ARM, interactive native checks and installed signing remain release gates |
-| G2: Engine seams | WebKit running behind new contracts, no engine types in shared product interfaces | Existing package and UI checks pass on macOS; iOS still builds |
+| G2: Engine seams | WebKit running behind new contracts, no engine types in shared product interfaces | Existing package and UI checks pass on macOS |
 | G3: Chromium vertical slice | Intel profiles, page lifetime, navigation, internal pages, extension install/update | Intel profile suite and extension core matrix pass; carry the same cases to final ARM qualification |
 | G4: Feature and migration parity | Remaining browsing integrations, journaled conversion and recovery | End-to-end feature matrix plus interruption/failure tests pass |
 | G5: Distribution readiness | ARM build after the integrated Intel replacement, Barc identity, standalone repository path, signed/notarized packages, update rehearsal | Both architecture slices verified; old-to-new-to-next update succeeds and recoverability verified |
 | G6: Release qualification | Native Intel/Apple Silicon execution, opt-in internal/canary use, then beta, then stable | Compatibility/performance gates pass on both architectures; engine update process exercised |
 
-Keep WebKit as the default through seam extraction. Use separate test profiles and an explicit restart-time engine choice in development/canary builds; never dynamically switch a live profile or silently mix engine stores. Freeze application schema churn around cutover. After a stable qualification period, remove transitional macOS WebKit code and flags while preserving iOS and necessary legacy import support.
+The WebKit app, built from `develop`, stays the daily browser and the fallback until cutover; this branch builds only Bark. Use separate test profiles; never dynamically switch a live profile or silently mix engine stores. Freeze application schema churn around cutover. Remove the remaining WebKit code from this branch piece by piece, keeping the read-only import of the WebKit app's data.
 
 Planning estimate, not a delivery commitment: G0/G1 2-4 engineer-weeks; G2 3-5; G3/G4 10-18 with the full Chromium path; G5/G6 3-6, plus 2-4 calendar weeks of beta observation. Budget roughly 4-8 months for one experienced full-time engineer, revisiting after G1; a qualified CEF path may reduce engine-maintenance work. Separate UI/runtime/release work can proceed concurrently once contracts stabilize, without assuming any particular team size.
 

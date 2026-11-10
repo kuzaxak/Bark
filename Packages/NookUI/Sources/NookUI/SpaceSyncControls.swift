@@ -3,8 +3,8 @@
 //  SpaceSyncControls.swift
 //  NookUI
 //
-//  iCloud sync of spaces as Settings and the space menu see it. The macOS app conforms with
-//  its CloudKit engine; iOS has none, and the controls stay hidden.
+//  iCloud sync of spaces as Settings and the space menu see it. The app conforms with its
+//  CloudKit engine.
 //
 
 import Foundation

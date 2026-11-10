@@ -3,8 +3,7 @@
 # manifest. Pass a commit SHA to pin a specific one, otherwise takes the newest
 # commit that touched src/js/resources.
 #
-# These bodies are GPL-3.0 and are not Nook's. The iOS target must not ship them;
-# see the #if os(iOS) in ScriptletResources.swift.
+# These bodies are GPL-3.0 and are not Nook's; see ScriptletResources.swift.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

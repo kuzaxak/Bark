@@ -69,7 +69,6 @@ public struct ProfilesSettingsView: View {
             }
     }
 
-    #if os(macOS)
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
             Text("A profile keeps its own logins, cookies and history. Each space uses one profile, and several spaces can share it.")
@@ -153,31 +152,6 @@ public struct ProfilesSettingsView: View {
         .background(shape.fill(NookDesign.Surface.raised))
         .overlay(shape.strokeBorder(NookDesign.Surface.hairline, lineWidth: NookDesign.Size.hairlineWidth))
     }
-    #else
-    private var content: some View {
-        Form {
-            Section {
-                ForEach(tabs.profiles) { profile in
-                    NavigationLink {
-                        ProfileDetailForm(profile: profile, profilePageError: $profilePageError)
-                            .navigationTitle(profile.name)
-                    } label: {
-                        LabeledContent(profile.name, value: spaceCount(profile))
-                    }
-                    .swipeActions {
-                        if tabs.profiles.count > 1 && tabs.profileEngine == .webKit {
-                            Button("Delete", role: .destructive) { pendingDelete = profile }
-                        }
-                    }
-                }
-                Button("New Profile", systemImage: "plus", action: addProfile)
-            } footer: {
-                Text("A profile keeps its own logins, cookies and history. Each space uses one profile, and several spaces can share it.")
-            }
-        }
-        .formStyle(.grouped)
-    }
-    #endif
 
     private func spaceCount(_ profile: ProfileSummary) -> String {
         switch profile.spaceIDs.count {

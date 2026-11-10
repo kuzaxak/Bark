@@ -49,10 +49,6 @@ actor FaviconGlow {
     }
 
     private static func cgImage(_ image: PlatformImage) -> CGImage? {
-        #if os(macOS)
         image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        #else
-        image.cgImage
-        #endif
     }
 }

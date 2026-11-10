@@ -4,7 +4,7 @@ import PackageDescription
 
 let package = Package(
     name: "NookSettings",
-    platforms: [.macOS("15.5"), .iOS("26.0")],
+    platforms: [.macOS("15.5")],
     products: [
         .library(name: "NookSettings", targets: ["NookSettings"]),
     ],

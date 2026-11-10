@@ -1,4 +1,0 @@
-module NookAdblockFFI {
-    header "nook_adblock.h"
-    export *
-}

@@ -11,11 +11,7 @@ import NookTabsCore
 import SwiftUI
 import NookDesign
 import NookWeb
-#if os(macOS)
 import AppKit
-#else
-import UIKit
-#endif
 
 public struct SpacesSettingsView: View {
     @Environment(TabsController.self) private var tabs
@@ -42,8 +38,8 @@ public struct SpacesSettingsView: View {
 
     private var spaces: [SpaceRecord] { tabs.orderedSpaces.filter { !$0.isAgent } }
 
-    /// Sync controls when levels can be set; nil on iOS, in an unsigned build and while the tabs
-    /// are read-only.
+    /// Sync controls when levels can be set; nil in an unsigned build and while the tabs are
+    /// read-only.
     private var sync: (any SpaceSyncControls)? {
         guard let sync = actions?.spaceSync, sync.status.availability.takesLevels else { return nil }
         return sync
@@ -429,12 +425,8 @@ public struct SpacesSettingsView: View {
     }
 
     private static func copy(_ text: String) {
-        #if os(macOS)
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-        #else
-        UIPasteboard.general.string = text
-        #endif
     }
 
     /// Names the Macs that synced the old copy, since one running a version of Nook from before

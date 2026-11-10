@@ -2,7 +2,6 @@
 import SwiftUI
 import WebKit
 
-#if canImport(AppKit)
 @_exported import MuteableWKWebView
 import AppKit
 import CoreAudio
@@ -68,60 +67,6 @@ extension PlatformImage {
 @MainActor func systemAppName(for url: URL) -> String? {
     NSWorkspace.shared.urlForApplication(toOpen: url)?.deletingPathExtension().lastPathComponent
 }
-#else
-import UIKit
-
-let appDidBecomeActive = UIApplication.didBecomeActiveNotification
-
-public enum PlatformUserAgent {
-    /// nil keeps WebKit's own iPhone or iPad string, completed by applicationNameForUserAgent
-    /// in BrowserConfig+iOS.swift.
-    public static let custom: String? = nil
-
-    /// Safari ships with iOS, so its version is the system's.
-    public static let safariVersion: String = osVersion
-}
-
-/// Never installed on iOS; the type exists so PageSession's stored property compiles.
-public typealias AudioDeviceListenerProc = @convention(c) () -> Void
-
-extension WKWebView {
-    /// Page muting is the macOS-only MuteableWKWebView target; a phone has one audible page.
-    public var isMuted: Bool { get { false } set {} }
-    /// Pinch zoom is built into UIKit's web view; the AppKit switch has no counterpart.
-    public var allowsMagnification: Bool { get { true } set {} }
-    /// UIKit's origin is top-left, which is what AppKit calls flipped.
-    public var isFlipped: Bool { true }
-    /// UIKit has no drawsBackground key; opacity is the nearest control.
-    public func setDrawsPageBackground(_ draws: Bool) { isOpaque = draws }
-}
-
-public typealias PlatformImage = UIImage
-public typealias PlatformColor = UIColor
-
-extension Image {
-    public init(platformImage: PlatformImage) { self.init(uiImage: platformImage) }
-}
-
-extension Color {
-    public init(platformColor: PlatformColor) { self.init(uiColor: platformColor) }
-}
-
-extension PlatformColor {
-    /// Fallback when a space's accent hex will not parse.
-    public static var defaultAccent: PlatformColor { .tintColor }
-}
-
-extension PlatformImage {
-    var singlePixelCGImage: CGImage? { cgImage }
-}
-
-@MainActor func openWithSystem(_ url: URL) { UIApplication.shared.open(url) }
-
-// canOpenURL needs every scheme declared in Info.plist, so iOS always asks and names no app.
-@MainActor func canOpenWithSystem(_ url: URL) -> Bool { true }
-@MainActor func systemAppName(for url: URL) -> String? { nil }
-#endif
 
 extension PlatformImage {
     /// The colour of a 1x1 snapshot, used to sample a page's background.

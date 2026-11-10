@@ -64,9 +64,6 @@ public final class Profile: NSObject, Identifiable {
         self.id = id
         self.name = name
         self.icon = icon
-        #if !os(macOS)
-        precondition(engine == .webKit, "Chromium profiles are supported only on macOS")
-        #endif
         self.engine = engine
         // Only WebKit opens a data store or reads the saved session cookies.
         self.storedWebKitDataStore = engine == .webKit

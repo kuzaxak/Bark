@@ -700,7 +700,6 @@ final class ChromiumApplication: ChromiumStartupBridge {
     enum LoaderError: Error { case missingSymbol(String), matchedApplicationProtocolRequired }
 }
 
-#if NOOK_CHROMIUM_LIBRARY
 @MainActor
 @_cdecl("barc_native_main")
 public func barcNativeMain(
@@ -715,4 +714,3 @@ public func barcNativeMain(
     }
     return ChromiumApplication.run(framework: framework, arguments: arguments)
 }
-#endif

@@ -65,7 +65,7 @@ You’ll need to set your personal Development Team in Signing to build locally.
 ```
 Nook/
 ├── App/                       # Entry point, AppDelegate, window scene, menu commands
-├── Packages/                  # Local Swift packages shared with the planned iOS port
+├── Packages/                  # Local Swift packages
 │   ├── NookTabsCore/          # Tab tree model: spaces, items, ordering, on-disk store
 │   ├── NookSettings/          # Settings service and every persisted value type
 │   ├── NookDesign/            # Design tokens: radii, spacing, type, motion, surfaces
@@ -108,7 +108,7 @@ Nook follows a manager-based architecture where:
 - **Models** represent data and state using Swift's `@Observable` macro
 - **Components** are SwiftUI views that reactively update based on model changes
 - **BrowserManager** acts as the central coordinator, connecting all managers together
-- **Packages** hold the model, blocker, tweak and shared view code that has no AppKit dependency, so it can be reused by an iOS app
+- **Packages** hold the model, blocker, tweak and shared view code
 
 
 ---

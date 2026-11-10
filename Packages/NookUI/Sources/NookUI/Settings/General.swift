@@ -146,7 +146,6 @@ public struct SettingsGeneralTab: View {
             performanceSection
 
             Section {
-                #if os(macOS)
                 LabeledContent(tabs.profileEngine == .chromium ? "Initial search engine for new profiles" : "Default search engine") {
                     HStack(spacing: NookDesign.Spacing.md) {
                         searchEnginePicker(settings)
@@ -161,13 +160,6 @@ public struct SettingsGeneralTab: View {
                         .controlSize(.small)
                     }
                 }
-                #else
-                // A picker inside a LabeledContent's trailing slot gets squeezed
-                // to "G...gle" at phone width. The Form's own picker row does not,
-                // so the add button takes a row of its own.
-                searchEnginePicker(settings)
-                Button("Add Search Engine…") { showingAddEngine = true }
-                #endif
 
                 if tabs.profileEngine == .chromium || (nookSettings.searchEngineId == SearchProvider.kagi.rawValue
                     || tabs.profiles.contains(where: { $0.searchEngineId == SearchProvider.kagi.rawValue })) {

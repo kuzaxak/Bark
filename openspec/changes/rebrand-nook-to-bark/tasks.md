@@ -4,7 +4,7 @@ Planning only. The user accepted fresh local/cloud state under a new Bark App ID
 
 ## 1. Identity and provisioning (B0)
 
-- [ ] 1.1 Confirm registration of the `ee.qdo.bark` bundle ID and the `iCloud.ee.qdo.bark` container, developer-team access and existing iOS/App Store records; deliver an identity map identifying any required new store record instead of an invalid in-place ID change.
+- [ ] 1.1 Confirm registration of the `ee.qdo.bark` bundle ID and the `iCloud.ee.qdo.bark` container, developer-team access and existing App Store records; deliver an identity map identifying any required new store record instead of an invalid in-place ID change.
 - [ ] 1.2 Register the new explicit App ID and container with required CloudKit/push capabilities; verify their association in the developer account without attaching the old container as a fallback.
 - [ ] 1.3 Generate new development/release provisioning and update the intended target IDs/entitlements; verify the signed app and issued profile agree on application prefix, bundle ID, cloud container and environment.
 - [ ] 1.4 Update `scripts/sign-app.sh`, configuration and provisioning-secret references; run signing validation for native Intel and Apple Silicon builds and document the new setup without secret values.
@@ -37,9 +37,9 @@ Planning only. The user accepted fresh local/cloud state under a new Bark App ID
 
 ## 5. Mechanical rename and documentation (B3)
 
-- [ ] 5.1 Rename app/project/targets/schemes/entrypoint and update resource paths; verify the documented Xcode build succeeds for Intel and Apple Silicon and the iOS target still builds.
+- [ ] 5.1 Rename app/project/targets/schemes/entrypoint and update resource paths; verify the documented Xcode build succeeds for Intel and Apple Silicon.
 - [ ] 5.2 Rename core/settings/design package products and imports in a coherent slice; run their existing package checks and app builds.
-- [ ] 5.3 Rename web/UI/blocker/tweaks package products and imports in a coherent slice; run their existing checks and both platform builds without changing runtime behavior.
+- [ ] 5.3 Rename web/UI/blocker/tweaks package products and imports in a coherent slice; run their existing checks and both architecture builds without changing runtime behavior.
 - [ ] 5.4 Update build, signing, DMG, CI and release path references and runner allowlists; verify a staged release pipeline reaches packaging with Bark names.
 - [ ] 5.5 Rewrite README, contribution/support destinations and trademark/attribution presentation for Bark; verify Intel/Apple Silicon documentation and all public links while retaining upstream license/authorship.
 - [ ] 5.6 Audit remaining Nook names and old identifiers against an explicit compatibility/attribution allowlist; verify no unexplained old product branding or active old cloud configuration remains.

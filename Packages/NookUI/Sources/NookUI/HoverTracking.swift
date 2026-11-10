@@ -8,11 +8,7 @@
 // NSTrackingArea delegates hover detection to AppKit, bypassing the traversal.
 
 import SwiftUI
-#if os(macOS)
 import AppKit
-#endif
-
-#if os(macOS)
 
 // MARK: - NSViewRepresentable
 
@@ -135,26 +131,6 @@ struct HoverTrackingModifier: ViewModifier {
         )
     }
 }
-
-#else
-
-public enum HoverResync {
-    @MainActor public static func request(after delay: TimeInterval) {}
-}
-
-
-/// Hover is a pointer notion; on iOS SwiftUI's own `.onHover` is cheap and only fires
-/// with a connected pointer.
-private struct HoverTrackingModifier: ViewModifier {
-    var always = false
-    let onHover: (Bool) -> Void
-
-    func body(content: Content) -> some View {
-        content.onHover(perform: onHover)
-    }
-}
-
-#endif
 
 extension View {
     /// Drop-in replacement for `.onHover` that uses `NSTrackingArea` instead of

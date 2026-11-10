@@ -9,11 +9,7 @@
 //
 
 import SwiftUI
-#if canImport(AppKit)
 import AppKit
-#elseif canImport(UIKit)
-import UIKit
-#endif
 
 public enum NookDesign {
 
@@ -51,12 +47,7 @@ public enum NookDesign {
         public static let rowGap: CGFloat = 2
         public static let sectionGap: CGFloat = 10
         public static let rowPadding: CGFloat = 8
-        #if os(iOS)
-        // Depth 5 at 20 would eat 100 of a 390pt phone row.
-        public static let folderIndent: CGFloat = 16
-        #else
         public static let folderIndent: CGFloat = 20
-        #endif
         public static let sidebarTop: CGFloat = 52     // the unified title band; the lights sit centred in it
         public static let titleFade: CGFloat = 20      // trailing fade on long row titles
     }
@@ -72,11 +63,7 @@ public enum NookDesign {
     // MARK: - Size
 
     public enum Size {
-        #if os(iOS)
-        public static let row: CGFloat = 44
-        #else
         public static let row: CGFloat = 32
-        #endif
         public static let iconButton: CGFloat = 28
         public static let favoriteTile: CGFloat = 48   // a favorite tile's height; at the default sidebar width tiles are 55 pt wide
         public static let favoriteBorder: CGFloat = 2  // the selected favorite's edge
@@ -87,13 +74,7 @@ public enum NookDesign {
         public static let essentialsTile: CGFloat = 44
         public static let essentialsFavicon: CGFloat = 20
         public static let navRow: CGFloat = 28
-        #if os(iOS)
-        // The floating bar's control row. 50 clears the 44pt touch minimum with
-        // room for the field's own inset.
-        public static let bottomBar: CGFloat = 50
-        #else
         public static let bottomBar: CGFloat = 40
-        #endif
         public static let spaceIcon: CGFloat = 14      // switcher and header symbol
         public static let rowGlyph: CGFloat = 13       // inline glyphs in a row: audio, lock, chevron
         public static let rowButton: CGFloat = 20      // hover-only close/unload button in a row
@@ -276,7 +257,6 @@ public enum NookDesign {
         public static func themeTintOpacity(intensity: Double) -> Double { 0.3 + 0.62 * intensity }
         public static let agentFrameWidth: CGFloat = 3        // frame around the Agent space's page
 
-        #if os(macOS)
         public static let windowBackground = Color(nsColor: .windowBackgroundColor)
         public static let raised = Color(nsColor: .controlBackgroundColor) // floating cards, active tile
         /// Link preview cards: near black in dark appearance and white in light, as Arc's are, so
@@ -291,12 +271,6 @@ public enum NookDesign {
                 ? NSColor.white.withAlphaComponent(0.14)
                 : NSColor.white.withAlphaComponent(0.72)
         })
-        #else
-        public static let windowBackground = Color(uiColor: .systemBackground)
-        public static let raised = Color(uiColor: .secondarySystemBackground) // floating cards, active tile
-        public static let selection = Color.primary.opacity(0.1)
-        public static let previewCard = Color(uiColor: .systemBackground)
-        #endif
 
         /// Sidebar/window chrome fill: the space accent fading to the system window background.
         /// The top stop is a tint, not the raw accent, so it reads as light/washed out for every
@@ -305,7 +279,6 @@ public enum NookDesign {
         public static func containerGradient(accent: Color, isActive: Bool) -> LinearGradient {
             let end = windowBackground
             let topBlend = isActive ? 0.55 : 0.8
-            #if os(macOS)
             // Blend per appearance: `blended` freezes `.windowBackgroundColor` to whatever
             // appearance is current when the body runs, which flips the top light/dark.
             let base = NSColor(accent)
@@ -316,11 +289,6 @@ public enum NookDesign {
                 }
                 return color
             })
-            #else
-            // ponytail: iOS not built yet; NSColor.blended(withFraction:of:) has no UIKit
-            // equivalent. Flat opacity tint stands in until an iOS window chrome exists.
-            let top = accent.opacity(1 - topBlend)
-            #endif
             return LinearGradient(colors: [top, end], startPoint: .top, endPoint: .bottom)
         }
     }

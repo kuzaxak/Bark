@@ -29,8 +29,8 @@ None: no durable specs existed before these two planning changes.
 
 ## Impact
 
-Touches `App/`, onboarding, menus and settings, shared UI, `Nook/Info.plist`, `NookiOS/Info.plist`, Xcode products/schemes, `Nook/logo.icon`, `Nook/logo-dev.icon`, asset catalogs, `assets/`, README and project policies, and signing/DMG/release scripts. Audit persistence keys, bundle IDs, CloudKit identifiers, native messaging, MCP discovery, and file types before renaming any of them.
+Touches `App/`, onboarding, menus and settings, shared UI, `Nook/Info.plist`, Xcode products/schemes, `Nook/logo.icon`, `Nook/logo-dev.icon`, asset catalogs, `assets/`, README and project policies, and signing/DMG/release scripts. Audit persistence keys, bundle IDs, CloudKit identifiers, native messaging, MCP discovery, and file types before renaming any of them.
 
 The user selected a new App ID and CloudKit container, then explicitly accepted a fresh start instead of cloud-data migration. The plan therefore replaces `ee.qdo.nook` and `iCloud.ee.qdo.nook` with the proposed Bark identifiers, regenerates provisioning, and resets synchronization state. Both Intel and Apple Silicon remain required; rewrite README accordingly. Logo style and final repository/domain names remain selection decisions; this plan creates no artwork and makes no external repository or cloud changes.
 
-This change is independent of renderer implementation and should be tested and released separately from the Chromium migration. Rebrand shared and iOS-facing surfaces consistently while leaving the iOS engine unchanged.
+This change is independent of renderer implementation and should be tested and released separately from the Chromium migration. Rebrand shared surfaces consistently.
