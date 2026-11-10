@@ -151,6 +151,12 @@ struct ChromiumSidebarShell: View {
                 }
             }
             .background {
+                if browserManager.showDefaultBrowserPrompt, registry.activeWindowId == window.id {
+                    ChromiumPagePanel(content: DefaultBrowserToast(onMakeDefault: { browserManager.setAsDefaultBrowser() },
+                        onNotNow: { browserManager.dismissDefaultBrowserPrompt() }))
+                }
+            }
+            .background {
                 if window.isExtensionLibraryVisible {
                     ChromiumPagePanel(content: ChromiumSiteControls(browserManager: browserManager, window: window,
                         settings: storage.settings, anchor: siteControlsAnchor).defaultAppStorage(storage.defaults), fill: .window)

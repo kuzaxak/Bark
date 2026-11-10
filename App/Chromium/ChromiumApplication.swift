@@ -542,6 +542,10 @@ final class ChromiumApplication: ChromiumStartupBridge {
         guard window > 0, acceptsWindows,
               let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
         didPresentInitialWindow = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+            guard let self, self.acceptsWindows else { return }
+            self.browserManager?.offerDefaultBrowserIfNeeded()
+        }
         admission?.restoreSavedWindows(open: bridge.profile_open_window, close: bridge.window_close, canPresent: { [weak self] in self?.acceptsWindows == true })
     }
 
