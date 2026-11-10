@@ -548,13 +548,10 @@ struct CommandPaletteView: View {
         @Binding var hoveredIndex: Int?
         var maximumHeight: CGFloat = 470
         let onSelect: (SearchManager.SearchSuggestion) -> Void
-        /// A scroll view takes all the height it is offered, so it is sized to its rows.
-        @State private var contentHeight: CGFloat = 0
 
         var body: some View {
             ScrollViewReader { proxy in
-            ScrollView(.vertical) {
-            LazyVStack(alignment: .leading, spacing: 5) {
+            FittedRowsScroll(maxHeight: maximumHeight, spacing: 5) {
                 ForEach(suggestions.indices, id: \.self) { index in
                     let suggestion = suggestions[index]
                     let isHovered = hoveredIndex == index
@@ -596,10 +593,7 @@ struct CommandPaletteView: View {
                         .id(index)
                 }
             }
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
-            }
             .scrollIndicators(.hidden)
-            .frame(height: min(contentHeight, maximumHeight))
             .onChange(of: selectedIndex) { _, index in proxy.scrollTo(index) }
             }
         }
