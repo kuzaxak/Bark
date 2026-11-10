@@ -52,6 +52,40 @@ struct PageLoadingProgressBar: View {
     }
 }
 
+/// The bridge reports no load fraction, so the bar sweeps while the page loads.
+struct NativePageLoadingBar: View {
+    let isLoading: Bool
+
+    /// Where the sweep is `time` seconds in: it enters from the left and leaves on the right.
+    static func sweep(at time: TimeInterval, width: CGFloat) -> (x: CGFloat, width: CGFloat) {
+        let period = 1.2
+        let phase = CGFloat(time.truncatingRemainder(dividingBy: period) / period)
+        let length = width * 0.3
+        return (x: -length + (width + length) * phase, width: length)
+    }
+
+    var body: some View {
+        GeometryReader { geo in
+            if isLoading {
+                TimelineView(.animation) { context in
+                    let sweep = Self.sweep(at: context.date.timeIntervalSinceReferenceDate, width: geo.size.width)
+                    ZStack(alignment: .leading) {
+                        Rectangle().fill(NookDesign.Surface.fillPressed)
+                        Rectangle()
+                            .fill(LinearGradient(colors: [.blue.opacity(0.7), .cyan.opacity(0.5)],
+                                                 startPoint: .leading, endPoint: .trailing))
+                            .frame(width: sweep.width)
+                            .offset(x: sweep.x)
+                    }
+                }
+            }
+        }
+        .frame(height: 2.5)
+        .clipped()
+        .allowsHitTesting(false)
+    }
+}
+
 @MainActor
 private class WebViewLoadingObserver: ObservableObject {
     @Published var progress: CGFloat = 0

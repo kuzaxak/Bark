@@ -147,6 +147,7 @@ extension BrowserManager: TabEventObserver {
         // opening tabs by hand never checked it and no cap could bind.
         compositorManager?.pageActivated(session.itemID)
         updateSidebarPiP(new: session, previous: previous)
+        session.sampleNativeTopBarColor()
     }
 
     func tabClosed(itemID: UUID) {

@@ -56,6 +56,8 @@ private final class AppearanceWatch: NSObject {
 
     let follower = ChromiumAppearance(settings: settings)
     defer { withExtendedLifetime(follower) {} }
+    var heard = 0
+    follower.onEffectiveChange = { heard += 1 }
     precondition(application.appearance?.name == .darkAqua, "the saved mode applies at startup")
     precondition(application.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua)
     let afterStart = watch.changes
@@ -66,6 +68,7 @@ private final class AppearanceWatch: NSObject {
     precondition(application.appearance?.name == .aqua, "Light applies live")
     precondition(application.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .aqua)
     precondition(watch.changes > afterStart, "Chromium hears the live change")
+    precondition(heard > 0, "the app hears it too, for what depends on it")
 
     settings.appearanceMode = .dark
     drain()

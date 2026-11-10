@@ -6,6 +6,8 @@ import NookSettings
 @MainActor
 final class ChromiumAppearance {
     private let observer: NSObjectProtocol
+    private var effective: NSKeyValueObservation?
+    var onEffectiveChange: (@MainActor () -> Void)?
 
     init(settings: NookSettingsService) {
         applyAppearanceMode(settings.appearanceMode)
@@ -13,6 +15,9 @@ final class ChromiumAppearance {
             MainActor.assumeIsolated {
                 if let settings { applyAppearanceMode(settings.appearanceMode) }
             }
+        }
+        effective = NSApp.observe(\.effectiveAppearance) { [weak self] _, _ in
+            MainActor.assumeIsolated { self?.onEffectiveChange?() }
         }
     }
 

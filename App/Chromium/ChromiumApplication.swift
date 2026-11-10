@@ -351,6 +351,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
+            appearance?.onEffectiveChange = { [weak manager, registry] in
+                guard let manager else { return }
+                manager.tabs.sessions.forEach { $0.resetNativeTopBarSample() }
+                registry.windows.values.forEach { manager.frontPage(in: $0)?.sampleNativeTopBarColor() }
+            }
             manager.tabs.blocker.setEnabled(storage.settings.adBlockerEnabled)
             let blocker = ChromiumContentBlocker(bridge: bridge, manager: manager.tabs.blocker)
             guard blocker.synchronize(), pageHost.configureBlocker(blocker), downloads.start(manager: storage.downloads) else { completion(nil); return }

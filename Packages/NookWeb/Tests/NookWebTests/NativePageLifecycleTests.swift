@@ -13,8 +13,75 @@ import SwiftData
 #if os(macOS)
 import AppKit
 
+private func cornerPNG(topRight: [UInt8], rest: [UInt8]) throws -> Data {
+    let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 4, pixelsHigh: 4, bitsPerSample: 8,
+        samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 16, bitsPerPixel: 32))
+    let bytes = try #require(bitmap.bitmapData)
+    for y in 0..<4 {
+        for x in 0..<4 {
+            let color = x == 3 && y == 0 ? topRight : rest
+            for channel in 0..<3 { bytes[y * 16 + x * 4 + channel] = color[channel] }
+            bytes[y * 16 + x * 4 + 3] = 255
+        }
+    }
+    return try #require(bitmap.representation(using: .png, properties: [:]))
+}
+
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func nativeTopBarColorSamplesThePageOncePerDomain() async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let native = f.host.finishCreate(0)
+        native.allowsThumbnails = true
+        let id = try #require(f.window.selectedItemID)
+        let page = try #require(f.tabs.session(for: id))
+        func navigate(_ address: String, finish: Bool = true) {
+            let url = URL(string: address)!
+            native.onEvent?(.started(url))
+            native.onEvent?(.committed(url, sameDocument: false))
+            if finish { native.onEvent?(.finished(url, title: "Fixture", isReload: false)) }
+        }
+        func nextCapture(_ count: Int) async -> Bool {
+            for _ in 0..<200 where native.thumbnailCompletions.count < count { try? await Task.sleep(for: .milliseconds(10)) }
+            return native.thumbnailCompletions.count == count
+        }
+        func red(_ color: NSColor?) -> Bool { (color?.usingColorSpace(.deviceRGB)?.redComponent ?? 0) > 0.9 }
+        func blue(_ color: NSColor?) -> Bool { (color?.usingColorSpace(.deviceRGB)?.blueComponent ?? 0) > 0.9 }
+        let redCorner = try cornerPNG(topRight: [255, 0, 0], rest: [0, 255, 0])
+        let blueCorner = try cornerPNG(topRight: [0, 0, 255], rest: [0, 255, 0])
+        let before = native.thumbnailCompletions.count
+
+        navigate("https://first.test/a")
+        #expect(await nextCapture(before + 1))
+        native.thumbnailCompletions[before](redCorner)
+        #expect(red(page.topBarBackgroundColor), "the top right corner colours the bar")
+
+        navigate("https://first.test/b")
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(native.thumbnailCompletions.count == before + 1, "one sample per domain")
+
+        navigate("https://second.test/a")
+        #expect(await nextCapture(before + 2))
+        navigate("https://third.test/a", finish: false)
+        native.thumbnailCompletions[before + 1](blueCorner)
+        #expect(red(page.topBarBackgroundColor), "a reply from a page already left is dropped")
+
+        native.onEvent?(.finished(URL(string: "https://third.test/a")!, title: "Fixture", isReload: false))
+        #expect(await nextCapture(before + 3))
+        native.thumbnailCompletions[before + 2](nil)
+        #expect(red(page.topBarBackgroundColor), "no frame yet keeps the colour")
+        page.sampleNativeTopBarColor()
+        #expect(await nextCapture(before + 4), "selecting the page asks again")
+        native.thumbnailCompletions[before + 3](blueCorner)
+        #expect(blue(page.topBarBackgroundColor))
+        page.sampleNativeTopBarColor()
+        try await Task.sleep(for: .milliseconds(450))
+        #expect(native.thumbnailCompletions.count == before + 4, "a sampled domain is not asked again")
+        page.resetNativeTopBarSample()
+        page.sampleNativeTopBarColor()
+        #expect(await nextCapture(before + 5), "an appearance change samples again")
+    }
+
     @Test func nativeBlockNoticeRequiresProvenanceAndContinuePublishesBeforeLoad() async throws {
         let f = try NativeModelFixture(nativeBlocking: true); defer { f.cleanup() }
         let native = f.host.finishCreate(0)

@@ -179,6 +179,7 @@ public final class PageSession: NSObject, Identifiable {
     /// The last page whose text went to history search, so a re-commit does not read it again.
     @ObservationIgnored var lastTextCapture: (url: URL, at: Date)?
     @ObservationIgnored var nativePageTextTask: Task<Void, Never>?
+    @ObservationIgnored var nativeTopBarSample: Task<Void, Never>?
 
     // MARK: - Media State
 
@@ -698,6 +699,7 @@ public final class PageSession: NSObject, Identifiable {
                     controller?.pageCommitted(itemID: itemID, url: newURL)
                     controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
                 }
+                sampleNativeTopBarColor()
             }
             if let finalTitle, let newURL {
                 updateTitle(finalTitle)
@@ -866,6 +868,7 @@ public final class PageSession: NSObject, Identifiable {
 
     deinit {
         nativePageTextTask?.cancel()
+        nativeTopBarSample?.cancel()
         nativeBoostTask?.cancel()
         if let nativeBoostObserver { NotificationCenter.default.removeObserver(nativeBoostObserver) }
         profileAwaitCancellable?.cancel()

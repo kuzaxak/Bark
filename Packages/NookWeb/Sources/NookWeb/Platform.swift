@@ -69,6 +69,15 @@ extension PlatformImage {
 }
 
 extension PlatformImage {
+    /// The colour of the image's top right pixel.
+    var topRightPixelColor: PlatformColor? {
+        guard let image = cgImage(forProposedRect: nil, context: nil, hints: nil), image.width > 0, image.height > 0,
+              let corner = image.cropping(to: CGRect(x: image.width - 1, y: 0, width: 1, height: 1)) else { return nil }
+        return PlatformImage(cgImage: corner, size: NSSize(width: 1, height: 1)).singlePixelColor
+    }
+}
+
+extension PlatformImage {
     /// The colour of a 1x1 snapshot, used to sample a page's background.
     public var singlePixelColor: PlatformColor? {
         guard let cgImage = singlePixelCGImage else { return nil }

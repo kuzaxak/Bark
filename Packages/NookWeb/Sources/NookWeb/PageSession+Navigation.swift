@@ -483,6 +483,33 @@ extension PageSession {
             (controller.session(for: itemID) === self || (isDetached && nativeResourceHost != nil))
     }
 
+    /// The top bar takes the colour at the page's top right, once per domain as on WebKit. A page
+    /// with no rendered frame yet refuses or returns nothing, and selecting it asks again.
+    public func sampleNativeTopBarColor() {
+        guard usesNativePageHost, !isLoading, let page = navigation, let domain = url.host,
+              lastTopBarDomain != domain else { return }
+        let serial = nativeNavigationSerial
+        nativeTopBarSample?.cancel()
+        nativeTopBarSample = Task { @MainActor [weak self, weak page] in
+            try? await Task.sleep(for: .milliseconds(300))
+            guard !Task.isCancelled, let self, let page, self.navigation === page,
+                  self.nativeNavigationSerial == serial else { return }
+            _ = page.captureThumbnail { [weak self, weak page] bytes in
+                guard let self, let page, self.navigation === page, self.nativeNavigationSerial == serial,
+                      let bytes, let color = PlatformImage(data: bytes)?.topRightPixelColor else { return }
+                self.lastSampledDomain = domain
+                self.lastTopBarDomain = domain
+                self.topBarBackgroundColor = color
+            }
+        }
+    }
+
+    /// A page's colours follow the appearance, so its next selection samples again.
+    public func resetNativeTopBarSample() {
+        lastSampledDomain = nil
+        lastTopBarDomain = nil
+    }
+
     /// Same opt-in delay and coalescing as WebKit; no page creation or retry loop.
     func scheduleNativePageTextCapture(sameDocument: Bool) {
         guard usesNativePageHost, let page = navigation, let controller,
