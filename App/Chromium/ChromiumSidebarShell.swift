@@ -18,6 +18,7 @@ struct ChromiumSidebarShell: View {
     let aiService: AIService
     let setPageHidden: (Bool) -> Void
     @State private var dialogFocus = ChromiumDialogFocus()
+    @Environment(\.colorScheme) private var baseColorScheme
 
     private func focusShownPage() {
         guard !window.nativePresentationIsPreparing, let page = browserManager.frontPage(in: window),
@@ -26,9 +27,26 @@ struct ChromiumSidebarShell: View {
         _ = native.selectNativePage()
     }
 
-    var body: some View {
+    private var spaceChrome: ChromiumSpaceChrome {
+        let space = window.spaceID.flatMap { browserManager.tabs.space($0) }
+        return ChromiumSpaceChrome(isIncognito: window.isIncognito, draftTheme: window.spaceDraftTheme,
+            spaceID: window.spaceID, agentSpaceID: browserManager.tabs.agentSpaceID,
+            spaceTheme: space?.theme, spaceAccentHex: space?.accentHex)
+    }
+
+    private func applyAccent() {
+        guard let hex = spaceChrome.accentHex, registry.activeWindowId == window.id else { return }
+        browserManager.gradientColorManager.setImmediate(SpaceGradient.accent(hex: hex))
+    }
+
+    private var layers: some View {
         ZStack {
+            ChromiumSpaceBackground(chrome: spaceChrome, isActive: registry.activeWindowId == window.id)
+                .animation(NookDesign.Motion.standard, value: window.spaceID)
+                .animation(NookDesign.Motion.standard, value: window.spaceDraftTheme == nil)
             SpacesSideBarView()
+                .environment(\.nookBaseColorScheme, baseColorScheme)
+                .spaceThemeAppearance(spaceChrome.theme)
                 .opacity(window.isSidebarMenuVisible ? 0 : 1)
                 .allowsHitTesting(!window.isSidebarMenuVisible)
             if let page = browserManager.tabs.selectedSession(in:window), let notice = page.nativeVaultNotice {
@@ -43,6 +61,7 @@ struct ChromiumSidebarShell: View {
             }
             if window.isSidebarMenuVisible {
                 SidebarMenu()
+                    .spaceThemeAppearance(spaceChrome.theme)
             }
             if window.isSidebarAIChatVisible {
                 SidebarAIChat()
@@ -91,6 +110,10 @@ struct ChromiumSidebarShell: View {
                 }
             }
         }
+    }
+
+    private var hostedLayers: some View {
+        layers
             .environmentObject(browserManager)
             .environmentObject(browserManager.gradientColorManager)
             .environmentObject(hover)
@@ -102,12 +125,20 @@ struct ChromiumSidebarShell: View {
             .environment(registry)
             .environment(commandPalette)
             .environment(organizer)
+            .environment(\.nookUsesDefaultSpaceTheme, spaceChrome.theme == nil)
             .defaultAppStorage(storage.defaults)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .onAppear { applyAccent() }
+            .onChange(of: spaceChrome.accentHex) { _, _ in applyAccent() }
+            .onChange(of: registry.activeWindowId) { _, _ in applyAccent() }
             .background {
                 ChromiumPageHeader(browserManager: browserManager, model: window,
                     height: headerHeight, content: AnyView(headerContent))
             }
+    }
+
+    private var paneledLayers: some View {
+        hostedLayers
             .background {
                 if window.isPortraitCaptureVisible, let page = browserManager.frontPage(in: window) {
                     ChromiumPagePanel(content: PortraitCaptureView(session: page)
@@ -146,6 +177,10 @@ struct ChromiumSidebarShell: View {
                         }, fill: .window)
                 }
             }
+    }
+
+    var body: some View {
+        paneledLayers
             .onChange(of: window.isBoostPanelVisible) { _, visible in
                 if visible { window.isPortraitCaptureVisible = false }
             }
@@ -211,6 +246,26 @@ struct ChromiumSidebarShell: View {
         return pages
     }
 
+}
+
+/// The sidebar's fill, the part of WindowView's window background this window has.
+private struct ChromiumSpaceBackground: View {
+    let chrome: ChromiumSpaceChrome
+    let isActive: Bool
+
+    var body: some View {
+        let accent = chrome.tintsPrivate ? SpaceGradient.incognito.primaryColor
+            : chrome.accentHex.map { SpaceGradient.accent(hex: $0).primaryColor } ?? SpaceGradient.default.primaryColor
+        SpaceChromeBackground(theme: chrome.theme, accent: accent, isActive: isActive)
+            .spaceThemeAppearance(chrome.theme)
+            .overlay(chrome.tintsPrivate ? NookDesign.Surface.privateTint : Color.clear)
+            .overlay(Rectangle().fill(NookDesign.Surface.agentGradient)
+                .opacity(chrome.showsAgentGradient ? NookDesign.Surface.agentChromeOpacity : 0))
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .backgroundDraggable()
+            .ignoresSafeArea()
+            .animation(NookDesign.Motion.standard, value: isActive)
+    }
 }
 
 /// A bounded sibling above Chromium's surface, like the existing address editor.

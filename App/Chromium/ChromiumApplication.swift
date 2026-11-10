@@ -29,6 +29,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var settingsWindow: NSWindow?
     private var settingsCloseObserver: NSObjectProtocol?
     private var storage: ChromiumAppStorage?
+    private var appearance: ChromiumAppearance?
     private var quitSave: ChromiumQuitSave?
     private var browserManager: BrowserManager?
     private let mcpManager = MCPManager()
@@ -345,6 +346,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         // the native profile; the CLI hint must never relabel a model profile.
         do {
             let storage = try ChromiumAppStorage(configuration: configuration)
+            appearance = ChromiumAppearance(settings: storage.settings)
             let manager = BrowserManager(settings: storage.settings, windowRegistry: registry,
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,

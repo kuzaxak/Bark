@@ -251,7 +251,7 @@ struct NookApp: App {
 
 // MARK: - Appearance Mode
 
-private func applyAppearanceMode(_ mode: AppearanceMode) {
+func applyAppearanceMode(_ mode: AppearanceMode) {
     switch mode {
     case .system:
         NSApp.appearance = nil  // Follow system
