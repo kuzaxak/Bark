@@ -39,19 +39,19 @@ private struct PrivacyPreferenceSections: View {
             }
         }
 
-        Section("Security") {
-            if browserManager.engine == .webKit {
+        if browserManager.engine == .webKit {
+            Section("Security") {
                 settingToggle(
                     "Warn before opening a site over HTTP",
                     detail: "Nook always tries HTTPS first. Ask before opening a site that only works over HTTP.",
                     isOn: $settings.warnBeforeHTTP
                 )
+                settingToggle(
+                    "Security keys (USB)",
+                    detail: "Sign in and create passkeys with a hardware key, such as a YubiKey, plugged into this Mac.",
+                    isOn: $settings.securityKeysEnabled
+                )
             }
-            settingToggle(
-                "Security keys (USB)",
-                detail: "Sign in and create passkeys with a hardware key, such as a YubiKey, plugged into this Mac.",
-                isOn: $settings.securityKeysEnabled
-            )
         }
 
         Section("Passwords") {

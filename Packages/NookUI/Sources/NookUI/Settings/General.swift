@@ -39,13 +39,8 @@ public struct SettingsGeneralTab: View {
         }
     }
 
-    public var body: some View {
-        if tabs.profileEngine == .chromium {
-            Form { performanceSection }
-                .formStyle(.grouped)
-        } else {
-            webKitSettings
-        }
+    private func shows(_ section: GeneralSettingsSection) -> Bool {
+        section.isShown(chromium: tabs.profileEngine == .chromium)
     }
 
     @ViewBuilder
@@ -90,8 +85,7 @@ public struct SettingsGeneralTab: View {
         }
     }
 
-    @ViewBuilder
-    private var webKitSettings: some View {
+    public var body: some View {
         @Bindable var settings = nookSettings
         Form {
             #if os(macOS)
@@ -99,16 +93,20 @@ public struct SettingsGeneralTab: View {
             Section {
                 DefaultBrowserRow()
                 Toggle("Warn before quitting Nook", isOn: $settings.askBeforeQuit)
-                Toggle("Check for updates automatically", isOn: $checksForUpdates)
-                Toggle("Download and install updates automatically", isOn: $installsUpdates)
-                    .disabled(!checksForUpdates)
+                if shows(.updates) {
+                    Toggle("Check for updates automatically", isOn: $checksForUpdates)
+                    Toggle("Download and install updates automatically", isOn: $installsUpdates)
+                        .disabled(!checksForUpdates)
+                }
             }
 
-            Section {
-                Toggle("Keep videos playing in the sidebar", isOn: $settings.autoPictureInPicture)
-            } footer: {
-                Text("Leaving a tab with a playing video moves it into a small window above the sidebar media controls.")
-                    .settingsFooter()
+            if shows(.sidebarVideo) {
+                Section {
+                    Toggle("Keep videos playing in the sidebar", isOn: $settings.autoPictureInPicture)
+                } footer: {
+                    Text("Leaving a tab with a playing video moves it into a small window above the sidebar media controls.")
+                        .settingsFooter()
+                }
             }
             #endif
 
@@ -129,12 +127,14 @@ public struct SettingsGeneralTab: View {
 
             Section {
                 Toggle("Open a Peek window when clicking on links with Shift held", isOn: $settings.peekOnShiftClick)
-                Toggle("Open a Peek window for links that open in a new tab", isOn: $settings.openNewTabLinksInPeek)
-                VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                    Toggle("Open a Peek window when clicking on links to other sites", isOn: $settings.peekLinksToOtherSites)
-                    Text("Only affects favorites and pinned tabs.")
-                        .font(NookDesign.Font.caption)
-                        .foregroundStyle(.secondary)
+                if shows(.peekFromLinkTargets) {
+                    Toggle("Open a Peek window for links that open in a new tab", isOn: $settings.openNewTabLinksInPeek)
+                    VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
+                        Toggle("Open a Peek window when clicking on links to other sites", isOn: $settings.peekLinksToOtherSites)
+                        Text("Only affects favorites and pinned tabs.")
+                            .font(NookDesign.Font.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             } header: {
                 Text("Peek")
