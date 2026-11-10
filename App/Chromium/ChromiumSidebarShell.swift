@@ -16,6 +16,15 @@ struct ChromiumSidebarShell: View {
     let organizer: TabOrganizerManager
     @ObservedObject var hover: HoverSidebarManager
     let aiService: AIService
+    let setPageHidden: (Bool) -> Void
+    @State private var dialogFocus = ChromiumDialogFocus()
+
+    private func focusShownPage() {
+        guard !window.nativePresentationIsPreparing, let page = browserManager.frontPage(in: window),
+              let native = page.navigation as? ChromiumPageNavigation,
+              browserManager.tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return }
+        _ = native.selectNativePage()
+    }
 
     var body: some View {
         ZStack {
@@ -119,22 +128,13 @@ struct ChromiumSidebarShell: View {
                         .environment(\.tabActions, browserManager)
                         .environment(window)
                         .defaultAppStorage(storage.defaults)
-                        .onAppear { NSApp.keyWindow?.makeFirstResponder(nil) }, fill: .window)
+                        .onAppear { dialogFocus.take(in: window.window) }
+                        .onDisappear { dialogFocus.giveBack(orFocusPage: focusShownPage) }, fill: .window)
                 }
             }
             .background {
-                if window.showsNativeEmptySpace {
-                    ChromiumPagePanel(content: EmptyWebsiteView()
-                        .environmentObject(browserManager.gradientColorManager)
-                        .environment(window)
-                        .environment(registry)
-                        .environment(browserManager.tabs)
-                        .environment(storage.settings)
-                        .environment(\.nookSettings, storage.settings)
-                        .environment(\.tabActions, browserManager)
-                        .defaultAppStorage(storage.defaults)
-                        .onAppear { window.window?.makeFirstResponder(nil) }, fill: .page)
-                }
+                ChromiumNoPagePanel(window: window, browserManager: browserManager, registry: registry,
+                                    storage: storage, setPageHidden: setPageHidden)
             }
             .background {
                 if window.tabSwitcher?.isPresented == true {
@@ -377,4 +377,48 @@ private struct ChromiumPageHeader: NSViewRepresentable {
         anchor.updateHeader()
     }
     static func dismantleNSView(_ anchor: Anchor, coordinator: ()) { anchor.stop() }
+}
+
+/// What the page area shows when the window shows no page of its own: an empty space, or a page
+/// another window holds. Page commands then do nothing, and once no other window shows the
+/// selected page this window shows it. Kept apart from the shell, whose body need not follow
+/// which window holds each page.
+private struct ChromiumNoPagePanel: View {
+    let window: BrowserWindowState
+    let browserManager: BrowserManager
+    let registry: WindowRegistry
+    let storage: ChromiumAppStorage
+    let setPageHidden: (Bool) -> Void
+
+    var body: some View {
+        let tabs = browserManager.tabs
+        let elsewhere = tabs.showsPageElsewhere(in: window)
+        Color.clear
+            .overlay {
+                if window.showsNativeEmptySpace {
+                    ChromiumPagePanel(content: EmptyWebsiteView()
+                        .environmentObject(browserManager.gradientColorManager)
+                        .environment(window)
+                        .environment(registry)
+                        .environment(tabs)
+                        .environment(storage.settings)
+                        .environment(\.nookSettings, storage.settings)
+                        .environment(\.tabActions, browserManager)
+                        .defaultAppStorage(storage.defaults)
+                        .onAppear { window.window?.makeFirstResponder(nil) }, fill: .page)
+                } else if elsewhere, let page = tabs.selectedSession(in: window) {
+                    let item = page.itemID
+                    ChromiumPagePanel(content: PageElsewhereView(title: page.title,
+                        onShowHere: { [window] in tabs.takeControl(item, in: window) },
+                        onGoToWindow: { tabs.showOwnerWindow(of: item) })
+                        .onAppear { window.window?.makeFirstResponder(nil) }, fill: .page)
+                }
+            }
+            .onChange(of: window.showsNativeEmptySpace || elsewhere, initial: true) { _, hidden in
+                setPageHidden(hidden)
+            }
+            .onChange(of: elsewhere) { wasElsewhere, _ in
+                if wasElsewhere { tabs.showSelectedPageHere(in: window) }
+            }
+    }
 }

@@ -5,6 +5,7 @@
 
 #include "chrome/browser/ui/views/frame/barc_runtime_startup_api.h"
 #include "base/functional/callback_forward.h"
+#include "ui/gfx/native_ui_types.h"
 class BrowserWindowInterface;
 class Profile;
 class GURL;
@@ -29,6 +30,16 @@ bool CanResolveApplicationBrowser();
 // Sticky mode identity survives early stop, preventing native queues from
 // falling through to stock/default-profile routing after cancellation.
 bool IsNativeApplicationMode();
+// Find, zoom, reload, print, devtools and history commands of the shown page.
+bool IsPageCommand(int command_id);
+// In native application mode a key runs a Chromium command only for the shown
+// page, for editing, or to ask the app for a window. The app owns every other
+// key, even when it has no action for it.
+bool ApplicationOwnsKeyCommand(int command_id);
+// Also true for a page command while the app shows no page in `window`.
+bool KeyCommandBelongsToApplication(gfx::NativeWindow window, int command_id);
+// Hands a BarcApplicationWindowRequest to the app; Chromium opens no window.
+void RequestApplicationWindow(int32_t request);
 // Captured before ChromeMain, so startup parsing does not query filesystem cwd
 // from the browser UI thread. Empty if unavailable/stopped.
 base::FilePath ApplicationLaunchDirectory();

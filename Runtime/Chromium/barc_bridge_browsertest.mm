@@ -199,6 +199,10 @@
 #include "components/javascript_dialogs/app_modal_dialog_controller.h"
 #include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/prefs/pref_service.h"
+#include "components/bookmarks/common/bookmark_pref_names.h"
+#include "ui/events/test/cocoa_test_event_utils.h"
+#include "base/apple/foundation_util.h"
+#import "ui/base/cocoa/nsmenu_additions.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/test/mock_permission_prompt_factory.h"
 #include "components/permissions/test/mock_permission_request.h"
@@ -4923,10 +4927,17 @@ class BarcApplicationLaunchBrowserTest
               self);
         },
         this);
+    barc_set_runtime_window_request_callback(
+        [](int32_t request, void* pointer) {
+          static_cast<BarcApplicationLaunchBrowserTest*>(pointer)
+              ->window_requests.push_back(request);
+        },
+        this);
     BarcSharedNativeWindowBrowserTest::SetUp();
   }
 
  protected:
+  std::vector<int32_t> window_requests;
   int32_t target = 0;
   bool fallback = false;
   int target_reads = 0;
@@ -5177,35 +5188,36 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
-                       NoWindowCommandsUseExactRegularUUIDAndDockReusesOwner) {
+                       NoWindowCommandsAskTheAppAndDockReusesOwner) {
   ASSERT_TRUE(base::test::RunUntil([&] { return InitialURLsReady(); }));
-  const int32_t original = target;
-  auto* profile = SharedWindow(original)->GetProfile();
-  target = 0;
-  fallback = true;
+  DiscoveryRows before;
+  before.Read();
   NSMenuItem* item = [[NSMenuItem alloc] init];
   item.tag = IDC_NEW_WINDOW;
-  ui_test_utils::BrowserCreatedObserver created;
   [AppController.sharedController commandDispatch:item];
-  auto* next = created.Wait();
-  ASSERT_TRUE(next);
-  EXPECT_EQ(profile, next->GetProfile());
-  EXPECT_NE(original, next->GetSessionID().id());
-  target = next->GetSessionID().id();
-  Admit(target);
-  DiscoveryRows rows;
-  rows.Read();
-  auto row =
-      std::find_if(rows.tabs.begin(), rows.tabs.end(),
-                   [&](const auto& tab) { return tab.window == target; });
-  ASSERT_NE(rows.tabs.end(), row);
-  EXPECT_EQ(0u, row->flags & BARC_DISCOVERY_TAB_APP_FACTORY);
-  const size_t before = rows.windows.size();
+  item.tag = IDC_NEW_INCOGNITO_WINDOW;
+  [AppController.sharedController commandDispatch:item];
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ((std::vector<int32_t>{BARC_APPLICATION_NEW_WINDOW,
+                                  BARC_APPLICATION_NEW_PRIVATE_WINDOW}),
+            window_requests);
+  DiscoveryRows after;
+  after.Read();
+  EXPECT_EQ(before.windows.size(), after.windows.size());
+  // Dock reopen shows the owner the app names and asks for no window.
   [AppController.sharedController applicationShouldHandleReopen:NSApp
                                               hasVisibleWindows:NO];
   base::RunLoop().RunUntilIdle();
-  rows.Read();
-  EXPECT_EQ(before, rows.windows.size());
+  EXPECT_EQ(2u, window_requests.size());
+  // With only a regular profile named, Dock reopen asks the app for New Window.
+  target = 0;
+  fallback = true;
+  [AppController.sharedController applicationShouldHandleReopen:NSApp
+                                              hasVisibleWindows:NO];
+  ASSERT_TRUE(base::test::RunUntil([&] { return window_requests.size() == 3; }));
+  EXPECT_EQ(BARC_APPLICATION_NEW_WINDOW, window_requests.back());
+  after.Read();
+  EXPECT_EQ(before.windows.size(), after.windows.size());
 }
 
 IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
@@ -5217,7 +5229,7 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
   base::test::TestFuture<barc::ApplicationBrowserResult,
                          BrowserWindowInterface*, Profile*>
       completed;
-  barc::RunInApplicationBrowser(1, completed.GetCallback());
+  barc::RunInApplicationBrowser(2, completed.GetCallback());
   uuid = kSharedWork;
   ASSERT_TRUE(completed.Wait());
   EXPECT_EQ(barc::ApplicationBrowserResult::kUnavailable, completed.Get<0>());
@@ -5379,7 +5391,7 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
   base::test::TestFuture<barc::ApplicationBrowserResult,
                          BrowserWindowInterface*, Profile*>
       completed;
-  barc::RunInApplicationBrowser(1, completed.GetCallback());
+  barc::RunInApplicationBrowser(2, completed.GetCallback());
   barc::RuntimeStopped();
   EXPECT_TRUE(barc::RuntimeCallbacksClearedForTesting());
   ASSERT_TRUE(completed.Wait());
@@ -12603,4 +12615,424 @@ IN_PROC_BROWSER_TEST_F(BarcAppLifetimeBrowserTest,
   }
   content::RunAllTasksUntilIdle();
   ASSERT_TRUE(work_alive);
+}
+
+@interface BarcMenuAction : NSObject {
+ @public
+  int runs;
+}
+- (void)run:(id)sender;
+@end
+@implementation BarcMenuAction
+- (void)run:(id)sender {
+  ++runs;
+}
+@end
+
+class BarcNativeKeysBrowserTest : public BarcDiscoveryBrowserTest {
+ public:
+  void SetUp() override {
+    barc_set_runtime_browser_target_callback(
+        [](int32_t, const char*, int32_t, int32_t,
+           BarcApplicationTarget* output, void*) -> int32_t {
+          if (output) *output = {};
+          return 0;
+        }, nullptr);
+    barc_set_runtime_window_request_callback(
+        [](int32_t request, void* pointer) {
+          static_cast<BarcNativeKeysBrowserTest*>(pointer)->window_requests.push_back(request);
+        }, this);
+    BarcDiscoveryBrowserTest::SetUp();
+  }
+
+ protected:
+  NSWindow* Window(BrowserWindowInterface* browser = nullptr) {
+    return (browser ? browser : this->browser())->GetWindow()->GetNativeWindow().GetNativeNSWindow();
+  }
+  static NSMenuItem* Item(NSMenu* menu, NSInteger tag) {
+    for (NSMenuItem* item in menu.itemArray) {
+      if (item.submenu) {
+        if (NSMenuItem* found = Item(item.submenu, tag)) return found;
+      } else if (item.tag == tag) {
+        return item;
+      }
+    }
+    return nil;
+  }
+  static NSMenuItem* Item(int command) { return Item([NSApp mainMenu], command); }
+  // AppKit's event loop makes an event current before dispatching it.
+  NSEvent* MakeCurrent(NSEvent* event) {
+    [NSApp postEvent:event atStart:YES];
+    NSEvent* current = [NSApp nextEventMatchingMask:NSEventMaskFromType(event.type) untilDate:nil
+                                             inMode:NSDefaultRunLoopMode dequeue:YES];
+    EXPECT_EQ(current, [NSApp currentEvent]);
+    return current;
+  }
+  // A key equivalent as AppKit routes it to a key browser window: the window
+  // first, then the matching main menu item, validated and sent to the window.
+  void Press(ui::KeyboardCode key, NSUInteger flags, BrowserWindowInterface* browser = nullptr) {
+    NSWindow* window = Window(browser);
+    [window makeFirstResponder:nil];
+    NSEvent* event = MakeCurrent(cocoa_test_event_utils::SynthesizeKeyEvent(window, true, key, flags));
+    if (![window performKeyEquivalent:event]) {
+      NSMenuItem* item = [[NSApp mainMenu] cr_menuItemForKeyEquivalentEvent:event];
+      if (item && [window validateUserInterfaceItem:item])
+        [NSApp sendAction:item.action to:window from:item];
+    }
+    content::RunAllTasksUntilIdle();
+  }
+  double Zoom() {
+    return zoom::ZoomController::FromWebContents(
+        browser()->GetTabStripModel()->GetActiveWebContents())->GetZoomLevel();
+  }
+  bool FindVisible() { return FindBarController::From(browser())->find_bar()->IsFindBarVisible(); }
+  static size_t Tabs() {
+    size_t tabs = 0;
+    GlobalBrowserCollection::GetInstance()->ForEach([&](BrowserWindowInterface* window) {
+      tabs += window->GetTabStripModel()->count();
+      return true;
+    });
+    return tabs;
+  }
+  static size_t Browsers() {
+    size_t count = 0;
+    GlobalBrowserCollection::GetInstance()->ForEach([&](BrowserWindowInterface*) {
+      ++count;
+      return true;
+    });
+    return count;
+  }
+  std::vector<int32_t> window_requests;
+};
+
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, KeysReachOnlyPageCommandsAndWindowRequests) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t id = browser()->GetSessionID().id();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), embedded_test_server()->GetURL("/title1.html")));
+  ASSERT_NE(0, barc_tab_create(id, embedded_test_server()->GetURL("/title2.html").spec().c_str(), 0));
+  auto* strip = browser()->GetTabStripModel();
+  ASSERT_EQ(2, strip->count());
+  ASSERT_EQ(0, strip->active_index());
+  PrefService* prefs = browser()->GetProfile()->GetPrefs();
+  const bool bar = prefs->GetBoolean(bookmarks::prefs::kShowBookmarkBar);
+  const size_t browsers = Browsers();
+
+  // A main menu key equivalent, a shortcut outside the menu, a view accelerator.
+  Press(ui::VKEY_B, NSEventModifierFlagCommand | NSEventModifierFlagShift);
+  EXPECT_EQ(bar, prefs->GetBoolean(bookmarks::prefs::kShowBookmarkBar));
+  Press(ui::VKEY_2, NSEventModifierFlagCommand);
+  EXPECT_EQ(0, strip->active_index());
+  auto* focus = BrowserView::GetBrowserViewForBrowser(browser())->GetFocusManager();
+  EXPECT_FALSE(focus->IsAcceleratorRegistered(ui::Accelerator(ui::VKEY_F7, ui::EF_NONE)));
+  EXPECT_TRUE(focus->IsAcceleratorRegistered(ui::Accelerator(ui::VKEY_F12, ui::EF_NONE)));
+  EXPECT_TRUE(focus->IsAcceleratorRegistered(ui::Accelerator(ui::VKEY_ESCAPE, ui::EF_NONE)));
+
+  // New Window asks the app, which opens the window it wants; Chromium opens none.
+  Press(ui::VKEY_N, NSEventModifierFlagCommand);
+  EXPECT_EQ(std::vector<int32_t>{BARC_APPLICATION_NEW_WINDOW}, window_requests);
+  EXPECT_EQ(browsers, Browsers());
+
+  Press(ui::VKEY_OEM_MINUS, NSEventModifierFlagCommand);
+  EXPECT_LT(Zoom(), 0);
+  Press(ui::VKEY_F, NSEventModifierFlagCommand);
+  EXPECT_TRUE(FindVisible());
+
+  // With no browser window key, the main menu sends its item to AppController.
+  // A key equivalent follows the same rule there; a click still runs the item.
+  NSMenuItem* new_tab = Item(IDC_NEW_TAB);
+  ASSERT_TRUE(new_tab);
+  const size_t tabs = Tabs();
+  MakeCurrent(cocoa_test_event_utils::SynthesizeKeyEvent(Window(), true, ui::VKEY_T, NSEventModifierFlagCommand));
+  [AppController.sharedController commandDispatch:new_tab];
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(tabs, Tabs());
+  const size_t before_click = Tabs();
+  MakeCurrent(cocoa_test_event_utils::MouseEventWithType(NSEventTypeLeftMouseUp, 0));
+  [AppController.sharedController commandDispatch:new_tab];
+  EXPECT_TRUE(base::test::RunUntil([&] { return Tabs() == before_click + 1; }));
+
+  // Close Window's key goes on to the menu's performClose:, the close button's
+  // path, rather than closing the client through Chromium.
+  NSMenuItem* close = Item(IDC_CLOSE_WINDOW);
+  ASSERT_TRUE(close);
+  const NSUInteger close_flags = NSEventModifierFlagCommand |
+      ([close.keyEquivalent isEqualToString:@"W"] ? NSEventModifierFlagShift : 0);
+  [Window() makeFirstResponder:nil];
+  NSEvent* close_key = MakeCurrent(
+      cocoa_test_event_utils::SynthesizeKeyEvent(Window(), true, ui::VKEY_W, close_flags));
+  ASSERT_EQ(close, [[NSApp mainMenu] cr_menuItemForKeyEquivalentEvent:close_key]);
+  EXPECT_FALSE([Window() performKeyEquivalent:close_key]);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(browsers, Browsers());
+}
+
+// An empty space shows a client with no tab. Its window keys still work: New
+// Window and New Private Window ask the app, and Close Window closes it.
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, EmptySpaceKeepsWindowCommands) {
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  ASSERT_EQ(1, barc_window_set_app_lifetime(work_id));
+  ASSERT_EQ(1u, barc_window_tab_count(work_id));
+  const int32_t tab = barc_window_tab_at(work_id, 0);
+  content::WebContentsDestroyedWatcher destroyed(tabs::TabHandle(tab).Get()->GetContents());
+  ASSERT_EQ(1, barc_tab_close(work_id, tab));
+  destroyed.Wait();
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(work->GetTabStripModel()->empty());
+  window_requests.clear();
+  Press(ui::VKEY_N, NSEventModifierFlagCommand, work);
+  Press(ui::VKEY_N, NSEventModifierFlagCommand | NSEventModifierFlagShift, work);
+  EXPECT_EQ((std::vector<int32_t>{BARC_APPLICATION_NEW_WINDOW,
+                                  BARC_APPLICATION_NEW_PRIVATE_WINDOW}),
+            window_requests);
+  // Chromium reshuffles Close Tab and Close Window for a window without tabs;
+  // the app keeps both as it installed them.
+  NSMenuItem* close_tab = Item(IDC_CLOSE_TAB);
+  NSMenuItem* close = Item(IDC_CLOSE_WINDOW);
+  ASSERT_TRUE(close_tab);
+  ASSERT_TRUE(close);
+  BarcMenuAction* app = [[BarcMenuAction alloc] init];
+  close_tab.target = app;
+  close_tab.action = @selector(run:);
+  [AppController.sharedController setMainWindowForTesting:Window(work)];
+  auto work_alive = work->GetWeakPtr();
+  Press(ui::VKEY_W, NSEventModifierFlagCommand | NSEventModifierFlagShift, work);
+  EXPECT_TRUE(close_tab.action == @selector(run:));
+  EXPECT_FALSE(close_tab.hidden);
+  EXPECT_TRUE(close.action == @selector(performClose:));
+  EXPECT_TRUE(base::test::RunUntil([&] { return !work_alive; }));
+  [AppController.sharedController setMainWindowForTesting:nil];
+}
+
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, WindowCommandsAskTheApp) {
+  const size_t browsers = Browsers();
+  chrome::ExecuteCommand(browser(), IDC_NEW_WINDOW);
+  chrome::ExecuteCommand(browser(), IDC_NEW_INCOGNITO_WINDOW);
+  Press(ui::VKEY_N, NSEventModifierFlagCommand | NSEventModifierFlagShift);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ((std::vector<int32_t>{BARC_APPLICATION_NEW_WINDOW,
+                                  BARC_APPLICATION_NEW_PRIVATE_WINDOW,
+                                  BARC_APPLICATION_NEW_PRIVATE_WINDOW}),
+            window_requests);
+  EXPECT_EQ(browsers, Browsers());
+}
+
+// The app answers some of Chromium's menu items itself, Downloads among them.
+// Their keys reach the app's item, and so do Chromium's shortcuts for that
+// command outside the menu, such as Downloads' Option-Command-L.
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, KeysReachTheAppsMenuItems) {
+  NSMenuItem* downloads = Item(IDC_SHOW_DOWNLOADS);
+  ASSERT_TRUE(downloads);
+  id target = downloads.target;
+  SEL action = downloads.action;
+  BarcMenuAction* app = [[BarcMenuAction alloc] init];
+  downloads.target = app;
+  downloads.action = @selector(run:);
+  [Window() makeFirstResponder:nil];
+  NSEvent* menu_key = MakeCurrent(cocoa_test_event_utils::SynthesizeKeyEvent(
+      Window(), true, ui::VKEY_J, NSEventModifierFlagCommand | NSEventModifierFlagShift));
+  EXPECT_EQ(downloads, [[NSApp mainMenu] cr_menuItemForKeyEquivalentEvent:menu_key]);
+  EXPECT_FALSE([Window() performKeyEquivalent:menu_key]);
+  NSEvent* shortcut = MakeCurrent(cocoa_test_event_utils::SynthesizeKeyEvent(
+      Window(), true, ui::VKEY_L, NSEventModifierFlagCommand | NSEventModifierFlagOption));
+  EXPECT_FALSE([[NSApp mainMenu] cr_menuItemForKeyEquivalentEvent:shortcut]);
+  EXPECT_TRUE([Window() performKeyEquivalent:shortcut]);
+  EXPECT_EQ(1, app->runs);
+  downloads.target = target;
+  downloads.action = action;
+}
+
+// Chromium keeps the keys it reserves, such as Close Window's, from pages.
+// Other keys the app owns still reach the page first.
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, PagesNeverSeeReservedKeys) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), embedded_test_server()->GetURL("/title1.html")));
+  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(contents,
+      "window.keys = []; addEventListener('keydown', e => { keys.push(e.code); e.preventDefault(); })"));
+  NSView* page = contents->GetRenderWidgetHostView()->GetNativeView().GetNativeNSView();
+  ASSERT_TRUE([Window() makeFirstResponder:page]);
+  NSMenuItem* close = Item(IDC_CLOSE_WINDOW);
+  ASSERT_TRUE(close);
+  const NSUInteger close_flags = NSEventModifierFlagCommand |
+      ([close.keyEquivalent isEqualToString:@"W"] ? NSEventModifierFlagShift : 0);
+  NSEvent* close_key = MakeCurrent(
+      cocoa_test_event_utils::SynthesizeKeyEvent(Window(), true, ui::VKEY_W, close_flags));
+  EXPECT_FALSE([Window() performKeyEquivalent:close_key]);
+  NSEvent* bookmarks = MakeCurrent(cocoa_test_event_utils::SynthesizeKeyEvent(
+      Window(), true, ui::VKEY_B, NSEventModifierFlagCommand | NSEventModifierFlagShift));
+  EXPECT_TRUE([Window() performKeyEquivalent:bookmarks]);
+  EXPECT_EQ("KeyB", content::EvalJs(contents,
+      "new Promise(done => { const check = () => keys.length ? done(keys.join()) :"
+      " setTimeout(check, 10); check(); })"));
+}
+
+// The app's sidebar and panels are AppKit fields inside Chromium's content view.
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, AppKitFieldsUndoAndRedo) {
+  NSWindow* window = Window();
+  NSTextField* field = [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, 200, 24)];
+  [window.contentView addSubview:field];
+  ASSERT_TRUE([window makeFirstResponder:field]);
+  NSTextView* editor = base::apple::ObjCCastStrict<NSTextView>(window.firstResponder);
+  [editor insertText:@"abc" replacementRange:editor.selectedRange];
+  [[NSRunLoop currentRunLoop] runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.05]];
+  auto target = [&](SEL action) -> NSResponder* {
+    for (NSResponder* responder = editor; responder; responder = responder.nextResponder) {
+      if ([responder respondsToSelector:action]) return responder;
+    }
+    return nil;
+  };
+  auto enabled = [&](NSMenuItem* item) {
+    NSResponder* responder = target(item.action);
+    return responder && (![responder respondsToSelector:@selector(validateUserInterfaceItem:)] ||
+                         [(id<NSUserInterfaceValidations>)responder validateUserInterfaceItem:item]);
+  };
+  NSMenuItem* undo = Item(IDC_CONTENT_CONTEXT_UNDO);
+  NSMenuItem* redo = Item(IDC_CONTENT_CONTEXT_REDO);
+  ASSERT_TRUE(undo);
+  ASSERT_TRUE(redo);
+  EXPECT_TRUE(enabled(undo));
+  [NSApp sendAction:undo.action to:target(undo.action) from:undo];
+  EXPECT_EQ(0u, editor.string.length);
+  EXPECT_TRUE(enabled(redo));
+  [NSApp sendAction:redo.action to:target(redo.action) from:redo];
+  EXPECT_TRUE([editor.string isEqualToString:@"abc"]);
+  [window makeFirstResponder:nil];
+  [field removeFromSuperview];
+}
+
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, HiddenPageTakesNoPageCommands) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t id = browser()->GetSessionID().id();
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), embedded_test_server()->GetURL("/title1.html")));
+  auto* contents = browser()->GetTabStripModel()->GetActiveWebContents();
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  NSMenuItem* reload = Item(IDC_RELOAD);
+  ASSERT_TRUE(reload);
+  EXPECT_TRUE([Window() validateUserInterfaceItem:reload]);
+  EXPECT_EQ(0, barc_window_set_page_hidden(0, 1));
+  ASSERT_EQ(1, barc_window_set_page_hidden(id, 1));
+
+  Press(ui::VKEY_OEM_MINUS, NSEventModifierFlagCommand);
+  EXPECT_EQ(0, Zoom());
+  Press(ui::VKEY_F, NSEventModifierFlagCommand);
+  EXPECT_FALSE(FindVisible());
+  EXPECT_FALSE([Window() validateUserInterfaceItem:reload]);
+  EXPECT_FALSE(view->AcceleratorPressed(ui::Accelerator(ui::VKEY_F12, ui::EF_NONE)));
+  content::RunAllTasksUntilIdle();
+  EXPECT_FALSE(DevToolsWindow::GetInstanceForInspectedWebContents(contents));
+
+  // The physical window shows no page whichever of its clients is selected.
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(work);
+  ASSERT_TRUE(personal);
+  ASSERT_EQ(1, barc_window_set_page_hidden(work_id, 1));
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return BrowserView::GetBrowserViewForBrowser(personal)->IsSelectedForNativeWindow();
+  }));
+  auto* work_zoom = zoom::ZoomController::FromWebContents(
+      work->GetTabStripModel()->GetActiveWebContents());
+  auto* personal_zoom = zoom::ZoomController::FromWebContents(
+      personal->GetTabStripModel()->GetActiveWebContents());
+  Press(ui::VKEY_OEM_MINUS, NSEventModifierFlagCommand, personal);
+  EXPECT_EQ(0, personal_zoom->GetZoomLevel());
+  EXPECT_EQ(0, work_zoom->GetZoomLevel());
+  ASSERT_EQ(1, barc_window_set_page_hidden(personal_id, 0));
+  Press(ui::VKEY_OEM_MINUS, NSEventModifierFlagCommand, personal);
+  EXPECT_LT(personal_zoom->GetZoomLevel(), 0);
+
+  ASSERT_EQ(1, barc_window_set_page_hidden(id, 0));
+  EXPECT_TRUE([Window() validateUserInterfaceItem:reload]);
+  Press(ui::VKEY_OEM_MINUS, NSEventModifierFlagCommand);
+  EXPECT_LT(Zoom(), 0);
+}
+
+// Chromium shows its own neighbour when the active tab closes. The app's
+// successor is shown instead, once the close goes ahead.
+IN_PROC_BROWSER_TEST_F(BarcNativeKeysBrowserTest, CloseShowsTheAppsSuccessor) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t id = browser()->GetSessionID().id();
+  auto* strip = browser()->GetTabStripModel();
+  struct Shown : TabStripModelObserver {
+    std::vector<int32_t> tabs;
+    void OnTabStripModelChanged(TabStripModel*, const TabStripModelChange&,
+                                const TabStripSelectionChange& selection) override {
+      if (selection.active_tab_changed() && selection.new_tab)
+        tabs.push_back(selection.new_tab->GetHandle().raw_value());
+    }
+  } shown;
+  strip->AddObserver(&shown);
+  std::vector<std::unique_ptr<NavigationEvents>> observed;
+  struct Pages {
+    int32_t closing, neighbour, successor;
+    uint64_t observation;
+  };
+  // The closing page first and active, Chromium's neighbour next, the app's successor last.
+  auto open = [&](const char* script, bool interacted) {
+    while (strip->count() > 1) strip->CloseWebContentsAt(1, TabCloseTypes::CLOSE_NONE);
+    strip->ActivateTabAt(0);
+    CHECK(ui_test_utils::NavigateToURL(browser(), embedded_test_server()->GetURL("/title1.html")));
+    CHECK(barc_tab_create(id, embedded_test_server()->GetURL("/title2.html").spec().c_str(), 0));
+    CHECK(barc_tab_create(id, embedded_test_server()->GetURL("/title3.html").spec().c_str(), 0));
+    CHECK_EQ(3, strip->count());
+    CHECK_EQ(0, strip->active_index());
+    Pages pages{barc_window_tab_at(id, 0), barc_window_tab_at(id, 1), barc_window_tab_at(id, 2), 0};
+    CHECK(content::ExecJs(strip->GetWebContentsAt(0), script));
+    if (interacted) content::PrepContentsForBeforeUnloadTest(strip->GetWebContentsAt(0));
+    observed.push_back(std::make_unique<NavigationEvents>());
+    pages.observation = barc_tab_observe(id, pages.closing, NavigationEvents::Receive,
+                                         observed.back().get());
+    CHECK(pages.observation);
+    shown.tabs.clear();
+    return pages;
+  };
+  auto active = [&] { return strip->GetActiveTab()->GetHandle().raw_value(); };
+  using Order = std::vector<int32_t>;
+  EXPECT_EQ(0, barc_tab_close_selecting(0, 0));
+
+  // No beforeunload: the successor is shown before the page goes.
+  Pages pages = open("", false);
+  ASSERT_EQ(1, barc_tab_close_selecting(pages.observation, pages.successor));
+  ASSERT_TRUE(base::test::RunUntil([&] { return strip->count() == 2; }));
+  EXPECT_EQ(Order{pages.successor}, shown.tabs);
+
+  // A listener that lets the page go without asking.
+  pages = open("addEventListener('beforeunload', () => {})", true);
+  ASSERT_EQ(1, barc_tab_close_selecting(pages.observation, pages.successor));
+  ASSERT_TRUE(base::test::RunUntil([&] { return strip->count() == 2; }));
+  EXPECT_EQ(Order{pages.successor}, shown.tabs);
+
+  // "Leave site?" keeps the page shown until it is answered. Stay forgets the
+  // successor, so a later close shows Chromium's neighbour.
+  pages = open("onbeforeunload = e => e.preventDefault()", true);
+  ASSERT_EQ(1, barc_tab_close_selecting(pages.observation, pages.successor));
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(dialog->is_before_unload_dialog());
+  EXPECT_EQ(pages.closing, active());
+  dialog->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return observed.back()->Count(BARC_TAB_CLOSE_CANCELLED) == 1;
+  }));
+  EXPECT_EQ(pages.closing, active());
+  EXPECT_TRUE(shown.tabs.empty());
+  ASSERT_EQ(1, barc_tab_close(id, barc_window_tab_at(id, 0)));
+  dialog = ui_test_utils::WaitForAppModalDialog();
+  dialog->view()->AcceptAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] { return strip->count() == 2; }));
+  EXPECT_EQ(Order{pages.neighbour}, shown.tabs);
+
+  // Leave shows the successor.
+  pages = open("onbeforeunload = e => e.preventDefault()", true);
+  ASSERT_EQ(1, barc_tab_close_selecting(pages.observation, pages.successor));
+  dialog = ui_test_utils::WaitForAppModalDialog();
+  EXPECT_EQ(pages.closing, active());
+  dialog->view()->AcceptAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] { return strip->count() == 2; }));
+  EXPECT_EQ(Order{pages.successor}, shown.tabs);
+  strip->RemoveObserver(&shown);
 }

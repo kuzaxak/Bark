@@ -11,11 +11,11 @@
 extern "C" {
 #endif
 #define BARC_API __attribute__((visibility("default")))
-// Version 8 lets the app own a window's lifetime: an emptied client stays open
-// and selected (barc_window_set_app_lifetime), and barc_tab_select refuses
-// bridge callbacks. Structs cross this boundary without size arguments; the
-// app requires this exact ABI.
-#define BARC_BRIDGE_VERSION 8
+// Version 9 gives the app its keys: a key reaches a Chromium command only for
+// the shown page or a window request the app answers. It adds
+// barc_window_set_page_hidden and barc_tab_close_selecting. Structs cross this
+// boundary without size arguments; the app requires this exact ABI.
+#define BARC_BRIDGE_VERSION 9
 BARC_API uint32_t barc_bridge_version(void);
 // Lowercase hex SHA-256 of the lines "<SHA-256 of header>  <header name>\n" for
 // barc_bridge_api.h, barc_runtime_startup_api.h and barc_page_tweaks.h, in that
@@ -26,8 +26,8 @@ BARC_API const char* barc_public_headers_sha256(void);
 // version renames it, so an app and framework built for different versions fail
 // at dlsym, as Chromium's ChromeAppModeStart_v<N> does. Update the name in
 // chrome/app/framework.exports and framework.order with it.
-#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v8"
-BARC_API int barc_engine_main_v8(int argc, const char** argv);
+#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v9"
+BARC_API int barc_engine_main_v9(int argc, const char** argv);
 // Static NUL-terminated engine version, valid for the process lifetime.
 BARC_API const char* barc_chromium_version(void);
 // Creates an empty same-profile peer for immediate page insertion/transfer.
@@ -49,6 +49,11 @@ BARC_API int barc_window_close(int32_t window);
 // remain still selects another one, so select first. Zero for an unknown,
 // closing or non-normal client.
 BARC_API int barc_window_set_app_lifetime(int32_t window);
+// The app shows no page in the physical window holding this client, as on an
+// empty space. Page commands there then do nothing, from keys or the menu,
+// whichever client is selected, until the app passes hidden=0. Zero for an
+// unknown or closing client.
+BARC_API int barc_window_set_page_hidden(int32_t window, int hidden);
 BARC_API size_t barc_window_tab_count(int32_t window);
 BARC_API int32_t barc_window_tab_at(int32_t window, size_t index);
 BARC_API int32_t barc_tab_create(int32_t window,
@@ -245,6 +250,12 @@ typedef void (*BarcTabCallback)(void* context, uint64_t observation,
 BARC_API uint64_t barc_tab_observe(int32_t window, int32_t tab,
                                   BarcTabCallback callback, void* context);
 BARC_API void barc_tab_unobserve(uint64_t observation);
+// Closes the observed tab as barc_tab_close does. If it is still the active
+// tab when it actually closes, `successor`, a tab of the same client, becomes
+// active instead of Chromium's neighbour: before the close for a page without
+// beforeunload or unload handlers, else once its beforeunload lets the close go
+// ahead. A cancelled close forgets the successor. 0 for an unknown observation.
+BARC_API int barc_tab_close_selecting(uint64_t observation, int32_t successor);
 // Pawl is opt-in per model-bound page. focus=0 cancels the previous capability.
 // Strings/view are borrowed only during this UI-thread callback. kind:0 password,1 OTP.
 typedef void (*BarcVaultCallback)(void* context, uint64_t observation,

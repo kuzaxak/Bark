@@ -13,6 +13,17 @@ public protocol NativePageResourceOwner: AnyObject {
     /// Detached pages use the same release contract without a model window.
     func closePage(_ page: any PageNavigation,
                    completion: @escaping @MainActor (PageCloseOutcome) -> Void)
+    /// As `closePage`. If the page is still shown when it actually closes, the
+    /// engine shows `successor` in its place rather than a page of its own choosing.
+    func closePage(_ page: any PageNavigation, showing successor: any PageNavigation,
+                   completion: @escaping @MainActor (PageCloseOutcome) -> Void)
+}
+
+public extension NativePageResourceOwner {
+    func closePage(_ page: any PageNavigation, showing successor: any PageNavigation,
+                   completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+        closePage(page, completion: completion)
+    }
 }
 
 /// The app's concrete native host owns process-local window/tab handles. Model
@@ -209,7 +220,8 @@ extension PageSession {
         }
     }
 
-    func requestNativeRelease(completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+    func requestNativeRelease(showing successor: (any PageNavigation)? = nil,
+                              completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         if nativeCreation != nil {
             cancelNativeCreation()
         }
@@ -230,11 +242,13 @@ extension PageSession {
         let id = UUID()
         nativeRelease = NativePageRelease(id: id, completions: [completion])
         nativeIsEnding = true
-        host.closePage(page) { [weak self, weak page] outcome in
+        let completion: @MainActor (PageCloseOutcome) -> Void = { [weak self, weak page] outcome in
             guard let self, let page, self.nativeRelease?.id == id,
                   self.navigation === page else { return }
             self.completeNativeRelease(outcome)
         }
+        if let successor { host.closePage(page, showing: successor, completion: completion) }
+        else { host.closePage(page, completion: completion) }
     }
 
     func completeNativeRelease(_ outcome: PageCloseOutcome) {

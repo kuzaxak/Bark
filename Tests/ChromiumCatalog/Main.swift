@@ -72,6 +72,7 @@ import NookWeb
     static var revision: UInt64 = 1
     static var miniCloseRequests = 0
     static var transfersEnabled = false
+    static var refusesTransfers = false
     static var transferCount = 0
     static var sameOwnerAdmissions = 0
     static var peekRoleClears = 0
@@ -91,6 +92,7 @@ import NookWeb
     static var privateCreatedClients: [Int32] = []
     static var restoring = false
     static var restoredURLs: [String] = []
+    static var profileOpens: [(String, Int32)] = []
     static var onShow: ((Int32) -> Int32)?
     static var onCloseWindow: ((Int32) -> Int32)?
     static var onSelectWindow: ((Int32) -> Int32)?
@@ -240,6 +242,7 @@ import NookWeb
             } }, transferAdmitting: { source, tab, destination, admission, context in MainActor.assumeIsolated {
                 precondition(Native.transfersEnabled)
                 Native.transferCount += 1
+                if Native.refusesTransfers { return 0 }
                 if source == destination {
                     Native.sameOwnerAdmissions += 1
                     Native.onTransferAdmission?()
@@ -279,8 +282,9 @@ import NookWeb
                 return 0
             } })
     }
+    static var closesShowing: [(tab: Int32, successor: Int32)] = []
     static var navigation: ChromiumNavigationAPI {
-        ChromiumNavigationAPI(observe: { window, tab, callback, context in MainActor.assumeIsolated {
+        var api = ChromiumNavigationAPI(observe: { window, tab, callback, context in MainActor.assumeIsolated {
             if Native.rejectNextObservation {
                 Native.rejectNextObservation = false
                 Native.onRejectedObserve?(window, tab); Native.onRejectedObserve = nil
@@ -319,6 +323,11 @@ import NookWeb
             } }, privateSessionUUID: { window, output, capacity in MainActor.assumeIsolated {
                 Native.copyPrivateID(window, output, capacity)
             } })
+        api.closeSelecting = { token, successor in MainActor.assumeIsolated {
+            guard let observed = Native.observers[token], Native.tabs.contains(where: { $0.tab == successor }) else { return 0 }
+            Native.closesShowing.append((observed.3, successor)); return 1
+        } }
+        return api
     }
     static var onAttach: ((Int32) -> Int32)?
     static func move(_ tab: Int32, to window: Int32) {
@@ -509,6 +518,7 @@ private struct NoTokens: KagiTokenStore {
         try checkLinkReachesEmptySpaceOfAnotherProfile()
         try checkPrivateSessions()
         try checkSavedWindowRestoration()
+        try checkNewWindowLikeWebKit()
         try checkPendingInitialPageRestoration()
         try checkPendingProfileRecoveryWindow()
         try checkDetachedMiniPromotion()
@@ -551,8 +561,14 @@ private struct NoTokens: KagiTokenStore {
     tabs.select(recent, in: window); tabs.select(closing, in: window)
     precondition(window.selectedItemID == closing && Native.windows[601]?.active_tab == 6010)
     tabs.close(closing)
-    precondition(window.selectedItemID == recent && Native.windows[601]?.active_tab == 6012,
-                 "Nook's live successor shows before the close")
+    precondition(Native.closesShowing.last! == (6010, 6012), "Chromium is to show Nook's live successor")
+    precondition(window.selectedItemID == closing, "The page stays shown until it actually closes")
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(window.selectedItemID == closing)
+    // The close goes ahead: Chromium shows the successor and the sidebar follows at once.
+    Native.windows[601]?.active_tab = 6012
+    admission.apply(Native.discovery.readSnapshot()!)
+    precondition(window.selectedItemID == recent, "The sidebar moves when Chromium shows the successor")
     func endTab(_ tab: Int32) {
         Native.tabs.removeAll { $0.tab == tab }
         for (token, observation) in Native.observers.filter({ $0.value.3 == tab }) {
@@ -590,7 +606,7 @@ private struct NoTokens: KagiTokenStore {
     // Links and Dock actions reach the empty space through its retained client.
     registry.setActive(window)
     precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == 601)
-    precondition(admission.browserTarget(kind: 1, regularProfile: Native.work)?.window == 601)
+    precondition(admission.browserTarget(kind: 2, regularProfile: Native.work)?.window == 601)
     let route = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
     precondition(route?.window == 601 && route?.profile == Native.work && route?.space == empty)
     Native.tabs.append(Native.tab(6013, window: 601))
@@ -795,7 +811,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(registry.windows[source.id] == nil && tabs.session(for: item) === originalSession)
     precondition(tabs.selectedSession(in: child) === originalSession && originalSession.navigation === page && !page.isClosed)
     registry.setActive(child)
-    let privateTarget = admission.browserTarget(kind: 1, regularProfile: nil)
+    let privateTarget = admission.browserTarget(kind: 2, regularProfile: nil)
     precondition(privateTarget?.window == page.nativeWindowID && privateTarget?.regularProfile == nil)
     precondition(admission.browserTarget(kind: 0, regularProfile: a) == nil)
 
@@ -882,8 +898,14 @@ private struct NoTokens: KagiTokenStore {
     // Synchronous completion is also valid; the exact factory blank is adopted
     // once rather than stolen by the ordinary catalog drain.
     add(722, session: UUID(), factory: true)
+    Native.restoring = true
+    let navigationsBefore = Native.restoredURLs.count
     _ = admission.openPrivateWindow(open: { callback, pointer in callback(0, 722, pointer) },
         close: { _ in preconditionFailure("Valid private factory was rejected") }, canPresent: { true })
+    Native.restoring = false
+    precondition(Native.restoredURLs.count == navigationsBefore + 1 &&
+                 Native.restoredURLs.last == TabsController.homeURL.absoluteString,
+                 "A private window opens WebKit's home page, not Chromium's")
     precondition(Native.admitted.contains(722))
     precondition(registry.windows.count == count + 1 && Native.shown == [722])
     admission.apply(Native.discovery.readSnapshot()!)
@@ -1192,7 +1214,7 @@ private struct NoTokens: KagiTokenStore {
     tabs.setSpace(emptySpace, in: initial)
     precondition(initial.showsNativeEmptySpace)
     precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == 1001)
-    precondition(admission.browserTarget(kind: 1, regularProfile: Native.work)?.window == 1001)
+    precondition(admission.browserTarget(kind: 2, regularProfile: Native.work)?.window == 1001)
     let emptyRoute = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
     precondition(emptyRoute?.window == 1001 && emptyRoute?.profile == Native.work && emptyRoute?.space == emptySpace)
     let emptyRouted = admission.incomingTarget(ruleSpace: Native.personal, mini: true, regularProfile: Native.work)
@@ -1201,7 +1223,6 @@ private struct NoTokens: KagiTokenStore {
     tabs.deleteSpace(emptySpace)
 
     registry.setActive(registry.windows[extraID]!)
-    precondition(admission.browserTarget(kind: 1, regularProfile: Native.work)?.window == 1002)
     precondition(admission.browserTarget(kind: 2, regularProfile: Native.work)?.window == 1002)
     precondition(admission.browserTarget(kind: 99, regularProfile: Native.work) == nil)
     registry.activeWindowId = nil // A settings/private window is frontmost.
@@ -1265,13 +1286,151 @@ private struct NoTokens: KagiTokenStore {
     Native.end(1001); Native.end(1002); Native.end(1005); Native.end(1006)
     admission.apply(Native.discovery.readSnapshot()!)
     precondition(registry.windows.isEmpty && Set(tabs.device.windows.map(\.id)) == Set(device.windows.map(\.id)))
-    let noWindow = admission.browserTarget(kind: 1, regularProfile: Native.personal)
+    let noWindow = admission.browserTarget(kind: 2, regularProfile: Native.personal)
     precondition(noWindow?.window == 0 && noWindow?.regularProfile == Native.personal)
     precondition(admission.browserTarget(kind: 0, regularProfile: UUID()) == nil)
 
     tabs.saveNow()
     let saved = TabStore(directory: root).load()
     precondition(Set(saved.device.windows.map(\.id)) == Set(device.windows.map(\.id)) && saved.device.windows.first { $0.id == splitID }?.split == split)
+}
+
+@MainActor private func checkNewWindowLikeWebKit() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/BarcNewWindow-\(UUID())", isDirectory: true)
+    let suite = "BarcNewWindow-\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "house", accentHex: "#123456", after: nil)
+    tree.createSpace(id: Native.personal, name: "Personal", icon: "house", accentHex: "#123456", after: Native.work)
+    let first = UUID(), second = UUID()
+    _ = try tree.createTab(id: first, url: URL(string: "https://fixture.invalid/new-window-first")!, title: "First",
+                           in: .tabs(spaceID: Native.work), after: nil)
+    _ = try tree.createTab(id: second, url: URL(string: "https://fixture.invalid/new-window-second")!, title: "Second",
+                           in: .tabs(spaceID: Native.work), after: first)
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    func make(_ name: String, records: [WindowRecord]) -> (ChromiumCreatedPageAdmission, TabsController, WindowRegistry) {
+        let directory = root.appendingPathComponent(name)
+        var device = DeviceState(); device.firstLaunchCompleted = true; device.windows = records
+        let store = TabStore(directory: directory); store.save(tree, device); store.flush()
+        let registry = WindowRegistry()
+        let tabs = TabsController(settings: settings, windowRegistry: registry,
+            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
+        let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        tabs.nativePageHost = host
+        let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+            registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+        return (admission, tabs, registry)
+    }
+    func factory(_ id: Int32, profile: UUID) {
+        Native.windows[id] = Native.window(id, group: UInt64(id), profile: profile, flags: 4 | 8, active: id * 10)
+        Native.tabs.append(Native.tab(id * 10, window: id, flags: 2))
+    }
+    Native.restoring = true; defer { Native.restoring = false }
+
+    // No saved window to claim: the first space, its first tab selected, no tab added.
+    do {
+        let (admission, tabs, registry) = make("first-space", records: [])
+        Native.profileOpens = []
+        precondition(admission.openNewWindow(open: { profile, destination, callback, pointer in MainActor.assumeIsolated {
+            Native.profileOpens.append((String(cString: profile!), destination))
+            factory(1301, profile: Native.work); callback?(0, 1301, pointer)
+        } }, close: { _ in preconditionFailure("The new window was closed") }, canPresent: { true }))
+        let state = registry.windows.values.first!
+        precondition(registry.windows.count == 1 && Native.profileOpens.count == 1 && Native.profileOpens[0].1 == 5 &&
+                     UUID(uuidString: Native.profileOpens[0].0) == Native.work)
+        precondition(state.spaceID == Native.work && state.selectedItemID == first, "The first space's first tab shows")
+        precondition(Set(tabs.items(inSpace: Native.work).map(\.id)) == [first, second] &&
+                     tabs.items(inSpace: Native.personal).isEmpty, "New Window adds no tab")
+        precondition(Native.shown.last == 1301)
+        Native.end(1301); admission.apply(Native.discovery.readSnapshot()!)
+    }
+
+    // A saved window nobody claimed comes back; on an empty space it shows the panel.
+    do {
+        let record = WindowRecord(id: UUID(), spaceID: Native.personal, selectedItemBySpace: [:])
+        let (admission, tabs, registry) = make("saved-empty", records: [record])
+        precondition(admission.openNewWindow(open: { profile, _, callback, pointer in MainActor.assumeIsolated {
+            precondition(UUID(uuidString: String(cString: profile!)) == Native.personal)
+            factory(1302, profile: Native.personal); callback?(0, 1302, pointer)
+        } }, close: { _ in preconditionFailure("The new window was closed") }, canPresent: { true }))
+        let state = registry.windows.values.first!
+        precondition(state.spaceID == Native.personal && state.selectedItemID == nil && state.showsNativeEmptySpace,
+                     "An empty space shows the empty-space panel")
+        precondition(tabs.items(inSpace: Native.personal).isEmpty, "No blank tab is added to the empty space")
+        precondition(tabs.device.windows.count == 1 && tabs.device.windows[0].id == state.id, "The saved window is claimed")
+        precondition(Native.shown.last == 1302)
+        Native.end(1302); admission.apply(Native.discovery.readSnapshot()!)
+    }
+
+    // The first tab is shown in another window: the new window says it is open there, as in
+    // WebKit mode, and moves nothing until asked. "Move Here" moves it either way, and once
+    // the window holding it closes the other one shows the page itself.
+    do {
+        let (admission, tabs, registry) = make("shown-elsewhere", records: [])
+        Native.transfersEnabled = true; defer { Native.transfersEnabled = false }
+        Native.onSelectWindow = { window in Native.windows[window]?.selected_client = window; return 1 }
+        defer { Native.onSelectWindow = nil }
+        Native.windows[1310] = Native.window(1310, group: 1310, profile: Native.work, active: 13100)
+        Native.tabs += [Native.tab(13100, window: 1310), Native.tab(13101, window: 1310)]
+        admission.apply(Native.discovery.readSnapshot()!)
+        let holder = registry.allWindows.first!
+        let top = tabs.displayOrder(in: holder).first!
+        tabs.select(top, in: holder)
+        let page = tabs.session(for: top)!.navigation as! ChromiumPageNavigation
+        precondition(holder.selectedItemID == top && page.nativeWindowID == 1310)
+        let transfers = Native.transferCount
+        precondition(admission.openNewWindow(open: { _, _, callback, pointer in MainActor.assumeIsolated {
+            factory(1311, profile: Native.work); callback?(0, 1311, pointer)
+        } }, close: { _ in preconditionFailure("The new window was closed") }, canPresent: { true }))
+        let state = registry.allWindows.first { $0 !== holder }!
+        precondition(state.selectedItemID == top && tabs.showsPageElsewhere(in: state), "It is open in another window")
+        precondition(Native.shown.last == 1311, "The new window shows at once")
+        precondition(Native.transferCount == transfers && page.nativeWindowID == 1310, "Nothing moved")
+
+        tabs.takeControl(top, in: state)
+        precondition(page.nativeWindowID == 1311 && tabs.pageOwnerWindow(of: top) === state, "Move Here moves the live page")
+        precondition(tabs.showsPageElsewhere(in: holder) && !tabs.showsPageElsewhere(in: state))
+        Native.windows[1310]?.active_tab = 13101
+        admission.apply(Native.discovery.readSnapshot()!)
+        precondition(holder.selectedItemID == top, "Chromium's tab in the first window is not mirrored")
+        tabs.takeControl(top, in: holder)
+        precondition(page.nativeWindowID == 1310 && tabs.showsPageElsewhere(in: state))
+
+        Native.end(1310)
+        admission.apply(Native.discovery.readSnapshot()!)
+        precondition(registry.windows[holder.id] == nil && !tabs.showsPageElsewhere(in: state))
+        tabs.showSelectedPageHere(in: state)
+        let reopened = tabs.session(for: top)?.navigation as? ChromiumPageNavigation
+        precondition(reopened?.nativeWindowID == 1311 && state.selectedItemID == top, "The page opens where it shows")
+        Native.end(1311); admission.apply(Native.discovery.readSnapshot()!)
+    }
+
+    // Whatever it selects, a new window never waits forever: the first tab is live in a
+    // window that does not show it, and moving it into the new window fails.
+    do {
+        let (admission, tabs, registry) = make("refused-move", records: [])
+        Native.transfersEnabled = true; Native.refusesTransfers = true
+        defer { Native.transfersEnabled = false; Native.refusesTransfers = false }
+        Native.onSelectWindow = { window in Native.windows[window]?.selected_client = window; return 1 }
+        Native.onCloseWindow = { window in Native.end(window); return 1 }
+        defer { Native.onSelectWindow = nil; Native.onCloseWindow = nil }
+        Native.windows[1320] = Native.window(1320, group: 1320, profile: Native.work, active: 13200)
+        Native.tabs += [Native.tab(13200, window: 1320), Native.tab(13201, window: 1320)]
+        admission.apply(Native.discovery.readSnapshot()!)
+        let holder = registry.allWindows.first!
+        let order = tabs.displayOrder(in: holder)
+        tabs.select(order[0], in: holder); tabs.select(order[1], in: holder)
+        precondition(holder.selectedItemID == order[1] && tabs.session(for: order[0])?.navigation != nil)
+        var closed: [Int32] = []
+        _ = admission.openNewWindow(open: { _, _, callback, pointer in MainActor.assumeIsolated {
+            factory(1321, profile: Native.work); callback?(0, 1321, pointer)
+        } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: { true })
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        precondition(closed == [1321] && registry.allWindows.count == 1, "The failed window closes")
+        Native.end(1320); admission.apply(Native.discovery.readSnapshot()!)
+    }
 }
 
 @MainActor private func checkPendingProfileRecoveryWindow() throws {

@@ -135,9 +135,9 @@ final class ChromiumCreatedPageAdmission {
     }
 
     /// Reuse the model's regular-profile preference for external links. A private
-    /// New Window requires its still-live exact native session, never UUID replay.
+    /// Dock reopen requires its still-live exact native session, never UUID replay.
     func browserTarget(kind: Int32, regularProfile: UUID?) -> (window: Int32, regularProfile: UUID?)? {
-        guard (0...2).contains(kind) else { return nil }
+        guard kind == 0 || kind == 2 else { return nil }
         func target(_ product: ChromiumProductWindow) -> Int32? {
             let state = product.state
             guard registry.windows[state.id] === state else { return nil }
@@ -456,6 +456,29 @@ final class ChromiumCreatedPageAdmission {
         return registry.windows[state.id] === state
     }
 
+    /// New Window as WebKit's `TabsController.attach` opens it: a saved window nobody has
+    /// claimed, else the first space with its first tab selected. It adds no tab.
+    @discardableResult
+    func openNewWindow(open: SavedOpen, close: @escaping (Int32) -> Int32,
+                       canPresent: @escaping () -> Bool) -> Bool {
+        guard canPresent(), let state = prepareSavedWindow(nil) else { return false }
+        guard let space = state.spaceID, let profile = tabs.profile(forSpace: space),
+              tabs.isProfileAvailable(profile.id) else {
+            registry.unregister(state.id)
+            return false
+        }
+        let request = SavedRequest(self, state: state, profile: profile.id, close: close, canPresent: canPresent)
+        profile.id.uuidString.withCString { uuid in
+            open(uuid, 5, { status, native, pointer in
+                MainActor.assumeIsolated {
+                    guard let pointer else { return }
+                    Unmanaged<SavedRequest>.fromOpaque(pointer).takeRetainedValue().complete(status, native)
+                }
+            }, Unmanaged.passRetained(request).toOpaque())
+        }
+        return registry.windows[state.id] === state
+    }
+
     func shouldDetachModelWindow(_ state: BrowserWindowState) -> Bool {
         products.values.contains { $0.state === state && !$0.preservesSavedRecord }
     }
@@ -543,8 +566,9 @@ final class ChromiumCreatedPageAdmission {
             guard current(), state.selectedItemID == nil || state.selectedItemID == item,
                   state.split == nil, tabs.item(item)?.url == initialURL else { return false }
             if state.selectedItemID != item { tabs.select(item, in: state) }
-        } else if let selected = state.selectedItemID { tabs.select(selected, in: state) }
-        else { _ = tabs.open(url: URL(string: "about:blank")!, in: state, placement: .newTab) }
+        } else if let selected = state.selectedItemID {
+            if !tabs.showsPageElsewhere(in: state) { tabs.select(selected, in: state) }
+        } else if let space = state.spaceID { tabs.setSpace(space, in: state) }
         state.windowHandle = shell.window // Existing pending-frame authority.
         if finishRestoredPresentation(product, native: native, profile: profile,
                                       show: show, canPresent: canPresent) {
@@ -597,6 +621,19 @@ final class ChromiumCreatedPageAdmission {
         func current() -> Bool {
             canPresent() && registry.windows[state.id] === state && !state.isIncognito &&
             state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
+        }
+        // An empty space, or a page another window holds, shows over the window's own client.
+        let showsNoPage = { state.showsNativeEmptySpace || self.tabs.showsPageElsewhere(in: state) }
+        if showsNoPage() {
+            guard current(), host.emptySpaceClient(in: state, profile: profile, open: false) == native else { return false }
+            if show, api.show(native) != 1 { return false }
+            guard current(), showsNoPage() else { return false }
+            product.preservesSavedRecord = false
+            if !product.didNotifyStartupWarming {
+                product.didNotifyStartupWarming = true
+                didPresent(state)
+            }
+            return true
         }
         guard current(), let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
               page.nativeWindowID == native, page.profileID == profile, !page.isPrivateSession,
@@ -773,10 +810,9 @@ final class ChromiumCreatedPageAdmission {
             if let admission, let product = admission.products.values.first(where: { $0.state === state }) {
                 let ownedSession = initialItem.flatMap { admission.tabs.session(for: $0) } ??
                     admission.tabs.selectedSession(in: state)
-                if let navigation = ownedSession?.navigation {
-                    guard let page = navigation as? ChromiumPageNavigation,
-                          page.nativeWindowID == native, page.nativeTabID == reservedTab else { return }
-                }
+                // Another window's page is not this window's to close.
+                if let page = ownedSession?.navigation as? ChromiumPageNavigation, page.nativeWindowID == native,
+                   page.nativeTabID != reservedTab { return }
                 // Once registered, keep model/shell ownership while close is
                 // pending or refused. Only actual group disappearance retires it.
                 if status == 0, let row = api.windowState(native), ChromiumDiscoveryAPI.profileID(row) == profile,
@@ -869,7 +905,9 @@ final class ChromiumCreatedPageAdmission {
               tabs.isNativePageOwner(session, in: product.state), host.isNativeSelection(page, in: product.state) else { return false }
         // The C private blank stays hidden. Showing is the final action after
         // actual model/header/selected-owner admission, never a guessed focus.
-        return api.show(window) == 1
+        guard api.show(window) == 1 else { return false }
+        page.load(TabsController.homeURL)
+        return true
     }
 
     typealias PrivateOpen = @convention(c) (@convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void, UnsafeMutableRawPointer?) -> Void
@@ -1080,11 +1118,11 @@ final class ChromiumCreatedPageAdmission {
                 session.navigation.map { host.isNativeSelection($0, in: product.state) } == true
             // Chromium activates a neighbour when the active tab closes. While Nook
             // picks the next tab, only a page Chromium just opened, such as a link,
-            // takes the selection. A page that closed itself reads closed here before
-            // its CLOSED reaches the model.
+            // or the successor Nook named with the close takes the selection. A page
+            // that closed itself reads closed here before its CLOSED reaches the model.
             let closedSelection = (tabs.selectedSession(in: product.state)?.navigation as? ChromiumPageNavigation)?.isClosed == true
             if tabs.nativeSelectionIsSettling(in: product.state) || closedSelection,
-               !created.contains(selected.active_tab) {
+               !created.contains(selected.active_tab), !tabs.isCloseSuccessor(session.itemID, in: product.state) {
                 if let page = session.navigation { _ = host.acceptNativeSelection(page, in: product.state) }
                 continue
             }

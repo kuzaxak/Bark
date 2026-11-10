@@ -3030,7 +3030,7 @@ struct NativePageLifecycleTests {
         #expect(fixture.window.selectedItemID == id && !fixture.window.showsNativeEmptySpace)
     }
 
-    @Test func closingSelectedPageShowsLiveSuccessorBeforeNativeClose() throws {
+    @Test func closingShownPageNamesItsLiveSuccessorAndStaysShown() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
         let first = try #require(fixture.window.selectedItemID)
@@ -3038,18 +3038,19 @@ struct NativePageLifecycleTests {
         fixture.host.finishCreate(0)
         let second = try #require(fixture.tabs.open(url: URL(string: "about:blank#second")!,
             in: fixture.window, placement: .newTab, parent: .tabs(spaceID: work)))
-        fixture.host.finishCreate(fixture.host.creates.count - 1)
+        let successor = fixture.host.finishCreate(fixture.host.creates.count - 1)
         fixture.tabs.select(first, in: fixture.window)
         #expect(fixture.window.selectedItemID == first)
-        var selectedAtClose: UUID?
-        fixture.host.onClose = { selectedAtClose = fixture.window.selectedItemID }
         fixture.tabs.close(first)
-        #expect(selectedAtClose == second, "Chromium never shows its own neighbour first")
+        #expect(fixture.host.closes.last?.successor === successor, "The engine shows Nook's pick, not its neighbour")
+        #expect(fixture.window.selectedItemID == first, "Shown until it actually closes, as while Leave site? asks")
+        #expect(fixture.tabs.isCloseSuccessor(second, in: fixture.window))
         fixture.host.finishClose(fixture.host.closes.count - 1, admitted: true)
         #expect(fixture.window.selectedItemID == second && fixture.tabs.item(first) == nil)
+        #expect(fixture.window.nativeCloseSuccessor == nil)
     }
 
-    @Test func refusedCloseReturnsToThePageThatStayed() throws {
+    @Test func refusedCloseKeepsThePageAndForgetsItsSuccessor() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
         let first = try #require(fixture.window.selectedItemID)
@@ -3057,12 +3058,78 @@ struct NativePageLifecycleTests {
         fixture.host.finishCreate(0)
         let second = try #require(fixture.tabs.open(url: URL(string: "about:blank#second")!,
             in: fixture.window, placement: .newTab, parent: .tabs(spaceID: work)))
-        fixture.host.finishCreate(fixture.host.creates.count - 1)
+        let successor = fixture.host.finishCreate(fixture.host.creates.count - 1)
         fixture.tabs.select(first, in: fixture.window)
         fixture.tabs.close(first)
-        #expect(fixture.window.selectedItemID == second)
         fixture.host.finishClose(fixture.host.closes.count - 1, admitted: false)
         #expect(fixture.window.selectedItemID == first && fixture.tabs.item(first) != nil)
+        #expect(fixture.window.nativeCloseSuccessor == nil && !fixture.tabs.isCloseSuccessor(second, in: fixture.window))
+        fixture.tabs.close(first)
+        #expect(fixture.host.closes.last?.successor === successor)
+    }
+
+    @Test func pageAnotherWindowShowsIsAPlaceholderUntilThatWindowLetsGo() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let space = try #require(f.window.spaceID)
+        f.host.finishCreate(0)
+        _ = try #require(f.tabs.open(url: URL(string: "about:blank#second")!,
+            in: f.window, placement: .background, parent: .tabs(spaceID: space)))
+        let order = f.tabs.displayOrder(in: f.window)
+        let first = try #require(order.first), second = try #require(order.last)
+        if f.tabs.session(for: first)?.navigation == nil {
+            f.tabs.select(first, in: f.window)
+            f.host.finishCreate(f.host.creates.count - 1)
+        }
+        f.tabs.select(first, in: f.window)
+        #expect(f.window.selectedItemID == first)
+        let other = BrowserWindowState()
+        f.registry.register(other); f.tabs.attach(window: other)
+        #expect(other.selectedItemID == first, "New Window selects the first tab, as in WebKit mode")
+        #expect(f.tabs.showsPageElsewhere(in: other) && !f.tabs.showsPageElsewhere(in: f.window))
+        #expect(f.tabs.nativeSelectionIsSettling(in: other), "Chromium's page there is no one's choice")
+        let selections = f.host.selectionCount
+        f.tabs.showSelectedPageHere(in: other)
+        #expect(f.host.selectionCount == selections, "The page stays in the window that shows it")
+
+        f.tabs.takeControl(first, in: other)
+        #expect(f.tabs.pageOwnerWindow(of: first) === other)
+        #expect(f.tabs.showsPageElsewhere(in: f.window) && !f.tabs.showsPageElsewhere(in: other))
+        f.tabs.takeControl(first, in: f.window)
+        #expect(f.tabs.showsPageElsewhere(in: other) && !f.tabs.showsPageElsewhere(in: f.window))
+
+        // The window holding the page moves on, so the other one shows the page itself.
+        f.tabs.select(second, in: f.window)
+        if f.tabs.session(for: second)?.navigation == nil { f.host.finishCreate(f.host.creates.count - 1) }
+        #expect(f.window.selectedItemID == second && !f.tabs.showsPageElsewhere(in: other))
+        let before = f.host.selectionCount
+        f.tabs.showSelectedPageHere(in: other)
+        #expect(f.host.selectionCount == before + 1 && f.tabs.pageOwnerWindow(of: first) === other)
+    }
+
+    @Test func placeholderUpdatesWhenTheHoldingWindowCloses() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.host.finishCreate(0)
+        let other = BrowserWindowState()
+        f.registry.register(other); f.tabs.attach(window: other)
+        #expect(f.tabs.showsPageElsewhere(in: other))
+        var changed = false
+        _ = withObservationTracking { f.tabs.showsPageElsewhere(in: other) } onChange: { changed = true }
+        f.registry.unregister(f.window.id)
+        #expect(changed, "The window showing the placeholder learns that the holding window closed")
+        #expect(!f.tabs.showsPageElsewhere(in: other))
+    }
+
+    @Test func coldSuccessorIsNotNamed() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let first = try #require(fixture.window.selectedItemID)
+        let work = try #require(fixture.window.spaceID)
+        fixture.host.finishCreate(0)
+        _ = try #require(fixture.tabs.open(url: URL(string: "about:blank#cold")!,
+            in: fixture.window, placement: .background, parent: .tabs(spaceID: work)))
+        fixture.tabs.close(first)
+        let close = try #require(fixture.host.closes.last)
+        #expect(close.successor == nil && fixture.window.nativeCloseSuccessor == nil)
     }
 
     @Test func refusedCloseEndsSettlingOnTheSamePage() throws {
@@ -4128,9 +4195,12 @@ private final class ControlledNativeHost: NativePageHost {
     }
     final class Closing {
         let page: NativeTestPage
+        let successor: NativeTestPage?
         var completion: (@MainActor (PageCloseOutcome) -> Void)?
-        init(page: NativeTestPage, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+        init(page: NativeTestPage, successor: NativeTestPage? = nil,
+             completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
             self.page = page
+            self.successor = successor
             self.completion = completion
         }
     }
@@ -4211,6 +4281,12 @@ private final class ControlledNativeHost: NativePageHost {
     var onClose: (() -> Void)?
     func closePage(_ page: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         closes.append(Closing(page: page as! NativeTestPage, completion: completion))
+        onClose?()
+    }
+    func closePage(_ page: any PageNavigation, showing successor: any PageNavigation,
+                   completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+        closes.append(Closing(page: page as! NativeTestPage, successor: successor as? NativeTestPage,
+                              completion: completion))
         onClose?()
     }
     @discardableResult func finishCreate(_ index: Int, loading: Bool = false) -> NativeTestPage {

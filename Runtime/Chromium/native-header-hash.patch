@@ -1,7 +1,7 @@
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
 @@ -32,6 +32,7 @@
- _barc_engine_main_v8
+ _barc_engine_main_v9
  _ChromeWebAppShortcutCopierMain
  _barc_bridge_version
 +_barc_public_headers_sha256

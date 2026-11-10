@@ -32,6 +32,8 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "components/tabs/public/tab_interface.h"
 #include "ui/display/screen.h"
 #include "url/url_constants.h"
@@ -57,6 +59,8 @@ struct Startup {
   raw_ptr<void> user_data = nullptr;
   void (*close_callback)(int32_t, void*) = nullptr;
   raw_ptr<void> close_user_data = nullptr;
+  void (*window_request_callback)(int32_t, void*) = nullptr;
+  raw_ptr<void> window_request_user_data = nullptr;
   int32_t (*browser_target_callback)(int32_t, const char*, int32_t, int32_t, BarcApplicationTarget*, void*) = nullptr;
   raw_ptr<void> browser_target_user_data = nullptr;
   base::RepeatingClosure launch_ready;
@@ -76,6 +80,8 @@ void ClearCallbacks() {
   state.user_data = nullptr;
   state.close_callback = nullptr;
   state.close_user_data = nullptr;
+  state.window_request_callback = nullptr;
+  state.window_request_user_data = nullptr;
   state.browser_target_callback = nullptr;
   state.browser_target_user_data = nullptr;
   state.launch_ready.Reset();
@@ -139,6 +145,17 @@ void barc_set_runtime_close_callback(void (*callback)(int32_t, void*),
       }));
 }
 
+void barc_set_runtime_window_request_callback(void (*callback)(int32_t, void*),
+                                              void* user_data) {
+  CHECK(pthread_main_np());
+  auto& state = State();
+  CHECK(state.phase == Phase::kEmpty || state.phase == Phase::kRegistered);
+  CHECK(callback);
+  CHECK(!state.window_request_callback);
+  state.window_request_callback = callback;
+  state.window_request_user_data = user_data;
+}
+
 void barc_set_runtime_browser_target_callback(
     int32_t (*callback)(int32_t, const char*, int32_t, int32_t,
                         BarcApplicationTarget*, void*),
@@ -191,7 +208,8 @@ namespace barc {
 bool RuntimeCallbacksClearedForTesting() {
   const auto& state = State();
   return !state.callback && !state.user_data && !state.close_callback &&
-         !state.close_user_data && !state.browser_target_callback &&
+         !state.close_user_data && !state.window_request_callback &&
+         !state.window_request_user_data && !state.browser_target_callback &&
          !state.browser_target_user_data && state.launch_ready.is_null() &&
          !state.launch_drain_posted && state.launch_directory.empty() &&
          !state.accepted_close_notified && !state.accepted_close_subscription &&
@@ -232,6 +250,69 @@ void NotifyApplicationBrowserAvailable() {
 }
 base::FilePath ApplicationLaunchDirectory() {
   return State().launch_directory;
+}
+bool IsPageCommand(int command_id) {
+  switch (command_id) {
+    case IDC_BACK:
+    case IDC_FORWARD:
+    case IDC_RELOAD:
+    case IDC_RELOAD_BYPASSING_CACHE:
+    case IDC_RELOAD_CLEARING_CACHE:
+    case IDC_STOP:
+    case IDC_FIND:
+    case IDC_FIND_NEXT:
+    case IDC_FIND_PREVIOUS:
+    case IDC_CLOSE_FIND_OR_STOP:
+    case IDC_ZOOM_PLUS:
+    case IDC_ZOOM_NORMAL:
+    case IDC_ZOOM_MINUS:
+    case IDC_PRINT:
+    case IDC_BASIC_PRINT:
+    case IDC_DEV_TOOLS:
+    case IDC_DEV_TOOLS_CONSOLE:
+    case IDC_DEV_TOOLS_DEVICES:
+    case IDC_DEV_TOOLS_INSPECT:
+    case IDC_DEV_TOOLS_TOGGLE:
+    case IDC_VIEW_SOURCE:
+      return true;
+    default:
+      return false;
+  }
+}
+bool ApplicationOwnsKeyCommand(int command_id) {
+  if (!IsNativeApplicationMode() || IsPageCommand(command_id)) {
+    return false;
+  }
+  switch (command_id) {
+    case IDC_CUT:
+    case IDC_COPY:
+    case IDC_PASTE:
+    case IDC_NEW_WINDOW:
+    case IDC_NEW_INCOGNITO_WINDOW:
+      return false;
+    default:
+      return true;
+  }
+}
+bool KeyCommandBelongsToApplication(gfx::NativeWindow window, int command_id) {
+  if (ApplicationOwnsKeyCommand(command_id)) {
+    return true;
+  }
+  if (!IsNativeApplicationMode() || !IsPageCommand(command_id) || !window) {
+    return false;
+  }
+  auto* view = BrowserView::GetBrowserViewForNativeWindow(window);
+  return view && view->browser_widget() &&
+         view->browser_widget()->barc_page_hidden();
+}
+void RequestApplicationWindow(int32_t request) {
+  CHECK_CURRENTLY_ON(content::BrowserThread::UI);
+  auto& state = State();
+  if (!IsNativeApplicationRegistered() || !state.window_request_callback ||
+      browser_shutdown::IsTryingToQuit()) {
+    return;
+  }
+  state.window_request_callback(request, state.window_request_user_data.get());
 }
 bool IsNativeApplicationMode() {
   auto* command = base::CommandLine::ForCurrentProcess();

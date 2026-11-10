@@ -39,6 +39,7 @@ private enum Native {
     static var onAttach: ((Int32) -> Int32)?
     static var observations: [UInt64: (ChromiumNavigationAPI.Callback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var nextObservation: UInt64 = 1
+    static var pageHidden: [Int32: Int32] = [:]
     static var blankSnapshots = false
     static var rejectsObservation = false
     static var catalogAvailable = true
@@ -71,6 +72,10 @@ private enum Native {
             setAppLifetime: { window in MainActor.assumeIsolated {
                 guard Native.profiles[window] != nil else { return 0 }
                 Native.appLifetime.insert(window); return 1
+            } },
+            setPageHidden: { window, hidden in MainActor.assumeIsolated {
+                guard Native.profiles[window] != nil else { return 0 }
+                Native.pageHidden[window] = hidden; return 1
             } },
             attach: { window, view in MainActor.assumeIsolated {
                 Native.attachmentCalls += 1
@@ -267,6 +272,14 @@ private enum HostChecks {
         }
         precondition(original.nativeTabID == 100 && Native.creates == 0)
         precondition(host.canAdoptPage(original, in: window))
+        // The empty-space panel covers the page Chromium keeps selected.
+        precondition(Native.pageHidden[10] == 0, "A window registers showing its page")
+        host.setPageHidden(true, in: window)
+        precondition(Native.pageHidden[10] == 1, "An empty space hides the page from its commands")
+        host.setPageHidden(false, in: window)
+        precondition(Native.pageHidden[10] == 0)
+        host.setPageHidden(true, in: BrowserWindowState(id: window.id))
+        precondition(Native.pageHidden[10] == 0, "Only the registered model window decides")
         let reservedHost = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
         let reservedWindow = BrowserWindowState(), reservedShell = NSView()
         precondition(reservedHost.registerWindow(reservedWindow, nativeOwner: 10, shell: reservedShell, initialBlankTab: 100))

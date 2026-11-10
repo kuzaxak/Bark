@@ -8,6 +8,7 @@ import SwiftUI
 
 private typealias ReadyCallback = @convention(c) (UnsafeMutableRawPointer?) -> Void
 private typealias CloseCallback = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Void
+private typealias WindowRequestCallback = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Void
 private typealias ProfileCallback = @convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void
 
 @MainActor
@@ -16,11 +17,13 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private typealias TargetCallback = @convention(c) (Int32, UnsafePointer<CChar>?, Int32, Int32, UnsafeMutablePointer<BarcApplicationTarget>?, UnsafeMutableRawPointer?) -> Int32
     private typealias RegisterTarget = @convention(c) (TargetCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias RegisterClose = @convention(c) (CloseCallback?, UnsafeMutableRawPointer?) -> Void
+    private typealias RegisterWindowRequest = @convention(c) (WindowRequestCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias Open = @convention(c) (UnsafePointer<CChar>?, Int32, ProfileCallback?, UnsafeMutableRawPointer?) -> Void
     private typealias Main = @convention(c) (Int32, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> Int32
     private typealias Complete = @convention(c) (Int32) -> Void
     private let registerCallback: Register
     private let registerClose: RegisterClose
+    private let registerWindowRequest: RegisterWindowRequest
     private let registerTarget: RegisterTarget
     private let open: Open
     private let privateOpen: ChromiumCreatedPageAdmission.PrivateOpen
@@ -100,6 +103,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         ordinaryPeer = try symbol("barc_window_new_peer", (@convention(c) (Int32) -> Int32).self)
         registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
         registerClose = try symbol("barc_set_runtime_close_callback", RegisterClose.self)
+        registerWindowRequest = try symbol("barc_set_runtime_window_request_callback", RegisterWindowRequest.self)
         registerTarget = try symbol("barc_set_runtime_browser_target_callback", RegisterTarget.self)
         open = try symbol("barc_profile_open_window", Open.self)
         privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
@@ -329,6 +333,22 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 }
             }
         }, Unmanaged.passUnretained(self).toOpaque())
+        registerWindowRequest({ request, pointer in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
+                guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return }
+                switch request {
+                case Int32(BARC_APPLICATION_NEW_WINDOW.rawValue):
+                    admission.openNewWindow(open: app.open, close: app.closeWindow,
+                        canPresent: { [weak app] in app?.acceptsWindows == true })
+                case Int32(BARC_APPLICATION_NEW_PRIVATE_WINDOW.rawValue):
+                    manager.createIncognitoWindow()
+                default:
+                    break
+                }
+            }
+        }, Unmanaged.passUnretained(self).toOpaque())
         registerCallback({ pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
@@ -406,6 +426,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
             if let mainMenu = NSApp.mainMenu { appMenu.install(in: mainMenu) }
             self.appMenu = appMenu
             manager.tabs.nativePageHost = pageHost
+            pageHost.pageIsHidden = { [weak tabs = manager.tabs] state in
+                state.showsNativeEmptySpace || tabs?.showsPageElsewhere(in: state) == true
+            }
             manager.tabs.nativeLiveFetch = { [liveFetch] profile, source in
                 try await liveFetch.fetch(profileID: profile, source: source)
             }
@@ -576,7 +599,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
         hover.nookSettings = storage.settings
         return NSHostingView(rootView: ChromiumSidebarShell(browserManager: manager,
             storage: storage, window: state, registry: registry,
-            commandPalette: palette, organizer: organizer, hover: hover, aiService: aiService))
+            commandPalette: palette, organizer: organizer, hover: hover, aiService: aiService,
+            setPageHidden: { [weak pageHost, weak state] hidden in
+                guard let state else { return }
+                pageHost?.setPageHidden(hidden, in: state)
+            }))
     }
 
     func attachShell(to window: Int32, completion: @escaping @MainActor (Int32?) -> Void) {

@@ -1,0 +1,490 @@
+diff --git i/chrome/app/framework.exports w/chrome/app/framework.exports
+index 087aa47120..8c68c57c2c 100644
+--- i/chrome/app/framework.exports
++++ w/chrome/app/framework.exports
+@@ -24,6 +24,7 @@ _barc_blocker_set_tab_policy
+ _barc_blocker_state
+ _barc_set_runtime_ready_callback
+ _barc_set_runtime_close_callback
++_barc_set_runtime_window_request_callback
+ _barc_set_runtime_browser_target_callback
+ _barc_runtime_complete_startup
+ _barc_profile_search_state
+@@ -38,6 +39,8 @@ _barc_window_new_peer
+ _barc_window_new_peer_in_native_window
+ _barc_window_close
+ _barc_window_set_app_lifetime
++_barc_window_set_page_hidden
++_barc_tab_close_selecting
+ _barc_window_tab_count
+ _barc_window_tab_at
+ _barc_tab_create
+diff --git i/chrome/app/framework.order w/chrome/app/framework.order
+index 8acac44f8f..b1e15f5700 100644
+--- i/chrome/app/framework.order
++++ w/chrome/app/framework.order
+@@ -42,6 +42,8 @@ _barc_window_new_peer
+ _barc_window_new_peer_in_native_window
+ _barc_window_close
+ _barc_window_set_app_lifetime
++_barc_window_set_page_hidden
++_barc_tab_close_selecting
+ _barc_window_tab_count
+ _barc_window_tab_at
+ _barc_tab_create
+@@ -123,6 +125,7 @@ _barc_tab_stop
+ 
+ _barc_set_runtime_ready_callback
+ _barc_set_runtime_close_callback
++_barc_set_runtime_window_request_callback
+ _barc_set_runtime_browser_target_callback
+ _barc_runtime_complete_startup
+ 
+diff --git i/chrome/browser/app_controller_mac.mm w/chrome/browser/app_controller_mac.mm
+index 5554e9221c..1e48533d61 100644
+--- i/chrome/browser/app_controller_mac.mm
++++ w/chrome/browser/app_controller_mac.mm
+@@ -1927,6 +1927,13 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+       browser_shutdown::IsTryingToQuit()) {
+     return;
+   }
++  NSEvent* event = NSApp.currentEvent;
++  if (barc::ApplicationOwnsKeyCommand([sender tag]) &&
++      [sender isKindOfClass:[NSMenuItem class]] &&
++      event.type == NSEventTypeKeyDown &&
++      [static_cast<NSMenuItem*>(sender) cr_firesForKeyEquivalentEvent:event]) {
++    return;
++  }
+ 
+   // Handle the case where we're dispatching a command from a sender that's in a
+   // browser window. This means that the command came from a background window
+@@ -1946,6 +1953,13 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+     return;
+   }
+ 
++  if (([sender tag] == IDC_NEW_INCOGNITO_WINDOW ||
++       [sender tag] == IDC_NEW_ISOLATED_WINDOW) &&
++      barc::IsNativeApplicationMode()) {
++    barc::RequestApplicationWindow(BARC_APPLICATION_NEW_PRIVATE_WINDOW);
++    return;
++  }
++
+   if ([sender tag] == IDC_NEW_WINDOW && barc::IsNativeApplicationMode()) {
+     if (!barc::CanResolveApplicationBrowser()) {
+       if (!_barcCommandLineHandled && barc::IsNativeApplicationRegistered()) {
+@@ -2703,6 +2717,11 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+   // having that same equivalent, the AppKit just won't take it. We get around
+   // this problem by leaving key equivalents alone and instead change the
+   // titles and actions of the menu items that own those equivalents.
++  // The app installs Close Tab and Close Window for its windows, which keep
++  // tabs that Chromium's selected client may not have.
++  if (barc::IsNativeApplicationMode()) {
++    return;
++  }
+   NSMenuItem* cmdWMenuItem = [self cmdWMenuItem];
+   NSMenuItem* shiftCmdWMenuItem = [self shiftCmdWMenuItem];
+ 
+@@ -2926,23 +2945,25 @@ void OpenNativeApplicationTabs(StartupTabs tabs) {
+ }
+ 
+ void OpenNativeApplicationWindow(int32_t kind) {
++  if (kind == 1) {
++    barc::RequestApplicationWindow(BARC_APPLICATION_NEW_WINDOW);
++    return;
++  }
+   barc::RunInApplicationBrowser(
+       kind,
+       base::BindOnce(
+-          [](int32_t kind, barc::ApplicationBrowserResult result,
++          [](barc::ApplicationBrowserResult result,
+              BrowserWindowInterface* browser, Profile* profile) {
+             if (result != barc::ApplicationBrowserResult::kReady ||
+                 !CanUseNativeApplicationProfile(profile)) {
+               return;
+             }
+-            if (kind == 2 && browser) {
++            if (browser) {
+               browser->GetWindow()->Show();  // Only the admitted model owner.
+               return;
+             }
+-            // NewEmptyWindow preserves this Guest parent's exact primary OTR.
+-            chrome::NewEmptyWindow(profile);
+-          },
+-          kind));
++            barc::RequestApplicationWindow(BARC_APPLICATION_NEW_WINDOW);
++          }));
+ }
+ 
+ void UpdateProfileInUse(Profile* profile) {
+diff --git i/chrome/browser/ui/browser_command_controller.cc w/chrome/browser/ui/browser_command_controller.cc
+index 98031e15cc..993ad64cdc 100644
+--- i/chrome/browser/ui/browser_command_controller.cc
++++ w/chrome/browser/ui/browser_command_controller.cc
+@@ -654,7 +654,11 @@ bool BrowserCommandController::ExecuteCommandWithDispositionAndContext(
+   // tab.  However, Ben says he tried removing this before and got lots of
+   // crashes, e.g. from Windows sending WM_COMMANDs at random times during
+   // window construction.  This probably could use closer examination someday.
+-  if (browser_->tab_strip_model()->active_index() == TabStripModel::kNoTab) {
++  // An app-owned window showing an empty space has no tab, and still asks the
++  // app for a new window.
++  if (browser_->tab_strip_model()->active_index() == TabStripModel::kNoTab &&
++      !(barc::IsNativeApplicationMode() &&
++        (id == IDC_NEW_WINDOW || id == IDC_NEW_INCOGNITO_WINDOW))) {
+     return true;
+   }
+ 
+diff --git i/chrome/browser/ui/browser_commands.cc w/chrome/browser/ui/browser_commands.cc
+index 7df906a9ed..caabcec1bf 100644
+--- i/chrome/browser/ui/browser_commands.cc
++++ w/chrome/browser/ui/browser_commands.cc
+@@ -1318,6 +1318,10 @@ void Stop(BrowserWindowInterface* browser) {
+ void NewWindow(BrowserWindowInterface* browser) {
+   Profile* const profile = browser->GetProfile();
+ #if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationMode()) {
++    barc::RequestApplicationWindow(BARC_APPLICATION_NEW_WINDOW);
++    return;
++  }
+   // Web apps should open a window to their launch page.
+   if (auto* const app_browser_controller =
+           web_app::AppBrowserController::From(browser)) {
+@@ -1371,37 +1375,7 @@ void NewIncognitoWindow(Profile* profile) {
+             profile, IncognitoModePrefs::IncognitoModeType::kStandard)) {
+       return;
+     }
+-    // Native-command creation is not an app-factory reservation: the catalog
+-    // must be able to admit the resulting real window. The manager disposes an
+-    // unused session when this synchronous handoff creates no Browser.
+-    g_browser_process->profile_manager()->CreatePrivateSessionAsync(
+-        base::BindOnce(
+-            [](base::WeakPtr<Profile> source, Profile* session) {
+-              if (!source || !session || !g_browser_process ||
+-                  g_browser_process->IsShuttingDown() ||
+-                  !barc::IsNativeApplicationRegistered() ||
+-                  IncognitoModePrefs::GetAvailability(source.get()) ==
+-                      policy::IncognitoModeAvailability::kForced ||
+-                  !IncognitoModePrefs::IsIncognitoTypeAllowed(
+-                      source.get(),
+-                      IncognitoModePrefs::IncognitoModeType::kStandard)) {
+-                return;
+-              }
+-              auto* manager = g_browser_process->profile_manager();
+-              auto* parent = session->GetOriginalProfile();
+-              if (!manager || !session->IsGuestSession() ||
+-                  !session->IsPrimaryOTRProfile() ||
+-                  !ProfileManager::IsPrivateSessionProfilePath(
+-                      parent->GetPath()) ||
+-                  manager->GetProfileByPath(parent->GetPath()) != parent ||
+-                  parent->GetPrimaryOTRProfile(/*create_if_needed=*/false) !=
+-                      session) {
+-                return;
+-              }
+-              OpenEmptyWindow(session,
+-                              /*should_trigger_session_restore=*/false);
+-            },
+-            profile->GetWeakPtr()));
++    barc::RequestApplicationWindow(BARC_APPLICATION_NEW_PRIVATE_WINDOW);
+     return;
+   }
+ #endif
+diff --git i/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm w/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm
+index 96e3c9bb38..1eccfc8156 100644
+--- i/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm
++++ w/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm
+@@ -8,6 +8,7 @@
+ #include "base/check.h"
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/global_keyboard_shortcuts_mac.h"
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+ #include "components/input/native_web_keyboard_event.h"
+ #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
+ #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
+@@ -18,6 +19,43 @@
+ #include "ui/gfx/native_ui_types.h"
+ #include "ui/views/widget/widget.h"
+ 
++namespace {
++
++NSMenuItem* ItemWithTag(NSMenu* menu, NSInteger tag) {
++  for (NSMenuItem* item in menu.itemArray) {
++    if (item.submenu) {
++      if (NSMenuItem* found = ItemWithTag(item.submenu, tag)) {
++        return found;
++      }
++    } else if (item.tag == tag) {
++      return item;
++    }
++  }
++  return nil;
++}
++
++// The app routes some of Chromium's main menu items to its own actions; the
++// rest still send commandDispatch: to Chromium. A key the app owns reaches the
++// app's item through the menu when the item holds the key, else directly.
++ui::PerformKeyEquivalentResult GiveKeyToApp(NSEvent* event, int command) {
++  auto answers = [](NSMenuItem* item) {
++    return item && item.action != @selector(commandDispatch:) &&
++           item.action != @selector(commandDispatchUsingKeyModifiers:);
++  };
++  NSMenu* menu = [NSApp mainMenu];
++  if (NSMenuItem* item = [menu cr_menuItemForKeyEquivalentEvent:event]) {
++    return answers(item) ? ui::PerformKeyEquivalentResult::kPassToMainMenu
++                         : ui::PerformKeyEquivalentResult::kHandled;
++  }
++  NSMenuItem* item = ItemWithTag(menu, command);
++  if (answers(item) && item.enabled) {
++    [NSApp sendAction:item.action to:item.target from:item];
++  }
++  return ui::PerformKeyEquivalentResult::kHandled;
++}
++
++}  // namespace
++
+ @implementation ChromeCommandDispatcherDelegate
+ 
+ - (BOOL)eventHandledByViewsFocusManager:(NSEvent*)event
+@@ -96,6 +134,23 @@
+   // By not passing the event to AppKit, we do lose out on the brief
+   // highlighting of the NSMenu.
+   CommandForKeyEventResult result = CommandForKeyEvent(event);
++  if (result.found() && barc::KeyCommandBelongsToApplication(
++                            gfx::NativeWindow(window), result.chrome_command)) {
++    // Keys Chromium reserves never reach the page.
++    auto* bridge =
++        remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window);
++    bool reserved = false;
++    if (bridge) {
++      bridge->host()->WillExecuteCommand(result.chrome_command,
++                                         WindowOpenDisposition::CURRENT_TAB,
++                                         /*is_before_first_responder=*/true,
++                                         &reserved);
++    }
++    if (!reserved) {
++      return ui::PerformKeyEquivalentResult::kUnhandled;
++    }
++    return GiveKeyToApp(event, result.chrome_command);
++  }
+   // Ignore new tab/window events if |event| is a key repeat to prevent
+   // users from accidentally opening too many empty tabs or windows.
+   if (event.isARepeat && (result.chrome_command == IDC_NEW_TAB ||
+@@ -157,6 +212,13 @@
+     result.from_main_menu = false;
+   }
+ 
++  if (result.found() && barc::KeyCommandBelongsToApplication(
++                            gfx::NativeWindow(window), result.chrome_command)) {
++    // Chromium's own items never see it: a redispatched event is no longer
++    // [NSApp currentEvent], which AppController checks.
++    return GiveKeyToApp(event, result.chrome_command);
++  }
++
+   if (result.found()) {
+     auto* bridge =
+         remote_cocoa::NativeWidgetNSWindowBridge::GetFromNSWindow(window);
+diff --git i/chrome/browser/ui/views/frame/barc_bridge.mm w/chrome/browser/ui/views/frame/barc_bridge.mm
+index 7f967e3579..5e8ede4e52 100644
+--- i/chrome/browser/ui/views/frame/barc_bridge.mm
++++ w/chrome/browser/ui/views/frame/barc_bridge.mm
+@@ -725,6 +725,30 @@ class TabObservation : public content::WebContentsObserver,
+   ~TabObservation() override { vault_callback_ = nullptr; vault_focus_.reset(); UnbindOwner(); }
+   int32_t tab_id() const { return tab_.raw_value(); }
+   bool active() const { return active_; }
++  int CloseSelecting(int32_t successor) {
++    auto keep_alive = shared_from_this();
++    auto* tab = tab_.Get();
++    if (!active_ || closing_ || !tab || !tab->GetBrowserWindowInterface() || !web_contents())
++      return 0;
++    close_successor_ = successor;
++    if (!web_contents()->NeedToFireBeforeUnloadOrUnloadEvents()) ShowCloseSuccessor();
++    tab = tab_.Get();
++    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
++    if (!active_ || closing_ || !owner || !web_contents()) return 0;
++    owner->GetTabStripModel()->CloseWebContents(
++        web_contents(), TabCloseTypes::CLOSE_USER_GESTURE |
++                            TabCloseTypes::CLOSE_CREATE_HISTORICAL_TAB);
++    return 1;
++  }
++  void ShowCloseSuccessor() {
++    const int32_t successor = std::exchange(close_successor_, 0);
++    auto* tab = tab_.Get();
++    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
++    auto* next = owner ? LookupTab(owner, successor) : nullptr;
++    if (!next || next == tab || !tab->IsActivated()) return;
++    auto* strip = owner->GetTabStripModel();
++    strip->ActivateTabAt(strip->GetIndexOfTab(next));
++  }
+   struct VaultSubmission {
+     uint64_t token;
+     base::WeakPtr<BrowserWindowInterface> owner;
+@@ -734,6 +758,7 @@ class TabObservation : public content::WebContentsObserver,
+   std::optional<VaultSubmission> vault_submission_;
+   uint64_t vault_submission_serial_ = 0;
+   bool vault_save_notification_posted_ = false;
++  int32_t close_successor_ = 0;
+   bool VaultSaveCurrent(uint64_t serial) const {
+     auto* tab = tab_.Get();
+     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+@@ -2291,14 +2316,18 @@ class TabObservation : public content::WebContentsObserver,
+   void TitleWasSet(content::NavigationEntry*) override { Emit(BARC_TAB_TITLE); }
+   void WebContentsDestroyed() override { Close(); }
+   void BeforeUnloadFired(bool proceed) override {
+-    if (proceed)
+-      return;
+     auto* tab = tab_.Get();
+     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+     auto* controller = owner ? UnloadController::From(owner) : nullptr;
+     // WebContents notifies before its delegate resets the window-close state.
+     // Window/group refusal comes from the terminal window notification instead.
+-    if (!controller || !controller->is_attempting_to_close_browser())
++    const bool tab_close = !controller || !controller->is_attempting_to_close_browser();
++    if (proceed && tab_close) {
++      ShowCloseSuccessor();
++      return;
++    }
++    close_successor_ = 0;
++    if (!proceed && tab_close)
+       Emit(BARC_TAB_CLOSE_CANCELLED);
+   }
+   void OnTabCloseCancelled(const tabs::TabInterface* tab) override {
+@@ -2653,6 +2682,20 @@ int barc_tab_cancel_script(uint64_t observation, uint64_t request) {
+   return 1;
+ }
+ 
++int barc_tab_close_selecting(uint64_t observation, int32_t successor) {
++  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI)) return 0;
++  auto found = ObservationTable().find(observation);
++  if (found == ObservationTable().end()) return 0;
++  if (navigation_callback_depth) {
++    return content::GetUIThreadTaskRunner({})->PostNonNestableTask(
++        FROM_HERE, base::BindOnce(
++                       [](uint64_t observation, int32_t successor) {
++                         barc_tab_close_selecting(observation, successor);
++                       },
++                       observation, successor));
++  }
++  return found->second->CloseSelecting(successor);
++}
+ int barc_tab_enable_peek(uint64_t observation, int enabled) {
+   if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+       enabled < 0 || enabled > (BARC_TAB_PEEK_CAPABLE | BARC_TAB_PEEK_ON_SHIFT_CLICK)) return 0;
+@@ -3686,6 +3729,16 @@ int barc_window_close(int32_t id) {
+   window->GetWindow()->Close();
+   return 1;
+ }
++int barc_window_set_page_hidden(int32_t id, int hidden) {
++  auto* window = Window(id);
++  auto* view = window && !window->IsDeleteScheduled()
++                   ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
++  auto* widget = view ? view->browser_widget() : nullptr;
++  if (!widget || widget->IsClosed() || widget->IsPhysicalCloseCommitted())
++    return 0;
++  widget->set_barc_page_hidden(hidden != 0);
++  return 1;
++}
+ int barc_window_set_app_lifetime(int32_t id) {
+   auto* window = Window(id);
+   auto* view = window && !window->IsDeleteScheduled() &&
+diff --git i/chrome/browser/ui/views/frame/browser_native_widget_mac.mm w/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+index fd4d2fa29f..d81764c672 100644
+--- i/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ w/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -40,6 +40,7 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view.h"
++#include "chrome/browser/ui/views/frame/barc_runtime_startup.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+@@ -454,7 +455,9 @@ void BrowserNativeWidgetMac::ValidateUserInterfaceItem(
+     remote_cocoa::mojom::ValidateUserInterfaceItemResult* result) {
+   BrowserWindowInterface* const browser =
+       browser_view_ ? browser_view_->browser() : nullptr;
+-  if (!browser || !chrome::SupportsCommand(browser, tag)) {
++  if (!browser || !chrome::SupportsCommand(browser, tag) ||
++      (barc::IsPageCommand(tag) && browser_view_->browser_widget() &&
++       browser_view_->browser_widget()->barc_page_hidden())) {
+     result->enable = false;
+     return;
+   }
+@@ -915,7 +918,8 @@ BrowserNativeWidgetMac::PreHandleKeyboardEvent(
+     if (command_id == -1) {
+       command_id = DelayedWebContentsCommandForKeyEvent(ns_event);
+     }
+-    if (command_id != -1) {
++    if (command_id != -1 &&
++        !barc::KeyCommandBelongsToApplication(GetNativeWindow(), command_id)) {
+       return content::KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT;
+     }
+   }
+diff --git i/chrome/browser/ui/views/frame/browser_view.cc w/chrome/browser/ui/views/frame/browser_view.cc
+index 039d2eaa2f..778d186e91 100644
+--- i/chrome/browser/ui/views/frame/browser_view.cc
++++ w/chrome/browser/ui/views/frame/browser_view.cc
+@@ -5627,6 +5627,11 @@ bool BrowserView::AcceleratorPressed(const ui::Accelerator& accelerator) {
+   if (!FindCommandIdForAccelerator(accelerator, &command_id)) {
+     return false;
+   }
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsPageCommand(command_id) && browser_widget_->barc_page_hidden()) {
++    return false;
++  }
++#endif
+ 
+   UpdateAcceleratorMetrics(accelerator, command_id);
+ 
+@@ -6049,6 +6054,11 @@ void BrowserView::LoadAccelerators() {
+     }
+ #endif
+ 
++#if BUILDFLAG(IS_MAC)
++    if (barc::ApplicationOwnsKeyCommand(entry.command_id)) {
++      continue;
++    }
++#endif
+     ui::Accelerator accelerator(entry.keycode, entry.modifiers);
+     accelerator_table_[accelerator] = entry.command_id;
+ 
+diff --git i/chrome/browser/ui/views/frame/browser_widget.h w/chrome/browser/ui/views/frame/browser_widget.h
+index c161816466..98054677c1 100644
+--- i/chrome/browser/ui/views/frame/browser_widget.h
++++ w/chrome/browser/ui/views/frame/browser_widget.h
+@@ -92,6 +92,8 @@ class BrowserWidget : public views::Widget,
+   // Selection is independent of which logical view uniquely owns this Widget.
+   BrowserView* selected_browser_view() const { return browser_view_; }
+   uint64_t barc_physical_group() const { return barc_physical_group_; }
++  bool barc_page_hidden() const { return barc_page_hidden_; }
++  void set_barc_page_hidden(bool hidden) { barc_page_hidden_ = hidden; }
+   uint64_t barc_selection_epoch() const { return barc_selection_epoch_; }
+ 
+   // One physical presentation, with tab/model/profile ownership unchanged.
+@@ -320,6 +322,7 @@ class BrowserWidget : public views::Widget,
+   // The explicitly selected logical client, independently of unique ownership.
+   raw_ptr<BrowserView> browser_view_;
+   const uint64_t barc_physical_group_;
++  bool barc_page_hidden_ = false;
+   uint64_t barc_selection_epoch_ = 0;
+   bool selecting_logical_view_ = false;
+ 
+diff --git i/components/remote_cocoa/app_shim/bridged_content_view.mm w/components/remote_cocoa/app_shim/bridged_content_view.mm
+index 58c8f6da2e..ade5e87436 100644
+--- i/components/remote_cocoa/app_shim/bridged_content_view.mm
++++ w/components/remote_cocoa/app_shim/bridged_content_view.mm
+@@ -1668,6 +1668,17 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
+ 
+ // NSUserInterfaceValidations protocol implementation.
+ 
++// AppKit text views leave undo: and redo: to the responder chain, where the
++// window's undo reaches their own undo stack. Answer them only while a views
++// text field, whose input runs through this view, is editing.
++- (BOOL)respondsToSelector:(SEL)selector {
++  if ((selector == @selector(undo:) || selector == @selector(redo:)) &&
++      self.window.firstResponder != self) {
++    return NO;
++  }
++  return [super respondsToSelector:selector];
++}
++
+ - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
+   // Special case this, since there's no cross-platform text command for it.
+   if (item.action == @selector(copyToFindPboard:))

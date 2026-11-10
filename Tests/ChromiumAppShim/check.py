@@ -32,7 +32,7 @@ VERSION = '156.0.8078.80'
 FRAMEWORK = 'Bark Framework.framework'
 BUNDLE_ID = 'ee.qdo.bark'
 DELEGATING_ZONE = 'DelegatingDefaultZoneForPartitionAlloc'
-BRIDGE_VERSION = 8
+BRIDGE_VERSION = 9
 ENTRY = f'barc_engine_main_v{BRIDGE_VERSION}'
 ABORT_STATUS = 134
 

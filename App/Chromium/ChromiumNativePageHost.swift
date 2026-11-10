@@ -15,6 +15,8 @@ struct ChromiumPageHostAPI {
     typealias Header = @convention(c) (Int32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32) -> Int32
     typealias Admission = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
     typealias TransferAdmitting = @convention(c) (Int32, Int32, Int32, Admission?, UnsafeMutableRawPointer?) -> Int32
+    typealias PageHidden = @convention(c) (Int32, Int32) -> Int32
+    typealias NewPeer = @convention(c) (Int32, Int32) -> Int32
     let open: Open
     let create: Create
     let tabAt: TabAt
@@ -22,11 +24,13 @@ struct ChromiumPageHostAPI {
     let selectWindow: WindowCommand
     let closeWindow: WindowCommand
     let setAppLifetime: WindowCommand
+    let setPageHidden: PageHidden
     let attach: Attach
     let shellIsOwned: Attach
     let detachIfOwned: Attach
     let setHeader: Header
     let transferAdmitting: TransferAdmitting
+    let newPeer: NewPeer
 
     init(library: UnsafeMutableRawPointer) throws {
         func load<T>(_ name: String, _: T.Type) throws -> T {
@@ -40,24 +44,29 @@ struct ChromiumPageHostAPI {
         selectWindow = try load("barc_window_select", WindowCommand.self)
         closeWindow = try load("barc_window_close", WindowCommand.self)
         setAppLifetime = try load("barc_window_set_app_lifetime", WindowCommand.self)
+        setPageHidden = try load("barc_window_set_page_hidden", PageHidden.self)
         attach = try load("barc_window_attach_native_shell", Attach.self)
         shellIsOwned = try load("barc_window_native_shell_is_owned", Attach.self)
         detachIfOwned = try load("barc_window_detach_native_shell_if_owned", Attach.self)
         transferAdmitting = try load("barc_tab_transfer_with_admission", TransferAdmitting.self)
+        newPeer = try load("barc_window_new_peer_in_native_window", NewPeer.self)
         setHeader = try load("barc_window_set_native_header", Header.self)
     }
 
     init(open: @escaping Open, create: @escaping Create, tabAt: @escaping TabAt, tabTitle: @escaping TabTitle,
          selectWindow: @escaping WindowCommand, closeWindow: @escaping WindowCommand,
          setAppLifetime: @escaping WindowCommand = { _ in 1 },
+         setPageHidden: @escaping PageHidden = { _, _ in 1 },
          attach: @escaping Attach, shellIsOwned: @escaping Attach, detachIfOwned: @escaping Attach,
          transferAdmitting: @escaping TransferAdmitting = { _, _, _, _, _ in 0 },
+         newPeer: @escaping NewPeer = { _, _ in 0 },
          setHeader: @escaping Header = { _, _, _, _, _ in 0 }) {
         self.open = open; self.create = create; self.tabAt = tabAt; self.tabTitle = tabTitle
         self.selectWindow = selectWindow; self.closeWindow = closeWindow
-        self.setAppLifetime = setAppLifetime; self.attach = attach
+        self.setAppLifetime = setAppLifetime; self.setPageHidden = setPageHidden; self.attach = attach
         self.shellIsOwned = shellIsOwned; self.detachIfOwned = detachIfOwned
         self.transferAdmitting = transferAdmitting
+        self.newPeer = newPeer
         self.setHeader = setHeader
     }
 }
@@ -229,6 +238,8 @@ final class ChromiumNativePageHost: NativePageHost {
         }
     }
     private var emptySpaceOpening: [CreationKey: EmptySpaceOpening] = [:]
+    /// The window shows no page of its own: an empty space, or a page another window holds.
+    var pageIsHidden: (BrowserWindowState) -> Bool = { $0.showsNativeEmptySpace }
 
     init(api: ChromiumPageHostAPI, navigationAPI: ChromiumNavigationAPI, discoveryAPI: ChromiumDiscoveryAPI,
          splitAPI: ChromiumSplitAPI? = nil, peekAPI: ChromiumPeekAPI? = nil,
@@ -249,8 +260,17 @@ final class ChromiumNativePageHost: NativePageHost {
         let owned = api.shellIsOwned(nativeOwner, Unmanaged.passUnretained(shell).toOpaque()) == 1
         mounts[window.id] = Mount(shell: shell, group: row.physical_group,
                                   attachedClient: owned ? nativeOwner : nil, model: window)
+        _ = api.setPageHidden(nativeOwner, pageIsHidden(window) ? 1 : 0)
         if let initialBlankTab { blankTabs[nativeOwner] = BlankReservation(tab: initialBlankTab, group: row.physical_group) }
         return true
+    }
+
+    /// The empty-space panel covers the page Chromium keeps selected, so its page
+    /// commands must do nothing until the window shows a page again.
+    func setPageHidden(_ hidden: Bool, in window: BrowserWindowState) {
+        guard let mount = mounts[window.id], mount.model === window,
+              let client = liveClient(in: window.id) else { return }
+        _ = api.setPageHidden(client, hidden ? 1 : 0)
     }
 
     /// Catalog disappearance ends registration, not any still-live moved tab.
@@ -951,6 +971,7 @@ final class ChromiumNativePageHost: NativePageHost {
 
     func selectPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
         guard let page = navigation as? ChromiumPageNavigation,
+              admission(page, in: window) != nil || moveHere(page, in: window),
               let (mount, before) = admission(page, in: window) else { return false }
         let previous = discoveryAPI.windowState(before.selected_client)
         mount.generation &+= 1
@@ -979,6 +1000,46 @@ final class ChromiumNativePageHost: NativePageHost {
             else if mount.attachedClient != old.window { _ = api.detachIfOwned(old.window, pointer) }
         }
         return false
+    }
+
+    /// A page another window holds moves into this one, into its client of the page's profile.
+    private func moveHere(_ page: ChromiumPageNavigation, in window: BrowserWindowState) -> Bool {
+        let id = ObjectIdentifier(page)
+        guard !page.isClosed, !page.isPrivateSession, !window.isIncognito, let profile = page.profileID,
+              let binding = pages[id], binding.page === page, binding.owned, binding.window != window.id,
+              closing[id] == nil, let mount = mounts[window.id], mount.model === window, mount.shell != nil,
+              let source = liveState(page.nativeWindowID), source.physical_group != mount.group,
+              discoveryAPI.identity(source) == profile, let owner = liveClient(in: window.id) else { return false }
+        var destination = liveClient(in: window.id, profile: profile) ?? 0
+        let created = destination == 0
+        if created { destination = api.newPeer(page.nativeWindowID, owner) }
+        guard destination > 0, let target = liveState(destination), target.physical_group == mount.group,
+              discoveryAPI.identity(target) == profile else {
+            if created && destination > 0 { _ = api.closeWindow(destination) }
+            return false
+        }
+        let previous = binding.window
+        let request = DetachedAdmission { [weak self, weak page, weak window] actual, tab in
+            guard let self, let page, let window, actual == destination, tab == page.nativeTabID,
+                  page.nativeWindowID == destination, self.pages[id] === binding,
+                  self.mounts[window.id] === mount else { return false }
+            binding.window = window.id
+            return true
+        }
+        let moved = withExtendedLifetime(request) {
+            api.transferAdmitting(page.nativeWindowID, page.nativeTabID, destination, { context, owner, tab in
+                MainActor.assumeIsolated {
+                    guard let context else { return 0 }
+                    return Unmanaged<DetachedAdmission>.fromOpaque(context).takeUnretainedValue().commit(owner, tab) ? 1 : 0
+                }
+            }, Unmanaged.passUnretained(request).toOpaque())
+        } == 1
+        guard moved else {
+            if pages[id] === binding, page.nativeWindowID != destination { binding.window = previous }
+            if created { _ = api.closeWindow(destination) }
+            return false
+        }
+        return true
     }
 
     private func splitPages(_ record: SplitRecord, pages: [UUID: PageSession],
@@ -1345,13 +1406,23 @@ final class ChromiumNativePageHost: NativePageHost {
     }
 
     func closePage(_ navigation: any PageNavigation, completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+        closePage(navigation, successor: nil, completion: completion)
+    }
+
+    func closePage(_ navigation: any PageNavigation, showing successor: any PageNavigation,
+                   completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
+        closePage(navigation, successor: successor as? ChromiumPageNavigation, completion: completion)
+    }
+
+    private func closePage(_ navigation: any PageNavigation, successor: ChromiumPageNavigation?,
+                           completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         guard let page = navigation as? ChromiumPageNavigation else { completion(.cancelled); return }
         if page.isClosed { completion(page.nativeCloseOutcome ?? .closed); return }
         let id = ObjectIdentifier(page)
         guard pages[id]?.page === page else { completion(.cancelled); return }
         if closing[id] != nil { closing[id]?.append(completion); return }
         closing[id] = [completion]
-        let accepted = page.requestNativeClose()
+        let accepted = page.requestNativeClose(showing: successor)
         // Terminal/cancellation delivery may have completed synchronously.
         if !accepted, let callbacks = closing.removeValue(forKey: id) {
             callbacks.forEach { $0(.cancelled) }

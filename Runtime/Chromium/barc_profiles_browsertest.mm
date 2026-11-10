@@ -712,87 +712,64 @@ class BarcPrivateCommandBrowserTest : public BarcProfilesBrowserTest {
           barc_runtime_complete_startup(initial);
         },
         nullptr);
+    barc_set_runtime_window_request_callback(
+        [](int32_t request, void* pointer) {
+          static_cast<BarcPrivateCommandBrowserTest*>(pointer)
+              ->window_requests.push_back(request);
+        },
+        this);
     BarcProfilesBrowserTest::SetUp();
   }
+
+ protected:
+  std::vector<int32_t> window_requests;
 };
 
 IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
-                       NativeIncognitoHasIndependentDiscoverableSession) {
+                       NativeIncognitoAsksTheAppForItsPrivateWindow) {
+  auto* manager = g_browser_process->profile_manager();
+  const size_t profiles_before =
+      manager->GetProfileAttributesStorage().GetNumberOfProfiles();
   chrome::NewIncognitoWindow(browser()->GetProfile());
-  int32_t native_id = 0;
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    GlobalBrowserCollection::GetInstance()->ForEach(
-        [&](BrowserWindowInterface* window) {
-          char identity[37];
-          if (barc_window_private_session_uuid(window->GetSessionID().id(),
-                                               identity, sizeof(identity))) {
-            native_id = window->GetSessionID().id();
-            return false;
-          }
-          return true;
-        });
-    return native_id != 0;
-  }));
-  auto* native = Window(native_id);
-  ASSERT_TRUE(native);
-  auto* session = native->GetProfile();
-  BarcDiscoveryWindow native_row;
-  ASSERT_EQ(1, barc_window_discovery_state(native_id, &native_row));
-  EXPECT_EQ(0u, native_row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
-  EXPECT_NE(0u, native_row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
-  char native_identity[37];
-  ASSERT_EQ(37u, barc_window_private_session_uuid(native_id, native_identity,
-                                                  sizeof(native_identity)));
-  NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-  ASSERT_EQ(1,
-            barc_window_attach_native_shell(native_id, (__bridge void*)header));
-  ASSERT_EQ(1, barc_window_admit_discovered(native_id, (__bridge void*)header));
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(std::vector<int32_t>{BARC_APPLICATION_NEW_PRIVATE_WINDOW},
+            window_requests);
+  EXPECT_EQ(profiles_before,
+            manager->GetProfileAttributesStorage().GetNumberOfProfiles());
+  GlobalBrowserCollection::GetInstance()->ForEach(
+      [&](BrowserWindowInterface* window) {
+        EXPECT_EQ(0u, barc_window_private_session_uuid(
+                          window->GetSessionID().id(), nullptr, 0));
+        return true;
+      });
+  // The app opens its private window as an independent, hidden session.
   Result factory;
   barc_private_session_open_window(Completed, &factory);
   ASSERT_EQ(BARC_PROFILE_OK, factory.Get<0>());
-  ASSERT_TRUE(Window(factory.Get<1>()));
-  EXPECT_FALSE(Window(factory.Get<1>())->GetWindow()->IsVisible());
+  auto* window = Window(factory.Get<1>());
+  ASSERT_TRUE(window);
+  EXPECT_FALSE(window->GetWindow()->IsVisible());
   BarcDiscoveryWindow factory_row;
   ASSERT_EQ(1, barc_window_discovery_state(factory.Get<1>(), &factory_row));
   EXPECT_NE(0u, factory_row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY);
-  ASSERT_NE(session, Window(factory.Get<1>())->GetProfile());
-  BarcDiscoverySnapshot snapshot;
-  ASSERT_EQ(BARC_DISCOVERY_READ_CAPACITY,
-            barc_discovery_snapshot(nullptr, 0, nullptr, 0, &snapshot));
-  std::vector<BarcDiscoveryWindow> windows(snapshot.window_count);
-  std::vector<BarcDiscoveryTab> tabs(snapshot.tab_count);
-  ASSERT_EQ(BARC_DISCOVERY_READ_OK,
-            barc_discovery_snapshot(windows.data(), windows.size(), tabs.data(),
-                                    tabs.size(), &snapshot));
-  bool saw_native_tab = false;
-  bool saw_factory_tab = false;
-  for (const auto& tab : tabs) {
-    if (tab.window == native_id) {
-      saw_native_tab = true;
-      EXPECT_EQ(0u, tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY);
-    } else if (tab.window == factory.Get<1>()) {
-      saw_factory_tab = true;
-      EXPECT_NE(0u, tab.flags & BARC_DISCOVERY_TAB_APP_FACTORY);
-    }
-  }
-  EXPECT_TRUE(saw_native_tab);
-  EXPECT_TRUE(saw_factory_tab);
-  // Ordinary New Window inherits this session, unlike explicit New Incognito.
-  chrome::NewWindow(native);
-  int same_session_windows = 0;
-  GlobalBrowserCollection::GetInstance()->ForEach(
-      [&](BrowserWindowInterface* window) {
-        if (window->GetProfile() == session) {
-          ++same_session_windows;
-          char identity[37];
-          EXPECT_EQ(37u, barc_window_private_session_uuid(
-                             window->GetSessionID().id(), identity,
-                             sizeof(identity)));
-          EXPECT_STREQ(native_identity, identity);
-        }
-        return true;
-      });
-  EXPECT_EQ(2, same_session_windows);
+  EXPECT_EQ(37u, barc_window_private_session_uuid(factory.Get<1>(), nullptr, 0));
+  // New Window from a private window asks the app too.
+  size_t browsers = 0;
+  GlobalBrowserCollection::GetInstance()->ForEach([&](BrowserWindowInterface*) {
+    ++browsers;
+    return true;
+  });
+  chrome::NewWindow(window);
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ((std::vector<int32_t>{BARC_APPLICATION_NEW_PRIVATE_WINDOW,
+                                  BARC_APPLICATION_NEW_WINDOW}),
+            window_requests);
+  size_t after = 0;
+  GlobalBrowserCollection::GetInstance()->ForEach([&](BrowserWindowInterface*) {
+    ++after;
+    return true;
+  });
+  EXPECT_EQ(browsers, after);
 }
 
 IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
@@ -804,6 +781,7 @@ IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
       browser()->GetProfile()->GetPrefs(),
       policy::IncognitoModeAvailability::kDisabled);
   chrome::NewIncognitoWindow(browser()->GetProfile());
+  EXPECT_TRUE(window_requests.empty());
   EXPECT_EQ(profiles_before,
             manager->GetProfileAttributesStorage().GetNumberOfProfiles());
   GlobalBrowserCollection::GetInstance()->ForEach(
@@ -825,6 +803,7 @@ IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
       browser()->GetProfile()->GetPrefs(),
       policy::IncognitoModeAvailability::kForced);
   chrome::NewIncognitoWindow(browser()->GetProfile());
+  EXPECT_TRUE(window_requests.empty());
   EXPECT_EQ(profiles_before,
             manager->GetProfileAttributesStorage().GetNumberOfProfiles());
   GlobalBrowserCollection::GetInstance()->ForEach(
@@ -836,57 +815,6 @@ IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
         return true;
       });
 }
-
-IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
-                       ForcedParentAfterCreationCannotBecomeGuest) {
-  auto* manager = g_browser_process->profile_manager();
-  const size_t profiles_before =
-      manager->GetProfileAttributesStorage().GetNumberOfProfiles();
-  chrome::NewIncognitoWindow(browser()->GetProfile());
-  ASSERT_GT(manager->GetProfileAttributesStorage().GetNumberOfProfiles(),
-            profiles_before);
-  IncognitoModePrefs::SetAvailability(
-      browser()->GetProfile()->GetPrefs(),
-      policy::IncognitoModeAvailability::kForced);
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    return manager->GetProfileAttributesStorage().GetNumberOfProfiles() ==
-           profiles_before;
-  }));
-  GlobalBrowserCollection::GetInstance()->ForEach(
-      [&](BrowserWindowInterface* window) {
-        char identity[37];
-        EXPECT_EQ(0u,
-                  barc_window_private_session_uuid(window->GetSessionID().id(),
-                                                   identity, sizeof(identity)));
-        return true;
-      });
-}
-
-IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
-                       NativeIncognitoRechecksPolicyAfterCreation) {
-  auto* manager = g_browser_process->profile_manager();
-  const size_t profiles_before =
-      manager->GetProfileAttributesStorage().GetNumberOfProfiles();
-  chrome::NewIncognitoWindow(browser()->GetProfile());
-  ASSERT_GT(manager->GetProfileAttributesStorage().GetNumberOfProfiles(),
-            profiles_before);
-  IncognitoModePrefs::SetAvailability(
-      browser()->GetProfile()->GetPrefs(),
-      policy::IncognitoModeAvailability::kDisabled);
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    return manager->GetProfileAttributesStorage().GetNumberOfProfiles() ==
-           profiles_before;
-  }));
-  GlobalBrowserCollection::GetInstance()->ForEach(
-      [&](BrowserWindowInterface* window) {
-        char identity[37];
-        EXPECT_EQ(0u,
-                  barc_window_private_session_uuid(window->GetSessionID().id(),
-                                                   identity, sizeof(identity)));
-        return true;
-      });
-}
-
 
 namespace {
 class OnPrivateProfileAdded : public ProfileManagerObserver {

@@ -17,6 +17,19 @@ __attribute__((visibility("default"))) void barc_set_runtime_ready_callback(
 // Initial attempts, non-quit window close and post-stop work never notify.
 __attribute__((visibility("default"))) void barc_set_runtime_close_callback(
     void (*callback)(int32_t accepted, void*), void* user_data);
+// Where a person's New Window or New Private Window request comes from: a key,
+// a menu, the Dock or a page's command.
+enum BarcApplicationWindowRequest {
+  BARC_APPLICATION_NEW_WINDOW = 1,
+  BARC_APPLICATION_NEW_PRIVATE_WINDOW = 2
+};
+// Main thread, once before ChromeMain; borrowed like the close callback. In
+// native application mode these requests come here and Chromium opens nothing:
+// the app opens the window it wants. Dock reopen comes here as New Window when
+// the browser target names no window to show.
+__attribute__((visibility("default"))) void
+barc_set_runtime_window_request_callback(
+    void (*callback)(int32_t request, void*), void* user_data);
 // A validated incoming URL chooses current-space or detached-mini presentation.
 // UUID fields are canonical, NUL-terminated model identities, never paths.
 // Native copies this value before the resolver returns.
@@ -30,8 +43,8 @@ typedef struct BarcApplicationTarget {
   char regular_profile_uuid[37];
   char space_uuid[37];
 } BarcApplicationTarget;
-// Browser UI, once before ChromeMain. kind=0 validated incoming URL, kind=1
-// New Window, kind=2 Dock reopen, kind=3 exact pending-page admission.
+// Browser UI, once before ChromeMain. kind=0 validated incoming URL, kind=2
+// Dock reopen, kind=3 exact pending-page admission.
 // validated_url is null for profile-only lookup. Pending handles are zero except
 // kind=3; that query never selects, creates or navigates.
 // Return 1 with an initialized exact target; 0 refuses. -1 means temporary

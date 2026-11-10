@@ -93,7 +93,7 @@ toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
 candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
 from one revision; apply it once to the pinned source, in the following order.
 From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 56 ordered patches and 30 copied
+procedure. The complete reviewed candidate has 57 ordered patches and 30 copied
 sources (the BRANDING file, 16 bridge sources, the existing translation script, two cosmetic resources
 the Boost picker resource, the native matcher header, the fixed-tweaks header, three tweak resources
 and the header digest script). Copies precede `lifecycle-close.patch`; the Swift overlay follows those
@@ -105,7 +105,7 @@ set barc_repo (realpath ../../../..)
 function prepare_native_candidate
     set -l runtime "$argv[1]/Runtime/Chromium"
     cp "$runtime/BRANDING" chrome/app/theme/chromium/BRANDING; or return 1
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings native-app-controlled-splits native-header-hash native-app-lifetime
+    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings native-app-controlled-splits native-header-hash native-app-lifetime native-key-ownership
         if test "$patch" = lifecycle-close
             for source in barc_bridge_api.h barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup_api.h barc_runtime_startup.h barc_runtime_startup.cc
                 cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
@@ -371,7 +371,7 @@ import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
 `--barc-app-profile` remains temporary-root verification with mock keychain and
 isolated preferences; neither mode enables cloud sync.
 
-Normal startup requires bridge version 8 before ChromeMain. Native registration
+Normal startup requires bridge version 9 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default
@@ -401,6 +401,34 @@ on a client whose last tab closes or moves out stays open and selected, reports
 still closes through `barc_window_close` of its last client, its close button or quit, with
 their prompts. `barc_tab_select` refuses bridge callbacks, because `TabStripModel::ActivateTab`
 CHECKs reentrancy in every build type and those callbacks can run inside a strip change.
+
+### App-owned keys
+
+In native application mode a key reaches a Chromium command only when the command acts on
+the shown page (find, zoom, reload, stop, print, devtools, view source, back and forward),
+edits, or asks the app for a window (New Window and New Private Window). The app owns every
+other key, even one it has no action for. On Mac a key reaches commands four ways, and
+`native-key-ownership.patch` applies the rule to each: `ChromeCommandDispatcherDelegate` before
+and after the page or field sees the key, the main menu's key equivalents (a key swallowed
+after the page never reaches the menu; with no browser window key, `AppController` drops a
+key equivalent but still runs a click), `BrowserView::LoadAccelerators`, and the renderer's
+shortcut reservation. Close Window and Quit keys still reach AppKit's `performClose:` and
+`terminate:`, which ask the app. New Window and New Private Window, from any key, menu, the
+Dock or a page's command, reach the app through `barc_set_runtime_window_request_callback`;
+Chromium opens no window or New Tab page for them. Dock reopen still shows the window the
+browser target names. `barc_window_set_page_hidden` marks a physical window that
+shows no page, as on an empty space: its page commands then do nothing from keys or the menu.
+Keys Chromium reserves from pages, such as Close Window's, still never reach the page. A key
+the app owns goes on to the main menu when the app answers that item itself, as it does Downloads.
+A window showing an empty space selects a client with no tab, where Chromium runs no command:
+New Window and New Private Window still reach the app from it, and `AppController` no longer
+reshuffles Close Tab and Close Window by the selected client's tabs, since the app installs both.
+`barc_tab_close_selecting` names the tab Chromium shows when the page actually closes, so a
+page with a beforeunload listener shows the app's pick, and "Leave site?" keeps the page shown
+until it is answered. The app's sidebar and panels are AppKit fields
+inside Chromium's content view, which answered `undo:` and `redo:` for its own views fields
+only, so Cmd+Z did nothing there; it now answers them only while a views field is editing,
+and the window reaches the field's undo.
 
 ### Native launch routing
 

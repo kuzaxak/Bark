@@ -205,6 +205,8 @@ public class BrowserWindowState {
     /// The space a Chromium window last entered or left empty. Chromium keeps showing some other
     /// client's page there, which the shell covers while this holds.
     var nativeEmptySpaceID: UUID?
+    /// The page Nook shows next once this window's shown page actually closes.
+    var nativeCloseSuccessor: UUID?
     public var showsNativeEmptySpace: Bool {
         spaceID != nil && nativeEmptySpaceID == spaceID && selectedItemID == nil
     }

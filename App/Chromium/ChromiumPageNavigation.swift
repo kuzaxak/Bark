@@ -16,6 +16,7 @@ struct ChromiumNavigationAPI {
     typealias Observe = @convention(c) (Int32, Int32, Callback?, UnsafeMutableRawPointer?) -> UInt64
     typealias PeekAdmission = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
     typealias EnablePeek = @convention(c) (UInt64, Int32) -> Int32
+    typealias CloseSelecting = @convention(c) (UInt64, Int32) -> Int32
     typealias CreatePeek = @convention(c) (UInt64, Int32, PeekAdmission?, UnsafeMutableRawPointer?) -> Int32
     typealias Unobserve = @convention(c) (UInt64) -> Void
     typealias Command = @convention(c) (Int32, Int32) -> Int32
@@ -89,6 +90,7 @@ struct ChromiumNavigationAPI {
     var cancelPicker: CancelScript? = nil
     var createPeek: CreatePeek? = nil
     var enablePeek: EnablePeek? = nil
+    var closeSelecting: CloseSelecting? = nil
     var applyBlockingPolicy: BlockingPolicy? = nil
     var search: Search? = nil
     var history: History? = nil
@@ -157,6 +159,7 @@ extension ChromiumNavigationAPI {
         cancelPicker = try resolve("barc_tab_cancel_boost_picker", CancelScript.self)
         createPeek = try resolve("barc_tab_create_peek", CreatePeek.self)
         enablePeek = try resolve("barc_tab_enable_peek", EnablePeek.self)
+        closeSelecting = try resolve("barc_tab_close_selecting", CloseSelecting.self)
         applyBlockingPolicy = try resolve("barc_blocker_set_tab_policy", BlockingPolicy.self)
         privateSessionUUID = try resolve("barc_window_private_session_uuid", ProfileUUID.self)
     }
@@ -364,7 +367,12 @@ final class ChromiumPageNavigation: PageNavigation {
     }
 
     @discardableResult func selectNativePage() -> Bool { command(api.select) }
-    @discardableResult func requestNativeClose() -> Bool { command(api.close) }
+    /// `successor`, a page of the same client, is shown if this page is still shown when it closes.
+    @discardableResult func requestNativeClose(showing successor: ChromiumPageNavigation? = nil) -> Bool {
+        guard let successor, !successor.invalidated, successor.window == window, !invalidated,
+              observation != 0, let closeSelecting = api.closeSelecting else { return command(api.close) }
+        return closeSelecting(observation, successor.tab) == 1
+    }
 
     private func command(_ action: ChromiumNavigationAPI.Command) -> Bool {
         !invalidated && window > 0 && action(window, tab) == 1
