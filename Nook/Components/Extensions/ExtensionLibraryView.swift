@@ -25,8 +25,10 @@ struct ExtensionLibraryView: View {
 
     private let logger = Logger(subsystem: "com.nook.browser", category: "ExtensionLibrary")
 
+    private var isChromium: Bool { browserManager.engine == .chromium }
+
     private var currentTab: PageSession? {
-        browserManager.tabs.selectedSession(in: windowState)
+        isChromium ? browserManager.frontPage(in: windowState) : browserManager.tabs.selectedSession(in: windowState)
     }
 
     private var currentHost: String? {
@@ -40,19 +42,19 @@ struct ExtensionLibraryView: View {
         return host.isEmpty ? nil : host
     }
 
-    private let width: CGFloat = 300
+    static let width: CGFloat = 240
     private let columns = Array(repeating: GridItem(.flexible(), spacing: NookDesign.Spacing.sm), count: 4)
 
     var body: some View {
-        VStack(alignment: .leading, spacing: NookDesign.Spacing.lg) {
+        VStack(alignment: .leading, spacing: NookDesign.Spacing.md + NookDesign.Spacing.xxs) {
             actionTiles
             extensionsSection
             settingsSection
             Rectangle().fill(NookDesign.Surface.hairline).frame(height: 1)
             footer
         }
-        .padding(NookDesign.Spacing.lg)
-        .frame(width: width)
+        .padding(NookDesign.Spacing.md + NookDesign.Spacing.xxs)
+        .frame(width: Self.width)
     }
 
     // MARK: - Actions
@@ -108,7 +110,7 @@ struct ExtensionLibraryView: View {
     private var extensionsSection: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.sm) {
             Text("Extensions")
-                .font(NookDesign.Font.title)
+                .font(NookDesign.Font.label)
 
             let extensions = browserManager.extensionManager?.installedExtensions.filter { $0.isEnabled } ?? []
             LazyVGrid(columns: columns, spacing: NookDesign.Spacing.sm) {
@@ -124,7 +126,7 @@ struct ExtensionLibraryView: View {
                 Button(action: openWebStore) {
                     ActionTileLabel(systemImage: "plus", compact: true)
                 }
-                .buttonStyle(ActionTileStyle())
+                .buttonStyle(ActionTileStyle(raised: false))
                 .help("Add Extension…")
             }
         }
@@ -133,11 +135,12 @@ struct ExtensionLibraryView: View {
     // MARK: - Settings
 
     @State private var contentBlockerEnabled: Bool = true
+    @State private var nativeZoomPercent: Int?
 
     private var settingsSection: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.xs) {
             Text("Settings")
-                .font(NookDesign.Font.title)
+                .font(NookDesign.Font.label)
                 .padding(.bottom, NookDesign.Spacing.xxs)
 
             if let host = currentHost {
@@ -155,7 +158,7 @@ struct ExtensionLibraryView: View {
                     if let newHost { contentBlockerEnabled = !browserManager.contentBlockerManager.isDomainAllowed(newHost) }
                 }
 
-                if let tab = currentTab, tab.enhancedFingerprintingProtectionApplies {
+                if !isChromium, let tab = currentTab, tab.enhancedFingerprintingProtectionApplies {
                     SiteSettingRow(
                         icon: "hand.raised.fill",
                         title: "Fingerprinting Protection",
@@ -181,21 +184,24 @@ struct ExtensionLibraryView: View {
                 }
             }
 
-            SiteSettingRow(
-                icon: "pip",
-                title: "Automatic Picture-in-Picture",
-                subtitle: settings.autoPictureInPicture ? "Allowed" : "Off",
-                isOn: settings.autoPictureInPicture
-            ) {
-                settings.autoPictureInPicture.toggle()
+            if !isChromium {
+                SiteSettingRow(
+                    icon: "pip",
+                    title: "Automatic Picture-in-Picture",
+                    subtitle: settings.autoPictureInPicture ? "Allowed" : "Off",
+                    isOn: settings.autoPictureInPicture
+                ) {
+                    settings.autoPictureInPicture.toggle()
+                }
             }
 
             if currentTab != nil {
+                let percent = isChromium ? nativeZoomPercent : browserManager.zoomManager.currentZoomPercentage
                 SiteSettingRow(
                     icon: "plus.magnifyingglass",
                     title: "Zoom",
-                    subtitle: "\(browserManager.zoomManager.currentZoomPercentage)%",
-                    isOn: browserManager.zoomManager.currentZoomPercentage != 100,
+                    subtitle: percent.map { "\($0)%" } ?? "",
+                    isOn: percent.map { $0 != 100 } ?? false,
                     action: nil
                 ) {
                     HStack(spacing: NookDesign.Spacing.xxs) {
@@ -205,6 +211,7 @@ struct ExtensionLibraryView: View {
                     .labelStyle(.iconOnly)
                     .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.rowButton + NookDesign.Spacing.xs))
                 }
+                .task(id: currentTab?.itemID) { if isChromium { await refreshNativeZoom() } }
             }
         }
     }
@@ -218,7 +225,7 @@ struct ExtensionLibraryView: View {
                 .font(NookDesign.Font.body)
                 .padding(.horizontal, NookDesign.Spacing.md)
                 .frame(height: NookDesign.Size.row)
-                .background(NookDesign.Surface.fill, in: NookDesign.Radius.shape(NookDesign.Radius.md))
+                .background(NookDesign.Surface.fillPressed, in: NookDesign.Radius.shape(NookDesign.Radius.md))
                 .help(currentHost ?? "")
 
             Spacer()
@@ -230,9 +237,10 @@ struct ExtensionLibraryView: View {
                     .disabled(currentHost == nil)
                 Divider()
                 Button("Manage Boosts…") {
-                    browserManager.openSettings(tab: .tweaks)
+                    browserManager.openBoostLibrary(in: windowState)
                     onDismiss()
                 }
+                .disabled(boostHost == nil)
                 Button("New Boost…") {
                     browserManager.openBoostPanel(in: windowState)
                     onDismiss()
@@ -240,7 +248,7 @@ struct ExtensionLibraryView: View {
                 .disabled(boostHost == nil)
                 Divider()
                 Button("Manage Extensions…") {
-                    browserManager.openSettings(tab: .extensions)
+                    browserManager.manageExtensions()
                     onDismiss()
                 }
                 Button("Add Extension…", action: openWebStore)
@@ -249,9 +257,7 @@ struct ExtensionLibraryView: View {
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: NookDesign.Size.spaceIcon, weight: .semibold))
-                    .frame(width: NookDesign.Size.iconButton + NookDesign.Spacing.xs,
-                           height: NookDesign.Size.iconButton + NookDesign.Spacing.xs)
-                    .background(NookDesign.Surface.fillPressed, in: Circle())
+                    .frame(width: NookDesign.Size.iconButton, height: NookDesign.Size.iconButton)
                     .contentShape(Circle())
             }
             .menuStyle(.button)
@@ -272,6 +278,11 @@ struct ExtensionLibraryView: View {
 
     private func clear(cache: Bool) {
         guard let host = currentHost else { return }
+        if isChromium {
+            browserManager.perform(cache ? .clearSiteCache : .clearSiteCookies)
+            onDismiss()
+            return
+        }
         Task {
             if cache {
                 await browserManager.cacheManager?.clearCacheForDomain(host)
@@ -285,37 +296,63 @@ struct ExtensionLibraryView: View {
     // MARK: - Zoom Helpers
 
     private func zoomIn() {
+        if isChromium { browserManager.perform(.zoomIn); followNativeZoom(); return }
         guard let tab = currentTab, let webView = tab.webView else { return }
         browserManager.zoomManager.zoomIn(for: webView, tabId: tab.itemID)
     }
 
     private func zoomOut() {
+        if isChromium { browserManager.perform(.zoomOut); followNativeZoom(); return }
         guard let tab = currentTab, let webView = tab.webView else { return }
         browserManager.zoomManager.zoomOut(for: webView, tabId: tab.itemID)
+    }
+
+    /// The renderer takes the new zoom a moment after the command.
+    private func followNativeZoom() {
+        Task { @MainActor in
+            for delay in [100, 300] {
+                try? await Task.sleep(for: .milliseconds(delay))
+                await refreshNativeZoom()
+            }
+        }
+    }
+
+    /// The isolated world, so a page's own script cannot change what the row reads.
+    private func refreshNativeZoom() async {
+        guard let native = currentTab?.navigation as? ChromiumPageNavigation,
+              let scale = windowState.window?.backingScaleFactor,
+              let reply = try? await native.evaluateScript("devicePixelRatio", mode: .expression, world: .isolated),
+              let ratio = Double(reply.json) else {
+            nativeZoomPercent = nil
+            return
+        }
+        nativeZoomPercent = ChromiumPageZoom.percent(devicePixelRatio: ratio, backingScale: Double(scale))
     }
 }
 
 // MARK: - Tiles
 
-/// Arc's square action tile: a raised dark key with a soft top light, pressing in a touch.
+/// Arc's action tile: a raised key on the panel, pressing in a touch. The add tile sits flat.
 private struct ActionTileStyle: ButtonStyle {
+    var raised = true
     @Environment(\.isEnabled) private var isEnabled
     @State private var isHovering = false
 
     func makeBody(configuration: Configuration) -> some View {
+        let shape = NookDesign.Radius.shape(NookDesign.Radius.md)
         configuration.label
             .foregroundStyle(isEnabled ? AnyShapeStyle(.primary) : AnyShapeStyle(.tertiary))
             .background {
-                NookDesign.Radius.shape(NookDesign.Radius.lg)
-                    .fill(configuration.isPressed ? NookDesign.Surface.fillPressed
-                          : isHovering && isEnabled ? NookDesign.Surface.fillPressed : NookDesign.Surface.fill)
-                    .overlay(alignment: .top) {
-                        // The light catching the key's top edge.
-                        NookDesign.Radius.shape(NookDesign.Radius.lg)
-                            .strokeBorder(LinearGradient(colors: [.white.opacity(0.12), .clear], startPoint: .top, endPoint: .center))
-                    }
+                if raised {
+                    shape.fill(NookDesign.Surface.raised)
+                        .overlay(shape.fill(configuration.isPressed || isHovering && isEnabled ? NookDesign.Surface.fill : .clear))
+                        .overlay(shape.strokeBorder(NookDesign.Surface.hairline, lineWidth: NookDesign.Size.hairlineWidth))
+                        .nookElevation(.raised)
+                } else {
+                    shape.fill(configuration.isPressed || isHovering && isEnabled ? NookDesign.Surface.fillPressed : NookDesign.Surface.fill)
+                }
             }
-            .contentShape(NookDesign.Radius.shape(NookDesign.Radius.lg))
+            .contentShape(shape)
             .scaleEffect(configuration.isPressed ? 0.96 : 1)
             .animation(NookDesign.Motion.quick, value: configuration.isPressed)
             .animation(NookDesign.Motion.quick, value: isHovering)
@@ -329,10 +366,10 @@ private struct ActionTileLabel: View {
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: compact ? NookDesign.Size.spaceIcon : NookDesign.Size.spaceIcon + 4, weight: .regular))
+            .font(.system(size: compact ? NookDesign.Size.spaceIcon : NookDesign.Size.spaceIcon + 2, weight: .regular))
             .contentTransition(.symbolEffect(.replace))
             .frame(maxWidth: .infinity)
-            .frame(height: NookDesign.Size.essentialsTile)
+            .frame(height: NookDesign.Size.row)
     }
 }
 
@@ -471,10 +508,10 @@ private struct SiteSettingRow<Trailing: View>: View {
         HStack(spacing: NookDesign.Spacing.md) {
             Image(systemName: icon)
                 .font(.system(size: NookDesign.Size.spaceIcon, weight: .semibold))
-                // On reads as a filled key in either appearance: primary fill, glyph knocked out.
-                .foregroundStyle(isOn ? AnyShapeStyle(.background) : AnyShapeStyle(.primary))
+                // Arc's round key: the glyph knocked out of the fill, which is darker when on.
+                .foregroundStyle(NookDesign.Surface.windowBackground)
                 .frame(width: iconSize, height: iconSize)
-                .background(isOn ? Color.primary : Color.primary.opacity(0.16), in: Circle())
+                .background(isOn ? Color.primary.opacity(0.8) : Color.primary.opacity(0.25), in: Circle())
                 .contentTransition(.symbolEffect(.replace))
             VStack(alignment: .leading, spacing: 0) {
                 Text(title)

@@ -94,6 +94,8 @@ public class BrowserWindowState {
 
     /// Whether the Boost panel for the selected page is open in this window
     public var isBoostPanelVisible: Bool = false
+    /// The Boost panel next opens on its list of every Boost.
+    public var boostPanelOpensLibrary: Bool = false
 
     /// Which of this window's pages the sidebar's mini player shows.
     public var miniPlayer = MiniPlayer()

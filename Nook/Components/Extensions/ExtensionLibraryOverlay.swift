@@ -114,7 +114,7 @@ struct ExtensionLibraryOverlay: View {
 }
 
 /// A small rounded triangle pointing up.
-private struct PanelNotch: Shape {
+struct PanelNotch: Shape {
     func path(in rect: CGRect) -> Path {
         var path = Path()
         path.move(to: CGPoint(x: rect.minX, y: rect.maxY))

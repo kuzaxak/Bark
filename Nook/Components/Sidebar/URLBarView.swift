@@ -19,6 +19,7 @@ struct URLBarView: View {
     @Environment(BrowserWindowState.self) private var windowState
     @Environment(\.nookSettings) var nookSettings
     @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.chromiumSiteControlsAnchor) private var siteControlsAnchor
     @State private var isHovering: Bool = false
     @State private var showCheckmark: Bool = false
     @State private var isEditing = false
@@ -264,18 +265,12 @@ struct URLBarView: View {
 
                 // Pinned extension buttons + library button
                 if !isEditing, browserManager.engine == .chromium {
-                    Menu {
-                        Button("Boost This Site…") { browserManager.perform(.boost) }
-                            .disabled(session?.url.scheme != "http" && session?.url.scheme != "https")
-                        Button("Capture in Portrait Mode") { browserManager.togglePortraitCapture(in: windowState) }
-                    } label: {
-                        Image(systemName: "ellipsis.circle")
-                    }
-                    .menuStyle(.borderlessButton)
-                    .fixedSize()
-                    .help("Page tools")
-                    .accessibilityLabel("Page tools")
-                    .disabled(session == nil)
+                    let shown = isHovering || windowState.isExtensionLibraryVisible
+                    ExtensionLibraryButton()
+                        .disabled(session == nil)
+                        .opacity(shown ? 1 : 0)
+                        .allowsHitTesting(shown)
+                        .background { if let siteControlsAnchor { ChromiumSiteControlsButtonProbe(anchor: siteControlsAnchor) } }
                 }
                 if !isEditing, let extensionManager = browserManager.extensionManager {
                     let pinnedIDs = browserManager.nookSettings?.pinnedExtensionIDs ?? []

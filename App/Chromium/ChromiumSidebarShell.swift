@@ -18,6 +18,7 @@ struct ChromiumSidebarShell: View {
     let aiService: AIService
     let setPageHidden: (Bool) -> Void
     @State private var dialogFocus = ChromiumDialogFocus()
+    @State private var siteControlsAnchor = ChromiumSiteControlsAnchor()
     @Environment(\.colorScheme) private var baseColorScheme
 
     private func focusShownPage() {
@@ -126,6 +127,7 @@ struct ChromiumSidebarShell: View {
             .environment(commandPalette)
             .environment(organizer)
             .environment(\.nookUsesDefaultSpaceTheme, spaceChrome.theme == nil)
+            .environment(\.chromiumSiteControlsAnchor, siteControlsAnchor)
             .defaultAppStorage(storage.defaults)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear { applyAccent() }
@@ -146,6 +148,12 @@ struct ChromiumSidebarShell: View {
                 } else if window.isBoostPanelVisible {
                     ChromiumPagePanel(content: BoostOverlay(fillsWindow: false)
                         .environmentObject(browserManager).environment(window))
+                }
+            }
+            .background {
+                if window.isExtensionLibraryVisible {
+                    ChromiumPagePanel(content: ChromiumSiteControls(browserManager: browserManager, window: window,
+                        settings: storage.settings, anchor: siteControlsAnchor).defaultAppStorage(storage.defaults), fill: .window)
                 }
             }
             .background {
@@ -226,10 +234,12 @@ struct ChromiumSidebarShell: View {
         .environment(\.nookSettings, storage.settings)
         .environment(\.tabActions, browserManager)
         .environment(window).environment(registry).environment(commandPalette).environment(organizer)
+        .environment(\.chromiumSiteControlsAnchor, siteControlsAnchor)
         .defaultAppStorage(storage.defaults)
     }
 
     private func dismissPagePanels() {
+        window.isExtensionLibraryVisible = false
         window.isBoostPanelVisible = false
         window.isPortraitCaptureVisible = false
     }

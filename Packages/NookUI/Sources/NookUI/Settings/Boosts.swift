@@ -53,6 +53,7 @@ public struct BoostPanel: View {
 
     public init(
         settings: NookSettingsService, host: String, canZap: Bool = true, canRunScripts: Bool = true,
+        opensLibrary: Bool = false,
         onPreview: @escaping (Boost) -> Void,
         onZap: @escaping () async -> String?, onCancelZap: @escaping () -> Void,
         onFinish: @escaping () -> Void
@@ -69,6 +70,7 @@ public struct BoostPanel: View {
             ?? Boost(name: "Boost 1", host: host)
         _draft = State(initialValue: first)
         _baseline = State(initialValue: first)
+        _showingLibrary = State(initialValue: opensLibrary)
     }
 
     // MARK: - State

@@ -43,6 +43,7 @@ struct BoostOverlay: View {
                 host: host,
                 canZap: !isNative || session.navigation?.supportsElementPicker == true,
                 canRunScripts: true,
+                opensLibrary: windowState.boostPanelOpensLibrary,
                 onPreview: { draft in
                     if isNative { preview(draft, in: session, serial: serial, page: page) }
                     else if let webView = session.webView {
@@ -75,7 +76,10 @@ struct BoostOverlay: View {
                    maxHeight: fillsWindow ? .infinity : nil, alignment: .topTrailing)
             .padding(.top, fillsWindow ? NookDesign.Size.row : 0)
             .transition(.opacity)
-            .onAppear { if isNative { preview(nil, in: session, serial: serial, page: page) } }
+            .onAppear {
+                windowState.boostPanelOpensLibrary = false
+                if isNative { preview(nil, in: session, serial: serial, page: page) }
+            }
             .onDisappear { endNativePreview(session, serial: serial, page: page) }
             .onChange(of: windowState.selectedItemID) { _, _ in close(session, serial: serial, page: page, settings) }
             .onChange(of: session.nativeNavigationSerial) { _, _ in

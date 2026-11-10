@@ -861,10 +861,9 @@ class BrowserManager: ObservableObject {
 
     // MARK: - Extension Library Panel
 
-    /// Toggles the extension library for the active window via keyboard shortcut. The overlay in
-    /// WindowView watches this flag; there is no panel to drive.
+    /// Toggles the site controls for the active window via keyboard shortcut. The window's overlay
+    /// watches this flag; there is no panel to drive.
     func toggleExtensionLibrary() {
-        if engine == .chromium { openNativeExtensionControls(); return }
         guard let windowState = windowRegistry?.activeWindow else { return }
         windowState.isExtensionLibraryVisible.toggle()
     }
@@ -953,6 +952,13 @@ class BrowserManager: ObservableObject {
               !Boost.normalizeHost(url.host ?? "").isEmpty
         else { return }
         windowState.isBoostPanelVisible = true
+    }
+
+    /// Opens the Boost panel on its list of every Boost.
+    func openBoostLibrary(in windowState: BrowserWindowState) {
+        windowState.boostPanelOpensLibrary = true
+        openBoostPanel(in: windowState)
+        if !windowState.isBoostPanelVisible { windowState.boostPanelOpensLibrary = false }
     }
 
     func openSettings(tab: SettingsTabs) {
