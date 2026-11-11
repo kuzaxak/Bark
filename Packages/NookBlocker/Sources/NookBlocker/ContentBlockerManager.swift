@@ -147,7 +147,9 @@ public final class ContentBlockerManager: NSObject {
         }
     }
 
-    public func allowDomain(_ host: String, allowed: Bool = true) {
+    /// Saves the choice for every profile; `page` is the page it was made on, nil from Settings.
+    @discardableResult public func allowDomain(_ host: String, allowed: Bool = true, from page: (any BlockablePage)?) -> Bool {
+        guard page?.isPrivate != true else { return false }
         let norm = host.lowercased()
         if allowed { allowedDomains.insert(norm) } else { allowedDomains.remove(norm) }
         settings.adBlockerWhitelist = Array(allowedDomains)
@@ -157,6 +159,7 @@ public final class ContentBlockerManager: NSObject {
             guard let h = session.blockingURL?.host?.lowercased(), h == norm || h.hasSuffix("." + norm) else { continue }
             reconcileAndReload(session, publishing: false)
         }
+        return true
     }
 
     /// Whitelist matches the host and any subdomain of it.

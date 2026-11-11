@@ -46,6 +46,21 @@ struct NativeBlockerModelTests {
         #expect(f.settings.enabledOptionalFilterLists == [optional.filename])
     }
 
+    @Test func aPrivatePageSavesNoSiteChoice() throws {
+        let f = try NativeBlockerFixture(); defer { f.cleanup() }
+        let page = NativeBlockerPage("https://ads.test/"), regular = NativeBlockerPage("https://ads.test/")
+        page.isPrivate = true
+        f.host.pages = [page, regular]
+        f.manager.attach(host: f.host)
+        #expect(!f.manager.allowDomain("ads.test", from: page), "a private window's page is refused")
+        #expect(!f.manager.isDomainAllowed("ads.test") && f.settings.adBlockerWhitelist.isEmpty)
+        #expect(page.reloads == 0 && regular.reloads == 0, "nothing reloads for a refused choice")
+        #expect(f.manager.allowDomain("ads.test", from: regular))
+        #expect(f.manager.isDomainAllowed("ads.test") && f.settings.adBlockerWhitelist == ["ads.test"])
+        #expect(f.manager.allowDomain("ads.test", allowed: false, from: nil), "Settings has no page")
+        #expect(f.settings.adBlockerWhitelist.isEmpty)
+    }
+
     @Test func nativeBuildUsesSamePolicyWithoutTouchingWebKit() async throws {
         let f = try NativeBlockerFixture(); defer { f.cleanup() }
         let first = NativeBlockerPage("https://ads.test/"), second = NativeBlockerPage("https://ads.test/")
@@ -57,10 +72,10 @@ struct NativeBlockerModelTests {
         #expect(f.manager.networkRules != nil)
         #expect(f.manager.advancedRulesEngine.engine.matches(url: "https://ads.test/ad.js", sourceURL: "https://site.test/", type: "script"))
         #expect(f.manager.shouldApplyBlocking(to: first))
-        f.manager.allowDomain("ADS.TEST")
+        f.manager.allowDomain("ADS.TEST", from: nil)
         #expect(!f.manager.shouldApplyBlocking(to: first) && !f.manager.shouldApplyBlocking(to: second))
         #expect(first.reloads == 1 && second.reloads == 1)
-        f.manager.allowDomain("ads.test", allowed: false)
+        f.manager.allowDomain("ads.test", allowed: false, from: nil)
         f.manager.disableTemporarily(for: first, duration: 60)
         #expect(!f.manager.shouldApplyBlocking(to: first) && f.manager.shouldApplyBlocking(to: second))
         second.isOAuthFlow = true
@@ -101,7 +116,7 @@ struct NativeBlockerModelTests {
         #expect(f.manager.networkPolicy(for: first).disabledUntil == deadline)
         #expect(f.manager.networkPolicy(for: first).isOAuthFlow)
         #expect(f.manager.networkPolicy(for: second).disabledUntil == nil)
-        f.manager.allowDomain("ALLOWED.TEST")
+        f.manager.allowDomain("ALLOWED.TEST", from: nil)
         #expect(f.manager.networkAllowedDomains == ["allowed.test"])
         // Read current user intent before the deferred settings observer runs.
         f.settings.adBlockerEnabled = false
@@ -361,6 +376,7 @@ private struct NativeBlockerTokenStore: KagiTokenStore {
 private final class NativeBlockerPage: BlockablePage {
     let itemID = UUID()
     var isOAuthFlow = false
+    var isPrivate = false
     var blockingURL: URL?
     var reloads = 0
     var policies: [ContentBlockerManager.NetworkPagePolicy] = []

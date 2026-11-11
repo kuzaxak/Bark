@@ -24,13 +24,25 @@ extension BrowserManager {
         return settings.isDeveloperSite(host)
     }
 
-    /// Turns Developer Mode on or off for `host`. Off, every window whose bar goes with it closes a
-    /// right column that shows a developer tool.
-    func setDeveloperSite(_ host: String, on: Bool) {
-        guard let settings = nookSettings else { return }
+    /// Turns Developer Mode on or off for `host`, asked from `window`; a private window saves none.
+    /// Off, every window whose bar goes with it closes a right column that shows a developer tool.
+    @discardableResult func setDeveloperSite(_ host: String, on: Bool, in window: BrowserWindowState) -> Bool {
+        guard !window.isIncognito, let settings = nookSettings else { return false }
         let barred = windowRegistry?.allWindows.filter { showsDeveloperBar(in: $0) } ?? []
         settings.setDeveloperSite(host, on: on)
         closeDeveloperTools(in: barred.filter { !showsDeveloperBar(in: $0) }, developerMode: settings.developerModeEnabled)
+        return true
+    }
+
+    /// The key and the command bar's Toggle Developer Mode for Site, with a toast saying what happened.
+    func toggleDeveloperSite(of page: PageSession, in window: BrowserWindowState) {
+        guard let settings = nookSettings, let host = page.url.host else { return }
+        let on = !settings.isDeveloperSite(host)
+        guard setDeveloperSite(host, on: on, in: window) else {
+            showWindowToast("Developer Mode isn’t available in private windows", in: window)
+            return
+        }
+        showWindowToast("Developer Mode \(on ? "on" : "off") for \(host)", in: window)
     }
 
     /// Developer Mode going off beside these windows' pages: a right column that shows a developer

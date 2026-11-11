@@ -36,8 +36,9 @@ import Foundation
         func isDomainAllowed(_ host: String?) -> Bool { host.map(allowed.contains) ?? false }
         func shouldApplyBlocking(to page: PageSession) -> Bool { isEnabled && !isDomainAllowed(page.url.host) }
         func isTemporarilyDisabled(tabId: UUID) -> Bool { false }
-        func allowDomain(_ host: String, allowed value: Bool) {
+        @discardableResult func allowDomain(_ host: String, allowed value: Bool, from page: PageSession?) -> Bool {
             if value { allowed.insert(host) } else { allowed.remove(host) }
+            return true
         }
     }
 }

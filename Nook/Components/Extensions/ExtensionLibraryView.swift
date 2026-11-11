@@ -35,9 +35,9 @@ struct ExtensionLibraryView: View {
         currentTab?.url.host
     }
 
-    /// Only web pages can be Boosted.
+    /// Only web pages can be Boosted, and a private window saves none.
     private var boostHost: String? {
-        guard let url = currentTab?.url, url.scheme == "http" || url.scheme == "https" else { return nil }
+        guard !isPrivate, let url = currentTab?.url, url.scheme == "http" || url.scheme == "https" else { return nil }
         let host = Boost.normalizeHost(url.host ?? "")
         return host.isEmpty ? nil : host
     }
@@ -88,7 +88,7 @@ struct ExtensionLibraryView: View {
                 ActionTileLabel(systemImage: "paintbrush.pointed")
             }
             .buttonStyle(ActionTileStyle())
-            .help("Boost")
+            .help(isPrivate ? "Boosts aren’t saved from private windows" : "Boost")
             .disabled(boostHost == nil)
 
             Button {
@@ -147,12 +147,11 @@ struct ExtensionLibraryView: View {
                 SiteSettingRow(
                     icon: "shield.lefthalf.filled",
                     title: "Content Blocker",
-                    subtitle: contentBlockerEnabled ? "On" : "Off for this site",
-                    isOn: contentBlockerEnabled
-                ) {
-                    contentBlockerEnabled.toggle()
-                    browserManager.contentBlockerManager.allowDomain(host, allowed: !contentBlockerEnabled)
-                }
+                    subtitle: (contentBlockerEnabled ? "On" : "Off for this site") + (isPrivate ? " · set in a regular window" : ""),
+                    isOn: contentBlockerEnabled,
+                    action: contentBlockerToggle(for: host)
+                )
+                .opacity(isPrivate ? NookDesign.Surface.unloadedOpacity : 1)
                 .onAppear { contentBlockerEnabled = !browserManager.contentBlockerManager.isDomainAllowed(host) }
                 .onChange(of: currentHost) { _, newHost in
                     if let newHost { contentBlockerEnabled = !browserManager.contentBlockerManager.isDomainAllowed(newHost) }
@@ -173,15 +172,15 @@ struct ExtensionLibraryView: View {
                     }
                 }
 
-                let developer = settings.isDeveloperSite(host)
+                let developer = !isPrivate && settings.isDeveloperSite(host)
                 SiteSettingRow(
                     icon: "hammer.fill",
                     title: "Developer Mode",
-                    subtitle: developer ? "On" : "Off",
-                    isOn: developer
-                ) {
-                    withAnimation(NookDesign.Motion.spring) { browserManager.setDeveloperSite(host, on: !developer) }
-                }
+                    subtitle: isPrivate ? "Not in private windows" : developer ? "On" : "Off",
+                    isOn: developer,
+                    action: developerModeToggle(for: host)
+                )
+                .opacity(isPrivate ? NookDesign.Surface.unloadedOpacity : 1)
             }
 
             if !isChromium {
@@ -214,6 +213,25 @@ struct ExtensionLibraryView: View {
                 .task(id: currentTab?.itemID) { if isChromium { await refreshNativeZoom() } }
             }
         }
+    }
+
+    // MARK: - Site Toggles
+
+    /// A private window leaves no record, and both lists below are saved for every profile.
+    private var isPrivate: Bool { windowState.isIncognito }
+
+    private func contentBlockerToggle(for host: String) -> (() -> Void)? {
+        guard !isPrivate else { return nil }
+        return {
+            self.contentBlockerEnabled.toggle()
+            self.browserManager.contentBlockerManager.allowDomain(host, allowed: !self.contentBlockerEnabled, from: self.currentTab)
+        }
+    }
+
+    private func developerModeToggle(for host: String) -> (() -> Void)? {
+        guard !isPrivate else { return nil }
+        let developer = settings.isDeveloperSite(host)
+        return { self.browserManager.setDeveloperSite(host, on: !developer, in: self.windowState) }
     }
 
     // MARK: - Footer
@@ -252,8 +270,10 @@ struct ExtensionLibraryView: View {
                     onDismiss()
                 }
                 Button("Add Extension…", action: openWebStore)
-                Divider()
-                Button("All Site Settings…", action: onShowMoreMenu)
+                if !isPrivate {
+                    Divider()
+                    Button("All Site Settings…", action: onShowMoreMenu)
+                }
             } label: {
                 Image(systemName: "ellipsis")
                     .font(.system(size: NookDesign.Size.spaceIcon, weight: .semibold))
@@ -538,7 +558,7 @@ private struct SiteSettingRow<Trailing: View>: View {
 }
 
 extension SiteSettingRow where Trailing == EmptyView {
-    init(icon: String, title: String, subtitle: String, isOn: Bool, action: @escaping () -> Void) {
+    init(icon: String, title: String, subtitle: String, isOn: Bool, action: (() -> Void)?) {
         self.init(icon: icon, title: title, subtitle: subtitle, isOn: isOn, action: action) { EmptyView() }
     }
 }

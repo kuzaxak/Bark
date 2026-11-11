@@ -114,6 +114,7 @@ private struct NoCredentials: KagiTokenStore { func load() -> String? { nil }; f
 @MainActor private final class Page: BlockablePage {
     let itemID = UUID()
     var isOAuthFlow = false
+    var isPrivate = false
     var webView: WKWebView? { nil }
 }
 
@@ -137,7 +138,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         check(await a.value); check(await b.value)
         precondition(adapter.apply(to: page, window: 1, tab: 10))
         precondition(!adapter.apply(to: page, window: 3, tab: 30))
-        f.manager.allowDomain("ALLOWED.TEST")
+        f.manager.allowDomain("ALLOWED.TEST", from: nil)
         precondition(Native.domains == ["allowed.test"] && Native.sources.isEmpty)
         await drain() // Finish the settings observer before the direct disable below.
         let acceptedSerial = Native.serial, acceptedToken = f.manager.networkSourceGeneration

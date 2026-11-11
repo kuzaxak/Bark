@@ -210,9 +210,10 @@ public final class HistoryManager {
         return await index.search(query, profile: profile)
     }
 
-    /// Remembers that `url` was chosen in the palette after typing `prefix`.
-    public func recordPick(prefix: String, url: URL) {
-        guard let index else { return }
+    /// Remembers that `url` was chosen in the palette after typing `prefix`. A private window's
+    /// typing is not kept.
+    public func recordPick(prefix: String, url: URL, fromPrivateWindow: Bool) {
+        guard !fromPrivateWindow, let index else { return }
         let profile = currentProfileId
         let key = HistoryIndex.cleanURL(url).absoluteString
         let date = Date()

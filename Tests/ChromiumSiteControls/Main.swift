@@ -1,5 +1,6 @@
 // Licensed under GPL-3.0. See LICENSE.
-// check.py compiles the shipped clear and zoom methods verbatim; the app around them is stubbed.
+// check.py compiles the shipped clear, zoom and site setting methods, and the Developer Mode and Boost writers, verbatim;
+// the app around them is stubbed.
 import Foundation
 
 enum PageCommand { case clearSiteCookies, clearSiteCache, zoomIn, zoomOut }
@@ -16,11 +17,30 @@ final class WKWebView {}
 }
 @MainActor final class PageSession {
     let itemID = UUID()
+    var url = URL(string: "https://work.test/a")!
     var webView: WKWebView?
     var navigation: AnyObject? = ChromiumPageNavigation()
 }
 @MainActor final class NSWindowStub { var backingScaleFactor = 2.0 }
-@MainActor final class BrowserWindowState { var window: NSWindowStub? = NSWindowStub() }
+@MainActor final class BrowserWindowState {
+    var window: NSWindowStub? = NSWindowStub(); var isIncognito = false
+    var isBoostPanelVisible = false, boostPanelOpensLibrary = false
+}
+@MainActor final class WindowRegistry { var allWindows: [BrowserWindowState] = [] }
+@MainActor final class ContentBlockerManager {
+    var allowed: Set<String> = []
+    @discardableResult func allowDomain(_ host: String, allowed: Bool = true, from page: PageSession?) -> Bool {
+        if allowed { self.allowed.insert(host) } else { self.allowed.remove(host) }
+        return true
+    }
+}
+@MainActor final class NookSettingsService {
+    var developerSites: Set<String> = []
+    var developerModeEnabled = false
+    func isDeveloperSite(_ host: String) -> Bool { developerSites.contains(host) }
+    func setDeveloperSite(_ host: String, on: Bool) { if on { developerSites.insert(host) } else { developerSites.remove(host) } }
+}
+enum Boost { static func normalizeHost(_ host: String) -> String { host } }
 @MainActor final class CacheManager { var hosts: [String] = []; func clearCacheForDomain(_ host: String) async { hosts.append(host) } }
 @MainActor final class CookieManager { var hosts: [String] = []; func deleteCookiesForDomain(_ host: String) async { hosts.append(host) } }
 @MainActor final class ZoomManager {
@@ -36,7 +56,17 @@ final class WKWebView {}
     var cacheManager: CacheManager? = CacheManager()
     var cookieManager: CookieManager? = CookieManager()
     let zoomManager = ZoomManager()
+    let contentBlockerManager = ContentBlockerManager()
+    let settings = NookSettingsService()
     func perform(_ command: PageCommand) { performed.append(command); onPerform?() }
+    var nookSettings: NookSettingsService? { settings }
+    var windowRegistry: WindowRegistry? = WindowRegistry()
+    var front: PageSession?
+    var toasts: [String] = []
+    func frontPage(in window: BrowserWindowState) -> PageSession? { front }
+    func showsDeveloperBar(in window: BrowserWindowState) -> Bool { false }
+    func closeDeveloperTools(in windows: [BrowserWindowState], developerMode: Bool) {}
+    func showWindowToast(_ message: String, in window: BrowserWindowState) { toasts.append(message) }
 }
 
 @main struct Main {
@@ -84,13 +114,48 @@ final class WKWebView {}
         precondition(ChromiumPageZoom.percent(devicePixelRatio: 2, backingScale: 0) == nil)
         precondition(ChromiumPageZoom.percent(devicePixelRatio: 0, backingScale: 2) == nil)
 
-        let window = CGSize(width: 1200, height: 800)
-        let centred = ChromiumSiteControlsPlacement.popover(button: CGRect(x: 600, y: 40, width: 28, height: 28), width: 300, in: window, margin: 8)
+        let windowSize = CGSize(width: 1200, height: 800)
+        let centred = ChromiumSiteControlsPlacement.popover(button: CGRect(x: 600, y: 40, width: 28, height: 28), width: 300, in: windowSize, margin: 8)
         precondition(centred.origin == CGPoint(x: 464, y: 76) && centred.notchX == 150, "it hangs centred under the button")
-        let left = ChromiumSiteControlsPlacement.popover(button: CGRect(x: 20, y: 50, width: 28, height: 28), width: 300, in: window, margin: 8)
+        let left = ChromiumSiteControlsPlacement.popover(button: CGRect(x: 20, y: 50, width: 28, height: 28), width: 300, in: windowSize, margin: 8)
         precondition(left.origin == CGPoint(x: 8, y: 86) && left.notchX == 26, "a button near the edge keeps the popover in the window, its notch on the button")
-        let right = ChromiumSiteControlsPlacement.popover(button: CGRect(x: 1180, y: 40, width: 16, height: 16), width: 300, in: window, margin: 8)
+        let right = ChromiumSiteControlsPlacement.popover(button: CGRect(x: 1180, y: 40, width: 16, height: 16), width: 300, in: windowSize, margin: 8)
         precondition(right.origin.x == 892 && right.notchX == 296)
+
+        guard let blocker = view.contentBlockerToggle(for: "work.test") else { preconditionFailure("a regular window offers the blocker toggle") }
+        blocker()
+        precondition(manager.contentBlockerManager.allowed == ["work.test"] && !view.contentBlockerEnabled, "a regular window turns the blocker off for the site")
+        view.developerModeToggle(for: "work.test")?()
+        precondition(manager.settings.developerSites == ["work.test"], "a regular window turns Developer Mode on for the site")
+        precondition(view.boostHost == "work.test")
+
+        view.windowState.isIncognito = true
+        manager.contentBlockerManager.allowed = []; manager.settings.developerSites = []
+        precondition(view.contentBlockerToggle(for: "private.test") == nil, "a private window cannot add the site to the blocker's saved list")
+        precondition(view.developerModeToggle(for: "private.test") == nil, "a private window cannot add the site to the saved developer sites")
+        precondition(view.boostHost == nil, "a private window saves no Boost for the site")
+        precondition(manager.contentBlockerManager.allowed.isEmpty && manager.settings.developerSites.isEmpty)
+
+        let window = view.windowState, keyPage = PageSession()
+        keyPage.url = URL(string: "https://keyed.test/")!
+        manager.toggleDeveloperSite(of: keyPage, in: window)
+        precondition(manager.settings.developerSites.isEmpty && manager.toasts.last == "Developer Mode isn’t available in private windows",
+                     "the key and the command bar save no developer site from a private window, and say why")
+        precondition(!manager.setDeveloperSite("keyed.test", on: true, in: window) && manager.settings.developerSites.isEmpty,
+                     "no caller can save one from a private window")
+        manager.front = keyPage
+        manager.openBoostPanel(in: window)
+        manager.openBoostLibrary(in: window)
+        precondition(!window.isBoostPanelVisible && !window.boostPanelOpensLibrary, "a private window opens no Boost panel, so it saves no Boost")
+
+        view.windowState.isIncognito = false
+        manager.toggleDeveloperSite(of: keyPage, in: window)
+        precondition(manager.settings.developerSites == ["keyed.test"] && manager.toasts.last == "Developer Mode on for keyed.test",
+                     "a regular window's key turns Developer Mode on for the site")
+        manager.openBoostLibrary(in: window)
+        precondition(window.isBoostPanelVisible && window.boostPanelOpensLibrary, "a regular window opens the Boost library")
+        window.isBoostPanelVisible = false; window.boostPanelOpensLibrary = false
+        manager.settings.developerSites = []
 
         manager.engine = .webKit
         manager.performed = []
@@ -101,6 +166,6 @@ final class WKWebView {}
         page.webView = WKWebView()
         view.zoomIn()
         precondition(manager.zoomManager.calls == 1 && manager.performed.isEmpty, "WebKit keeps its zoom")
-        print("Site controls: native clear and zoom on Chromium, WebKit unchanged")
+        print("Site controls: native clear and zoom on Chromium, no saved site setting from a private window, WebKit unchanged")
     }
 }

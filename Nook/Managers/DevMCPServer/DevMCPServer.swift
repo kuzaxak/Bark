@@ -568,7 +568,7 @@ final class DevMCPServer {
         case "set_blocking":
             guard let host else { return text("Agent page has no host", error: true) }
             let enabled = args["enabled"] as? Bool ?? true
-            blocker.allowDomain(host, allowed: !enabled)
+            blocker.allowDomain(host, allowed: !enabled, from: page)
             guard bm.tabs.existingNativeAgentPage(in: window) === page else {
                 return text("Policy updated, but Agent page ownership changed", error: true)
             }
@@ -1130,7 +1130,7 @@ final class DevMCPServer {
             case "set_blocking":
                 guard let host = webView?.url?.host else { return text("Selected tab has no host", error: true) }
                 let enabled = args["enabled"] as? Bool ?? true
-                bm.contentBlockerManager.allowDomain(host, allowed: !enabled)
+                bm.contentBlockerManager.allowDomain(host, allowed: !enabled, from: session)
                 return text("Blocking \(enabled ? "on" : "off") for \(host); reloading. Call wait_for_load next.")
 
             case "check_urls":

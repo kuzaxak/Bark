@@ -687,7 +687,7 @@ struct CommandPaletteView: View {
         case .folder(let folder):
             browserManager.tabs.reveal(folder.itemID, in: windowState)
         case .history(let historyEntry):
-            browserManager.historyManager.recordPick(prefix: text, url: historyEntry.url)
+            browserManager.historyManager.recordPick(prefix: text, url: historyEntry.url, fromPrivateWindow: windowState.isIncognito)
             open(historyEntry.url)
         case .url, .search:
             // Explicit site-search templates remain URLs, including mouse picks.
@@ -955,7 +955,7 @@ struct CommandPaletteView: View {
             return
         }
         if let url = URL(string: "nook-action:\(action.rawValue)") {
-            browserManager.historyManager.recordPick(prefix: text, url: url)
+            browserManager.historyManager.recordPick(prefix: text, url: url, fromPrivateWindow: windowState.isIncognito)
         }
         let tabs = browserManager.tabs
         let selected = windowState.selectedItemID
@@ -1073,7 +1073,7 @@ struct CommandPaletteView: View {
             selectSuggestion(row)
             return
         }
-        if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url) }
+        if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url, fromPrivateWindow: windowState.isIncognito) }
         browserManager.tabs.open(url: url, in: windowState, placement: .background)
     }
 
@@ -1088,7 +1088,7 @@ struct CommandPaletteView: View {
         } else if let query = nativeSearchQuery(for: row) {
             itemID = browserManager.tabs.openSearch(query, in: windowState, placement: .background)
         } else if let url = url(for: row) {
-            if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url) }
+            if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url, fromPrivateWindow: windowState.isIncognito) }
             itemID = browserManager.tabs.open(url: url, in: windowState, placement: .background)
         } else {
             itemID = nil

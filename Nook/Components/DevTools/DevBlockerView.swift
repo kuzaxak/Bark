@@ -75,7 +75,7 @@ struct DevBlockerView: View {
         } else if let host {
             Toggle("Block on \(host)", isOn: Binding(
                 get: { !blocker.isDomainAllowed(host) },
-                set: { blocker.allowDomain(host, allowed: !$0) }
+                set: { blocker.allowDomain(host, allowed: !$0, from: session) }
             ))
             .font(NookDesign.Font.secondary)
             if let session, !blocker.shouldApplyBlocking(to: session), !blocker.isDomainAllowed(host) {

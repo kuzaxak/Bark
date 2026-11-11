@@ -946,9 +946,10 @@ class BrowserManager: ObservableObject {
         openSettings(tab: .spaces)
     }
 
-    /// Opens the Boost panel over the page in front. Nothing is saved until the person saves.
+    /// Opens the Boost panel over the page in front. Nothing is saved until the person saves, and a
+    /// private window, which saves no Boost, opens none.
     func openBoostPanel(in windowState: BrowserWindowState) {
-        guard let url = frontPage(in: windowState)?.url,
+        guard !windowState.isIncognito, let url = frontPage(in: windowState)?.url,
               url.scheme == "http" || url.scheme == "https",
               !Boost.normalizeHost(url.host ?? "").isEmpty
         else { return }

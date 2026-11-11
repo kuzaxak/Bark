@@ -92,10 +92,7 @@ extension BrowserManager {
         case .copyScreenshot:
             copyScreenshot(of: webView, in: window)
         case .developerMode:
-            guard let settings = nookSettings, let host = page.url.host else { return }
-            let on = !settings.isDeveloperSite(host)
-            setDeveloperSite(host, on: on)
-            showWindowToast("Developer Mode \(on ? "on" : "off") for \(host)", in: window)
+            toggleDeveloperSite(of: page, in: window)
         case .pictureInPicture:
             page.requestPictureInPicture()
         case .mute:
@@ -131,10 +128,8 @@ extension BrowserManager {
         if command == .boost { openBoostPanel(in: window); return true }
         guard tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return false }
         if command == .developerMode {
-            guard let settings = nookSettings, let host = page.url.host else { return false }
-            let on = !settings.isDeveloperSite(host)
-            setDeveloperSite(host, on: on)
-            showWindowToast("Developer Mode \(on ? "on" : "off") for \(host)", in: window)
+            guard page.url.host != nil else { return false }
+            toggleDeveloperSite(of: page, in: window)
             return true
         }
         guard command.supportsNativePage else {

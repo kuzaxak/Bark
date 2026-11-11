@@ -23,6 +23,8 @@ public protocol BlockablePage: AnyObject {
     var itemID: UUID { get }
     /// True while the page is part of an OAuth flow, which is exempt from blocking.
     var isOAuthFlow: Bool { get }
+    /// A private window's page. What it shows leaves no record.
+    var isPrivate: Bool { get }
     /// The page's web view, once it has one.
     var webView: WKWebView? { get }
     /// Current engine-owned page URL; querying it must not create a web view.
