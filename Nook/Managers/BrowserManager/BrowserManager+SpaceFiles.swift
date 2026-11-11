@@ -88,6 +88,7 @@ extension BrowserManager {
         return tabs.profiles.first { $0.spaceIDs.contains(spaceID) }?.id
     }
 
+    /// `handle` runs after the question's sheet has gone, so it can show a sheet of its own.
     private func askProfile(for file: SpaceFile, then handle: @escaping (UUID) -> Void) {
         let profiles = tabs.profiles
         guard !profiles.isEmpty else { return }
@@ -105,7 +106,8 @@ extension BrowserManager {
         alert.addButton(withTitle: "Cancel")
         runAlert(alert) { response in
             guard response == .alertFirstButtonReturn, profiles.indices.contains(popup.indexOfSelectedItem) else { return }
-            handle(profiles[popup.indexOfSelectedItem].id)
+            let profile = profiles[popup.indexOfSelectedItem].id
+            DispatchQueue.main.async { handle(profile) }
         }
     }
 

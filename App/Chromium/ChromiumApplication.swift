@@ -36,6 +36,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var aiService: AIService?
     private var appMenu: ChromiumAppMenu?
     private var mouseButtons: ChromiumMouseButtons?
+    private let spaceFiles = ChromiumSpaceFiles()
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
     private var ready: (@MainActor () -> Void)?
@@ -201,6 +202,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 output.pointee.size = size
                 guard let pointer else { return refused }
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
+                if kind == BARC_APPLICATION_TARGET_URL.rawValue, app.acceptsWindows, let url,
+                   let incoming = URL(string: String(cString: url)), app.spaceFiles.take(incoming) { return refused }
                 guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return refused }
                 guard app.pageTweaks?.isReady == true else { return ordinaryWindow }
                 if kind == BARC_APPLICATION_TARGET_PENDING_PAGE.rawValue {
@@ -568,6 +571,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         guard window > 0, acceptsWindows,
               let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
         didPresentInitialWindow = true
+        if let manager = browserManager { spaceFiles.ready { [weak manager] in manager?.importSpaceFile(at: $0) } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self, self.acceptsWindows else { return }
             self.browserManager?.offerDefaultBrowserIfNeeded()
