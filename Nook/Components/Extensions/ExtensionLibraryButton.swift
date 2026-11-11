@@ -15,14 +15,14 @@ struct ExtensionLibraryButton: View {
 
     var body: some View {
         // Arc's site controls button; the panel springs out of it.
-        Button("Site Controls", systemImage: "slider.horizontal.3") {
+        Button("Site Controls", systemImage: "slider.horizontal.2.square") {
             withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
                 windowState.isExtensionLibraryVisible.toggle()
             }
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.iconButton, radius: NookDesign.Radius.sm))
-        .foregroundStyle(Color.primary)
+        .font(.system(size: NookDesign.Size.siteControlsGlyph, weight: .regular))
+        .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.addressButton, radius: NookDesign.Radius.sm, foreground: .secondary))
         // The overlay in WindowView hangs off this frame.
         .anchorPreference(key: ExtensionLibraryAnchorKey.self, value: .bounds) { $0 }
     }

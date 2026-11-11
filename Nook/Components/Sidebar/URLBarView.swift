@@ -106,9 +106,7 @@ struct URLBarView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(colorScheme == .dark
-                      ? Color.white.opacity(splitItemID == nil ? (isHovering ? 0.10 : 0.15) : 0)
-                      : Color.black.opacity(splitItemID == nil ? 0.08 : 0))
+                .fill(splitItemID == nil ? Self.fieldFill(dark: colorScheme == .dark, hovering: isHovering) : .clear)
         }
         // Report the frame in the window space so we can overlay the mini palette above all content
         .background {
@@ -179,7 +177,7 @@ struct URLBarView: View {
     }
 
     private func sidebarAddress(session: PageSession?) -> some View {
-        HStack(spacing: NookDesign.Spacing.sm) {
+        HStack(spacing: NookDesign.Spacing.xs) {
                 // The address edits in place; the global command palette remains separate.
                 Group {
                     if session != nil {
@@ -261,8 +259,8 @@ struct URLBarView: View {
                     }
                     .help(browserManager.help("Copy URL", shortcut: .copyCurrentURL))
                     .labelStyle(.iconOnly)
-                    .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.iconButton, radius: NookDesign.Radius.sm))
-                    .foregroundStyle(Color.primary)
+                    .font(.system(size: NookDesign.Size.addressGlyph, weight: .regular))
+                    .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.addressButton, radius: NookDesign.Radius.sm, foreground: .secondary))
                     .transition(.opacity.combined(with: .scale(scale: 0.9)))
                     .contentTransition(.symbolEffect(.replace))
                 }
@@ -296,7 +294,7 @@ struct URLBarView: View {
                 }
             }
             .padding(.leading, NookDesign.Spacing.lg)
-            .padding(.trailing, NookDesign.Spacing.rowPadding)
+            .padding(.trailing, NookDesign.Spacing.sm)
     }
 
     private var controlHeight: CGFloat {
@@ -620,6 +618,14 @@ struct URLBarView: View {
     private func displayPath(for session: PageSession?) -> String {
         guard let url = session?.url else { return "" }
         return Self.shownPath(of: url, developerPage: isDevPage(session))
+    }
+
+    static func fieldFillOpacity(dark: Bool, hovering: Bool) -> Double {
+        dark ? (hovering ? 0.14 : 0.10) : (hovering ? 0.05 : 0.08)
+    }
+
+    static func fieldFill(dark: Bool, hovering: Bool) -> Color {
+        (dark ? Color.white : Color.black).opacity(fieldFillOpacity(dark: dark, hovering: hovering))
     }
 
     static func shownPath(of url: URL, developerPage: Bool) -> String {

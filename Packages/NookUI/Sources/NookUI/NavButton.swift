@@ -18,10 +18,13 @@ public struct NookIconButtonStyle: ButtonStyle {
 
     let size: CGFloat
     let radius: CGFloat
+    let foreground: HierarchicalShapeStyle
 
-    public init(size: CGFloat = NookDesign.Size.iconButton, radius: CGFloat = NookDesign.Radius.md) {
+    public init(size: CGFloat = NookDesign.Size.iconButton, radius: CGFloat = NookDesign.Radius.md,
+                foreground: HierarchicalShapeStyle = .primary) {
         self.size = size
         self.radius = radius
+        self.foreground = foreground
     }
 
     public func makeBody(configuration: Configuration) -> some View {
@@ -30,7 +33,7 @@ public struct NookIconButtonStyle: ButtonStyle {
                 .fill(fill(isPressed: configuration.isPressed))
                 .frame(width: size, height: size)
             configuration.label
-                .foregroundStyle(.primary)
+                .foregroundStyle(foreground)
         }
         .frame(width: size, height: size)
         .opacity(isEnabled ? 1.0 : 0.3)

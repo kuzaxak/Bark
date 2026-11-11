@@ -65,6 +65,9 @@ public enum NookDesign {
     public enum Size {
         public static let row: CGFloat = 32
         public static let iconButton: CGFloat = 28
+        public static let addressButton: CGFloat = 24
+        public static let addressGlyph: CGFloat = 15
+        public static let siteControlsGlyph: CGFloat = 17
         public static let favoriteTile: CGFloat = 48   // a favorite tile's height; at the default sidebar width tiles are 55 pt wide
         public static let favoriteBorder: CGFloat = 2  // the selected favorite's edge
         public static let favoriteGlowScale: CGFloat = 2   // pixels per point of the blurred favicon behind a tile
