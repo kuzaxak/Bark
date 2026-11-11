@@ -51,7 +51,7 @@ final class FavoritePreview {
               tabs.isProfileAvailable(profile) else { return nil }
         return Source(itemID: item.id, spaceID: space, profileID: profile, url: url)
     }
-    fileprivate func isCurrent(in window: BrowserWindowState, tabs: TabsController) -> Bool {
+    func isCurrent(in window: BrowserWindowState, tabs: TabsController) -> Bool {
         guard tabs.windowRegistry.windows[window.id] === window, windowID == window.id,
               let itemID, let item = tabs.item(itemID),
               let source, window.spaceID == source.spaceID,
@@ -166,37 +166,80 @@ struct FavoritePreviewOverlay: View {
     @Environment(BrowserWindowState.self) private var windowState
 
     private let preview = FavoritePreview.shared
-    private let cardWidth: CGFloat = 280
     @State private var liveCardHeight: CGFloat = 0
 
     var body: some View {
         GeometryReader { proxy in
             if let anchor, let itemID = preview.itemID, preview.isCurrent(in: windowState, tabs: tabs) {
                 let tile = proxy[anchor]
-                if let live = preview.live {
-                    liveCard(live, itemID: itemID)
-                        .offset(besideTile(tile, in: proxy.size))
-                        .transition(.opacity)
-                } else {
-                    pullRequests(itemID: itemID)
-                        .offset(underTile(tile, in: proxy.size))
-                        .transition(.opacity)
-                }
+                let origin = preview.live == nil
+                    ? FavoritePreviewPlacement.underTile(tile, in: proxy.size)
+                    : FavoritePreviewPlacement.besideTile(tile, cardHeight: liveCardHeight, in: proxy.size)
+                FavoritePreviewCard(itemID: itemID)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { liveCardHeight = $0 }
+                    .offset(x: origin.x, y: origin.y)
+                    .transition(.opacity)
             }
         }
         .animation(NookDesign.Motion.quick, value: preview.itemID)
-        // No hover exit arrives while the window is not key, so the card would stay up.
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
-            guard preview.windowID == windowState.id, (note.object as? NSWindow) === windowState.window else { return }
-            preview.dismiss()
+        .dismissesFavoritePreview(when: windowState)
+    }
+}
+
+extension View {
+    /// No hover exit arrives while the window is not key, so a card would stay up.
+    func dismissesFavoritePreview(when window: BrowserWindowState) -> some View {
+        onReceive(NotificationCenter.default.publisher(for: NSWindow.didResignKeyNotification)) { note in
+            guard FavoritePreview.shared.windowID == window.id, (note.object as? NSWindow) === window.window else { return }
+            FavoritePreview.shared.dismiss()
+        }
+    }
+}
+
+/// Where the hovered favorite's card goes, with a top-left origin, in a space of `size`.
+enum FavoritePreviewPlacement {
+    static let pullRequestsWidth: CGFloat = 280
+
+    static func underTile(_ tile: CGRect, in size: CGSize) -> CGPoint {
+        let edge = NookDesign.Spacing.md
+        return CGPoint(x: min(max(edge, tile.minX), max(edge, size.width - pullRequestsWidth - edge)),
+                       y: tile.maxY + NookDesign.Spacing.xs)
+    }
+
+    /// Hanging from the tile's lower corner, as in Arc: to its right, or its left when the
+    /// sidebar is on the right.
+    static func besideTile(_ tile: CGRect, cardHeight: CGFloat, in size: CGSize) -> CGPoint {
+        let edge = NookDesign.Spacing.md
+        let width = NookDesign.Size.favoriteCard
+        let right = tile.maxX + NookDesign.Spacing.xs
+        let x = right + width + edge <= size.width ? right : tile.minX - NookDesign.Spacing.xs - width
+        let y = min(tile.maxY - NookDesign.Spacing.md, size.height - cardHeight - edge)
+        return CGPoint(x: max(edge, x), y: max(edge, y))
+    }
+}
+
+/// The hovered favorite's card: a Gmail or Calendar favorite's live card, or the rows its site shows.
+struct FavoritePreviewCard: View {
+    let itemID: UUID
+
+    @Environment(TabsController.self) private var tabs
+    @Environment(BrowserWindowState.self) private var windowState
+
+    private let preview = FavoritePreview.shared
+
+    var body: some View {
+        if let live = preview.live {
+            liveCard(live)
+        } else {
+            pullRequests
         }
     }
 
-    private func pullRequests(itemID: UUID) -> some View {
+    private var pullRequests: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
             ForEach(preview.rows) { row in
                 Button {
-                    open(row.url, in: itemID)
+                    open(row.url)
                 } label: {
                     HStack(spacing: NookDesign.Spacing.md) {
                         Image(systemName: "arrow.triangle.pull")
@@ -213,48 +256,30 @@ struct FavoritePreviewOverlay: View {
             }
         }
         .padding(NookDesign.Spacing.xs)
-        .frame(width: cardWidth)
+        .frame(width: FavoritePreviewPlacement.pullRequestsWidth)
         .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.lg))
         .onHoverTracking { preview.cardHover($0) }
     }
 
     /// In the favorite's space look: its light or dark theme and its accent.
-    private func liveCard(_ live: GoogleFavorite, itemID: UUID) -> some View {
+    private func liveCard(_ live: GoogleFavorite) -> some View {
         let space = tabs.spaceID(of: itemID).flatMap { tabs.space($0) }
         let accent = space?.accentColor ?? .accentColor
         return Group {
             switch live {
             case .calendar(let account):
-                MeetingCard(account: account, accent: accent) { open($0, in: itemID) }
+                MeetingCard(account: account, accent: accent) { open($0) }
             case .mail(let account):
-                MailCard(itemID: itemID, account: account) { open($0, in: itemID) }
+                MailCard(itemID: itemID, account: account) { open($0) }
             }
         }
         .frame(width: NookDesign.Size.favoriteCard)
         .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.lg))
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { liveCardHeight = $0 }
         .onHoverTracking { preview.cardHover($0) }
         .spaceThemeAppearance(space?.theme)
     }
 
-    private func underTile(_ tile: CGRect, in size: CGSize) -> CGSize {
-        let edge = NookDesign.Spacing.md
-        return CGSize(width: min(max(edge, tile.minX), max(edge, size.width - cardWidth - edge)),
-                      height: tile.maxY + NookDesign.Spacing.xs)
-    }
-
-    /// Hanging from the tile's lower corner, as in Arc: to its right, or its left when the
-    /// sidebar is on the right.
-    private func besideTile(_ tile: CGRect, in size: CGSize) -> CGSize {
-        let edge = NookDesign.Spacing.md
-        let width = NookDesign.Size.favoriteCard
-        let right = tile.maxX + NookDesign.Spacing.xs
-        let x = right + width + edge <= size.width ? right : tile.minX - NookDesign.Spacing.xs - width
-        let y = min(tile.maxY - NookDesign.Spacing.md, size.height - liveCardHeight - edge)
-        return CGSize(width: max(edge, x), height: max(edge, y))
-    }
-
-    private func open(_ url: URL, in itemID: UUID) {
+    private func open(_ url: URL) {
         guard preview.isCurrent(in: windowState, tabs: tabs), let expected = preview.source else { return }
         preview.dismiss()
         tabs.select(itemID, in: windowState)

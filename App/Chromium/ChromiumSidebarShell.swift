@@ -121,6 +121,9 @@ struct ChromiumSidebarShell: View {
 
     private var hostedLayers: some View {
         layers
+            .overlayPreferenceValue(FavoritePreviewAnchorKey.self) {
+                ChromiumFavoriteCard(anchor: $0, window: window, tabs: browserManager.tabs)
+            }
             .environmentObject(browserManager)
             .environmentObject(browserManager.gradientColorManager)
             .environmentObject(hover)

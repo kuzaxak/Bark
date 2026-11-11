@@ -433,6 +433,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             manager.tabs.pageTranslation = { [aiConfig = storage.aiConfig] in aiConfig.pageTranslation }
             mcpManager.startEnabledServers(configs: storage.aiConfig.mcpServers)
             registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
+            LiveFavorites.shared.start(tabs: manager.tabs, windows: registry)
             registry.onWindowClose = { [weak self, weak manager, weak registry = self.registry] id in
                 guard let manager, let state = registry?.windows[id] else { return }
                 let tabs = manager.tabs
