@@ -276,9 +276,16 @@ enum ShortcutCategory: String, CaseIterable, Hashable, Codable {
 }
 
 extension ShortcutAction {
-    /// Actions on the sidebar and its windows. Chromium's accelerators for these keys would act on its
-    /// own hidden tab order, or have no equivalent. Undo Close Tab stays out: its default Command-Z must
-    /// keep undoing text in pages and fields.
+    /// Undo Close Tab runs from the command bar and from any key but Command-Z, which must keep
+    /// undoing text in pages and fields.
+    var runsInChromium: Bool { runsInChromiumSidebar || self == .undoCloseTab }
+
+    func takesKeyInChromium(_ key: KeyCombination) -> Bool {
+        runsInChromiumSidebar || (self == .undoCloseTab && key != KeyCombination(key: "z", modifiers: [.command]))
+    }
+
+    /// Actions on the sidebar and its windows, whose keys the app takes before Chromium. Chromium's
+    /// accelerators for them would act on its own hidden tab order, or ignore a key the person rebound.
     var runsInChromiumSidebar: Bool {
         switch self {
         case .closeTab, .nextTab, .previousTab, .goToLastTab, .nextSpace, .previousSpace, .addSplitView,
@@ -287,7 +294,7 @@ extension ShortcutAction {
              .toggleSidebar, .toggleAIAssistant, .viewDownloads, .viewHistory, .expandAllFolders, .duplicateTab,
              .toggleTopBarAddressView, .toggleDarkMode, .pinToSpace, .addToFavorites, .addToFolder, .moveToSpace,
              .renameTab, .organizeTabs, .customizeSpaceGradient, .manageExtensions, .toggleExtensionLibrary, .installExtension,
-             .closeBrowser, .toggleBookmark:
+             .closeBrowser, .toggleBookmark, .newWindow, .closeWindow, .toggleFullScreen, .capturePortrait:
             return true
         default:
             return false

@@ -282,7 +282,7 @@ class KeyboardShortcutManager {
             } else {
                 switch shortcut.action {
                 case .newTab, .focusAddressBar, .openCommandPalette: break
-                default: guard shortcut.action.runsInChromiumSidebar else { return false }
+                default: guard shortcut.action.takesKeyInChromium(shortcut.keyCombination) else { return false }
                 }
             }
         }
@@ -566,8 +566,7 @@ class KeyboardShortcutManager {
             }
             return
         }
-        // Other native keyboard actions remain Chromium's existing accelerators.
-        if browserManager.tabs.profileEngine == .chromium, !action.runsInChromiumSidebar {
+        if browserManager.tabs.profileEngine == .chromium, !action.runsInChromium {
             if let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow, window.window === keyWindow {
                 browserManager.showWindowToast("This action is not available yet", in: window)
             }

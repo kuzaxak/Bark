@@ -403,6 +403,7 @@ class BrowserManager: ObservableObject {
     var openSettingsAction: OpenSettingsAction?
     var nativeOpenSettings: ((SettingsTabs) -> Void)?
     var nativeCreateIncognitoWindow: (() -> Void)?
+    var nativeCreateWindow: (() -> Void)?
 
     var modelContext: ModelContext
     /// The tab model: tree, device state, window selection and live pages.
@@ -1231,7 +1232,10 @@ class BrowserManager: ObservableObject {
     /// Opens a regular window. `frame` places a window restored from DeviceState.windows;
     /// `setup` runs once the window is registered and set up.
     func createNewWindow(frame: NSRect? = nil, then setup: ((BrowserWindowState) -> Void)? = nil) {
-        guard engine == .webKit else { return }
+        if engine == .chromium {
+            if frame == nil, setup == nil { nativeCreateWindow?() }
+            return
+        }
         guard let windowRegistry = windowRegistry,
               let webViewCoordinator = webViewCoordinator else {
             #if DEBUG

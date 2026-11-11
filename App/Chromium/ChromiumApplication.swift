@@ -465,6 +465,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 admission.reloadProfileWindows(ids, open: self.bridge.profile_open_window, close: self.bridge.window_close,
                     canPresent: { [weak self] in self?.acceptsWindows == true })
             }
+            manager.nativeCreateWindow = { [weak self, weak admission] in
+                guard let self, let admission, self.acceptsWindows else { return }
+                _ = admission.openNewWindow(open: self.bridge.profile_open_window, close: self.bridge.window_close,
+                    canPresent: { [weak self] in self?.acceptsWindows == true })
+            }
             manager.nativeCreateIncognitoWindow = { [weak self, weak admission] in
                 guard let self, let admission, self.acceptsWindows else { return }
                 let origin = self.registry.activeWindow, originID = origin?.id
