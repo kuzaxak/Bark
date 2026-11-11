@@ -35,6 +35,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let mcpManager = MCPManager()
     private var aiService: AIService?
     private var appMenu: ChromiumAppMenu?
+    private var mouseButtons: ChromiumMouseButtons?
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
     private var ready: (@MainActor () -> Void)?
@@ -434,6 +435,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             mcpManager.startEnabledServers(configs: storage.aiConfig.mcpServers)
             registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
             LiveFavorites.shared.start(tabs: manager.tabs, windows: registry)
+            mouseButtons = ChromiumMouseButtons(manager: manager, registry: registry)
             registry.onWindowClose = { [weak self, weak manager, weak registry = self.registry] id in
                 guard let manager, let state = registry?.windows[id] else { return }
                 let tabs = manager.tabs
