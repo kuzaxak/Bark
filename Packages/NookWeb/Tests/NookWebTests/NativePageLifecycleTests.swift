@@ -3021,6 +3021,104 @@ struct NativePageLifecycleTests {
         #expect(!navigation.invalidated, "Inactive profile retains its live page")
     }
 
+    @Test func deleteSpaceClosesLivePagesFirstAndARefusedCloseKeepsTheSpace() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let page = f.host.finishCreate(0)
+        let work = try #require(f.window.spaceID), item = try #require(f.window.selectedItemID)
+        let sibling = try #require(f.tabs.createSpace(name: "Sibling", icon: "", accentHex: "#123456", after: work, sharingLoginsWith: work))
+        let other = BrowserWindowState(); other.spaceID = work
+        f.registry.register(other); f.tabs.attach(window: other, restoringSavedState: false)
+        var notices: [String] = []
+        f.tabs.onSpaceDeletionNotice = { notices.append($0) }
+        var wiped = false
+        f.tabs.onDeleteProfile = { _, _, _, _ in wiped = true }
+
+        f.tabs.deleteSpace(work)
+        #expect(f.host.closes.count == 1 && f.host.closes.first?.page === page, "Live pages close through the host first")
+        #expect(f.tabs.space(work) != nil && f.window.spaceID == work, "The space waits for the close")
+        f.host.finishClose(0, admitted: false)
+        #expect(f.tabs.space(work) != nil && f.window.spaceID == work && f.tabs.tree.item(item) != nil, "A refused close keeps the space")
+        #expect(f.tabs.session(for: item)?.navigation === page)
+
+        f.tabs.deleteSpace(work)
+        #expect(f.host.closes.count == 2)
+        f.host.finishClose(1, admitted: true)
+        #expect(f.tabs.space(work) == nil && f.tabs.tree.item(item) == nil)
+        #expect(f.window.spaceID == sibling && other.spaceID == sibling, "Windows showing it move on")
+        #expect(f.tabs.device.closed.contains { $0.items.contains { $0.id == item } }, "Its tabs go to the reopen history")
+        #expect(!wiped && notices.isEmpty, "The sibling keeps the profile")
+    }
+
+    @Test func deleteSpaceMovesASharedFavoriteWithoutClosingIt() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.host.finishCreate(0)
+        let work = try #require(f.window.spaceID)
+        let sibling = try #require(f.tabs.createSpace(name: "Sibling", icon: "", accentHex: "#123456", after: work, sharingLoginsWith: work))
+        let next = f.host.creates.count
+        let favorite = try #require(f.tabs.open(url: URL(string: "about:blank#favorite")!, in: f.window, placement: .newTab, parent: .favorites(spaceID: work)))
+        let page = f.host.finishCreate(next)
+        f.tabs.deleteSpace(work)
+        #expect(!f.host.closes.contains { $0.page === page }, "A favorite the sibling shows stays live")
+        for index in f.host.closes.indices { f.host.finishClose(index, admitted: true) }
+        #expect(f.tabs.space(work) == nil)
+        #expect(f.tabs.tree.item(favorite)?.parent == .favorites(spaceID: sibling))
+        #expect(f.tabs.session(for: favorite)?.navigation === page)
+    }
+
+    @Test func deletingAProfilesLastSpaceClosesItsPagesAndKeepsTheProfile() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let page = f.host.finishCreate(0)
+        let work = try #require(f.window.spaceID), item = try #require(f.window.selectedItemID)
+        let store = try #require(f.tabs.tree.dataStoreID(for: work))
+        let personal = try #require(f.tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
+        #expect(f.tabs.tree.dataStoreID(for: personal) != store)
+        var notices: [String] = []
+        f.tabs.onSpaceDeletionNotice = { notices.append($0) }
+        var wiped = false
+        f.tabs.onDeleteProfile = { _, _, _, _ in wiped = true }
+
+        f.tabs.deleteSpace(work)
+        #expect(f.host.closes.count == 1 && f.host.closes.first?.page === page && f.tabs.space(work) != nil, "Its pages close first")
+        f.host.finishClose(0, admitted: true)
+        #expect(f.tabs.space(work) == nil && f.tabs.tree.item(item) == nil && f.window.spaceID == personal)
+        #expect(f.tabs.device.keptProfiles?.contains { $0.id == store } == true, "The profile stays in Settings > Profiles")
+        #expect(f.tabs.profiles.contains { $0.id == store })
+        #expect(!wiped && notices.isEmpty && f.tabs.device.pendingProfileDeletion == nil)
+    }
+
+    @Test func theOnlySpaceClosesNothing() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.host.finishCreate(0)
+        let work = try #require(f.window.spaceID)
+        let agent = try #require(f.tabs.ensureAgentSpace(loginsFrom: f.window))
+        #expect(f.tabs.isLastRegularSpace(work) && !f.tabs.isLastRegularSpace(agent), "The Agent space never counts as a space left")
+        var notices: [String] = []
+        f.tabs.onSpaceDeletionNotice = { notices.append($0) }
+        f.tabs.deleteSpace(work)
+        #expect(f.host.closes.isEmpty && f.tabs.space(work) != nil)
+        #expect(notices.count == 1, "It cannot go, and the person is told")
+        let personal = try #require(f.tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
+        #expect(!f.tabs.isLastRegularSpace(work) && !f.tabs.isLastRegularSpace(personal))
+    }
+
+    @Test func deleteSpaceBlockedByAProfileChangeSaysWhy() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let page = f.host.finishCreate(0)
+        let space = try #require(f.window.spaceID)
+        let destination = try #require(f.tabs.createSpace(name: "Destination", icon: "", accentHex: "#123456", after: space))
+        let target = try #require(f.tabs.tree.dataStoreID(for: destination))
+        _ = try #require(f.tabs.createSpace(name: "Sibling", icon: "", accentHex: "#654321", after: space, sharingLoginsWith: space))
+        f.tabs.onDeleteProfile = { _, _, _, _ in }
+        f.tabs.setProfile(space, to: target)
+        #expect(f.tabs.device.pendingProfileDeletion?.change?.spaceIDs.contains(space) == true)
+        var notices: [String] = []
+        f.tabs.onSpaceDeletionNotice = { notices.append($0) }
+        let closes = f.host.closes.count
+        f.tabs.deleteSpace(space)
+        #expect(f.tabs.space(space) != nil && notices.count == 1 && f.host.closes.count == closes)
+        _ = page
+    }
+
     @Test func enteringEmptySpaceShowsItThenItsFirstTabSelects() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -3424,6 +3522,8 @@ struct NativePageLifecycleTests {
         fixture.tabs.deleteSpace(space)
         #expect(fixture.tabs.tree.space(space) != nil && fixture.tabs.tree.item(id) != nil)
         #expect(fixture.window.selectedItemID == id && !navigation.invalidated)
+        #expect(fixture.host.closes.count == 1, "Deleting asks the page to close before any model change")
+        fixture.host.finishClose(0, admitted: false)
         var proposed = fixture.tabs.tree
         let deletion = try proposed.close(id, promotingChildren: true).change
         fixture.tabs.apply(deletion)
@@ -3434,7 +3534,7 @@ struct NativePageLifecycleTests {
         #expect(fixture.tabs.tree.item(id) != nil)
         fixture.tabs.deleteSpace(shared)
         #expect(fixture.tabs.tree.space(shared) == nil)
-        #expect(fixture.host.closes.isEmpty)
+        #expect(fixture.host.closes.count == 1, "A space with no live page has nothing to close")
     }
 
     @Test func newerSelectionCancelsOlderPendingPages() throws {

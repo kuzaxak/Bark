@@ -986,29 +986,24 @@ extension TabsController {
     }
 
     /// Deletes a space; its items go to the reopen history and its website data is cleared
-    /// unless another space shares it, or kept in Profiles with `keepingLeftProfile`.
-    /// Windows showing it move to another space.
+    /// unless another space shares it, or kept in Profiles with `keepingLeftProfile`. Chromium
+    /// keeps the profile of a last space, as Arc does. Windows showing it move to another space.
     public func deleteSpace(_ spaceID: UUID, keepingLeftProfile: Bool = false) {
         guard let owner = owner(ofSpace: spaceID) else { return }
-        if case .main = owner, profileEngine == .chromium, !keepingLeftProfile,
-           tree.space(spaceID)?.isAgent != true,
-           let storeID = tree.dataStoreID(for: spaceID) {
-            let stillOwned = tree.orderedSpaces.contains {
-                $0.id != spaceID && !$0.isAgent && tree.dataStoreID(for: $0.id) == storeID
-            }
-            // Native profile deletion is unavailable; keep both the space and
-            // its profile instead of claiming that its cookies were erased.
-            guard stillOwned else { return }
+        if case .main = owner, profileEngine == .chromium, let refusal = nativeSpaceDeletionRefusal(spaceID) {
+            onSpaceDeletionNotice?(refusal)
+            return
         }
         if profileEngine == .chromium {
             let source = tree(owner)
-            let ids = (source.children(of: .favorites(spaceID: spaceID))
-                       + source.children(of: .pinned(spaceID: spaceID))
-                       + source.children(of: .tabs(spaceID: spaceID)))
+            let keepsFavorites = source.favoriteSpaces(sharedWith: spaceID).contains { $0 != spaceID }
+            let closing = ((keepsFavorites ? [] : source.children(of: .favorites(spaceID: spaceID)))
+                           + source.children(of: .pinned(spaceID: spaceID))
+                           + source.children(of: .tabs(spaceID: spaceID)))
                 .flatMap { source.subtree(of: $0.id) }
-            // Bulk space deletion has no native admission phase in this slice.
-            // Refuse before moving favorites or altering selection/metadata.
-            guard !ids.contains(where: { session(for: $0)?.requiresNativeResourceRelease == true }) else { return }
+            if releaseNativePagesBeforeMutation(closing, then: { [weak self] in
+                self?.deleteSpace(spaceID, keepingLeftProfile: keepingLeftProfile)
+            }) { return }
         }
         // Favorites other spaces still show move to one of them instead of closing.
         if let heir = tree(owner).favoriteSpaces(sharedWith: spaceID).first(where: { $0 != spaceID }) {
@@ -1031,7 +1026,10 @@ extension TabsController {
             let result = try tree.deleteSpace(spaceID)
             closed = result.closed
             return result.change
-        }) != nil else { return }
+        }) != nil else {
+            onSpaceDeletionNotice?("This space couldn’t be deleted.")
+            return
+        }
         for id in ids { endSession(id) }
         if case .main = owner, !isAgent {
             for entry in closed { recordClosed(entry) }
@@ -1047,7 +1045,7 @@ extension TabsController {
         }
         if case .main = owner, let profile = deleted,
            !tree.orderedSpaces.contains(where: { tree.dataStoreID(for: $0.id) == profile.id }) {
-            if keepingLeftProfile, let left {
+            if keepingLeftProfile || profileEngine == .chromium, let left {
                 keepProfile(left)
             } else {
                 // Its cookies and logins go with it, since no other space uses this data store.
@@ -1057,6 +1055,30 @@ extension TabsController {
             // The Agent space may have borrowed its logins from this one.
             if let agent = agentSpaceID { unloadPagesOnWrongDataStore(items(inSpace: agent).map(\.id)) }
         }
+    }
+
+    /// The last space that is not the Agent space, which the tree never deletes.
+    public func isLastRegularSpace(_ spaceID: UUID) -> Bool {
+        guard let owner = owner(ofSpace: spaceID) else { return false }
+        let source = tree(owner)
+        return source.space(spaceID)?.isAgent == false && !source.orderedSpaces.contains { $0.id != spaceID && !$0.isAgent }
+    }
+
+    /// Why Chromium keeps a space, checked before any of its pages closes.
+    private func nativeSpaceDeletionRefusal(_ spaceID: UUID) -> String? {
+        if profileChangeHolds(spaceID) {
+            return "This space can’t be deleted while its profile is changing. Finish or retry that in Settings > Profiles."
+        }
+        return isLastRegularSpace(spaceID) ? "You cannot delete the last remaining space." : nil
+    }
+
+    /// A pending profile change owns its spaces and its destination until it finishes.
+    private func profileChangeHolds(_ spaceID: UUID) -> Bool {
+        guard let pending = device.pendingProfileDeletion else { return false }
+        if pending.change?.spaceIDs.contains(spaceID) == true { return true }
+        guard let store = tree.dataStoreID(for: spaceID) else { return false }
+        return (store == pending.survivor || store == pending.target)
+            && tree.profile(ofSpace: spaceID)?.spaceIDs == [spaceID]
     }
 
     // MARK: - Unload

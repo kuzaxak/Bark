@@ -77,6 +77,8 @@ public final class TabsController {
     @ObservationIgnored private var spaceProfiles: [UUID: Profile] = [:]
 
     @ObservationIgnored public var onDeleteProfile: ProfileDeletionAction?
+    /// Tells the person why a space could not be deleted.
+    @ObservationIgnored public var onSpaceDeletionNotice: ((String) -> Void)?
     @ObservationIgnored public var onProfileWindowsNeedReload: (@MainActor (Set<UUID>) -> Void)?
     @ObservationIgnored private var profileDeletionInFlight = false
     @ObservationIgnored private let store: TabStore

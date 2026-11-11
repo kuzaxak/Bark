@@ -404,6 +404,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 profilePages.open(profile, destination: destination, canPresent: canPresent, completion: completion)
             }
             manager.nativeOpenSettings = { [weak self] tab in self?.showSettings(tab) }
+            manager.tabs.onSpaceDeletionNotice = { message in
+                let alert = NSAlert()
+                alert.messageText = message
+                if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+                    alert.beginSheetModal(for: window)
+                } else {
+                    alert.runModal()
+                }
+            }
             self.storage = storage
             browserManager = manager
             quitSave = ChromiumQuitSave(flushTabs: { [weak manager] in manager?.tabs.flushSync() },

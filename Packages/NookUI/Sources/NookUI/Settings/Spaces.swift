@@ -264,7 +264,6 @@ public struct SpacesSettingsView: View {
                         Button("Delete Space…", systemImage: "trash", role: .destructive) {
                             showDeleteDialog(space)
                         }
-                        .disabled(!canDeleteSpace(space))
                     }
                 } label: {
                     Image(systemName: "ellipsis.circle")
@@ -578,14 +577,7 @@ public struct SpacesSettingsView: View {
         }
     }
 
-    private func canDeleteSpace(_ space: SpaceRecord) -> Bool {
-        tabs.profileEngine == .webKit ||
-            tabs.profiles.first(where: { $0.spaceIDs.contains(space.id) })
-                .map { $0.spaceIDs.count > 1 } == true
-    }
-
     private func showDeleteDialog(_ space: SpaceRecord) {
-        guard canDeleteSpace(space) else { return }
         actions?.confirmSpaceDeletion(
             spaceName: space.name,
             tabCount: tabs.tabCount(inSpace: space.id),

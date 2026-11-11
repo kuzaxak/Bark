@@ -87,7 +87,7 @@ struct SpaceContextMenu: View {
         actions?.confirmSpaceDeletion(
             spaceName: space.name,
             tabCount: tabs.tabCount(inSpace: space.id),
-            isLastSpace: !canDelete,
+            isLastSpace: tabs.isLastRegularSpace(space.id),
             onDelete: onDeleteSpace
         )
     }
