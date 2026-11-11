@@ -9,7 +9,8 @@
 import SwiftUI
 import NookDesign
 
-/// A reusable toast container that provides standardized visual styling.
+/// A reusable toast container that provides standardized visual styling. It keeps to the width it is
+/// given and wraps its text.
 /// Use with `.transition(.toast)` and `.animation(NookDesign.Motion.standard, value: condition)` in parent.
 struct ToastView<Content: View>: View {
     let content: Content
@@ -21,7 +22,7 @@ struct ToastView<Content: View>: View {
     var body: some View {
         content
             .padding(12)
-            .fixedSize(horizontal: true, vertical: false)
+            .fixedSize(horizontal: false, vertical: true)
             .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.xl))
     }
 }

@@ -97,7 +97,8 @@ struct ChromiumSidebarShell: View {
                     CopyURLToast(title: window.copyToastText)
                 }
             }
-            .padding(10)
+            .frame(width: window.sidebarContentWidth)
+            .padding(.vertical, 10)
             .animation(.smooth(duration: 0.25), value: browserManager.showTabClosureToast)
             .animation(.smooth(duration: 0.25), value: window.isShowingCopyURLToast)
             .animation(.smooth(duration: 0.25), value: browserManager.downloadManager.lastTidied?.id)
