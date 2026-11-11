@@ -585,6 +585,7 @@ struct URLBarView: View {
             return
         }
         if usesNativeEditor, let page = editPage {
+            if browserManager.siteRoutingManager.applyRoute(navigating: page.url, to: url, page: page) { return }
             page.load(url)
             return
         }

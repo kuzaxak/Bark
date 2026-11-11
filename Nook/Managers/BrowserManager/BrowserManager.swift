@@ -566,9 +566,9 @@ class BrowserManager: ObservableObject {
             // Launch waits on the blocker, so it starts here and not when the first window appears,
             // about 190 ms later. NookApp's own call then finds it already under way.
             self.contentBlockerManager.setEnabled(settings.adBlockerEnabled)
-            self.siteRoutingManager.host = self
             SocialImageTweaks.downloader = self
         }
+        self.siteRoutingManager.host = self
         // Note: tracking protection will be configured after settingsManager injection
 
         self.peekManager.attach(browserManager: self)

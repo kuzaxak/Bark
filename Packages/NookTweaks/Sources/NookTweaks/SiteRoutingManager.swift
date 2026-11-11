@@ -37,6 +37,18 @@ public final class SiteRoutingManager {
         return true
     }
 
+    /// A navigation of `page` from `current` to `url` that the app itself starts, such as a typed
+    /// one, routed as WebKit's navigation policy routes its pages: only when it leaves the site.
+    public func applyRoute(navigating current: URL?, to url: URL, page: AnyObject) -> Bool {
+        func site(_ url: URL?) -> String {
+            let host = url?.host?.lowercased() ?? ""
+            return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
+        }
+        let from = site(current), to = site(url)
+        guard !from.isEmpty, !to.isEmpty, from != to else { return false }
+        return applyRoute(url: url, from: page)
+    }
+
     // MARK: - CRUD
 
     public func addRule(_ rule: SiteRoutingRule) {
