@@ -55,10 +55,16 @@ struct SpaceSwitcherTitle: View {
 
     private func label(_ space: SpaceRecord) -> some View {
         let isDropTarget = dragSession.isDragging && dragSession.activeZone == .target(.pinned(spaceID: space.id))
-        let title = HStack(spacing: NookDesign.Spacing.xs) {
-            if space.isAgent {
-                Image(systemName: "sparkles").foregroundStyle(NookDesign.Surface.agentGradient)
+        let title = HStack(spacing: NookDesign.Tab.iconGap) {
+            Group {
+                if space.isAgent {
+                    Image(systemName: "sparkles").foregroundStyle(NookDesign.Surface.agentGradient)
+                } else {
+                    SpaceIcon(space.icon, name: space.name)
+                }
             }
+            .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
+            .accessibilityHidden(true)
             Text(space.name).foregroundStyle(.primary)
         }
             .font(NookDesign.Font.label)
@@ -71,14 +77,17 @@ struct SpaceSwitcherTitle: View {
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
                 .nookTrailingFade()
         }
-        .padding(.horizontal, NookDesign.Spacing.sm)
-        .frame(height: NookDesign.Size.row)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, NookDesign.Tab.horizontalPadding)
+        .frame(height: NookDesign.Tab.height)
         .background(
             NookDesign.Radius.shape(NookDesign.Radius.md)
                 .fill(isHovering || isDropTarget ? NookDesign.Surface.fill : Color.clear)
         )
         .contentShape(NookDesign.Radius.shape(NookDesign.Radius.md))
         .onHoverTracking { isHovering = $0 }
+        .accessibilityElement(children: .combine)
+        .padding(.vertical, NookDesign.Tab.verticalInset)
     }
 
     @ViewBuilder

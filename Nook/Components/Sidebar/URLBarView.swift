@@ -194,13 +194,13 @@ struct URLBarView: View {
                                 // Two texts so a narrow sidebar cuts the path first and then the
                                 // host's head: `accounts.google.com.x.evil.tld` must keep `evil.tld`.
                                 HStack(spacing: 0) {
-                                    Text(displayHost(for: session)).foregroundStyle(.primary)
+                                    Text(displayHost(for: session)).foregroundStyle(.secondary)
                                         .truncationMode(.head)
                                         .layoutPriority(1)
                                     Text(displayPath(for: session)).foregroundStyle(.tertiary)
                                         .truncationMode(.tail)
                                 }
-                                .font(NookDesign.Font.secondary)
+                                .font(NookDesign.Font.bodyRegular)
                                 .lineLimit(1)
                                 if let session, session.translationOffer != nil, !session.isTranslated {
                                     Button("Translation Available") { session.toggleTranslation() }
@@ -232,7 +232,7 @@ struct URLBarView: View {
                                 .font(.system(size: NookDesign.Size.rowGlyph, weight: .medium))
                                 .foregroundStyle(textColor)
                             Text("Search or Enter URL...")
-                                .font(NookDesign.Font.secondary)
+                                .font(NookDesign.Font.bodyRegular)
                                 .foregroundStyle(textColor)
                         }
                     }
@@ -295,7 +295,8 @@ struct URLBarView: View {
                         }
                 }
             }
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
+            .padding(.leading, NookDesign.Spacing.lg)
+            .padding(.trailing, NookDesign.Spacing.rowPadding)
     }
 
     private var controlHeight: CGFloat {
@@ -617,11 +618,14 @@ struct URLBarView: View {
         return "\(host):\(port)"
     }
     private func displayPath(for session: PageSession?) -> String {
-        guard let url = session?.url, url.host != nil else { return "" }
-        let path = url.path
-        // A developer's own server shows its query too: it is usually what is being tested.
-        if isDevPage(session), let query = url.query { return path + "?" + query }
-        return path == "/" ? "" : path
+        guard let url = session?.url else { return "" }
+        return Self.shownPath(of: url, developerPage: isDevPage(session))
+    }
+
+    static func shownPath(of url: URL, developerPage: Bool) -> String {
+        guard developerPage, url.host != nil else { return "" }
+        guard let query = url.query else { return url.path == "/" ? "" : url.path }
+        return url.path + "?" + query
     }
 
     private func isDevPage(_ session: PageSession?) -> Bool {

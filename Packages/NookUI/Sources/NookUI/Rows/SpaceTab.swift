@@ -74,7 +74,7 @@ public struct SpaceTab: View {
                 tabs.select(item.id, in: windowState)
             }
         }) {
-            HStack(spacing: NookDesign.Spacing.md) {
+            HStack(spacing: NookDesign.Tab.iconGap) {
                 if hasChildren { trailChevron }
                 ItemFavicon(item: item, session: session)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
@@ -194,7 +194,7 @@ public struct SpaceTab: View {
                     }
                 }
             }
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
+            .padding(.horizontal, NookDesign.Tab.horizontalPadding)
             .frame(height: NookDesign.Tab.height)
             .frame(minWidth: 0, maxWidth: .infinity)
             .overlay {

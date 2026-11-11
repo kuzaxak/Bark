@@ -142,8 +142,10 @@ public enum NookDesign {
 
     /// Sidebar tab cards. Keep these separate from general chrome/control sizing.
     public enum Tab {
-        public static let height: CGFloat = 32
-        public static let verticalInset: CGFloat = 1
+        public static let height: CGFloat = 33
+        public static let verticalInset: CGFloat = 4
+        public static let horizontalPadding: CGFloat = 10
+        public static let iconGap: CGFloat = 11
         public static let stride: CGFloat = height + verticalInset * 2
         public static let radius: CGFloat = 12
         public static let font = NookDesign.Font.body   // tab title, as before the Arc work

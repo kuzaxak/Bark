@@ -29,7 +29,7 @@ public struct SplitHalfLabel: View {
         let title = tabs.title(for: item)
         let session = tabs.session(for: item.id)
         Button(action: { RowPress.click { tabs.select(item.id, in: windowState) } }) {
-            HStack(spacing: NookDesign.Spacing.md) {
+            HStack(spacing: NookDesign.Tab.iconGap) {
                 ItemFavicon(item: item, session: session)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                     .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
@@ -54,7 +54,7 @@ public struct SplitHalfLabel: View {
                     }
                 }
             }
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
+            .padding(.horizontal, NookDesign.Tab.horizontalPadding)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
         }

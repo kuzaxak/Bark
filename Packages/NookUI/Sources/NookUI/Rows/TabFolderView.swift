@@ -47,7 +47,7 @@ public struct TabFolderView: View {
                 }
             }
         }) {
-            HStack(spacing: NookDesign.Spacing.md) {
+            HStack(spacing: NookDesign.Tab.iconGap) {
                 Image(systemName: "chevron.right")
                     .font(.system(size: NookDesign.Size.rowGlyph - 1, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -115,7 +115,7 @@ public struct TabFolderView: View {
                     .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.rowButton, radius: NookDesign.Radius.sm))
                 }
             }
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
+            .padding(.horizontal, NookDesign.Tab.horizontalPadding)
             .frame(height: NookDesign.Tab.height)
             .frame(maxWidth: .infinity)
             .nookTabSurface(selected: isDropTarget, hovered: isHovering)

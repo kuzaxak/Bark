@@ -98,7 +98,7 @@ struct SpacesSideBarView: View {
     @ObservedObject private var dragSession = NookDragSessionManager.shared
 
     private var mainSidebarContent: some View {
-        return VStack(spacing: NookDesign.Spacing.sectionGap) {
+        return VStack(spacing: NookDesign.Spacing.md) {
             // History buttons: share the traffic-light row on the left, their own row on the right.
             if nookSettings.sidebarPosition != .left {
                 titleRow
@@ -410,15 +410,13 @@ struct SpacesSideBarView: View {
                 .environment(windowRegistry)
                 .environment(\.nookSettings, nookSettings)
                 .padding(.horizontal, NookDesign.Spacing.sidebarInset)
-                .padding(.bottom, NookDesign.Spacing.sectionGap)
+                .padding(.bottom, NookDesign.Spacing.xs)
             }
 
-            // Between favorites and pinned tabs, as in Arc.
             SpaceSwitcherTitle(spaceID: space.id, onNewSpace: showSpaceCreationDialog)
                 .environment(tabs)
                 .environment(windowState)
                 .padding(.horizontal, NookDesign.Spacing.sidebarInset)
-                .padding(.bottom, NookDesign.Spacing.sectionGap)
 
             SpaceView(
                 spaceID: space.id,
@@ -497,7 +495,7 @@ private struct AgentSpaceRow: View {
 
     var body: some View {
         Button(action: toggle) {
-            HStack(spacing: NookDesign.Spacing.md) {
+            HStack(spacing: NookDesign.Tab.iconGap) {
                 Image(systemName: "sparkles")
                     .font(.system(size: NookDesign.Size.rowGlyph, weight: .medium))
                     .foregroundStyle(NookDesign.Surface.agentGradient)
@@ -508,8 +506,8 @@ private struct AgentSpaceRow: View {
                 Spacer(minLength: 0)
             }
             .foregroundStyle(isHovering ? .secondary : .tertiary)
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
-            .frame(height: NookDesign.Size.row)
+            .padding(.horizontal, NookDesign.Tab.horizontalPadding)
+            .frame(height: NookDesign.Tab.height)
             .background(isHovering ? NookDesign.Surface.fill : Color.clear)
             .clipShape(NookDesign.Radius.shape(NookDesign.Radius.md))
             .contentShape(NookDesign.Radius.shape(NookDesign.Radius.md))

@@ -102,7 +102,7 @@ private struct NookDragPreviewContent: View {
                 // Keep the space's colored material under the same selected-tab surface.
                 SpaceChromeBackground(theme: manager.draggedTheme, accent: manager.draggedAccent, isActive: true, blursBehind: false)
                 Color.clear.nookTabSurface(selected: true)
-                HStack(spacing: NookDesign.Spacing.md) {
+                HStack(spacing: NookDesign.Tab.iconGap) {
                     if let icon = manager.draggedIcon {
                         icon.resizable().scaledToFit()
                             .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
@@ -120,7 +120,7 @@ private struct NookDragPreviewContent: View {
                         Spacer(minLength: 0)
                     }
                 }
-                .padding(.horizontal, NookDesign.Spacing.rowPadding)
+                .padding(.horizontal, NookDesign.Tab.horizontalPadding)
                             }
             .frame(width: size.width, height: size.height)
             .clipShape(NookDesign.Radius.shape(isTile ? NookDesign.Radius.lg : NookDesign.Tab.radius))

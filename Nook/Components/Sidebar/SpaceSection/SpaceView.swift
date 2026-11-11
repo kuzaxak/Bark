@@ -308,9 +308,10 @@ struct SpaceView: View {
         Button {
             commandPalette.open()
         } label: {
-            HStack(spacing: NookDesign.Spacing.md) {
+            HStack(spacing: NookDesign.Tab.iconGap) {
                 Image(systemName: "plus")
                     .font(.system(size: NookDesign.Size.favicon, weight: .medium))
+                    .frame(width: NookDesign.Size.favicon)
                 Text("New Tab")
                     .font(NookDesign.Tab.font)
                 Spacer(minLength: 0)
@@ -321,7 +322,7 @@ struct SpaceView: View {
                 }
             }
             .foregroundStyle(isNewTabHovering ? .secondary : .tertiary)
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
+            .padding(.horizontal, NookDesign.Tab.horizontalPadding)
             .frame(height: NookDesign.Tab.height)
             .frame(maxWidth: .infinity)
             .background(isNewTabHovering ? NookDesign.Surface.fill : Color.clear)

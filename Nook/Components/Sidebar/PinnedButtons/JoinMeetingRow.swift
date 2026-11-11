@@ -26,7 +26,7 @@ struct JoinMeetingRow: View {
            let meeting = Meetings.joinable(live.meetings, at: live.now, hidden: live.hiddenJoins),
            let link = meeting.conferenceURL {
             let title = meeting.title.isEmpty ? "Meeting" : meeting.title
-            HStack(spacing: NookDesign.Spacing.md) {
+            HStack(spacing: NookDesign.Tab.iconGap) {
                 Group {
                     if isHovering {
                         Button {
@@ -63,8 +63,8 @@ struct JoinMeetingRow: View {
                 .buttonStyle(.plain)
                 .help("Join \(title)")
             }
-            .padding(.horizontal, NookDesign.Spacing.rowPadding)
-            .frame(height: NookDesign.Size.row)
+            .padding(.horizontal, NookDesign.Tab.horizontalPadding)
+            .frame(height: NookDesign.Tab.height)
             .background(isHovering ? NookDesign.Surface.fill : Color.clear, in: NookDesign.Radius.shape(NookDesign.Radius.md))
             .onHoverTracking { isHovering = $0 }
         }
