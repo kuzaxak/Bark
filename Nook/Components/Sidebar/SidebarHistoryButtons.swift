@@ -31,7 +31,7 @@ struct SidebarHistoryButtons: View {
             }
             .accessibilityLabel(session?.isLoading == true ? "Stop Loading" : "Reload")
         }
-        .nookSidebarIconButtons()
+        .nookSidebarIconButtons(size: NookDesign.SidebarChrome.titleButton)
     }
 
     /// Nil while another window holds the page: its controls stay inert until Move Here.

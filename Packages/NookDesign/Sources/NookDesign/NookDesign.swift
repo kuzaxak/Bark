@@ -131,6 +131,7 @@ public enum NookDesign {
         public static let defaultResizeDark = Color(.sRGB, red: 145 / 255, green: 153 / 255, blue: 172 / 255)
         public static let icon: CGFloat = 15
         public static let button: CGFloat = 30
+        public static let titleButton: CGFloat = 32
         public static let gap: CGFloat = 2
         /// Where the title row's sidebar button starts, from the window's edge: its symbol sits a
         /// light's gap and a little more past the zoom button, as in Arc. macOS 26 draws the window

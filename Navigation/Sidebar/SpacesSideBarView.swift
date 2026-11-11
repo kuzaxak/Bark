@@ -456,7 +456,7 @@ struct SpacesSideBarView: View {
             Button("Toggle Sidebar", systemImage: nookSettings.sidebarPosition == .left ? "sidebar.left" : "sidebar.right") {
                 browserManager.toggleSidebar(for: windowState)
             }
-            .nookSidebarIconButtons()
+            .nookSidebarIconButtons(size: NookDesign.SidebarChrome.titleButton)
             Spacer(minLength: 0)
             if showsHistory, !browserManager.showsTopBar(in: windowState) {
                 SidebarHistoryButtons()
