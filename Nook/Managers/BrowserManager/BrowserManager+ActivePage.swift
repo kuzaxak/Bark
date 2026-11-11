@@ -132,6 +132,13 @@ extension BrowserManager {
             toggleDeveloperSite(of: page, in: window)
             return true
         }
+        if command == .pickElement, native.supportsElementPicker {
+            withDeveloperCapture { [weak self, weak page, weak native] in
+                guard let self, let page, let native else { return }
+                Task { await self.pickNativeElement(on: page, navigation: native) }
+            }
+            return true
+        }
         guard command.supportsNativePage else {
             showWindowToast("This action is not available yet", in: window)
             return false

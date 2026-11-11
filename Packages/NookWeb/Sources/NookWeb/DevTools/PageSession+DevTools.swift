@@ -59,6 +59,19 @@ extension PageSession {
             arguments: ["selector": selector], in: nil, in: DevPickerScript.world)
     }
 
+    /// The element at `selector`, as the WebKit picker sends it, for a native isolated-world
+    /// request once Chromium's picker has returned the selector.
+    public func nativeDevPickScript(_ selector: String) -> String? {
+        guard developerModeOn, usesNativePageHost, navigation != nil, !nativeIsEnding else { return nil }
+        return DevPickerScript.describeScript(selector: selector)
+    }
+
+    /// The same element's React, Vue or Svelte names and source, for a native page-world request.
+    public func nativeDevHintsScript(_ selector: String) -> String? {
+        guard developerModeOn, usesNativePageHost, navigation != nil, !nativeIsEnding else { return nil }
+        return DevPickerScript.hintsScript(selector: selector)
+    }
+
     /// The existing dormant snapshot controller for a native isolated-world
     /// request. This installs no picker listeners and exposes no native handler.
     public func nativeDevSnapshotScript(_ selector: String, maxDepth: Int, maxNodes: Int) -> String? {

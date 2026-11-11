@@ -54,6 +54,22 @@ enum DevPickerScript {
     return out;
     """
 
+    /// The element at `selector` as the picker sends it, for a world the picker never started in.
+    static func describeScript(selector: String) -> String? {
+        literal(selector).map { source + "\nreturn window.__nookDevPicker.describe(\($0));" }
+    }
+
+    /// `hintsSource` for one selector, as a script body for the page world.
+    static func hintsScript(selector: String) -> String? {
+        literal(selector).map { "const selector = \($0);\n" + hintsSource }
+    }
+
+    private static func literal(_ string: String) -> String? {
+        (try? JSONSerialization.data(withJSONObject: string, options: .fragmentsAllowed))
+            .flatMap { String(data: $0, encoding: .utf8) }?
+            .replacingOccurrences(of: "\u{2028}", with: "\\u2028").replacingOccurrences(of: "\u{2029}", with: "\\u2029")
+    }
+
     static let source = """
     \(marker)
     (function () {
@@ -293,7 +309,9 @@ enum DevPickerScript {
         if (omitted) lines.push('- … cut at maxNodes or maxDepth; raise them or pick a narrower selector');
         return lines.join('\\n');
       }
-      window.__nookDevPicker = { start, stop, flash, snapshot };
+      function describe(selector) { const el = document.querySelector(selector); return el ? bundle(el) : null; }
+
+      window.__nookDevPicker = { start, stop, flash, snapshot, describe };
     })();
     """
 }

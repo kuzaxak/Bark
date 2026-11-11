@@ -30,6 +30,26 @@ extension BrowserManager {
         showDevToast("Element copied")
     }
 
+    /// Chromium's picker returns the element's selector and the script bridge reads the rest. The
+    /// handoff has no screenshot and no console or network context: Chromium pages have no capture.
+    func pickNativeElement(on page: PageSession, navigation: ChromiumPageNavigation) async {
+        let serial = page.nativeNavigationSerial
+        func current() -> Bool { page.navigation === navigation && page.nativeNavigationSerial == serial && !navigation.isClosed }
+        guard let selector = await navigation.pickElement(), current(),
+              let describe = page.nativeDevPickScript(selector),
+              let described = try? await navigation.evaluateScript(describe, mode: .asyncBody, world: .isolated), current(),
+              let body = try? JSONSerialization.jsonObject(with: Data(described.json.utf8)),
+              var element = DevPickedElement(message: body) else { return }
+        if element.source?.isEmpty == true { element.source = nil }
+        if let hints = page.nativeDevHintsScript(selector),
+           let read = try? await navigation.evaluateScript(hints, mode: .asyncBody, world: .page) {
+            element.apply(hints: try? JSONSerialization.jsonObject(with: Data(read.json.utf8)))
+        }
+        guard current() else { return }
+        handOff(DevPick(markdown: DevHandoff.markdown(element: element, errors: [], failed: [], imagePath: nil)), from: page)
+        showDevToast("Element copied")
+    }
+
     /// Clipboard, DevMCP `selection`, and the Agent tab's compose box.
     func handOff(_ pick: DevPick, from session: PageSession?) {
         session?.devCapture?.lastPick = pick

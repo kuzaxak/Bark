@@ -17,6 +17,7 @@ import NookWeb
 @MainActor private var agentIdle: Task<Void, Never>?
 /// Set while the agent's page is out of the window for being idle; the next tool call clears it.
 @MainActor private var agentParked = false
+@MainActor private var nativeAgentIdle: AgentIdleClose?
 
 extension BrowserManager {
     private static let agentIdleDelay: Duration = .seconds(30)
@@ -89,6 +90,26 @@ extension BrowserManager {
             try? await Task.sleep(for: Self.agentCloseDelay)
             if Task.isCancelled { return }
             self.closeIdleAgentTabs()
+        }
+    }
+
+    /// On Chromium the Agent space's tabs close after the same wait as in WebKit windows, counted
+    /// from the last tool call.
+    func installNativeAgentIdleClose() {
+        guard engine == .chromium, nativeAgentIdle == nil else { return }
+        let idle = AgentIdleClose(delay: Self.agentIdleDelay + Self.agentCloseDelay,
+                                  calls: { [weak self] in self?.tabs.agentCallsInFlight ?? 0 },
+                                  close: { [weak self] in self?.closeIdleAgentTabs() })
+        nativeAgentIdle = idle
+        watchAgentCalls(idle)
+    }
+
+    private func watchAgentCalls(_ idle: AgentIdleClose) {
+        withObservationTracking { _ = tabs.agentCallsInFlight } onChange: { [weak self] in
+            Task { @MainActor in
+                idle.callsChanged()
+                self?.watchAgentCalls(idle)
+            }
         }
     }
 

@@ -441,6 +441,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             registry.onActiveWindowChange = { [weak manager] in manager?.setActiveWindowState($0) }
             LiveFavorites.shared.start(tabs: manager.tabs, windows: registry)
             mouseButtons = ChromiumMouseButtons(manager: manager, registry: registry)
+            manager.installNativeAgentIdleClose()
             registry.onWindowClose = { [weak self, weak manager, weak registry = self.registry] id in
                 guard let manager, let state = registry?.windows[id] else { return }
                 let tabs = manager.tabs
