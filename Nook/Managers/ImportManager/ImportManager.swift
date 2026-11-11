@@ -11,7 +11,31 @@ import Combine
 import SwiftUI
 
 class ImportManager: ObservableObject {
-    
+    /// Where Arc and Dia keep the data an import reads.
+    struct Sources {
+        /// Arc's Application Support folder.
+        let arc: URL
+        /// Dia's `StorableProfileContainers.json`.
+        let dia: URL
+
+        static let installed = Sources(
+            arc: URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Arc").expandingTildeInPath),
+            dia: URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Dia/StorableProfileContainers.json").expandingTildeInPath))
+
+        /// Copies laid out under a verification run's data directory, in place of the person's own.
+        static func fixtures(in root: URL) -> Sources {
+            let imports = root.appendingPathComponent("Import", isDirectory: true)
+            return Sources(arc: imports.appendingPathComponent("Arc", isDirectory: true),
+                           dia: imports.appendingPathComponent("Dia/StorableProfileContainers.json"))
+        }
+    }
+
+    let sources: Sources
+
+    init(sources: Sources = .installed) {
+        self.sources = sources
+    }
+
     func importArcSidebarData() async -> ArcImportResult {
         guard let data = try? Data(contentsOf: arcDirectory.appendingPathComponent("StorableSidebar.json")),
               var result = try? parseArcSidebarData(data) else { return ArcImportResult() }
@@ -49,8 +73,14 @@ class ImportManager: ObservableObject {
         return try? JSONSerialization.data(withJSONObject: card, options: [.prettyPrinted, .sortedKeys])
     }
 
+    /// Keeps Arc's member card beside the tabs in `tabsDirectory`.
+    func saveArcMembershipCard(nextTo tabsDirectory: URL) {
+        guard let card = arcMembershipCard() else { return }
+        try? card.write(to: tabsDirectory.deletingLastPathComponent().appendingPathComponent("ArcMembershipCard.json"), options: .atomic)
+    }
+
     func importDiaData() async -> DiaImportResult {
-        let fileURL = getDiaFileURL()
+        let fileURL = sources.dia
 
         guard FileManager.default.fileExists(atPath: fileURL.path) else {
             return DiaImportResult(favoriteTabs: [], windowTabs: [])
@@ -77,13 +107,5 @@ class ImportManager: ObservableObject {
         }
     }
 
-    private var arcDirectory: URL {
-        URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Arc").expandingTildeInPath)
-    }
-
-    private func getDiaFileURL() -> URL {
-        URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Dia/StorableProfileContainers.json")
-            .expandingTildeInPath
-        )
-    }
+    private var arcDirectory: URL { sources.arc }
 }

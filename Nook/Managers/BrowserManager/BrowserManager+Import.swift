@@ -17,10 +17,7 @@ extension BrowserManager {
     @discardableResult
     func importArcData() async -> Bool {
         let result = await importManager.importArcSidebarData()
-        if let card = importManager.arcMembershipCard() {
-            try? card.write(to: TabsController.defaultDirectory.deletingLastPathComponent()
-                .appendingPathComponent("ArcMembershipCard.json"), options: .atomic)
-        }
+        importManager.saveArcMembershipCard(nextTo: tabs.directory)
         pendingExtensionImports += importManager.arcExtensionIDs()
         installPendingExtensionImports()
         guard let window = importWindow else { return false }

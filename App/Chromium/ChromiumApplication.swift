@@ -347,11 +347,13 @@ final class ChromiumApplication: ChromiumStartupBridge {
         // the native profile; the CLI hint must never relabel a model profile.
         do {
             let storage = try ChromiumAppStorage(configuration: configuration)
+            let hadTabs = ChromiumOnboarding.hasTabs(in: storage.tabsDirectory)
             appearance = ChromiumAppearance(settings: storage.settings)
             let manager = BrowserManager(settings: storage.settings, windowRegistry: registry,
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
+            if configuration.isVerification { manager.importManager = ImportManager(sources: .fixtures(in: configuration.root)) }
             appearance?.onEffectiveChange = { [weak manager, registry] in
                 guard let manager else { return }
                 manager.tabs.sessions.forEach { $0.resetNativeTopBarSample() }
@@ -503,7 +505,14 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 }), let self, let manager else { completion(nil); return }
                 manager.tabs.resumePendingProfileDeletion { [weak self] _ in
                     guard let self, self.acceptsWindows else { completion(nil); return }
-                    self.openInitialModelWindow(completion: completion)
+                    guard ChromiumOnboarding.isNeeded(didFinish: &storage.settings.didFinishOnboarding, hadTabs: hadTabs) else {
+                        self.openInitialModelWindow(completion: completion)
+                        return
+                    }
+                    ChromiumOnboarding.present(manager: manager, settings: storage.settings) { [weak self] in
+                        guard let self, self.acceptsWindows else { completion(nil); return }
+                        self.openInitialModelWindow(completion: completion)
+                    }
                 }
             }
         } catch {
