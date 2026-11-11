@@ -19,6 +19,7 @@ struct ChromiumSidebarShell: View {
     let setPageHidden: (Bool) -> Void
     @State private var dialogFocus = ChromiumDialogFocus()
     @State private var siteControlsAnchor = ChromiumSiteControlsAnchor()
+    @State private var titleBand = SidebarTitleBand.design
     @Environment(\.colorScheme) private var baseColorScheme
 
     private func focusShownPage() {
@@ -47,7 +48,11 @@ struct ChromiumSidebarShell: View {
                 .animation(NookDesign.Motion.standard, value: window.spaceDraftTheme == nil)
             SpacesSideBarView()
                 .environment(\.nookBaseColorScheme, baseColorScheme)
+                .environment(\.sidebarTitleBand, titleBand)
                 .spaceThemeAppearance(spaceChrome.theme)
+                .background(SidebarTitleBandReader { titleBand = $0 ?? .design })
+                // Chromium's title bar band is the lights' row, which the title row shares.
+                .ignoresSafeArea(.container, edges: .top)
                 .opacity(window.isSidebarMenuVisible ? 0 : 1)
                 .allowsHitTesting(!window.isSidebarMenuVisible)
             if let page = browserManager.tabs.selectedSession(in:window), let notice = page.nativeVaultNotice {

@@ -26,6 +26,7 @@ struct SpacesSideBarView: View {
     @Environment(\.nookSettings) var nookSettings
     @Environment(CommandPalette.self) var commandPalette
     @Environment(TabOrganizerManager.self) var tabOrganizerManager
+    @Environment(\.sidebarTitleBand) private var titleBand
 
     // Hover states
     @State private var isSidebarHovered: Bool = false
@@ -85,7 +86,7 @@ struct SpacesSideBarView: View {
             // The library floats over the window (`LibraryOverlay`), so the sidebar keeps its content.
             if windowState.spaceDraftTheme != nil {
                 SpaceCreationSidebar()
-                    .padding(.top, nookSettings.sidebarPosition == .left ? NookDesign.Spacing.sidebarTop : NookDesign.Spacing.sidebarInset)
+                    .padding(.top, nookSettings.sidebarPosition == .left ? titleBand.contentTop : NookDesign.Spacing.sidebarInset)
                     .transition(.opacity)
             } else {
                 mainSidebarContent
@@ -170,13 +171,14 @@ struct SpacesSideBarView: View {
             .environment(windowState)
         }
         // Extra top padding when sidebar is on the left to avoid overlapping native traffic light buttons
-        .padding(.top, nookSettings.sidebarPosition == .left ? NookDesign.Spacing.sidebarTop : NookDesign.Spacing.sidebarInset)
+        .padding(.top, nookSettings.sidebarPosition == .left ? titleBand.contentTop : NookDesign.Spacing.sidebarInset)
         .overlay(alignment: .topLeading) {
             if nookSettings.sidebarPosition == .left {
                 titleRow
-                    .frame(height: NookDesign.Spacing.sidebarTop)
-                    .padding(.leading, NookDesign.SidebarChrome.trafficLightsInset - windowInset)
+                    .frame(height: titleBand.height)
+                    .padding(.leading, titleBand.leadingInset - windowInset)
                     .padding(.trailing, NookDesign.Spacing.sidebarInset)
+                    .background { Color.clear.conditionalWindowDrag() }
             }
         }
         .padding(.bottom, NookDesign.Spacing.sidebarInset)
