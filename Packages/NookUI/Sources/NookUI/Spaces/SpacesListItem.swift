@@ -111,7 +111,7 @@ struct SpacesListItem: View {
         } else if forceDot {
             plainDot
         } else {
-            SpaceIcon(space.icon, name: space.name)
+            SpaceIcon(space.icon, name: space.name, symbolSize: NookDesign.Size.dockSpaceIcon, symbolWeight: .regular)
                 .foregroundStyle(Color.primary)
         }
     }

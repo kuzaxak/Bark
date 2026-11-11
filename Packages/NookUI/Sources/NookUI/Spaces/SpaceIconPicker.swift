@@ -10,9 +10,13 @@ public struct SpaceIcon: View {
     let value: String
     /// A space with a placeholder icon shows its name's first letter instead of a plain dot.
     let name: String?
-    public init(_ value: String, name: String? = nil) {
+    let symbolSize: CGFloat
+    let symbolWeight: Font.Weight
+    public init(_ value: String, name: String? = nil, symbolSize: CGFloat = 15, symbolWeight: Font.Weight = .medium) {
         self.value = value
         self.name = name
+        self.symbolSize = symbolSize
+        self.symbolWeight = symbolWeight
     }
     /// Empty, or one of the placeholder icons spaces carried before the picker existed: all draw
     /// as the plain accent dot.
@@ -33,7 +37,7 @@ public struct SpaceIcon: View {
         } else if Self.isEmoji(value) {
             Text(value).font(NookDesign.Font.heading)
         } else {
-            Image(systemName: value).font(.system(size: 15, weight: .medium))
+            Image(systemName: value).font(.system(size: symbolSize, weight: symbolWeight))
         }
     }
 }

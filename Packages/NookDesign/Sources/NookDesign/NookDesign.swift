@@ -77,8 +77,10 @@ public enum NookDesign {
         public static let essentialsTile: CGFloat = 44
         public static let essentialsFavicon: CGFloat = 20
         public static let navRow: CGFloat = 28
-        public static let bottomBar: CGFloat = 40
+        public static let bottomBar: CGFloat = 36
         public static let spaceIcon: CGFloat = 14      // switcher and header symbol
+        public static let dockSpaceIcon: CGFloat = 13
+        public static let dockPlus: CGFloat = 17
         public static let rowGlyph: CGFloat = 13       // inline glyphs in a row: audio, lock, chevron
         public static let rowButton: CGFloat = 20      // hover-only close/unload button in a row
         public static let cornerButton: CGFloat = 14   // button tucked into a tile corner, kept off the tile's centre

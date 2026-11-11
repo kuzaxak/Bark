@@ -115,6 +115,7 @@ struct SidebarBottomBar: View {
                 .labelStyle(.titleAndIcon)
         } label: {
             Label("Actions", systemImage: "plus")
+                .font(.system(size: NookDesign.Size.dockPlus, weight: .regular))
         }
         .menuStyle(.button)
         .nookSidebarIconButtons()
