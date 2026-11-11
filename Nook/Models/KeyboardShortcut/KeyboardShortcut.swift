@@ -284,6 +284,10 @@ extension ShortcutAction {
         runsInChromiumSidebar || (self == .undoCloseTab && key != KeyCombination(key: "z", modifiers: [.command]))
     }
 
+    /// Organize Tabs needs the on-device model and its setting in Settings > AI. Without them the
+    /// command bar leaves it out and its key goes to the page.
+    func isAvailable(organizerModel: Bool, organizerEnabled: Bool) -> Bool { self != .organizeTabs || organizerModel && organizerEnabled }
+
     /// Actions on the sidebar and its windows, whose keys the app takes before Chromium. Chromium's
     /// accelerators for them would act on its own hidden tab order, or ignore a key the person rebound.
     var runsInChromiumSidebar: Bool {

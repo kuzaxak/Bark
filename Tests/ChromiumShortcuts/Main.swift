@@ -22,6 +22,15 @@ enum Check {
                      "Undo Close Tab takes a key the person bound to it")
         precondition(ShortcutAction.undoCloseTab.runsInChromium, "Its command bar row runs")
         precondition(!ShortcutAction.undoCloseTab.runsInChromiumSidebar, "runsInChromiumSidebar decides plain key handling")
+
+        precondition(!ShortcutAction.organizeTabs.isAvailable(organizerModel: false, organizerEnabled: true),
+                     "Organize Tabs stays out of the command bar and keys without its model")
+        precondition(!ShortcutAction.organizeTabs.isAvailable(organizerModel: true, organizerEnabled: false),
+                     "Organize Tabs stays out of the command bar and keys while it is off in Settings")
+        precondition(ShortcutAction.organizeTabs.isAvailable(organizerModel: true, organizerEnabled: true),
+                     "Organize Tabs is offered once its model is there and it is on")
+        precondition(ShortcutAction.allCases.filter { $0 != .organizeTabs }.allSatisfy { $0.isAvailable(organizerModel: false, organizerEnabled: false) },
+                     "No other action depends on the organizer")
         print("PASS")
     }
 }

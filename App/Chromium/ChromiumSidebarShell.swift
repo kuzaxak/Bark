@@ -129,6 +129,8 @@ struct ChromiumSidebarShell: View {
             .environment(\.nookUsesDefaultSpaceTheme, spaceChrome.theme == nil)
             .environment(\.chromiumSiteControlsAnchor, siteControlsAnchor)
             .defaultAppStorage(storage.defaults)
+            .modifier(OrganizeTabsRequests(window: window, registry: registry, organizer: organizer, tabs: browserManager.tabs,
+                notify: { [browserManager, window] in browserManager.showWindowToast($0, in: window) }))
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onAppear { applyAccent() }
             .onChange(of: spaceChrome.accentHex) { _, _ in applyAccent() }
@@ -262,6 +264,28 @@ struct ChromiumSidebarShell: View {
         return pages
     }
 
+}
+
+/// The Organize Tabs shortcut and command bar row, for the window in front. A space the organizer
+/// cannot sort says why.
+private struct OrganizeTabsRequests: ViewModifier {
+    let window: BrowserWindowState
+    let registry: WindowRegistry
+    let organizer: TabOrganizerManager
+    let tabs: TabsController
+    let notify: (String) -> Void
+
+    func body(content: Content) -> some View {
+        content.onReceive(NotificationCenter.default.publisher(for: .organizeTabsRequested)) { _ in
+            guard registry.activeWindow?.id == window.id, let spaceID = window.spaceID else { return }
+            Task { await organize(spaceID) }
+        }
+    }
+
+    func organize(_ spaceID: UUID) async {
+        await organizer.organizeTabs(in: spaceID, using: tabs)
+        if let error = organizer.error { notify(error) }
+    }
 }
 
 /// The sidebar's fill, the part of WindowView's window background this window has.

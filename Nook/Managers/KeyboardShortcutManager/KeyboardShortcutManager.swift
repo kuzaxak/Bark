@@ -282,7 +282,10 @@ class KeyboardShortcutManager {
             } else {
                 switch shortcut.action {
                 case .newTab, .focusAddressBar, .openCommandPalette: break
-                default: guard shortcut.action.takesKeyInChromium(shortcut.keyCombination) else { return false }
+                default:
+                    guard shortcut.action.takesKeyInChromium(shortcut.keyCombination),
+                          shortcut.action.isAvailable(organizerModel: TabOrganizationModel.isAvailable,
+                              organizerEnabled: browserManager?.nookSettings?.tabOrganizerEnabled == true) else { return false }
                 }
             }
         }
