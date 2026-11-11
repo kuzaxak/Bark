@@ -1091,11 +1091,17 @@ extension TabsController {
         page.unload()
     }
 
-    /// Current runtime signals shared by automatic and bulk unloading. This does not establish
-    /// whether a document has unsaved work, uploads, or screen sharing: those signals are absent.
+    /// Why automatic unloading leaves a page alone. Chromium reports no capture, upload or unsaved
+    /// work, so nothing unloads there on its own.
     public func inactiveUnloadProtectionReason(for page: PageSession) -> InactiveUnloadProtection? {
         if isOnScreen(page.itemID) { return .visible }
         if profileEngine == .chromium { return .unknownNativeActivity }
+        return activityProtection(for: page)
+    }
+
+    /// Current runtime signals. This does not establish whether a document has unsaved work or
+    /// uploads, and on Chromium whether it captures a camera, microphone or screen: those signals are absent.
+    private func activityProtection(for page: PageSession) -> InactiveUnloadProtection? {
         if page.hasPlayingAudio || page.hasAudioContent { return .audio }
         if page.hasPiPActive { return .pictureInPicture }
         if isInMiniPlayer(page.itemID) { return .miniPlayer }
@@ -1112,9 +1118,8 @@ extension TabsController {
         return nil
     }
 
-    /// Unloads hidden pages using the same activity and residency protection as automatic actions.
     public func unloadAllHidden() {
-        for page in sessions where !page.isUnloaded && inactiveUnloadProtectionReason(for: page) == nil {
+        for page in sessions where !page.isUnloaded && !isOnScreen(page.itemID) && activityProtection(for: page) == nil {
             page.unload()
         }
     }

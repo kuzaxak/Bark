@@ -64,9 +64,9 @@ public struct SettingsGeneralTab: View {
                     .font(NookDesign.Font.caption)
                     .foregroundStyle(.secondary)
                 #endif
-                Button("Unload All Inactive Tabs") {
-                    tabs.unloadAllHidden()
-                }
+            }
+            Button("Unload All Inactive Tabs") {
+                tabs.unloadAllHidden()
             }
         } header: {
             Text("Performance")

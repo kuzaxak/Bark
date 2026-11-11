@@ -2977,19 +2977,47 @@ struct NativePageLifecycleTests {
             "The same counter must observe actual structural admission work")
     }
 
-    @Test func bulkUnloadProtectsUnknownNativeActivity() throws {
-        let fixture = try NativeModelFixture()
-        defer { fixture.cleanup() }
-        let first = try #require(fixture.window.selectedItemID)
-        fixture.host.finishCreate(0)
-        let space = try #require(fixture.window.spaceID)
-        _ = fixture.tabs.open(url: URL(string: "about:blank#other")!, in: fixture.window,
-            placement: .newTab, parent: .tabs(spaceID: space))
-        fixture.host.finishCreate(1)
-        let page = try #require(fixture.tabs.session(for: first))
-        #expect(fixture.tabs.inactiveUnloadProtectionReason(for: page) == .unknownNativeActivity)
-        fixture.tabs.unloadAllHidden()
-        #expect(fixture.host.closes.isEmpty && !page.isUnloaded)
+    @Test func automaticUnloadStaysOutWhileTheExplicitActionUnloadsHiddenPages() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let visible = try #require(f.window.selectedItemID)
+        f.host.finishCreate(0)
+        let space = try #require(f.window.spaceID)
+        func open(_ fragment: String, parent: Parent? = nil) throws -> (UUID, NativeTestPage) {
+            let index = f.host.creates.count
+            let id = try #require(f.tabs.open(url: URL(string: "about:blank#" + fragment)!, in: f.window,
+                                              placement: .newTab, parent: parent ?? .tabs(spaceID: space)))
+            return (id, f.host.finishCreate(index))
+        }
+        let (plain, plainPage) = try open("plain")
+        let (refusing, refusingPage) = try open("refusing")
+        let (audible, audiblePage) = try open("audible")
+        let (videoPiP, videoPiPPage) = try open("video-pip")
+        let (documentPiP, documentPiPPage) = try open("document-pip")
+        let (pinned, pinnedPage) = try open("pinned", parent: .pinned(spaceID: space))
+        f.tabs.select(visible, in: f.window)
+        audiblePage.state.isAudible = true
+        audiblePage.onStateChanged?(audiblePage.state)
+        videoPiPPage.state.hasVideoPictureInPicture = true
+        videoPiPPage.state.hasDocumentPictureInPicture = false
+        videoPiPPage.onStateChanged?(videoPiPPage.state)
+        documentPiPPage.state.hasVideoPictureInPicture = false
+        documentPiPPage.state.hasDocumentPictureInPicture = true
+        documentPiPPage.onStateChanged?(documentPiPPage.state)
+
+        let hidden = try #require(f.tabs.session(for: plain))
+        #expect(f.tabs.inactiveUnloadProtectionReason(for: hidden) == .unknownNativeActivity, "Automatic unloading has no capture signal")
+
+        f.tabs.unloadAllHidden()
+        #expect(Set(f.host.closes.map { ObjectIdentifier($0.page) }) == [ObjectIdentifier(plainPage), ObjectIdentifier(refusingPage)])
+        f.host.finishClose(try #require(f.host.closes.firstIndex { $0.page === plainPage }), admitted: true)
+        f.host.finishClose(try #require(f.host.closes.firstIndex { $0.page === refusingPage }), admitted: false)
+        #expect(hidden.isUnloaded, "A hidden page unloads")
+        #expect(f.tabs.session(for: refusing)?.isUnloaded == false, "A page that refuses stays")
+        for id in [visible, audible, videoPiP, documentPiP, pinned] {
+            #expect(f.tabs.session(for: id)?.isUnloaded == false)
+        }
+        #expect(f.tabs.session(for: videoPiP)?.navigation === videoPiPPage && f.tabs.session(for: pinned)?.navigation === pinnedPage)
+        #expect(f.window.selectedItemID == visible)
     }
 
     @Test func selectionCoalescesCreationAndUsesActualProfileIdentity() throws {
