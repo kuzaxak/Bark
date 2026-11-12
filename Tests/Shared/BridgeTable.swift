@@ -102,4 +102,9 @@ let trappingBridge = BarcBridge(
     blocker_prepare: { _, _, _ in fatalError("blocker_prepare") },
     blocker_state: { _, _ in fatalError("blocker_state") },
     blocker_set_tab_policy: { _, _, _, _, _ in fatalError("blocker_set_tab_policy") },
-    page_tweaks_publish: { _, _ in fatalError("page_tweaks_publish") })
+    page_tweaks_publish: { _, _ in fatalError("page_tweaks_publish") },
+    window_set_root_view: { _, _ in fatalError("window_set_root_view") },
+    tab_native_view: { _, _ in fatalError("tab_native_view") },
+    window_set_chrome: { _, _ in fatalError("window_set_chrome") },
+    window_host_observe: { _, _, _ in fatalError("window_host_observe") },
+    window_host_unobserve: { _ in fatalError("window_host_unobserve") })

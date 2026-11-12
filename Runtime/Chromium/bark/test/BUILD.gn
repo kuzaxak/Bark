@@ -12,6 +12,7 @@ test("bark_browser_tests") {
     "barc_extension_storage_browsertest.mm",
     "barc_native_policy_browsertest.mm",
     "barc_profiles_browsertest.mm",
+    "bark_window_host_browsertest.mm",
   ]
   deps = [
     "//chrome/browser/download",
@@ -23,6 +24,8 @@ test("bark_browser_tests") {
     "//bark:engine",
     "//chrome/browser:file_select_helper",
     "//components/permissions:test_support",
+    "//chrome/browser/ui/side_panel",
+    "//ui/base:test_support",
     "//ui/shell_dialogs:test_support",
     "//chrome/app:command_ids",
     "//chrome/browser/policy:policy",

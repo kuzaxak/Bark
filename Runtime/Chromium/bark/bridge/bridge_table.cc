@@ -110,9 +110,14 @@ constexpr BarcBridge kBridge = {
     .blocker_state = &barc_blocker_state,
     .blocker_set_tab_policy = &barc_blocker_set_tab_policy,
     .page_tweaks_publish = &barc_page_tweaks_publish,
+    .window_set_root_view = &barc_window_set_root_view,
+    .tab_native_view = &barc_tab_native_view,
+    .window_set_chrome = &barc_window_set_chrome,
+    .window_host_observe = &barc_window_host_observe,
+    .window_host_unobserve = &barc_window_host_unobserve,
 };
 }  // namespace
 
-const BarcBridge* barc_bridge_v10() {
+const BarcBridge* barc_bridge_v11() {
   return &kBridge;
 }

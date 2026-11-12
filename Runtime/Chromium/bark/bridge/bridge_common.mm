@@ -116,6 +116,7 @@
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "bark/bridge/barc_runtime_startup.h"
+#include "bark/browser/ui/bark_window_host.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
@@ -250,6 +251,8 @@ std::set<uint64_t>& AppLifetimeGroups() {
   return *groups;
 }
 bool HasAppLifetime(BrowserWindowInterface* browser) {
+  if (auto* host = bark::BarkWindowHost::ForBrowser(browser))
+    return AppLifetimeGroups().contains(host->physical_group());
   auto* view = browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
   auto* widget = view ? view->browser_widget() : nullptr;
   return widget && AppLifetimeGroups().contains(widget->barc_physical_group());
@@ -257,6 +260,8 @@ bool HasAppLifetime(BrowserWindowInterface* browser) {
 bool RetainsEmptyTabStrip(BrowserWindowInterface* browser) {
   if (!HasAppLifetime(browser))
     return false;
+  if (auto* host = bark::BarkWindowHost::ForBrowser(browser))
+    return !host->closing();
   auto* widget = BrowserView::GetBrowserViewForBrowser(browser)->browser_widget();
   return !widget->IsClosed() && !widget->IsPhysicalCloseCommitted();
 }

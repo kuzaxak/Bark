@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/ui/views/frame/browser_window_factory.cc b/chrome/browser/ui/views/frame/browser_window_factory.cc
-index ad579aa818..90207d128e 100644
+index ad579aa818..b41d41ff3f 100644
 --- a/chrome/browser/ui/views/frame/browser_window_factory.cc
 +++ b/chrome/browser/ui/views/frame/browser_window_factory.cc
-@@ -4,6 +4,11 @@
+@@ -4,6 +4,12 @@
  
  #include <memory>
  
@@ -11,10 +11,11 @@ index ad579aa818..90207d128e 100644
 +#include "chrome/browser/ui/browser_init_state.h"
 +#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 +
++#include "bark/browser/ui/bark_window_factory.h"
  #include "build/build_config.h"
  #include "chrome/browser/ui/browser_window_deleter.h"
  #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
-@@ -27,11 +32,58 @@
+@@ -27,11 +33,61 @@
  #include "chromeos/components/kiosk/kiosk_utils.h"
  #endif
  
@@ -46,6 +47,9 @@ index ad579aa818..90207d128e 100644
  BrowserWindow::CreateBrowserWindow(BrowserWindowInterface* browser,
                                     bool user_gesture,
                                     bool in_tab_dragging) {
++  if (auto bark_window = bark::MaybeCreateHostWindow(browser, in_tab_dragging)) {
++    return bark_window;
++  }
 +  const auto* init_state = BrowserInitState::From(browser);
 +  const auto native_window_owner =
 +      init_state ? init_state->create_params().native_window_owner

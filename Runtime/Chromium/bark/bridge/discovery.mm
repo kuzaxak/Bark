@@ -152,6 +152,8 @@
 
 #include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/bridge_internal.h"
+#include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_window_host.h"
 
 using namespace barc::internal;
 
@@ -256,18 +258,7 @@ class BrowserDiscovery final
   base::WeakPtrFactory<BrowserDiscovery> weak_factory_{this};
 };
 
-bool DiscoveryWindowRow(BrowserWindowInterface* browser,
-                        BarcDiscoveryWindow* row) {
-  auto* view = browser && !browser->IsDeleteScheduled()
-                   ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
-  auto* widget = view ? view->browser_widget() : nullptr;
-  auto* selected = widget ? widget->selected_browser_view() : nullptr;
-  if (!view || !selected || widget->IsClosed())
-    return false;
-  *row = {.size = sizeof(BarcDiscoveryWindow)};
-  row->window = browser->GetSessionID().id();
-  row->physical_group = widget->barc_physical_group();
-  row->selected_client = selected->browser()->GetSessionID().id();
+void DiscoveryKinds(BrowserWindowInterface* browser, BarcDiscoveryWindow* row) {
   auto* active = browser->GetTabStripModel()->GetActiveTab();
   row->active_tab = active ? active->GetHandle().raw_value() : 0;
   switch (browser->GetType()) {
@@ -286,6 +277,45 @@ bool DiscoveryWindowRow(BrowserWindowInterface* browser,
   if (row->profile_kind == BARC_DISCOVERY_REGULAR)
     barc_window_profile_uuid(row->window, row->regular_profile_uuid,
                              sizeof(row->regular_profile_uuid));
+}
+bool HostDiscoveryWindowRow(BrowserWindowInterface* browser,
+                            BarcDiscoveryWindow* row) {
+  auto* host = bark::BarkWindowHost::ForBrowser(browser);
+  auto* selected = host ? host->selected() : nullptr;
+  if (!selected || host->closing() || !host->widget())
+    return false;
+  *row = {.size = sizeof(BarcDiscoveryWindow)};
+  row->window = browser->GetSessionID().id();
+  row->physical_group = host->physical_group();
+  row->selected_client = selected->browser()->GetSessionID().id();
+  DiscoveryKinds(browser, row);
+  if (host->widget()->IsActive()) row->flags |= BARC_DISCOVERY_PHYSICAL_ACTIVE;
+  if (host->widget()->IsVisible()) row->flags |= BARC_DISCOVERY_PHYSICAL_VISIBLE;
+  if (selected->browser() == browser) row->flags |= BARC_DISCOVERY_SELECTED_CLIENT;
+  row->flags |= BARC_DISCOVERY_WINDOW_APP_FACTORY;
+  if (UnloadController::From(browser)->owner_close_admitted())
+    row->flags |= BARC_DISCOVERY_OWNER_ENDING;
+  if (browser->GetTabStripModel()->empty()) row->flags |= BARC_DISCOVERY_EMPTY_STRIP;
+  if (AppLifetimeGroups().contains(row->physical_group))
+    row->flags |= BARC_DISCOVERY_APP_LIFETIME;
+  return true;
+}
+bool DiscoveryWindowRow(BrowserWindowInterface* browser,
+                        BarcDiscoveryWindow* row) {
+  if (browser && !browser->IsDeleteScheduled() &&
+      bark::BarkWindowHost::ForBrowser(browser))
+    return HostDiscoveryWindowRow(browser, row);
+  auto* view = browser && !browser->IsDeleteScheduled()
+                   ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
+  auto* widget = view ? view->browser_widget() : nullptr;
+  auto* selected = widget ? widget->selected_browser_view() : nullptr;
+  if (!view || !selected || widget->IsClosed())
+    return false;
+  *row = {.size = sizeof(BarcDiscoveryWindow)};
+  row->window = browser->GetSessionID().id();
+  row->physical_group = widget->barc_physical_group();
+  row->selected_client = selected->browser()->GetSessionID().id();
+  DiscoveryKinds(browser, row);
   if (widget->IsActive()) row->flags |= BARC_DISCOVERY_PHYSICAL_ACTIVE;
   if (widget->IsVisible()) row->flags |= BARC_DISCOVERY_PHYSICAL_VISIBLE;
   if (selected == view) row->flags |= BARC_DISCOVERY_SELECTED_CLIENT;

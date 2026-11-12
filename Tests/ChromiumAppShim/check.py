@@ -30,11 +30,11 @@ VERSION = '156.0.8078.80'
 FRAMEWORK = 'Bark Framework.framework'
 BUNDLE_ID = 'ee.qdo.bark'
 DELEGATING_ZONE = 'DelegatingDefaultZoneForPartitionAlloc'
-BRIDGE_VERSION = 10
+BRIDGE_VERSION = 11
 ENTRY = f'barc_engine_main_v{BRIDGE_VERSION}'
 TABLE = f'barc_bridge_v{BRIDGE_VERSION}'
-# The last revision with the version 9 app, which a version 10 engine must refuse.
-V9_REVISION = 'd3d1e41c'
+# The last revision with the version 10 app, which a version 11 engine must refuse.
+V10_REVISION = 'd5c7eec1'
 ABORT_STATUS = 134
 
 ENGINE_PLIST = dict(CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundleName='Bark',
@@ -353,17 +353,17 @@ def package_cases(work):
     check('linking the package adds no library', linked == ['/usr/lib/libSystem.B.dylib'], linked)
 
 
-def v9_shim(output):
-    """The version 9 app's main and headers, from the last revision that had them."""
-    tree = output.parent / 'v9-tree'
+def v10_shim(output):
+    """The version 10 app's main and headers, from the last revision that had them."""
+    tree = output.parent / 'v10-tree'
     module = tree / 'headers/BarcChromium'
     module.mkdir(parents=True)
     def show(path):
-        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{V9_REVISION}:{path}'], capture_output=True, check=True).stdout
+        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{V10_REVISION}:{path}'], capture_output=True, check=True).stdout
     for name in ['main.cc', 'early_zone_registration_apple.cc', 'early_zone_registration_apple.h', 'early_zone_registration_utils_apple.h']:
         (tree / name).write_bytes(show(f'ChromiumApp/{name}'))
     headers = f'Packages/BarkEngine/BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium'
-    for name in ['barc_bridge_api.h', 'barc_runtime_startup_api.h', 'barc_page_tweaks.h', 'barc_public_headers_sha256.h']:
+    for name in ['barc_bridge_api.h', 'barc_public_headers_sha256.h']:
         (module / name).write_bytes(show(f'{headers}/{name}'))
     subprocess.run(['xcrun', 'clang++', '-arch', 'x86_64', '-std=c++20', '-fno-exceptions', '-fno-rtti', '-nostdlib++', '-O2',
                     f'-DENGINE_VERSION_STRING="{VERSION}"', f'-I{tree / "headers"}', f'-I{tree}',
@@ -413,20 +413,20 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
     check('that error names the missing entry', ENTRY in run.stderr, run.stderr)
 
-    v9_engine = work / 'framework-v9.dylib'
-    fake_framework(v9_engine, entry='barc_engine_main_v9', table=None, digest='9' * 64)
-    run, lines = launch('v10-app-v9-engine', framework=v9_engine)
-    check('a version 10 app with a version 9 engine aborts before the shell loads',
+    v10_engine = work / 'framework-v10.dylib'
+    fake_framework(v10_engine, entry='barc_engine_main_v10', table='barc_bridge_v10', digest='a' * 64)
+    run, lines = launch('v11-app-v10-engine', framework=v10_engine)
+    check('a version 11 app with a version 10 engine aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines and 'bridge-table' not in lines, (run.returncode, lines))
-    check('that error says the engine was built for another bridge version and names version 10',
-          ENTRY in run.stderr and 'another bridge version' in run.stderr and 'needs version 10' in run.stderr, run.stderr)
+    check('that error says the engine was built for another bridge version and names version 11',
+          ENTRY in run.stderr and 'another bridge version' in run.stderr and 'needs version 11' in run.stderr, run.stderr)
 
-    v9_app = v9_shim(work / 'v9-app')
-    run, lines = launch('v9-app-v10-engine', main=v9_app)
-    check('a version 9 app with a version 10 engine aborts before the shell loads',
+    v10_app = v10_shim(work / 'v10-app')
+    run, lines = launch('v10-app-v11-engine', main=v10_app)
+    check('a version 10 app with a version 11 engine aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines, (run.returncode, lines))
-    check('that error says the engine was built for another bridge version and names version 9',
-          'barc_engine_main_v9' in run.stderr and 'another bridge version' in run.stderr and 'needs version 9' in run.stderr, run.stderr)
+    check('that error says the engine was built for another bridge version and names version 10',
+          'barc_engine_main_v10' in run.stderr and 'another bridge version' in run.stderr and 'needs version 10' in run.stderr, run.stderr)
 
     no_table = work / 'framework-without-table.dylib'
     fake_framework(no_table, table=None)

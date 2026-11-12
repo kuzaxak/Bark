@@ -4579,7 +4579,7 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
 }
 
 TEST(BarcBridgeTableTest, TableDeclaresItsSizeAndFillsEveryMember) {
-  const BarcBridge* bridge = barc_bridge_v10();
+  const BarcBridge* bridge = barc_bridge_v11();
   ASSERT_TRUE(bridge);
   EXPECT_EQ(sizeof(BarcBridge), bridge->size);
   // Every member after `size` is a function pointer.

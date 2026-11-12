@@ -26,6 +26,7 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "bark/bridge/barc_bridge.h"
+#include "bark/browser/ui/bark_window_host.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
 #include "chrome/browser/ui/browser_window.h"
@@ -192,7 +193,8 @@ void barc_runtime_complete_startup(int32_t window) {
                        SessionID::FromSerializedValue(window))
                  : nullptr;
   if (browser && !browser->IsDeleteScheduled() &&
-      BrowserView::GetBrowserViewForBrowser(browser)) {
+      (BrowserView::GetBrowserViewForBrowser(browser) ||
+       bark::BarkWindowHost::ForBrowser(browser))) {
     // The caller has admitted its model and attached the native shell. Show is
     // the final callout: it may synchronously destroy the browser.
     browser->GetWindow()->Show();

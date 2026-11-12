@@ -109,6 +109,11 @@ int barc_blocker_prepare(int32_t window, BarcBlockerCallback callback, void* con
 int barc_blocker_state(int32_t window, BarcBlockerState* out_state);
 int barc_blocker_set_tab_policy(int32_t window, int32_t tab, int32_t oauth, const char* continued_host, uint64_t disabled_for_ms);
 int barc_page_tweaks_publish(const uint8_t* json, size_t length);
+int barc_window_set_root_view(int32_t window, void* root_view);
+void* barc_tab_native_view(int32_t window, int32_t tab);
+int barc_window_set_chrome(int32_t window, const BarcWindowChrome* chrome);
+uint64_t barc_window_host_observe(int32_t window, BarcWindowHostCallback callback, void* context);
+void barc_window_host_unobserve(uint64_t observation);
 #ifdef __cplusplus
 }
 #endif

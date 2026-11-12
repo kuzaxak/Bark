@@ -152,6 +152,9 @@
 
 #include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/bridge_internal.h"
+#include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_window_factory.h"
+#include "bark/browser/ui/bark_window_host.h"
 
 using namespace barc::internal;
 
@@ -159,8 +162,12 @@ int32_t barc_window_new_peer(int32_t source) {
   auto* window = Window(source);
   if (!window)
     return 0;
-  auto* peer = CreateBrowserWindow(
-      BrowserWindowCreateParams(*window->GetProfile(), true));
+  BrowserWindowInterface* peer = nullptr;
+  {
+    bark::ScopedAppWindowCreation app_window;
+    peer = CreateBrowserWindow(
+        BrowserWindowCreateParams(*window->GetProfile(), true));
+  }
   if (auto* view = peer ? BrowserView::GetBrowserViewForBrowser(peer) : nullptr)
     view->MarkBarcAppFactoryOrigin();
   return peer ? peer->GetSessionID().id() : 0;
@@ -257,6 +264,16 @@ int barc_window_set_page_hidden(int32_t id, int hidden) {
 }
 int barc_window_set_app_lifetime(int32_t id) {
   auto* window = Window(id);
+  if (auto* host = bark::BarkWindowHost::ForBrowser(window)) {
+    if (window->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+        host->closing() ||
+        UnloadController::From(window)->is_attempting_to_close_browser())
+      return 0;
+    UnloadController::SetEmptyTabStripRetention(&RetainsEmptyTabStrip);
+    if (AppLifetimeGroups().insert(host->physical_group()).second)
+      barc::BrowserDiscoveryChanged();
+    return 1;
+  }
   auto* view = window && !window->IsDeleteScheduled() &&
                        window->GetType() == BrowserWindowInterface::TYPE_NORMAL
                    ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
@@ -689,6 +706,8 @@ int barc_tab_transfer_with_admission(int32_t source, int32_t tab,
 }
 int barc_window_select(int32_t id) {
   auto* window = Window(id);
+  if (auto* bark_window = bark::BarkBrowserWindow::FromBrowser(window))
+    return bark_window->host()->Select(bark_window);
   auto* view = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
   return view && view->browser_widget()->SelectLogicalBrowserView(view);
 }

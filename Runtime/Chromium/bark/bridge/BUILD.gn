@@ -1,6 +1,6 @@
 assert(is_mac)
 
-# The C bridge the app reaches through barc_bridge_v10(), and the hooks
+# The C bridge the app reaches through barc_bridge_v11(), and the hooks
 # upstream code calls.
 source_set("bridge") {
   sources = [
@@ -22,6 +22,7 @@ source_set("bridge") {
     "peek.mm",
     "splits.mm",
     "tab_observation.mm",
+    "window_host.mm",
     "windows.mm",
   ]
   public = [
@@ -33,6 +34,7 @@ source_set("bridge") {
   ]
   deps = [
     "//bark/browser/content_blocking:native_content_blocker",
+    "//bark/browser/ui",
     "//bark/browser/webauthn",
     "//base",
     "//chrome/app:command_ids",

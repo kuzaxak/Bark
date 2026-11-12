@@ -28,8 +28,8 @@ extern "C" {
 #endif
 #define BARC_API __attribute__((visibility("default")))
 // Version 10 moves every call into one table and gives each crossing struct a
-// leading size.
-#define BARC_BRIDGE_VERSION 10
+// leading size. Version 11 adds the window host's calls.
+#define BARC_BRIDGE_VERSION 11
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.
@@ -38,15 +38,15 @@ BARC_API const char* barc_public_headers_sha256(void);
 // version renames it, so an app and framework built for different versions fail
 // at dlsym, as Chromium's ChromeAppModeStart_v<N> does. Update the name in
 // chrome/app/framework.exports and framework.order with it.
-#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v10"
+#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v11"
 typedef int (*BarcEngineMain)(int argc, const char** argv);
-BARC_API int barc_engine_main_v10(int argc, const char** argv);
+BARC_API int barc_engine_main_v11(int argc, const char** argv);
 // The table for this version, valid for the process lifetime. Its name changes
 // with the entry's.
-#define BARC_BRIDGE_SYMBOL "barc_bridge_v10"
+#define BARC_BRIDGE_SYMBOL "barc_bridge_v11"
 struct BarcBridge;
 typedef const struct BarcBridge* (*BarcBridgeEntry)(void);
-BARC_API const struct BarcBridge* barc_bridge_v10(void);
+BARC_API const struct BarcBridge* barc_bridge_v11(void);
 
 // ---- Startup ----------------------------------------------------------------
 
@@ -482,6 +482,47 @@ typedef struct BarcBlockerState {
   int32_t ready;                  // Explicitly disabled, or current matcher ready.
   int32_t requested_policy;       // BarcBlockerPolicy.
 } BarcBlockerState;
+
+// ---- Window host -------------------------------------------------------------
+// With --bark-window=host, a window the app creates is a Bark window host: one
+// NSWindow showing one root view the app sets, in which the app places each
+// tab's page view itself. Without the switch these calls return 0 or null.
+
+// Window chrome the app owns, in points.
+typedef struct BarcWindowChrome {
+  size_t size;
+  double titlebar_height;
+  // From the window's leading edge to the first window button's.
+  double leading_inset;
+} BarcWindowChrome;
+
+enum BarcWindowHostEventKind {
+  // `tab`'s page view `view` leaves the window: the tab closes, moves to another
+  // window or replaces its contents.
+  BARC_WINDOW_HOST_PAGE_VIEW_RETIRED = 1,
+  // The window entered or left full screen; `fullscreen` says which kind.
+  BARC_WINDOW_HOST_FULLSCREEN_CHANGED = 2
+};
+enum BarcFullscreenKind {
+  BARC_FULLSCREEN_NONE = 0,
+  BARC_FULLSCREEN_WINDOW = 1,
+  // A page asked for full screen: hide the sidebar and the page frame.
+  BARC_FULLSCREEN_PAGE = 2
+};
+typedef struct BarcWindowHostEvent {
+  size_t size;
+  int32_t kind;        // BarcWindowHostEventKind.
+  int32_t window;      // The logical window the event concerns.
+  int32_t tab;         // PAGE_VIEW_RETIRED only, else 0.
+  int32_t fullscreen;  // FULLSCREEN_CHANGED only: BarcFullscreenKind.
+  // PAGE_VIEW_RETIRED only: the page view leaving, as tab_native_view returned
+  // it; alive during the call. Remove it only if the app still shows it there.
+  void* view;
+} BarcWindowHostEvent;
+// Borrowed event, valid during the call. Delivered from a posted task, never
+// inside the engine change that caused it.
+typedef void (*BarcWindowHostCallback)(const BarcWindowHostEvent* event,
+                                       void* context);
 
 // ---- The table -----------------------------------------------------------------
 
@@ -1044,6 +1085,29 @@ struct BarcBridge {
   // only affected cached documents/pending script continuations. Unchanged
   // publications are no-ops.
   int (* _Nonnull page_tweaks_publish)(const uint8_t* json, size_t length);
+
+  // -- Window host (version 11). Each returns 0 or null for a window that is
+  // not a Bark window host.
+  // Gives the window the app's root view, which fills its content area. Set
+  // once per physical window: the same view again returns 1, another view 0.
+  // The engine retains the view until the window closes.
+  int (* _Nonnull window_set_root_view)(int32_t window, void* root_view);
+  // The tab's page view, an NSView the app places in its root view. Borrowed:
+  // valid until the window's observers get PAGE_VIEW_RETIRED for this tab.
+  // Placing it in the window shows the page; removing it hides it. Its frame is
+  // the page's size.
+  void* (* _Nonnull tab_native_view)(int32_t window, int32_t tab);
+  // Not available until the window frame lands: returns 0 for every window.
+  int (* _Nonnull window_set_chrome)(int32_t window,
+                                     const BarcWindowChrome* chrome);
+  // Observes the physical window `window` belongs to, for every client in it.
+  // Returns a nonzero token; events keep arriving after the window closes
+  // until unobserve, so the last PAGE_VIEW_RETIRED events reach the app.
+  uint64_t (* _Nonnull window_host_observe)(int32_t window,
+                                            BarcWindowHostCallback callback,
+                                            void* context);
+  // Stops delivery, including events already posted. Unknown tokens are ignored.
+  void (* _Nonnull window_host_unobserve)(uint64_t observation);
 };
 
 #ifdef __cplusplus

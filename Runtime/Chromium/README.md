@@ -368,7 +368,7 @@ import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
 `--barc-app-profile` remains temporary-root verification with mock keychain and
 isolated preferences; neither mode enables cloud sync.
 
-Normal startup requires bridge version 10 before ChromeMain. Native registration
+Normal startup requires bridge version 11 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default
@@ -398,6 +398,19 @@ on a client whose last tab closes or moves out stays open and selected, reports
 still closes through `barc_window_close` of its last client, its close button or quit, with
 their prompts. `barc_tab_select` refuses bridge callbacks, because `TabStripModel::ActivateTab`
 CHECKs reentrancy in every build type and those callbacks can run inside a strip change.
+
+### Window host (`--bark-window=host`)
+
+With the switch, a normal window the app creates through `profile_open_window` or `window_new_peer`
+is a Bark window host (`bark/browser/ui/`): a `BrowserWindow` with no `BrowserView`, toolbar, tab
+strip or contents view, in an `NSWindow` of Bark's class whose only content is the root view the app
+sets with `window_set_root_view`. The app places each tab's page view (`tab_native_view`) in that root;
+a page is visible only while its view is in the window, and its view's frame is its size.
+`window_host_observe` reports a page view leaving the window and full-screen changes. Popups, DevTools,
+windows Chromium creates by itself and every window without the switch keep `BrowserView`. The old
+path's shell, header, page-hidden, Peek and split calls return 0 for a host window. The one factory hook
+is in `browser_window_factory.cc`; `sad_tab_controller.cc` returns no contents view instead of
+dereferencing a missing `BrowserView` when a page in a host window crashes.
 
 ### App-owned keys
 

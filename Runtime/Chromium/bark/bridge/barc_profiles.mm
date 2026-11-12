@@ -1,5 +1,6 @@
 #include "bark/bridge/barc_profiles.h"
 #include "bark/bridge/barc_bridge.h"
+#include "bark/browser/ui/bark_window_factory.h"
 
 #include <algorithm>
 #include <map>
@@ -226,7 +227,13 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
     params.native_window_owner = owner_alive->GetSessionID();
   }
   const auto selection_before = selected_owner();
-  auto* created = CreateBrowserWindow(std::move(params));
+  BrowserWindowInterface* created = nullptr;
+  {
+    std::optional<bark::ScopedAppWindowCreation> app_window;
+    if (!request->private_session)
+      app_window.emplace();
+    created = CreateBrowserWindow(std::move(params));
+  }
   if (!created) {
     request->Complete(BARC_PROFILE_UNAVAILABLE, 0);
     return;
