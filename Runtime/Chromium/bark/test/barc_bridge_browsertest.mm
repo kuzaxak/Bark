@@ -10413,8 +10413,12 @@ IN_PROC_BROWSER_TEST_F(BarcNativeBlockerBrowserTest,
 
 namespace {
 class BarcNativeCosmeticPrerenderBrowserTest : public BarcNativeBlockerBrowserTest {
- private:
-  content::test::ScopedPrerenderFeatureList prerender_features_;
+ protected:
+  content::WebContents* Page() { return page_.get(); }
+  base::WeakPtr<content::WebContents> page_;
+  // Its feature overrides must exist before the browser starts.
+  content::test::PrerenderTestHelper prerender_{base::BindRepeating(
+      &BarcNativeCosmeticPrerenderBrowserTest::Page, base::Unretained(this))};
 };
 }
 
@@ -10430,8 +10434,8 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticPrerenderBrowserTest,
   Navigate(work, embedded_test_server()->GetURL("/title1.html"));
   auto* page = work->GetTabStripModel()->GetActiveWebContents();
   ASSERT_EQ(content::Visibility::VISIBLE, page->GetVisibility());
-  content::test::PrerenderTestHelper prerender(base::BindRepeating(
-      [](content::WebContents* contents) { return contents; }, page));
+  page_ = page->GetWeakPtr();
+  auto& prerender = prerender_;
   const GURL target = embedded_test_server()->GetURL("/native-cosmetics");
   const auto id = prerender.AddPrerender(target);
   auto* prepared = prerender.GetPrerenderedMainFrameHost(id);
@@ -10458,8 +10462,8 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticPrerenderBrowserTest,
   InstallNativeBlocker(work_id, NativeCosmeticTestRules());
   Navigate(work, embedded_test_server()->GetURL("/title1.html"));
   auto* page = work->GetTabStripModel()->GetActiveWebContents();
-  content::test::PrerenderTestHelper prerender(base::BindRepeating(
-      [](content::WebContents* contents) { return contents; }, page));
+  page_ = page->GetWeakPtr();
+  auto& prerender = prerender_;
   const GURL target = embedded_test_server()->GetURL("/native-cosmetics");
   const auto id = prerender.AddPrerender(target);
   auto* prepared = prerender.GetPrerenderedMainFrameHost(id);
