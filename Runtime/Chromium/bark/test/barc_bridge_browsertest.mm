@@ -8631,6 +8631,14 @@ IN_PROC_BROWSER_TEST_F(BarcBackForwardCacheBrowserTest,
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
   const int32_t tab = barc_window_tab_at(work_id, 0);
+  // Opening a profile loads its extensions, and each extension load flushes
+  // every tab's back-forward cache in every profile, so open it first.
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* personal = SharedWindow(personal_id);
+  Navigate(personal, embedded_test_server()->GetURL("/barc-cache-b"));
+  auto* other = personal->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(other, "window.otherState='personal';draft.value='personal draft';"));
+  ASSERT_EQ(1, barc_window_select(work_id));
   const GURL first = embedded_test_server()->GetURL("/barc-cache-a");
   Navigate(work, first);
   auto* page = work->GetTabStripModel()->GetActiveWebContents();
@@ -8649,11 +8657,6 @@ IN_PROC_BROWSER_TEST_F(BarcBackForwardCacheBrowserTest,
     auto* entry = controller.GetEntryAtIndex(index);
     history.emplace_back(entry->GetUniqueID(), entry->GetURL());
   }
-  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
-  auto* personal = SharedWindow(personal_id);
-  Navigate(personal, embedded_test_server()->GetURL("/barc-cache-b"));
-  auto* other = personal->GetTabStripModel()->GetActiveWebContents();
-  ASSERT_TRUE(content::ExecJs(other, "window.otherState='personal';draft.value='personal draft';"));
   ASSERT_EQ(1, barc_window_select(personal_id));
   ASSERT_EQ(content::Visibility::HIDDEN, page->GetVisibility());
   EXPECT_EQ(0, barc_tab_execute_command(personal_id, tab, BARC_PAGE_CLEAR_BACK_FORWARD_CACHE));
