@@ -12302,6 +12302,15 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticCacheBrowserTest,
   auto* page = owner->GetTabStripModel()->GetActiveWebContents();
   NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
   ASSERT_EQ(1, barc_window_attach_native_shell(window, (__bridge void*)header)); ASSERT_EQ(1, barc_window_show(window));
+  // The real pointer's events reach the page under it and move its hover off the
+  // simulated one, which hides the control, so the window moves out from under it.
+  NSWindow* physical = owner->GetWindow()->GetNativeWindow().GetNativeNSWindow();
+  const NSRect visible = physical.screen.visibleFrame;
+  NSRect placed = physical.frame;
+  placed.size.width = std::min(NSWidth(placed), NSWidth(visible) / 2 - 1);
+  placed.origin.x = NSEvent.mouseLocation.x < NSMidX(visible) ? NSMaxX(visible) - NSWidth(placed) : NSMinX(visible);
+  [physical setFrame:placed display:YES];
+  ASSERT_FALSE(NSPointInRect(NSEvent.mouseLocation, physical.frame));
   content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(page);
   content::WaitForHitTestData(page->GetPrimaryMainFrame());
   EXPECT_EQ("undefined", content::EvalJs(page, "typeof nookSocialDownloadNative"));
