@@ -8733,6 +8733,8 @@ IN_PROC_BROWSER_TEST_F(BarcBackForwardCacheBrowserTest,
   EXPECT_EQ(1, barc_tab_execute_command(peer_id, tab, BARC_PAGE_CLEAR_BACK_FORWARD_CACHE));
   EXPECT_EQ(document.AsRenderFrameHostIfValid(), contents->GetPrimaryMainFrame());
   EXPECT_EQ(1, content::EvalJs(contents.get(), "closeAttempts"));
+  // The fixture's quit asks the page again, and nothing answers that dialog.
+  ASSERT_TRUE(content::ExecJs(contents.get(), "onbeforeunload=null;"));
 }
 
 
