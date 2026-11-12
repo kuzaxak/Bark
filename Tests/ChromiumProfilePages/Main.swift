@@ -114,7 +114,7 @@ private enum Native {
 
 @main
 private enum ProfileChecks {
-    @MainActor static func main() throws {
+    @MainActor static func main() async throws {
         var tree = TabTree()
         let space = UUID()
         tree.createSpace(id: space, name: "Work", icon: "briefcase", accentHex: "#000000", after: nil)
@@ -139,6 +139,8 @@ private enum ProfileChecks {
             precondition(presenter.ownsNativeWindow(window))
             precondition(Native.calls == ["open:" + profile.id.uuidString, "attach", "select", "navigate:" + route.1, "show"])
             Native.close(window, flags: 0)
+            // A plain CLOSED reaches the presenter on a later main-actor turn.
+            for _ in 0..<8 where presenter.ownsNativeWindow(window) { await Task.yield() }
             precondition(!presenter.ownsNativeWindow(window))
             precondition(Native.calls.last == "detach")
         }
