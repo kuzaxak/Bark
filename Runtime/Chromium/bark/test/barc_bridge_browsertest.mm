@@ -47,7 +47,9 @@
 #include "content/public/browser/context_menu_params.h"
 #include "content/public/common/drop_data.h"
 #include "chrome/browser/ui/browser_live_tab_context.h"
+#include "base/memory/raw_ptr.h"
 #include "base/run_loop.h"
+#include "base/task/sequenced_task_runner.h"
 #include "base/synchronization/waitable_event.h"
 #include "bark/browser/content_blocking/native_content_blocker.h"
 #include "bark/bridge/barc_bridge_functions.h"
@@ -9672,12 +9674,65 @@ IN_PROC_BROWSER_TEST_F(BarcNativeBlockerBrowserTest,
 
 // The matcher draft must be linked for these real-loader observations. No test
 // bypasses resource eligibility or interprets a zero count as upload-idle.
+namespace {
+// ControllableHttpResponse writes its response as HTTP/1.1 bytes, which an
+// HTTP/2 connection never sends; this one holds an HTTP/2 response instead.
+class HeldHttp2Response {
+ public:
+  HeldHttp2Response(net::EmbeddedTestServer& server, std::string path)
+      : path_(std::move(path)), test_runner_(base::SequencedTaskRunner::GetCurrentDefault()) {
+    server.RegisterRequestHandler(
+        base::BindRepeating(&HeldHttp2Response::Handle, base::Unretained(this)));
+  }
+  void WaitForRequest() { requested_.Run(); }
+  void Send(std::string_view body) {
+    base::RunLoop sent;
+    server_runner_->PostTaskAndReply(
+        FROM_HERE,
+        base::BindOnce(
+            [](base::WeakPtr<net::test_server::HttpResponseDelegate> delegate, std::string body) {
+              if (delegate)
+                delegate->SendHeadersContentAndFinish(
+                    net::HTTP_OK, "OK", {{"Content-Type", "text/plain"}}, body);
+            },
+            delegate_, std::string(body)),
+        sent.QuitClosure());
+    sent.Run();
+  }
+
+ private:
+  class Held : public net::test_server::HttpResponse {
+   public:
+    explicit Held(HeldHttp2Response* owner) : owner_(owner) {}
+    void SendResponse(base::WeakPtr<net::test_server::HttpResponseDelegate> delegate) override {
+      owner_->delegate_ = delegate;
+      owner_->server_runner_ = base::SequencedTaskRunner::GetCurrentDefault();
+      owner_->test_runner_->PostTask(
+          FROM_HERE, base::BindOnce(&base::RunLoop::Quit, base::Unretained(&owner_->requested_)));
+    }
+
+   private:
+    const raw_ptr<HeldHttp2Response> owner_;
+  };
+  std::unique_ptr<net::test_server::HttpResponse> Handle(
+      const net::test_server::HttpRequest& request) {
+    if (request.relative_url != path_) return nullptr;
+    return std::make_unique<Held>(this);
+  }
+  const std::string path_;
+  const scoped_refptr<base::SequencedTaskRunner> test_runner_;
+  scoped_refptr<base::SequencedTaskRunner> server_runner_;
+  base::WeakPtr<net::test_server::HttpResponseDelegate> delegate_;
+  base::RunLoop requested_;
+};
+}  // namespace
+
 IN_PROC_BROWSER_TEST_F(BarcNativeBlockerBrowserTest, ObservedDocumentBodyStreamAndCancel) {
   net::EmbeddedTestServer server(net::EmbeddedTestServer::TYPE_HTTPS,
       net::test_server::HttpConnection::Protocol::kHttp2);
   server.ServeFilesFromSourceDirectory("chrome/test/data");
-  net::test_server::ControllableHttpResponse completed(&server, "/body-complete");
-  net::test_server::ControllableHttpResponse aborted(&server, "/body-abort");
+  HeldHttp2Response completed(server, "/body-complete");
+  HeldHttp2Response aborted(server, "/body-abort");
   ASSERT_TRUE(server.Start());
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
@@ -9711,8 +9766,7 @@ IN_PROC_BROWSER_TEST_F(BarcNativeBlockerBrowserTest, ObservedDocumentBodyStreamA
   ASSERT_TRUE(content::ExecJs(page, "bodyController.close();true;"));
   completed.WaitForRequest();
   EXPECT_TRUE(observed(page));
-  completed.Send(net::HTTP_OK, "text/plain", "complete");
-  completed.Done();
+  completed.Send("complete");
   EXPECT_EQ("complete", content::EvalJs(page, "bodyPromise.then(()=>bodyDone)"));
   ASSERT_TRUE(base::test::RunUntil([&] { return !observed(page); }));
   ASSERT_TRUE(begin("/body-abort"));
