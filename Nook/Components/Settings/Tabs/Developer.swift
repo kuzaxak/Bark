@@ -52,12 +52,19 @@ struct SettingsDeveloperTab: View {
             } header: {
                 Text("Browser Control")
             } footer: {
-                Text("A client must send the token from Application Support/ee.qdo.nook/dev-mcp-token. Any program on this Mac can read that file, and with it run JavaScript in your tabs and read pages you are signed in to. Leave this off unless you are driving Nook from an agent.")
+                Text("A client must send the token from \(tokenPath). Any program on this Mac can read that file, and with it run JavaScript in your tabs and read pages you are signed in to. Leave this off unless you are driving Nook from an agent.")
                     .font(NookDesign.Font.caption)
                     .foregroundStyle(.secondary)
                     .settingsFooter()
             }
         }
         .formStyle(.grouped)
+    }
+
+    private var tokenPath: String {
+        let file = browserManager.engine == .chromium
+            ? (try? DevMCPConfiguration.native(appRoot: browserManager.tabs.directory.deletingLastPathComponent()))?.tokenFile
+            : DevMCPConfiguration.legacy().tokenFile
+        return ((file?.path ?? "") as NSString).abbreviatingWithTildeInPath
     }
 }

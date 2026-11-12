@@ -7,11 +7,12 @@
 //
 
 import NookSettings
+import NookWeb
 import SwiftUI
 
 public struct SettingsAppearanceTab: View {
     @Environment(NookSettingsService.self) var nookSettings
-
+    @Environment(TabsController.self) private var tabs
 
     public init() {}
 
@@ -30,20 +31,31 @@ public struct SettingsAppearanceTab: View {
             // floating URL bar, and a hover preview. None has a touch meaning.
             #if os(macOS)
             Section("Layout") {
-                Picker("Sidebar Position", selection: $settings.sidebarPosition) {
-                    ForEach(SidebarPosition.allCases) { provider in
-                        Text(provider.displayName).tag(provider)
+                if shows(.sidebarPosition) {
+                    Picker("Sidebar Position", selection: $settings.sidebarPosition) {
+                        ForEach(SidebarPosition.allCases) { provider in
+                            Text(provider.displayName).tag(provider)
+                        }
                     }
                 }
                 Toggle("Show URL bar in the web view", isOn: $settings.topBarAddressView)
-                Toggle("Preview link URL on hover", isOn: $settings.showLinkStatusBar)
+                if shows(.linkStatusPreview) {
+                    Toggle("Preview link URL on hover", isOn: $settings.showLinkStatusBar)
+                }
                 Toggle("Show previews when hovering favorites", isOn: $settings.favoritePreviews)
-                Toggle("Show meetings and mail on favorites", isOn: $settings.favoriteMeetingsAndMail)
+                Toggle(tabs.profileEngine == .chromium ? "Show unread mail on favorites" : "Show meetings and mail on favorites",
+                       isOn: $settings.favoriteMeetingsAndMail)
                 Toggle("Translucent space themes", isOn: $settings.themeTranslucency)
-                Toggle("Hide border", isOn: $settings.hideWebContentBorder)
+                if shows(.hideBorder) {
+                    Toggle("Hide border", isOn: $settings.hideWebContentBorder)
+                }
             }
             #endif
         }
         .formStyle(.grouped)
+    }
+
+    private func shows(_ control: SettingsControl) -> Bool {
+        control.isShown(chromium: tabs.profileEngine == .chromium)
     }
 }

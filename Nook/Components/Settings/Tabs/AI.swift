@@ -8,6 +8,7 @@
 
 import NookSettings
 import NookWeb
+import NookUI
 import SwiftUI
 import NookDesign
 
@@ -33,6 +34,10 @@ struct SettingsAITab: View {
     @State private var translationOpenRouterSearch: String = ""
     @State private var showFetchedTranslationModels: Bool = false
 
+    private func shows(_ control: SettingsControl) -> Bool {
+        control.isShown(chromium: tabs.profileEngine == .chromium)
+    }
+
     var body: some View {
         @Bindable var settings = nookSettings
         Form {
@@ -52,22 +57,26 @@ struct SettingsAITab: View {
                                 .foregroundStyle(.secondary)
                         }
                     }
-                    Toggle(isOn: $settings.autoRenamePinnedTabs) {
-                        VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                            Text("Rename Pinned Tabs")
-                                .font(NookDesign.Font.body)
-                            Text("Shortens a tab's title when you pin it to a space")
-                                .font(NookDesign.Font.caption)
-                                .foregroundStyle(.secondary)
+                    if shows(.renamePinnedTabs) {
+                        Toggle(isOn: $settings.autoRenamePinnedTabs) {
+                            VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
+                                Text("Rename Pinned Tabs")
+                                    .font(NookDesign.Font.body)
+                                Text("Shortens a tab's title when you pin it to a space")
+                                    .font(NookDesign.Font.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    Toggle(isOn: $settings.linkPreviews) {
-                        VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                            Text("Link Previews")
-                                .font(NookDesign.Font.body)
-                            Text("Hold Shift while hovering a link to see a short summary of the page")
-                                .font(NookDesign.Font.caption)
-                                .foregroundStyle(.secondary)
+                    if shows(.linkPreviews) {
+                        Toggle(isOn: $settings.linkPreviews) {
+                            VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
+                                Text("Link Previews")
+                                    .font(NookDesign.Font.body)
+                                Text("Hold Shift while hovering a link to see a short summary of the page")
+                                    .font(NookDesign.Font.caption)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
                     }
                 }
@@ -85,24 +94,26 @@ struct SettingsAITab: View {
             }
 
             // MARK: - Downloads
-            Section {
-                Toggle(isOn: $settings.tidyDownloads) {
-                    VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                        Text("Tidy Downloads")
-                            .font(NookDesign.Font.body)
-                        Text("Renames downloads with meaningless names, such as 387494876.pdf, after the page they came from")
+            if shows(.tidyDownloads) {
+                Section {
+                    Toggle(isOn: $settings.tidyDownloads) {
+                        VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
+                            Text("Tidy Downloads")
+                                .font(NookDesign.Font.body)
+                            Text("Renames downloads with meaningless names, such as 387494876.pdf, after the page they came from")
+                                .font(NookDesign.Font.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .disabled(TabOrganizationModel.unavailableNote != nil)
+                    if let note = TabOrganizationModel.unavailableNote {
+                        Text(note)
                             .font(NookDesign.Font.caption)
                             .foregroundStyle(.secondary)
                     }
+                } header: {
+                    Text("Downloads")
                 }
-                .disabled(TabOrganizationModel.unavailableNote != nil)
-                if let note = TabOrganizationModel.unavailableNote {
-                    Text(note)
-                        .font(NookDesign.Font.caption)
-                        .foregroundStyle(.secondary)
-                }
-            } header: {
-                Text("Downloads")
             }
 
             translationSection

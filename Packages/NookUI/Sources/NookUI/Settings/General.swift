@@ -39,7 +39,7 @@ public struct SettingsGeneralTab: View {
         }
     }
 
-    private func shows(_ section: GeneralSettingsSection) -> Bool {
+    private func shows(_ section: SettingsControl) -> Bool {
         section.isShown(chromium: tabs.profileEngine == .chromium)
     }
 

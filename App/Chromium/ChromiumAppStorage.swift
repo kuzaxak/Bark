@@ -27,7 +27,8 @@ final class ChromiumAppStorage {
         let tokens: any KagiTokenStore = configuration.isVerification
             ? VerificationKagiTokenStore() : KeychainKagiTokenStore(service: "NookChromium Kagi Session Link")
         settings = NookSettingsService(kagiTokenStore: tokens, userDefaults: isolated,
-                                       boostStore: BoostStore(fileURL: app.appendingPathComponent("Boosts.json")))
+                                       boostStore: BoostStore(fileURL: app.appendingPathComponent("Boosts.json")),
+                                       keepsSidebarLeft: true)
         downloads = DownloadManager(historyFileURL: app.appendingPathComponent("Downloads.json"), usesNativeDownloads: true)
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)
         aiConfig = AIConfigService(configURL: configuration.aiConfigURL,

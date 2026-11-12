@@ -163,21 +163,41 @@ private struct PrivacyPreferenceSections: View {
 /// Chromium keeps cookies and cache per profile, so they are cleared from the Profiles tab.
 struct ChromiumPrivacySettingsView: View {
     @EnvironmentObject var browserManager: BrowserManager
+    @State private var pageError: ProfilePageOpenError?
 
     var body: some View {
         Form {
             PrivacyPreferenceSections()
 
-            Section("Website Data") {
+            Section {
                 LabeledContent("Browsing history") {
-                    Button("Clear History") { browserManager.historyManager.clearHistory() }
+                    Button("Clear History", action: clearHistory)
                 }
                 LabeledContent("Cookies and cache") {
                     Button("Open Profiles") { SettingsNavigation.shared.currentSettingsTab = .profiles }
                 }
+            } header: {
+                Text("Website Data")
+            } footer: {
+                Text("Clear History removes the current profile’s history from the sidebar and command bar, then opens Chromium’s Delete Browsing Data to clear the history Chromium keeps.")
+                    .settingsFooter()
             }
         }
         .formStyle(.grouped)
+        .alert("Delete Browsing Data", isPresented: Binding(get: { pageError != nil }, set: { if !$0 { pageError = nil } })) {
+            Button("OK") { pageError = nil }
+        } message: {
+            Text(pageError?.localizedDescription ?? "")
+        }
+    }
+
+    private func clearHistory() {
+        let history = browserManager.historyManager
+        history.clearHistory()
+        guard let profile = history.currentProfileId else { return }
+        browserManager.tabs.openProfilePage(profileID: profile, destination: .clearData) { result in
+            if case .failure(let error) = result { pageError = error }
+        }
     }
 }
 

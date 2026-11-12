@@ -47,7 +47,9 @@ public struct AirTrafficControlSettingsView: View {
             } header: {
                 Text("Rules")
             } footer: {
-                Text("Automatically route websites to specific spaces. When you navigate to a matching domain, a new tab opens in the designated space.")
+                Text(tabs.profileEngine == .chromium
+                     ? "Automatically route websites to specific spaces. A link from another app, or an address you type over a page’s address, opens in the space its rule names. Links you click in a page stay in their space."
+                     : "Automatically route websites to specific spaces. When you navigate to a matching domain, a new tab opens in the designated space.")
                     .settingsFooter()
             }
 

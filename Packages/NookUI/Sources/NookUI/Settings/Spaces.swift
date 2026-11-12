@@ -66,7 +66,7 @@ public struct SpacesSettingsView: View {
                     .settingsFooter()
             }
 
-            if let status = actions?.spaceSync?.status {
+            if let status = actions?.spaceSync?.status, SettingsControl.iCloudSync.isShown(chromium: tabs.profileEngine == .chromium) {
                 syncSection(status)
             }
             if let sync, sync.status.availability == .available {

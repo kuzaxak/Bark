@@ -318,10 +318,16 @@ public final class NookSettingsService {
         }
     }
     
-    public var sidebarPosition: SidebarPosition {
+    /// Bark's native shell has no right-hand layout.
+    private let keepsSidebarLeft: Bool
+    private var storedSidebarPosition: SidebarPosition {
         didSet {
-            userDefaults.set(sidebarPosition.rawValue, forKey: sidebarPositionKey)
+            userDefaults.set(storedSidebarPosition.rawValue, forKey: sidebarPositionKey)
         }
+    }
+    public var sidebarPosition: SidebarPosition {
+        get { keepsSidebarLeft ? .left : storedSidebarPosition }
+        set { storedSidebarPosition = newValue }
     }
     
     public var externalLinkDestination: ExternalLinkDestination {
@@ -757,7 +763,8 @@ public final class NookSettingsService {
         }
     }
 
-    public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore(), userDefaults: UserDefaults = .standard, boostStore: BoostStore = BoostStore()) {
+    public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore(), userDefaults: UserDefaults = .standard, boostStore: BoostStore = BoostStore(),
+                keepsSidebarLeft: Bool = false) {
         self.boostStore = boostStore
         self.userDefaults = userDefaults
         self.kagiTokenStore = kagiTokenStore
@@ -902,7 +909,8 @@ public final class NookSettingsService {
         self.debugToggleUpdateNotification = userDefaults.bool(forKey: debugToggleUpdateNotificationKey)
         self.lastSeenVersion = userDefaults.string(forKey: lastSeenVersionKey)
         self.askBeforeQuit = userDefaults.bool(forKey: askBeforeQuitKey)
-        self.sidebarPosition = SidebarPosition(rawValue: userDefaults.string(forKey: sidebarPositionKey) ?? "left") ?? SidebarPosition.left
+        self.keepsSidebarLeft = keepsSidebarLeft
+        self.storedSidebarPosition = SidebarPosition(rawValue: userDefaults.string(forKey: sidebarPositionKey) ?? "left") ?? SidebarPosition.left
         self.externalLinkDestination = ExternalLinkDestination(stored: userDefaults.string(forKey: externalLinkDestinationKey))
         self.topBarAddressView = userDefaults.bool(forKey: topBarAddressViewKey)
         self.geminiApiKey = ""  // In-memory only; persistent storage via AIKeychainStorage
