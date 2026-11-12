@@ -8529,6 +8529,8 @@ IN_PROC_BROWSER_TEST_F(BarcAppSplitBrowserTest, LinkHoverBubbleDoesNotBlockPaneS
   ASSERT_EQ(1, barc_window_set_split(work, &request));
   auto* widget = Container(a)->GetWidget();
   auto hover = [&](int32_t tab) {
+    // A status bubble drops a URL set before its pane's first layout sizes it.
+    widget->LayoutRootViewIfNecessary();
     Container(tab)->contents_view()->GetStatusBubble()->SetURL(
         embedded_test_server()->GetURL("/hovered-link"));
     return base::test::RunUntil([&] {
