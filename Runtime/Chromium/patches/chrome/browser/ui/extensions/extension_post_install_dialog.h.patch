@@ -1,0 +1,35 @@
+diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.h b/chrome/browser/ui/extensions/extension_post_install_dialog.h
+index fc9659429d..e3ffb41d9e 100644
+--- a/chrome/browser/ui/extensions/extension_post_install_dialog.h
++++ b/chrome/browser/ui/extensions/extension_post_install_dialog.h
+@@ -5,14 +5,18 @@
+ #ifndef CHROME_BROWSER_UI_EXTENSIONS_EXTENSION_POST_INSTALL_DIALOG_H_
+ #define CHROME_BROWSER_UI_EXTENSIONS_EXTENSION_POST_INSTALL_DIALOG_H_
+ 
++#include <optional>
++
+ #include "base/functional/callback_forward.h"
+ #include "base/functional/callback_helpers.h"
+ #include "base/memory/scoped_refptr.h"
++#include "base/memory/weak_ptr.h"
+ #include "chrome/browser/ui/extensions/extension_install_ui.h"
+ #include "extensions/buildflags/buildflags.h"
+ 
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+ 
++class BrowserWindowInterface;
+ class Profile;
+ class SkBitmap;
+ 
+@@ -29,7 +33,10 @@ void TriggerPostInstallDialog(
+     const SkBitmap& icon,
+     base::OnceCallback<content::WebContents*()> get_web_contents_callback,
+     base::OnceCallback<void(base::WeakPtr<content::WebContents>)>
+-        show_iph_callback = base::DoNothing());
++        show_iph_callback = base::DoNothing(),
++    // Supplied-but-expired ownership cancels; it never falls back to native UI.
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner =
++        std::nullopt);
+ 
+ }  // namespace extensions
+ 

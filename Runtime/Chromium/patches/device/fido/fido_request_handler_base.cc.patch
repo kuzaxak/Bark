@@ -1,0 +1,14 @@
+diff --git a/device/fido/fido_request_handler_base.cc b/device/fido/fido_request_handler_base.cc
+index 92809136af..e0875bb8e9 100644
+--- a/device/fido/fido_request_handler_base.cc
++++ b/device/fido/fido_request_handler_base.cc
+@@ -507,6 +507,9 @@ void FidoRequestHandlerBase::DiscoveryStarted(
+           // implement GetPlatformCredentialStatus.
+           continue;
+         }
++        if (!platform_authenticator->ShouldCheckPlatformCredentialStatus()) {
++          continue;
++        }
+         transport_availability_info_.has_icloud_keychain |=
+             platform_authenticator->GetType() ==
+             AuthenticatorType::kICloudKeychain;

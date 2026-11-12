@@ -1,0 +1,31 @@
+diff --git a/components/download/internal/common/download_item_impl.cc b/components/download/internal/common/download_item_impl.cc
+index 48b41ef91a..09fe139543 100644
+--- a/components/download/internal/common/download_item_impl.cc
++++ b/components/download/internal/common/download_item_impl.cc
+@@ -686,6 +686,10 @@ void DownloadItemImpl::Pause() {
+ }
+ 
+ void DownloadItemImpl::Resume(bool user_resume) {
++  // Pausing the same already-validated stream is safe; an interrupted media
++  // save cannot issue a new request through restart/resume.
++  if (download_source_ == DownloadSource::NATIVE_SOCIAL_MEDIA && state_ != IN_PROGRESS_INTERNAL) return;
++
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   DVLOG(20) << __func__ << "() download = " << DebugString(true);
+ 
+@@ -890,6 +894,7 @@ bool DownloadItemImpl::IsTemporary() const {
+ }
+ 
+ bool DownloadItemImpl::CanResume() const {
++  if (download_source_ == DownloadSource::NATIVE_SOCIAL_MEDIA && state_ != IN_PROGRESS_INTERNAL) return false;
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+   switch (state_) {
+     case INITIAL_INTERNAL:
+@@ -1406,6 +1411,7 @@ void DownloadItemImpl::SimulateErrorForTesting(DownloadInterruptReason reason) {
+ }
+ 
+ ResumeMode DownloadItemImpl::GetResumeMode() const {
++  if (download_source_ == DownloadSource::NATIVE_SOCIAL_MEDIA) return ResumeMode::INVALID;
+   DCHECK_CALLED_ON_VALID_THREAD(thread_checker_);
+ 
+   // We can't continue without a handle on the intermediate file.

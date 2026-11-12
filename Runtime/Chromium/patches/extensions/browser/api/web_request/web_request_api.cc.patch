@@ -1,0 +1,59 @@
+diff --git a/extensions/browser/api/web_request/web_request_api.cc b/extensions/browser/api/web_request/web_request_api.cc
+index fd3cfab2d0..93d7c6a6dd 100644
+--- a/extensions/browser/api/web_request/web_request_api.cc
++++ b/extensions/browser/api/web_request/web_request_api.cc
+@@ -788,11 +788,13 @@ bool WebRequestAPI::MaybeProxyURLLoaderFactory(
+     mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+         header_client,
+     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-    const url::Origin& request_initiator) {
++    const url::Origin& request_initiator,
++    std::optional<int64_t> document_navigation_id) {
+   const ProxyDecision decision = MaybeProxyURLLoaderFactoryInternal(
+       browser_context, frame, render_process_id, type, navigation_id,
+       ukm_source_id, factory_builder, header_client,
+-      std::move(navigation_response_task_runner), request_initiator);
++      std::move(navigation_response_task_runner), request_initiator,
++      document_navigation_id);
+   base::UmaHistogramEnumeration("Extensions.WebRequest.ProxyDecision2",
+                                 decision);
+   const size_t kMaxCount = 10u;
+@@ -843,7 +845,8 @@ WebRequestAPI::ProxyDecision WebRequestAPI::MaybeProxyURLLoaderFactoryInternal(
+     mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+         header_client,
+     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-    const url::Origin& request_initiator) {
++    const url::Origin& request_initiator,
++    std::optional<int64_t> document_navigation_id) {
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+ 
+   ProxyDecision decision = ProxyDecision::kWillNotProxy;
+@@ -859,6 +862,9 @@ WebRequestAPI::ProxyDecision WebRequestAPI::MaybeProxyURLLoaderFactoryInternal(
+       decision = ProxyDecision::kWillProxyForEmbedderWebView;
+     } else if (IsAvailableToWebViewEmbedderExtensionFrame(frame)) {
+       decision = ProxyDecision::kWillProxyForEmbedderWebView;
++    } else if (ExtensionsBrowserClient::Get()->HasNativeRequestPolicy(
++                   browser_context)) {
++      decision = ProxyDecision::kWillProxyForNativePolicy;
+     } else {
+       return decision;
+     }
+@@ -871,6 +877,9 @@ WebRequestAPI::ProxyDecision WebRequestAPI::MaybeProxyURLLoaderFactoryInternal(
+       decision = ProxyDecision::kWillProxyForWebUI;
+     } else if (IsAvailableToWebViewEmbedderWebPageFrame(frame)) {
+       decision = ProxyDecision::kWillProxyForEmbedderWebView;
++    } else if (ExtensionsBrowserClient::Get()->HasNativeRequestPolicy(
++                   browser_context)) {
++      decision = ProxyDecision::kWillProxyForNativePolicy;
+     } else {
+       return decision;
+     }
+@@ -910,7 +919,7 @@ WebRequestAPI::ProxyDecision WebRequestAPI::MaybeProxyURLLoaderFactoryInternal(
+       &request_id_generator_, std::move(navigation_ui_data),
+       std::move(navigation_id), ukm_source_id, factory_builder,
+       std::move(header_client_receiver), proxies_.get(), type,
+-      std::move(navigation_response_task_runner));
++      std::move(navigation_response_task_runner), document_navigation_id);
+   return decision;
+ }
+ 

@@ -1,0 +1,87 @@
+diff --git a/chrome/browser/ui/views/frame/multi_contents_view_delegate.cc b/chrome/browser/ui/views/frame/multi_contents_view_delegate.cc
+index dbaa65affb..b638b802a7 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_view_delegate.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_view_delegate.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "chrome/browser/ui/views/frame/multi_contents_view_delegate.h"
+ 
++#include <array>
++
+ #include "chrome/browser/sessions/session_service.h"
+ #include "chrome/browser/sessions/session_service_factory.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+@@ -25,6 +27,13 @@
+ #include "ui/base/window_open_disposition.h"
+ #include "url/url_constants.h"
+ 
++void MultiContentsViewDelegate::ResizeDividers(
++    base::span<const double> dividers,
++    bool done_resizing) {
++  CHECK_EQ(dividers.size(), 1u);
++  ResizeWebContents(dividers.front(), done_resizing);
++}
++
+ MultiContentsViewDelegateImpl::MultiContentsViewDelegateImpl(
+     BrowserWindowInterface& browser)
+     : browser_(browser), tab_strip_model_(*browser.GetTabStripModel()) {}
+@@ -33,7 +42,7 @@ void MultiContentsViewDelegateImpl::WebContentsFocused(
+     content::WebContents* web_contents) {
+   const tabs::TabInterface* tab =
+       tabs::TabInterface::MaybeGetFromContents(web_contents);
+-  if (!tab || !tab->IsSplit()) {
++  if (!browser_->IsSelectedForNativeWindow() || !tab || !tab->IsSplit()) {
+     return;
+   }
+ 
+@@ -63,28 +72,29 @@ void MultiContentsViewDelegateImpl::ReverseWebContents() {
+ 
+ void MultiContentsViewDelegateImpl::ResizeWebContents(double start_ratio,
+                                                       bool done_resizing) {
+-  const std::optional<split_tabs::SplitTabId> split_tab_id =
+-      tab_strip_model_->GetActiveTab()->GetSplit();
++  const std::array<double, 1> dividers{start_ratio};
++  ResizeDividers(dividers, done_resizing);
++}
+ 
+-  CHECK(split_tab_id.has_value());
+-  tab_strip_model_->UpdateSplitRatio(split_tab_id.value(), start_ratio,
+-                                     !done_resizing);
+-
+-  if (done_resizing) {
+-    const split_tabs::SplitTabId split_id =
+-        tab_strip_model_->GetActiveTab()->GetSplit().value();
+-
+-    SessionService* const session_service =
+-        SessionServiceFactory::GetForProfile(browser_->GetProfile());
+-
+-    if (!session_service) {
+-      return;
+-    }
+-
+-    const split_tabs::SplitTabVisualData* visual_data =
+-        tab_strip_model_->GetSplitData(split_id)->visual_data();
+-    session_service->SetSplitTabData(browser_->GetSessionID(), split_id,
+-                                     visual_data);
++void MultiContentsViewDelegateImpl::ResizeDividers(
++    base::span<const double> dividers,
++    bool done_resizing) {
++  const auto split_id = tab_strip_model_->GetActiveTab()->GetSplit();
++  CHECK(split_id);
++  auto owner = browser_->GetWeakPtr();
++  tab_strip_model_->UpdateSplitDividers(*split_id, dividers, !done_resizing);
++  // Split observers may close the owner or replace its current split.
++  if (!owner || owner->IsDeleteScheduled())
++    return;
++  auto* strip = owner->GetTabStripModel();
++  auto* active = strip->GetActiveTab();
++  if (!done_resizing || !active || active->GetSplit() != split_id ||
++      !strip->ContainsSplit(*split_id)) {
++    return;
++  }
++  if (auto* service = SessionServiceFactory::GetForProfile(owner->GetProfile())) {
++    service->SetSplitTabData(owner->GetSessionID(), *split_id,
++                            strip->GetSplitData(*split_id)->visual_data());
+   }
+ }
+ 

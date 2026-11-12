@@ -1,0 +1,29 @@
+diff --git a/chrome/browser/download/chrome_download_manager_delegate.cc b/chrome/browser/download/chrome_download_manager_delegate.cc
+index 0cfc34d1e0..d054268f0f 100644
+--- a/chrome/browser/download/chrome_download_manager_delegate.cc
++++ b/chrome/browser/download/chrome_download_manager_delegate.cc
+@@ -32,6 +32,9 @@
+ #include "base/task/thread_pool.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_bridge.h"
++#endif
+ #include "chrome/browser/browser_process.h"
+ #include "chrome/browser/download/download_core_service.h"
+ #include "chrome/browser/download/download_core_service_factory.h"
+@@ -2469,6 +2472,14 @@ void ChromeDownloadManagerDelegate::CheckDownloadAllowed(
+     return;
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (content_initiated &&
++      barc::RequestPeekForOptionClick(web_contents, url, request_initiator)) {
++    OnCheckDownloadAllowedFailed(std::move(check_download_allowed_cb));
++    return;
++  }
++#endif
++
+   // Check whether download is restricted for saved tab groups.
+   if (tab_groups::RestrictDownloadOnSyncedTabs() &&
+       TabGroupSyncTabState::FromWebContents(web_contents)) {

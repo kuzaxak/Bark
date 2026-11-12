@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/views/download/download_in_progress_dialog_view.h b/chrome/browser/ui/views/download/download_in_progress_dialog_view.h
+index 7f0c774f7f..bf991fdfd1 100644
+--- a/chrome/browser/ui/views/download/download_in_progress_dialog_view.h
++++ b/chrome/browser/ui/views/download/download_in_progress_dialog_view.h
+@@ -24,10 +24,12 @@ class DownloadInProgressDialogView : public views::DialogDelegateView {
+   // kLastWindowInIncognitoProfile to indicate the user is
+   // closing the last incognito window. |callback| will be called with true if
+   // the download should be canceled, or false if the download should proceed.
+-  static void Show(gfx::NativeWindow parent,
+-                   int download_count,
+-                   UnloadController::DownloadCloseType dialog_type,
+-                   base::OnceCallback<void(bool)> callback);
++  // Creates an unshown modal. The caller can record its weak handle before Show.
++  static views::Widget* Create(
++      gfx::NativeWindow parent,
++      int download_count,
++      UnloadController::DownloadCloseType dialog_type,
++      base::OnceCallback<void(bool)> callback);
+ 
+  private:
+   DownloadInProgressDialogView(int download_count,

@@ -1,0 +1,1005 @@
+diff --git a/chrome/browser/ui/views/frame/browser_view.cc b/chrome/browser/ui/views/frame/browser_view.cc
+index b68f089aeb..28f33fca2f 100644
+--- a/chrome/browser/ui/views/frame/browser_view.cc
++++ b/chrome/browser/ui/views/frame/browser_view.cc
+@@ -3,6 +3,10 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/ui/views/frame/browser_view.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_bridge.h"
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
+ 
+ #include <stdint.h>
+ 
+@@ -48,6 +52,7 @@
+ #include "chrome/browser/devtools/devtools_window.h"
+ #include "chrome/browser/enterprise/data_protection/data_protection_navigation_observer.h"
+ #include "chrome/browser/enterprise/data_protection/data_protection_overlay_view.h"
++#include "chrome/browser/enterprise/data_protection/data_protection_ui_controller.h"
+ #include "chrome/browser/enterprise/watermark/settings.h"
+ #include "chrome/browser/extensions/browser_extension_window_controller.h"
+ #include "chrome/browser/extensions/extension_util.h"
+@@ -355,6 +360,7 @@
+ #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+ #include "ui/views/controls/button/menu_button.h"
+ #include "ui/views/controls/textfield/textfield.h"
++#include "ui/views/controls/native/native_view_host.h"
+ #include "ui/views/controls/webview/webview.h"
+ #include "ui/views/interaction/element_tracker_views.h"
+ #include "ui/views/interaction/view_subregion_anchor.h"
+@@ -890,11 +896,14 @@ class BrowserView::PipExclusionObserverImpl
+ ///////////////////////////////////////////////////////////////////////////////
+ // BrowserView, public:
+ 
++DEFINE_USER_DATA(BrowserView);
++
+ BrowserView::BrowserView(BrowserWindowInterface* browser)
+     : views::ClientView(nullptr, nullptr),
+       exclusive_access_context_(
+           std::make_unique<ExclusiveAccessContextImpl>(*this)),
+-      browser_(browser) {
++      browser_(browser),
++      browser_view_data_(std::in_place, browser->GetUnownedUserDataHost(), *this) {
+   if (auto* manager = InitialWebUIWindowMetricsManager::From(browser_.get())) {
+     manager->OnBrowserWindowCreated();
+   }
+@@ -1108,6 +1117,7 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
+ }
+ 
+ BrowserView::~BrowserView() {
++  browser_view_data_.reset();
+   // Remove the layout manager to avoid dangling. This needs to be earlier than
+   // other cleanups that destroy views referenced in the layout manager.
+   SetLayoutManager(nullptr);
+@@ -1133,9 +1143,17 @@ BrowserView::~BrowserView() {
+   // child views and it is an observer for avatar toolbar button if any.
+   autofill_bubble_handler_.reset();
+ 
++  // Hierarchy callbacks must see the still-valid owner fields. A reparent in
++  // progress may retain only the emptied contents shell beyond this teardown.
++  if (multi_contents_view_) {
++    multi_contents_view_->RetireAfterOwnerDestruction();
++  }
++  set_contents_view(nullptr);
++
+   // These are raw pointers to child views, so they need to be set to null
+   // before `RemoveAllChildViews()` is called to avoid dangling.
+   browser_widget_ = nullptr;
++  owned_browser_widget_.reset();
+   main_background_region_ = nullptr;
+   top_container_ = nullptr;
+   web_app_frame_toolbar_ = nullptr;
+@@ -1158,6 +1176,8 @@ BrowserView::~BrowserView() {
+   side_panel_ = nullptr;
+ 
+ #if BUILDFLAG(IS_MAC)
++  barc_page_header_ = nullptr;
++  barc_native_shell_ = nullptr;
+   tab_overlay_view_ = nullptr;
+ 
+   overlay_widget_.reset();
+@@ -1172,21 +1192,19 @@ BrowserView::~BrowserView() {
+ // static
+ BrowserWindow* BrowserWindow::FindBrowserWindowWithWebContents(
+     content::WebContents* web_contents) {
+-  // Check first to see if the we can find a top level widget for the
+-  // `web_contents`. This covers the case of searching for the browser window
+-  // associated with a non-tab contents and the active tab contents. Fall back
+-  // to searching the tab strip model for a tab contents match. This later
+-  // search is necessary as a tab contents can be swapped out of the browser
+-  // window's ContentWebView on a tab switch and may disassociate with its top
+-  // level NativeView.
++  // A tab's logical owner is authoritative even when its native view still
++  // belongs to another selected BrowserView or the tab is being detached.
++  if (auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents)) {
++    return BrowserView::GetBrowserViewForBrowser(
++        tab->GetBrowserWindowInterface());
++  }
++  // Non-tab contents retain their native-window association.
+   if (const auto* widget = views::Widget::GetTopLevelWidgetForNativeView(
+           web_contents->GetNativeView())) {
+     return BrowserView::GetBrowserViewForNativeWindow(
+         widget->GetNativeWindow());
+   }
+-  const auto* browser =
+-      GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(web_contents);
+-  return browser ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
++  return nullptr;
+ }
+ 
+ // static
+@@ -1201,19 +1219,20 @@ BrowserView* BrowserView::GetBrowserViewForNativeWindow(
+ // static
+ BrowserView* BrowserView::GetBrowserViewForBrowser(
+     const BrowserWindowInterface* browser) {
+-  // In unit tests, the BrowserWindow may not be a BrowserView even
+-  // in Views Browser builds. Always go through the ForNativeWindow path, which
+-  // is robust against being given any kind of native window.
+-  //
+-  // Also, tests don't always have a non-null NativeWindow backing the
+-  // BrowserWindow, so be sure to check for that as well.
+-  //
+-  // Lastly note that this function can be called during construction of
+-  // Browser, at which point `browser->GetWindow()` might return nullptr.
+-  if (!browser->GetWindow() || !browser->GetWindow()->GetNativeWindow()) {
++  if (!browser) {
+     return nullptr;
+   }
+-  return GetBrowserViewForNativeWindow(browser->GetWindow()->GetNativeWindow());
++  // Resolve the logical owner first. Destruction clears this registration
++  // before any child teardown, so never query a dying BrowserWindow just to
++  // discover that its BrowserView is gone.
++  auto* view = const_cast<BrowserView*>(Get(browser->GetUnownedUserDataHost()));
++  // The production factory assigns Browser::window_ only after constructing
++  // the view/widget. Preserve that construction-time null behavior.
++  if (!view || !browser->GetWindow() ||
++      !browser->GetWindow()->GetNativeWindow()) {
++    return nullptr;
++  }
++  return view;
+ }
+ 
+ // static
+@@ -1364,6 +1383,11 @@ BrowserView::GetExclusiveAccessBubbleViewsContextForTesting() {
+ }
+ 
+ bool BrowserView::GetTabStripVisible() const {
++#if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
++#endif
+   if (!ShouldDrawTabStrip()) {
+     return false;
+   }
+@@ -1573,6 +1597,10 @@ float BrowserView::GetTopControlsSlideBehaviorShownRatio() const {
+   return 1.f;
+ }
+ 
++ui::TrackedElement* BrowserView::GetFallbackPopupAnchor() {
++  return fallback_popup_anchor_.get();
++}
++
+ views::Widget* BrowserView::GetWidgetForAnchoring() {
+ #if BUILDFLAG(IS_MAC)
+   if (WindowFeatureController::From(browser())->UsesImmersiveFullscreenMode()) {
+@@ -1617,18 +1645,153 @@ void BrowserView::OnVerticalTabStripModeChanged(
+ ///////////////////////////////////////////////////////////////////////////////
+ // BrowserView, BrowserWindow implementation:
+ 
++bool BrowserView::BarcPresentationCurrent(
++    const std::optional<BarcPresentationGuard>& guard) const {
++  if (!guard)
++    return true;
++#if BUILDFLAG(IS_MAC)
++  return !browser_widget_->IsClosed() && IsSelectedForNativeWindow() &&
++      guard->sequence == barc_presentation_sequence_ &&
++      guard->shell_epoch == barc_shell_epoch_;
++#else
++  return false;
++#endif
++}
++bool BrowserView::BarcPresentationShouldStayInactive(
++    const std::optional<BarcPresentationGuard>& guard) const {
++  if (!guard)
++    return false;
++  return guard->selection_epoch != browser_widget_->barc_selection_epoch();
++}
++bool BrowserView::SelectBarcPresentationClient(
++    std::optional<BarcPresentationGuard>* guard) {
++  // Admission continuations never select an older logical client. Only the
++  // ordinary unguarded Chrome presentation path keeps its stock selection.
++  if (*guard)
++    return BarcPresentationCurrent(*guard);
++  if (IsSelectedForNativeWindow())
++    return true;
++  auto alive = GetAsWeakPtr();
++  return browser_widget_->SelectLogicalBrowserView(this) && alive;
++}
++
++#if BUILDFLAG(IS_MAC)
++bool BrowserView::InitializeBarcCompactShell() {
++  if (!barc::IsNativeApplicationRegistered() || barc_native_shell_ ||
++      browser_->GetType() != BrowserWindowInterface::TYPE_POPUP)
++    return false;
++  auto alive = GetAsWeakPtr();
++  barc_compact_shell_ = true;
++  auto* shell = barc::CreateNativeShell(this);
++  if (!alive)
++    return false;
++  barc_native_shell_ = shell;
++  if (!shell) {
++    barc_compact_shell_ = false;
++    return false;
++  }
++  barc::BrowserDiscoveryChanged();
++  return true;
++}
++bool BrowserView::HasConfirmedBarcCompactShell() const {
++  return barc_compact_shell_ && barc_native_admitted_ && barc_native_shell_ &&
++      barc_native_shell_->native_view() &&
++      barc_compact_admitted_epoch_ == barc_shell_epoch_;
++}
++bool BrowserView::BarcAwaitingNativeAdmission() const {
++  return barc::IsNativeApplicationRegistered() && barc_native_shell_ &&
++      (browser_->GetType() == BrowserWindowInterface::TYPE_NORMAL || barc_compact_shell_) &&
++      !barc_app_factory_origin_ && !barc_native_admitted_;
++}
++void BrowserView::MarkBarcAppFactoryOrigin() {
++  if (barc_app_factory_origin_)
++    return;
++  barc_app_factory_origin_ = true;
++  barc_pending_presentation_ = BarcNativePresentation::kNone;
++  ++barc_presentation_sequence_;
++  barc::BrowserDiscoveryChanged();
++}
++void BrowserView::BarcNativeShellWillChange() { ++barc_shell_epoch_; }
++bool BrowserView::DeferBarcNativePresentation(BarcNativePresentation intent) {
++  if (!barc::IsNativeApplicationRegistered() || !barc_native_shell_ ||
++      (browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL && !barc_compact_shell_) ||
++      barc_app_factory_origin_)
++    return false;
++  ++barc_presentation_sequence_;
++  if (barc_native_admitted_)
++    return false;
++  barc_pending_presentation_ = intent;
++  barc_pending_guard_ = {barc_presentation_sequence_,
++      browser_widget_->barc_selection_epoch(), barc_shell_epoch_};
++  barc::BrowserDiscoveryChanged();
++  return true;
++}
++bool BrowserView::AdmitBarcNativeWindow(gfx::NativeView expected) {
++  if (!barc::IsNativeApplicationRegistered() || !barc_native_shell_ ||
++      !expected || barc_native_shell_->native_view() != expected ||
++      (browser_->GetType() != BrowserWindowInterface::TYPE_NORMAL && !barc_compact_shell_) ||
++      barc_app_factory_origin_ || !IsSelectedForNativeWindow())
++    return false;
++  if (barc_native_admitted_) {
++    if (barc_compact_shell_) barc_compact_admitted_epoch_ = barc_shell_epoch_;
++    return true;
++  }
++  auto alive = GetAsWeakPtr();
++  const auto intent = barc_pending_presentation_;
++  auto guard = barc_pending_guard_;
++  guard.shell_epoch = barc_shell_epoch_;  // Admission owns the attached header.
++  barc_native_admitted_ = true;
++  barc_pending_presentation_ = BarcNativePresentation::kNone;
++  barc::BrowserDiscoveryChanged();
++  // An obsolete presentation request does not undo a successful model/header
++  // admission, but must never override a later native selection or intent.
++  switch (intent) {
++    case BarcNativePresentation::kShow: ShowImpl(guard); break;
++    case BarcNativePresentation::kShowInactive: ShowInactiveImpl(guard); break;
++    case BarcNativePresentation::kActivate: ActivateImpl(guard); break;
++    case BarcNativePresentation::kNone: break;
++  }
++  const bool current = alive && IsSelectedForNativeWindow() && barc_native_shell_ &&
++         barc_native_shell_->native_view() == expected;
++  if (current && barc_compact_shell_) barc_compact_admitted_epoch_ = barc_shell_epoch_;
++  return current;
++}
++#endif
++
+ void BrowserView::Show() {
++#if BUILDFLAG(IS_MAC)
++  if (DeferBarcNativePresentation(BarcNativePresentation::kShow))
++    return;
++#endif
++  ShowImpl(std::nullopt);
++}
++
++void BrowserView::ShowImpl(std::optional<BarcPresentationGuard> guard) {
++  if (!BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
++  auto alive = GetAsWeakPtr();
++  if (!SelectBarcPresentationClient(&guard)) {
++    return;
++  }
+   // Attempts to show closed windows should no-op.
+   if (browser_widget_->IsClosed()) {
+     return;
+   }
+ 
+   if (auto* manager = InitialWebUIManager::From(browser())) {
+-    if (manager->RequestDeferShow(base::BindOnce(
+-            &BrowserView::Show, weak_ptr_factory_.GetWeakPtr()))) {
++    auto continuation = guard
++        ? base::BindOnce(&BrowserView::ShowImpl, GetAsWeakPtr(), guard)
++        : base::BindOnce(&BrowserView::Show, GetAsWeakPtr());
++    if (manager->RequestDeferShow(std::move(continuation))) {
+       return;
+     }
+   }
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
+   // The Browser associated with this browser window must become the active
+@@ -1640,6 +1803,12 @@ void BrowserView::Show() {
+   BrowserActiveStateManager::From(browser())->DidBecomeActive();
+ #endif
+ 
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
+   // If the window is already visible, just activate it.
+   if (browser_widget_->IsVisible()) {
+     browser_widget_->Activate();
+@@ -1663,7 +1832,11 @@ void BrowserView::Show() {
+     return;
+   }
+ 
++  if (!BarcPresentationCurrent(guard) || BarcPresentationShouldStayInactive(guard))
++    return;
+   OnWindowDidShow();
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
+ 
+   // The fullscreen transition clears out focus, but there are some cases (for
+   // example, new window in Mac fullscreen with toolbar showing) where we need
+@@ -1683,17 +1856,36 @@ void BrowserView::Show() {
+ }
+ 
+ void BrowserView::ShowInactive() {
+-  if (!browser_widget_->IsVisible()) {
++#if BUILDFLAG(IS_MAC)
++  if (DeferBarcNativePresentation(BarcNativePresentation::kShowInactive))
++    return;
++#endif
++  ShowInactiveImpl(std::nullopt);
++}
++void BrowserView::ShowInactiveImpl(std::optional<BarcPresentationGuard> guard) {
++  if (!SelectBarcPresentationClient(&guard))
++    return;
++  if (!browser_widget_->IsVisible())
+     browser_widget_->ShowInactive();
+-  }
+ }
+ 
+ void BrowserView::Hide() {
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsNativeApplicationRegistered() && barc_native_shell_ &&
++      !barc_app_factory_origin_) {
++    ++barc_presentation_sequence_;
++    barc_pending_presentation_ = BarcNativePresentation::kNone;
++  }
++#endif
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   browser_widget_->Hide();
+ }
+ 
+ bool BrowserView::IsVisible() const {
+-  return browser_widget_->IsVisible();
++  return (IsSelectedForNativeWindow() || browser_widget_->HasBarcPresentedContents(this)) &&
++         browser_widget_->IsVisible();
+ }
+ 
+ void BrowserView::SetBounds(const gfx::Rect& bounds) {
+@@ -1717,10 +1909,32 @@ void BrowserView::SetBounds(const gfx::Rect& bounds) {
+ }
+ 
+ void BrowserView::Close() {
++  if (browser_widget_->GetLogicalBrowserViews().size() > 1 ||
++      browser_widget_->HasPhysicalClosePending()) {
++    browser_widget_->RequestLogicalClose(this);
++    return;
++  }
+   browser_widget_->Close();
+ }
+ 
+ void BrowserView::Activate() {
++#if BUILDFLAG(IS_MAC)
++  if (DeferBarcNativePresentation(BarcNativePresentation::kActivate))
++    return;
++#endif
++  ActivateImpl(std::nullopt);
++}
++void BrowserView::ActivateImpl(std::optional<BarcPresentationGuard> guard) {
++  if (!BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
++  auto alive = GetAsWeakPtr();
++  if (!SelectBarcPresentationClient(&guard)) {
++    return;
++  }
+   if (browser_widget_->IsClosed()) {
+     // Since the activation is asynchronous, it's possible that the browser has
+     // been closed before the activation is ready, in this case, we don't have
+@@ -1729,26 +1943,39 @@ void BrowserView::Activate() {
+   }
+ 
+   if (auto* manager = InitialWebUIManager::From(browser())) {
+-    if (manager->RequestDeferShow(base::BindOnce(
+-            &BrowserView::Activate, weak_ptr_factory_.GetWeakPtr()))) {
++    auto continuation = guard
++        ? base::BindOnce(&BrowserView::ActivateImpl, GetAsWeakPtr(), guard)
++        : base::BindOnce(&BrowserView::Activate, GetAsWeakPtr());
++    if (manager->RequestDeferShow(std::move(continuation))) {
+       return;
+     }
+   }
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
+ 
+ #if !BUILDFLAG(IS_WIN) && !BUILDFLAG(IS_CHROMEOS)
+   // Update the list managed by `BrowserList` synchronously the same way
+   // `BrowserView::Show()` does.
+   BrowserActiveStateManager::From(browser_)->DidBecomeActive();
+ #endif
++  if (!alive || !BarcPresentationCurrent(guard))
++    return;
++  if (BarcPresentationShouldStayInactive(guard)) {
++    ShowInactiveImpl(guard);
++    return;
++  }
+   browser_widget_->Activate();
+ }
+ 
+ void BrowserView::Deactivate() {
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   browser_widget_->Deactivate();
+ }
+ 
+ bool BrowserView::IsActive() const {
+-  return browser_widget_->IsActive();
++  return IsSelectedForNativeWindow() && browser_widget_->IsActive();
+ }
+ 
+ void BrowserView::FlashFrame(bool flash) {
+@@ -1879,13 +2106,16 @@ std::vector<StatusBubble*> BrowserView::GetStatusBubbles() {
+ }
+ 
+ void BrowserView::UpdateTitleBar() {
+-  browser_widget_->UpdateWindowTitle();
++  if (IsSelectedForNativeWindow()) {
++    browser_widget_->UpdateWindowTitle();
++  }
+   if (web_app_window_title_) {
+     DCHECK(GetIsWebAppType());
+     web_app_window_title_->SetText(GetWindowTitle());
+     InvalidateLayout();
+   }
+-  if (!IsLoadingAnimationRunning() && CanChangeWindowIcon()) {
++  if (IsSelectedForNativeWindow() && !IsLoadingAnimationRunning() &&
++      CanChangeWindowIcon()) {
+     browser_widget_->UpdateWindowIcon();
+   }
+ }
+@@ -1909,7 +2139,8 @@ void BrowserView::OnBookmarkBarStateChanged(
+ void BrowserView::UpdateLoadingAnimations(bool is_visible) {
+   const bool tabs_need_loading_ui =
+       browser_->GetTabStripModel()->TabsNeedLoadingUI();
+-  const bool should_animate = is_visible && tabs_need_loading_ui;
++  const bool should_animate =
++      is_visible && IsSelectedForNativeWindow() && tabs_need_loading_ui;
+ 
+   if (should_animate == IsLoadingAnimationRunning()) {
+     return;
+@@ -1977,6 +2208,11 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
+                                      int reason) {
+   DCHECK(new_contents);
+   TRACE_EVENT0("ui", "BrowserView::OnActiveTabChanged");
++  auto alive = GetAsWeakPtr();
++  browser_widget_->ReconcileBarcActiveTab(this, new_contents);
++  if (!alive) {
++    return;
++  }
+   views::WebView* active_contents_view = GetActiveContentsWebView();
+   bool tab_change_in_split_view =
+       IsTabChangeInSplitView(old_contents, new_contents);
+@@ -2010,6 +2246,7 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
+       !browser_->GetTabStripModel()->closing_all() && GetWidget()->IsActive() &&
+       GetWidget()->IsVisible() && !tab_change_in_split_view;
+ #endif
++  will_restore_focus &= IsSelectedForNativeWindow();
+   // Update various elements that are interested in knowing the current
+   // WebContents.
+ 
+@@ -2027,8 +2264,10 @@ void BrowserView::OnActiveTabChanged(content::WebContents* old_contents,
+       GetWidget()->GetFocusManager()->ClearFocus();
+     }
+ 
+-    multi_contents_view_->GetInactiveContentsView()->SetWebContents(nullptr);
+-    active_contents_view->SetWebContents(nullptr);
++    multi_contents_view_->ExecuteOnEachVisibleContentsView(
++        base::BindRepeating([](ContentsWebView* view) {
++          view->SetWebContents(nullptr);
++        }));
+   }
+ 
+   // Do this before updating InfoBarContainer as the InfoBarContainer may
+@@ -2245,6 +2484,11 @@ bool BrowserView::IsFullscreen() const {
+ }
+ 
+ void BrowserView::RestoreFocus() {
++  // A physical pane is already focused while its profile/tab selection is
++  // reconciled. Restoring the previously active tab would steal that focus.
++  if (!IsSelectedForNativeWindow() || browser_widget_->IsChangingBarcPresentation()) {
++    return;
++  }
+   WebContents* selected_web_contents = GetActiveWebContents();
+   if (selected_web_contents) {
+     selected_web_contents->RestoreFocus();
+@@ -2885,6 +3129,11 @@ void BrowserView::TryNotifyWindowBoundsChanged(const gfx::Rect& widget_bounds) {
+ 
+ void BrowserView::OnWidgetVisibilityChanged(views::Widget* widget,
+                                             bool visible) {
++#if BUILDFLAG(IS_MAC)
++  barc::BrowserDiscoveryChanged();
++#endif
++  visible = (visible && IsSelectedForNativeWindow()) ||
++            (widget->IsVisible() && browser_widget_->HasBarcPresentedContents(this));
+   UpdateLoadingAnimations(visible);
+ 
+   if (visible &&
+@@ -3026,6 +3275,11 @@ void BrowserView::MaybeShowReadingListInSidePanelIPH() {
+ }
+ 
+ bool BrowserView::IsBookmarkBarVisible() const {
++#if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
++#endif
+   if (!WindowFeatureController::From(browser_)->SupportsWindowFeature(
+           WindowFeatureController::WindowFeature::kFeatureBookmarkBar)) {
+     return false;
+@@ -3065,6 +3319,9 @@ void BrowserView::DisableTabStripEditingForTesting() {
+ 
+ bool BrowserView::IsToolbarVisible() const {
+ #if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
+   // Immersive full screen makes it possible to display the toolbar when
+   // kShowFullscreenToolbar is not set.
+   if (!WindowFeatureController::From(browser())
+@@ -3091,6 +3348,11 @@ bool BrowserView::IsToolbarShowing() const {
+ }
+ 
+ bool BrowserView::IsLocationBarVisible() const {
++#if BUILDFLAG(IS_MAC)
++  if (barc_native_shell_) {
++    return false;
++  }
++#endif
+   return WindowFeatureController::From(browser_)->SupportsWindowFeature(
+              WindowFeatureController::WindowFeature::kFeatureLocationBar) &&
+          GetLocationBar()->IsVisible();
+@@ -3190,8 +3452,23 @@ void BrowserView::ConfirmBrowserCloseWithPendingDownloads(
+   // getting stuck in the hover state. Reset the window controls to
+   // prevent this.
+   browser_widget()->non_client_view()->ResetWindowControls();
+-  DownloadInProgressDialogView::Show(GetNativeWindow(), download_count,
+-                                     dialog_type, std::move(callback));
++  auto alive = weak_ptr_factory_.GetWeakPtr();
++  auto* widget = DownloadInProgressDialogView::Create(
++      GetNativeWindow(), download_count, dialog_type, std::move(callback));
++  auto warning = widget->GetWeakPtr();
++  if (!alive) {
++    warning->Close();
++    return;
++  }
++  pending_download_warning_ = warning;
++  warning->Show();
++}
++
++void BrowserView::CancelPendingDownloadWarning() {
++  auto warning = std::exchange(pending_download_warning_, {});
++  if (warning) {
++    warning->Close();
++  }
+ }
+ 
+ void BrowserView::UserChangedTheme(BrowserThemeChangeType theme_change_type) {
+@@ -3506,7 +3783,7 @@ void BrowserView::OnSplitTabChanged(const SplitTabChange& change) {
+           browser_->GetTabStripModel()->GetActiveTab();
+ 
+       if (active_tab->GetSplit() == change.split_id) {
+-        multi_contents_view_->SwapContentsInSplitView();
++        ShowSplitView(/*focus_active_view=*/false);
+       }
+       break;
+     }
+@@ -4181,6 +4458,9 @@ void BrowserView::OnWidgetDestroying(views::Widget* widget) {
+ 
+ void BrowserView::OnWidgetActivationChanged(views::Widget* widget,
+                                             bool active) {
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+   if (browser_->GetWindow()) {
+     if (active) {
+       if (restore_focus_on_activation_.has_value() &&
+@@ -4263,8 +4543,47 @@ void BrowserView::CloseTabSearchBubble() {
+   }
+ }
+ 
++bool BrowserView::IsSelectedForNativeWindow() const {
++  return browser_widget_ && browser_widget_->selected_browser_view() == this;
++}
++
++void BrowserView::BindPhysicalBrowserWidget(BrowserWidget* widget) {
++  CHECK(!browser_widget_);
++  CHECK(widget);
++  browser_widget_ = widget;
++  paint_as_active_subscription_ =
++      browser_widget_->RegisterPaintAsActiveChangedCallback(base::BindRepeating(
++          &BrowserView::PaintAsActiveChanged, base::Unretained(this)));
++}
++
++void BrowserView::SetOwnFrameView(BrowserFrameView* frame) {
++  own_frame_view_.SetView(frame);
++}
++
++void BrowserView::TransferPhysicalWidgetOwnershipTo(BrowserView* destination) {
++  CHECK(destination);
++  CHECK_NE(this, destination);
++  CHECK(owned_browser_widget_);
++  CHECK_EQ(browser_widget_, destination->browser_widget_);
++  CHECK(!destination->owned_browser_widget_);
++  destination->owned_browser_widget_ = std::move(owned_browser_widget_);
++}
++
+ void BrowserView::DeleteBrowserWindow() {
+-  CHECK(browser_widget_);
++  if (!browser_widget_) {
++    CHECK(!GetWidget());
++    delete this;  // Explicit native-host construction aborted before
++                  // attachment.
++    return;
++  }
++  if (browser_widget_->GetLogicalBrowserViews().size() > 1) {
++    browser_widget_->RemoveLogicalBrowserView(this);
++    return;
++  }
++  if (browser_widget_->IsPhysicalCloseCommitted() &&
++      browser_widget_->browser_native_widget()) {
++    browser_widget_->NotifyClientWillClose(this);
++  }
+ 
+   // Window placement is expected to be saved when the window closes.
+   // Determination for whether placement should be saved depends on the
+@@ -4272,7 +4591,8 @@ void BrowserView::DeleteBrowserWindow() {
+   // before the frame is destroyed to mitigate UAF risk.
+   browser_widget_->SaveWindowPlacementIfNeeded();
+ 
+-  browser_widget_.reset();
++  browser_widget_ = nullptr;
++  owned_browser_widget_.reset();
+   // BrowserWidget owns BrowserView in its views::View hierarchy and `this` will
+   // not be valid after this returns.
+ }
+@@ -4308,9 +4628,11 @@ void BrowserView::UpdateTabSearchBubbleHost() {
+         combo_button->end_button(), browser_.get());
+     combo_button->SetTabSearchBubbleHost(tab_search_bubble_host_.get());
+   } else {
+-    auto* combo_button =
+-        BrowserElementsViews::From(browser_.get())
+-            ->GetViewAs<TabStripComboButton>(kTabStripComboButtonElementId);
++    // The physical Widget may contain several logical BrowserViews. Keep the
++    // bubble host and its anchor in this BrowserView's ownership tree.
++    auto* combo_button = views::AsViewClass<TabStripComboButton>(
++        horizontal_tab_strip_region_view_->GetViewByElementId(
++            kTabStripComboButtonElementId));
+     tab_search_bubble_host_ = std::make_unique<TabSearchBubbleHost>(
+         combo_button->end_button(), browser_.get());
+     combo_button->SetTabSearchBubbleHost(tab_search_bubble_host_.get());
+@@ -4329,9 +4651,13 @@ void BrowserView::ShowSplitView(bool focus_active_view) {
+ 
+   std::vector<tabs::TabInterface*> split_tabs = split_data->ListTabs();
+ 
+-  for (size_t i = 0; tabs::TabInterface* tab : split_tabs) {
+-    multi_contents_view_->SetWebContentsAtIndex(tab->GetContents(), i++);
++  std::vector<content::WebContents*> contents;
++  for (auto* tab : split_tabs) {
++    contents.push_back(tab->GetContents());
+   }
++  multi_contents_view_->UpdateSplitVisualData(*split_data->visual_data());
++  multi_contents_view_->SetSplitContents(contents);
++  multi_contents_view_->ShowSplitView(*split_data->visual_data());
+   const int first_split_tab_index =
+       browser_->GetTabStripModel()->GetIndexOfTab(split_tabs[0]);
+   const int relative_active_position = active_index - first_split_tab_index;
+@@ -4339,10 +4665,19 @@ void BrowserView::ShowSplitView(bool focus_active_view) {
+ 
+   multi_contents_view_->UpdateSplitVisualData(*split_data->visual_data());
+ 
++#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
++  // Attachment callbacks can run while an incoming pane is still hidden.
++  // Reconcile policy against the complete, now-visible pane set.
++  if (auto* protection =
++          enterprise_data_protection::DataProtectionUIController::From(browser())) {
++    protection->MaybeUpdateScreenshotSettings();
++  }
++#endif
++
+   // Set focus to the active contents avoid reentrency when setting the web
+   // contents within MultiContentsView. See crbug.com/458189541 and
+   // crbug.com/447369458
+-  if (focus_active_view) {
++  if (focus_active_view && IsSelectedForNativeWindow()) {
+     if (!GetWidget()->IsActive()) {
+       GetFocusManager()->SetStoredFocusView(
+           multi_contents_view_->GetActiveContentsView());
+@@ -4355,31 +4690,33 @@ void BrowserView::ShowSplitView(bool focus_active_view) {
+ 
+ void BrowserView::HideSplitView() {
+   multi_contents_view_->CloseSplitView();
++#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
++  if (auto* protection =
++          enterprise_data_protection::DataProtectionUIController::From(browser())) {
++    protection->MaybeUpdateScreenshotSettings();
++  }
++#endif
+ }
+ 
+ void BrowserView::UpdateActiveTabInSplitView() {
+   CHECK(multi_contents_view_->IsInSplitView());
+-  const int active_index = browser_->GetTabStripModel()->active_index();
+-
+-  std::optional<split_tabs::SplitTabId> split_tab_id =
+-      browser_->GetTabStripModel()->GetTabAtIndex(active_index)->GetSplit();
+-
+-  CHECK(split_tab_id.has_value());
+-
+-  tabs::TabInterface* first_tab = browser_->GetTabStripModel()
+-                                      ->GetSplitData(split_tab_id.value())
+-                                      ->ListTabs()[0];
+-  const int first_split_tab_index =
+-      browser_->GetTabStripModel()->GetIndexOfTab(first_tab);
+-  const int relative_active_position = active_index - first_split_tab_index;
+-  multi_contents_view_->SetActiveIndex(relative_active_position);
++  // A retained split may have just lost a pane. Model indices already reflect
++  // removal while the mounted container order is reconciled by the subsequent
++  // contents-change notification. Activate the surviving document's real view.
++  multi_contents_view_->SetActiveContents(
++      browser_->GetTabStripModel()->GetActiveWebContents());
+ 
+   // When active tab changes inside a split, it's generally due to focus change.
+   // However, there are cases where inactive tab can be activated without a
+   // focus change e.g. using tab shortcuts and in these cases update focus.
+-  if (GetWidget()->IsActive() &&
+-      multi_contents_view_->GetInactiveContentsView()->HasFocus()) {
+-    multi_contents_view_->GetActiveContentsView()->RequestFocus();
++  if (IsSelectedForNativeWindow() && GetWidget()->IsActive()) {
++    for (auto* view : GetAllVisibleContentsWebViews()) {
++      if (view != multi_contents_view_->GetActiveContentsView() &&
++          view->HasFocus()) {
++        multi_contents_view_->GetActiveContentsView()->RequestFocus();
++        break;
++      }
++    }
+   }
+ }
+ 
+@@ -4388,8 +4725,10 @@ bool BrowserView::IsTabChangeInSplitView(content::WebContents* old_contents,
+   return multi_contents_view_->IsInSplitView() &&
+          multi_contents_view_->GetActiveContentsView()->web_contents() ==
+              old_contents &&
+-         multi_contents_view_->GetInactiveContentsView()->web_contents() ==
+-             new_contents;
++         old_contents != new_contents &&
++         multi_contents_view_->GetContentsContainerViewFor(new_contents) &&
++         multi_contents_view_->GetContentsContainerViewFor(new_contents)
++             ->GetVisible();
+ }
+ 
+ void BrowserView::UpdateTabModalDialogHost() {
+@@ -4437,12 +4776,10 @@ void BrowserView::MaybeUpdateStoredFocusForWebContents(
+ 
+ std::vector<ContentsWebView*> BrowserView::GetAllVisibleContentsWebViews() {
+   std::vector<ContentsWebView*> contents_views;
+-  contents_views.push_back(multi_contents_view_->GetActiveContentsView());
+-  ContentsWebView* inactive_contents_view =
+-      multi_contents_view_->GetInactiveContentsView();
+-  if (multi_contents_view_->IsInSplitView()) {
+-    contents_views.push_back(inactive_contents_view);
+-  }
++  multi_contents_view_->ExecuteOnEachVisibleContentsView(
++      base::BindRepeating([](std::vector<ContentsWebView*>* views,
++                             ContentsWebView* view) { views->push_back(view); },
++                          &contents_views));
+   return contents_views;
+ }
+ 
+@@ -4589,6 +4926,10 @@ bool BrowserView::RotatePaneFocusFromView(views::View* focused_view,
+ // BrowserView, views::ClientView overrides:
+ 
+ views::CloseRequestResult BrowserView::OnWindowCloseRequested() {
++  if (browser_widget_->GetLogicalBrowserViews().size() > 1 ||
++      browser_widget_->HasPhysicalClosePending()) {
++    return browser_widget_->PreparePhysicalClose();
++  }
+   // You cannot close a frame for which there is an active originating drag
+   // session.
+   if (tab_strip_view() && !tab_strip_view()->IsTabStripCloseable()) {
+@@ -4827,7 +5168,11 @@ int BrowserView::NonClientHitTest(const gfx::Point& point) {
+ 
+ gfx::Size BrowserView::GetMinimumSize() const {
+   auto* const layout = GetBrowserViewLayout();
+-  return layout ? layout->GetMinimumSize(this) : gfx::Size();
++  gfx::Size minimum = layout ? layout->GetMinimumSize(this) : gfx::Size();
++#if BUILDFLAG(IS_MAC)
++  minimum.Enlarge(barc::NativeShellWidth(this), barc::NativeShellHeight(this));
++#endif
++  return minimum;
+ }
+ 
+ ///////////////////////////////////////////////////////////////////////////////
+@@ -4886,6 +5231,12 @@ void BrowserView::Layout(PassKey) {
+   }
+ 
+   LayoutSuperclass<views::View>(this);
++#if BUILDFLAG(IS_MAC)
++  barc::LayoutNativeShell(barc_native_shell_, this);
++  if (IsSelectedForNativeWindow()) {
++    browser_widget_->SyncBarcPresentedBounds();
++  }
++#endif
+ 
+   // TODO(jamescook): Why was this in the middle of layout code?
+   toolbar_->location_bar()->UpdateFocusBehavior(IsToolbarVisible());
+@@ -5015,12 +5366,14 @@ void BrowserView::AddedToWidget() {
+ 
+   // Stow a pointer to this object onto the window handle so that we can get at
+   // it later when all we have is a native view.
+-  GetWidget()->SetNativeWindowProperty(kBrowserViewKey, this);
++  if (IsSelectedForNativeWindow()) {
++    GetWidget()->SetNativeWindowProperty(kBrowserViewKey, this);
+ 
+-  // Stow a pointer to the browser's profile onto the window handle so that we
+-  // can get it later when all we have is a native view.
+-  GetWidget()->SetNativeWindowProperty(Profile::kProfileKey,
+-                                       browser_->GetProfile());
++    // Stow a pointer to the browser's profile onto the window handle so that we
++    // can get it later when all we have is a native view.
++    GetWidget()->SetNativeWindowProperty(Profile::kProfileKey,
++                                         browser_->GetProfile());
++  }
+ 
+ #if defined(USE_AURA)
+   // Stow a pointer to the browser's profile onto the window handle so
+@@ -5091,6 +5444,13 @@ void BrowserView::AddedToWidget() {
+ 
+   // TODO(crbug.com/40664862): Remove BrowserViewLayout dependence on
+   // Widget and move to the constructor.
++#if BUILDFLAG(IS_MAC)
++  barc_native_shell_ = barc::CreateNativeShell(this);
++  if (barc_native_shell_) {
++    barc_page_header_ = AddChildView(std::make_unique<views::NativeViewHost>());
++    barc_page_header_->SetVisible(false);
++  }
++#endif
+   BrowserViewLayoutViews layout_views;
+ 
+   // LINT.IfChange(BrowserViewLayoutViews)
+@@ -5247,7 +5607,14 @@ const views::View* BrowserView::GetViewByElementId(
+ ///////////////////////////////////////////////////////////////////////////////
+ // BrowserView, ui::AcceleratorTarget overrides:
+ 
++bool BrowserView::CanHandleAccelerators() const {
++  return IsSelectedForNativeWindow() && View::CanHandleAccelerators();
++}
++
+ bool BrowserView::AcceleratorPressed(const ui::Accelerator& accelerator) {
++  if (!IsSelectedForNativeWindow()) {
++    return false;
++  }
+   NativeWebKeyboardEvent native_event(accelerator.ToKeyEvent());
+   if (ExclusiveAccessManager::From(browser_)->HandleUserKeyEvent(
+           native_event)) {
+@@ -5260,6 +5627,11 @@ bool BrowserView::AcceleratorPressed(const ui::Accelerator& accelerator) {
+   if (!FindCommandIdForAccelerator(accelerator, &command_id)) {
+     return false;
+   }
++#if BUILDFLAG(IS_MAC)
++  if (barc::IsPageCommand(command_id) && browser_widget_->barc_page_hidden()) {
++    return false;
++  }
++#endif
+ 
+   UpdateAcceleratorMetrics(accelerator, command_id);
+ 
+@@ -5340,11 +5712,11 @@ bool BrowserView::ShouldShowAvatarToolbarIPH() {
+ }
+ 
+ BrowserFrameView* BrowserView::GetFrameView() {
+-  return browser_widget_ ? browser_widget_->GetFrameView() : nullptr;
++  return static_cast<BrowserFrameView*>(own_frame_view_.view());
+ }
+ 
+ const BrowserFrameView* BrowserView::GetFrameView() const {
+-  return browser_widget_ ? browser_widget_->GetFrameView() : nullptr;
++  return static_cast<const BrowserFrameView*>(own_frame_view_.view());
+ }
+ 
+ BrowserViewLayout* BrowserView::GetBrowserViewLayout() const {
+@@ -5437,7 +5809,7 @@ bool BrowserView::MaybeUpdateDevtools(content::WebContents* contents) {
+   }
+ 
+   bool devtools_layout_updated = false;
+-  if (IsInSplitView()) {
++  if (IsInSplitView() && new_tab && new_tab->IsSplit()) {
+     std::optional<split_tabs::SplitTabId> split_tab_id = new_tab->GetSplit();
+     CHECK(split_tab_id.has_value());
+     split_tabs::SplitTabData* split_data =
+@@ -5682,6 +6054,11 @@ void BrowserView::LoadAccelerators() {
+     }
+ #endif
+ 
++#if BUILDFLAG(IS_MAC)
++    if (barc::ApplicationOwnsKeyCommand(entry.command_id)) {
++      continue;
++    }
++#endif
+     ui::Accelerator accelerator(entry.keycode, entry.modifiers);
+     accelerator_table_[accelerator] = entry.command_id;
+ 
+@@ -6082,7 +6459,8 @@ void BrowserView::PaintAsActiveChanged() {
+     return;
+   }
+ 
+-  const bool is_active = browser_widget_->ShouldPaintAsActive();
++  const bool is_active =
++      IsSelectedForNativeWindow() && browser_widget_->ShouldPaintAsActive();
+ 
+   // TODO: Unify semantics of "active" between the BrowserList and
+   // BrowserWindowInterface clients. The latter is more accurate definition
+@@ -6108,7 +6486,9 @@ void BrowserView::FrameColorsChanged() {
+     web_app_window_title_->SetBackgroundColor(frame_color);
+     web_app_window_title_->SetEnabledColor(caption_color);
+   }
+-  GetWidget()->SetBackgroundColor(kColorToolbar);
++  if (IsSelectedForNativeWindow()) {
++    GetWidget()->SetBackgroundColor(kColorToolbar);
++  }
+ }
+ 
+ void BrowserView::UpdateAccessibleNameForAllTabs() {
+@@ -6138,13 +6518,13 @@ void BrowserView::UpdateAccessibleNameForTabAt(int index) {
+ }
+ 
+ void BrowserView::UpdateAccessibleNameForRootView() {
+-  if (GetWidget()) {
++  if (GetWidget() && IsSelectedForNativeWindow()) {
+     GetWidget()->UpdateAccessibleNameForRootView();
+   }
+ }
+ 
+ void BrowserView::UpdateAccessibleURLForRootView(const GURL& url) {
+-  if (GetWidget()) {
++  if (GetWidget() && IsSelectedForNativeWindow()) {
+     GetWidget()->UpdateAccessibleURLForRootView(url);
+   }
+ }
+@@ -6169,6 +6549,13 @@ void BrowserView::OnFirstPresentation(
+ 
+ #if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+ void BrowserView::ApplyScreenshotSettings(bool allow) {
++  if (browser_widget_->HasBarcPresentedContents(this)) {
++    browser_widget_->UpdateBarcPresentedScreenshotPolicy();
++    return;
++  }
++  if (!IsSelectedForNativeWindow()) {
++    return;
++  }
+ #if BUILDFLAG(IS_WIN)
+   DCHECK_NE(GetWidget()->GetNativeWindow()->GetHost()->GetAcceleratedWidget(),
+             gfx::kNullAcceleratedWidget);

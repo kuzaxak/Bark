@@ -1,0 +1,142 @@
+diff --git a/chrome/browser/ui/views/frame/multi_contents_view.h b/chrome/browser/ui/views/frame/multi_contents_view.h
+index e39f000c2a..180f58f3eb 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_view.h
++++ b/chrome/browser/ui/views/frame/multi_contents_view.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_MULTI_CONTENTS_VIEW_H_
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_MULTI_CONTENTS_VIEW_H_
+ 
++#include <array>
+ #include <memory>
+ #include <optional>
+ 
+@@ -46,7 +47,7 @@ namespace views {
+ class WebView;
+ }  // namespace views
+ 
+-// MultiContentsView shows up to two contents web views side by side, and
++// MultiContentsView shows up to four live contents views in one row or column, and
+ // manages their layout relative to each other.
+ class MultiContentsView
+     : public views::View,
+@@ -71,6 +72,23 @@ class MultiContentsView
+ 
+   MultiContentsView(BrowserView* browser_view,
+                     std::unique_ptr<MultiContentsViewDelegate> delegate);
++  // Physical native presentation owns no profile, preferences or WebContents.
++  // It temporarily parents existing profile-owned containers in the same Widget.
++  explicit MultiContentsView(std::unique_ptr<MultiContentsViewDelegate> delegate);
++
++  // Same-Widget reparenting transfers parent ownership without an intermediate
++  // detached view. Refusal leaves the existing parent unchanged.
++  bool ReturnContainerFromPresentation(ContentsContainerView* container);
++  bool AddPresentedContainer(ContentsContainerView* container);
++  // Retains only an empty detached shell while an atomic reparent still
++  // references this view as its original parent. Called during owner teardown.
++  void RetireAfterOwnerDestruction();
++  void StopObservingPresentedContainers();
++  void ForgetReturnedPresentedContainers();
++  void HideUnpresentedOwnerContainers();
++  void ReversePresentedContainers();
++  bool is_physical_presentation() const { return browser_view_ == nullptr; }
++
+   MultiContentsView(const MultiContentsView&) = delete;
+   MultiContentsView& operator=(const MultiContentsView&) = delete;
+   ~MultiContentsView() override;
+@@ -83,7 +101,7 @@ class MultiContentsView
+   // Returns the currently active ContentsWebView.
+   ContentsWebView* GetActiveContentsView() const;
+ 
+-  // Returns the currently inactive ContentsWebView.
++  // Returns one inactive ContentsWebView (the other pane for a two-pane split).
+   ContentsWebView* GetInactiveContentsView() const;
+ 
+   // These are the rounded corner radii to render on the multi-contents view and
+@@ -101,8 +119,7 @@ class MultiContentsView
+   // the layout and prevent a re-layout of WebContents.
+   void ShowSplitView(split_tabs::SplitTabVisualData visual_data);
+ 
+-  // Preserves the active WebContents and hides the second ContentsContainerView
+-  // and resize handle.
++  // Preserves the active WebContents and hides every other container/handle.
+   void CloseSplitView();
+ 
+   // Visually swaps the two contents of the active split view by doing an
+@@ -112,12 +129,16 @@ class MultiContentsView
+ 
+   // Assigns the given |web_contents| to the ContentsContainerView's
+   // ContentsWebView at |index| in contents_container_views_. |index| must be
+-  // either 0 or 1 as we currently only support two contents. If |index| is 1
++  // within the current split pane count. If |index| is nonzero
+   // and we are not currently in a split view, displays the split views.
+   void SetWebContentsAtIndex(content::WebContents* web_contents, int index);
++  void SetSplitContents(base::span<content::WebContents* const> contents);
+ 
+   // Sets the index of the active contents view within contents_views_.
+   void SetActiveIndex(int index);
++  // Resolves the actual mounted container during model removal notifications,
++  // before ordered split membership has been reconciled in the view tree.
++  void SetActiveContents(content::WebContents* contents);
+   int GetActiveIndex() const { return active_index_; }
+ 
+   // Updates the size and layout of the contents views based on |visual_data|.
+@@ -127,6 +148,13 @@ class MultiContentsView
+     return visual_data_.split_layout();
+   }
+   double GetSplitRatio() const { return visual_data_.split_ratio(); }
++  double GetDividerRatio(size_t divider) const {
++    return visual_data_.split_dividers()[divider];
++  }
++  size_t GetPaneCount() const {
++    return IsInSplitView() ? visual_data_.pane_count() : 1;
++  }
++  void OnResizeDivider(size_t divider, int resize_amount, bool done_resizing);
+ 
+   // SplitTabHighlightController::Delegate:
+   void SetHighlightActiveContentsView(bool needs_attention) override;
+@@ -262,6 +290,14 @@ class MultiContentsView
+ 
+   int GetInactiveIndex() const;
+ 
++  void DestroyOwnerBoundChildren();
++  std::weak_ptr<std::unique_ptr<MultiContentsView>> hierarchy_retirement_;
++  std::vector<std::unique_ptr<ContentsContainerView>> retired_hierarchy_children_;
++
++  void ObserveContainerFocus(ContentsContainerView* container);
++  bool HasBorrowedContainers() const;
++  std::optional<std::array<bool, split_tabs::SplitTabVisualData::kMaxPanes>>
++      container_visibility_before_physical_borrow_;
+   void OnWebContentsFocused(views::WebView*);
+   void OnNtpFooterFocused(views::WebView*);
+   void OnActorOverlayFocused(views::WebView*);
+@@ -292,8 +328,8 @@ class MultiContentsView
+ 
+   raw_ptr<MultiContentsBackgroundView> background_view_;
+ 
+-  // Holds ContentsContainerViews, when not in a split view the second
+-  // ContentsContainerView is not visible.
++  // All four empty native containers exist before feature-controller enrollment.
++  // Unused panes remain hidden and unbound to WebContents.
+   std::vector<raw_ptr<ContentsContainerView, DanglingUntriaged>>
+       contents_container_views_;
+ 
+@@ -305,9 +341,9 @@ class MultiContentsView
+   // contents_web_view_.
+   raw_ptr<views::View> lens_overlay_view_ = nullptr;
+ 
+-  // The handle responsible for resizing the two contents views as relative to
+-  // each other.
++  // The first resize handle, retained for the existing two-pane API/tests.
+   raw_ptr<MultiContentsResizeArea> resize_area_ = nullptr;
++  std::vector<raw_ptr<MultiContentsResizeArea>> resize_areas_;
+ 
+   // The views that are shown for entering split view. E.g., this is shown when
+   // the user drags a link to the edge of the contents view.
+@@ -335,6 +371,7 @@ class MultiContentsView
+   // Initial size of `start_contents_.contents_view_` along the resize axis when
+   // a resize action began. Nullopt if not currently resizing.
+   std::optional<int> initial_start_size_on_resize_;
++  std::optional<size_t> resizing_divider_;
+ 
+   // Insets of the start and end contents view when in split view.
+   gfx::Insets split_view_insets_;

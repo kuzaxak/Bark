@@ -1,15 +1,16 @@
 import AppKit
+import BarcChromium
 import SwiftUI
 import NookTabsCore
 import NookWeb
 
 @MainActor
 private enum Native {
-    static var callback: ChromiumPageHostAPI.Callback?
+    static var callback: barc_profile_window_callback?
     static var context: UnsafeMutableRawPointer?
     static var profile = UUID()
     static var calls: [String] = []
-    static var observers: [UInt64: (ChromiumNavigationAPI.Callback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
+    static var observers: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var token: UInt64 = 1
     static var attachAccepted = true
     static var showAccepted = true
@@ -19,65 +20,78 @@ private enum Native {
     static var members: [Int32: Set<Int32>] = [:]
     static var detachAttempts = 0
 
-    static var api: ChromiumProfilePageAPI {
-        ChromiumProfilePageAPI(open: { uuid, destination, callback, context in MainActor.assumeIsolated {
-            precondition(destination == 5, "Utility construction must remain hidden")
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.profile_open_window = { uuid, destination, callback, context in MainActor.assumeIsolated {
+            precondition(destination == BARC_PROFILE_BLANK, "Utility construction must remain hidden")
             Native.calls.append("open:" + String(cString: uuid!))
             Native.callback = callback; Native.context = context
-        } }, copyTitle: { window, tab, _, _ in MainActor.assumeIsolated {
+        } }
+        bridge.tab_copy_title = { window, tab, _, _ in MainActor.assumeIsolated {
             Native.members[window]?.contains(tab) == true ? 1 : 0
-        } }, detachOwned: { window, expected in MainActor.assumeIsolated {
+        } }
+        bridge.window_detach_native_shell_if_owned = { window, expected in MainActor.assumeIsolated {
             Native.detachAttempts += 1
             guard let current = Native.headers[window],
                   Unmanaged.passUnretained(current).toOpaque() == expected else { return 0 }
             Native.headers[window] = nil
             Native.calls.append("detach")
             return 1
-        } }, ownsHeader: { window, expected in MainActor.assumeIsolated {
+        } }
+        bridge.window_native_shell_is_owned = { window, expected in MainActor.assumeIsolated {
             guard Native.members[window] != nil else { return 0 }
             guard let current = Native.headers[window] else { return expected == nil ? 1 : 0 }
             return Unmanaged.passUnretained(current).toOpaque() == expected ? 1 : 0
-        } }, tabAt: { window, _ in MainActor.assumeIsolated { Native.members[window]?.first ?? 0 } },
-        attach: { window, pointer in MainActor.assumeIsolated {
+        } }
+        bridge.window_tab_at = { window, _ in MainActor.assumeIsolated { Native.members[window]?.first ?? 0 } }
+        bridge.window_attach_native_shell = { window, pointer in MainActor.assumeIsolated {
             guard let pointer else { preconditionFailure("Unconditional header detach is forbidden") }
             if Native.attachAccepted { Native.headers[window] = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue() }
             Native.calls.append("attach"); Native.onAttach?()
             return Native.attachAccepted ? 1 : 0
-        } }, select: { _ in MainActor.assumeIsolated { Native.calls.append("select"); return 1 } },
-        show: { _ in MainActor.assumeIsolated {
+        } }
+        bridge.window_select = { _ in MainActor.assumeIsolated { Native.calls.append("select"); return 1 } }
+        bridge.window_show = { _ in MainActor.assumeIsolated {
             Native.calls.append("show"); Native.onShow?()
             return Native.showAccepted ? 1 : 0
-        } }, close: { _ in MainActor.assumeIsolated { Native.calls.append("close"); return 1 } })
-    }
-
-    static var navigation: ChromiumNavigationAPI {
-        ChromiumNavigationAPI(observe: { window, tab, callback, context in MainActor.assumeIsolated {
+        } }
+        bridge.window_close = { _ in MainActor.assumeIsolated { Native.calls.append("close"); return 1 } }
+        bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
             let token = Native.token; Native.token += 1
             Native.observers[token] = (callback, context, window, tab)
             return token
-        } }, unobserve: { token in MainActor.assumeIsolated { Native.observers[token] = nil } },
-        navigate: { _, _, url in MainActor.assumeIsolated {
+        } }
+        bridge.tab_unobserve = { token in MainActor.assumeIsolated { Native.observers[token] = nil } }
+        bridge.tab_observe_media = { _, _ in 1 }
+        bridge.tab_observe_vault = { _, _ in 1 }
+        bridge.tab_observe_vault_save = { _, _ in 1 }
+        bridge.tab_observe_vault_passkeys = { _, _ in 1 }
+        bridge.tab_navigate = { _, _, url in MainActor.assumeIsolated {
             Native.calls.append("navigate:" + String(cString: url!)); return 1
-        } }, back: { window, tab in MainActor.assumeIsolated { Native.calls.append("back:\(window):\(tab)"); return 1 } },
-        forward: { window, tab in MainActor.assumeIsolated { Native.calls.append("forward:\(window):\(tab)"); return 1 } },
-        reload: { window, tab in MainActor.assumeIsolated { Native.calls.append("reload:\(window):\(tab)"); return 1 } },
-        stop: { _, _ in 1 },
-        select: { _, _ in 1 }, close: { _, _ in 1 },
-        captureThumbnail: { _, _, _ in 0 },
-        clearSiteData: { _, _, _, _ in 0 }, profileUUID: { _, pointer, capacity in MainActor.assumeIsolated {
+        } }
+        bridge.tab_go_back = { window, tab in MainActor.assumeIsolated { Native.calls.append("back:\(window):\(tab)"); return 1 } }
+        bridge.tab_go_forward = { window, tab in MainActor.assumeIsolated { Native.calls.append("forward:\(window):\(tab)"); return 1 } }
+        bridge.tab_reload = { window, tab in MainActor.assumeIsolated { Native.calls.append("reload:\(window):\(tab)"); return 1 } }
+        bridge.tab_stop = { _, _ in 1 }
+        bridge.tab_select = { _, _ in 1 }
+        bridge.tab_close = { _, _ in 1 }
+        bridge.tab_capture_thumbnail = { _, _, _ in 0 }
+        bridge.tab_clear_site_data = { _, _, _, _ in 0 }
+        bridge.window_profile_uuid = { _, pointer, capacity in MainActor.assumeIsolated {
             let bytes = Array(Native.profile.uuidString.utf8CString)
             if let pointer, capacity >= bytes.count {
                 for (index, byte) in bytes.enumerated() { pointer[index] = byte }
             }
             return bytes.count
-        } })
+        } }
+        return bridge
     }
 
     static func opened(_ window: Int32) {
         let callback = self.callback, context = self.context
         self.callback = nil; self.context = nil
         members[window] = [window * 10]
-        callback?(0, window, context)
+        callback?(BARC_PROFILE_OK, window, context)
     }
 
     static func transfer(_ window: Int32, to destination: Int32) {
@@ -106,7 +120,7 @@ private enum ProfileChecks {
         tree.createSpace(id: space, name: "Work", icon: "briefcase", accentHex: "#000000", after: nil)
         let profile = tree.profiles.first!
         Native.profile = profile.id
-        let presenter = ChromiumProfilePagePresenter(api: Native.api, navigationAPI: Native.navigation)
+        let presenter = ChromiumProfilePagePresenter(bridge: Native.bridge)
         var outcomes: [Result<Void, ProfilePageOpenError>] = []
         presenter.open(profile, destination: .settings, canPresent: { false }) { outcomes.append($0) }
         precondition(Native.calls.isEmpty)
@@ -340,11 +354,11 @@ private enum ProfileChecks {
         presenter.openRecovery(kept, canPresent: { true }, openSettings: {}) { recovery.append($0) }
         let failedCallback = Native.callback, failedContext = Native.context
         Native.callback = nil; Native.context = nil
-        failedCallback?(4, 0, failedContext)
+        failedCallback?(BARC_PROFILE_CANCELLED, 0, failedContext)
         guard case .failure(.presentationFailed) = recovery.removeLast() else { preconditionFailure() }
         // One cancellation callback can deliver another request's factory result.
         // Both requests must already be revoked before the first callout.
-        var pendingFactories: [(ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)] = []
+        var pendingFactories: [(barc_profile_window_callback?, UnsafeMutableRawPointer?)] = []
         var delivered = false
         Native.calls = []
         for _ in 0..<2 {
@@ -355,7 +369,7 @@ private enum ProfileChecks {
                     for (index, pending) in pendingFactories.enumerated() {
                         let window = Int32(78 + index)
                         Native.members[window] = [window * 10]
-                        pending.0?(0, window, pending.1)
+                        pending.0?(BARC_PROFILE_OK, window, pending.1)
                     }
                 }
             }

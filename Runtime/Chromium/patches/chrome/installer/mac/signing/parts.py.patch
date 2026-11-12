@@ -1,0 +1,67 @@
+diff --git a/chrome/installer/mac/signing/parts.py b/chrome/installer/mac/signing/parts.py
+index caf9b6f544..13b09bff0f 100644
+--- a/chrome/installer/mac/signing/parts.py
++++ b/chrome/installer/mac/signing/parts.py
+@@ -174,6 +174,7 @@ def get_parts(config):
+         )
+ 
+     dylibs = [
++        'libnook_adblock.dylib',
+         'libaperitif.dylib',
+         'libvk_swiftshader.dylib',
+         'libvulkan.dylib',
+@@ -202,6 +203,32 @@ def get_parts(config):
+             verify_options=verify_options,
+         )
+ 
++    # Mandatory native siblings; no discovery or --deep signing.
++    native_root = '{.app_product}.app/Contents/Frameworks'.format(config)
++    sparkle = native_root + '/Sparkle.framework/Versions/B'
++    for name, path, identifier, executable in (
++        ('native-sparkle-downloader', sparkle + '/XPCServices/Downloader.xpc',
++         'org.sparkle-project.DownloaderService', True),
++        ('native-sparkle-installer', sparkle + '/XPCServices/Installer.xpc',
++         'org.sparkle-project.InstallerLauncher', True),
++        ('native-sparkle-updater', sparkle + '/Updater.app',
++         'org.sparkle-project.Sparkle.Updater', True),
++        ('native-sparkle-autoupdate', sparkle + '/Autoupdate',
++         'Autoupdate-5555494459251b2ebc0232c783a3e31c4a4e4056', True),
++        ('native-sparkle-framework', native_root + '/Sparkle.framework',
++         'org.sparkle-project.Sparkle', False),
++        ('native-shell', native_root + '/NookNativeShell.framework',
++         'ee.qdo.nook.NativeShell', False),
++    ):
++        parts[name] = CodeSignedProduct(
++            path, identifier,
++            options=(CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS
++                     if executable else None),
++            sign_with_identifier=(name == 'native-sparkle-autoupdate'),
++            replace_existing_signature=name.startswith('native-sparkle-'),
++            preserve_entitlements=name.startswith('native-sparkle-'),
++            verify_options=verify_options)
++
+     return parts
+ 
+ 
+@@ -257,6 +284,12 @@ async def sign_chrome(paths, config, sign_framework=False):
+ 
+     _sanity_check_version_keys(paths, parts)
+ 
++    # Native siblings are outside the reusable Chromium Framework signature.
++    # Keep leaf-before-container order even when sign_framework is False.
++    for name, part in parts.items():
++        if name.startswith('native-'):
++            signing.sign_part(paths, config, part)
++
+     if sign_framework:
+         # To sign an .app bundle that contains nested code, the nested
+         # components themselves must be signed. Each of these components is
+@@ -265,7 +298,7 @@ async def sign_chrome(paths, config, sign_framework=False):
+         # signing the Current version.
+         # https://developer.apple.com/library/content/technotes/tn2206/_index.html#//apple_ref/doc/uid/DTS40007919-CH1-TNTAG13
+         for name, part in parts.items():
+-            if name in ('app', 'framework', 'privileged-helper'):
++            if name in ('app', 'framework', 'privileged-helper') or name.startswith('native-'):
+                 continue
+             signing.sign_part(paths, config, part)
+ 

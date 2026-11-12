@@ -1,0 +1,92 @@
+diff --git a/ui/views/window/default_frame_view.cc b/ui/views/window/default_frame_view.cc
+index 34ca2a0375..6ae6b8d85a 100644
+--- a/ui/views/window/default_frame_view.cc
++++ b/ui/views/window/default_frame_view.cc
+@@ -120,12 +120,15 @@ gfx::Rect DefaultFrameView::GetWindowBoundsForClientBounds(
+ }
+ 
+ int DefaultFrameView::NonClientHitTest(const gfx::Point& point) {
++  if (!client_view()) {
++    return HTNOWHERE;
++  }
+   // Sanity check.
+   if (!bounds().Contains(point)) {
+     return HTNOWHERE;
+   }
+ 
+-  int frame_component = widget_->client_view()->NonClientHitTest(point);
++  int frame_component = client_view()->NonClientHitTest(point);
+ 
+   // See if we're in the sysmenu region.  (We check the ClientView first to be
+   // consistent with OpaqueBrowserFrameView; it's not really necessary here.)
+@@ -243,25 +246,29 @@ void DefaultFrameView::Layout(PassKey) {
+ 
+ gfx::Size DefaultFrameView::CalculatePreferredSize(
+     const SizeBounds& available_size) const {
+-  return widget_->non_client_view()
+-      ->GetWindowBoundsForClientBounds(
+-          gfx::Rect(widget_->client_view()->GetPreferredSize(available_size)))
++  if (!client_view()) {
++    return gfx::Size();
++  }
++  return GetWindowBoundsForClientBounds(
++             gfx::Rect(client_view()->GetPreferredSize(available_size)))
+       .size();
+ }
+ 
+ gfx::Size DefaultFrameView::GetMinimumSize() const {
+-  return widget_->non_client_view()
+-      ->GetWindowBoundsForClientBounds(
+-          gfx::Rect(widget_->client_view()->GetMinimumSize()))
++  if (!client_view()) {
++    return gfx::Size();
++  }
++  return GetWindowBoundsForClientBounds(gfx::Rect(client_view()->GetMinimumSize()))
+       .size();
+ }
+ 
+ gfx::Size DefaultFrameView::GetMaximumSize() const {
+-  gfx::Size max_size = widget_->client_view()->GetMaximumSize();
++  if (!client_view()) {
++    return gfx::Size();
++  }
++  gfx::Size max_size = client_view()->GetMaximumSize();
+   gfx::Size converted_size =
+-      widget_->non_client_view()
+-          ->GetWindowBoundsForClientBounds(gfx::Rect(max_size))
+-          .size();
++      GetWindowBoundsForClientBounds(gfx::Rect(max_size)).size();
+   return gfx::Size(max_size.width() == 0 ? 0 : converted_size.width(),
+                    max_size.height() == 0 ? 0 : converted_size.height());
+ }
+@@ -367,6 +374,9 @@ void DefaultFrameView::PaintRestoredFrameBorder(gfx::Canvas* canvas) {
+ }
+ 
+ void DefaultFrameView::PaintMaximizedFrameBorder(gfx::Canvas* canvas) {
++  if (!client_view()) {
++    return;
++  }
+   frame_background_->PaintMaximized(canvas, this);
+ 
+   ui::ResourceBundle& rb = ui::ResourceBundle::GetSharedInstance();
+@@ -379,7 +389,7 @@ void DefaultFrameView::PaintMaximizedFrameBorder(gfx::Canvas* canvas) {
+   int edge_height = titlebar_bottom->height() -
+                     (ShouldShowClientEdge() ? kClientEdgeThickness : 0);
+   canvas->TileImageInt(*titlebar_bottom, 0,
+-                       widget_->client_view()->y() - edge_height, width(),
++                       client_view()->y() - edge_height, width(),
+                        edge_height);
+ }
+ 
+@@ -403,7 +413,10 @@ void DefaultFrameView::PaintTitleBar(gfx::Canvas* canvas) {
+ }
+ 
+ void DefaultFrameView::PaintRestoredClientEdge(gfx::Canvas* canvas) {
+-  gfx::Rect client_area_bounds = widget_->client_view()->bounds();
++  if (!client_view()) {
++    return;
++  }
++  gfx::Rect client_area_bounds = client_view()->bounds();
+   // The shadows have a 1 pixel gap on the inside, so draw them 1 pixel inwards.
+   gfx::Rect shadowed_area_bounds = client_area_bounds;
+   shadowed_area_bounds.Inset(gfx::Insets(1));

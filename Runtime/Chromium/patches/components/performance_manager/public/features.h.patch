@@ -1,0 +1,16 @@
+diff --git a/components/performance_manager/public/features.h b/components/performance_manager/public/features.h
+index 329ff70f35..3dbdac6431 100644
+--- a/components/performance_manager/public/features.h
++++ b/components/performance_manager/public/features.h
+@@ -17,6 +17,11 @@
+ 
+ namespace performance_manager::features {
+ 
++// Native Barc cannot yet prove absence of document/worker/keepalive uploads.
++// Hold destructive resource actions independently of user/extension preferences.
++// Explicit user close is not a resource action and remains unaffected.
++bool IsNativeResourceProtectionHeld();
++
+ #if !BUILDFLAG(IS_ANDROID)
+ 
+ #if BUILDFLAG(IS_LINUX)

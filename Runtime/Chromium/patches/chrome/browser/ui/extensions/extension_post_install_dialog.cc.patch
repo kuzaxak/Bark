@@ -1,0 +1,203 @@
+diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chrome/browser/ui/extensions/extension_post_install_dialog.cc
+index bc61086dd2..8bf721bea5 100644
+--- a/chrome/browser/ui/extensions/extension_post_install_dialog.cc
++++ b/chrome/browser/ui/extensions/extension_post_install_dialog.cc
+@@ -15,6 +15,12 @@
+ #include "base/task/sequenced_task_runner.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/ui/extensions/extension_dialog_utils.h"
++#if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
++#endif
+ #include "chrome/browser/ui/extensions/extension_installed_watcher.h"
+ #include "chrome/browser/ui/extensions/extension_post_install_dialog_model.h"
+ #include "chrome/common/url_constants.h"
+@@ -44,6 +50,26 @@
+ namespace extensions {
+ 
+ namespace {
++#if !BUILDFLAG(IS_ANDROID)
++bool CanPresentForBrowserOwner(
++    const std::optional<base::WeakPtr<BrowserWindowInterface>>& owner,
++    Profile* profile,
++    content::WebContents* contents) {
++  if (!owner)
++    return true;
++  auto* browser = owner->get();
++  if (!browser || browser->IsDeleteScheduled() ||
++      !browser->IsSelectedForNativeWindow() || !browser->GetWindow() ||
++      browser->GetProfile() != profile)
++    return false;
++  auto* view = BrowserView::GetBrowserViewForBrowser(browser);
++  return view && view->GetWidget() &&
++         (!contents ||
++          GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
++              contents) == browser);
++}
++#endif
++
+ constexpr gfx::Size kMaxIconSize{43, 43};
+ 
+ void ConfigurePostInstallDialogModel(
+@@ -137,11 +163,17 @@ void ShowExtensionPostInstallDialog(
+     content::WebContents* web_contents,
+     std::unique_ptr<ExtensionPostInstallDialogModel> model,
+     base::OnceCallback<void(base::WeakPtr<content::WebContents>)>
+-        show_iph_callback) {
++        show_iph_callback,
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner) {
+   if (!web_contents) {
+     return;
+   }
+ 
++#if !BUILDFLAG(IS_ANDROID)
++  if (!CanPresentForBrowserOwner(browser_owner, profile, web_contents))
++    return;
++#endif
++  const auto weak_profile = profile->GetWeakPtr();
+   auto delegate = std::make_unique<ExtensionPostInstallDialog>(
+       web_contents, std::move(model));
+   gfx::NativeWindow native_window = web_contents->GetTopLevelNativeWindow();
+@@ -153,14 +185,6 @@ void ShowExtensionPostInstallDialog(
+ 
+   ui::DialogModel::Builder dialog_model_builder(std::move(delegate));
+ 
+-  if (!show_iph_callback.is_null()) {
+-    dialog_model_builder.SetDialogDestroyingCallback(base::BindOnce(
+-        base::IgnoreResult(&base::SequencedTaskRunner::PostTask),
+-        base::SequencedTaskRunner::GetCurrentDefault(), FROM_HERE,
+-        base::BindOnce(std::move(show_iph_callback),
+-                       web_contents->GetWeakPtr())));
+-  }
+-
+   auto manage_shortcuts_callback =
+       base::BindRepeating(&ExtensionPostInstallDialog::LinkClicked,
+                           base::Unretained(weak_delegate));
+@@ -169,6 +193,12 @@ void ShowExtensionPostInstallDialog(
+                                   weak_delegate->model(),
+                                   manage_shortcuts_callback);
+ 
++  if (!weak_profile)
++    return;
++#if !BUILDFLAG(IS_ANDROID)
++  if (!CanPresentForBrowserOwner(browser_owner, profile, web_contents))
++    return;
++#endif
+ #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+   // Add a sync or sign in promo in the footer if it should be shown.
+   extensions::ExtensionRegistry* registry =
+@@ -183,7 +213,52 @@ void ShowExtensionPostInstallDialog(
+   }
+ #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+ 
++  if (!weak_profile)
++    return;
++#if !BUILDFLAG(IS_ANDROID)
++  if (!CanPresentForBrowserOwner(browser_owner, profile, web_contents))
++    return;
++#endif
++  if (!show_iph_callback.is_null()) {
++    // Rejected models must not schedule an IPH. Register after ownership
++    // admission and recheck when the posted callback runs.
++    dialog_model_builder.SetDialogDestroyingCallback(base::BindOnce(
++        base::IgnoreResult(&base::SequencedTaskRunner::PostTask),
++        base::SequencedTaskRunner::GetCurrentDefault(), FROM_HERE,
++        base::BindOnce(
++            [](base::WeakPtr<Profile> profile,
++               std::optional<base::WeakPtr<BrowserWindowInterface>> owner,
++               base::WeakPtr<content::WebContents> contents,
++               base::OnceCallback<void(base::WeakPtr<content::WebContents>)>
++                   callback) {
++              if (!profile || !contents)
++                return;
++#if !BUILDFLAG(IS_ANDROID)
++              if (!CanPresentForBrowserOwner(owner, profile.get(),
++                                             contents.get()))
++                return;
++#endif
++              std::move(callback).Run(contents);
++            },
++            profile->GetWeakPtr(), browser_owner, web_contents->GetWeakPtr(),
++            std::move(show_iph_callback))));
++  }
+   std::unique_ptr<ui::DialogModel> dialog_model = dialog_model_builder.Build();
++#if !BUILDFLAG(IS_ANDROID)
++  if (browser_owner) {
++    const auto weak_owner = *browser_owner;
++    auto* container = BrowserView::GetBrowserViewForBrowser(weak_owner.get())
++                          ->toolbar_button_provider()
++                          ->GetExtensionsContainerViews();
++    if (container) {
++      ShowDialog(container, {weak_delegate->model()->extension_id()},
++                 std::move(dialog_model));
++    } else {
++      ShowDialog(weak_owner.get(), std::move(dialog_model));
++    }
++    return;
++  }
++#endif
+   ShowDialog(native_window, weak_delegate->model()->extension_id(),
+              std::move(dialog_model));
+ }
+@@ -196,34 +271,52 @@ void TriggerPostInstallDialog(
+     const SkBitmap& icon,
+     base::OnceCallback<content::WebContents*()> get_web_contents_callback,
+     base::OnceCallback<void(base::WeakPtr<content::WebContents>)>
+-        show_iph_callback) {
++        show_iph_callback,
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner) {
+   auto watcher = std::make_unique<ExtensionInstalledWatcher>(profile);
+   ExtensionInstalledWatcher* watcher_ptr = watcher.get();
+   watcher_ptr->WaitForInstall(
+       extension->id(),
+       base::BindOnce(
+           [](std::unique_ptr<ExtensionInstalledWatcher> watcher,
+-             scoped_refptr<const extensions::Extension> ext, Profile* prof,
++             scoped_refptr<const extensions::Extension> ext,
++             base::WeakPtr<Profile> weak_profile,
++             std::optional<base::WeakPtr<BrowserWindowInterface>> owner,
+              const SkBitmap& icon_val,
+              base::OnceCallback<content::WebContents*()> get_web_contents_cb,
+              base::OnceCallback<void(base::WeakPtr<content::WebContents>)>
+                  show_iph_cb,
+              bool installed) {
+-            if (!installed) {
++            if (!installed || !weak_profile) {
+               return;
+             }
++#if !BUILDFLAG(IS_ANDROID)
++            if (!CanPresentForBrowserOwner(owner, weak_profile.get(), nullptr))
++              return;
++#endif
+             content::WebContents* web_contents =
+                 std::move(get_web_contents_cb).Run();
+             if (!web_contents) {
+               return;
+             }
++            // Getting the target contents may invoke embedder callbacks.
++            if (!weak_profile)
++              return;
++#if !BUILDFLAG(IS_ANDROID)
++            if (!CanPresentForBrowserOwner(owner, weak_profile.get(),
++                                           web_contents))
++              return;
++#endif
++            auto* prof = weak_profile.get();
+             auto model = std::make_unique<ExtensionPostInstallDialogModel>(
+                 prof, ext.get(), icon_val);
+             extensions::ShowExtensionPostInstallDialog(
+-                prof, web_contents, std::move(model), std::move(show_iph_cb));
++                prof, web_contents, std::move(model), std::move(show_iph_cb),
++                owner);
+           },
+-          std::move(watcher), extension, profile, icon,
+-          std::move(get_web_contents_callback), std::move(show_iph_callback)));
++          std::move(watcher), extension, profile->GetWeakPtr(), browser_owner,
++          icon, std::move(get_web_contents_callback),
++          std::move(show_iph_callback)));
+ }
+ 
+ }  // namespace extensions

@@ -1,0 +1,73 @@
+diff --git a/chrome/browser/webauthn/authenticator_request_dialog_controller.cc b/chrome/browser/webauthn/authenticator_request_dialog_controller.cc
+index 0d4be67e11..893afddc55 100644
+--- a/chrome/browser/webauthn/authenticator_request_dialog_controller.cc
++++ b/chrome/browser/webauthn/authenticator_request_dialog_controller.cc
+@@ -395,6 +395,9 @@ const gfx::VectorIcon& GetMechanismIcon(
+                        ? vector_icons::kPasswordManagerIcon
+                        : vector_icons::kPasswordManagerOldIcon;
+           },
++          [](const Mechanism::PawlVault&) -> const gfx::VectorIcon& {
++            return vector_icons::kPasswordManagerIcon;
++          },
+           [](const Mechanism::SignInAgain&) -> const gfx::VectorIcon& {
+             return features::IsRoundedIconsEnabled()
+                        ? vector_icons::kSyncIcon
+@@ -432,6 +435,7 @@ bool MechanismMatchesHint(const Mechanism::Type& mech,
+           },
+           [](const Mechanism::Password&) { return false; },
+           [](const Mechanism::SignInAgain&) { return false; },
++          [](const Mechanism::PawlVault&) { return false; },
+       },
+       mech);
+ }
+@@ -1017,7 +1021,7 @@ void AuthenticatorRequestDialogController::
+   if (!type.has_value()) {
+     if (std::ranges::any_of(
+             authenticators, [](const AuthenticatorReference& ref) {
+-              return ref.type == AuthenticatorType::kOther &&
++              return ref.authenticator_id != "NookPawlVault" && ref.type == AuthenticatorType::kOther &&
+                      ref.transport == device::FidoTransportProtocol::kInternal;
+             })) {
+       type = AuthenticatorType::kOther;
+@@ -1034,7 +1038,8 @@ void AuthenticatorRequestDialogController::
+         if (type && *type == AuthenticatorType::kEnclave) {
+           return ref.type == *type;
+         }
+-        return ref.transport == device::FidoTransportProtocol::kInternal &&
++        return ref.authenticator_id != "NookPawlVault" &&
++               ref.transport == device::FidoTransportProtocol::kInternal &&
+                (!type || ref.type == *type);
+       });
+ 
+@@ -2125,6 +2130,31 @@ void AuthenticatorRequestDialogController::PopulateMechanisms() {
+     AddWindowsButton(windows_button_label->first, windows_button_label->second);
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (std::ranges::any_of(ephemeral_state_.saved_authenticators_,[](const auto& ref) {
++        return ref.authenticator_id == "NookPawlVault";
++      })) {
++    Mechanism::Type type = Mechanism::PawlVault();
++    model_->mechanisms.emplace_back(type,u"Pawl Vault",GetMechanismIcon(type,ui_presentation()),
++        base::BindRepeating([](base::WeakPtr<AuthenticatorRequestDialogController> self) {
++          if (!self) return;
++          auto found = std::ranges::find_if(self->ephemeral_state_.saved_authenticators_,[](const auto& ref) {
++            return ref.authenticator_id == "NookPawlVault";
++          });
++          if (found == self->ephemeral_state_.saved_authenticators_.end()) return;
++          const auto id = found->authenticator_id;
++          self->ephemeral_state_.dispatched_platform_authenticator_type_ = found->type;
++          self->SetCurrentStep(Step::kPlatformAuthenticator);
++          if (!self || self->model_->step() != Step::kPlatformAuthenticator ||
++              self->ephemeral_state_.dispatched_platform_authenticator_type_ != AuthenticatorType::kOther) return;
++          // Step observers may cancel/rebuild the saved-authenticator vector.
++          found = std::ranges::find_if(self->ephemeral_state_.saved_authenticators_,[&id](const auto& ref) {
++            return ref.authenticator_id == id;
++          });
++          if (found != self->ephemeral_state_.saved_authenticators_.end()) self->DispatchRequestAsync(&*found);
++        },weak_factory_.GetWeakPtr()));
++  }
++#endif
+   model_->mechanisms = webauthn::sorting::SortMechanisms(
+       std::move(model_->mechanisms), ui_presentation());
+ }

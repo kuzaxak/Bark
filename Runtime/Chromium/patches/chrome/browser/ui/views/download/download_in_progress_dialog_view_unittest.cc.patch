@@ -1,0 +1,18 @@
+diff --git a/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc b/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc
+index 7479b2db21..b98eb3aa5e 100644
+--- a/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc
++++ b/chrome/browser/ui/views/download/download_in_progress_dialog_view_unittest.cc
+@@ -28,10 +28,11 @@ TEST_F(DownloadInProgressDialogTest, CallbackIsRunOnClose) {
+   std::optional<bool> result;
+   views::NamedWidgetShownWaiter waiter(views::test::AnyWidgetTestPasskey(),
+                                        "DownloadInProgressDialogView");
+-  DownloadInProgressDialogView::Show(
++  DownloadInProgressDialogView::Create(
+       parent->GetNativeWindow(), 1,
+       UnloadController::DownloadCloseType::kBrowserShutdown,
+-      base::BindLambdaForTesting([&](bool b) { result = b; }));
++      base::BindLambdaForTesting([&](bool b) { result = b; }))
++      ->Show();
+   waiter.WaitIfNeededAndGet()->Close();
+ 
+   ASSERT_TRUE(result.has_value());

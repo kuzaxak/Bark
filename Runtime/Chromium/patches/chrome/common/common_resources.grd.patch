@@ -1,0 +1,26 @@
+diff --git a/chrome/common/common_resources.grd b/chrome/common/common_resources.grd
+index 02b9d652cc..630547811f 100644
+--- a/chrome/common/common_resources.grd
++++ b/chrome/common/common_resources.grd
+@@ -8,9 +8,21 @@
+   </outputs>
+   <release seq="1">
+     <includes>
++
+       <include name="IDR_CHROME_EXTENSION_API_FEATURES" file="extensions\api\_api_features.json" type="BINDATA" compress="gzip"/>
+       <include name="IDR_CHROME_APP_API_FEATURES" file="apps\platform_apps\api\_api_features.json" type="BINDATA" compress="gzip"/>
+       <include name="IDR_CHROME_CONTROLLED_FRAME_API_FEATURES" file="controlled_frame\api\_api_features.json" type="BINDATA" compress="gzip"/>
++      <if expr="is_macosx">
++        <include name="IDR_NOOK_SOCIAL_DOWNLOAD" file="../../bark/resources/nook_tweaks/social-image-download.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_SOCIAL_VIDEO" file="../../bark/resources/nook_tweaks/social-video-source.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_SPONSOR_BLOCK" file="../../bark/resources/nook_tweaks/youtube-sponsorblock.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_YOUTUBE_TWEAKS" file="../../bark/resources/nook_tweaks/youtube-tweaks.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_FACEBOOK_TWEAKS" file="../../bark/resources/nook_tweaks/facebook-feed-prune.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_REDDIT_TWEAKS" file="../../bark/resources/nook_tweaks/reddit-tweaks.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_COSMETIC_SCRIPTLETS" file="../../bark/resources/nook_cosmetics/scriptlets.json" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_BOOST_PICKER" file="../../bark/resources/nook_boost_picker.js" type="BINDATA" compress="gzip" />
++        <include name="IDR_NOOK_COSMETIC_OBSERVER" file="../../bark/resources/nook_cosmetics/observer.js" type="BINDATA" compress="gzip" />
++      </if>
+     </includes>
+   </release>
+ </grit>

@@ -1,0 +1,56 @@
+diff --git a/components/sync_preferences/dual_layer_user_pref_store.cc b/components/sync_preferences/dual_layer_user_pref_store.cc
+index ea9d82a2ad..91af0186c0 100644
+--- a/components/sync_preferences/dual_layer_user_pref_store.cc
++++ b/components/sync_preferences/dual_layer_user_pref_store.cc
+@@ -100,14 +100,20 @@ void DualLayerUserPrefStore::UnderlyingPrefStoreObserver::
+     OnInitializationCompleted(bool succeeded) {
+   initialization_succeeded_ = succeeded;
+ 
+-  // Notify observers only after all underlying PrefStores are initialized.
+-  if (!outer_->IsInitializationComplete()) {
++  // Failure is terminal even when the failed store never becomes initialized.
++  // Successful completion still waits for both underlying stores.
++  if (outer_->initialization_failed_ ||
++      (succeeded && !outer_->IsInitializationComplete())) {
+     return;
+   }
++  if (!succeeded) {
++    outer_->initialization_failed_ = true;
++  }
++  scoped_refptr<DualLayerUserPrefStore> keep_alive(outer_.get());
+ 
+-  // Forward error if any of the underlying store reported error upon
+-  // ReadPrefsAsync().
+-  if (outer_->read_error_delegate_.has_value() &&
++  // As with JsonPrefStore, read errors accompany an otherwise completed read;
++  // failed initialization is reported directly to observers.
++  if (succeeded && outer_->read_error_delegate_.has_value() &&
+       outer_->read_error_delegate_.value()) {
+     if (auto read_error = outer_->GetReadError();
+         read_error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
+@@ -116,7 +122,8 @@ void DualLayerUserPrefStore::UnderlyingPrefStoreObserver::
+   }
+ 
+   for (auto& observer : outer_->observers_) {
+-    observer.OnInitializationCompleted(outer_->IsInitializationSuccessful());
++    observer.OnInitializationCompleted(succeeded &&
++                                       outer_->IsInitializationSuccessful());
+   }
+ }
+ 
+@@ -446,6 +453,7 @@ PersistentPrefStore::PrefReadError DualLayerUserPrefStore::GetReadError()
+ }
+ 
+ PersistentPrefStore::PrefReadError DualLayerUserPrefStore::ReadPrefs() {
++  scoped_refptr<DualLayerUserPrefStore> keep_alive(this);
+   // Call ReadPrefs() on both stores before reporting error.
+   auto local_prefs_read_error = local_pref_store_->ReadPrefs();
+   auto account_prefs_read_error = account_pref_store_->ReadPrefs();
+@@ -457,6 +465,7 @@ PersistentPrefStore::PrefReadError DualLayerUserPrefStore::ReadPrefs() {
+ }
+ 
+ void DualLayerUserPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
++  scoped_refptr<DualLayerUserPrefStore> keep_alive(this);
+   // The store is expected to take ownership of `error_delegate`, thus it's not
+   // valid to forward the same to the two underlying stores. Instead, if any
+   // error occurs, it's reported in OnInitializationCompleted() handle.

@@ -1,0 +1,94 @@
+diff --git a/chrome/browser/ui/views/frame/multi_contents_resize_area.cc b/chrome/browser/ui/views/frame/multi_contents_resize_area.cc
+index 37a68df743..dbf0fd6532 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_resize_area.cc
++++ b/chrome/browser/ui/views/frame/multi_contents_resize_area.cc
+@@ -21,6 +21,7 @@
+ #include "ui/views/controls/focus_ring.h"
+ #include "ui/views/controls/highlight_path_generator.h"
+ #include "ui/views/layout/flex_layout.h"
++#include "ui/views/view_tracker.h"
+ 
+ namespace {
+ constexpr int kHandleCornerRadius = 2;
+@@ -75,9 +76,11 @@ BEGIN_METADATA(MultiContentsResizeHandle)
+ END_METADATA
+ 
+ MultiContentsResizeArea::MultiContentsResizeArea(
+-    MultiContentsView* multi_contents_view)
+-    : ResizeArea(multi_contents_view),
+-      multi_contents_view_(multi_contents_view) {
++    MultiContentsView* multi_contents_view,
++    size_t divider_index)
++    : ResizeArea(this),
++      multi_contents_view_(multi_contents_view),
++      divider_index_(divider_index) {
+   flex_layout_manager_ =
+       SetLayoutManager(std::make_unique<views::FlexLayout>());
+   flex_layout_manager_->SetMainAxisAlignment(views::LayoutAlignment::kCenter)
+@@ -89,6 +92,11 @@ MultiContentsResizeArea::MultiContentsResizeArea(
+   OnLayoutUpdated();
+ }
+ 
++void MultiContentsResizeArea::OnResize(int resize_amount, bool done_resizing) {
++  multi_contents_view_->OnResizeDivider(divider_index_, resize_amount,
++                                        done_resizing);
++}
++
+ void MultiContentsResizeArea::SetLayout(split_tabs::SplitTabLayout layout) {
+   Axis old_axis = axis();
+   set_axis(layout == split_tabs::SplitTabLayout::kSideBySide ? Axis::kHorizontal
+@@ -103,7 +111,10 @@ void MultiContentsResizeArea::OnGestureEvent(ui::GestureEvent* event) {
+   // swap the contents views.
+   if (!is_resizing() && event->type() == ui::EventType::kGestureTap &&
+       event->details().tap_count() == 2) {
++    views::ViewTracker alive(this);
+     multi_contents_view_->OnSwap();
++    if (!alive)
++      return;
+   }
+   ResizeArea::OnGestureEvent(event);
+ }
+@@ -113,7 +124,10 @@ void MultiContentsResizeArea::OnMouseReleased(const ui::MouseEvent& event) {
+   // event, swap the contents views.
+   if (!is_resizing() && event.IsOnlyLeftMouseButton() &&
+       event.GetClickCount() == 2) {
++    views::ViewTracker alive(this);
+     multi_contents_view_->OnSwap();
++    if (!alive)
++      return;
+   }
+   ResizeArea::OnMouseReleased(event);
+ }
+@@ -130,12 +144,18 @@ bool MultiContentsResizeArea::OnKeyPressed(const ui::KeyEvent& event) {
+     return false;
+   }
+ 
+-  multi_contents_view_->OnResize(resize_amount, true);
++  views::ViewTracker alive(this);
++  views::ViewTracker contents_alive(multi_contents_view_);
++  OnResize(resize_amount, true);
++  if (!alive || !contents_alive ||
++      divider_index_ + 1 >= multi_contents_view_->GetPaneCount()) {
++    return true;
++  }
+ 
+   if ((axis() == Axis::kHorizontal ? multi_contents_view_->width()
+                                    : multi_contents_view_->height()) > 0) {
+     const int start_percent =
+-        base::ClampRound(multi_contents_view_->GetSplitRatio() * 100);
++        base::ClampRound(multi_contents_view_->GetDividerRatio(divider_index_) * 100);
+     const int end_percent = 100 - start_percent;
+ 
+     auto [start_label_id, end_label_id] = GetAccessibleAlertStringIds();
+@@ -161,8 +181,10 @@ void MultiContentsResizeArea::OnMouseExited(const ui::MouseEvent& event) {
+ }
+ 
+ void MultiContentsResizeArea::SetVisible(bool visible) {
++  views::ViewTracker alive(this);
+   views::View::SetVisible(visible);
+-  resize_handle_->UpdateVisibility();
++  if (alive)
++    resize_handle_->UpdateVisibility();
+ }
+ 
+ void MultiContentsResizeArea::OnLayoutUpdated() {

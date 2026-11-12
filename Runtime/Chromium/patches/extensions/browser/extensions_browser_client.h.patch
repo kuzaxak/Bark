@@ -1,0 +1,78 @@
+diff --git a/extensions/browser/extensions_browser_client.h b/extensions/browser/extensions_browser_client.h
+index 104ed9480c..33e0146962 100644
+--- a/extensions/browser/extensions_browser_client.h
++++ b/extensions/browser/extensions_browser_client.h
+@@ -10,6 +10,7 @@
+ #include <string>
+ #include <vector>
+ 
++#include "base/functional/callback_helpers.h"
+ #include "base/functional/callback_forward.h"
+ #include "base/memory/ref_counted.h"
+ #include "base/memory/ref_counted_memory.h"
+@@ -48,6 +49,7 @@ class Version;
+ 
+ namespace content {
+ class BrowserContext;
++class WeakDocumentPtr;
+ class RenderFrameHost;
+ class SiteInstance;
+ class StoragePartitionConfig;
+@@ -134,6 +136,7 @@ class ScriptExecutor;
+ class SharedModuleService;
+ class SitePermissionsHelper;
+ class UserScriptListener;
++struct WebRequestInfo;
+ 
+ // Interface to allow the extensions module to make browser-process-specific
+ // queries of the embedder. Should be Set() once in the browser process.
+@@ -481,6 +484,30 @@ class ExtensionsBrowserClient {
+   // code instead.
+   virtual bool IsWebUIAllowedToMakeNetworkRequests(const url::Origin& origin);
+ 
++  // Opt-in native filtering uses the existing WebRequest proxy. The context is
++  // the factory's actual context, including OTR, not the API's original one.
++  // Body presence only. The loader owns the token; unsupported provenance
++  // returns an empty token and must never be interpreted as known-idle.
++  virtual base::ScopedClosureRunner ObserveNativeRequestBody(
++      content::BrowserContext* context,
++      const content::WeakDocumentPtr& document,
++      bool keepalive);
++
++  virtual bool HasNativeRequestPolicy(content::BrowserContext* context) const;
++  // Runs only after extension cancellation/redirect decisions. The callback
++  // returns a net error; no Swift/UI policy callout is made for each request.
++  virtual void CheckNativeRequestPolicy(
++      content::BrowserContext* context,
++      const content::WeakDocumentPtr& document,
++      const GURL& document_site,
++      const WebRequestInfo& request,
++      base::OnceCallback<void(int)> callback);
++
++  // Record a native main-frame denial only after the request/redirect identity
++  // is still current. Extension denials never call this hook.
++  virtual void NativeNavigationBlocked(content::BrowserContext* context,
++      const content::WeakDocumentPtr& document, const WebRequestInfo& request);
++
+   virtual network::mojom::NetworkContext* GetSystemNetworkContext();
+ 
+   virtual UserScriptListener* GetUserScriptListener();
+@@ -710,13 +737,12 @@ class ExtensionsBrowserClient {
+       content::WebContents* web_contents,
+       std::unique_ptr<InstallPromptData> prompt);
+ 
+-  // Creates install prompt UI anchored to `native_window` rather than a
+-  // WebContents, for use when `function`'s caller has no directly associated
+-  // WebContents (e.g. an extension service worker).
++  // Creates permission prompt UI for the originating function. Embedders can
++  // preserve logical browser/tab identity rather than infer it from a native
++  // window shared by several logical browsers.
+   virtual std::unique_ptr<ExtensionInstallPromptClient>
+-  CreateInstallPromptForNativeWindow(gfx::NativeWindow native_window,
+-                                     content::BrowserContext& browser_context,
+-                                     std::unique_ptr<InstallPromptData> prompt);
++  CreateInstallPromptForFunction(ExtensionFunction& function,
++                                 std::unique_ptr<InstallPromptData> prompt);
+ 
+   // Returns a native window suitable for anchoring UI (e.g. a
+   // permission-request prompt) triggered by `function`. Returns null if none

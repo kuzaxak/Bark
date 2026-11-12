@@ -1,0 +1,73 @@
+diff --git a/components/split_tabs/split_tab_visual_data.h b/components/split_tabs/split_tab_visual_data.h
+index 5d14b4e383..09abf36ccf 100644
+--- a/components/split_tabs/split_tab_visual_data.h
++++ b/components/split_tabs/split_tab_visual_data.h
+@@ -5,6 +5,16 @@
+ #ifndef COMPONENTS_SPLIT_TABS_SPLIT_TAB_VISUAL_DATA_H_
+ #define COMPONENTS_SPLIT_TABS_SPLIT_TAB_VISUAL_DATA_H_
+ 
++#include <array>
++#include <cstddef>
++
++#include "base/containers/span.h"
++
++namespace base {
++class Pickle;
++class PickleIterator;
++}  // namespace base
++
+ namespace split_tabs {
+ 
+ // Orientation of a split view. Needs to be kept in sync with
+@@ -27,6 +37,12 @@ class SplitTabVisualData {
+   SplitTabVisualData();
+   explicit SplitTabVisualData(SplitTabLayout split_layout);
+   SplitTabVisualData(SplitTabLayout split_layout, double split_ratio);
++  SplitTabVisualData(SplitTabLayout split_layout,
++                     base::span<const double> split_dividers);
++  static constexpr size_t kMaxPanes = 4;
++  static bool AreValidDividers(base::span<const double> split_dividers);
++  static SplitTabVisualData EqualSplit(SplitTabLayout split_layout,
++                                       size_t pane_count);
+   ~SplitTabVisualData();
+ 
+   SplitTabVisualData(const SplitTabVisualData& other) = default;
+@@ -39,11 +55,23 @@ class SplitTabVisualData {
+     split_layout_ = split_layout;
+   }
+ 
+-  void set_split_ratio(double split_ratio) { split_ratio_ = split_ratio; }
++  // The legacy ratio controls the first divider. With more than two panes it
++  // is clamped below the next divider, leaving the other pane boundaries fixed.
++  void set_split_ratio(double split_ratio);
++  void set_split_dividers(base::span<const double> split_dividers);
+ 
+   SplitTabLayout split_layout() const { return split_layout_; }
+ 
+-  double split_ratio() const { return split_ratio_; }
++  double split_ratio() const { return split_dividers_[0]; }
++  base::span<const double> split_dividers() const {
++    return base::span(split_dividers_).first(divider_count_);
++  }
++  size_t pane_count() const { return divider_count_ + 1; }
++
++  // Optional end-of-command extension after the legacy ratio/layout fields.
++  // Two-pane writers retain their original bytes; readers accept that format.
++  void WriteAdditionalDividers(base::Pickle* pickle) const;
++  bool ReadAdditionalDividers(base::PickleIterator* iter);
+ 
+   // Checks whether two instances are visually equivalent.
+   friend bool operator==(const SplitTabVisualData&,
+@@ -51,8 +79,10 @@ class SplitTabVisualData {
+ 
+  private:
+   SplitTabLayout split_layout_;
+-  // ratio of the first split tab's width to the available width.
+-  double split_ratio_ = 0.5;
++  // Normalized boundaries, leading-to-trailing or top-to-bottom. Unused slots
++  // stay zero so equality retains value semantics across cardinality changes.
++  std::array<double, kMaxPanes - 1> split_dividers_ = {0.5, 0, 0};
++  size_t divider_count_ = 1;
+ };
+ 
+ }  // namespace split_tabs

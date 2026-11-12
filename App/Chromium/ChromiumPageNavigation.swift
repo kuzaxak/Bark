@@ -6,169 +6,9 @@ import AppKit
 import NookBlocker
 import NookWeb
 
-/// The additive C boundary in Runtime/Chromium/barc_bridge_api.h. Resolve once per
-/// runtime, then share the functions between pages; no polling or extra views.
-struct ChromiumNavigationAPI {
-    typealias Callback = @convention(c) (
-        UnsafeMutableRawPointer?, UInt64, Int32, Int32, Int32,
-        UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32, UInt32
-    ) -> Void
-    typealias Observe = @convention(c) (Int32, Int32, Callback?, UnsafeMutableRawPointer?) -> UInt64
-    typealias PeekAdmission = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
-    typealias EnablePeek = @convention(c) (UInt64, Int32) -> Int32
-    typealias CloseSelecting = @convention(c) (UInt64, Int32) -> Int32
-    typealias CreatePeek = @convention(c) (UInt64, Int32, PeekAdmission?, UnsafeMutableRawPointer?) -> Int32
-    typealias Unobserve = @convention(c) (UInt64) -> Void
-    typealias Command = @convention(c) (Int32, Int32) -> Int32
-    typealias History = @convention(c) (Int32, Int32, Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
-    typealias HistoryGo = @convention(c) (Int32, Int32, Int32) -> Int32
-    typealias Search = @convention(c) (Int32, Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
-    typealias Navigate = @convention(c) (Int32, Int32, UnsafePointer<CChar>?) -> Int32
-    typealias PageCommand = @convention(c) (Int32, Int32, Int32) -> Int32
-    typealias ThumbnailCallback = @convention(c) (
-        UnsafeMutableRawPointer?, UInt64, UInt64, UnsafePointer<UInt8>?, Int
-    ) -> Void
-    typealias CaptureScreenshot = @convention(c) (UInt64, UInt64, Int32, ThumbnailCallback?) -> Int32
-    typealias CancelCapture = @convention(c) (UInt64, UInt64) -> Int32
-    typealias CaptureThumbnail = @convention(c) (UInt64, UInt64, ThumbnailCallback?) -> Int32
-    typealias FileCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, Int32, Int32,
-        UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int64, Int32) -> Void
-    typealias DownloadFile = @convention(c) (UInt64, UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, FileCallback?) -> Int32
-    typealias CancelFile = @convention(c) (UInt64, UInt64) -> Int32
-    typealias SiteDataCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, Int32) -> Void
-    typealias SiteData = @convention(c) (UInt64, UInt64, Int32, SiteDataCallback?) -> Int32
-    typealias MediaCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, Int32, Int32, UInt32,
-        UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Void
-    typealias ObserveMedia = @convention(c) (UInt64, MediaCallback?) -> Int32
-    typealias StyleCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, Int32) -> Void
-    typealias UserCSS = @convention(c) (UInt64, UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, StyleCallback?) -> Int32
-    typealias TranslationCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, UInt64, Int32, UnsafePointer<CChar>?) -> Void
-    typealias Translation = @convention(c) (UInt64, UInt64, UInt64, Int32, UnsafePointer<CChar>?, TranslationCallback?) -> Int32
-    typealias ScriptCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, Int32,
-        UnsafePointer<CChar>?, Int, UnsafePointer<CChar>?, Int, Int32) -> Void
-    typealias EvaluateScript = @convention(c) (UInt64, UInt64, Int32, Int32, UnsafePointer<CChar>?, ScriptCallback?) -> Int32
-    typealias CancelScript = @convention(c) (UInt64, UInt64) -> Int32
-    typealias PickerCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, UnsafePointer<CChar>?, Int) -> Void
-    typealias StartPicker = @convention(c) (UInt64, UInt64, PickerCallback?) -> Int32
-    typealias ProfileUUID = @convention(c) (Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
-    typealias VaultCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, UnsafePointer<CChar>?, Int32, UnsafeMutableRawPointer?, Double, Double, Double, Double) -> Void
-    typealias VaultSaveCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
-    typealias ObserveVaultSave = @convention(c) (UInt64, VaultSaveCallback?) -> Int32
-    typealias VaultPasskeyCallback = @convention(c) (UnsafeMutableRawPointer?, UInt64, UInt64, Int32, UnsafePointer<CChar>?, UnsafeMutableRawPointer?) -> Void
-    typealias ObserveVaultPasskeys = @convention(c) (UInt64, VaultPasskeyCallback?) -> Int32
-    typealias CompleteVaultPasskey = @convention(c) (UInt64, UInt64, Int32, UnsafePointer<CChar>?) -> Int32
-    typealias ObserveVault = @convention(c) (UInt64, VaultCallback?) -> Int32
-    typealias VaultCurrent = @convention(c) (UInt64, UInt64) -> Int32
-    typealias VaultFill = @convention(c) (UInt64, UInt64, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
-    typealias BlockingPolicy = @convention(c) (Int32, Int32, Int32, UnsafePointer<CChar>?, UInt64) -> Int32
-
-    let observe: Observe
-    let unobserve: Unobserve
-    let navigate: Navigate
-    let back: Command
-    let forward: Command
-    let reload: Command
-    let stop: Command
-    let select: Command
-    let close: Command
-    let captureThumbnail: CaptureThumbnail
-    let clearSiteData: SiteData
-    let profileUUID: ProfileUUID
-    var downloadFile: DownloadFile? = nil
-    var cancelFile: CancelFile? = nil
-    var captureScreenshot: CaptureScreenshot? = nil
-    var cancelCapture: CancelCapture? = nil
-    var executePageCommand: PageCommand? = nil
-    var setMuted: PageCommand? = nil
-    var observeMedia: ObserveMedia? = nil
-    var mediaAction: PageCommand? = nil
-    var setUserCSS: UserCSS? = nil
-    var translate: Translation? = nil
-    var evaluateScript: EvaluateScript? = nil
-    var cancelScript: CancelScript? = nil
-    var startPicker: StartPicker? = nil
-    var cancelPicker: CancelScript? = nil
-    var createPeek: CreatePeek? = nil
-    var enablePeek: EnablePeek? = nil
-    var closeSelecting: CloseSelecting? = nil
-    var applyBlockingPolicy: BlockingPolicy? = nil
-    var search: Search? = nil
-    var history: History? = nil
-    var historyGo: HistoryGo? = nil
-    var observeVaultPasskeys: ObserveVaultPasskeys? = nil
-    var vaultPasskeyCurrent: VaultCurrent? = nil
-    var completeVaultPasskey: CompleteVaultPasskey? = nil
-    var observeVault: ObserveVault? = nil
-    var observeVaultSave: ObserveVaultSave? = nil
-    var vaultSaveCurrent: VaultCurrent? = nil
-    var cancelVaultSave: VaultCurrent? = nil
-    var vaultCurrent: VaultCurrent? = nil
-    var vaultFieldCurrent: VaultCurrent? = nil
-    var cancelVaultFocus: VaultCurrent? = nil
-    var vaultFill: VaultFill? = nil
-    var privateSessionUUID: ProfileUUID = { _, _, _ in 0 }
-}
-
-extension ChromiumNavigationAPI {
-    init(library: UnsafeMutableRawPointer) throws {
-        func resolve<T>(_ name: String, _: T.Type) throws -> T {
-            guard let address = dlsym(library, name) else {
-                throw ChromiumNavigationError.missingSymbol(name)
-            }
-            return unsafeBitCast(address, to: T.self)
-        }
-        observe = try resolve("barc_tab_observe", Observe.self)
-        unobserve = try resolve("barc_tab_unobserve", Unobserve.self)
-        navigate = try resolve("barc_tab_navigate", Navigate.self)
-        search = try resolve("barc_tab_search", Search.self)
-        observeVaultSave = try resolve("barc_tab_observe_vault_save", ObserveVaultSave.self)
-        vaultSaveCurrent = try resolve("barc_tab_vault_save_is_current", VaultCurrent.self)
-        cancelVaultSave = try resolve("barc_tab_cancel_vault_save", VaultCurrent.self)
-        observeVaultPasskeys = try resolve("barc_tab_observe_vault_passkeys", ObserveVaultPasskeys.self)
-        vaultPasskeyCurrent = try resolve("barc_tab_vault_passkey_is_current", VaultCurrent.self)
-        completeVaultPasskey = try resolve("barc_tab_complete_vault_passkey", CompleteVaultPasskey.self)
-        observeVault = try resolve("barc_tab_observe_vault", ObserveVault.self)
-        vaultCurrent = try resolve("barc_tab_vault_focus_is_current", VaultCurrent.self)
-        vaultFieldCurrent = try resolve("barc_tab_vault_field_is_current", VaultCurrent.self)
-        cancelVaultFocus = try resolve("barc_tab_cancel_vault_focus", VaultCurrent.self)
-        vaultFill = try resolve("barc_tab_fill_vault", VaultFill.self)
-        history = try resolve("barc_tab_copy_history", History.self)
-        historyGo = try resolve("barc_tab_go_to_history_entry", HistoryGo.self)
-        back = try resolve("barc_tab_go_back", Command.self)
-        forward = try resolve("barc_tab_go_forward", Command.self)
-        reload = try resolve("barc_tab_reload", Command.self)
-        stop = try resolve("barc_tab_stop", Command.self)
-        select = try resolve("barc_tab_select", Command.self)
-        close = try resolve("barc_tab_close", Command.self)
-        captureThumbnail = try resolve("barc_tab_capture_thumbnail", CaptureThumbnail.self)
-        downloadFile = try resolve("barc_tab_download_file", DownloadFile.self)
-        cancelFile = try resolve("barc_tab_cancel_file", CancelFile.self)
-        captureScreenshot = try resolve("barc_tab_capture_screenshot", CaptureScreenshot.self)
-        cancelCapture = try resolve("barc_tab_cancel_capture", CancelCapture.self)
-        clearSiteData = try resolve("barc_tab_clear_site_data", SiteData.self)
-        profileUUID = try resolve("barc_window_profile_uuid", ProfileUUID.self)
-        executePageCommand = try resolve("barc_tab_execute_command", PageCommand.self)
-        setMuted = try resolve("barc_tab_set_muted", PageCommand.self)
-        observeMedia = try resolve("barc_tab_observe_media", ObserveMedia.self)
-        mediaAction = try resolve("barc_tab_media_action", PageCommand.self)
-        setUserCSS = try resolve("barc_tab_set_user_css", UserCSS.self)
-        translate = try resolve("barc_tab_translate", Translation.self)
-        evaluateScript = try resolve("barc_tab_evaluate_script", EvaluateScript.self)
-        cancelScript = try resolve("barc_tab_cancel_script", CancelScript.self)
-        startPicker = try resolve("barc_tab_start_boost_picker", StartPicker.self)
-        cancelPicker = try resolve("barc_tab_cancel_boost_picker", CancelScript.self)
-        createPeek = try resolve("barc_tab_create_peek", CreatePeek.self)
-        enablePeek = try resolve("barc_tab_enable_peek", EnablePeek.self)
-        closeSelecting = try resolve("barc_tab_close_selecting", CloseSelecting.self)
-        applyBlockingPolicy = try resolve("barc_blocker_set_tab_policy", BlockingPolicy.self)
-        privateSessionUUID = try resolve("barc_window_private_session_uuid", ProfileUUID.self)
-    }
-}
-
 enum ChromiumSiteDataOutcome: Equatable { case completed, cancelled, failed }
 
 enum ChromiumNavigationError: Error {
-    case missingSymbol(String)
     case profileMismatch
     case fileDownloadUnavailable
     case screenshotBounds, screenshotUnavailable
@@ -196,7 +36,7 @@ final class ChromiumPageNavigation: PageNavigation {
     private var vaultSaveCallback: (@MainActor (VaultNativeSubmission?) -> Void)?
     private var vaultPasskeyCallback: (@MainActor (VaultNativePasskeyRequest?) -> Void)?
     private var vaultCallback: (@MainActor (VaultNativeFocus?) -> Void)?
-    private let api: ChromiumNavigationAPI
+    private let bridge: BarcBridge
     private let tab: Int32
     private var window: Int32
     private var nextThumbnailRequest: UInt64 = 0
@@ -233,10 +73,10 @@ final class ChromiumPageNavigation: PageNavigation {
         weak var owner: ChromiumPageNavigation?
     }
 
-    init(profileID: UUID, window: Int32, tab: Int32, api: ChromiumNavigationAPI, privateSession: Bool = false) throws {
+    init(profileID: UUID, window: Int32, tab: Int32, bridge: BarcBridge, privateSession: Bool = false) throws {
         // Verify the native owner, rather than trusting a caller's profile label.
         var uuid = [CChar](repeating: 0, count: 37)
-        let query = privateSession ? api.privateSessionUUID : api.profileUUID
+        let query = privateSession ? bridge.window_private_session_uuid : bridge.window_profile_uuid
         let required = query(window, &uuid, uuid.count)
         guard required == uuid.count,
               UUID(uuidString: String(decoding: uuid.dropLast().map { UInt8(bitPattern: $0) }, as: UTF8.self)) == profileID else {
@@ -246,16 +86,16 @@ final class ChromiumPageNavigation: PageNavigation {
         self.isPrivateSession = privateSession
         self.window = window
         self.tab = tab
-        self.api = api
+        self.bridge = bridge
         context.owner = self
-        let token = api.observe(window, tab, { pointer, token, event, window, tab, url, title, error, flags in
+        let token = bridge.tab_observe(window, tab, { pointer, token, event, window, tab, url, title, error, flags in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
                 // Copy borrowed strings before calling any client code, which
                 // can close the tab or cancel this observation synchronously.
                 context.owner?.receive(
-                    token: token, event: event, window: window, tab: tab,
+                    token: token, event: BarcTabEvent(rawValue: UInt32(bitPattern: event)), window: window, tab: tab,
                     url: url.flatMap { URL(string: String(cString: $0)) },
                     title: title.map { String(cString: $0) }, error: error, flags: flags)
             }
@@ -265,39 +105,37 @@ final class ChromiumPageNavigation: PageNavigation {
             throw ChromiumNavigationError.observationRejected
         }
         observation = token
-        if let observeMedia = api.observeMedia {
-            let accepted = observeMedia(token, { pointer, token, window, tab, flags, title, artist, album in
-                MainActor.assumeIsolated {
-                    guard let pointer else { return }
-                    let title = title.map { String(cString: $0) }, artist = artist.map { String(cString: $0) }
-                    let album = album.map { String(cString: $0) }
-                    let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
-                    context.owner?.receiveMedia(token: token, window: window, tab: tab, flags: flags,
-                                                title: title, artist: artist, album: album)
-                }
-            })
-            guard accepted == 1, !invalidated else {
-                invalidate(); throw ChromiumNavigationError.observationRejected
+        let accepted = bridge.tab_observe_media(token, { pointer, token, window, tab, flags, title, artist, album in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let title = title.map { String(cString: $0) }, artist = artist.map { String(cString: $0) }
+                let album = album.map { String(cString: $0) }
+                let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+                context.owner?.receiveMedia(token: token, window: window, tab: tab, flags: flags,
+                                            title: title, artist: artist, album: album)
             }
+        })
+        guard accepted == 1, !invalidated else {
+            invalidate(); throw ChromiumNavigationError.observationRejected
         }
     }
 
     isolated deinit {
-        if observation != 0 { api.unobserve(observation) }
+        if observation != 0 { bridge.tab_unobserve(observation) }
     }
 
     func search(_ query: String, kagiSessionToken: String?) -> Bool {
-        guard !invalidated, window > 0, let command = api.search else { return false }
+        guard !invalidated, window > 0 else { return false }
         let accepted = query.withCString { query in
-            if let token = kagiSessionToken { return token.withCString { command(window, tab, query, $0) } }
-            return command(window, tab, query, nil)
+            if let token = kagiSessionToken { return token.withCString { bridge.tab_search(window, tab, query, $0) } }
+            return bridge.tab_search(window, tab, query, nil)
         }
         return accepted == 1 && !invalidated
     }
 
     func load(_ url: URL) {
         guard !invalidated, window > 0 else { return }
-        let accepted = url.absoluteString.withCString { api.navigate(window, tab, $0) }
+        let accepted = url.absoluteString.withCString { bridge.tab_navigate(window, tab, $0) }
         if accepted != 1, !invalidated {
             let error = NSError(domain: "Barc.Chromium.Command", code: 1,
                                 userInfo: [NSLocalizedDescriptionKey: "This tab is no longer available."])
@@ -306,12 +144,13 @@ final class ChromiumPageNavigation: PageNavigation {
     }
 
     func historyEntries(forward: Bool) -> [PageHistoryEntry] {
-        guard !invalidated, !isClosed, window > 0, let read = api.history else { return [] }
+        guard !invalidated, !isClosed, window > 0 else { return [] }
         let owner = window
-        let count = read(owner, tab, forward ? 1 : 0, nil, 0)
+        let direction = Int32((forward ? BARC_HISTORY_FORWARD : BARC_HISTORY_BACK).rawValue)
+        let count = bridge.tab_copy_history(owner, tab, direction, nil, 0)
         guard count > 1, count <= 1_048_576, !invalidated, window == owner else { return [] }
         var bytes = [CChar](repeating: 0, count: count)
-        let copied = read(owner, tab, forward ? 1 : 0, &bytes, count)
+        let copied = bridge.tab_copy_history(owner, tab, direction, &bytes, count)
         guard copied == count, bytes.last == 0, !invalidated, window == owner,
               let entries = try? JSONDecoder().decode([PageHistoryEntry].self,
                   from: Data(bytes.dropLast().map { UInt8(bitPattern: $0) })),
@@ -320,32 +159,31 @@ final class ChromiumPageNavigation: PageNavigation {
         return entries
     }
     @discardableResult func goToHistoryEntry(_ id: Int32) -> Bool {
-        guard !invalidated, !isClosed, window > 0, id > 0, let go = api.historyGo else { return false }
-        return go(window, tab, id) == 1
+        guard !invalidated, !isClosed, window > 0, id > 0 else { return false }
+        return bridge.tab_go_to_history_entry(window, tab, id) == 1
     }
 
-    @discardableResult func goBack() -> Bool { command(api.back) }
-    @discardableResult func goForward() -> Bool { command(api.forward) }
-    @discardableResult func reload() -> Bool { command(api.reload) }
-    func stop() { _ = command(api.stop) }
+    @discardableResult func goBack() -> Bool { command(bridge.tab_go_back) }
+    @discardableResult func goForward() -> Bool { command(bridge.tab_go_forward) }
+    @discardableResult func reload() -> Bool { command(bridge.tab_reload) }
+    func stop() { _ = command(bridge.tab_stop) }
 
     @discardableResult func applyBlockingPolicy(_ policy: ContentBlockerManager.NetworkPagePolicy) -> Bool {
-        guard !invalidated, !isClosed, window > 0, observation != 0,
-              let apply = api.applyBlockingPolicy else { return false }
+        guard !invalidated, !isClosed, window > 0, observation != 0 else { return false }
         let remaining = max(0, policy.disabledUntil?.timeIntervalSinceNow ?? 0)
         let milliseconds = UInt64(min(remaining * 1_000, Double(Int64.max).nextDown).rounded(.up))
         if let host = policy.continuedHost {
-            return host.withCString { apply(window, tab, policy.isOAuthFlow ? 1 : 0, $0, milliseconds) == 1 }
+            return host.withCString { bridge.blocker_set_tab_policy(window, tab, policy.isOAuthFlow ? 1 : 0, $0, milliseconds) == 1 }
         }
-        return apply(window, tab, policy.isOAuthFlow ? 1 : 0, nil, milliseconds) == 1
+        return bridge.blocker_set_tab_policy(window, tab, policy.isOAuthFlow ? 1 : 0, nil, milliseconds) == 1
     }
 
     @discardableResult
     func setNativePeekCapability(_ enabled: Bool, onShiftClick: Bool = false) -> Bool {
         if !enabled { peekEnabled = false; pendingPeekRequest = 0 }
-        let capability: Int32 = enabled ? (onShiftClick ? 3 : 1) : 0
-        guard !invalidated, !isClosed, observation != 0, let enable = api.enablePeek,
-              enable(observation, capability) == 1 else { return false }
+        let capability = enabled ? Int32(onShiftClick ? BARC_TAB_PEEK_CAPABLE | BARC_TAB_PEEK_ON_SHIFT_CLICK : BARC_TAB_PEEK_CAPABLE) : 0
+        guard !invalidated, !isClosed, observation != 0,
+              bridge.tab_enable_peek(observation, capability) == 1 else { return false }
         peekEnabled = enabled
         return true
     }
@@ -356,32 +194,31 @@ final class ChromiumPageNavigation: PageNavigation {
 
     /// Called only after PageSession leaves the native observer stack. Native
     /// admission consumes the captured document intent, never a caller URL.
-    func createNativePeek(request: Int32, admission: ChromiumNavigationAPI.PeekAdmission,
+    func createNativePeek(request: Int32, admission: BarcTransferAdmission,
                           context: UnsafeMutableRawPointer?) -> Bool {
         guard !invalidated, !isClosed, window > 0, observation != 0,
-              request > 0, pendingPeekRequest == request,
-              let create = api.createPeek else { return false }
-        let accepted = create(observation, request, admission, context) == 1
+              request > 0, pendingPeekRequest == request else { return false }
+        let accepted = bridge.tab_create_peek(observation, request, admission, context) == 1
         if pendingPeekRequest == request { pendingPeekRequest = 0 }
         return accepted
     }
 
-    @discardableResult func selectNativePage() -> Bool { command(api.select) }
+    @discardableResult func selectNativePage() -> Bool { command(bridge.tab_select) }
     /// `successor`, a page of the same client, is shown if this page is still shown when it closes.
     @discardableResult func requestNativeClose(showing successor: ChromiumPageNavigation? = nil) -> Bool {
         guard let successor, !successor.invalidated, successor.window == window, !invalidated,
-              observation != 0, let closeSelecting = api.closeSelecting else { return command(api.close) }
-        return closeSelecting(observation, successor.tab) == 1
+              observation != 0 else { return command(bridge.tab_close) }
+        return bridge.tab_close_selecting(observation, successor.tab) == 1
     }
 
-    private func command(_ action: ChromiumNavigationAPI.Command) -> Bool {
+    private func command(_ action: (Int32, Int32) -> Int32) -> Bool {
         !invalidated && window > 0 && action(window, tab) == 1
     }
 
     @discardableResult
     func executeNativePageCommand(_ command: Int32) -> Bool {
-        guard !invalidated, !isClosed, window > 0, let execute = api.executePageCommand else { return false }
-        return execute(window, tab, command) == 1
+        guard !invalidated, !isClosed, window > 0 else { return false }
+        return bridge.tab_execute_command(window, tab, command) == 1
     }
 
     @discardableResult
@@ -396,20 +233,20 @@ final class ChromiumPageNavigation: PageNavigation {
 
     @discardableResult
     func setPlaybackPaused(_ paused: Bool) -> Bool {
-        guard !invalidated, !isClosed, window > 0, let action = api.mediaAction else { return false }
-        return action(window, tab, paused ? 1 : 0) == 1
+        guard !invalidated, !isClosed, window > 0 else { return false }
+        return bridge.tab_media_action(window, tab, Int32((paused ? BARC_MEDIA_PAUSE : BARC_MEDIA_PLAY).rawValue)) == 1
     }
 
     @discardableResult
     func skipTrack(forward: Bool) -> Bool {
-        guard !invalidated, !isClosed, window > 0, let action = api.mediaAction else { return false }
-        return action(window, tab, forward ? 3 : 2) == 1
+        guard !invalidated, !isClosed, window > 0 else { return false }
+        return bridge.tab_media_action(window, tab, Int32((forward ? BARC_MEDIA_NEXT_TRACK : BARC_MEDIA_PREVIOUS_TRACK).rawValue)) == 1
     }
 
     @discardableResult
     func setAudioMuted(_ muted: Bool) -> Bool {
-        guard !invalidated, !isClosed, window > 0, let setMuted = api.setMuted else { return false }
-        return setMuted(window, tab, muted ? 1 : 0) == 1
+        guard !invalidated, !isClosed, window > 0 else { return false }
+        return bridge.tab_set_muted(window, tab, muted ? 1 : 0) == 1
     }
 
     @discardableResult
@@ -419,7 +256,7 @@ final class ChromiumPageNavigation: PageNavigation {
         nextThumbnailRequest += 1
         let request = nextThumbnailRequest
         thumbnailRequest = (request, thumbnailGeneration, window, 1_048_576, completion)
-        let accepted = api.captureThumbnail(observation, request, { pointer, token, request, bytes, count in
+        let accepted = bridge.tab_capture_thumbnail(observation, request, { pointer, token, request, bytes, count in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -446,7 +283,7 @@ final class ChromiumPageNavigation: PageNavigation {
         thumbnailGeneration &+= 1
         let pending = thumbnailRequest
         thumbnailRequest = nil
-        if let pending { _ = api.cancelCapture?(observation, pending.id) }
+        if let pending { _ = bridge.tab_cancel_capture(observation, pending.id) }
         pending?.completion(nil)
     }
 
@@ -464,8 +301,7 @@ final class ChromiumPageNavigation: PageNavigation {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 guard !invalidated, !isClosed, observation != 0, window > 0,
-                      thumbnailRequest == nil, nextThumbnailRequest != UInt64.max,
-                      let capture = api.captureScreenshot else {
+                      thumbnailRequest == nil, nextThumbnailRequest != UInt64.max else {
                     continuation.resume(throwing: ChromiumNavigationError.screenshotUnavailable)
                     return
                 }
@@ -476,7 +312,7 @@ final class ChromiumPageNavigation: PageNavigation {
                     if let bytes { continuation.resume(returning: bytes) }
                     else { continuation.resume(throwing: ChromiumNavigationError.screenshotUnavailable) }
                 })
-                let accepted = capture(observation, id, Int32(maxWidth), { pointer, token, request, bytes, count in
+                let accepted = bridge.tab_capture_screenshot(observation, id, Int32(maxWidth), { pointer, token, request, bytes, count in
                     MainActor.assumeIsolated {
                         guard let pointer else { return }
                         let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -497,14 +333,14 @@ final class ChromiumPageNavigation: PageNavigation {
 
     private func cancelFileDownload(_ id: UInt64) {
         guard let request = fileRequests.removeValue(forKey: id) else { return }
-        _ = api.cancelFile?(observation, id)
+        _ = bridge.tab_cancel_file(observation, id)
         request.completion(.failure(CancellationError()))
     }
     private func cancelFileDownloads() {
         let requests = fileRequests
         fileRequests.removeAll()
         for (id, request) in requests {
-            _ = api.cancelFile?(observation, id)
+            _ = bridge.tab_cancel_file(observation, id)
             request.completion(.failure(CancellationError()))
         }
     }
@@ -528,8 +364,8 @@ final class ChromiumPageNavigation: PageNavigation {
         guard temporary==nil || temporary?.url.deletingLastPathComponent().path==pending.directory.path else {
             pending.completion(.failure(ChromiumNavigationError.fileDownloadUnavailable));return
         }
-        guard !invalidated,!isClosed,pending.window==window,result != 1,bytes>=0,
-              result != 0 || (temporary != nil && bytes<=100*1024*1024) else {
+        guard !invalidated,!isClosed,pending.window==window,result != BARC_FILE_CANCELLED.rawValue,bytes>=0,
+              result != BARC_FILE_OK.rawValue || (temporary != nil && bytes<=100*1024*1024) else {
             pending.completion(.failure(CancellationError()));return
         }
         pending.completion(.success(.init(result:result,status:status,temporary:temporary,
@@ -545,7 +381,7 @@ final class ChromiumPageNavigation: PageNavigation {
             try Task.checkCancellation()
             return try await withCheckedThrowingContinuation { continuation in
                 guard !invalidated, !isClosed, observation != 0, window > 0,
-                      fileRequests.count < 6, nextFileRequest != .max, let start = api.downloadFile,
+                      fileRequests.count < 6, nextFileRequest != .max,
                       url.scheme?.lowercased() == "https", url.user == nil, url.password == nil,
                       directory.isFileURL, !url.absoluteString.utf8.contains(0), !directory.path.utf8.contains(0) else {
                     continuation.resume(throwing: ChromiumNavigationError.fileDownloadUnavailable);return
@@ -554,7 +390,7 @@ final class ChromiumPageNavigation: PageNavigation {
                 let id = nextFileRequest;request.id = id
                 fileRequests[id] = (window, directory, { continuation.resume(with: $0) })
                 let accepted = url.absoluteString.withCString { url in directory.path.withCString { directory in
-                    start(observation,id,url,directory,{ pointer,token,request,result,status,path,mime,bytes,directoryDescriptor in
+                    bridge.tab_download_file(observation,id,url,directory,{ pointer,token,request,result,status,path,mime,bytes,directoryDescriptor in
                         MainActor.assumeIsolated {
                             guard let pointer else { _=ChromiumPageNavigation.takeDownloadedTemporary(path,directory:directoryDescriptor);return }
                             let context=Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -583,7 +419,7 @@ final class ChromiumPageNavigation: PageNavigation {
         nextSiteDataRequest += 1
         let request = nextSiteDataRequest
         siteDataRequest = (request, window, completion)
-        let accepted = api.clearSiteData(observation, request, action, { pointer, token, request, result in
+        let accepted = bridge.tab_clear_site_data(observation, request, action, { pointer, token, request, result in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -600,7 +436,8 @@ final class ChromiumPageNavigation: PageNavigation {
         guard !invalidated, !isClosed, pending.window == window else {
             pending.completion(.cancelled); return
         }
-        pending.completion(result == 0 ? .completed : (result == 1 ? .cancelled : .failed))
+        pending.completion(result == BARC_SITE_COMPLETED.rawValue ? .completed :
+            (result == BARC_SITE_CANCELLED.rawValue ? .cancelled : .failed))
     }
 
     private func cancelSiteData() {
@@ -609,8 +446,14 @@ final class ChromiumPageNavigation: PageNavigation {
         pending?.completion(.cancelled)
     }
 
-    enum ScriptMode: Int32 { case expression = 0, asyncBody = 1 }
-    enum ScriptWorld: Int32 { case page = 0, isolated = 1 }
+    enum ScriptMode {
+        case expression, asyncBody
+        var native: BarcScriptMode { self == .expression ? BARC_SCRIPT_COMPLETION_VALUE : BARC_SCRIPT_ASYNC_BODY }
+    }
+    enum ScriptWorld {
+        case page, isolated
+        var native: BarcScriptWorld { self == .page ? BARC_SCRIPT_PAGE_WORLD : BARC_SCRIPT_ISOLATED_WORLD }
+    }
     struct ScriptResult {
         let text: String
         let json: String
@@ -642,7 +485,7 @@ final class ChromiumPageNavigation: PageNavigation {
     private var nextPickerRequest: UInt64 = 0
     private var pickerRequest: (id: UInt64, continuation: CheckedContinuation<String?, Never>)?
     var supportsElementPicker: Bool {
-        !invalidated && !isClosed && observation != 0 && api.startPicker != nil && api.cancelPicker != nil
+        !invalidated && !isClosed && observation != 0
     }
     func pickElement() async -> String? {
         guard supportsElementPicker, !state.isLoading, pickerRequest == nil,
@@ -653,7 +496,7 @@ final class ChromiumPageNavigation: PageNavigation {
             guard !Task.isCancelled else { return nil }
             return await withCheckedContinuation { continuation in
                 pickerRequest = (request, continuation)
-                let accepted = api.startPicker?(observation, request, { pointer, token, request, selector, length in
+                let accepted = bridge.tab_start_boost_picker(observation, request, { pointer, token, request, selector, length in
                     guard let pointer else { return }
                     MainActor.assumeIsolated {
                         let owner = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue().owner
@@ -682,14 +525,13 @@ final class ChromiumPageNavigation: PageNavigation {
     private func cancelPicker(request: UInt64? = nil) {
         guard let pending = pickerRequest, request == nil || pending.id == request else { return }
         pickerRequest = nil
-        if observation != 0 { _ = api.cancelPicker?(observation, pending.id) }
+        if observation != 0 { _ = bridge.tab_cancel_boost_picker(observation, pending.id) }
         pending.continuation.resume(returning: nil)
     }
 
     func evaluateScript(_ source: String, mode: ScriptMode, world: ScriptWorld) async throws -> ScriptResult {
         guard !invalidated, !isClosed, observation != 0, window > 0,
               !source.contains("\0"), source.utf8.count <= 128 * 1024,
-              let evaluate = api.evaluateScript, api.cancelScript != nil,
               nextScriptRequest < UInt64.max else { throw ScriptError.unavailable }
         guard scriptRequest == nil else { throw ScriptError.busy }
         try Task.checkCancellation()
@@ -700,7 +542,7 @@ final class ChromiumPageNavigation: PageNavigation {
             return try await withCheckedThrowingContinuation { continuation in
                 scriptRequest = (request, continuation)
                 let accepted = source.withCString { source in
-                    evaluate(observation, request, mode.rawValue, world.rawValue, source,
+                    bridge.tab_evaluate_script(observation, request, Int32(mode.native.rawValue), Int32(world.native.rawValue), source,
                         { pointer, token, request, status, text, textLength, json, jsonLength, isString in
                             guard let pointer else { return }
                             MainActor.assumeIsolated {
@@ -744,15 +586,15 @@ final class ChromiumPageNavigation: PageNavigation {
         guard let text = bounded(text, textLength), let json = bounded(json, jsonLength) else {
             pending.continuation.resume(throwing: ScriptError.unserializable); return
         }
-        switch status {
-        case 0, 1:
+        switch BarcScriptResult(rawValue: UInt32(bitPattern: status)) {
+        case BARC_SCRIPT_VALUE, BARC_SCRIPT_UNDEFINED:
             pending.continuation.resume(returning: ScriptResult(text: text, json: json,
-                isString: isString, isUndefined: status == 1))
-        case 2: pending.continuation.resume(throwing: ScriptError.exception(text))
-        case 3: pending.continuation.resume(throwing: ScriptError.rejected(text))
-        case 5: pending.continuation.resume(throwing: ScriptError.busy)
-        case 6: pending.continuation.resume(throwing: ScriptError.cancelled)
-        case 7: pending.continuation.resume(throwing: ScriptError.unserializable)
+                isString: isString, isUndefined: status == BARC_SCRIPT_UNDEFINED.rawValue))
+        case BARC_SCRIPT_EXCEPTION: pending.continuation.resume(throwing: ScriptError.exception(text))
+        case BARC_SCRIPT_REJECTED: pending.continuation.resume(throwing: ScriptError.rejected(text))
+        case BARC_SCRIPT_BUSY: pending.continuation.resume(throwing: ScriptError.busy)
+        case BARC_SCRIPT_CANCELLED: pending.continuation.resume(throwing: ScriptError.cancelled)
+        case BARC_SCRIPT_UNSERIALIZABLE: pending.continuation.resume(throwing: ScriptError.unserializable)
         default: pending.continuation.resume(throwing: ScriptError.unavailable)
         }
     }
@@ -761,24 +603,24 @@ final class ChromiumPageNavigation: PageNavigation {
         guard let pending = scriptRequest, request == nil || pending.id == request else { return }
         scriptRequest = nil
         // Revoke before native cancellation can synchronously call back.
-        if observation != 0 { _ = api.cancelScript?(observation, pending.id) }
+        if observation != 0 { _ = bridge.tab_cancel_script(observation, pending.id) }
         pending.continuation.resume(throwing: ScriptError.cancelled)
     }
 
-    var supportsTranslation: Bool { !invalidated && !isClosed && api.translate != nil }
+    var supportsTranslation: Bool { !invalidated && !isClosed }
 
     @discardableResult
     func translate(_ command: PageTranslationCommand,
                    completion: @escaping @MainActor (PageTranslationResult?) -> Void) -> Bool {
         guard supportsTranslation, observation != 0, window != 0,
-              let translate = api.translate, nextTranslationRequest < UInt64.max else { return false }
-        let operation: Int32
+              nextTranslationRequest < UInt64.max else { return false }
+        let operation: BarcTranslateOperation
         let pairs: [PageTranslationNode]
         switch command {
-        case .sample: operation = 0; pairs = []
-        case .start: operation = 1; pairs = []
-        case .apply(let value): operation = 2; pairs = value
-        case .restore: operation = 3; pairs = []
+        case .sample: operation = BARC_TRANSLATE_SAMPLE; pairs = []
+        case .start: operation = BARC_TRANSLATE_START; pairs = []
+        case .apply(let value): operation = BARC_TRANSLATE_APPLY; pairs = value
+        case .restore: operation = BARC_TRANSLATE_RESTORE; pairs = []
         }
         guard pairs.count <= 128, pairs.allSatisfy({ $0.id.utf8.count <= 32 && $0.text.utf8.count <= 131072 }),
               let data = try? JSONEncoder().encode(pairs), data.count <= 512 * 1024,
@@ -791,7 +633,7 @@ final class ChromiumPageNavigation: PageNavigation {
         guard supportsTranslation, nextTranslationRequest == request else { return false }
         translationRequest = (request, completion)
         let accepted = payload.withCString { value in
-            translate(observation, translationGeneration, request, operation, value, { pointer, token, generation, request, status, payload in
+            bridge.tab_translate(observation, translationGeneration, request, Int32(operation.rawValue), value, { pointer, token, generation, request, status, payload in
                 guard let pointer else { return }
                 MainActor.assumeIsolated {
                     let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -809,7 +651,7 @@ final class ChromiumPageNavigation: PageNavigation {
         guard !invalidated, !isClosed, observation == token,
               generation == translationGeneration else { return }
         let result: PageTranslationResult?
-        if status == 0, let payload {
+        if status == BARC_TRANSLATE_APPLIED.rawValue, let payload {
             let bytes = strnlen(payload, 512 * 1024 + 1)
             result = bytes <= 512 * 1024 ? try? JSONDecoder().decode(PageTranslationResult.self,
                 from: Data(bytes: payload, count: bytes)) : nil
@@ -830,13 +672,13 @@ final class ChromiumPageNavigation: PageNavigation {
         pending?.completion(nil)
     }
 
-    var supportsUserCSS: Bool { !invalidated && !isClosed && api.setUserCSS != nil }
+    var supportsUserCSS: Bool { !invalidated && !isClosed }
 
     @discardableResult
     func setUserCSS(_ css: String, for committedURL: URL,
                     completion: @escaping @MainActor (Bool) -> Void) -> Bool {
         guard !invalidated, !isClosed, observation != 0, window > 0,
-              let setStyle = api.setUserCSS, !css.contains("\0"), css.utf8.count <= 16 * 1024 * 1024,
+              !css.contains("\0"), css.utf8.count <= 16 * 1024 * 1024,
               nextStyleRequest != UInt64.max else { return false }
         // Revoke first; a superseded completion may reenter and issue newer CSS.
         nextStyleRequest += 1
@@ -848,7 +690,7 @@ final class ChromiumPageNavigation: PageNavigation {
         styleRequest = (request, window, completion)
         let accepted = committedURL.absoluteString.withCString { url in
             css.withCString { style in
-                setStyle(observation, request, url, style, { pointer, token, request, result in
+                bridge.tab_set_user_css(observation, request, url, style, { pointer, token, request, result in
                     MainActor.assumeIsolated {
                         guard let pointer else { return }
                         let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -864,7 +706,7 @@ final class ChromiumPageNavigation: PageNavigation {
     private func receivedStyle(token: UInt64, request: UInt64, result: Int32) {
         guard token == observation, let pending = styleRequest, pending.id == request else { return }
         styleRequest = nil
-        pending.completion(!invalidated && !isClosed && pending.window == window && result == 0)
+        pending.completion(!invalidated && !isClosed && pending.window == window && result == BARC_STYLE_APPLIED.rawValue)
     }
 
     private func cancelStyle() {
@@ -896,12 +738,12 @@ final class ChromiumPageNavigation: PageNavigation {
         onEvent = nil
         onNativeCloseOutcome = nil
         onNativeOwnerChanged = nil
-        if token != 0 { api.unobserve(token) }
+        if token != 0 { bridge.tab_unobserve(token) }
     }
 
     private func matchesProfile(_ window: Int32) -> Bool {
         var bytes = [CChar](repeating: 0, count: 37)
-        let query = isPrivateSession ? api.privateSessionUUID : api.profileUUID
+        let query = isPrivateSession ? bridge.window_private_session_uuid : bridge.window_profile_uuid
         guard query(window, &bytes, 37) == 37, bytes[36] == 0, !bytes[..<36].contains(0) else { return false }
         return UUID(uuidString: String(cString: bytes)) == profileID
     }
@@ -933,46 +775,48 @@ final class ChromiumPageNavigation: PageNavigation {
     private func receiveMedia(token: UInt64, window: Int32, tab: Int32, flags: UInt32,
                               title: String?, artist: String?, album: String?) {
         guard admitCallback(token: token, window: window, tab: tab) else { return }
-        let known = flags & 1 != 0
-        let playing = flags & 4 != 0, video = flags & 8 != 0
-        let media = known ? PageMedia(hasMedia: flags & 2 != 0, isAudible: flags & 256 != 0,
+        let known = flags & BARC_MEDIA_KNOWN.rawValue != 0
+        let playing = flags & BARC_MEDIA_PLAYING.rawValue != 0, video = flags & BARC_MEDIA_VIDEO.rawValue != 0
+        let media = known ? PageMedia(hasMedia: flags & BARC_MEDIA_CONTROLLABLE.rawValue != 0,
+            isAudible: flags & BARC_MEDIA_AUDIBLE.rawValue != 0,
             isPlaying: playing, hasVideo: video, isPlayingVideo: playing && video,
-            handlesPreviousTrack: flags & 16 != 0, handlesNextTrack: flags & 32 != 0,
-            canPlay: flags & 64 != 0, canPause: flags & 128 != 0,
+            handlesPreviousTrack: flags & BARC_MEDIA_PREVIOUS.rawValue != 0, handlesNextTrack: flags & BARC_MEDIA_NEXT.rawValue != 0,
+            canPlay: flags & BARC_MEDIA_CAN_PLAY.rawValue != 0, canPause: flags & BARC_MEDIA_CAN_PAUSE.rawValue != 0,
             title: title.flatMap { $0.isEmpty ? nil : $0 }, artist: artist.flatMap { $0.isEmpty ? nil : $0 },
             album: album.flatMap { $0.isEmpty ? nil : $0 }) : nil
         var next = state
         next.media = media
-        if known { next.isAudible = flags & 256 != 0 }
+        if known { next.isAudible = flags & BARC_MEDIA_AUDIBLE.rawValue != 0 }
         if next != state { state = next; onEvent?(.mediaChanged(media)) }
     }
 
-    private func receive(token: UInt64, event: Int32, window: Int32, tab: Int32,
+    private func receive(token: UInt64, event: BarcTabEvent, window: Int32, tab: Int32,
                          url: URL?, title: String?, error: Int32, flags: UInt32) {
-        guard admitCallback(token: token, window: window, tab: tab, terminal: event == 7) else { return }
-        if event == 10 || event == 11 {
+        guard admitCallback(token: token, window: window, tab: tab, terminal: event == BARC_TAB_CLOSED) else { return }
+        let sameDocument = flags & BARC_TAB_SAME_DOCUMENT.rawValue != 0
+        if event == BARC_TAB_NATIVE_BLOCKED || event == BARC_TAB_CONTINUE_NATIVE_BLOCK {
             // The rejected target is independent of the displayed document.
             // Never infer native blocker provenance from a generic net error.
             if let url, ["http", "https"].contains(url.scheme?.lowercased() ?? "") {
-                onEvent?(event == 10 ? .nativeBlocked(url) : .continueNativeBlock(url))
+                onEvent?(event == BARC_TAB_NATIVE_BLOCKED ? .nativeBlocked(url) : .continueNativeBlock(url))
             }
             return
         }
-        if event == 9 { // Link intent must never overwrite the source snapshot.
+        if event == BARC_TAB_PEEK_REQUESTED { // Link intent must never overwrite the source snapshot.
             if peekEnabled, error > 0, let url {
                 pendingPeekRequest = error
                 onEvent?(.peekRequested(url))
             }
             return
         }
-        if event == 8 { // CLOSE_CANCELLED is not navigation cancellation.
+        if event == BARC_TAB_CLOSE_CANCELLED { // Not navigation cancellation.
             onNativeCloseOutcome?(.cancelled)
             return
         }
-        if event == 7 { // CLOSED: the engine has already ended observation.
+        if event == BARC_TAB_CLOSED { // The engine has already ended observation.
             observation = 0
             isClosed = true
-            let outcome: PageCloseOutcome = flags & 128 != 0 ? .ownerEnded : .closed
+            let outcome: PageCloseOutcome = flags & BARC_TAB_OWNER_ENDED.rawValue != 0 ? .ownerEnded : .closed
             nativeCloseOutcome = outcome
             let notify = onEvent
             let closeOutcome = onNativeCloseOutcome
@@ -983,48 +827,50 @@ final class ChromiumPageNavigation: PageNavigation {
                 closeOutcome?(outcome)
                 notify?(outcome == .ownerEnded ? .ownerEnded : .closed)
             }
-            // CLOSED arrives inside a bridge callback, where barc_tab_select
+            // CLOSED arrives inside a bridge callback, where tab_select
             // refuses the selection the app makes next.
             if outcome == .closed { Task { @MainActor in deliver() } } else { deliver() }
             return
         }
-        if event == 1 || (event == 2 && flags & 16 == 0) {
+        if event == BARC_TAB_STARTED || (event == BARC_TAB_COMMITTED && !sameDocument) {
             cancelElementPicker()
-            if event == 1 { cancelScript(); cancelFileDownloads() }
+            if event == BARC_TAB_STARTED { cancelScript(); cancelFileDownloads() }
             pendingPeekRequest = 0
         }
         var media = state.media
-        if (event == 2 && flags & 16 == 0) || (event == 4 && flags & 32 == 0) { media = nil }
-        if let audible = media?.isAudible, audible != (flags & 512 != 0) {
-            media?.isAudible = flags & 512 != 0
+        let provisional = flags & BARC_TAB_PROVISIONAL.rawValue != 0
+        let audible = flags & BARC_TAB_AUDIBLE.rawValue != 0, pipKnown = flags & BARC_TAB_PIP_STATE_KNOWN.rawValue != 0
+        if (event == BARC_TAB_COMMITTED && !sameDocument) || (event == BARC_TAB_FAILED && !provisional) { media = nil }
+        if let current = media?.isAudible, current != audible {
+            media?.isAudible = audible
         }
         let snapshot = PageNavigationState(
-            url: url, title: title, isLoading: flags & 1 != 0,
-            canGoBack: flags & 2 != 0, canGoForward: flags & 4 != 0,
-            isAudioMuted: flags & 256 != 0, isAudible: flags & 512 != 0,
-            hasVideoPictureInPicture: flags & 4096 != 0 ? flags & 1024 != 0 : nil,
-            hasDocumentPictureInPicture: flags & 4096 != 0 ? flags & 2048 != 0 : nil, media: media)
+            url: url, title: title, isLoading: flags & BARC_TAB_LOADING.rawValue != 0,
+            canGoBack: flags & BARC_TAB_BACK.rawValue != 0, canGoForward: flags & BARC_TAB_FORWARD.rawValue != 0,
+            isAudioMuted: flags & BARC_TAB_MUTED.rawValue != 0, isAudible: audible,
+            hasVideoPictureInPicture: pipKnown ? flags & BARC_TAB_VIDEO_PIP.rawValue != 0 : nil,
+            hasDocumentPictureInPicture: pipKnown ? flags & BARC_TAB_DOCUMENT_PIP.rawValue != 0 : nil, media: media)
         if state != snapshot {
             state = snapshot
             onStateChanged?(snapshot)
         }
         guard !invalidated else { return }
-        if event == 1 || event == 2 { cancelThumbnail() }
-        if event == 2 && flags & 16 == 0 { cancelStyle(); cancelTranslation() }
+        if event == BARC_TAB_STARTED || event == BARC_TAB_COMMITTED { cancelThumbnail() }
+        if event == BARC_TAB_COMMITTED && !sameDocument { cancelStyle(); cancelTranslation() }
         guard !invalidated else { return }
         switch event {
-        case 1: onEvent?(.started(url))
-        case 2: onEvent?(.committed(url, sameDocument: flags & 16 != 0))
-        case 3: onEvent?(.finished(url, title: title, isReload: flags & 8 != 0))
-        case 4:
-            if flags & 64 != 0 {
+        case BARC_TAB_STARTED: onEvent?(.started(url))
+        case BARC_TAB_COMMITTED: onEvent?(.committed(url, sameDocument: sameDocument))
+        case BARC_TAB_FINISHED: onEvent?(.finished(url, title: title, isReload: flags & BARC_TAB_RELOAD.rawValue != 0))
+        case BARC_TAB_FAILED:
+            if flags & BARC_TAB_ABORTED.rawValue != 0 {
                 onEvent?(.cancelled(committedURL: url))
                 return
             }
             let failure = NSError(domain: "Barc.Chromium.Navigation", code: Int(error),
                                   userInfo: [NSLocalizedDescriptionKey: "The page could not be loaded."])
-            onEvent?(.failed(failure, provisional: flags & 32 != 0, committedURL: url))
-        case 5: if let title { onEvent?(.titleChanged(title)) }
+            onEvent?(.failed(failure, provisional: provisional, committedURL: url))
+        case BARC_TAB_TITLE: if let title { onEvent?(.titleChanged(title)) }
         default: break  // INITIAL and STATE never invent a history visit.
         }
     }
@@ -1036,36 +882,36 @@ extension ChromiumPageNavigation: VaultNativePage {
     func observeVaultPasskeys(_ callback: (@MainActor (VaultNativePasskeyRequest?) -> Void)?) {
         let previous = vaultPasskeyCallback; vaultPasskeyCallback = callback
         if callback == nil { previous?(nil) }
-        guard !invalidated, observation != 0, let observe = api.observeVaultPasskeys else { callback?(nil); return }
-        let native: ChromiumNavigationAPI.VaultPasskeyCallback? = callback == nil ? nil : { pointer, token, request, operation, arguments, nativeView in
+        guard !invalidated, observation != 0 else { callback?(nil); return }
+        let native: BarcVaultPasskeyCallback? = callback == nil ? nil : { pointer, token, request, operation, arguments, nativeView in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
                 guard let owner = context.owner, owner.observation == token, !owner.invalidated else { return }
-                guard request != 0, (operation == 0 || operation == 1), let nativeView,
+                guard request != 0, operation == BARC_PASSKEY_REGISTER.rawValue || operation == BARC_PASSKEY_ASSERT.rawValue, let nativeView,
                       let args = ChromiumPageNavigation.fileString(arguments,limit:65537),
                       owner.vaultPasskeyIsCurrent(request) else { owner.vaultPasskeyCallback?(nil); return }
                 let view = Unmanaged<NSView>.fromOpaque(nativeView).takeUnretainedValue()
                 owner.vaultPasskeyCallback?(VaultNativePasskeyRequest(token:request,operation:operation,arguments:args,view:view))
             }
         }
-        if observe(observation,native) != 1 { callback?(nil) }
+        if bridge.tab_observe_vault_passkeys(observation,native) != 1 { callback?(nil) }
     }
     func vaultPasskeyIsCurrent(_ token: UInt64) -> Bool {
         !invalidated && !isClosed && observation != 0 && window > 0 && matchesProfile(window) &&
-            api.vaultPasskeyCurrent?(observation,token) == 1
+            bridge.tab_vault_passkey_is_current(observation,token) == 1
     }
     func completeVaultPasskey(_ token: UInt64, result: String?) -> Bool {
-        guard observation != 0, let complete = api.completeVaultPasskey else { return false }
-        guard let result else { return complete(observation,token,0,nil) == 1 }
+        guard observation != 0 else { return false }
+        guard let result else { return bridge.tab_complete_vault_passkey(observation,token,0,nil) == 1 }
         guard !result.utf8.contains(0), result.utf8.count <= 262144, vaultPasskeyIsCurrent(token) else { return false }
-        return result.withCString { complete(observation,token,1,$0) == 1 }
+        return result.withCString { bridge.tab_complete_vault_passkey(observation,token,1,$0) == 1 }
     }
     func observeVaultSave(_ callback: (@MainActor (VaultNativeSubmission?) -> Void)?) {
         let previous = vaultSaveCallback; vaultSaveCallback = callback
         if callback == nil { previous?(nil) }
-        guard !invalidated, observation != 0, let observe = api.observeVaultSave else { callback?(nil); return }
-        let native: ChromiumNavigationAPI.VaultSaveCallback? = callback == nil ? nil : { pointer, token, submission, origin, username, password, nativeView in
+        guard !invalidated, observation != 0 else { callback?(nil); return }
+        let native: BarcVaultSaveCallback? = callback == nil ? nil : { pointer, token, submission, origin, username, password, nativeView in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
@@ -1079,26 +925,26 @@ extension ChromiumPageNavigation: VaultNativePage {
                 owner.vaultSaveCallback?(VaultNativeSubmission(token:submission,origin:origin,username:username,password:password,view:view))
             }
         }
-        if observe(observation,native) != 1 { callback?(nil) }
+        if bridge.tab_observe_vault_save(observation,native) != 1 { callback?(nil) }
     }
     func vaultSaveIsCurrent(_ token: UInt64) -> Bool {
         !invalidated && !isClosed && observation != 0 && window > 0 && matchesProfile(window) &&
-            api.vaultSaveCurrent?(observation,token) == 1
+            bridge.tab_vault_save_is_current(observation,token) == 1
     }
     func cancelVaultSave(_ token: UInt64) {
-        if observation != 0 { _ = api.cancelVaultSave?(observation,token) }
+        if observation != 0 { _ = bridge.tab_cancel_vault_save(observation,token) }
     }
     func observeVault(_ callback: (@MainActor (VaultNativeFocus?) -> Void)?) {
         let previous = vaultCallback
         vaultCallback = callback
         if callback == nil { previous?(nil) }
-        guard !invalidated, observation != 0, let observe = api.observeVault else { callback?(nil); return }
-        let native: ChromiumNavigationAPI.VaultCallback? = callback == nil ? nil : { pointer, token, focus, origin, kind, nativeView, x, y, width, height in
+        guard !invalidated, observation != 0 else { callback?(nil); return }
+        let native: BarcVaultCallback? = callback == nil ? nil : { pointer, token, focus, origin, kind, nativeView, x, y, width, height in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
                 guard let owner = context.owner, owner.observation == token, !owner.invalidated else { return }
-                guard focus != 0, (kind == 0 || kind == 1), let nativeView,
+                guard focus != 0, kind == BARC_VAULT_PASSWORD.rawValue || kind == BARC_VAULT_ONE_TIME_CODE.rawValue, let nativeView,
                       let origin = ChromiumPageNavigation.fileString(origin, limit: 4096),
                       [x,y,width,height].allSatisfy(\.isFinite), width > 0, height > 0 else {
                     owner.vaultCallback?(nil); return
@@ -1108,23 +954,22 @@ extension ChromiumPageNavigation: VaultNativePage {
                 if !view.isFlipped { rect.origin.y = view.bounds.height - rect.maxY }
                 rect = rect.intersection(view.bounds)
                 guard !rect.isNull, !rect.isEmpty, owner.vaultFocusIsCurrent(focus) else { owner.vaultCallback?(nil); return }
-                owner.vaultCallback?(VaultNativeFocus(token:focus,origin:origin,isCode:kind == 1,view:view,anchor:rect))
+                owner.vaultCallback?(VaultNativeFocus(token:focus,origin:origin,isCode:kind == BARC_VAULT_ONE_TIME_CODE.rawValue,view:view,anchor:rect))
             }
         }
-        if observe(observation, native) != 1 { callback?(nil) }
+        if bridge.tab_observe_vault(observation, native) != 1 { callback?(nil) }
     }
     func vaultFieldIsCurrent(_ token: UInt64) -> Bool {
         !invalidated && !isClosed && observation != 0 && window > 0 && matchesProfile(window) &&
-            api.vaultFieldCurrent?(observation, token) == 1
+            bridge.tab_vault_field_is_current(observation, token) == 1
     }
-    func cancelVaultFocus(_ token: UInt64) { if observation != 0 { _ = api.cancelVaultFocus?(observation, token) } }
+    func cancelVaultFocus(_ token: UInt64) { if observation != 0 { _ = bridge.tab_cancel_vault_focus(observation, token) } }
     func vaultFocusIsCurrent(_ token: UInt64) -> Bool {
         !invalidated && !isClosed && observation != 0 && window > 0 && matchesProfile(window) &&
-            api.vaultCurrent?(observation,token) == 1
+            bridge.tab_vault_focus_is_current(observation,token) == 1
     }
     func fillVault(_ token: UInt64, username: String, secret: String) -> Bool {
-        guard !username.utf8.contains(0), !secret.utf8.contains(0), vaultFocusIsCurrent(token),
-              let fill = api.vaultFill else { return false }
-        return username.withCString { username in secret.withCString { secret in fill(observation,token,username,secret) == 1 } }
+        guard !username.utf8.contains(0), !secret.utf8.contains(0), vaultFocusIsCurrent(token) else { return false }
+        return username.withCString { username in secret.withCString { secret in bridge.tab_fill_vault(observation,token,username,secret) == 1 } }
     }
 }

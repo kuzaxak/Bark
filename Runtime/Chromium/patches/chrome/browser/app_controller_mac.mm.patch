@@ -1,0 +1,584 @@
+diff --git a/chrome/browser/app_controller_mac.mm b/chrome/browser/app_controller_mac.mm
+index ead883ef95..e3f1864f5e 100644
+--- a/chrome/browser/app_controller_mac.mm
++++ b/chrome/browser/app_controller_mac.mm
+@@ -4,11 +4,15 @@
+ 
+ #import "chrome/browser/app_controller_mac.h"
+ 
++#include "bark/bridge/barc_runtime_startup.h"
++#include "chrome/browser/ui/startup/startup_tab_provider.h"
++
+ #include <AppKit/AppKit.h>
+ #include <dispatch/dispatch.h>
+ #include <stddef.h>
+ 
+ #include <algorithm>
++#include <iterator>
+ #include <memory>
+ #include <vector>
+ 
+@@ -435,6 +439,12 @@ base::FilePath GetStartupProfilePathMac() {
+ 
+ void OpenStartupTabsInBrowserWithProfile(const StartupTabs& tabs,
+                                          Profile* profile);
++void OpenStartupTabsAtExactOwner(const StartupTabs& tabs,
++                                 Profile* profile,
++                                 BrowserWindowInterface* browser);
++void OpenNativeApplicationTabs(StartupTabs tabs);
++void OpenNativeApplicationWindow(int32_t kind);
++bool CanUseNativeApplicationProfile(Profile* profile);
+ 
+ void OpenStartupTabsInBrowser(StartupTabs tabs) {
+   StartupTabs regular_tabs;
+@@ -485,34 +495,55 @@ void OpenStartupTabsInBrowser(StartupTabs tabs) {
+               return profile_tab_map;
+             },
+             std::move(shortcuts)),
+-        base::BindOnce([](const base::flat_map<base::FilePath, StartupTabs>
+-                              profile_tab_map) {
+-          const base::FilePath& user_data_dir =
+-              g_browser_process->profile_manager()->user_data_dir();
+-          ProfileAttributesStorage& profile_attributes_storage =
+-              g_browser_process->profile_manager()
+-                  ->GetProfileAttributesStorage();
+-          for (const auto& [profile, tabs_for_profile] : profile_tab_map) {
+-            const base::FilePath profile_path = user_data_dir.Append(profile);
+-            if (profile_attributes_storage.GetProfileAttributesWithPath(
+-                    profile_path)) {
+-              app_controller_mac::RunInProfileSafely(
+-                  profile_path,
+-                  base::BindOnce(&OpenStartupTabsInBrowserWithProfile,
+-                                 tabs_for_profile),
+-                  app_controller_mac::kShowProfilePickerOnFailure);
+-            } else {
+-              // If the target profile doesn't exist, fall back to the
+-              // last profile.
+-              app_controller_mac::RunInLastProfileSafely(
+-                  base::BindOnce(&OpenStartupTabsInBrowserWithProfile,
+-                                 tabs_for_profile),
+-                  app_controller_mac::kShowProfilePickerOnFailure);
+-            }
+-          }
+-        }));
++        base::BindOnce(
++            [](StartupTabs native_regular_tabs,
++               const base::flat_map<base::FilePath, StartupTabs>
++                   profile_tab_map) {
++              if (barc::IsNativeApplicationMode()) {
++                StartupTabs tabs = std::move(native_regular_tabs);
++                for (const auto& [profile, profile_tabs] : profile_tab_map) {
++                  tabs.insert(tabs.end(), profile_tabs.begin(),
++                              profile_tabs.end());
++                }
++                OpenNativeApplicationTabs(std::move(tabs));
++                return;
++              }
++              const base::FilePath& user_data_dir =
++                  g_browser_process->profile_manager()->user_data_dir();
++              ProfileAttributesStorage& profile_attributes_storage =
++                  g_browser_process->profile_manager()
++                      ->GetProfileAttributesStorage();
++              for (const auto& [profile, tabs_for_profile] : profile_tab_map) {
++                const base::FilePath profile_path =
++                    user_data_dir.Append(profile);
++                if (profile_attributes_storage.GetProfileAttributesWithPath(
++                        profile_path)) {
++                  app_controller_mac::RunInProfileSafely(
++                      profile_path,
++                      base::BindOnce(&OpenStartupTabsInBrowserWithProfile,
++                                     tabs_for_profile),
++                      app_controller_mac::kShowProfilePickerOnFailure);
++                } else {
++                  // If the target profile doesn't exist, fall back to the
++                  // last profile.
++                  app_controller_mac::RunInLastProfileSafely(
++                      base::BindOnce(&OpenStartupTabsInBrowserWithProfile,
++                                     tabs_for_profile),
++                      app_controller_mac::kShowProfilePickerOnFailure);
++                }
++              }
++            },
++            barc::IsNativeApplicationMode() ? std::move(regular_tabs)
++                                            : StartupTabs{}));
++    if (barc::IsNativeApplicationMode()) {
++      return;
++    }
+   }
+ 
++  if (barc::IsNativeApplicationMode()) {
++    OpenNativeApplicationTabs(std::move(regular_tabs));
++    return;
++  }
+   if (!regular_tabs.empty()) {
+     app_controller_mac::RunInLastProfileSafely(
+         base::BindOnce(&OpenStartupTabsInBrowserWithProfile, regular_tabs),
+@@ -539,6 +570,7 @@ Profile* GetLastProfileMac() {
+ 
+ @interface AppController () <HandoffObserverDelegate>
+ - (void)initMenuState;
++- (Profile*)safeProfileForNewWindows:(Profile*)profile;
+ - (void)initProfileMenu;
+ - (void)updateConfirmToQuitPrefMenuItem:(NSMenuItem*)item;
+ - (void)cancelConfirmQuitPanel;
+@@ -554,6 +586,8 @@ Profile* GetLastProfileMac() {
+ // once after startup has completed. It opens the tabs in |_startupTabs|, and
+ // clears |_startupTabs|.
+ - (void)openStartupUrls;
++- (void)openNativeApplicationTabs:(StartupTabs)tabs;
++- (void)deferNativeStartupTabs:(StartupTabs)tabs;
+ 
+ // Opens a tab for each StartupTab in |tabs|. If there is exactly one tab open
+ // before this method is called, and that tab is the NTP, then this method
+@@ -715,6 +749,13 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+   // Launch Services) before we've launched the browser, we queue them up in
+   // |_startupTabs| so that they can go in the first browser window/tab.
+   StartupTabs _startupTabs;
++  bool _barcCommandLineHandled;
++  bool _barcPendingReopen;
++  bool _barcResolvingURL;
++  size_t _barcValidatedTabs;
++  uint64_t _barcURLGeneration;
++  barc::ApplicationPage _barcPendingPage;
++  NSUInteger _barcPendingNewWindows;
+   BOOL _startupComplete;
+ 
+   // Outlets for testing close tab/window menu items.
+@@ -1086,6 +1127,13 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+ }
+ 
+ - (void)didEndMainMessageLoop {
++  ++_barcURLGeneration;
++  _barcValidatedTabs = 0;
++  _barcPendingPage = {};
++  _startupTabs.clear();
++  _barcPendingNewWindows = 0;
++  _barcPendingReopen = false;
++  _barcResolvingURL = false;
+   if (!_lastProfile) {
+     // If only the profile picker is open and closed again, there is no profile
+     // loaded when main message loop ends and we cannot load it from disk now.
+@@ -1247,8 +1295,194 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+ #endif
+ }
+ 
++- (void)deferNativeStartupTabs:(StartupTabs)tabs {
++  tabs.insert(tabs.end(), std::make_move_iterator(_startupTabs.begin()),
++              std::make_move_iterator(_startupTabs.end()));
++  _startupTabs =
++      std::move(tabs);  // Deferred older requests precede new arrivals.
++}
++
++- (void)openNativeApplicationTabs:(StartupTabs)tabs {
++  _barcResolvingURL = false;
++  if (!barc::IsNativeApplicationRegistered()) {
++    _startupTabs.clear();
++    _barcValidatedTabs = 0;
++    return;
++  }
++  // Validation stays upstream. Its result goes back to the front of the one
++  // existing queue before later native arrivals, without a second URL store.
++  _barcValidatedTabs += tabs.size();
++  [self deferNativeStartupTabs:std::move(tabs)];
++  barc::NotifyApplicationBrowserAvailable();
++}
++
++- (void)drainNativeValidatedURL {
++  if (_barcResolvingURL || !_barcValidatedTabs || _startupTabs.empty()) {
++    return;
++  }
++  const uint64_t generation = ++_barcURLGeneration;
++  const bool has_page = _barcPendingPage.tab != 0;
++  const barc::ApplicationPage pending = _barcPendingPage;
++  _barcResolvingURL = true;
++  __weak AppController* weak_controller = self;
++  barc::RunInApplicationBrowser(
++      has_page ? 3 : 0, _startupTabs.front().url.spec(),
++      pending.window, pending.tab,
++      base::BindOnce(^(barc::ApplicationBrowserResult result,
++                       BrowserWindowInterface* browser, Profile* profile,
++                       BarcApplicationTarget target) {
++        AppController* controller = weak_controller;
++        if (!controller || controller->_barcURLGeneration != generation) {
++          return;
++        }
++        if (!barc::IsNativeApplicationRegistered()) {
++          controller->_barcResolvingURL = false;
++          controller->_startupTabs.clear();
++          controller->_barcValidatedTabs = 0;
++          controller->_barcPendingPage = {};
++          return;
++        }
++        if (result == barc::ApplicationBrowserResult::kOpening) {
++          controller->_barcResolvingURL = false;
++          return;  // Posted real admission, never a retry timer.
++        }
++        if (!controller->_barcValidatedTabs || controller->_startupTabs.empty()) {
++          controller->_barcResolvingURL = false;
++          return;
++        }
++        if (!has_page && result == barc::ApplicationBrowserResult::kReady &&
++            CanUseNativeApplicationProfile(profile) &&
++            StartupBrowserCreatorImpl::CanOpenURL(
++                profile, controller->_startupTabs.front().url,
++                chrome::startup::IsProcessStartup::kNo)) {
++          const auto created = barc::CreateApplicationPage(profile, browser, target, generation);
++          if (controller->_barcURLGeneration != generation || !barc::IsNativeApplicationRegistered()) return;
++          controller->_barcPendingPage = created;
++          controller->_barcResolvingURL = false;
++          if (created.tab) {
++            barc::NotifyApplicationBrowserAvailable();
++            return;  // Observer/header/model admission precedes navigation.
++          }
++        } else if (has_page && result == barc::ApplicationBrowserResult::kReady &&
++                   CanUseNativeApplicationProfile(profile) &&
++                   barc::IsPendingApplicationPage(pending)) {
++          StartupTabs front{std::move(controller->_startupTabs.front())};
++          controller->_startupTabs.erase(controller->_startupTabs.begin());
++          --controller->_barcValidatedTabs;
++          controller->_barcPendingPage = {};
++          barc::ConsumeApplicationPage(pending.window, pending.tab, pending.request);
++          // Remove only this admitted front entry before navigation callouts.
++          // The stock navigator preserves validation and opaque initiators.
++          content::WebContents* contents = nullptr;
++          auto* strip = browser->GetTabStripModel();
++          for (int index = 0; index < strip->count(); ++index) {
++            auto* candidate = strip->GetWebContentsAt(index);
++            if (tabs::TabInterface::GetFromContents(candidate)->GetHandle().raw_value() == pending.tab) {
++              contents = candidate;
++              break;
++            }
++          }
++          if (contents) {
++            base::CommandLine dummy(base::CommandLine::NO_PROGRAM);
++            StartupBrowserCreatorImpl launch(base::FilePath(), dummy,
++                first_run::IsChromeFirstRun() ? chrome::startup::IsFirstRun::kYes
++                                             : chrome::startup::IsFirstRun::kNo);
++            launch.OpenTabsInBrowser(browser, chrome::startup::IsProcessStartup::kNo,
++                front, StartupBrowserCreatorImpl::TabOverWrite::kNo,
++                barc::IsApplicationMini(browser), contents);
++          }
++          if (controller->_barcURLGeneration != generation) return;
++          controller->_barcResolvingURL = false;
++          if (!controller->_startupTabs.empty()) {
++            barc::NotifyApplicationBrowserAvailable();
++          }
++          return;
++        }
++        // Terminal refusal consumes only the captured front. A closed/moved
++        // pending owner never retargets this URL into a different document.
++        controller->_startupTabs.erase(controller->_startupTabs.begin());
++        --controller->_barcValidatedTabs;
++        controller->_barcPendingPage = {};
++        if (has_page) {
++          barc::CloseUnusedApplicationPage(pending);
++        }
++        if (controller->_barcURLGeneration != generation) return;
++        controller->_barcResolvingURL = false;
++        if (!controller->_startupTabs.empty()) {
++          barc::NotifyApplicationBrowserAvailable();
++        }
++      }));
++}
++
+ - (void)openStartupUrls {
+   CHECK(_startupComplete);
++  if (barc::IsNativeApplicationMode()) {
++    if (!barc::CanResolveApplicationBrowser() || _barcResolvingURL) {
++      return;
++    }
++    if (_barcValidatedTabs) {
++      [self drainNativeValidatedURL];
++      return;
++    }
++    if (_barcCommandLineHandled && _startupTabs.empty() &&
++        !_barcPendingNewWindows && !_barcPendingReopen) {
++      return;
++    }
++    const NSUInteger new_windows = std::exchange(_barcPendingNewWindows, 0);
++    const bool reopen = std::exchange(_barcPendingReopen, false);
++    StartupTabs pending = std::move(_startupTabs);
++    _startupTabs.clear();  // Before any operation can requeue or receive URLs.
++    _barcResolvingURL = true;
++    if (!_barcCommandLineHandled) {
++      _barcCommandLineHandled = true;
++      __weak AppController* weak_controller = self;
++      barc::RunInApplicationBrowser(
++          0, base::BindOnce(
++                 ^(StartupTabs batch, barc::ApplicationBrowserResult result,
++                   BrowserWindowInterface* browser, Profile* profile) {
++                   AppController* controller = weak_controller;
++                   if (!controller) {
++                     return;
++                   }
++                   if (result == barc::ApplicationBrowserResult::kOpening) {
++                     controller->_barcCommandLineHandled = false;
++                     [controller deferNativeStartupTabs:std::move(batch)];
++                     controller->_barcResolvingURL = false;
++                     return;
++                   }
++                   if (result != barc::ApplicationBrowserResult::kReady ||
++                       !CanUseNativeApplicationProfile(profile)) {
++                     controller->_barcResolvingURL = false;
++                     if (!barc::IsNativeApplicationRegistered()) {
++                       controller->_startupTabs.clear();
++                     } else if (!controller->_startupTabs.empty()) {
++                       barc::NotifyApplicationBrowserAvailable();
++                     }
++                     LOG(WARNING) << "Native application command-line target "
++                                     "was cancelled or refused";
++                     return;
++                   }
++                   StartupTabProviderImpl provider;
++                   auto tabs = provider.GetCommandLineTabs(
++                       *base::CommandLine::ForCurrentProcess(),
++                       barc::ApplicationLaunchDirectory(), profile);
++                   tabs.insert(tabs.end(),
++                               std::make_move_iterator(batch.begin()),
++                               std::make_move_iterator(batch.end()));
++                   OpenStartupTabsInBrowser(std::move(tabs));
++                 },
++                 std::move(pending)));
++    } else {
++      OpenStartupTabsInBrowser(std::move(pending));
++    }
++    for (NSUInteger i = 0; i < new_windows; ++i) {
++      OpenNativeApplicationWindow(1);
++    }
++    if (reopen) {
++      [self applicationShouldHandleReopen:NSApp hasVisibleWindows:NO];
++    }
++    return;
++  }
+   [self openStartupTabsReplacingNTP:std::move(_startupTabs)];
+   _startupTabs.clear();
+ }
+@@ -1257,14 +1491,25 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+   if (tabs.empty()) {
+     return;
+   }
+-
++  if (barc::IsNativeApplicationMode()) {
++    if (!barc::IsNativeApplicationRegistered() ||
++        browser_shutdown::IsTryingToQuit()) {
++      return;
++    }
++    _startupTabs.insert(_startupTabs.end(),
++                        std::make_move_iterator(tabs.begin()),
++                        std::make_move_iterator(tabs.end()));
++    if (_startupComplete) {
++      [self openStartupUrls];
++    }
++    return;
++  }
+   if (!_startupComplete) {
+     for (auto& tab : tabs) {
+       _startupTabs.push_back(std::move(tab));
+     }
+     return;
+   }
+-
+   OpenStartupTabsInBrowser(std::move(tabs));
+ }
+ 
+@@ -1328,6 +1573,12 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+   [self registerServicesMenuTypesTo:[notify object]];
+ 
+   _startupComplete = YES;
++  if (barc::IsNativeApplicationMode()) {
++    __weak AppController* weak_controller = self;
++    barc::SetApplicationLaunchReadyCallback(base::BindRepeating(^{
++      [weak_controller openStartupUrls];
++    }));
++  }
+ 
+   if (base::CommandLine::ForCurrentProcess()->HasSwitch(switches::kKioskMode))
+     ConfigureNSAppForKioskMode();
+@@ -1676,6 +1927,13 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+       browser_shutdown::IsTryingToQuit()) {
+     return;
+   }
++  NSEvent* event = NSApp.currentEvent;
++  if (barc::ApplicationOwnsKeyCommand([sender tag]) &&
++      [sender isKindOfClass:[NSMenuItem class]] &&
++      event.type == NSEventTypeKeyDown &&
++      [static_cast<NSMenuItem*>(sender) cr_firesForKeyEquivalentEvent:event]) {
++    return;
++  }
+ 
+   // Handle the case where we're dispatching a command from a sender that's in a
+   // browser window. This means that the command came from a background window
+@@ -1695,6 +1953,24 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+     return;
+   }
+ 
++  if (([sender tag] == IDC_NEW_INCOGNITO_WINDOW ||
++       [sender tag] == IDC_NEW_ISOLATED_WINDOW) &&
++      barc::IsNativeApplicationMode()) {
++    barc::RequestApplicationWindow(BARC_APPLICATION_NEW_PRIVATE_WINDOW);
++    return;
++  }
++
++  if ([sender tag] == IDC_NEW_WINDOW && barc::IsNativeApplicationMode()) {
++    if (!barc::CanResolveApplicationBrowser()) {
++      if (!_barcCommandLineHandled && barc::IsNativeApplicationRegistered()) {
++        ++_barcPendingNewWindows;
++      }
++    } else {
++      OpenNativeApplicationWindow(1);
++    }
++    return;
++  }
++
+   Profile* unsafeLastProfile = [self lastProfileIfLoaded];
+   Profile* lastProfile = [self safeProfileForNewWindows:unsafeLastProfile];
+   // Ignore commands during session restore's browser creation.  It uses a
+@@ -1857,6 +2133,17 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+   if (browser_shutdown::IsTryingToQuit())
+     return NO;
+ 
++  if (barc::IsNativeApplicationMode()) {
++    if (!barc::CanResolveApplicationBrowser()) {
++      if (!_barcCommandLineHandled && barc::IsNativeApplicationRegistered()) {
++        _barcPendingReopen = true;
++      }
++    } else {
++      OpenNativeApplicationWindow(2);
++    }
++    return NO;
++  }
++
+   // Bring all browser windows to the front. Specifically, this brings them in
+   // front of any app windows. FocusWindowSet will also unminimize the most
+   // recently minimized window if no windows in the set are visible.
+@@ -2430,6 +2717,11 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+   // having that same equivalent, the AppKit just won't take it. We get around
+   // this problem by leaving key equivalents alone and instead change the
+   // titles and actions of the menu items that own those equivalents.
++  // The app installs Close Tab and Close Window for its windows, which keep
++  // tabs that Chromium's selected client may not have.
++  if (barc::IsNativeApplicationMode()) {
++    return;
++  }
+   NSMenuItem* cmdWMenuItem = [self cmdWMenuItem];
+   NSMenuItem* shiftCmdWMenuItem = [self shiftCmdWMenuItem];
+ 
+@@ -2634,6 +2926,46 @@ class AppControllerProfileObserver : public ProfileAttributesStorage::Observer,
+ 
+ namespace {
+ 
++bool CanUseNativeApplicationProfile(Profile* profile) {
++  if (!profile) {
++    return false;
++  }
++  if (profile->IsRegularProfile() &&
++      IncognitoModePrefs::GetAvailability(profile) ==
++          policy::IncognitoModeAvailability::kForced) {
++    LOG(WARNING) << "Native application forced-private launch is unavailable";
++    return false;  // Never create an unowned stock primary OTR as a side
++                   // effect.
++  }
++  return [AppController.sharedController safeProfileForNewWindows:profile] ==
++         profile;
++}
++void OpenNativeApplicationTabs(StartupTabs tabs) {
++  [AppController.sharedController openNativeApplicationTabs:std::move(tabs)];
++}
++
++void OpenNativeApplicationWindow(int32_t kind) {
++  if (kind == 1) {
++    barc::RequestApplicationWindow(BARC_APPLICATION_NEW_WINDOW);
++    return;
++  }
++  barc::RunInApplicationBrowser(
++      kind,
++      base::BindOnce(
++          [](barc::ApplicationBrowserResult result,
++             BrowserWindowInterface* browser, Profile* profile) {
++            if (result != barc::ApplicationBrowserResult::kReady ||
++                !CanUseNativeApplicationProfile(profile)) {
++              return;
++            }
++            if (browser) {
++              browser->GetWindow()->Show();  // Only the admitted model owner.
++              return;
++            }
++            barc::RequestApplicationWindow(BARC_APPLICATION_NEW_WINDOW);
++          }));
++}
++
+ void UpdateProfileInUse(Profile* profile) {
+   if (!profile) {
+     return;
+@@ -2654,18 +2986,38 @@ void OpenStartupTabsInBrowserWithProfile(const StartupTabs& tabs,
+   // window, not in PWA/app windows which cannot accept new tabs.
+   BrowserWindowInterface* browser =
+       ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser();
+-  int startupIndex = TabStripModel::kNoTab;
+-  content::WebContents* startupContent = nullptr;
++  OpenStartupTabsAtExactOwner(tabs, profile, browser);
++}
++
++void OpenStartupTabsAtExactOwner(const StartupTabs& tabs,
++                                 Profile* profile,
++                                 BrowserWindowInterface* browser) {
++  if (!profile || (browser && (browser->IsDeleteScheduled() ||
++                               browser->GetProfile() != profile))) {
++    return;
++  }
++  base::WeakPtr<content::WebContents> startupContent;
+   if (browser && browser->GetTabStripModel()->count() == 1) {
+     // If there's only 1 tab and the tab is NTP, close this NTP tab and open all
+     // startup urls in new tabs, because the omnibox will stay focused if we
+     // load url in NTP tab.
+-    startupIndex = browser->GetTabStripModel()->active_index();
+-    startupContent = browser->GetTabStripModel()->GetActiveWebContents();
++    if (auto* contents = browser->GetTabStripModel()->GetActiveWebContents()) {
++      startupContent = contents->GetWeakPtr();
++    }
+   } else if (!browser) {
+     // if no browser window exists then create one with no tabs to be filled in.
+     browser = CreateBrowserWindow(BrowserWindowCreateParams(profile, true));
+-    browser->GetWindow()->Show();
++    if (!browser) {
++      return;
++    }
++    if (!barc::IsNativeApplicationMode()) {
++      auto alive = browser->GetWeakPtr();
++      browser->GetWindow()->Show();
++      if (!alive || alive->IsDeleteScheduled()) {
++        return;
++      }
++      browser = alive.get();
++    }
+   }
+ 
+   // Various methods to open URLs that we get in a native fashion. We use
+@@ -2677,15 +3029,24 @@ void OpenStartupTabsInBrowserWithProfile(const StartupTabs& tabs,
+       first_run::IsChromeFirstRun() ? chrome::startup::IsFirstRun::kYes
+                                     : chrome::startup::IsFirstRun::kNo;
+   StartupBrowserCreatorImpl launch(base::FilePath(), dummy, first_run);
++  auto alive = browser->GetWeakPtr();
+   launch.OpenTabsInBrowser(browser, chrome::startup::IsProcessStartup::kNo,
+                            tabs, StartupBrowserCreatorImpl::TabOverWrite::kNo);
++  if (!alive || alive->IsDeleteScheduled()) {
++    return;
++  }
++  browser = alive.get();
+ 
+   // This NTP check should be replaced once https://crbug.com/41261582 is fixed.
+-  if (startupIndex != TabStripModel::kNoTab &&
++  if (startupContent &&
+       (startupContent->GetVisibleURL() == chrome::kChromeUINewTabURL ||
+        startupContent->GetVisibleURL() == chrome::kChromeUINewTabPageURL)) {
+-    browser->GetTabStripModel()->CloseWebContentsAt(startupIndex,
+-                                                    TabCloseTypes::CLOSE_NONE);
++    const int startupIndex = browser->GetTabStripModel()->GetIndexOfWebContents(
++        startupContent.get());
++    if (startupIndex != TabStripModel::kNoTab) {
++      browser->GetTabStripModel()->CloseWebContentsAt(
++          startupIndex, TabCloseTypes::CLOSE_NONE);
++    }
+   }
+ }
+ 

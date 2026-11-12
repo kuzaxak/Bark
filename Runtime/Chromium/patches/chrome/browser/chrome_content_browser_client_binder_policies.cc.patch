@@ -1,0 +1,28 @@
+diff --git a/chrome/browser/chrome_content_browser_client_binder_policies.cc b/chrome/browser/chrome_content_browser_client_binder_policies.cc
+index f1a32ebd76..f939dd11fb 100644
+--- a/chrome/browser/chrome_content_browser_client_binder_policies.cc
++++ b/chrome/browser/chrome_content_browser_client_binder_policies.cc
+@@ -3,6 +3,10 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/chrome_content_browser_client_binder_policies.h"
++#include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "chrome/common/chrome_render_frame.mojom.h"
++#endif
+ 
+ #include "chrome/browser/ui/webui/bluetooth_internals/bluetooth_internals.mojom.h"
+ #include "components/autofill/content/common/mojom/autofill_driver.mojom.h"
+@@ -23,6 +27,12 @@ namespace {
+ // `RegisterBrowserInterfaceBindersForFrame()`.
+ void RegisterPoliciesForNonAssociatedInterfaces(
+     content::MojoBinderPolicyMap& policy_map) {
++#if BUILDFLAG(IS_MAC)
++  // A sync document-start lookup must not wait for prerender activation. The
++  // receiver authorizes the exact document/Profile and performs no UI action.
++  policy_map.SetNonAssociatedPolicy<chrome::mojom::NookCosmeticResourcesHost>(
++      content::MojoBinderNonAssociatedPolicy::kGrant);
++#endif
+   // Prerendering does not happen for WebUI pages, so set kUnexpected as the
+   // policy for interfaces registered by WebUI.
+   policy_map.SetNonAssociatedPolicy<::mojom::BluetoothInternalsHandler>(

@@ -1,0 +1,19 @@
+diff --git a/chrome/browser/profiles/profile.cc b/chrome/browser/profiles/profile.cc
+index f5c9ae68aa..27c325f7d4 100644
+--- a/chrome/browser/profiles/profile.cc
++++ b/chrome/browser/profiles/profile.cc
+@@ -532,6 +532,14 @@ void Profile::Wipe() {
+       chrome_browsing_data_remover::ALL_ORIGIN_TYPES);
+ }
+ 
++void Profile::Wipe(content::BrowsingDataRemover::Observer* observer) {
++  CHECK(observer);
++  GetBrowsingDataRemover()->RemoveAndReply(
++      base::Time(), base::Time::Max(),
++      chrome_browsing_data_remover::WIPE_PROFILE,
++      chrome_browsing_data_remover::ALL_ORIGIN_TYPES, observer);
++}
++
+ void Profile::NotifyOffTheRecordProfileCreated(Profile* off_the_record) {
+   DCHECK_EQ(off_the_record->GetOriginalProfile(), this);
+   DCHECK(off_the_record->IsOffTheRecord());

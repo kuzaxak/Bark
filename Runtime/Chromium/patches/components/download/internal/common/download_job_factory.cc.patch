@@ -1,0 +1,16 @@
+diff --git a/components/download/internal/common/download_job_factory.cc b/components/download/internal/common/download_job_factory.cc
+index 3887e3689d..51a37e28e5 100644
+--- a/components/download/internal/common/download_job_factory.cc
++++ b/components/download/internal/common/download_job_factory.cc
+@@ -43,6 +43,11 @@ ConnectionType GetConnectionType(net::HttpConnectionInfo connection_info) {
+ // Returns if the download can be parallelized.
+ bool IsParallelizableDownload(const DownloadCreateInfo& create_info,
+                               DownloadItem* download_item) {
++  // Secondary range requests do not carry this action's credential and
++  // redirect restrictions. Keep custom social saves on one validated stream.
++  if (create_info.download_source == DownloadSource::NATIVE_SOCIAL_MEDIA)
++    return false;
++
+   if (download_item->GetDownloadFile() &&
+       download_item->GetDownloadFile()->IsMemoryFile()) {
+     return false;

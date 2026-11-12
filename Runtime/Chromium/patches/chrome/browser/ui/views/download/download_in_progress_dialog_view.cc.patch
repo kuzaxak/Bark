@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc b/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc
+index 02a1a9bdf0..464ca4fa85 100644
+--- a/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc
++++ b/chrome/browser/ui/views/download/download_in_progress_dialog_view.cc
+@@ -16,14 +16,14 @@
+ #include "ui/views/layout/fill_layout.h"
+ 
+ // static
+-void DownloadInProgressDialogView::Show(
++views::Widget* DownloadInProgressDialogView::Create(
+     gfx::NativeWindow parent,
+     int download_count,
+     UnloadController::DownloadCloseType dialog_type,
+     base::OnceCallback<void(bool)> callback) {
+   DownloadInProgressDialogView* window = new DownloadInProgressDialogView(
+       download_count, dialog_type, std::move(callback));
+-  constrained_window::CreateBrowserModalDialogViews(window, parent)->Show();
++  return constrained_window::CreateBrowserModalDialogViews(window, parent);
+ }
+ 
+ DownloadInProgressDialogView::DownloadInProgressDialogView(

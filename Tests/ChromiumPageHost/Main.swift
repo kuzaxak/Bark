@@ -19,7 +19,7 @@ private enum Native {
     static var ending: Set<Int32> = []
     static var appLifetime: Set<Int32> = []
     static var nextTab: Int32 = 200
-    static var pending: (ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)?
+    static var pending: (barc_profile_window_callback?, UnsafeMutableRawPointer?)?
     static var openedFrom: [Int32] = []
     static var opens = 0
     static var creates = 0
@@ -37,7 +37,7 @@ private enum Native {
     static var onObserve: ((Int32, Int32) -> Void)?
     static var onSelect: (() -> Int32)?
     static var onAttach: ((Int32) -> Int32)?
-    static var observations: [UInt64: (ChromiumNavigationAPI.Callback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
+    static var observations: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var nextObservation: UInt64 = 1
     static var pageHidden: [Int32: Int32] = [:]
     static var blankSnapshots = false
@@ -45,60 +45,12 @@ private enum Native {
     static var catalogAvailable = true
     static var onNavigate: ((Int32, Int32, String) -> Int32)?
 
-    static var api: ChromiumPageHostAPI {
-        ChromiumPageHostAPI(
-            open: { owner, _, destination, callback, context in MainActor.assumeIsolated {
-                precondition(destination == 5)
-                Native.opens += 1; Native.openedFrom.append(owner); Native.pending = (callback, context)
-            } },
-            create: { window, url, foreground in MainActor.assumeIsolated {
-                precondition(String(cString: url!) == "about:blank" && foreground == 0)
-                Native.creates += 1; Native.nextTab += 1; Native.tabs[window, default: []].append(Native.nextTab)
-                return Native.nextTab
-            } },
-            tabAt: { window, index in MainActor.assumeIsolated {
-                guard let list = Native.tabs[window], list.indices.contains(index) else { return 0 }
-                return list[index]
-            } },
-            tabTitle: { window, tab, _, _ in MainActor.assumeIsolated {
-                Native.tabs[window]?.contains(tab) == true && Native.profiles[window] != nil ? 1 : 0
-            } },
-            selectWindow: { window in MainActor.assumeIsolated {
-                Native.selectionCalls += 1; Native.selected = window; return 1
-            } },
-            closeWindow: { window in MainActor.assumeIsolated {
-                Native.windowCloses.append(window); Native.tabs[window] = nil; Native.profiles[window] = nil; return 1
-            } },
-            setAppLifetime: { window in MainActor.assumeIsolated {
-                guard Native.profiles[window] != nil else { return 0 }
-                Native.appLifetime.insert(window); return 1
-            } },
-            setPageHidden: { window, hidden in MainActor.assumeIsolated {
-                guard Native.profiles[window] != nil else { return 0 }
-                Native.pageHidden[window] = hidden; return 1
-            } },
-            attach: { window, view in MainActor.assumeIsolated {
-                Native.attachmentCalls += 1
-                if let callback = Native.onAttach { return callback(window) }
-                if view == nil { Native.headerOwners.remove(window) } else {
-                    Native.headerOwners.insert(window); Native.lastAttached = window
-                }
-                return 1
-            } },
-            shellIsOwned: { window, _ in MainActor.assumeIsolated { Native.headerOwners.contains(window) ? 1 : 0 } },
-            detachIfOwned: { window, _ in MainActor.assumeIsolated {
-                guard Native.headerOwners.contains(window) else { return 0 }
-                Native.attachmentCalls += 1
-                if let callback = Native.onAttach { return callback(window) }
-                Native.headerOwners.remove(window); if Native.lastAttached == window { Native.lastAttached = 0 }; return 1
-            } })
-    }
-
     static func row(_ window: Int32) -> BarcDiscoveryWindow? {
         let group = groups[window] ?? 1
         let retained = appLifetime.contains { (groups[$0] ?? 1) == group }
         guard let profile = profiles[window], let list = tabs[window], !list.isEmpty || retained else { return nil }
         var row = BarcDiscoveryWindow()
+        row.size = MemoryLayout<BarcDiscoveryWindow>.size
         row.window = window; row.physical_group = group
         row.active_tab = activeTabs[window].flatMap { list.contains($0) ? $0 : nil } ?? list.first ?? 0
         row.selected_client = selected; row.profile_kind = 0
@@ -108,62 +60,130 @@ private enum Native {
         }
         return row
     }
-    static var discovery: ChromiumDiscoveryAPI {
-        ChromiumDiscoveryAPI(read: { windows, capacity, _, _, output in MainActor.assumeIsolated {
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.profile_open_in_native_window = { owner, _, destination, callback, context in MainActor.assumeIsolated {
+            precondition(destination == BARC_PROFILE_BLANK)
+            Native.opens += 1; Native.openedFrom.append(owner); Native.pending = (callback, context)
+        } }
+        bridge.tab_create = { window, url, foreground in MainActor.assumeIsolated {
+            precondition(String(cString: url!) == "about:blank" && foreground == 0)
+            Native.creates += 1; Native.nextTab += 1; Native.tabs[window, default: []].append(Native.nextTab)
+            return Native.nextTab
+        } }
+        bridge.window_tab_at = { window, index in MainActor.assumeIsolated {
+            guard let list = Native.tabs[window], list.indices.contains(index) else { return 0 }
+            return list[index]
+        } }
+        bridge.tab_copy_title = { window, tab, _, _ in MainActor.assumeIsolated {
+            Native.tabs[window]?.contains(tab) == true && Native.profiles[window] != nil ? 1 : 0
+        } }
+        bridge.window_select = { window in MainActor.assumeIsolated {
+            Native.selectionCalls += 1; Native.selected = window; return 1
+        } }
+        bridge.window_close = { window in MainActor.assumeIsolated {
+            Native.windowCloses.append(window); Native.tabs[window] = nil; Native.profiles[window] = nil; return 1
+        } }
+        bridge.window_set_app_lifetime = { window in MainActor.assumeIsolated {
+            guard Native.profiles[window] != nil else { return 0 }
+            Native.appLifetime.insert(window); return 1
+        } }
+        bridge.window_set_page_hidden = { window, hidden in MainActor.assumeIsolated {
+            guard Native.profiles[window] != nil else { return 0 }
+            Native.pageHidden[window] = hidden; return 1
+        } }
+        bridge.window_attach_native_shell = { window, view in MainActor.assumeIsolated {
+            Native.attachmentCalls += 1
+            if let callback = Native.onAttach { return callback(window) }
+            if view == nil { Native.headerOwners.remove(window) } else {
+                Native.headerOwners.insert(window); Native.lastAttached = window
+            }
+            return 1
+        } }
+        bridge.window_native_shell_is_owned = { window, _ in MainActor.assumeIsolated { Native.headerOwners.contains(window) ? 1 : 0 } }
+        bridge.window_detach_native_shell_if_owned = { window, _ in MainActor.assumeIsolated {
+            guard Native.headerOwners.contains(window) else { return 0 }
+            Native.attachmentCalls += 1
+            if let callback = Native.onAttach { return callback(window) }
+            Native.headerOwners.remove(window); if Native.lastAttached == window { Native.lastAttached = 0 }; return 1
+        } }
+        bridge.tab_transfer_with_admission = { _, _, _, _, _ in 0 }
+        bridge.window_new_peer_in_native_window = { _, _ in 0 }
+        bridge.window_set_native_header = { _, _, _, _, _ in 0 }
+        bridge.discovery_snapshot = { windows, capacity, _, _, output in MainActor.assumeIsolated {
+            guard let output, output.pointee.size >= MemoryLayout<BarcDiscoverySnapshot>.size,
+                  capacity == 0 || windows![0].size >= MemoryLayout<BarcDiscoveryWindow>.size else {
+                return Int32(BARC_DISCOVERY_READ_INVALID_ARGUMENT.rawValue)
+            }
             guard Native.catalogAvailable else { return 2 }
             let rows = Native.profiles.keys.sorted().compactMap { Native.row($0) }
-            output?.pointee.window_count = rows.count; output?.pointee.tab_count = 0
-            output?.pointee.revision = 1
+            output.pointee.window_count = rows.count; output.pointee.tab_count = 0
+            output.pointee.revision = 1
             guard capacity >= rows.count else { return 1 }
             for (index, row) in rows.enumerated() { windows?[index] = row }
             return 0
-        } }, state: { window, output in MainActor.assumeIsolated {
-            guard let row = Native.row(window) else { return 0 }; output?.pointee = row; return 1
-        } }, observe: { _, _ in 1 }, unobserve: { _ in }, admit: { _, _ in 1 })
-    }
-
-    static var navigation: ChromiumNavigationAPI {
-        ChromiumNavigationAPI(
-            observe: { window, tab, callback, context in MainActor.assumeIsolated {
-                guard !Native.rejectsObservation else { return 0 }
-                guard !Native.observations.values.contains(where: { $0.3 == tab }) else { return 0 }
-                let token = Native.nextObservation; Native.nextObservation += 1
-                Native.observations[token] = (callback, context, window, tab)
-                (Native.blankSnapshots ? "about:blank" : "https://fixture.invalid/page-\(tab)").withCString {
-                    callback?(context, token, 0, window, tab, $0, nil, 0, 0)
-                }
-                Native.onObserve?(window, tab)
-                return token
-            } },
-            unobserve: { token in MainActor.assumeIsolated { Native.observations[token] = nil } },
-            navigate: { window, tab, url in MainActor.assumeIsolated {
-                guard let onNavigate = Native.onNavigate else { preconditionFailure("Host must not navigate during construction") }
-                return onNavigate(window, tab, String(cString: url!))
-            } },
-            back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in 1 }, stop: { _, _ in 1 },
-            select: { window, tab in MainActor.assumeIsolated {
-                Native.selectionCalls += 1
-                if let callback = Native.onSelect { return callback() }
-                Native.selected = window; Native.activeTabs[window] = tab; return 1
-            } },
-            close: { window, tab in MainActor.assumeIsolated {
-                Native.nativeCloses.append((window, tab)); return 1
-            } },
-            captureThumbnail: { _, _, _ in 0 },
-            clearSiteData: { _, _, _, _ in 0 }, profileUUID: { window, buffer, capacity in MainActor.assumeIsolated {
-                guard let profile = Native.profiles[window] else { return 0 }
-                let bytes = Array(profile.uuidString.utf8CString)
-                if let buffer, capacity >= bytes.count {
-                    for (index, byte) in bytes.enumerated() { buffer[index] = byte }
-                }
-                return bytes.count
-            } })
+        } }
+        bridge.window_discovery_state = { window, output in MainActor.assumeIsolated {
+            guard let output, output.pointee.size >= MemoryLayout<BarcDiscoveryWindow>.size,
+                  let row = Native.row(window) else { return 0 }
+            output.pointee = row; return 1
+        } }
+        bridge.discovery_observe = { _, _ in 1 }
+        bridge.discovery_unobserve = { _ in }
+        bridge.window_admit_discovered = { _, _ in 1 }
+        bridge.window_private_session_uuid = { _, _, _ in 0 }
+        bridge.tab_copy_launch_space = { _, _, _, _ in 0 }
+        bridge.tab_application_pending = { _, _ in 0 }
+        bridge.window_show = { _ in 0 }
+        bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
+            guard !Native.rejectsObservation else { return 0 }
+            guard !Native.observations.values.contains(where: { $0.3 == tab }) else { return 0 }
+            let token = Native.nextObservation; Native.nextObservation += 1
+            Native.observations[token] = (callback, context, window, tab)
+            (Native.blankSnapshots ? "about:blank" : "https://fixture.invalid/page-\(tab)").withCString {
+                callback?(context, token, 0, window, tab, $0, nil, 0, 0)
+            }
+            Native.onObserve?(window, tab)
+            return token
+        } }
+        bridge.tab_unobserve = { token in MainActor.assumeIsolated { Native.observations[token] = nil } }
+        bridge.tab_observe_media = { _, _ in 1 }
+        bridge.tab_observe_vault = { _, _ in 1 }
+        bridge.tab_observe_vault_save = { _, _ in 1 }
+        bridge.tab_observe_vault_passkeys = { _, _ in 1 }
+        bridge.tab_enable_peek = { _, _ in 0 }
+        bridge.blocker_set_tab_policy = { _, _, _, _, _ in 0 }
+        bridge.tab_navigate = { window, tab, url in MainActor.assumeIsolated {
+            guard let onNavigate = Native.onNavigate else { preconditionFailure("Host must not navigate during construction") }
+            return onNavigate(window, tab, String(cString: url!))
+        } }
+        bridge.tab_go_back = { _, _ in 1 }; bridge.tab_go_forward = { _, _ in 1 }
+        bridge.tab_reload = { _, _ in 1 }; bridge.tab_stop = { _, _ in 1 }
+        bridge.tab_select = { window, tab in MainActor.assumeIsolated {
+            Native.selectionCalls += 1
+            if let callback = Native.onSelect { return callback() }
+            Native.selected = window; Native.activeTabs[window] = tab; return 1
+        } }
+        bridge.tab_close = { window, tab in MainActor.assumeIsolated {
+            Native.nativeCloses.append((window, tab)); return 1
+        } }
+        bridge.tab_capture_thumbnail = { _, _, _ in 0 }
+        bridge.tab_clear_site_data = { _, _, _, _ in 0 }
+        bridge.window_profile_uuid = { window, buffer, capacity in MainActor.assumeIsolated {
+            guard let profile = Native.profiles[window] else { return 0 }
+            let bytes = Array(profile.uuidString.utf8CString)
+            if let buffer, capacity >= bytes.count {
+                for (index, byte) in bytes.enumerated() { buffer[index] = byte }
+            }
+            return bytes.count
+        } }
+        return bridge
     }
 
     static func opened(profile: UUID?, window: Int32 = 20, blank: Int32 = 200) {
         profiles[window] = profile ?? second; tabs[window] = [blank]
         let result = pending; pending = nil
-        result?.0?(0, window, result?.1)
+        result?.0?(BARC_PROFILE_OK, window, result?.1)
     }
 
     static func emit(_ event: Int32, page: ChromiumPageNavigation, flags: UInt32 = 0) {
@@ -181,7 +201,7 @@ private enum Native {
     func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     func mounted(client: Int32, tab: Int32, pages count: Int = 1, group: UInt64) -> (ChromiumNativePageHost, BrowserWindowState, [ChromiumPageNavigation]) {
         Native.profiles[client] = Native.first; Native.tabs[client] = [tab]; Native.groups[client] = group; Native.selected = client
-        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        let host = ChromiumNativePageHost(bridge: Native.bridge)
         let window = BrowserWindowState(), shell = NSView()
         shells.append(shell)
         precondition(host.registerWindow(window, nativeOwner: client, shell: shell, initialBlankTab: tab))
@@ -236,13 +256,13 @@ private enum Native {
     Native.profiles[77] = Native.second; Native.tabs[77] = []; Native.groups[77] = 70
     Native.selected = 77
     Native.windowCloses = []
-    let stale = Native.discovery.readSnapshot()!
+    let stale = Native.bridge.readSnapshot()!
     Native.tabs[75] = [750]
     only.closeSurplusClients(in: window, snapshot: stale)
     precondition(Native.windowCloses == [76], "A client that gained a tab since the snapshot stays")
     Native.tabs[75] = []
     Native.windowCloses = []
-    only.closeSurplusClients(in: window, snapshot: Native.discovery.readSnapshot()!)
+    only.closeSurplusClients(in: window, snapshot: Native.bridge.readSnapshot()!)
     precondition(Native.windowCloses == [75], "Only unselected empty duplicates close")
     precondition(Native.row(70) != nil && Native.row(77) != nil)
 
@@ -257,7 +277,7 @@ private enum Native {
 @main
 private enum HostChecks {
     @MainActor static func main() throws {
-        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        let host = ChromiumNativePageHost(bridge: Native.bridge)
         let window = BrowserWindowState()
         let shell = NSView()
         precondition(host.registerWindow(window, nativeOwner: 10, shell: shell, initialBlankTab: 100))
@@ -280,7 +300,7 @@ private enum HostChecks {
         precondition(Native.pageHidden[10] == 0)
         host.setPageHidden(true, in: BrowserWindowState(id: window.id))
         precondition(Native.pageHidden[10] == 0, "Only the registered model window decides")
-        let reservedHost = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        let reservedHost = ChromiumNativePageHost(bridge: Native.bridge)
         let reservedWindow = BrowserWindowState(), reservedShell = NSView()
         precondition(reservedHost.registerWindow(reservedWindow, nativeOwner: 10, shell: reservedShell, initialBlankTab: 100))
         let beforeReserved = Native.nextObservation
@@ -522,7 +542,7 @@ private func checkActualModelAdoption() throws {
     registry.setActive(window)
     tabs.attach(window: window)
     let space = window.spaceID!, profile = tabs.profile(forSpace: space)!
-    let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let shell = NSView()
     Native.profiles[90] = profile.id
@@ -562,7 +582,7 @@ private func checkAuthoritativeGroups() throws {
         Native.groups[owner] = 50
     }
     Native.selected = 120; Native.attached = 120
-    let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     let window = BrowserWindowState(), shell = NSView()
     precondition(host.registerWindow(window, nativeOwner: 120, shell: shell))
     let binding = try host.bindExistingPage(nativeWindow: 121, tab: 1210, profile: profile, in: window).get()
@@ -644,7 +664,7 @@ private func checkAuthoritativeGroups() throws {
     Native.profiles[120] = nil; Native.tabs[120] = nil
     Native.selected = 122; Native.activeTabs[122] = page.nativeTabID
     precondition(host.acceptNativeSelection(page, in: window))
-    let surviving = Native.discovery.readSnapshot()!
+    let surviving = Native.bridge.readSnapshot()!
     precondition(!host.unregisterWindow(window, absentFrom: surviving))
 
     // A move to another physical group is neither destruction nor authority to
@@ -675,7 +695,7 @@ private func checkAuthoritativeGroups() throws {
     let beforeCleanupCloses = Native.nativeCloses.count
     Native.profiles[121] = nil; Native.tabs[121] = nil
     Native.profiles[122] = nil; Native.tabs[122] = nil
-    precondition(host.unregisterWindow(window, absentFrom: Native.discovery.readSnapshot()!))
+    precondition(host.unregisterWindow(window, absentFrom: Native.bridge.readSnapshot()!))
     precondition(!page.isClosed && Native.observations.values.contains { $0.3 == page.nativeTabID })
     precondition(Native.selectionCalls == beforeForeign && Native.nativeCloses.count == beforeCleanupCloses)
     Native.emit(7, page: page, flags: 128)
@@ -684,41 +704,49 @@ private func checkAuthoritativeGroups() throws {
 
 #if BLOCKER_HOST_CHECKS
 @MainActor private enum BlockerNative {
-    struct Work { let window: Int32; let generation: UInt64; let callback: ChromiumBlockerAPI.Callback; let context: UnsafeMutableRawPointer? }
+    struct Work { let window: Int32; let generation: UInt64; let callback: BarcBlockerCallback; let context: UnsafeMutableRawPointer? }
     static var work: [Work] = []
     static var revision: UInt64 = 0, generation: UInt64 = 0, required: UInt64 = 0
     static var enabled = false
     static var prepared: Set<Int32> = []
     static var policy: [(Int32, Int32, Int32)] = []
-    static var api: ChromiumBlockerAPI { ChromiumBlockerAPI(publish: { _, _, generation, callback, context in
-        MainActor.assumeIsolated {
-            guard let callback else { return 0 }
-            BlockerNative.work.append(Work(window: 0, generation: generation, callback: callback, context: context)); return 1
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.blocker_publish_rules = { _, _, generation, callback, context in
+            MainActor.assumeIsolated {
+                guard let callback else { return 0 }
+                BlockerNative.work.append(Work(window: 0, generation: generation, callback: callback, context: context)); return 1
+            }
         }
-    }, policy: { value, required, _, _ in MainActor.assumeIsolated { BlockerNative.enabled = value == 1; BlockerNative.required = required; return 1 } },
-    prepare: { window, callback, context in MainActor.assumeIsolated {
-        guard Native.profiles[window] != nil, let callback else { return 0 }
-        if (window == 20 && !BlockerNative.prepared.contains(20)) ||
-            (BlockerNative.enabled && BlockerNative.generation != BlockerNative.required) {
-            BlockerNative.work.append(Work(window: window, generation: 0, callback: callback, context: context))
-        } else {
-            BlockerNative.prepared.insert(window)
-            callback(context, BlockerNative.enabled ? BlockerNative.revision : 0, Int32(BARC_BLOCKER_READY.rawValue))
-        }
-        return 1
-    } }, tabPolicy: { window, tab, oauth, _, _ in MainActor.assumeIsolated {
-        BlockerNative.policy.append((window, tab, oauth)); return Native.tabs[window]?.contains(tab) == true ? 1 : 0
-    } }, state: { window, output in MainActor.assumeIsolated {
-        guard let output, Native.profiles[window] != nil else { return 0 }
-        output.pointee = BarcBlockerState(); output.pointee.context_id = UInt64(window)
-        output.pointee.publication_revision = BlockerNative.revision
-        output.pointee.installed_revision = BlockerNative.prepared.contains(window) ? BlockerNative.revision : 0
-        output.pointee.source_generation = BlockerNative.generation
-        output.pointee.required_source_generation = BlockerNative.required
-        output.pointee.ready = !BlockerNative.enabled || (BlockerNative.generation == BlockerNative.required && BlockerNative.prepared.contains(window)) ? 1 : 0
-        output.pointee.requested_policy = BlockerNative.enabled ? 1 : 0
-        return 1
-    } }) }
+        bridge.blocker_set_policy = { value, required, _, _ in MainActor.assumeIsolated { BlockerNative.enabled = value == 1; BlockerNative.required = required; return 1 } }
+        bridge.blocker_prepare = { window, callback, context in MainActor.assumeIsolated {
+            guard Native.profiles[window] != nil, let callback else { return 0 }
+            if (window == 20 && !BlockerNative.prepared.contains(20)) ||
+                (BlockerNative.enabled && BlockerNative.generation != BlockerNative.required) {
+                BlockerNative.work.append(Work(window: window, generation: 0, callback: callback, context: context))
+            } else {
+                BlockerNative.prepared.insert(window)
+                callback(context, BlockerNative.enabled ? BlockerNative.revision : 0, Int32(BARC_BLOCKER_READY.rawValue))
+            }
+            return 1
+        } }
+        bridge.blocker_set_tab_policy = { window, tab, oauth, _, _ in MainActor.assumeIsolated {
+            BlockerNative.policy.append((window, tab, oauth)); return Native.tabs[window]?.contains(tab) == true ? 1 : 0
+        } }
+        bridge.blocker_state = { window, output in MainActor.assumeIsolated {
+            guard let output, output.pointee.size >= MemoryLayout<BarcBlockerState>.size, Native.profiles[window] != nil else { return 0 }
+            let size = output.pointee.size
+            output.pointee = BarcBlockerState(); output.pointee.size = size; output.pointee.context_id = UInt64(window)
+            output.pointee.publication_revision = BlockerNative.revision
+            output.pointee.installed_revision = BlockerNative.prepared.contains(window) ? BlockerNative.revision : 0
+            output.pointee.source_generation = BlockerNative.generation
+            output.pointee.required_source_generation = BlockerNative.required
+            output.pointee.ready = !BlockerNative.enabled || (BlockerNative.generation == BlockerNative.required && BlockerNative.prepared.contains(window)) ? 1 : 0
+            output.pointee.requested_policy = BlockerNative.enabled ? 1 : 0
+            return 1
+        } }
+        return bridge
+    }
     static func finish(_ result: BarcBlockerResult) {
         let next = work.removeFirst()
         if result == BARC_BLOCKER_READY {
@@ -781,13 +809,11 @@ private func checkAuthoritativeGroups() throws {
         Native.profiles = [10: Native.first]; Native.tabs = [10: [100]]; Native.groups = [:]
         Native.selected = 10; Native.attached = 10; Native.ending = []; Native.observations = [:]
         Native.blankSnapshots = true; Native.onObserve = nil; Native.onSelect = nil; Native.onAttach = nil
-        let blocker = ChromiumContentBlocker(api: BlockerNative.api, manager: manager)
-        let host = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation,
-            discoveryAPI: Native.discovery)
+        let blocker = ChromiumContentBlocker(bridge: BlockerNative.bridge, manager: manager)
+        let host = ChromiumNativePageHost(bridge: Native.bridge)
         precondition(host.configureBlocker(blocker))
         precondition(!host.configureBlocker(blocker))
-        let occupied = ChromiumNativePageHost(api: Native.api, navigationAPI: Native.navigation,
-            discoveryAPI: Native.discovery)
+        let occupied = ChromiumNativePageHost(bridge: Native.bridge)
         precondition(occupied.registerWindow(window, nativeOwner: 10, shell: shell))
         precondition(!occupied.configureBlocker(blocker))
         tabs.nativePageHost = host

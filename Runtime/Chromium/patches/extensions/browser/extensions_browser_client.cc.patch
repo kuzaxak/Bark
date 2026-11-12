@@ -1,0 +1,56 @@
+diff --git a/extensions/browser/extensions_browser_client.cc b/extensions/browser/extensions_browser_client.cc
+index d3fae1de43..1a2761d32d 100644
+--- a/extensions/browser/extensions_browser_client.cc
++++ b/extensions/browser/extensions_browser_client.cc
+@@ -26,6 +26,7 @@
+ #include "extensions/browser/install_prompt_data.h"
+ #include "extensions/browser/scoped_extension_keep_alive.h"
+ #include "extensions/common/constants.h"
++#include "net/base/net_errors.h"
+ #include "extensions/common/extension_id.h"
+ #include "extensions/common/permissions/permission_set.h"
+ #include "url/gurl.h"
+@@ -122,6 +123,31 @@ bool ExtensionsBrowserClient::IsWebUIAllowedToMakeNetworkRequests(
+   return false;
+ }
+ 
++base::ScopedClosureRunner ExtensionsBrowserClient::ObserveNativeRequestBody(
++    content::BrowserContext* context,
++    const content::WeakDocumentPtr& document,
++    bool keepalive) {
++  return {};
++}
++
++bool ExtensionsBrowserClient::HasNativeRequestPolicy(
++    content::BrowserContext* context) const {
++  return false;
++}
++
++void ExtensionsBrowserClient::CheckNativeRequestPolicy(
++    content::BrowserContext* context,
++    const content::WeakDocumentPtr& document,
++    const GURL& document_site,
++    const WebRequestInfo& request,
++    base::OnceCallback<void(int)> callback) {
++  std::move(callback).Run(net::OK);
++}
++
++void ExtensionsBrowserClient::NativeNavigationBlocked(
++    content::BrowserContext* context, const content::WeakDocumentPtr& document,
++    const WebRequestInfo& request) {}
++
+ network::mojom::NetworkContext*
+ ExtensionsBrowserClient::GetSystemNetworkContext() {
+   return nullptr;
+@@ -404,9 +430,8 @@ ExtensionsBrowserClient::CreateInstallPrompt(
+ }
+ 
+ std::unique_ptr<ExtensionInstallPromptClient>
+-ExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
+-    gfx::NativeWindow native_window,
+-    content::BrowserContext& browser_context,
++ExtensionsBrowserClient::CreateInstallPromptForFunction(
++    ExtensionFunction& function,
+     std::unique_ptr<InstallPromptData> prompt) {
+   return nullptr;
+ }

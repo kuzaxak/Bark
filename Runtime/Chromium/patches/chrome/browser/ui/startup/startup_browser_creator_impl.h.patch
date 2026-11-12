@@ -1,0 +1,35 @@
+diff --git a/chrome/browser/ui/startup/startup_browser_creator_impl.h b/chrome/browser/ui/startup/startup_browser_creator_impl.h
+index d1c7316a1e..40d376a6b2 100644
+--- a/chrome/browser/ui/startup/startup_browser_creator_impl.h
++++ b/chrome/browser/ui/startup/startup_browser_creator_impl.h
+@@ -18,6 +18,7 @@
+ #include "url/gurl.h"
+ 
+ class BrowserWindowInterface;
++namespace content { class WebContents; }
+ class Profile;
+ class StartupBrowserCreator;
+ class StartupTabProvider;
+@@ -82,12 +83,20 @@ class StartupBrowserCreatorImpl {
+   // and a tabbed browser, the tabs are added to it. Otherwise a new tabbed
+   // browser is created and the tabs are added to it. The browser the tabs
+   // are added to is returned, which is either |browser|, the newly created
+-  // browser, or nullptr if browser could not be created.
++  // browser, or nullptr if browser could not be created. The explicit popup
++  // mode accepts exactly one tab and an existing popup; it never finds or
++  // creates a replacement normal browser.
+   BrowserWindowInterface* OpenTabsInBrowser(
+       BrowserWindowInterface* browser,
+       chrome::startup::IsProcessStartup process_startup,
+       const StartupTabs& tabs,
+-      TabOverWrite is_active_tab_overwrite = TabOverWrite::kNo);
++      TabOverWrite is_active_tab_overwrite = TabOverWrite::kNo,
++      bool existing_single_tab_popup = false,
++      content::WebContents* existing_contents = nullptr);
++
++  // Existing runtime launch handling, including protocol-handler loop checks.
++  static bool CanOpenURL(Profile* profile, const GURL& url,
++                         chrome::startup::IsProcessStartup process_startup);
+ 
+   void SetCurrentChromeVersionStringForTesting(
+       const std::optional<std::string>& version) {

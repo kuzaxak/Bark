@@ -1,0 +1,14 @@
+diff --git a/android_webview/browser/aw_content_browser_client.cc b/android_webview/browser/aw_content_browser_client.cc
+index 13adf90091..b83e5826a5 100644
+--- a/android_webview/browser/aw_content_browser_client.cc
++++ b/android_webview/browser/aw_content_browser_client.cc
+@@ -1182,7 +1182,8 @@ void AwContentBrowserClient::WillCreateURLLoaderFactory(
+     bool* disable_secure_dns,
+     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-    bool is_for_network_service) {
++    bool is_for_network_service,
++    std::optional<int64_t> document_navigation_id) {
+   TRACE_EVENT0("android_webview",
+                "AwContentBrowserClient::WillCreateURLLoaderFactory");
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);

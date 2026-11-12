@@ -1,0 +1,65 @@
+diff --git a/ui/views/controls/native/native_view_host.cc b/ui/views/controls/native/native_view_host.cc
+index 9a8c18843c..7bd612e614 100644
+--- a/ui/views/controls/native/native_view_host.cc
++++ b/ui/views/controls/native/native_view_host.cc
+@@ -20,6 +20,7 @@
+ #include "ui/views/view_utils.h"
+ #include "ui/views/views_features.h"
+ #include "ui/views/widget/widget.h"
++#include "ui/views/view_tracker.h"
+ 
+ namespace views {
+ 
+@@ -42,7 +43,10 @@ void NativeViewHost::Attach(gfx::NativeView native_view) {
+   DCHECK(native_view);
+   DCHECK(!native_view_);
+   native_view_ = native_view;
++  ViewTracker alive(this);
+   native_wrapper_->AttachNativeView();
++  if (!alive.view())
++    return;
+   InvalidateLayout();
+   // The call to InvalidateLayout() triggers an async call to Layout(), which
+   // updates the visibility of the NativeView. The call to Layout() only happens
+@@ -50,6 +54,8 @@ void NativeViewHost::Attach(gfx::NativeView native_view) {
+   // could be visible when |this| is not.
+   if (!IsDrawn()) {
+     native_wrapper_->HideWidget();
++    if (!alive.view())
++      return;
+   }
+ 
+   Widget* widget = Widget::GetWidgetForNativeView(native_view);
+@@ -287,8 +293,11 @@ ui::Cursor NativeViewHost::GetCursor(const ui::MouseEvent& event) {
+ }
+ 
+ void NativeViewHost::SetVisible(bool visible) {
++  ViewTracker alive(this);
+   if (native_view_) {
+     native_wrapper_->SetVisible(visible);
++    if (!alive.view())
++      return;
+   }
+   View::SetVisible(visible);
+ }
+@@ -329,6 +338,7 @@ gfx::Rect NativeViewHost::GetNativeViewClipRect() const {
+ }
+ 
+ void NativeViewHost::Detach(bool destroyed) {
++  ViewTracker alive(this);
+   if (native_view_) {
+     if (!destroyed) {
+       Widget* widget = Widget::GetWidgetForNativeView(native_view_);
+@@ -336,8 +346,12 @@ void NativeViewHost::Detach(bool destroyed) {
+         widget->SetNativeWindowProperty(kWidgetNativeViewHostKey, nullptr);
+       }
+       ClearFocus();
++      if (!alive.view())
++        return;
+     }
+     native_wrapper_->NativeViewDetaching(destroyed);
++    if (!alive.view())
++      return;
+     native_view_ = gfx::NativeView();
+   }
+ }

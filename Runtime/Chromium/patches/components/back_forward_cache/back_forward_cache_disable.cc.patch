@@ -1,0 +1,13 @@
+diff --git a/components/back_forward_cache/back_forward_cache_disable.cc b/components/back_forward_cache/back_forward_cache_disable.cc
+index 50610e34a7..8be0069372 100644
+--- a/components/back_forward_cache/back_forward_cache_disable.cc
++++ b/components/back_forward_cache/back_forward_cache_disable.cc
+@@ -45,6 +45,8 @@ std::string ReasonIdToString(DisabledReasonId reason_id) {
+       return "ExtensionFrame";
+     case DisabledReasonId::kPrivilegedWebContents:
+       return "PrivilegedWebContents";
++    case DisabledReasonId::kNativeCosmeticPolicyChanged:
++      return "NativeCosmeticPolicyChanged";
+   }
+ }
+ 

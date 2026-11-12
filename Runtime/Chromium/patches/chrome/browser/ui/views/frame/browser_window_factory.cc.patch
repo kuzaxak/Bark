@@ -1,0 +1,75 @@
+diff --git a/chrome/browser/ui/views/frame/browser_window_factory.cc b/chrome/browser/ui/views/frame/browser_window_factory.cc
+index ad579aa818..90207d128e 100644
+--- a/chrome/browser/ui/views/frame/browser_window_factory.cc
++++ b/chrome/browser/ui/views/frame/browser_window_factory.cc
+@@ -4,6 +4,11 @@
+ 
+ #include <memory>
+ 
++#include "base/check.h"
++#include "base/command_line.h"
++#include "chrome/browser/ui/browser_init_state.h"
++#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
++
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/browser_window_deleter.h"
+ #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
+@@ -27,11 +32,58 @@
+ #include "chromeos/components/kiosk/kiosk_utils.h"
+ #endif
+ 
++bool BrowserWindow::IsSelectedForNativeWindow() const {
++  return true;
++}
++
++// static
++bool BrowserWindow::CanCreateInNativeWindow(const SessionID& owner) {
++#if BUILDFLAG(IS_MAC)
++  if (!base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window") ||
++      webui_browser::IsWebUIBrowserEnabled()) {
++    return false;
++  }
++  auto* collection = GlobalBrowserCollection::GetInstance();
++  auto* browser = collection ? collection->FindBrowserWithID(owner) : nullptr;
++  auto* view = browser && !browser->IsDeleteScheduled()
++                   ? BrowserView::GetBrowserViewForBrowser(browser)
++                   : nullptr;
++  return view && view->browser_widget()->CanAcceptLogicalBrowser();
++#else
++  return false;
++#endif
++}
++
+ // static
+ std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
+ BrowserWindow::CreateBrowserWindow(BrowserWindowInterface* browser,
+                                    bool user_gesture,
+                                    bool in_tab_dragging) {
++  const auto* init_state = BrowserInitState::From(browser);
++  const auto native_window_owner =
++      init_state ? init_state->create_params().native_window_owner
++                 : std::nullopt;
++  if (native_window_owner) {
++    if (browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL ||
++        in_tab_dragging || !CanCreateInNativeWindow(*native_window_owner)) {
++      return nullptr;
++    }
++    auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
++        *native_window_owner);
++    auto owner_alive = owner->GetWeakPtr();
++    auto* view = new BrowserView(browser);
++    // View construction warms WebUI and calls the embedder. Preserve this real
++    // but unattached view for Browser's feature-before-view abort cleanup if
++    // those callbacks invalidated/refused the host.
++    if (!owner_alive || !CanCreateInNativeWindow(*native_window_owner)) {
++      return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(view);
++    }
++    auto* host = BrowserView::GetBrowserViewForBrowser(owner_alive.get())
++                     ->browser_widget();
++    host->AttachLogicalBrowserView(view);
++    return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(view);
++  }
+   if (webui_browser::IsWebUIBrowserEnabled() &&
+       browser->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL) {
+     return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(

@@ -1,0 +1,35 @@
+diff --git a/content/public/browser/content_browser_client.h b/content/public/browser/content_browser_client.h
+index 6e730455c6..63baefdd1f 100644
+--- a/content/public/browser/content_browser_client.h
++++ b/content/public/browser/content_browser_client.h
+@@ -1926,6 +1926,10 @@ class CONTENT_EXPORT ContentBrowserClient {
+   // |navigation_id| is valid iff |type| is |kNavigation|. It corresponds to the
+   // Navigation ID returned by NavigationHandle::GetNavigationId().
+   //
++  // |document_navigation_id| identifies the document for a subresource
++  // factory, including an incoming document not yet committed. It never
++  // changes the navigation-request-only meaning of |navigation_id|.
++  //
+   // |ukm_source_id| can be used to record UKM events associated with the
+   // page or worker this URLLoaderFactory is intended for (it may be
+   // ukm::kInvalidSourceIdObj if there is no such ID available).
+@@ -1984,7 +1988,18 @@ class CONTENT_EXPORT ContentBrowserClient {
+       bool* disable_secure_dns,
+       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      bool is_for_network_service);
++      bool is_for_network_service,
++      std::optional<int64_t> document_navigation_id = std::nullopt);
++
++  // Checks the final WebSocket URL after any embedder/extension interception.
++  // The initiator is captured by the connector; frame is the exact creator
++  // document (also for dedicated workers), or null for shared/service workers.
++  // Always UI-thread. Call callback once with net::OK or a network error.
++  // Content revalidates the process/document before creating the socket.
++  virtual void CheckWebSocketConnection(
++      BrowserContext* browser_context, RenderFrameHost* frame,
++      const GURL& url, const url::Origin& initiator,
++      base::OnceCallback<void(int)> callback);
+ 
+   // Returns true when the embedder wants to intercept a websocket connection.
+   virtual bool WillInterceptWebSocket(RenderFrameHost* frame);

@@ -1,0 +1,125 @@
+diff --git a/chrome/installer/mac/signing/parts_test.py b/chrome/installer/mac/signing/parts_test.py
+index 1d238909c9..10df762956 100644
+--- a/chrome/installer/mac/signing/parts_test.py
++++ b/chrome/installer/mac/signing/parts_test.py
+@@ -36,6 +36,18 @@ class TestGetParts(unittest.TestCase):
+         self.assertIn('libEGL.dylib', all_parts)
+         self.assertIn('libGLESv2.dylib', all_parts)
+ 
++    def test_native_adblock_is_explicit_verified_library(self):
++        config = test_config.TestConfig()
++        all_parts = parts.get_parts(config)
++        library = all_parts['libnook_adblock.dylib']
++        self.assertEqual(config.framework_dir + '/Libraries/libnook_adblock.dylib',
++                         library.path)
++        self.assertEqual('libnook_adblock', library.identifier)
++        self.assertEqual(all_parts['libaperitif.dylib'].verify_options,
++                         library.verify_options)
++        self.assertEqual(all_parts['libaperitif.dylib'].options,
++                         library.options)
++
+     def test_get_parts_static_angle(self):
+ 
+         class StaticAngleTestConfig(test_config.TestConfig):
+@@ -219,7 +231,8 @@ class TestSignChrome(unittest.TestCase):
+         kwargs['run_command_all_output_async'].return_value = ('', 0, '', '')
+ 
+         dist = model.Distribution()
+-        config = dist.to_config(test_config.TestConfig())
++        config = dist.to_config(test_config.TestConfig(
++            notarize=model.NotarizeAndStapleLevel.NONE))
+ 
+         asyncio.run(parts.sign_chrome(self.paths, config, sign_framework=True))
+ 
+@@ -355,7 +368,8 @@ class TestSignChrome(unittest.TestCase):
+             manager.attach_mock(kwargs[kwarg], kwarg)
+ 
+         dist = model.Distribution()
+-        config = dist.to_config(test_config.TestConfig())
++        config = dist.to_config(test_config.TestConfig(
++            notarize=model.NotarizeAndStapleLevel.NONE))
+ 
+         asyncio.run(parts.sign_chrome(self.paths, config, sign_framework=False))
+ 
+@@ -377,9 +391,11 @@ class TestSignChrome(unittest.TestCase):
+         signed_paths = [
+             call[1][2].path for call in kwargs['sign_part'].mock_calls
+         ]
++        native_paths = [p.path for n, p in parts.get_parts(config).items()
++                        if n.startswith('native-')]
+         self.assertEqual(
+             signed_paths,
+-            [
++            native_paths + [
+                 'App Product.app/Contents/Library/LaunchServices/test.signing.bundle_id.UpdaterPrivilegedHelper',
+                 'App Product.app',
+             ],
+@@ -510,3 +526,68 @@ class TestSignChrome(unittest.TestCase):
+                 parts.sign_chrome(self.paths, config, sign_framework=True)
+             ),
+         )
++
++
++class TestNativeShellParts(unittest.TestCase):
++    def test_native_parts_are_explicit_and_nested_ordered(self):
++        products = parts.get_parts(test_config.TestConfigNonChromeBranded())
++        names = [name for name in products if name.startswith('native-')]
++        self.assertEqual(names, [
++            'native-sparkle-downloader', 'native-sparkle-installer',
++            'native-sparkle-updater', 'native-sparkle-autoupdate',
++            'native-sparkle-framework', 'native-shell'])
++        for name in names:
++            self.assertIsNone(products[name].entitlements)
++            self.assertEqual(name != 'native-shell', products[name].replace_existing_signature)
++            self.assertEqual(name != 'native-shell', products[name].preserve_entitlements)
++            if name not in ('native-shell', 'native-sparkle-framework'):
++                self.assertEqual(model.CodeSignOptions.FULL_HARDENED_RUNTIME_OPTIONS,
++                                 products[name].options)
++        self.assertFalse(products['native-shell'].sign_with_identifier)
++        self.assertEqual('ee.qdo.nook.NativeShell',
++                         products['native-shell'].identifier)
++        self.assertEqual('App Product.app/Contents/Frameworks/NookNativeShell.framework',
++                         products['native-shell'].path)
++        self.assertEqual('App Product.app/Contents/Frameworks/Product Framework.framework',
++                         products['framework'].path)
++        self.assertEqual('org.sparkle-project.DownloaderService',
++                         products['native-sparkle-downloader'].identifier)
++
++    @mock.patch('signing.parts._sanity_check_version_keys')
++    @mock.patch('signing.signing.validate_app_geometry')
++    @mock.patch('signing.signing.validate_app', new_callable=mock.AsyncMock)
++    @mock.patch('signing.commands.copy_files')
++    @mock.patch('signing.signing.sign_part')
++    def test_native_failure_stops_before_outer_app(self, sign, *unused):
++        config = test_config.TestConfigNonChromeBranded()
++        sign.side_effect = RuntimeError('native signing refused')
++        with self.assertRaisesRegex(RuntimeError, 'native signing refused'):
++            asyncio.run(parts.sign_chrome(model.Paths('/i', '/o', '/w'), config,
++                                         sign_framework=False))
++        self.assertEqual(1, sign.call_count)
++        self.assertTrue(sign.call_args.args[2].path.endswith('Downloader.xpc'))
++
++    @mock.patch('signing.parts._sanity_check_version_keys')
++    @mock.patch('signing.signing.validate_app_geometry')
++    @mock.patch('signing.signing.validate_app', new_callable=mock.AsyncMock)
++    @mock.patch('signing.commands.copy_files')
++    @mock.patch('signing.signing.sign_part')
++    def test_native_signing_once_in_order_with_or_without_framework(self, sign, *unused):
++        root = 'App Product.app/Contents/Frameworks/'
++        expected = [root + 'Sparkle.framework/Versions/B/' + suffix for suffix in (
++            'XPCServices/Downloader.xpc', 'XPCServices/Installer.xpc',
++            'Updater.app', 'Autoupdate')]
++        expected += [root + 'Sparkle.framework', root + 'NookNativeShell.framework']
++        for sign_framework in (False, True):
++            with self.subTest(sign_framework=sign_framework):
++                sign.reset_mock()
++                config = test_config.TestConfigNonChromeBranded()
++                asyncio.run(parts.sign_chrome(model.Paths('/i', '/o', '/w'),
++                                             config, sign_framework=sign_framework))
++                paths = [call.args[2].path for call in sign.call_args_list]
++                self.assertEqual(expected, paths[:6])
++                for path in expected:
++                    self.assertEqual(1, paths.count(path))
++                self.assertEqual('App Product.app', paths[-1])
++                if not sign_framework:
++                    self.assertNotIn(config.framework_dir, paths)

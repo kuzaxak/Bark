@@ -1,0 +1,51 @@
+diff --git a/components/performance_manager/worker_watcher_unittest.cc b/components/performance_manager/worker_watcher_unittest.cc
+index 552c0d538f..c4c9996764 100644
+--- a/components/performance_manager/worker_watcher_unittest.cc
++++ b/components/performance_manager/worker_watcher_unittest.cc
+@@ -851,6 +851,46 @@ TEST_F(WorkerWatcherTest, SharedWorkerDiesAsServiceWorkerClient) {
+   EXPECT_FALSE(service_worker_node);
+ }
+ 
++TEST_F(WorkerWatcherTest, ServiceWorkerStopsBeforeDeadWorkerClientsAreRemoved) {
++  SetContents(CreateTestWebContents());
++  content::NavigationSimulator::NavigateAndCommitFromBrowser(
++      web_contents(), GURL("https://www.foo.com/"));
++  auto process_node = GetProcessNode(process());
++  auto frame_node = GetFrameNode(main_rfh());
++  ASSERT_TRUE(process_node);
++  ASSERT_TRUE(frame_node);
++
++  const auto shared_token =
++      shared_worker_factory()->CreateSharedWorker(process_node.get());
++  const auto dedicated_token = dedicated_worker_factory()->CreateDedicatedWorker(
++      process_node.get(), frame_node.get());
++  auto shared_node = GetWorkerNode(shared_token);
++  auto dedicated_node = GetWorkerNode(dedicated_token);
++  const auto version = service_worker_factory()->CreateServiceWorker();
++  const auto service_token = service_worker_factory()->StartServiceWorker(
++      version, process_node.get());
++  auto service_node = GetWorkerNode(service_token);
++  ASSERT_TRUE(service_node);
++  const auto shared_client = service_worker_factory()->AddClient(version, shared_node.get());
++  const auto dedicated_client = service_worker_factory()->AddClient(version, dedicated_node.get());
++  EXPECT_TRUE(IsWorkerClient(service_node, shared_node));
++  EXPECT_TRUE(IsWorkerClient(service_node, dedicated_node));
++
++  // The service worker retains both controllee registrations after the actual
++  // client nodes disappear, as happens during private BrowserContext shutdown.
++  shared_worker_factory()->DestroySharedWorker(shared_token);
++  dedicated_worker_factory()->DestroyDedicatedWorker(dedicated_token);
++  ASSERT_FALSE(shared_node);
++  ASSERT_FALSE(dedicated_node);
++  ASSERT_TRUE(service_node);
++  EXPECT_TRUE(service_node->GetClientWorkers().empty());
++  service_worker_factory()->StopServiceWorker(version);
++  EXPECT_FALSE(service_node);
++  service_worker_factory()->RemoveClient(version, shared_client);
++  service_worker_factory()->RemoveClient(version, dedicated_client);
++  service_worker_factory()->DestroyServiceWorker(version);
++}
++
+ TEST_F(WorkerWatcherTest, OneSharedWorkerTwoClients) {
+   SetContents(CreateTestWebContents());
+   content::NavigationSimulator::NavigateAndCommitFromBrowser(

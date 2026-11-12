@@ -1,0 +1,12 @@
+diff --git a/tools/metrics/histograms/metadata/performance_manager/enums.xml b/tools/metrics/histograms/metadata/performance_manager/enums.xml
+index 572e2aeb81..1dd2496595 100644
+--- a/tools/metrics/histograms/metadata/performance_manager/enums.xml
++++ b/tools/metrics/histograms/metadata/performance_manager/enums.xml
+@@ -69,6 +69,7 @@ chromium-metrics-reviews@google.com.
+   <int value="27" label="User Edits"/>
+   <int value="28" label="GLIC Shared"/>
+   <int value="29" label="Web App"/>
++  <int value="30" label="UnknownNativeActivity"/>
+ </enum>
+ 
+ <!-- LINT.ThenChange(//chrome/browser/performance_manager/policies/cannot_discard_reason.h:CannotDiscardReason) -->

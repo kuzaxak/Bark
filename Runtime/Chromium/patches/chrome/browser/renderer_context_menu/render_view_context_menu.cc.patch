@@ -1,0 +1,357 @@
+diff --git a/chrome/browser/renderer_context_menu/render_view_context_menu.cc b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+index b55c138d48..e0dcff5794 100644
+--- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
++++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
+@@ -37,6 +37,15 @@
+ #include "base/system/sys_info.h"
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/content_blocking/native_content_blocker.h"
++#include "bark/bridge/barc_runtime_startup.h"
++#include "content/public/browser/navigation_handle.h"
++#include "content/public/browser/navigation_entry.h"
++#include "content/public/browser/web_contents_observer.h"
++#include "bark/bridge/barc_bridge.h"
++#endif
++
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/app/vector_icons/vector_icons.h"
+ #include "chrome/browser/app_mode/app_mode_utils.h"
+@@ -242,6 +251,7 @@
+ #include "content/public/browser/spare_render_process_host_manager.h"
+ #include "content/public/browser/ssl_status.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/weak_document_ptr.h"
+ #include "content/public/common/buildflags.h"
+ #include "content/public/common/referrer.h"
+ #include "content/public/common/url_constants.h"
+@@ -415,6 +425,170 @@ using extensions::MenuManager;
+ 
+ namespace {
+ 
++#if BUILDFLAG(IS_MAC)
++// The intrinsic ApplicationLaunch record owns this one captured intent. Its
++// pending-only list supplies ordering; there is no second URL queue.
++class PendingPrivateMenuNavigation
++    : public content::WebContentsObserver,
++      public std::enable_shared_from_this<PendingPrivateMenuNavigation> {
++ public:
++  PendingPrivateMenuNavigation(
++      content::WebContents* source, content::WeakDocumentPtr document,
++      Profile* source_profile, Profile* destination,
++      content::OpenURLParams params,
++      base::OnceCallback<void(content::NavigationHandle&)> callback)
++      : content::WebContentsObserver(source),
++        document_(document), source_profile_(source_profile->GetWeakPtr()),
++        destination_(destination->GetWeakPtr()), params_(std::move(params)),
++        callback_(std::move(callback)) {
++    auto* frame = document_.AsRenderFrameHostIfValid();
++    CHECK(frame);
++    source_frame_ = frame->GetFrameTreeNodeId();
++  }
++
++  void Start() {
++    auto keep_alive = shared_from_this();
++    if (!ValidSource()) return Cancel();
++    static uint64_t next_request = 0;
++    CHECK_NE(++next_request, 0u);
++    page_ = barc::CreateApplicationPage(destination_.get(), nullptr, {},
++                                        next_request);
++    if (finished_ || !ValidSource() || !page_.tab) {
++      barc::CloseUnusedApplicationPage(page_);
++      return Cancel();
++    }
++    auto* blank = PendingContents();
++    auto* entry = blank ? blank->GetController().GetActiveEntry() : nullptr;
++    if (!entry) return Cancel();
++    entry_id_ = entry->GetUniqueID();
++    if (!MatchesDestination()) return Cancel();
++    if (!barc::SetApplicationPageResume(page_, base::BindRepeating(
++            &PendingPrivateMenuNavigation::Resume, keep_alive))) {
++      Cancel();
++    }
++  }
++
++ private:
++  content::WebContents* PendingContents() const {
++    if (!destination_ ||
++        !barc::ApplicationPageMatches(page_.window, page_.tab, page_.request))
++      return nullptr;
++    auto* tab = tabs::TabHandle(page_.tab).Get();
++    return tab && tab->GetContents()->GetBrowserContext() == destination_.get()
++        ? tab->GetContents() : nullptr;
++  }
++  bool MatchesDestination() const {
++    auto* blank = PendingContents();
++    if (!blank || !entry_id_ || !barc::IsPendingApplicationPage(page_)) return false;
++    auto& controller = blank->GetController();
++    auto* entry = controller.GetActiveEntry();
++    // The original explicit blank may commit after capture. Its entry identity
++    // survives that commit; a new/replacement navigation has a different ID.
++    // Reload retains the ID, but Chromium marks the transition as RELOAD.
++    return entry && entry->GetUniqueID() == entry_id_ &&
++        controller.GetEntryCount() == 1 &&
++        entry->GetURL() == GURL(url::kAboutBlankURL) &&
++        !ui::PageTransitionCoreTypeIs(entry->GetTransitionType(),
++                                      ui::PAGE_TRANSITION_RELOAD) &&
++        !(entry->GetTransitionType() & ui::PAGE_TRANSITION_FORWARD_BACK) &&
++        (blank->GetLastCommittedURL().is_empty() ||
++         blank->GetLastCommittedURL() == GURL(url::kAboutBlankURL));
++  }
++  bool ValidSource() const {
++    auto* frame = document_.AsRenderFrameHostIfValid();
++    return !finished_ && web_contents() && source_profile_ && destination_ &&
++        frame && frame->IsActive() &&
++        content::WebContents::FromRenderFrameHost(frame) == web_contents() &&
++        frame->GetBrowserContext() == source_profile_.get() &&
++        !source_profile_->ShutdownStarted() &&
++        !destination_->ShutdownStarted() && g_browser_process &&
++        !g_browser_process->IsShuttingDown() &&
++        barc::IsNativeApplicationRegistered() &&
++        IsOpenLinkOTREnabled(source_profile_.get(), params_.url) &&
++        !enterprise_isolated_mode::IsolatedModeReplacesIncognito(
++            source_profile_.get());
++  }
++  void Cancel() {
++    auto keep_alive = shared_from_this();
++    if (std::exchange(finished_, true)) return;
++    const bool close_original_blank = !entry_id_ || MatchesDestination();
++    Observe(nullptr);
++    callback_.Reset();
++    if (close_original_blank) barc::CloseUnusedApplicationPage(page_);
++    else barc::AbandonApplicationPageRequest(page_.tab, page_.request);
++    // A newer same-URL document is not the captured blank and must survive.
++
++  }
++  void Resume() {
++    auto keep_alive = shared_from_this();
++    if (resolving_) return;
++    if (!ValidSource() || !MatchesDestination())
++      return Cancel();
++    resolving_ = true;
++    barc::RunInApplicationBrowser(3, params_.url.spec(), page_.window, page_.tab,
++        base::BindOnce(&PendingPrivateMenuNavigation::Resolved, keep_alive));
++  }
++  void Resolved(barc::ApplicationBrowserResult result,
++                BrowserWindowInterface* browser, Profile* profile,
++                BarcApplicationTarget target) {
++    resolving_ = false;
++    if (!ValidSource() || !MatchesDestination())
++      return Cancel();
++    if (result == barc::ApplicationBrowserResult::kOpening) return;
++    if (result != barc::ApplicationBrowserResult::kReady || !browser ||
++        browser->GetSessionID().id() != page_.window ||
++        profile != destination_.get()) return Cancel();
++    auto* strip = browser->GetTabStripModel();
++    content::WebContents* blank = nullptr;
++    for (int i = 0; i < strip->count(); ++i) {
++      if (strip->GetTabAtIndex(i)->GetHandle().raw_value() == page_.tab) {
++        blank = strip->GetWebContentsAt(i);
++        break;
++      }
++    }
++    if (!blank || blank->GetBrowserContext() != profile ||
++        !MatchesDestination()) return Cancel();
++    NavigateParams navigation(browser, params_.url, params_.transition);
++    navigation.FillNavigateParamsFromOpenURLParams(params_);
++    navigation.source_contents = web_contents();
++    navigation.initiating_profile = profile;
++    SanitizeNavigationSourceForProfile(&navigation, profile);
++    // CURRENT_TAB uses source_contents as its exact destination after the
++    // shared cross-profile security sanitation has removed source metadata.
++    navigation.source_contents = blank;
++    navigation.disposition = WindowOpenDisposition::CURRENT_TAB;
++    navigation.tabstrip_add_types = AddTabTypes::ADD_NONE;
++    navigation.window_action = NavigateParams::WindowAction::kNoAction;
++    finished_ = true;
++    Observe(nullptr);
++    auto callback = std::move(callback_);
++    barc::ConsumeApplicationPage(page_.window, page_.tab, page_.request);
++    auto handle = Navigate(&navigation);
++    if (handle && callback) std::move(callback).Run(*handle);
++  }
++  void DidStartNavigation(content::NavigationHandle* handle) override {
++    if (!handle->IsSameDocument() &&
++        (handle->IsInPrimaryMainFrame() ||
++         handle->GetFrameTreeNodeId() == source_frame_)) Cancel();
++  }
++  void RenderFrameDeleted(content::RenderFrameHost* frame) override {
++    if (!document_.AsRenderFrameHostIfValid()) Cancel();
++  }
++  void WebContentsDestroyed() override { Cancel(); }
++
++  content::WeakDocumentPtr document_;
++  content::FrameTreeNodeId source_frame_;
++  base::WeakPtr<Profile> source_profile_;
++  base::WeakPtr<Profile> destination_;
++  content::OpenURLParams params_;
++  base::OnceCallback<void(content::NavigationHandle&)> callback_;
++  barc::ApplicationPage page_;
++  int entry_id_ = 0;
++  bool resolving_ = false;
++  bool finished_ = false;
++};
++#endif
++
+ constexpr int kMaxContentCustomCommands = 1000;
+ constexpr int IDC_CONTENT_CONTEXT_CUSTOM_LAST =
+     IDC_CONTENT_CONTEXT_CUSTOM_FIRST + kMaxContentCustomCommands;
+@@ -667,13 +841,14 @@ int UmaEnumForCommand(int key, UmaEnumIdLookupType type) {
+        {IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED, 169},
+        {IDC_CONTENT_CONTEXT_ASK_GOOGLE_ABOUT_THIS_PAGE, 170},
+        {IDC_CONTENT_CONTEXT_CONTEXTUAL_TASKS_SUBMENU, 171},
++       {IDC_CONTENT_CONTEXT_OPENLINKINPEEK, 172},
+        // To add new items:
+        //   - Add one more line above this comment block, using the UMA value
+        //     from the line below this comment block.
+        //   - Increment the UMA value in that latter line.
+        //   - Add the new item to the RenderViewContextMenuItem enum in
+        //     tools/metrics/histograms/metadata/ui/enums.xml.
+-       {kUmaMaxValueKey, 172}});
++       {kUmaMaxValueKey, 173}});
+   // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:RenderViewContextMenuItem)
+ 
+   // LINT.IfChange(ContextMenuOptionDesktop)
+@@ -1989,6 +2164,12 @@ void RenderViewContextMenu::AppendLinkItems() {
+     }
+ 
+     if (show_open_in_new_tab) {
++#if BUILDFLAG(IS_MAC)
++      if (params_.link_url.is_valid() && !params_.link_url.SchemeIs("javascript") &&
++          barc::CanRequestPeek(GetRenderFrameHost())) {
++        menu_model_.AddItem(IDC_CONTENT_CONTEXT_OPENLINKINPEEK, u"Open link in Peek");
++      }
++#endif
+       menu_model_.AddItemWithStringId(
+           IDC_CONTENT_CONTEXT_OPENLINKNEWTAB,
+           in_app ? IDS_CONTENT_CONTEXT_OPENLINKNEWTAB_INAPP
+@@ -2008,7 +2189,11 @@ void RenderViewContextMenu::AppendLinkItems() {
+       // Opening a link in split view should also go through the same
+       // constraints as opening a link in a new tab since a split view tab is a
+       // new tab that is then joined with the current active tab.
+-      if (IsNormalBrowser()) {
++      if (IsNormalBrowser()
++#if BUILDFLAG(IS_MAC)
++          && !barc::IsNativeApplicationMode()
++#endif
++      ) {
+         tabs::TabInterface* tab =
+             tabs::TabInterface::MaybeGetFromContents(GetWebContents());
+         auto [string_id, icon] =
+@@ -3384,6 +3569,13 @@ void RenderViewContextMenu::AppendLiveCaptionItem() {
+ // Menu delegate functions -----------------------------------------------------
+ 
+ bool RenderViewContextMenu::IsCommandIdEnabled(int id) const {
++#if BUILDFLAG(IS_MAC)
++  if (id == IDC_CONTENT_CONTEXT_OPENLINKINPEEK) {
++    return !params_.link_url.SchemeIs("javascript") &&
++        barc::CanRequestPeek(GetRenderFrameHost()) &&
++        IsCommandIdEnabled(IDC_CONTENT_CONTEXT_OPENLINKNEWTAB);
++  }
++#endif
+ #if BUILDFLAG(IS_CHROMEOS)
+   // Disable context menu in locked fullscreen mode to prevent users from
+   // exiting this mode (the menu is not really disabled as the user can still
+@@ -3812,6 +4004,83 @@ void RenderViewContextMenu::OpenURLWithExtraHeaders(
+     bool started_from_context_menu,
+     base::OnceCallback<void(content::NavigationHandle&)>
+         navigation_handle_callback) {
++#if BUILDFLAG(IS_MAC)
++  if (disposition == WindowOpenDisposition::OFF_THE_RECORD &&
++      barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    Profile* source_profile = GetProfile();
++    auto* frame = source_document_at_menu_open_.AsRenderFrameHostIfValid();
++    if (!frame || !frame->IsActive() || !g_browser_process ||
++        g_browser_process->IsShuttingDown() ||
++        !g_browser_process->profile_manager() ||
++        !IsOpenLinkOTREnabled(source_profile, url) ||
++        enterprise_isolated_mode::IsolatedModeReplacesIncognito(
++            source_profile)) {
++      return;
++    }
++    // Capture the stock sanitized metadata before the menu is dismissed. The
++    // originating document, not this short-lived menu, owns cancellation.
++    auto params = GetOpenURLParamsWithExtraHeaders(
++        url, referring_url, initiator, disposition, transition, extra_headers,
++        started_from_context_menu);
++    g_browser_process->profile_manager()->CreatePrivateSessionAsync(
++        base::BindOnce(
++            [](base::WeakPtr<content::WebContents> source,
++               content::WeakDocumentPtr document,
++               base::WeakPtr<Profile> source_profile,
++               content::OpenURLParams params,
++               base::OnceCallback<void(content::NavigationHandle&)> callback,
++               Profile* session) {
++              auto* frame = document.AsRenderFrameHostIfValid();
++              if (!source || !source_profile || !frame || !frame->IsActive() ||
++                  content::WebContents::FromRenderFrameHost(frame) !=
++                      source.get() ||
++                  frame->GetBrowserContext() != source_profile.get() ||
++                  source_profile->ShutdownStarted() || !session ||
++                  !g_browser_process || g_browser_process->IsShuttingDown() ||
++                  !barc::IsNativeApplicationRegistered() ||
++                  !IsOpenLinkOTREnabled(source_profile.get(), params.url) ||
++                  enterprise_isolated_mode::IsolatedModeReplacesIncognito(
++                      source_profile.get())) {
++                return;
++              }
++              auto* manager = g_browser_process->profile_manager();
++              auto* parent = session->GetOriginalProfile();
++              if (!manager || !session->IsGuestSession() ||
++                  !session->IsPrimaryOTRProfile() ||
++                  !ProfileManager::IsPrivateSessionProfilePath(
++                      parent->GetPath()) ||
++                  manager->GetProfileByPath(parent->GetPath()) != parent ||
++                  parent->GetPrimaryOTRProfile(false) != session) {
++                return;
++              }
++              if (NativeContentBlocker::IsRegistered()) {
++                auto intent = std::make_shared<PendingPrivateMenuNavigation>(
++                    source.get(), document, source_profile.get(), session,
++                    std::move(params), std::move(callback));
++                intent->Start();
++                return;
++              }
++              NavigateParams navigation(session, params.url, params.transition);
++              navigation.FillNavigateParamsFromOpenURLParams(params);
++              navigation.source_contents = source.get();
++              navigation.tabstrip_add_types = AddTabTypes::ADD_NONE;
++              // Fill retains the source context for stock security sanitation;
++              // select the independently resolved destination explicitly.
++              navigation.initiating_profile = session;
++              navigation.disposition = WindowOpenDisposition::NEW_WINDOW;
++              auto handle = Navigate(&navigation);
++              if (handle && callback) {
++                std::move(callback).Run(*handle);
++              }
++            },
++            source_web_contents_->GetWeakPtr(), source_document_at_menu_open_,
++            source_profile->GetWeakPtr(), std::move(params),
++            std::move(navigation_handle_callback)));
++    return;
++  }
++#endif
+   RenderViewContextMenuBase::OpenURLWithExtraHeaders(
+       url, referring_url, initiator, disposition, transition, extra_headers,
+       started_from_context_menu, std::move(navigation_handle_callback));
+@@ -3848,6 +4117,17 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
+   }
+ 
+   switch (id) {
++#if BUILDFLAG(IS_MAC)
++    case IDC_CONTENT_CONTEXT_OPENLINKINPEEK: {
++      if (!IsCommandIdEnabled(id)) break;
++      auto params = GetOpenURLParamsWithExtraHeaders(
++          params_.link_url, params_.frame_url, params_.frame_origin,
++          WindowOpenDisposition::NEW_BACKGROUND_TAB, ui::PAGE_TRANSITION_LINK,
++          std::string(), /*started_from_context_menu=*/true);
++      barc::RequestPeek(GetRenderFrameHost(), params);
++      break;
++    }
++#endif
+     case IDC_CONTENT_CONTEXT_OPENLINKNEWTAB: {
+       WindowOpenDisposition new_tab_disposition =
+           WindowOpenDisposition::NEW_BACKGROUND_TAB;

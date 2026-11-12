@@ -1,0 +1,44 @@
+diff --git a/content/public/browser/render_frame_host.h b/content/public/browser/render_frame_host.h
+index cac64d560e..f36b055436 100644
+--- a/content/public/browser/render_frame_host.h
++++ b/content/public/browser/render_frame_host.h
+@@ -50,12 +50,12 @@
+ #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
+ #include "ui/accessibility/ax_node_id_forward.h"
+ #include "ui/gfx/native_ui_types.h"
++#include "url/gurl.h"
+ 
+ #if BUILDFLAG(IS_ANDROID)
+ #include "third_party/jni_zero/jni_zero.h"
+ #endif
+ 
+-class GURL;
+ class SkBitmap;
+ 
+ namespace network {
+@@ -1155,6 +1155,10 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
+   // during call to RenderFrameHostImpl::DidNavigate which happens after commit.
+   virtual bool IsErrorDocument() const = 0;
+ 
++  // Token for the currently committed document. Like IsErrorDocument(), this
++  // must not be called on a speculative or pending-commit RenderFrameHost.
++  virtual const blink::DocumentToken& GetDocumentToken() const = 0;
++
+   // Return checked and weak references, respectively, to the current document
+   // in this RenderFrameHost, which will be no longer valid once the
+   // RenderFrameHost is deleted or navigates to another document.
+@@ -1205,6 +1209,14 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
+   virtual std::vector<base::SafeRef<NavigationHandle>>
+   GetPendingCommitCrossDocumentNavigations() const = 0;
+ 
++  // Authorizes document-scoped embedder resources while the renderer is
++  // committing, before its DidCommit acknowledgement. Reads existing navigation
++  // state; a reused frame cannot authorize its outgoing document by URL alone.
++  // A cached document may be identified; this does not make it active or grant
++  // script execution/activation permission.
++  virtual std::optional<GURL> GetCurrentOrPendingCommitDocumentURL(
++      const blink::DocumentToken& document) const = 0;
++
+   // Checks Blink runtime-enabled features (BREF) to create and return
+   // a CookieSettingOverrides pertaining to the last committed document in the
+   // frame. Can only be called on a frame with a committed navigation.

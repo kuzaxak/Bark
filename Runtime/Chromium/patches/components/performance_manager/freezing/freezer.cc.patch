@@ -1,0 +1,21 @@
+diff --git a/components/performance_manager/freezing/freezer.cc b/components/performance_manager/freezing/freezer.cc
+index 14d785b302..a096ff980f 100644
+--- a/components/performance_manager/freezing/freezer.cc
++++ b/components/performance_manager/freezing/freezer.cc
+@@ -8,6 +8,7 @@
+ #include "base/memory/weak_ptr.h"
+ #include "base/task/task_traits.h"
+ #include "components/performance_manager/public/graph/page_node.h"
++#include "components/performance_manager/public/features.h"
+ #include "content/public/browser/visibility.h"
+ #include "content/public/browser/web_contents.h"
+ 
+@@ -15,6 +16,8 @@ namespace performance_manager {
+ 
+ void Freezer::MaybeFreezePageNode(const PageNode* page_node) {
+   DCHECK(page_node);
++  // Final admission protects direct callers that did not pass FreezingPolicy.
++  if (features::IsNativeResourceProtectionHeld()) return;
+ 
+   base::WeakPtr<content::WebContents> contents = page_node->GetWebContents();
+   CHECK(contents);

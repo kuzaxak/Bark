@@ -1,0 +1,44 @@
+# Native matcher proof links the exact pinned Intel Rust artifact recorded in
+# the handoff. Other architectures remain unqualified, not silently substituted.
+assert(is_mac)
+source_set("native_content_blocker") {
+  sources = [
+    "native_content_blocker.cc",
+    "native_content_blocker.h",
+  ]
+  public_deps = [
+    "//base",
+    "//components/keyed_service/core",
+    "//url",
+  ]
+  deps = [
+    ":nook_adblock",
+    "//chrome/browser/profiles:profile",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/common:mojo_bindings",
+    "//chrome/common:resources",
+    "//components/back_forward_cache",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//crypto",
+    "//net",
+    "//services/network/public/cpp",
+    "//ui/base",
+  ]
+}
+source_set("nook_adblock") {
+  sources = [ "nook_adblock/nook_adblock.h" ]
+  libs = [ "//bark/browser/content_blocking/nook_adblock/libnook_adblock.dylib" ]
+  data_deps = [ ":nook_adblock_runtime" ]
+}
+
+copy("nook_adblock_runtime") {
+  sources = [ "nook_adblock/libnook_adblock.dylib" ]
+  outputs = [ "$root_out_dir/Libraries/{{source_file_part}}" ]
+}
+
+bundle_data("nook_adblock_library") {
+  sources = [ "$root_out_dir/Libraries/libnook_adblock.dylib" ]
+  outputs = [ "{{bundle_contents_dir}}/Libraries/{{source_file_part}}" ]
+  public_deps = [ ":nook_adblock_runtime" ]
+}

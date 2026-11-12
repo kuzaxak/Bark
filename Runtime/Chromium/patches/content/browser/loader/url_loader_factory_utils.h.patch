@@ -1,0 +1,22 @@
+diff --git a/content/browser/loader/url_loader_factory_utils.h b/content/browser/loader/url_loader_factory_utils.h
+index 41e0227b3c..df034a5412 100644
+--- a/content/browser/loader/url_loader_factory_utils.h
++++ b/content/browser/loader/url_loader_factory_utils.h
+@@ -58,7 +58,8 @@ class CONTENT_EXPORT ContentClientParams final {
+                       bool* bypass_redirect_checks = nullptr,
+                       std::optional<int64_t> navigation_id = std::nullopt,
+                       scoped_refptr<base::SequencedTaskRunner>
+-                          navigation_response_task_runner = nullptr);
++                          navigation_response_task_runner = nullptr,
++                      std::optional<int64_t> document_navigation_id = std::nullopt);
+ 
+   ContentClientParams(const ContentClientParams&) = delete;
+   ContentClientParams& operator=(const ContentClientParams&) = delete;
+@@ -85,6 +86,7 @@ class CONTENT_EXPORT ContentClientParams final {
+   ukm::SourceIdObj ukm_source_id_;
+   raw_ptr<bool> bypass_redirect_checks_;
+   std::optional<int64_t> navigation_id_;
++  std::optional<int64_t> document_navigation_id_;
+   scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner_;
+ };
+ 

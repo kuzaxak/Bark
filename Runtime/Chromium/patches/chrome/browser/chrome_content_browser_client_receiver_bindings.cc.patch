@@ -1,0 +1,26 @@
+diff --git a/chrome/browser/chrome_content_browser_client_receiver_bindings.cc b/chrome/browser/chrome_content_browser_client_receiver_bindings.cc
+index a805557b73..db3ebbfde1 100644
+--- a/chrome/browser/chrome_content_browser_client_receiver_bindings.cc
++++ b/chrome/browser/chrome_content_browser_client_receiver_bindings.cc
+@@ -10,6 +10,10 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/browser_process.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/content_blocking/native_content_blocker.h"
++#include "chrome/common/chrome_render_frame.mojom.h"
++#endif
+ #include "chrome/browser/chrome_browser_interface_binders.h"
+ #include "chrome/browser/chrome_browser_interface_binders_webui.h"
+ #include "chrome/browser/chrome_content_browser_client.h"
+@@ -335,6 +339,10 @@ void ChromeContentBrowserClient::BindMediaServiceReceiver(
+ void ChromeContentBrowserClient::RegisterBrowserInterfaceBindersForFrame(
+     content::RenderFrameHost* render_frame_host,
+     mojo::BinderMapWithContext<content::RenderFrameHost*>* map) {
++#if BUILDFLAG(IS_MAC)
++  map->Add<chrome::mojom::NookCosmeticResourcesHost>(
++      &NativeContentBlocker::BindCosmeticResources);
++#endif
+   chrome::internal::PopulateChromeFrameBinders(map, render_frame_host);
+   chrome::internal::PopulateChromeWebUIFrameBinders(map, render_frame_host);
+ 

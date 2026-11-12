@@ -1,0 +1,30 @@
+diff --git a/chrome/browser/ui/views/frame/multi_contents_view_delegate.h b/chrome/browser/ui/views/frame/multi_contents_view_delegate.h
+index e182430481..4b963703a9 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_view_delegate.h
++++ b/chrome/browser/ui/views/frame/multi_contents_view_delegate.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_MULTI_CONTENTS_VIEW_DELEGATE_H_
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_MULTI_CONTENTS_VIEW_DELEGATE_H_
+ 
++#include "base/containers/span.h"
+ #include "chrome/browser/ui/views/frame/multi_contents_view_drop_target_controller.h"
+ 
+ class TabStripModel;
+@@ -21,6 +22,8 @@ class MultiContentsViewDelegate
+ 
+   virtual void WebContentsFocused(content::WebContents* contents) = 0;
+   virtual void ResizeWebContents(double ratio, bool done_resizing) = 0;
++  virtual void ResizeDividers(base::span<const double> dividers,
++                              bool done_resizing);
+   virtual void ReverseWebContents() = 0;
+ };
+ 
+@@ -41,6 +44,8 @@ class MultiContentsViewDelegateImpl : public MultiContentsViewDelegate {
+   // Updates the split sizing ratio.
+   // Must already be in a split.
+   void ResizeWebContents(double ratio, bool done_resizing) override;
++  void ResizeDividers(base::span<const double> dividers,
++                      bool done_resizing) override;
+ 
+   // Reverses the order of split tabs.
+   // Must already be in a split.

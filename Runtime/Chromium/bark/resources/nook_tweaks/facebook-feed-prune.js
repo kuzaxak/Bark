@@ -1,0 +1,1 @@
+../../../../../Packages/NookBlocker/Sources/NookBlocker/Resources/facebook-feed-prune.js

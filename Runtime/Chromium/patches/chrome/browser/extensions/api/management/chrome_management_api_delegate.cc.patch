@@ -1,0 +1,149 @@
+diff --git a/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc b/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc
+index f52cfce94e..c1627693fd 100644
+--- a/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc
++++ b/chrome/browser/extensions/api/management/chrome_management_api_delegate.cc
+@@ -5,15 +5,22 @@
+ #include "chrome/browser/extensions/api/management/chrome_management_api_delegate.h"
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <utility>
+ 
++#include "base/functional/bind.h"
++#include "base/memory/weak_ptr.h"
++#include "base/task/single_thread_task_runner.h"
++#include "build/build_config.h"
+ #include "chrome/browser/extensions/chrome_extension_function_details.h"
+ #include "chrome/browser/extensions/extension_management.h"
+ #include "chrome/browser/extensions/extension_tab_util.h"
+ #include "chrome/browser/extensions/launch_util.h"
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+ #include "chrome/browser/ui/webui/extensions/extension_icon_source.h"
+ #include "chrome/common/extensions/manifest_handlers/app_launch_info.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "extensions/browser/api/management/management_api.h"
+ #include "extensions/browser/extension_registrar.h"
+ #include "extensions/browser/launch_util.h"
+@@ -85,10 +92,54 @@ class ManagementUninstallFunctionUninstallDialogDelegate
+       const Extension* target_extension,
+       bool show_programmatic_uninstall_ui)
+       : function_(function) {
+-    ChromeExtensionFunctionDetails details(function);
+-    extension_uninstall_dialog_ = ExtensionUninstallDialog::Create(
+-        Profile::FromBrowserContext(function->browser_context()),
+-        details.GetNativeWindowForUI(), this);
++    std::optional<tabs::TabHandle> sender_tab;
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner;
++#if !BUILDFLAG(IS_ANDROID)
++    auto* sender = function->GetSenderWebContents();
++    auto* tab =
++        sender ? tabs::TabInterface::MaybeGetFromContents(sender) : nullptr;
++    if (tab) {
++      auto* owner = tab->GetBrowserWindowInterface();
++      if (!owner) {
++        // An identified tab is detached/closing. Never choose another browser
++        // by activity or by its shared native window. Complete after the
++        // caller has stored this delegate and returned RespondLater().
++        base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++            FROM_HERE,
++            base::BindOnce(&ManagementUninstallFunctionUninstallDialogDelegate::
++                               OnExtensionUninstallDialogClosed,
++                           weak_factory_.GetWeakPtr(), false,
++                           std::u16string()));
++        return;
++      }
++      sender_tab = tab->GetHandle();
++      browser_owner = owner->GetWeakPtr();
++      extension_uninstall_dialog_ = ExtensionUninstallDialog::CreateForBrowser(
++          Profile::FromBrowserContext(function->browser_context()), owner,
++          this);
++    } else
++#endif
++    {
++      // Keep the existing controller/native/AppWindow/final-browser choice,
++      // but retain its logical browser when that choice has one.
++      ChromeExtensionFunctionDetails details(function);
++      BrowserWindowInterface* owner = nullptr;
++      const auto parent = details.GetNativeWindowForUI(&owner);
++#if !BUILDFLAG(IS_ANDROID)
++      if (owner) {
++        browser_owner = owner->GetWeakPtr();
++        extension_uninstall_dialog_ =
++            ExtensionUninstallDialog::CreateForBrowser(
++                Profile::FromBrowserContext(function->browser_context()), owner,
++                this);
++      } else
++#endif
++      {
++        extension_uninstall_dialog_ = ExtensionUninstallDialog::Create(
++            Profile::FromBrowserContext(function->browser_context()), parent,
++            this);
++      }
++    }
+     bool uninstall_from_webstore =
+         (function->extension() &&
+          function->extension()->id() == kWebStoreAppId) ||
+@@ -108,13 +159,15 @@ class ManagementUninstallFunctionUninstallDialogDelegate
+       source = UNINSTALL_SOURCE_EXTENSION;
+       reason = UNINSTALL_REASON_MANAGEMENT_API;
+     }
+-    if (show_programmatic_uninstall_ui) {
+-      extension_uninstall_dialog_->ConfirmUninstallByExtension(
+-          target_extension, function->extension(), reason, source);
+-    } else {
+-      extension_uninstall_dialog_->ConfirmUninstall(target_extension, reason,
+-                                                    source);
+-    }
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(
++            &ManagementUninstallFunctionUninstallDialogDelegate::Confirm,
++            weak_factory_.GetWeakPtr(),
++            scoped_refptr<const Extension>(target_extension),
++            scoped_refptr<const Extension>(function->extension()),
++            show_programmatic_uninstall_ui, reason, source, sender_tab,
++            browser_owner));
+   }
+ 
+   ManagementUninstallFunctionUninstallDialogDelegate(
+@@ -131,8 +184,39 @@ class ManagementUninstallFunctionUninstallDialogDelegate
+   }
+ 
+  private:
++  void Confirm(scoped_refptr<const Extension> target,
++               scoped_refptr<const Extension> requester,
++               bool show_programmatic_ui,
++               UninstallReason reason,
++               UninstallSource source,
++               std::optional<tabs::TabHandle> sender_tab,
++               std::optional<base::WeakPtr<BrowserWindowInterface>> owner) {
++#if !BUILDFLAG(IS_ANDROID)
++    if ((owner && !*owner) ||
++        (sender_tab &&
++         (!owner || !sender_tab->Get() ||
++          sender_tab->Get()->GetBrowserWindowInterface() != owner->get()))) {
++      OnExtensionUninstallDialogClosed(false, std::u16string());
++      return;
++    }
++#endif
++    // The TabHandle is revalidated before this posted confirmation only. The
++    // dialog retains the originating weak browser through icon delivery and
++    // acceptance; it does not follow a later tab reparent to a different owner.
++    // Confirm may synchronously cancel and release the function/delegate.
++    // Do not access members after either call.
++    if (show_programmatic_ui) {
++      extension_uninstall_dialog_->ConfirmUninstallByExtension(
++          target, requester, reason, source);
++      return;
++    }
++    extension_uninstall_dialog_->ConfirmUninstall(target, reason, source);
++  }
++
+   raw_ptr<ManagementUninstallFunctionBase> function_;
+   std::unique_ptr<ExtensionUninstallDialog> extension_uninstall_dialog_;
++  base::WeakPtrFactory<ManagementUninstallFunctionUninstallDialogDelegate>
++      weak_factory_{this};
+ };
+ 
+ SupervisedUserExtensionsDelegate*

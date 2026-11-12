@@ -1,0 +1,94 @@
+diff --git a/components/sessions/core/session_service_commands_unittest.cc b/components/sessions/core/session_service_commands_unittest.cc
+index c74191dd96..83ffa54789 100644
+--- a/components/sessions/core/session_service_commands_unittest.cc
++++ b/components/sessions/core/session_service_commands_unittest.cc
+@@ -4,6 +4,8 @@
+ 
+ #include "components/sessions/core/session_service_commands.h"
+ 
++#include <array>
++#include <limits>
+ #include <memory>
+ #include <set>
+ #include <string>
+@@ -135,5 +137,80 @@ TEST(SessionServiceCommandsTest, ReplayResultCorruptedCommandAfterValidWindow) {
+   EXPECT_EQ(1u, valid_windows.size());
+ }
+ 
++TEST(SessionServiceCommandsTest, TwoPaneSplitRetainsLegacyWireFormat) {
++  const auto id = split_tabs::SplitTabId::GenerateNew();
++  const split_tabs::SplitTabVisualData visual(
++      split_tabs::SplitTabLayout::kStacked, 0.35);
++  const auto command = CreateSplitTabDataUpdateCommand(id, &visual);
++  base::Pickle legacy;
++  base::WriteTokenToPickle(&legacy, id.token());
++  legacy.WriteDouble(0.35);
++  legacy.WriteString("Horizontal");
++  EXPECT_EQ(*command, SessionCommand(command->id(), legacy));
++}
++
++TEST(SessionServiceCommandsTest, SplitTwoToFourPanesRoundTrip) {
++  const std::array<double, 3> dividers{0.2, 0.45, 0.8};
++  for (size_t panes = 2; panes <= 4; ++panes) {
++    SCOPED_TRACE(panes);
++    const auto window = SessionID::NewUnique();
++    const auto split = split_tabs::SplitTabId::GenerateNew();
++    const split_tabs::SplitTabVisualData visual(
++        split_tabs::SplitTabLayout::kStacked,
++        base::span(dividers).first(panes - 1));
++    std::vector<std::unique_ptr<SessionCommand>> commands;
++    for (size_t i = 0; i < panes; ++i) {
++      const auto tab = SessionID::NewUnique();
++      auto initial = BuildRestorableSession(window, tab);
++      for (auto& command : initial) {
++        commands.push_back(std::move(command));
++      }
++      commands.push_back(CreateSetTabIndexInWindowCommand(tab, i));
++      commands.push_back(CreateSplitTabCommand(tab, split));
++    }
++    commands.push_back(CreateSplitTabDataUpdateCommand(split, &visual));
++    std::vector<std::unique_ptr<SessionWindow>> restored;
++    ASSERT_EQ(SessionReplayResult::kSuccess, ReplayCommands(commands, &restored));
++    ASSERT_EQ(1u, restored.size());
++    EXPECT_EQ(panes, restored.front()->tabs.size());
++    ASSERT_EQ(1u, restored.front()->split_tabs.size());
++    EXPECT_EQ(split, restored.front()->split_tabs.front()->id_);
++    EXPECT_EQ(visual, restored.front()->split_tabs.front()->split_visual_data_);
++  }
++}
++
++TEST(SessionServiceCommandsTest, InvalidSplitDividerExtensionIsCorruption) {
++  const auto split = split_tabs::SplitTabId::GenerateNew();
++  const split_tabs::SplitTabVisualData visual;
++  const auto valid = CreateSplitTabDataUpdateCommand(split, &visual);
++  const auto check = [&](int count, base::span<const double> extra) {
++    auto commands = BuildRestorableSession(SessionID::NewUnique(),
++                                             SessionID::NewUnique());
++    base::Pickle malformed;
++    base::WriteTokenToPickle(&malformed, split.token());
++    malformed.WriteDouble(0.2);
++    malformed.WriteString("Horizontal");
++    malformed.WriteInt(count);
++    for (double divider : extra) {
++      malformed.WriteDouble(divider);
++    }
++    commands.push_back(std::make_unique<SessionCommand>(valid->id(), malformed));
++    std::vector<std::unique_ptr<SessionWindow>> restored;
++    EXPECT_EQ(SessionReplayResult::kCorruptedCommand,
++              ReplayCommands(commands, &restored));
++  };
++  const std::array<double, 2> ordinary{0.5, 0.8};
++  check(3, base::span(ordinary).first(1u));  // Truncated extension.
++  check(4, ordinary);  // More than four panes.
++  check(1, {});  // Two-pane legacy data has no extension.
++  const std::array<double, 2> duplicate{0.2, 0.8};
++  check(3, duplicate);
++  const std::array<double, 2> descending{0.8, 0.5};
++  check(3, descending);
++  const std::array<double, 2> nonfinite{
++      0.5, std::numeric_limits<double>::quiet_NaN()};
++  check(3, nonfinite);
++}
++
+ }  // namespace
+ }  // namespace sessions

@@ -1,0 +1,25 @@
+diff --git a/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.h b/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.h
+index e0ecb9f0c3..630115946f 100644
+--- a/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.h
++++ b/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.h
+@@ -62,6 +62,9 @@ class ExtensionKeybindingRegistryViews
+   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+   bool CanHandleAccelerators() const override;
+ 
++  // Call outgoing(false), change the native owner's selected logical browser,
++  // then call incoming(native_is_active). Even an inactive native window must
++  // apply its newly selected registry's cached shortcut-suspension state.
+   void OnHostActivationChanged(bool active);
+ 
+  private:
+@@ -81,6 +84,10 @@ class ExtensionKeybindingRegistryViews
+   // accelerators with. Not owned by us.
+   raw_ptr<views::FocusManager> focus_manager_;
+ 
++  // The browser owns this registry. Null preserves the standalone profile/tab-
++  // list constructor behavior; selection is always read from the native owner.
++  raw_ptr<BrowserWindowInterface> browser_ = nullptr;
++
+   // Only set for the window-scoped instance created by
+   // BrowserWindowFeatures.
+   std::optional<ui::ScopedUnownedUserData<ExtensionKeybindingRegistryViews>>

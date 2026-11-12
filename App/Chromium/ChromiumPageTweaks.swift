@@ -1,4 +1,5 @@
 // Licensed under GPL-3.0. See LICENSE.
+import BarcChromium
 import Darwin
 import Foundation
 import Observation
@@ -7,8 +8,7 @@ import NookTweaks
 
 /// One fixed settings publication; document selection/lifetime stays native.
 @MainActor final class ChromiumPageTweaks {
-    typealias Publish = @convention(c) (UnsafePointer<UInt8>?, Int) -> Int32
-    private let publish: Publish
+    private let bridge: BarcBridge
     private let settings: NookSettingsService
     private var accepted: NativePageTweaks?
     private var stopped = false
@@ -16,8 +16,8 @@ import NookTweaks
     private(set) var lastError: Error?
     private(set) var isReady = false
 
-    init(publish: @escaping Publish, settings: NookSettingsService) {
-        self.publish = publish; self.settings = settings
+    init(bridge: BarcBridge, settings: NookSettingsService) {
+        self.bridge = bridge; self.settings = settings
     }
     /// The existing initial-page admission waits for the persisted Boost file,
     /// then proves this exact startup still owns the result before publication.
@@ -43,7 +43,7 @@ import NookTweaks
             let snapshot = try wanted.get()
             if snapshot == accepted { lastError = nil; return true }
             let data = try snapshot.encoded()
-            guard data.withUnsafeBytes({ publish($0.bindMemory(to: UInt8.self).baseAddress, $0.count) }) == 1 else {
+            guard data.withUnsafeBytes({ bridge.page_tweaks_publish($0.bindMemory(to: UInt8.self).baseAddress, $0.count) }) == 1 else {
                 throw Failure.refused
             }
             guard !stopped, observation == generation,
@@ -56,7 +56,7 @@ import NookTweaks
             accepted = nil
             if lastError == nil { fputs("Page customizations are unavailable; saved settings were preserved and scripts revoked.\n", stderr) }
             lastError = error
-            let revoked = publish(nil, 0) == 1
+            let revoked = bridge.page_tweaks_publish(nil, 0) == 1
             if !stopped, observation == generation { isReady = revoked }
             return revoked && !stopped && observation == generation
         }

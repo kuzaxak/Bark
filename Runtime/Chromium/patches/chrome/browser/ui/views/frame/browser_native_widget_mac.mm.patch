@@ -1,0 +1,118 @@
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+index 818924fc76..2c2b020564 100644
+--- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
++++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
+@@ -40,6 +40,7 @@
+ #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+ #include "chrome/browser/ui/ui_features.h"
+ #include "chrome/browser/ui/views/frame/browser_frame_view.h"
++#include "bark/bridge/barc_runtime_startup.h"
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/browser_widget.h"
+ #include "chrome/browser/ui/views/frame/glass_frame_service.h"
+@@ -220,6 +221,10 @@ BrowserNativeWidgetMac::BrowserNativeWidgetMac(BrowserWidget* browser_widget,
+     chrome::AddCommandObserver(browser_view_->browser(), IDC_FORWARD, this);
+   }
+ 
++  BindSelectedBrowserSubscriptions();
++}
++
++void BrowserNativeWidgetMac::BindSelectedBrowserSubscriptions() {
+   if (features::IsGlassFrameEnabled()) {
+     if (auto* vertical_tab_strip_state_controller =
+             tabs::VerticalTabStripStateController::From(
+@@ -241,6 +246,53 @@ BrowserNativeWidgetMac::BrowserNativeWidgetMac(BrowserWidget* browser_widget,
+                   base::Unretained(this)));
+     }
+   }
++  if (GetWidget()->IsNativeWidgetInitialized()) {
++    // GlassFrameService is only available if glass frame is enabled.
++    if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
++      glass_frame_service_subscription_ =
++          glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
++              browser_view_->browser(),
++              base::BindRepeating(
++                  &BrowserNativeWidgetMac::UpdateGlassEligibility,
++                  base::Unretained(this)));
++      UpdateGlassEligibility(glass_frame_service->IsBrowserWindowEligible(
++          browser_view_->browser()));
++    }
++  }
++}
++
++bool BrowserNativeWidgetMac::CanSelectBrowserView() {
++  auto* host = GetNSWindowHost();
++  return host && !host->target_fullscreen_state() &&
++         !host->in_fullscreen_transition() && !GetRemoteCocoaApplicationHost();
++}
++
++void BrowserNativeWidgetMac::SelectBrowserView(BrowserView* browser_view) {
++  CHECK(browser_view);
++  CHECK_EQ(browser_view->browser()->GetType(),
++           BrowserWindowInterface::Type::TYPE_NORMAL);
++  // Remote PWA application hosts own a different native lifetime. They are not
++  // eligible for the normal-profile shared-window path.
++  CHECK(!GetRemoteCocoaApplicationHost());
++  CHECK_EQ(browser_view->GetWidget(), GetWidget());
++  vertical_tab_subscription_ = {};
++  vertical_tab_collapse_subscription_ = {};
++  vertical_tab_resizing_subscription_ = {};
++  glass_frame_service_subscription_ = {};
++  browser_view_ = browser_view;
++  CHECK(!GetRemoteCocoaApplicationHost());
++  last_theme_color_.reset();
++  last_is_vertical_tabs_.reset();
++  auto* ns_window = base::apple::ObjCCastStrict<NativeWidgetMacNSWindow>(
++      GetWidget()->GetNativeWindow().GetNativeNSWindow());
++  touch_bar_delegate_ = [[BrowserWindowTouchBarViewsDelegate alloc]
++      initWithBrowser:browser_view_->browser()
++               window:ns_window];
++  [ns_window setWindowTouchBarDelegate:touch_bar_delegate_];
++  [ns_window setTouchBar:nil];
++  BindSelectedBrowserSubscriptions();
++  UpdateBackgroundGeometry();
++  UpdateBackgroundColor();
+ }
+ 
+ BrowserNativeWidgetMac::~BrowserNativeWidgetMac() = default;
+@@ -403,7 +455,9 @@ void BrowserNativeWidgetMac::ValidateUserInterfaceItem(
+     remote_cocoa::mojom::ValidateUserInterfaceItemResult* result) {
+   BrowserWindowInterface* const browser =
+       browser_view_ ? browser_view_->browser() : nullptr;
+-  if (!browser || !chrome::SupportsCommand(browser, tag)) {
++  if (!browser || !chrome::SupportsCommand(browser, tag) ||
++      (barc::IsPageCommand(tag) && browser_view_->browser_widget() &&
++       browser_view_->browser_widget()->barc_page_hidden())) {
+     result->enable = false;
+     return;
+   }
+@@ -784,18 +838,7 @@ void BrowserNativeWidgetMac::OnWidgetInitDone() {
+       GetWidget()->RegisterPaintAsActiveChangedCallback(
+           base::BindRepeating(&BrowserNativeWidgetMac::UpdateBackgroundColor,
+                               base::Unretained(this)));
+-  // GlassFrameService is only available if glass frame is enabled.
+-  if (auto* const glass_frame_service = GlassFrameService::GetInstance()) {
+-    glass_frame_service_subscription_ =
+-        glass_frame_service->RegisterGlassFrameEligibilityChangedCallback(
+-            browser_view_->browser(),
+-            base::BindRepeating(&BrowserNativeWidgetMac::UpdateGlassEligibility,
+-                                base::Unretained(this)));
+-    if (glass_frame_service->IsBrowserWindowEligible(
+-            browser_view_->browser())) {
+-      UpdateGlassEligibility(true);
+-    }
+-  }
++  BindSelectedBrowserSubscriptions();
+ }
+ 
+ void BrowserNativeWidgetMac::OnWidgetThemeChanged(views::Widget* widget) {
+@@ -875,7 +918,8 @@ BrowserNativeWidgetMac::PreHandleKeyboardEvent(
+     if (command_id == -1) {
+       command_id = DelayedWebContentsCommandForKeyEvent(ns_event);
+     }
+-    if (command_id != -1) {
++    if (command_id != -1 &&
++        !barc::KeyCommandBelongsToApplication(GetNativeWindow(), command_id)) {
+       return content::KeyboardEventProcessingResult::NOT_HANDLED_IS_SHORTCUT;
+     }
+   }

@@ -1,0 +1,34 @@
+diff --git a/chrome/browser/ui/extensions/extension_install_ui_desktop.cc b/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
+index c9e2a59c3e..2cfdefea02 100644
+--- a/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
++++ b/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
+@@ -140,12 +140,15 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
+   if (!extension->is_app()) {
+     SkBitmap icon_to_use = icon ? *icon : SkBitmap();
+     extensions::TriggerPostInstallDialog(
+-        profile(), extension, icon_to_use,
++        current_profile, extension, icon_to_use,
+         base::BindOnce(
+-            [](BrowserWindowInterface* bwi) {
+-              return bwi->GetActiveTabInterface()->GetContents();
++            [](base::WeakPtr<BrowserWindowInterface> bwi)
++                -> content::WebContents* {
++              return bwi && bwi->GetActiveTabInterface()
++                         ? bwi->GetActiveTabInterface()->GetContents()
++                         : nullptr;
+             },
+-            browser_window),
++            browser_window->GetWeakPtr()),
+         base::BindOnce(
+             [](const extensions::ExtensionId& extension_id,
+                base::WeakPtr<content::WebContents> web_contents) {
+@@ -169,7 +172,8 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
+                 extensions_toolbar->ShowPinnedByDefaultIPH(extension_id);
+               }
+             },
+-            extension->id()));
++            extension->id()),
++        browser_window->GetWeakPtr());
+     return;
+   }
+ 

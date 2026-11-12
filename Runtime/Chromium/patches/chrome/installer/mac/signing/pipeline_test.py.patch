@@ -1,0 +1,153 @@
+diff --git a/chrome/installer/mac/signing/pipeline_test.py b/chrome/installer/mac/signing/pipeline_test.py
+index 29d521ac03..c13c0eb671 100644
+--- a/chrome/installer/mac/signing/pipeline_test.py
++++ b/chrome/installer/mac/signing/pipeline_test.py
+@@ -332,6 +332,9 @@ class TestPipelineHelpers(unittest.TestCase):
+         self.assertEqual(
+             staple.mock_calls,
+             [
++                mock.call('/$W/App Product.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc'),
++                mock.call('/$W/App Product.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc'),
++                mock.call('/$W/App Product.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app'),
+                 mock.call(
+                     '/$W/App Product.app/Contents/Frameworks/Product Framework.framework/Helpers/Product Helper.app'
+                 ),
+@@ -376,6 +379,9 @@ class TestPipelineHelpers(unittest.TestCase):
+         self.assertEqual(
+             staple.mock_calls,
+             [
++                mock.call('/$W/App Product Canary.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc'),
++                mock.call('/$W/App Product Canary.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Downloader.xpc'),
++                mock.call('/$W/App Product Canary.app/Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app'),
+                 mock.call(
+                     '/$W/App Product Canary.app/Contents/Frameworks/Product Framework.framework/Helpers/Product Helper.app'
+                 ),
+@@ -1172,6 +1178,11 @@ updater requirement is 'true '""",
+ @mock.patch('signing.commands.tempfile.mkdtemp', _get_work_dir)
+ class TestSignAll(unittest.TestCase):
+     def setUp(self, **kwargs):
++        # Packaging-shape tests isolate the assessment step; ordering and
++        # rejection propagation are exercised by TestAssessmentOrdering below.
++        assessment = mock.patch('signing.signing.assess_app')
++        assessment.start()
++        self.addCleanup(assessment.stop)
+         _get_work_dir.count = 0
+         self.paths = model.Paths('/$I', '/$O', None)
+ 
+@@ -1953,3 +1964,116 @@ class TestSignAll(unittest.TestCase):
+ 
+         self.assertEqual(_last_brand_filter(), skip_brands)
+         self.assertEqual(_last_channel_filter(), include_channels)
++
++
++class TestAssessmentOrdering(unittest.IsolatedAsyncioTestCase):
++    async def exercise(self, level, failure=None, assess=True):
++        from signing import signing
++
++        events = []
++        paths = model.Paths('/$I', '/$O', '/$W')
++
++        class Config(test_config.TestConfigNonChromeBranded):
++            @property
++            def run_spctl_assess(self):
++                return assess
++
++        config = Config(notarize=level)
++        self.assertFalse(config.inject_get_task_allow_entitlement)
++        part = model.CodeSignedProduct('App Product.app', 'test.app')
++
++        async def check(command, **kwargs):
++            operation = 'assess' if command[0] == 'spctl' else 'verify'
++            events.append(operation)
++            return command, (7 if failure == operation else 0), '', 'rejected'
++
++        async def customize(paths, config, *args):
++            await signing.validate_app(paths, config, part)
++
++        async def notarize_app(*args):
++            events.append('notary-start')
++            await asyncio.sleep(0)
++            if failure == 'notary':
++                raise RuntimeError('notary rejected')
++            events.append('notary-success')
++
++        def staple(*args):
++            events.append('staple')
++            if failure == 'staple':
++                raise RuntimeError('stapling failed')
++
++        async def package(*args):
++            events.append('package')
++
++        with (
++            mock.patch('signing.commands.WorkDirectory') as work_dir,
++            mock.patch('signing.model._get_identity_hash', return_value='identity'),
++            mock.patch('signing.commands.run_command'),
++            mock.patch('signing.commands.run_command_all_output_async',
++                       side_effect=check) as checks,
++            mock.patch('signing.pipeline._customize_and_sign_chrome',
++                       side_effect=customize),
++            mock.patch('signing.pipeline._zip_and_notarize',
++                       side_effect=notarize_app),
++            mock.patch('signing.pipeline._staple_chrome', side_effect=staple),
++            mock.patch('signing.pipeline._package_and_maybe_notarize_distributions',
++                       side_effect=package),
++        ):
++            work_dir.return_value.__enter__.return_value = paths
++            try:
++                await pipeline.sign_all(paths, config)
++            except Exception as error:
++                return events, checks.await_args_list, error
++        return events, checks.await_args_list, None
++
++    async def test_assessment_follows_awaited_notary_and_optional_staple(self):
++        for level in (model.NotarizeAndStapleLevel.WAIT_NOSTAPLE,
++                      model.NotarizeAndStapleLevel.STAPLE):
++            with self.subTest(level=level):
++                events, checks, error = await self.exercise(level)
++                self.assertIsNone(error)
++                expected = ['verify', 'notary-start', 'notary-success']
++                if level.should_staple():
++                    expected.append('staple')
++                self.assertEqual(expected + ['assess', 'package'], events)
++                self.assertEqual(checks[-1].args[0],
++                                 ['spctl', '--assess', '-vv',
++                                  '/$W/stable/App Product.app'])
++
++    async def test_non_notarized_assessment_remains_before_packaging(self):
++        events, _, error = await self.exercise(model.NotarizeAndStapleLevel.NONE)
++        self.assertIsNone(error)
++        self.assertEqual(['verify', 'assess', 'package'], events)
++
++    async def test_assessment_opt_out_remains_effective(self):
++        for level in model.NotarizeAndStapleLevel:
++            with self.subTest(level=level):
++                events, _, error = await self.exercise(level, assess=False)
++                self.assertIsNone(error)
++                self.assertNotIn('assess', events)
++                self.assertEqual('package', events[-1])
++
++    async def test_failure_prevents_later_phases(self):
++        import subprocess
++
++        for failure in ('verify', 'notary', 'staple', 'assess'):
++            with self.subTest(failure=failure):
++                events, _, error = await self.exercise(
++                    model.NotarizeAndStapleLevel.STAPLE, failure=failure)
++                expected = ['verify']
++                if failure != 'verify':
++                    expected.append('notary-start')
++                if failure not in ('verify', 'notary'):
++                    expected.extend(['notary-success', 'staple'])
++                if failure == 'assess':
++                    expected.append('assess')
++                self.assertEqual(expected, events)
++                cause = error.exceptions[0] if isinstance(error, ExceptionGroup) else error
++                if failure in ('verify', 'assess'):
++                    self.assertIsInstance(cause, subprocess.CalledProcessError)
++                    self.assertEqual(7, cause.returncode)
++                    self.assertEqual('rejected', cause.stderr)
++                else:
++                    self.assertIsInstance(cause, RuntimeError)
++                    self.assertEqual('notary rejected' if failure == 'notary'
++                                     else 'stapling failed', str(cause))

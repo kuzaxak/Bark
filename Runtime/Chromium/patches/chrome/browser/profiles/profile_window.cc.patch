@@ -1,0 +1,34 @@
+diff --git a/chrome/browser/profiles/profile_window.cc b/chrome/browser/profiles/profile_window.cc
+index c72ef9d143..2578c051f2 100644
+--- a/chrome/browser/profiles/profile_window.cc
++++ b/chrome/browser/profiles/profile_window.cc
+@@ -19,6 +19,10 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
++
+ #include "build/chromeos_buildflags.h"
+ #include "chrome/browser/about_flags.h"
+ #include "chrome/browser/browser_process.h"
+@@ -234,6 +238,18 @@ void SwitchToProfile(const base::FilePath& path,
+ 
+ void SwitchToGuestProfile(
+     base::OnceCallback<void(BrowserWindowInterface*)> callback) {
++#if BUILDFLAG(IS_MAC)
++  // The product's private sessions have explicit asynchronous admission.
++  // Stock Guest/ProfilePicker windows have no Barc model/header owner.
++  if (barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    if (callback) {
++      std::move(callback).Run(nullptr);
++    }
++    return;
++  }
++#endif
+   SwitchToProfile(ProfileManager::GetGuestProfilePath(),
+                   /*always_create=*/false, std::move(callback));
+ }

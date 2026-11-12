@@ -1,0 +1,19 @@
+diff --git a/extensions/browser/api/permissions/permissions_api.cc b/extensions/browser/api/permissions/permissions_api.cc
+index 21fc0bc7ec..a0bab0c931 100644
+--- a/extensions/browser/api/permissions/permissions_api.cc
++++ b/extensions/browser/api/permissions/permissions_api.cc
+@@ -469,11 +469,9 @@ ExtensionFunction::ResponseAction PermissionsRequestFunction::Run() {
+     return did_respond() ? AlreadyResponded() : RespondLater();
+   }
+ 
+-  install_ui_ =
+-      ExtensionsBrowserClient::Get()->CreateInstallPromptForNativeWindow(
+-          native_window, *browser_context(),
+-          std::make_unique<InstallPromptData>(
+-              InstallPromptData::PERMISSIONS_PROMPT));
++  install_ui_ = ExtensionsBrowserClient::Get()->CreateInstallPromptForFunction(
++      *this, std::make_unique<InstallPromptData>(
++                 InstallPromptData::PERMISSIONS_PROMPT));
+   install_ui_->ConfirmPermissions(
+       base::BindOnce(&PermissionsRequestFunction::OnInstallPromptDone, this),
+       extension(), std::move(total_new_permissions));

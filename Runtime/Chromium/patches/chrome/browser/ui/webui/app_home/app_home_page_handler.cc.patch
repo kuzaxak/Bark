@@ -1,0 +1,28 @@
+diff --git a/chrome/browser/ui/webui/app_home/app_home_page_handler.cc b/chrome/browser/ui/webui/app_home/app_home_page_handler.cc
+index ad3c81cd42..e9640c05d5 100644
+--- a/chrome/browser/ui/webui/app_home/app_home_page_handler.cc
++++ b/chrome/browser/ui/webui/app_home/app_home_page_handler.cc
+@@ -529,8 +529,9 @@ void AppHomePageHandler::UninstallWebApp(const std::string& web_app_id) {
+ extensions::ExtensionUninstallDialog*
+ AppHomePageHandler::CreateExtensionUninstallDialog() {
+   BrowserWindowInterface* browser = GetCurrentBrowser();
+-  extension_uninstall_dialog_ = extensions::ExtensionUninstallDialog::Create(
+-      profile_, browser->GetWindow()->GetNativeWindow(), this);
++  extension_uninstall_dialog_ =
++      extensions::ExtensionUninstallDialog::CreateForBrowser(profile_, browser,
++                                                             this);
+   return extension_uninstall_dialog_.get();
+ }
+ 
+@@ -546,8 +547,9 @@ void AppHomePageHandler::UninstallExtensionApp(const Extension* extension) {
+   extension_dialog_prompting_ = true;
+ 
+   BrowserWindowInterface* browser = GetCurrentBrowser();
+-  extension_uninstall_dialog_ = extensions::ExtensionUninstallDialog::Create(
+-      profile_, browser->GetWindow()->GetNativeWindow(), this);
++  extension_uninstall_dialog_ =
++      extensions::ExtensionUninstallDialog::CreateForBrowser(profile_, browser,
++                                                             this);
+ 
+   extension_uninstall_dialog_->ConfirmUninstall(
+       extension, extensions::UNINSTALL_REASON_USER_INITIATED,

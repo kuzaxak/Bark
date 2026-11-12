@@ -1,0 +1,26 @@
+diff --git a/chrome/browser/profiles/nuke_profile_directory_utils.cc b/chrome/browser/profiles/nuke_profile_directory_utils.cc
+index 5c46d57e88..086a2b9308 100644
+--- a/chrome/browser/profiles/nuke_profile_directory_utils.cc
++++ b/chrome/browser/profiles/nuke_profile_directory_utils.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/profiles/nuke_profile_directory_utils.h"
+ 
++#include <algorithm>
+ #include <map>
+ 
+ #include "base/check_op.h"
+@@ -137,6 +138,13 @@ bool IsProfileDirectoryMarkedForDeletion(const base::FilePath& profile_path) {
+          it->second == ProfileDeletionStage::MARKED;
+ }
+ 
++bool IsProfileDirectoryPendingDeletion(const base::FilePath& profile_path) {
++  if (ProfilesToDelete().contains(profile_path)) { return true; }
++  if (!g_browser_process || !g_browser_process->local_state()) { return false; }
++  const auto& deleted = g_browser_process->local_state()->GetList(prefs::kProfilesDeleted);
++  return std::ranges::find(deleted, base::FilePathToValue(profile_path.BaseName())) != deleted.end();
++}
++
+ void CancelProfileDeletion(const base::FilePath& path) {
+   DCHECK(!ProfilesToDelete().contains(path) ||
+          ProfilesToDelete()[path] == ProfileDeletionStage::SCHEDULING);

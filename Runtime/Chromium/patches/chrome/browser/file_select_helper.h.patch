@@ -1,0 +1,23 @@
+diff --git a/chrome/browser/file_select_helper.h b/chrome/browser/file_select_helper.h
+index a2acc4f5af..eff19f0d8b 100644
+--- a/chrome/browser/file_select_helper.h
++++ b/chrome/browser/file_select_helper.h
+@@ -156,6 +156,8 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
+ 
+   void InitLifecycleObserver(content::WebContents* web_contents);
+   void OnTabDeactivated(tabs::TabInterface* tab);
++  bool HasSelectedNativeOwner() const;
++  void OnNativeWindowSelectionChanged();
+ 
+   void EnumerateDirectoryImpl(
+       content::WebContents* tab,
+@@ -344,6 +346,9 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
+   bool abort_on_missing_web_contents_in_tests_ = true;
+ 
+   base::CallbackListSubscription tab_deactivated_subscription_;
++  base::CallbackListSubscription tab_detached_subscription_;
++  base::CallbackListSubscription tab_discarded_subscription_;
++  base::CallbackListSubscription native_window_selection_changed_subscription_;
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+   // When not null, this prevents picture-in-picture windows from opening.

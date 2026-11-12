@@ -1,0 +1,10 @@
+diff --git a/components/download/database/proto/download_source.proto b/components/download/database/proto/download_source.proto
+index 43a8f1c4e6..7db0505022 100644
+--- a/components/download/database/proto/download_source.proto
++++ b/components/download/database/proto/download_source.proto
+@@ -24,4 +24,5 @@ enum DownloadSource {
+   RETRY = 10;
+   RETRY_FROM_BUBBLE = 11;
+   TOOLBAR_MENU = 12;
++  NATIVE_SOCIAL_MEDIA = 13;
+ }

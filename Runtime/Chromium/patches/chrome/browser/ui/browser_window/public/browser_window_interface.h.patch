@@ -1,0 +1,52 @@
+diff --git a/chrome/browser/ui/browser_window/public/browser_window_interface.h b/chrome/browser/ui/browser_window/public/browser_window_interface.h
+index 8a2e9f19aa..a42d99171c 100644
+--- a/chrome/browser/ui/browser_window/public/browser_window_interface.h
++++ b/chrome/browser/ui/browser_window/public/browser_window_interface.h
+@@ -7,6 +7,7 @@
+ 
+ #include <vector>
+ 
++#include "base/callback_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "build/build_config.h"
+ #include "content/public/browser/page_navigator.h"
+@@ -60,6 +61,8 @@ class ScopedBrowserShower;
+ 
+ class BrowserWindowInterface : public content::PageNavigator {
+  public:
++  BrowserWindowInterface();
++  ~BrowserWindowInterface() override;
+   // TODO(crbug.com/421758609): Hoist other enums above method declarations.
+   enum class ClosingStatus {
+     kPermitted,
+@@ -80,6 +83,19 @@ class BrowserWindowInterface : public content::PageNavigator {
+   virtual ui::BaseWindow* GetWindow() = 0;
+   virtual const ui::BaseWindow* GetWindow() const = 0;
+ 
++  // Whether this logical browser is the selected owner of its native window.
++  // Independent of native visibility/key state: hidden windows still have a
++  // selected owner. Implementations sharing a native window must select at most
++  // one logical browser; the default preserves single-browser window behavior.
++  virtual bool IsSelectedForNativeWindow() const;
++
++  // Logical selection is independent of native activation. Consumers requery
++  // IsSelectedForNativeWindow(); a callback can cause a newer selection. Only
++  // the authoritative native-owner transition notifies both affected owners.
++  base::CallbackListSubscription RegisterNativeWindowSelectionChanged(
++      base::RepeatingClosure callback);
++  void NotifyNativeWindowSelectionChanged();
++
+   // Returns the profile that semantically owns this browser window.
+   // On most desktop platforms, there is only one profile per browser window.
+   // This will never be null and never changes for the lifetime of a given
+@@ -332,6 +348,10 @@ class BrowserWindowInterface : public content::PageNavigator {
+   virtual const DesktopBrowserWindowCapabilities* capabilities() const = 0;
+ #endif  // !BUILDFLAG(IS_ANDROID)
+ 
++ private:
++  base::RepeatingClosureList native_window_selection_changed_callbacks_;
++
++ public:
+   // S T O P
+   // Please do not add new features here without consulting desktop leads
+   // (erikchen@) and Clank leads (twellington@, dtrainor@). See comment at the

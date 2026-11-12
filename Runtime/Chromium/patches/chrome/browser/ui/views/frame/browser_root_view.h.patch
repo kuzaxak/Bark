@@ -1,0 +1,14 @@
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.h b/chrome/browser/ui/views/frame/browser_root_view.h
+index 6bff662b1f..445e7e9b79 100644
+--- a/chrome/browser/ui/views/frame/browser_root_view.h
++++ b/chrome/browser/ui/views/frame/browser_root_view.h
+@@ -30,6 +30,9 @@ class BrowserRootView : public views::internal::RootView {
+   METADATA_HEADER(BrowserRootView, views::internal::RootView)
+ 
+  public:
++  // Discard drag/filter state belonging to the previous logical profile.
++  void SelectBrowserView(BrowserView* browser_view);
++
+   struct DropIndex {
+     // The index within the tabstrip to drop on/before (see `relative_to_index`
+     // below).

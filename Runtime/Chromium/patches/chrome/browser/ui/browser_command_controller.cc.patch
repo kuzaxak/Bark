@@ -1,0 +1,63 @@
+diff --git a/chrome/browser/ui/browser_command_controller.cc b/chrome/browser/ui/browser_command_controller.cc
+index 921461b9e9..4ef18f5441 100644
+--- a/chrome/browser/ui/browser_command_controller.cc
++++ b/chrome/browser/ui/browser_command_controller.cc
+@@ -24,6 +24,9 @@
+ #include "base/time/time.h"
+ #include "build/branding_buildflags.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
+ #include "chrome/app/chrome_command_ids.h"
+ #include "chrome/browser/actor/ui/actor_overlay_web_view.h"
+ #include "chrome/browser/bookmarks/bookmark_model_factory.h"
+@@ -651,7 +654,11 @@ bool BrowserCommandController::ExecuteCommandWithDispositionAndContext(
+   // tab.  However, Ben says he tried removing this before and got lots of
+   // crashes, e.g. from Windows sending WM_COMMANDs at random times during
+   // window construction.  This probably could use closer examination someday.
+-  if (browser_->tab_strip_model()->active_index() == TabStripModel::kNoTab) {
++  // An app-owned window showing an empty space has no tab, and still asks the
++  // app for a new window.
++  if (browser_->tab_strip_model()->active_index() == TabStripModel::kNoTab &&
++      !(barc::IsNativeApplicationMode() &&
++        (id == IDC_NEW_WINDOW || id == IDC_NEW_INCOGNITO_WINDOW))) {
+     return true;
+   }
+ 
+@@ -2160,6 +2167,22 @@ void BrowserCommandController::UpdateCommandsForTabState() {
+   content::WebContents* current_web_contents =
+       browser_->tab_strip_model()->GetActiveWebContents();
+   if (!current_web_contents) {  // May be NULL during tab restore.
++    if (browser_->tab_strip_model()->empty()) {
++      // A native app-owned browser stays open with no tabs. Clear what its
++      // last tab enabled; the next active tab enables these again.
++      for (int command :
++           {IDC_BACK, IDC_FORWARD, IDC_RELOAD, IDC_RELOAD_BYPASSING_CACHE,
++            IDC_RELOAD_CLEARING_CACHE, IDC_DUPLICATE_TAB, IDC_WINDOW_MUTE_SITE,
++            IDC_WINDOW_PIN_TAB, IDC_WINDOW_GROUP_TAB, IDC_VIEW_SOURCE,
++            IDC_SEND_TAB_TO_SELF, IDC_QRCODE_GENERATOR, IDC_SHOW_TRANSLATE,
++            IDC_CREATE_SHORTCUT, IDC_INSTALL_PWA, IDC_OPEN_IN_CHROME,
++            IDC_TOGGLE_REQUEST_TABLET_SITE, IDC_READING_LIST_MENU_ADD_TAB,
++            IDC_FIND, IDC_FIND_NEXT, IDC_FIND_PREVIOUS, IDC_PRINT,
++            IDC_BASIC_PRINT, IDC_SAVE_PAGE, IDC_BOOKMARK_THIS_TAB,
++            IDC_ZOOM_PLUS, IDC_ZOOM_NORMAL, IDC_ZOOM_MINUS, IDC_ROUTE_MEDIA}) {
++        command_updater_->UpdateCommandEnabled(command, false);
++      }
++    }
+     return;
+   }
+ 
+@@ -2771,7 +2794,11 @@ void BrowserCommandController::UpdateCommandsForTabStripStateChanged() {
+                                          CanMoveActiveTabToNewWindow(browser_));
+   command_updater_->UpdateCommandEnabled(
+       IDC_NEW_SPLIT_TAB,
+-      browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL);
++      browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL
++#if BUILDFLAG(IS_MAC)
++          && !barc::IsNativeApplicationMode()
++#endif
++  );
+   command_updater_->UpdateCommandEnabled(IDC_GROUP_UNGROUPED_TABS,
+                                          CanGroupAllUngroupedTabs(browser_));
+ 

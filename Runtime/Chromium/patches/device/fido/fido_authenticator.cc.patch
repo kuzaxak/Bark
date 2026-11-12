@@ -1,0 +1,15 @@
+diff --git a/device/fido/fido_authenticator.cc b/device/fido/fido_authenticator.cc
+index 47a8e94e95..1c1a0fc4a3 100644
+--- a/device/fido/fido_authenticator.cc
++++ b/device/fido/fido_authenticator.cc
+@@ -184,6 +184,10 @@ void FidoAuthenticator::Reset(ResetCallback callback) {
+                           std::nullopt);
+ }
+ 
++bool FidoAuthenticator::ShouldCheckPlatformCredentialStatus() const {
++  return true;
++}
++
+ AuthenticatorType FidoAuthenticator::GetType() const {
+   return AuthenticatorType::kOther;
+ }

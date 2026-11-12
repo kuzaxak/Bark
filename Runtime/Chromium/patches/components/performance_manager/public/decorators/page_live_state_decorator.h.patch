@@ -1,0 +1,53 @@
+diff --git a/components/performance_manager/public/decorators/page_live_state_decorator.h b/components/performance_manager/public/decorators/page_live_state_decorator.h
+index df716610a4..b81aaf7ebe 100644
+--- a/components/performance_manager/public/decorators/page_live_state_decorator.h
++++ b/components/performance_manager/public/decorators/page_live_state_decorator.h
+@@ -8,6 +8,7 @@
+ #include <iosfwd>
+ #include <memory>
+ 
++#include "base/functional/callback_helpers.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/observer_list.h"
+ #include "base/observer_list_types.h"
+@@ -20,6 +21,7 @@
+ 
+ namespace content {
+ class WebContents;
++class WeakDocumentPtr;
+ }
+ 
+ namespace performance_manager {
+@@ -88,6 +90,14 @@ class PageLiveStateDecorator
+   static void OnIsCapturingDisplayChanged(content::WebContents* contents,
+                                           bool is_capturing_display);
+ 
++  // Observe only a body-bearing loader with a proven originating document.
++  // The returned token represents that proxy segment, not network upload completion.
++  // Zero observations MUST NOT be treated as upload-idle: workers, keepalive,
++  // service-worker interception and loader replacement can be unobservable.
++  // UI thread only. Does not change eligibility or any resource-protection hold.
++  static base::ScopedClosureRunner ObserveDocumentRequestBody(
++      const content::WeakDocumentPtr& document);
++
+   static void SetIsDiscarded(content::WebContents* contents, bool is_discarded);
+ 
+   // Set the auto discardable property. This defaults to true, and can be set
+@@ -215,6 +225,8 @@ class PageLiveStateDecorator::Data {
+   void AddObserver(PageLiveStateObserver* observer);
+   void RemoveObserver(PageLiveStateObserver* observer);
+ 
++  virtual bool HasObservedDocumentBodyWork() const = 0;
++
+   virtual bool IsConnectedToUSBDevice() const = 0;
+   virtual bool IsConnectedToBluetoothDevice() const = 0;
+   virtual bool IsConnectedToHidDevice() const = 0;
+@@ -268,6 +280,8 @@ class PageLiveStateDecorator::Data {
+ 
+ class PageLiveStateObserver : public base::CheckedObserver {
+  public:
++  virtual void OnHasObservedDocumentBodyWorkChanged(const PageNode* page_node) {}
++
+   PageLiveStateObserver();
+   ~PageLiveStateObserver() override;
+   PageLiveStateObserver(const PageLiveStateObserver& other) = delete;

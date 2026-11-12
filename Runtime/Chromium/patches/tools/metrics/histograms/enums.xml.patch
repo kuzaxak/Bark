@@ -1,0 +1,20 @@
+diff --git a/tools/metrics/histograms/enums.xml b/tools/metrics/histograms/enums.xml
+index 356d608cb0..d994fe99dc 100644
+--- a/tools/metrics/histograms/enums.xml
++++ b/tools/metrics/histograms/enums.xml
+@@ -687,6 +687,7 @@ uploading your change for review.  These are checked by presubmit scripts.
+   <int value="196625" label="kEmbedder-kPostMessageByWebViewClient"/>
+   <int value="196626" label="kEmbedder-kExtensionFrame"/>
+   <int value="196627" label="kEmbedder-kPrivilegedWebContents"/>
++  <int value="196628" label="kEmbedder-kNativeCosmeticPolicyChanged"/>
+ </enum>
+ 
+ <enum name="BackgroundColorChangeOrigin">
+@@ -6003,6 +6004,7 @@ shown properly on the user-facing crash UI.
+   <int value="51" label="kDetach">
+     A request was received to detach a frame within a BFCached page.
+   </int>
++  <int value="131092" label="NativeCosmeticPolicyChanged"/>
+ </enum>
+ 
+ <enum name="IncidentType">

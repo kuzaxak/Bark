@@ -1,0 +1,13 @@
+diff --git a/chrome/common/BUILD.gn b/chrome/common/BUILD.gn
+index 582f9b2193..058dce6c38 100644
+--- a/chrome/common/BUILD.gn
++++ b/chrome/common/BUILD.gn
+@@ -38,6 +38,8 @@ fuzzer_test("ini_parser_fuzzer") {
+ grit("resources") {
+   source = "common_resources.grd"
+   inputs = [
++    "//bark/resources/nook_cosmetics/observer.js",
++    "//bark/resources/nook_cosmetics/scriptlets.json",
+     "apps/platform_apps/api/_api_features.json",
+     "controlled_frame/api/_api_features.json",
+     "extensions/api/_api_features.json",

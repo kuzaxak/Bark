@@ -1,0 +1,39 @@
+diff --git a/chrome/browser/extensions/extension_install_prompt.h b/chrome/browser/extensions/extension_install_prompt.h
+index 7edcac89ef..f35cd9c6ca 100644
+--- a/chrome/browser/extensions/extension_install_prompt.h
++++ b/chrome/browser/extensions/extension_install_prompt.h
+@@ -8,6 +8,7 @@
+ #include <stddef.h>
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ #include <vector>
+ 
+@@ -27,13 +28,14 @@
+ 
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+ 
++class BrowserWindowInterface;
+ class ExtensionInstallPromptShowParams;
+ class Profile;
+ 
+ namespace content {
+ class BrowserContext;
+ class WebContents;
+-}
++}  // namespace content
+ 
+ namespace extensions {
+ class CrxInstallError;
+@@ -77,7 +79,9 @@ class ExtensionInstallPrompt : public extensions::ExtensionInstallPromptClient {
+   // windows) is used if a new tab needs to be opened.
+   ExtensionInstallPrompt(Profile* profile,
+                          gfx::NativeWindow native_window,
+-                         std::unique_ptr<extensions::InstallPromptData> prompt);
++                         std::unique_ptr<extensions::InstallPromptData> prompt,
++                         std::optional<base::WeakPtr<BrowserWindowInterface>>
++                             browser_owner = std::nullopt);
+ 
+   ExtensionInstallPrompt(const ExtensionInstallPrompt&) = delete;
+   ExtensionInstallPrompt& operator=(const ExtensionInstallPrompt&) = delete;

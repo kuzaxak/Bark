@@ -1,0 +1,1 @@
+../../../../Packages/NookWeb/Sources/NookWeb/Resources/page-translate.js

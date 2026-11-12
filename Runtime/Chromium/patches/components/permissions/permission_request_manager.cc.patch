@@ -1,0 +1,115 @@
+diff --git a/components/permissions/permission_request_manager.cc b/components/permissions/permission_request_manager.cc
+index f331f4df78..3ebab9c720 100644
+--- a/components/permissions/permission_request_manager.cc
++++ b/components/permissions/permission_request_manager.cc
+@@ -915,6 +915,11 @@ content::WebContents* PermissionRequestManager::GetAssociatedWebContents() {
+ }
+ 
+ bool PermissionRequestManager::RecreateView() {
++  if (!tab_is_active_ ||
++      !PermissionsClient::Get()->IsPermissionPromptOwnerSelected(
++          GetTabInterface(web_contents()))) {
++    return false;
++  }
+   const bool should_do_auto_response_for_testing =
+       (current_request_prompt_disposition_ ==
+        PermissionPromptDisposition::MAC_OS_PROMPT);
+@@ -930,7 +935,22 @@ bool PermissionRequestManager::RecreateView() {
+     }
+     CalculateCurrentVariantForEmbeddedPrompt();
+   }
+-  view_ = view_factory_.Run(web_contents(), this);
++  // The factory may synchronously change logical owners or destroy this page.
++  creating_prompt_ = true;
++  auto alive = weak_factory_.GetWeakPtr();
++  auto created_view = view_factory_.Run(web_contents(), this);
++  if (!alive) {
++    return false;
++  }
++  creating_prompt_ = false;
++  view_ = std::move(created_view);
++  if (!tab_is_active_ ||
++      !PermissionsClient::Get()->IsPermissionPromptOwnerSelected(
++          GetTabInterface(web_contents()))) {
++    tab_is_active_ = false;
++    OnTabActiveChanged();
++    return false;
++  }
+   if (!view_) {
+     current_request_prompt_disposition_ =
+         PermissionPromptDisposition::NONE_VISIBLE;
+@@ -1199,7 +1219,9 @@ void PermissionRequestManager::ShowPrompt() {
+   DCHECK(!web_contents()->HasUncommittedNavigationInPrimaryMainFrame());
+   DCHECK(current_request_ui_to_use_);
+ 
+-  if (!tab_is_active_) {
++  if (!tab_is_active_ ||
++      !PermissionsClient::Get()->IsPermissionPromptOwnerSelected(
++          GetTabInterface(web_contents()))) {
+     NotifyPromptCreationFailedHiddenTab();
+     return;
+   }
+@@ -2020,7 +2042,8 @@ void PermissionRequestManager::AdoptTabInterfaceIfNeeded(
+   if (tab_insert_subscription_ || !tab_interface) {
+     return;
+   }
+-  tab_is_active_ = tab_interface->IsActivated();
++  tab_is_active_ = tab_interface->IsActivated() &&
++      PermissionsClient::Get()->IsPermissionPromptOwnerSelected(tab_interface);
+   tab_insert_subscription_ = tab_interface->RegisterDidInsert(
+       base::BindRepeating(&PermissionRequestManager::OnTabAttached,
+                           weak_factory_.GetWeakPtr()));
+@@ -2032,6 +2055,11 @@ void PermissionRequestManager::AdoptTabInterfaceIfNeeded(
+ void PermissionRequestManager::RegisterTabSubscriptions(
+     tabs::TabInterface* tab_interface) {
+   tab_subscriptions_.clear();
++  tab_subscriptions_.push_back(
++      PermissionsClient::Get()->RegisterPermissionPromptOwnerChanged(
++          tab_interface, base::BindRepeating(
++              &PermissionRequestManager::OnNativeWindowSelectionChanged,
++              weak_factory_.GetWeakPtr())));
+ 
+   tab_subscriptions_.push_back(tab_interface->RegisterDidActivate(
+       base::BindRepeating(&PermissionRequestManager::OnTabActiveStatusChanged,
+@@ -2053,7 +2081,8 @@ void PermissionRequestManager::OnTabActiveStatusChanged(
+     bool is_active,
+     tabs::TabInterface* tab_interface) {
+   const bool prior_tab_is_active_ = tab_is_active_;
+-  tab_is_active_ = is_active;
++  tab_is_active_ = is_active &&
++      PermissionsClient::Get()->IsPermissionPromptOwnerSelected(tab_interface);
+   if (prior_tab_is_active_ != tab_is_active_) {
+     OnTabActiveChanged();
+   }
+@@ -2096,10 +2125,21 @@ void PermissionRequestManager::OnTabWillDiscardContents(
+ void PermissionRequestManager::OnTabAttached(
+     tabs::TabInterface* tab_interface) {
+   RegisterTabSubscriptions(tab_interface);
++  OnNativeWindowSelectionChanged();
++}
++
++void PermissionRequestManager::OnNativeWindowSelectionChanged() {
++  if (auto* tab = GetTabInterface(web_contents())) {
++    OnTabActiveStatusChanged(tab->IsActivated(), tab);
++  }
+ }
+ 
+ void PermissionRequestManager::OnTabActiveChanged() {
++  auto alive = weak_factory_.GetWeakPtr();
+   NotifyTabActiveChanged(tab_is_active_);
++  if (!alive) {
++    return;
++  }
+   if (!tab_is_active_) {
+     if (view_) {
+       switch (view_->GetTabSwitchingBehavior()) {
+@@ -2122,7 +2162,8 @@ void PermissionRequestManager::OnTabActiveChanged() {
+     return;
+   }
+ 
+-  if (web_contents()->HasUncommittedNavigationInPrimaryMainFrame()) {
++  if (creating_prompt_ ||
++      web_contents()->HasUncommittedNavigationInPrimaryMainFrame()) {
+     return;
+   }
+ 

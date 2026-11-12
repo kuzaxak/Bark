@@ -1,0 +1,114 @@
+diff --git a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc b/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
+index 9bc1098150..6426dedeb3 100644
+--- a/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
++++ b/chrome/browser/ui/extensions/extension_uninstall_dialog_impl.cc
+@@ -5,10 +5,16 @@
+ #include <memory>
+ #include <string>
+ 
++#include "base/callback_list.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "chrome/browser/extensions/extension_uninstall_dialog.h"
+ #include "chrome/browser/ui/extensions/extension_dialog_utils.h"
++#if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
++#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
++#endif
+ #include "chrome/grit/generated_resources.h"
+ #include "extensions/browser/ui_util.h"
+ #include "extensions/buildflags/buildflags.h"
+@@ -45,6 +51,10 @@ class ExtensionUninstallDialogImpl
+  private:
+   void Show() override;
+   void Close() override;
++#if !BUILDFLAG(IS_ANDROID)
++  void OnBrowserOwnerClosed(BrowserWindowInterface* browser);
++  base::CallbackListSubscription browser_close_subscription_;
++#endif
+ 
+   // Pointer to the DialogModel for the dialog. This is cleared when the dialog
+   // is being closed and OnDialogClosed is reported. As such it prevents access
+@@ -121,9 +131,38 @@ void ExtensionUninstallDialogImpl::Show() {
+                                ui::DialogModelLabel(checkbox_label));
+   }
+ 
++  if (!CanShowForBrowserOwner()) {
++    OnDialogClosed(CLOSE_ACTION_CANCELED);
++    return;
++  }
++#if !BUILDFLAG(IS_ANDROID)
++  auto* owner = browser_owner();
++  auto* owner_view =
++      owner ? BrowserView::GetBrowserViewForBrowser(owner) : nullptr;
++  if (owner && (!owner_view || !owner_view->GetWidget())) {
++    OnDialogClosed(CLOSE_ACTION_CANCELED);
++    return;
++  }
++  if (owner) {
++    browser_close_subscription_ = owner->RegisterBrowserDidClose(
++        base::BindRepeating(&ExtensionUninstallDialogImpl::OnBrowserOwnerClosed,
++                            weak_ptr_factory_.GetWeakPtr()));
++  }
++#endif
+   std::unique_ptr<ui::DialogModel> dialog_model = dialog_builder.Build();
+   dialog_model_ = dialog_model.get();
+-
++#if !BUILDFLAG(IS_ANDROID)
++  if (owner) {
++    auto* container =
++        owner_view->toolbar_button_provider()->GetExtensionsContainerViews();
++    if (container) {
++      ShowDialog(container, {extension()->id()}, std::move(dialog_model));
++    } else {
++      ShowDialog(owner, std::move(dialog_model));
++    }
++    return;
++  }
++#endif
+   ShowDialog(parent(), extension()->id(), std::move(dialog_model));
+ }
+ 
+@@ -132,12 +171,31 @@ void ExtensionUninstallDialogImpl::Close() {
+   dialog_model_->host()->Close();
+ }
+ 
++#if !BUILDFLAG(IS_ANDROID)
++void ExtensionUninstallDialogImpl::OnBrowserOwnerClosed(
++    BrowserWindowInterface* browser) {
++  if (dialog_model_)
++    Close();
++}
++#endif
++
+ void ExtensionUninstallDialogImpl::DialogAccepted() {
+   DCHECK(dialog_model_);
++  if (!CanShowForBrowserOwner()) {
++    dialog_model_ = nullptr;
++#if !BUILDFLAG(IS_ANDROID)
++    browser_close_subscription_ = {};
++#endif
++    OnDialogClosed(CLOSE_ACTION_CANCELED);
++    return;
++  }
+   const bool checkbox_is_checked =
+       ShouldShowCheckbox() &&
+       dialog_model_->GetCheckboxByUniqueId(kCheckboxId)->is_checked();
+   dialog_model_ = nullptr;
++#if !BUILDFLAG(IS_ANDROID)
++  browser_close_subscription_ = {};
++#endif
+   OnDialogClosed(checkbox_is_checked
+                      ? CLOSE_ACTION_UNINSTALL_AND_CHECKBOX_CHECKED
+                      : CLOSE_ACTION_UNINSTALL);
+@@ -148,6 +206,9 @@ void ExtensionUninstallDialogImpl::DialogClosing() {
+     return;
+   }
+   dialog_model_ = nullptr;
++#if !BUILDFLAG(IS_ANDROID)
++  browser_close_subscription_ = {};
++#endif
+   OnDialogClosed(CLOSE_ACTION_CANCELED);
+ }
+ 

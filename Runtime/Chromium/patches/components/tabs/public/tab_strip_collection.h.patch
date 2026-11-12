@@ -1,0 +1,15 @@
+diff --git a/components/tabs/public/tab_strip_collection.h b/components/tabs/public/tab_strip_collection.h
+index 8e9717922f..2a8f1b8e31 100644
+--- a/components/tabs/public/tab_strip_collection.h
++++ b/components/tabs/public/tab_strip_collection.h
+@@ -116,6 +116,10 @@ class TabStripCollection : public TabCollection {
+                    const std::vector<TabInterface*>& tabs,
+                    split_tabs::SplitTabVisualData visual_data);
+   void ReverseSplit(split_tabs::SplitTabId split_id);
++  // Move one member within its split, retaining the collection and tab identity.
++  void MoveTabInSplit(split_tabs::SplitTabId split_id,
++                       TabInterface* tab,
++                       size_t final_index);
+   void Unsplit(split_tabs::SplitTabId split_id);
+   std::set<split_tabs::SplitTabId> ListSplits() const;
+ 

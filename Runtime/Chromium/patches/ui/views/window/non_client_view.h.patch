@@ -1,0 +1,62 @@
+diff --git a/ui/views/window/non_client_view.h b/ui/views/window/non_client_view.h
+index 11551d82f6..bc53fb08f6 100644
+--- a/ui/views/window/non_client_view.h
++++ b/ui/views/window/non_client_view.h
+@@ -6,6 +6,7 @@
+ #define UI_VIEWS_WINDOW_NON_CLIENT_VIEW_H_
+ 
+ #include <memory>
++#include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "build/build_config.h"
+@@ -67,6 +68,32 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
+   // Replaces the current FrameView (if any) with the specified one.
+   void SetFrameView(std::unique_ptr<FrameView> frame_view);
+ 
++  // Retain an additional frame/client pair in this Widget, initially hidden.
++  // The frame owns the client through its View tree; NonClientView owns frames.
++  // Requires an attached NonClientView and unparented incoming objects created
++  // for this same Widget (including any frame/client controller references).
++  // The caller must handle WidgetDelegate/accelerator lifetimes independently.
++  // As with SetFrameView, hierarchy callbacks during retain/release must not
++  // synchronously destroy this View or mutate its frame hierarchy. All frame
++  // mutations require the Widget/View lifetime to survive callbacks. Requesting
++  // deferred Widget::Close() is allowed; synchronous CloseNow() is not.
++  void RetainClientFrame(std::unique_ptr<FrameView> frame,
++                         std::unique_ptr<ClientView> client);
++
++  // Select an existing attached pair without removing/re-adding either tree.
++  // Clears focus in the outgoing tree; the caller chooses incoming focus and
++  // logical activation. Returns false for an unknown client. Frame mutation
++  // must not be reentered from visibility/focus callbacks.
++  bool SelectClientFrame(ClientView* client);
++
++  // Release only an inactive pair for logical-close ownership transfer; the
++  // returned frame still owns its client. Destroy it before its former Widget:
++  // stock frames retain raw Widget references. This is not cross-window
++  // transfer. The caller must release any delegate/accelerator binding before
++  // deletion. The active client cannot be released; select another first, or
++  // close the Widget normally to destroy its final active pair.
++  std::unique_ptr<FrameView> ReleaseClientFrame(ClientView* client);
++
+   // Replaces the current |overlay_view_| (if any) with the specified one.
+   void SetOverlayView(View* view);
+ 
+@@ -136,10 +163,15 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
+   // dynamically as the system settings change.
+   std::unique_ptr<FrameView> frame_view_;
+ 
++  // These stay attached to this View, but only frame_view_ is drawn/targeted.
++  // Detach all frames in our destructor before their owning pointers reset.
++  std::vector<std::unique_ptr<FrameView>> retained_frame_views_;
++  bool switching_client_frame_ = false;
++
+   // A ClientView object or subclass, responsible for sizing the contents view
+   // of the window, hit testing and perhaps other tasks depending on the
+   // implementation.
+-  const raw_ptr<ClientView, DanglingUntriaged> client_view_;
++  raw_ptr<ClientView, DanglingUntriaged> client_view_;
+ 
+   // The overlay view, when non-NULL and visible, takes up the entire widget and
+   // is placed on top of the ClientView and FrameView.

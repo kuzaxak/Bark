@@ -1,0 +1,14 @@
+diff --git a/components/download/internal/common/download_stats.cc b/components/download/internal/common/download_stats.cc
+index 80011cc511..658734d08e 100644
+--- a/components/download/internal/common/download_stats.cc
++++ b/components/download/internal/common/download_stats.cc
+@@ -112,6 +112,9 @@ std::string CreateHistogramNameWithSuffix(const std::string& name,
+     case DownloadSource::RETRY_FROM_BUBBLE:
+       suffix = "RetryFromBubble";
+       break;
++    case DownloadSource::NATIVE_SOCIAL_MEDIA:
++      suffix = "NativeSocialMedia";
++      break;
+     case DownloadSource::TOOLBAR_MENU:
+       suffix = "ToolbarMenu";
+       break;

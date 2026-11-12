@@ -1,0 +1,100 @@
+diff --git a/components/performance_manager/decorators/page_live_state_decorator.cc b/components/performance_manager/decorators/page_live_state_decorator.cc
+index cb35f58771..70b7b31b3b 100644
+--- a/components/performance_manager/decorators/page_live_state_decorator.cc
++++ b/components/performance_manager/decorators/page_live_state_decorator.cc
+@@ -5,6 +5,7 @@
+ #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
+ 
+ #include <memory>
++#include <limits>
+ #include <ostream>
+ #include <utility>
+ 
+@@ -17,9 +18,11 @@
+ #include "base/sequence_checker.h"
+ #include "base/strings/to_string.h"
+ #include "base/thread_annotations.h"
++#include "base/task/sequenced_task_runner.h"
+ #include "components/performance_manager/decorators/decorators_utils.h"
+ #include "components/performance_manager/graph/page_node_impl.h"
+ #include "components/performance_manager/public/features.h"
++#include "components/performance_manager/public/graph/frame_node.h"
+ #include "components/performance_manager/public/graph/graph.h"
+ #include "components/performance_manager/public/graph/node_attached_data.h"
+ #include "components/performance_manager/public/graph/node_data_describer_registry.h"
+@@ -27,6 +30,8 @@
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/weak_document_ptr.h"
+ 
+ namespace performance_manager {
+ 
+@@ -46,6 +51,25 @@ class PageLiveStateDataImpl
+   PageLiveStateDataImpl& operator=(const PageLiveStateDataImpl&) = delete;
+ 
+   // PageLiveStateDecorator::Data:
++  bool HasObservedDocumentBodyWork() const override {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    return observed_document_body_work_ != 0;
++  }
++  void AddObservedDocumentBodyWork() {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    CHECK_LT(observed_document_body_work_, std::numeric_limits<uint32_t>::max());
++    if (++observed_document_body_work_ != 1) return;
++    for (auto& observer : observers_)
++      observer.OnHasObservedDocumentBodyWorkChanged(page_node_);
++  }
++  void RemoveObservedDocumentBodyWork() {
++    DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
++    CHECK_GT(observed_document_body_work_, 0u);
++    if (--observed_document_body_work_ != 0) return;
++    for (auto& observer : observers_)
++      observer.OnHasObservedDocumentBodyWorkChanged(page_node_);
++  }
++
+   bool IsConnectedToUSBDevice() const override {
+     DCHECK_CALLED_ON_VALID_SEQUENCE(sequence_checker_);
+     return is_connected_to_usb_device_;
+@@ -341,6 +365,7 @@ class PageLiveStateDataImpl
+   }
+ 
+  private:
++  uint32_t observed_document_body_work_ GUARDED_BY_CONTEXT(sequence_checker_) = 0;
+   bool is_connected_to_usb_device_ GUARDED_BY_CONTEXT(sequence_checker_) =
+       false;
+   bool is_connected_to_bluetooth_device_ GUARDED_BY_CONTEXT(sequence_checker_) =
+@@ -419,6 +444,32 @@ std::ostream& operator<<(std::ostream& os, GlicActuationState state) {
+ PageLiveStateDecorator::PageLiveStateDecorator() = default;
+ PageLiveStateDecorator::~PageLiveStateDecorator() = default;
+ 
++// static
++base::ScopedClosureRunner PageLiveStateDecorator::ObserveDocumentRequestBody(
++    const content::WeakDocumentPtr& document) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  auto* frame = document.AsRenderFrameHostIfValid();
++  if (!frame || frame->GetLifecycleState() != content::RenderFrameHost::LifecycleState::kActive ||
++      frame->GetLastCommittedURL().is_empty() || !PerformanceManager::IsAvailable()) return {};
++  auto frame_node = PerformanceManager::GetFrameNodeForRenderFrameHost(frame);
++  if (!frame_node) return {};
++  auto data = PageLiveStateDataImpl::GetOrCreate(
++      PageNodeImpl::FromNode(frame_node->GetPageNode()))->GetWeakPtr();
++  // The weak graph attachment belongs to this frame's original page, never a
++  // later selected window or a reused RFH's replacement document.
++  data->AddObservedDocumentBodyWork();
++  return base::ScopedClosureRunner(base::BindOnce(
++      [](base::WeakPtr<PageLiveStateDataImpl> data) {
++        DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++        // Factory-map erase can run this callback from a request destructor.
++        // Notify only after that stack unwinds, without retaining either owner.
++        base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
++            FROM_HERE, base::BindOnce([](base::WeakPtr<PageLiveStateDataImpl> data) {
++              if (data) data->RemoveObservedDocumentBodyWork();
++            }, data));
++      }, data));
++}
++
+ // static
+ void PageLiveStateDecorator::AddAllPageObserver(
+     PageLiveStateObserver* observer) {

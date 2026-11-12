@@ -1,0 +1,13 @@
+diff --git a/components/sync_preferences/dual_layer_user_pref_store.h b/components/sync_preferences/dual_layer_user_pref_store.h
+index eb87695233..4687c072fc 100644
+--- a/components/sync_preferences/dual_layer_user_pref_store.h
++++ b/components/sync_preferences/dual_layer_user_pref_store.h
+@@ -270,6 +270,8 @@ class DualLayerUserPrefStore : public PersistentPrefStore,
+   // Used to avoid self-notifications.
+   bool is_setting_prefs_ = false;
+ 
++  // Failure is terminal; set before callbacks to suppress peer completion.
++  bool initialization_failed_ = false;
+   base::ObserverList<PrefStore::Observer, true> observers_;
+ 
+   const scoped_refptr<PrefModelAssociatorClient> pref_model_associator_client_;

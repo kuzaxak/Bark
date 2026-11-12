@@ -1,0 +1,105 @@
+diff --git a/components/download/internal/common/resource_downloader.cc b/components/download/internal/common/resource_downloader.cc
+index 5856d8f9fe..f5b77a471a 100644
+--- a/components/download/internal/common/resource_downloader.cc
++++ b/components/download/internal/common/resource_downloader.cc
+@@ -7,6 +7,10 @@
+ #include <memory>
+ 
+ #include "base/functional/bind.h"
++#include "base/strings/string_util.h"
++#include "base/strings/utf_string_conversions.h"
++#include "net/base/filename_util.h"
++#include "net/base/mime_util.h"
+ #include "base/task/single_thread_task_runner.h"
+ #include "components/download/public/common/download_features.h"
+ #include "components/download/public/common/download_utils.h"
+@@ -21,6 +25,37 @@
+ 
+ namespace download {
+ 
++namespace {
++bool MediaFilename(const base::FilePath& name) {
++  auto extension = name.FinalExtension();
++  if (extension.empty()) return false;
++  std::string mime;
++  return net::GetMimeTypeFromExtension(extension.substr(1), &mime) &&
++      (mime.starts_with("image/") || mime.starts_with("video/") || mime.starts_with("audio/"));
++}
++bool AcceptSocialMedia(DownloadCreateInfo& info) {
++  if (info.result != DOWNLOAD_INTERRUPT_REASON_NONE || !info.save_info) return false;
++  const std::string mime = base::ToLowerASCII(info.mime_type);
++  // Resolve Content-Disposition using Chromium's standard untrusted-filename
++  // sanitizer. A media-looking filename never makes text/html acceptable.
++  auto name = net::GenerateFileName(info.url(), info.content_disposition, "",
++      base::UTF16ToUTF8(info.save_info->suggested_name), mime, "download");
++  const bool named_media = MediaFilename(name);
++  const bool untyped = mime.empty() || mime == "application/octet-stream";
++  if (!mime.starts_with("image/") && !mime.starts_with("video/") && !(untyped && named_media)) return false;
++  if (!named_media) {
++    std::string extension;
++    if (!net::GetPreferredExtensionForMimeType(mime, &extension)) extension = "media";
++    name = name.AddExtensionASCII(extension);
++  }
++  // Our sanitized suggestion owns the filename; do not let the original
++  // Content-Disposition restore a misleading executable extension downstream.
++  info.content_disposition.clear();
++  info.save_info->suggested_name = name.AsUTF16Unsafe();
++  return true;
++}
++}
++
+ // This object monitors the URLLoaderCompletionStatus change when
+ // ResourceDownloader is asking |delegate_| whether download can proceed.
+ class URLLoaderStatusMonitor : public network::mojom::URLLoaderClient {
+@@ -78,11 +113,25 @@ std::unique_ptr<ResourceDownloader> ResourceDownloader::BeginDownload(
+     mojo::PendingRemote<device::mojom::WakeLockProvider> wake_lock_provider,
+     bool is_background_mode,
+     const scoped_refptr<base::SingleThreadTaskRunner>& task_runner) {
++  URLSecurityPolicy policy = url_security_policy;
++  if (params->download_source() == DownloadSource::NATIVE_SOCIAL_MEDIA) {
++    request->credentials_mode = params->credentials_mode();
++    // Navigation mode requires credentials include. Omitted-cookie media saves
++    // use the normal no-CORS download path, retaining network security checks.
++    if (request->credentials_mode == network::mojom::CredentialsMode::kOmit)
++      request->mode = network::mojom::RequestMode::kNoCors;
++    // DownloadResponseHandler invokes this before following every redirect.
++    // kOmit remains omitted; credential-bearing requests separately reject
++    // cross-origin redirects using their normal request-local redirect mode.
++    policy = base::BindRepeating([](URLSecurityPolicy previous, int process, const GURL& url) {
++      return url.SchemeIs("https") && (!previous || previous.Run(process, url));
++    }, url_security_policy);
++  }
+   auto downloader = std::make_unique<ResourceDownloader>(
+       delegate, std::move(request), params->render_process_host_id(),
+       params->render_frame_host_routing_id(), serialized_embedder_download_data,
+       tab_url, tab_referrer_url, is_new_download, task_runner,
+-      std::move(url_loader_factory), url_security_policy,
++      std::move(url_loader_factory), policy,
+       std::move(wake_lock_provider));
+ 
+   downloader->Start(std::move(params), is_parallel_request, is_background_mode);
+@@ -244,6 +293,16 @@ void ResourceDownloader::InterceptResponse(
+ void ResourceDownloader::OnResponseStarted(
+     std::unique_ptr<DownloadCreateInfo> download_create_info,
+     mojom::DownloadStreamHandlePtr stream_handle) {
++  const bool rejected = download_create_info->download_source == DownloadSource::NATIVE_SOCIAL_MEDIA &&
++      download_create_info->result == DOWNLOAD_INTERRUPT_REASON_NONE && !AcceptSocialMedia(*download_create_info);
++  if (rejected) {
++    // No item/file has been created. Reuse the normal interrupted-start path,
++    // discard the body and retire transport; never expose an unsafe target.
++    download_create_info->result = DOWNLOAD_INTERRUPT_REASON_FILE_BLOCKED;
++    stream_handle.reset();
++    url_loader_client_receiver_.reset();
++    url_loader_.reset();
++  }
+   download_create_info->is_new_download = is_new_download_;
+   download_create_info->guid = guid_;
+   download_create_info->serialized_embedder_download_data =
+@@ -272,6 +331,7 @@ void ResourceDownloader::OnResponseStarted(
+               base::OnTaskRunnerDeleter(
+                   base::SingleThreadTaskRunner::GetCurrentDefault())),
+           reinterpret_cast<UrlDownloadHandlerID>(this), std::move(callback_)));
++  if (rejected) Destroy();
+ }
+ 
+ void ResourceDownloader::OnReceiveRedirect() {

@@ -1,4 +1,5 @@
 // Licensed under GPL-3.0. See LICENSE.
+import BarcChromium
 import Foundation
 import NookBlocker
 import NookWeb
@@ -8,20 +9,20 @@ import NookWeb
 @MainActor
 private enum Native {
     static let profile = UUID(uuidString: "9fc28221-b340-4c80-94ef-89a2cf4db441")!
-    static var callback: ChromiumNavigationAPI.Callback?
+    static var callback: BarcTabCallback?
     static var context: UnsafeMutableRawPointer?
     static var observed = 0
     static var cancelled: [UInt64] = []
     static var commands: [(String, Int32, Int32)] = []
-    static var mediaCallback: ChromiumNavigationAPI.MediaCallback?
+    static var mediaCallback: BarcMediaCallback?
     static var enableMedia = false
     static var mediaActions: [(Int32, Int32, Int32)] = []
     static var acceptsMedia = true
     static var acceptsCommands = true
     static var acceptsObserver = true
     static var pageCommands: [(Int32, Int32, Int32)] = []
-    static var thumbnailCallback: ChromiumNavigationAPI.ThumbnailCallback?
-    static var fileCalls: [(UInt64, String, String, ChromiumNavigationAPI.FileCallback?)] = []
+    static var thumbnailCallback: BarcTabThumbnailCallback?
+    static var fileCalls: [(UInt64, String, String, BarcFileCallback?)] = []
     static var fileCancelled: [UInt64] = []
     static var acceptsFile = true
     static var returnedProfile: UUID?
@@ -29,22 +30,22 @@ private enum Native {
     static var captureCancelled: [UInt64] = []
     static var thumbnailRequest: UInt64 = 0
     static var thumbnailAccepts = true
-    static var siteDataCallback: ChromiumNavigationAPI.SiteDataCallback?
+    static var siteDataCallback: BarcSiteDataCallback?
     static var siteDataRequest: UInt64 = 0
     static var siteDataActions: [Int32] = []
     static var acceptsSiteData = true
     static var muteRequests: [(Int32, Int32, Int32)] = []
-    static var styles: [(request: UInt64, url: String, css: String, callback: ChromiumNavigationAPI.StyleCallback?)] = []
+    static var styles: [(request: UInt64, url: String, css: String, callback: BarcStyleCallback?)] = []
     static var acceptStyles = true
     static var peekRequests: [Int32] = []
     static var peekCapabilities: [Int32] = []
     static var translationCalls: [(generation: UInt64, request: UInt64, operation: Int32,
-        payload: String, callback: ChromiumNavigationAPI.TranslationCallback?)] = []
+        payload: String, callback: BarcTranslationCallback?)] = []
     static var acceptsTranslation = true
     static var scriptCalls: [(request: UInt64, mode: Int32, world: Int32, source: String,
-        callback: ChromiumNavigationAPI.ScriptCallback?)] = []
+        callback: BarcScriptCallback?)] = []
     static var scriptCancelled: [UInt64] = []
-    static var pickerCalls: [(UInt64, ChromiumNavigationAPI.PickerCallback?)] = []
+    static var pickerCalls: [(UInt64, BarcPickerCallback?)] = []
     static var pickerCancelled: [UInt64] = []
     static func pickReply(_ index: Int, _ selector: String) {
         let call = pickerCalls[index]
@@ -90,85 +91,109 @@ private enum Native {
         return acceptsCommands ? 1 : 0
     }
 
-    static var api: ChromiumNavigationAPI {
-        ChromiumNavigationAPI(
-            observe: { _, _, callback, context in
-                MainActor.assumeIsolated {
-                    Native.observed += 1
-                    guard Native.acceptsObserver else { return 0 }
-                    Native.callback = callback; Native.context = context
-                    Native.emit(0, flags: 2 | 4096)
-                    return 41
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.tab_observe = { _, _, callback, context in
+            MainActor.assumeIsolated {
+                Native.observed += 1
+                guard Native.acceptsObserver else { return 0 }
+                Native.callback = callback; Native.context = context
+                Native.emit(0, flags: 2 | 4096)
+                return 41
+            }
+        }
+        bridge.tab_unobserve = { token in MainActor.assumeIsolated { Native.cancelled.append(token) } }
+        bridge.tab_navigate = { window, tab, url in
+            MainActor.assumeIsolated { Native.command(String(cString: url!), window, tab) }
+        }
+        bridge.tab_go_back = { window, tab in MainActor.assumeIsolated { Native.command("back", window, tab) } }
+        bridge.tab_go_forward = { window, tab in MainActor.assumeIsolated { Native.command("forward", window, tab) } }
+        bridge.tab_reload = { window, tab in MainActor.assumeIsolated { Native.command("reload", window, tab) } }
+        bridge.tab_stop = { window, tab in MainActor.assumeIsolated { Native.command("stop", window, tab) } }
+        bridge.tab_select = { window, tab in MainActor.assumeIsolated { Native.command("select", window, tab) } }
+        bridge.tab_close = { window, tab in MainActor.assumeIsolated { Native.command("close", window, tab) } }
+        bridge.tab_capture_thumbnail = { _, request, callback in MainActor.assumeIsolated {
+            Native.thumbnailRequest = request; Native.thumbnailCallback = callback
+            return Native.thumbnailAccepts ? 1 : 0
+        } }
+        bridge.tab_clear_site_data = { _, request, action, callback in MainActor.assumeIsolated {
+            Native.siteDataRequest = request; Native.siteDataActions.append(action)
+            Native.siteDataCallback = callback; return Native.acceptsSiteData ? 1 : 0
+        } }
+        bridge.window_profile_uuid = { _, buffer, capacity in
+            MainActor.assumeIsolated {
+                let bytes = Array((Native.returnedProfile ?? Native.profile).uuidString.lowercased().utf8CString)
+                if let buffer, capacity >= bytes.count {
+                    for (index, byte) in bytes.enumerated() { buffer[index] = byte }
                 }
-            },
-            unobserve: { token in MainActor.assumeIsolated { Native.cancelled.append(token) } },
-            navigate: { window, tab, url in
-                MainActor.assumeIsolated { Native.command(String(cString: url!), window, tab) }
-            },
-            back: { window, tab in MainActor.assumeIsolated { Native.command("back", window, tab) } },
-            forward: { window, tab in MainActor.assumeIsolated { Native.command("forward", window, tab) } },
-            reload: { window, tab in MainActor.assumeIsolated { Native.command("reload", window, tab) } },
-            stop: { window, tab in MainActor.assumeIsolated { Native.command("stop", window, tab) } },
-            select: { window, tab in MainActor.assumeIsolated { Native.command("select", window, tab) } },
-            close: { window, tab in MainActor.assumeIsolated { Native.command("close", window, tab) } },
-            captureThumbnail: { _, request, callback in MainActor.assumeIsolated {
-                Native.thumbnailRequest = request; Native.thumbnailCallback = callback
-                return Native.thumbnailAccepts ? 1 : 0
-            } },
-            clearSiteData: { _, request, action, callback in MainActor.assumeIsolated {
-                Native.siteDataRequest = request; Native.siteDataActions.append(action)
-                Native.siteDataCallback = callback; return Native.acceptsSiteData ? 1 : 0
-            } }, profileUUID: { _, buffer, capacity in
-                MainActor.assumeIsolated {
-                    let bytes = Array((Native.returnedProfile ?? Native.profile).uuidString.lowercased().utf8CString)
-                    if let buffer, capacity >= bytes.count {
-                        for (index, byte) in bytes.enumerated() { buffer[index] = byte }
-                    }
-                    return bytes.count
-                }
-            }, downloadFile: { _, request, url, directory, callback in MainActor.assumeIsolated {
-                Native.fileCalls.append((request,String(cString:url!),String(cString:directory!),callback))
-                return Native.acceptsFile ? 1:0
-            } }, cancelFile: { _, request in MainActor.assumeIsolated { Native.fileCancelled.append(request);return 1 } }, captureScreenshot: { _, request, width, callback in MainActor.assumeIsolated {
-                Native.screenshotWidths.append(width)
-                Native.thumbnailRequest = request; Native.thumbnailCallback = callback
-                return Native.thumbnailAccepts ? 1 : 0
-            } }, cancelCapture: { _, request in MainActor.assumeIsolated {
-                Native.captureCancelled.append(request); return 1
-            } }, executePageCommand: { window, tab, command in MainActor.assumeIsolated {
-                Native.pageCommands.append((window, tab, command)); return Native.acceptsCommands ? 1 : 0
-            } }, setMuted: { window, tab, muted in MainActor.assumeIsolated {
-                Native.muteRequests.append((window, tab, muted)); return Native.acceptsCommands ? 1 : 0
-            } }, observeMedia: enableMedia ? { _, callback in MainActor.assumeIsolated {
-                Native.mediaCallback = callback; return Native.acceptsMedia ? 1 : 0
-            } } : nil, mediaAction: { window, tab, action in MainActor.assumeIsolated {
-                Native.mediaActions.append((window, tab, action)); return Native.acceptsCommands ? 1 : 0
-            } }, setUserCSS: { _, request, url, css, callback in MainActor.assumeIsolated {
-                Native.styles.append((request, url.map(String.init(cString:)) ?? "", css.map(String.init(cString:)) ?? "", callback))
-                return Native.acceptStyles ? 1 : 0
-            } }, translate: { _, generation, request, operation, pairs, callback in MainActor.assumeIsolated {
-                Native.translationCalls.append((generation, request, operation,
-                    pairs.map(String.init(cString:)) ?? "", callback))
-                return Native.acceptsTranslation ? 1 : 0
-            } }, evaluateScript: { _, request, mode, world, source, callback in MainActor.assumeIsolated {
-                Native.scriptCalls.append((request, mode, world, source.map(String.init(cString:)) ?? "", callback))
-                return Native.acceptsScript ? 1 : 0
-            } }, cancelScript: { _, request in MainActor.assumeIsolated {
-                Native.scriptCancelled.append(request); return 1
-            } }, startPicker: { _, request, callback in MainActor.assumeIsolated {
-                Native.pickerCalls.append((request, callback)); return 1
-            } }, cancelPicker: { _, request in MainActor.assumeIsolated {
-                Native.pickerCancelled.append(request); return 1
-            } }, createPeek: { observation, request, admission, context in MainActor.assumeIsolated {
-                precondition(observation == 41)
-                Native.peekRequests.append(request)
-                return admission?(context, 12, 30) ?? 0
-            } }, enablePeek: { token, enabled in MainActor.assumeIsolated {
-                precondition(token == 41); Native.peekCapabilities.append(enabled); return 1
-            } }, applyBlockingPolicy: { window, tab, oauth, host, milliseconds in MainActor.assumeIsolated {
-                Native.policies.append((window, tab, oauth, host.map(String.init(cString:)), milliseconds))
-                return Native.acceptsPolicy ? 1 : 0
-            } })
+                return bytes.count
+            }
+        }
+        bridge.window_private_session_uuid = { _, _, _ in 0 }
+        bridge.tab_download_file = { _, request, url, directory, callback in MainActor.assumeIsolated {
+            Native.fileCalls.append((request,String(cString:url!),String(cString:directory!),callback))
+            return Native.acceptsFile ? 1:0
+        } }
+        bridge.tab_cancel_file = { _, request in MainActor.assumeIsolated { Native.fileCancelled.append(request);return 1 } }
+        bridge.tab_capture_screenshot = { _, request, width, callback in MainActor.assumeIsolated {
+            Native.screenshotWidths.append(width)
+            Native.thumbnailRequest = request; Native.thumbnailCallback = callback
+            return Native.thumbnailAccepts ? 1 : 0
+        } }
+        bridge.tab_cancel_capture = { _, request in MainActor.assumeIsolated {
+            Native.captureCancelled.append(request); return 1
+        } }
+        bridge.tab_execute_command = { window, tab, command in MainActor.assumeIsolated {
+            Native.pageCommands.append((window, tab, command)); return Native.acceptsCommands ? 1 : 0
+        } }
+        bridge.tab_set_muted = { window, tab, muted in MainActor.assumeIsolated {
+            Native.muteRequests.append((window, tab, muted)); return Native.acceptsCommands ? 1 : 0
+        } }
+        bridge.tab_observe_media = { _, callback in MainActor.assumeIsolated {
+            guard Native.enableMedia else { return 1 }
+            Native.mediaCallback = callback; return Native.acceptsMedia ? 1 : 0
+        } }
+        bridge.tab_media_action = { window, tab, action in MainActor.assumeIsolated {
+            Native.mediaActions.append((window, tab, action)); return Native.acceptsCommands ? 1 : 0
+        } }
+        bridge.tab_set_user_css = { _, request, url, css, callback in MainActor.assumeIsolated {
+            Native.styles.append((request, url.map(String.init(cString:)) ?? "", css.map(String.init(cString:)) ?? "", callback))
+            return Native.acceptStyles ? 1 : 0
+        } }
+        bridge.tab_translate = { _, generation, request, operation, pairs, callback in MainActor.assumeIsolated {
+            Native.translationCalls.append((generation, request, operation,
+                pairs.map(String.init(cString:)) ?? "", callback))
+            return Native.acceptsTranslation ? 1 : 0
+        } }
+        bridge.tab_evaluate_script = { _, request, mode, world, source, callback in MainActor.assumeIsolated {
+            Native.scriptCalls.append((request, mode, world, source.map(String.init(cString:)) ?? "", callback))
+            return Native.acceptsScript ? 1 : 0
+        } }
+        bridge.tab_cancel_script = { _, request in MainActor.assumeIsolated {
+            Native.scriptCancelled.append(request); return 1
+        } }
+        bridge.tab_start_boost_picker = { _, request, callback in MainActor.assumeIsolated {
+            Native.pickerCalls.append((request, callback)); return 1
+        } }
+        bridge.tab_cancel_boost_picker = { _, request in MainActor.assumeIsolated {
+            Native.pickerCancelled.append(request); return 1
+        } }
+        bridge.tab_create_peek = { observation, request, admission, context in MainActor.assumeIsolated {
+            precondition(observation == 41)
+            Native.peekRequests.append(request)
+            return admission?(context, 12, 30) ?? 0
+        } }
+        bridge.tab_enable_peek = { token, enabled in MainActor.assumeIsolated {
+            precondition(token == 41); Native.peekCapabilities.append(enabled); return 1
+        } }
+        bridge.blocker_set_tab_policy = { window, tab, oauth, host, milliseconds in MainActor.assumeIsolated {
+            Native.policies.append((window, tab, oauth, host.map(String.init(cString:)), milliseconds))
+            return Native.acceptsPolicy ? 1 : 0
+        } }
+        bridge.tab_observe_vault = { _, _ in 1 }
+        bridge.tab_observe_vault_save = { _, _ in 1 }
+        bridge.tab_observe_vault_passkeys = { _, _ in 1 }
+        return bridge
     }
 
     static func emitMedia(_ flags: UInt32, window: Int32 = 10, title: String = "Track",
@@ -179,7 +204,7 @@ private enum Native {
     }
 
     static func page() throws -> ChromiumPageNavigation {
-        try ChromiumPageNavigation(profileID: profile, window: 10, tab: 20, api: api)
+        try ChromiumPageNavigation(profileID: profile, window: 10, tab: 20, bridge: bridge)
     }
 }
 
@@ -191,15 +216,17 @@ private enum SearchNative {
     static let state = ProfileSearchState(version: "v", selected: "native", name: "Native", controlled: false,
         managed: false, providers: [], suggestions: "kagi", kagiSession: true)
     static var api: ChromiumProfileSearch {
-        ChromiumProfileSearch(state: { uuid, owner, kind, seed, selection, choices, callback, context in
+        var bridge = trappingBridge
+        bridge.profile_search_state = { uuid, owner, kind, seed, selection, choices, callback, context in
             MainActor.assumeIsolated {
                 SearchNative.calls.append((String(cString: uuid!), owner, kind, seed != nil, choices != 0))
-                if SearchNative.asksForSeed && seed == nil { callback?(context, 3, nil); return }
+                if SearchNative.asksForSeed && seed == nil { callback?(context, Int32(BARC_SEARCH_NEEDS_SEED.rawValue), nil); return }
                 SearchNative.asksForSeed = false
                 let json = String(data: try! JSONEncoder().encode(SearchNative.state), encoding: .utf8)!
-                json.withCString { callback?(context, 0, $0) }
+                json.withCString { callback?(context, Int32(BARC_SEARCH_OK.rawValue), $0) }
             }
-        })
+        }
+        return ChromiumProfileSearch(bridge: bridge)
     }
 }
 
@@ -212,7 +239,7 @@ private enum NavigationChecks {
     @MainActor static func main() async throws {
         Native.reset()
         do {
-            _ = try ChromiumPageNavigation(profileID: UUID(), window: 10, tab: 20, api: Native.api)
+            _ = try ChromiumPageNavigation(profileID: UUID(), window: 10, tab: 20, bridge: Native.bridge)
             preconditionFailure("A mislabeled native profile was admitted")
         } catch ChromiumNavigationError.profileMismatch {}
         precondition(Native.observed == 0)
@@ -839,14 +866,14 @@ private enum NavigationChecks {
         let policyCalls = Native.policies.count
         precondition(!policyPage.applyBlockingPolicy(policy) && Native.policies.count == policyCalls)
         Native.reset()
-        var searchAPI = Native.api
-        searchAPI.search = { window, tab, query, token in
+        var searchAPI = Native.bridge
+        searchAPI.tab_search = { window, tab, query, token in
             MainActor.assumeIsolated {
                 SearchNative.commands.append((window, tab, String(cString: query!), token.map { String(cString: $0) }))
                 return 1
             }
         }
-        let searchPage = try ChromiumPageNavigation(profileID: Native.profile, window: 10, tab: 20, api: searchAPI)
+        let searchPage = try ChromiumPageNavigation(profileID: Native.profile, window: 10, tab: 20, bridge: searchAPI)
         precondition(searchPage.search("a query", kagiSessionToken: "synthetic-session"))
         precondition(SearchNative.commands.last?.0 == 10 && SearchNative.commands.last?.2 == "a query" &&
             SearchNative.commands.last?.3 == "synthetic-session")
@@ -898,8 +925,8 @@ private enum NavigationChecks {
         precondition(endingPickResult == nil && Native.pickerCancelled.count == 3)
         precondition(Native.commands.isEmpty)
         Native.reset()
-        var historyAPI = Native.api
-        historyAPI.history = { _, _, direction, buffer, capacity in
+        var historyAPI = Native.bridge
+        historyAPI.tab_copy_history = { _, _, direction, buffer, capacity in
             MainActor.assumeIsolated {
                 let value = direction == 0 ? "[{\"id\":77,\"title\":\"Earlier\",\"url\":\"https://fixture.test/earlier\"}]" : "[]"
                 let bytes = Array(value.utf8CString)
@@ -909,10 +936,10 @@ private enum NavigationChecks {
                 return bytes.count
             }
         }
-        historyAPI.historyGo = { window, tab, entry in
+        historyAPI.tab_go_to_history_entry = { window, tab, entry in
             MainActor.assumeIsolated { Native.command("history:\(entry)", window, tab) }
         }
-        let history = try ChromiumPageNavigation(profileID: Native.profile, window: 10, tab: 20, api: historyAPI)
+        let history = try ChromiumPageNavigation(profileID: Native.profile, window: 10, tab: 20, bridge: historyAPI)
         let entries = history.historyEntries(forward: false)
         precondition(entries.map(\.id) == [77] && history.historyEntries(forward: true).isEmpty)
         Native.emit(2, url: "https://fixture.test/intervening")

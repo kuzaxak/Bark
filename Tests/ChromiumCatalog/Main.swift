@@ -65,7 +65,7 @@ import NookWeb
     static var windows: [Int32: BarcDiscoveryWindow] = [:]
     static var tabs: [BarcDiscoveryTab] = []
     static var shells: [Int32: UnsafeMutableRawPointer] = [:]
-    static var observers: [UInt64: (ChromiumNavigationAPI.Callback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
+    static var observers: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var nextToken: UInt64 = 10
     static var callback: BarcDiscoveryCallback?
     static var context: UnsafeMutableRawPointer?
@@ -92,14 +92,14 @@ import NookWeb
     static var privateCreatedClients: [Int32] = []
     static var restoring = false
     static var restoredURLs: [String] = []
-    static var profileOpens: [(String, Int32)] = []
+    static var profileOpens: [(String, barc_profile_destination)] = []
     static var onShow: ((Int32) -> Int32)?
     static var onCloseWindow: ((Int32) -> Int32)?
     static var onSelectWindow: ((Int32) -> Int32)?
-    static var onOpen: ((Int32, ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?) -> Void)?
+    static var onOpen: ((Int32, barc_profile_window_callback?, UnsafeMutableRawPointer?) -> Void)?
     static var onAdmit: ((Int32) -> Void)?
-    static var savedRequests: [(UUID, ChromiumCreatedPageAdmission.SavedCallback?, UnsafeMutableRawPointer?)] = []
-    static var privateCallback: (@convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void)?
+    static var savedRequests: [(UUID, barc_profile_window_callback?, UnsafeMutableRawPointer?)] = []
+    static var privateCallback: barc_profile_window_callback?
     static var privateContext: UnsafeMutableRawPointer?
     static func copyPrivateID(_ window: Int32, _ output: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> Int {
         privateIdentityReads += 1
@@ -130,41 +130,55 @@ import NookWeb
         revision += 1
         callback?(context, 1, revision)
     }
-    static var discovery: ChromiumDiscoveryAPI {
-        ChromiumDiscoveryAPI(read: { windowRows, windowCapacity, tabRows, tabCapacity, size in MainActor.assumeIsolated {
+    static var splitLayouts: [Int32: BarcSplitLayout] = [:]
+    static var splitGeneration: UInt64 = 0
+    static var allowSplit = true
+    static var closesShowing: [(tab: Int32, successor: Int32)] = []
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.discovery_snapshot = { windowRows, windowCapacity, tabRows, tabCapacity, size in MainActor.assumeIsolated {
+            guard let size, size.pointee.size >= MemoryLayout<BarcDiscoverySnapshot>.size,
+                  windowCapacity == 0 || windowRows![0].size >= MemoryLayout<BarcDiscoveryWindow>.size,
+                  tabCapacity == 0 || tabRows![0].size >= MemoryLayout<BarcDiscoveryTab>.size else {
+                return Int32(BARC_DISCOVERY_READ_INVALID_ARGUMENT.rawValue)
+            }
             Native.snapshotReads += 1
             let rows = Native.windows.values.sorted { $0.window < $1.window }
-            size?.pointee = BarcDiscoverySnapshot(revision: Native.revision, window_count: rows.count, tab_count: Native.tabs.count)
+            size.pointee = BarcDiscoverySnapshot(size: size.pointee.size, revision: Native.revision,
+                                                 window_count: rows.count, tab_count: Native.tabs.count)
             guard windowCapacity >= rows.count, tabCapacity >= Native.tabs.count else { return 1 }
-            for (index, row) in rows.enumerated() { windowRows?[index] = row }
-            for (index, row) in Native.tabs.enumerated() { tabRows?[index] = row }
+            for (index, row) in rows.enumerated() { var row = row; row.size = windowRows![index].size; windowRows![index] = row }
+            for (index, row) in Native.tabs.enumerated() { var row = row; row.size = tabRows![index].size; tabRows![index] = row }
             return 0
-        } }, state: { id, result in MainActor.assumeIsolated {
-            guard let row = Native.windows[id] else { return 0 }
-            result?.pointee = row; return 1
-        } }, observe: { callback, context in MainActor.assumeIsolated {
+        } }
+        bridge.window_discovery_state = { id, result in MainActor.assumeIsolated {
+            guard let result, result.pointee.size >= MemoryLayout<BarcDiscoveryWindow>.size, var row = Native.windows[id] else { return 0 }
+            row.size = result.pointee.size; result.pointee = row; return 1
+        } }
+        bridge.discovery_observe = { callback, context in MainActor.assumeIsolated {
             Native.callback = callback; Native.context = context; return 1
-        } }, unobserve: { _ in MainActor.assumeIsolated {
+        } }
+        bridge.discovery_unobserve = { _ in MainActor.assumeIsolated {
             Native.callback = nil; Native.context = nil
-        } }, admit: { window, view in MainActor.assumeIsolated {
+        } }
+        bridge.window_admit_discovered = { window, view in MainActor.assumeIsolated {
             guard Native.shells[window] == view else { return 0 }
             Native.admitted.append(window)
             Native.windows[window]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
             Native.onAdmit?(window)
             return 1 // Preserve the caller's inactive/active intent.
-        } }, privateUUID: { window, output, capacity in MainActor.assumeIsolated {
+        } }
+        bridge.window_private_session_uuid = { window, output, capacity in MainActor.assumeIsolated {
             Native.copyPrivateID(window, output, capacity)
-        } }, show: { window in MainActor.assumeIsolated {
+        } }
+        bridge.window_show = { window in MainActor.assumeIsolated {
             precondition(Native.shells[window] != nil && Native.windows[window]?.selected_client == window)
             Native.shown.append(window); return Native.onShow?(window) ?? 1
-        } })
-    }
-    static var splitLayouts: [Int32: BarcSplitLayout] = [:]
-    static var splitGeneration: UInt64 = 0
-    static var allowSplit = true
-    static var split: ChromiumSplitAPI {
-        ChromiumSplitAPI(set: { owner, input in MainActor.assumeIsolated {
-            guard Native.allowSplit, let input, Native.windows[owner]?.selected_client == owner else { return 0 }
+        } }
+        bridge.tab_copy_launch_space = { _, _, _, _ in 0 }
+        bridge.tab_application_pending = { _, _ in 0 }
+        bridge.window_set_split = { owner, input in MainActor.assumeIsolated {
+            guard Native.allowSplit, let input, input.pointee.size >= MemoryLayout<BarcSplitLayout>.size, Native.windows[owner]?.selected_client == owner else { return 0 }
             var layout = input.pointee
             let members = withUnsafeBytes(of: layout.tabs) { Array($0.bindMemory(to: Int32.self).prefix(Int(layout.count))) }
             guard let group = Native.windows[owner]?.physical_group,
@@ -182,109 +196,117 @@ import NookWeb
             Native.splitLayouts[owner] = layout
             Native.windows[owner]?.active_tab = layout.active_tab
             return 1
-        } }, get: { owner, member, output in MainActor.assumeIsolated {
+        } }
+        bridge.window_get_split = { owner, member, output in MainActor.assumeIsolated {
             let stored = Native.splitLayouts[owner] ?? Native.splitLayouts.first { key, value in
                 value.kind == 1 && Native.windows[key]?.physical_group == Native.windows[owner]?.physical_group
             }?.value
-            guard var layout = stored else { return 0 }
+            guard let output, output.pointee.size >= MemoryLayout<BarcSplitLayout>.size, var layout = stored else { return 0 }
             let members = withUnsafeBytes(of: layout.tabs) { Array($0.bindMemory(to: Int32.self).prefix(Int(layout.count))) }
             let requested = member == 0 ? Native.windows[owner]?.active_tab ?? 0 : member
             guard members.contains(requested) else { return 0 }
             let activeOwner = layout.kind == 1 ? Native.windows[owner]?.selected_client ?? owner : owner
             layout.active_tab = members.contains(Native.windows[activeOwner]?.active_tab ?? 0) ? Native.windows[activeOwner]!.active_tab : 0
-            output?.pointee = layout
+            layout.size = output.pointee.size
+            output.pointee = layout
             return 1
-        } }, clear: { owner, _, expected in MainActor.assumeIsolated {
+        } }
+        bridge.window_clear_split = { owner, _, expected in MainActor.assumeIsolated {
             guard let key = Native.splitLayouts.keys.first(where: { key in
                 key == owner || Native.splitLayouts[key]?.kind == 1 &&
                     Native.windows[key]?.physical_group == Native.windows[owner]?.physical_group
             }), let actual = Native.splitLayouts[key], let expected,
+                  expected.pointee.size >= MemoryLayout<BarcSplitLayout>.size,
                   actual.kind == expected.pointee.kind,
                   actual.generation == expected.pointee.generation,
                   actual.collection == expected.pointee.collection else { return 0 }
             Native.splitLayouts[key] = nil
             return 1
-        } })
-    }
-    static var host: ChromiumPageHostAPI {
-        ChromiumPageHostAPI(open: { owner, _, _, callback, context in MainActor.assumeIsolated {
+        } }
+        bridge.profile_open_in_native_window = { owner, _, _, callback, context in MainActor.assumeIsolated {
             guard let open = Native.onOpen else { preconditionFailure("Discovery created a browser") }
             open(owner, callback, context)
-        } },
-            create: { client, _, foreground in MainActor.assumeIsolated {
-                precondition(foreground == 0 && (Native.restoring || Native.allowPrivateCreate && Native.privateIDs[client] != nil))
-                let tab = Int32(9000 + Native.privateCreatedClients.count)
-                Native.privateCreatedClients.append(client); Native.tabs.append(Native.tab(tab, window: client))
-                return tab
-            } },
-            tabAt: { window, index in MainActor.assumeIsolated {
-                let rows = Native.tabs.filter { $0.window == window }
-                return rows.indices.contains(index) ? rows[index].tab : 0
-            } }, tabTitle: { window, tab, _, _ in MainActor.assumeIsolated {
-                Native.membershipChecks += 1
-                return Native.tabs.contains { $0.window == window && $0.tab == tab } ? 1 : 0
-            } }, selectWindow: { owner in MainActor.assumeIsolated {
-                guard let select = Native.onSelectWindow else { preconditionFailure("Discovery focused a window") }
-                return select(owner)
-            } },
-            closeWindow: { window in MainActor.assumeIsolated {
-                guard Native.restoring, let close = Native.onCloseWindow else { preconditionFailure("Discovery closed native contents") }
-                return close(window)
-            } },
-            attach: { window, view in MainActor.assumeIsolated {
-                Native.attachments += 1; Native.shells[window] = view
-                return Native.onAttach?(window) ?? 1
-            } }, shellIsOwned: { window, view in MainActor.assumeIsolated {
-                Native.windows[window] != nil && Native.shells[window] == view ? 1 : 0
-            } }, detachIfOwned: { window, view in MainActor.assumeIsolated {
-                guard view != nil, Native.windows[window] != nil, Native.shells[window] == view else { return 0 }
-                Native.shells[window] = nil; return 1
-            } }, transferAdmitting: { source, tab, destination, admission, context in MainActor.assumeIsolated {
-                precondition(Native.transfersEnabled)
-                Native.transferCount += 1
-                if Native.refusesTransfers { return 0 }
-                if source == destination {
-                    Native.sameOwnerAdmissions += 1
-                    Native.onTransferAdmission?()
-                    guard Native.tabs.contains(where: { $0.window == source && $0.tab == tab }),
-                          admission?(context, destination, tab) == 1,
-                          let index = Native.tabs.firstIndex(where: { $0.window == destination && $0.tab == tab }) else { return 0 }
-                    if Native.tabs[index].flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 {
-                        Native.peekRoleClears += 1
-                        Native.tabs[index].flags &= ~UInt32(BARC_DISCOVERY_TAB_PEEK.rawValue)
-                        Native.tabs[index].peek_source_tab = 0
-                    }
-                    return 1
-                }
-                let previous = Native.windows[destination]?.active_tab ?? 0
-                precondition(Native.tabs.contains { $0.window == source && $0.tab == tab })
-                Native.move(tab, to: destination)
+        } }
+        bridge.tab_create = { client, _, foreground in MainActor.assumeIsolated {
+            precondition(foreground == 0 && (Native.restoring || Native.allowPrivateCreate && Native.privateIDs[client] != nil))
+            let tab = Int32(9000 + Native.privateCreatedClients.count)
+            Native.privateCreatedClients.append(client); Native.tabs.append(Native.tab(tab, window: client))
+            return tab
+        } }
+        bridge.window_tab_at = { window, index in MainActor.assumeIsolated {
+            let rows = Native.tabs.filter { $0.window == window }
+            return rows.indices.contains(index) ? rows[index].tab : 0
+        } }
+        bridge.tab_copy_title = { window, tab, _, _ in MainActor.assumeIsolated {
+            Native.membershipChecks += 1
+            return Native.tabs.contains { $0.window == window && $0.tab == tab } ? 1 : 0
+        } }
+        bridge.window_select = { owner in MainActor.assumeIsolated {
+            guard let select = Native.onSelectWindow else { preconditionFailure("Discovery focused a window") }
+            return select(owner)
+        } }
+        bridge.window_close = { window in MainActor.assumeIsolated {
+            guard Native.restoring, let close = Native.onCloseWindow else { preconditionFailure("Discovery closed native contents") }
+            return close(window)
+        } }
+        bridge.window_attach_native_shell = { window, view in MainActor.assumeIsolated {
+            Native.attachments += 1; Native.shells[window] = view
+            return Native.onAttach?(window) ?? 1
+        } }
+        bridge.window_native_shell_is_owned = { window, view in MainActor.assumeIsolated {
+            Native.windows[window] != nil && Native.shells[window] == view ? 1 : 0
+        } }
+        bridge.window_detach_native_shell_if_owned = { window, view in MainActor.assumeIsolated {
+            guard view != nil, Native.windows[window] != nil, Native.shells[window] == view else { return 0 }
+            Native.shells[window] = nil; return 1
+        } }
+        bridge.tab_transfer_with_admission = { source, tab, destination, admission, context in MainActor.assumeIsolated {
+            precondition(Native.transfersEnabled)
+            Native.transferCount += 1
+            if Native.refusesTransfers { return 0 }
+            if source == destination {
+                Native.sameOwnerAdmissions += 1
                 Native.onTransferAdmission?()
-                let accepted = admission?(context, destination, tab) == 1
-                if accepted {
-                    if let index = Native.tabs.firstIndex(where: { $0.window == destination && $0.tab == tab }),
-                       Native.tabs[index].flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 {
-                        Native.peekRoleClears += 1
-                        Native.tabs[index].flags &= ~UInt32(BARC_DISCOVERY_TAB_PEEK.rawValue)
-                        Native.tabs[index].peek_source_tab = 0
-                    }
-                    if !Native.tabs.contains(where: { $0.window == source }) {
-                        Native.windows[source] = nil; Native.shells[source] = nil
-                    }
-                    return Native.tabs.contains { $0.window == destination && $0.tab == tab } ? 1 : 0
+                guard Native.tabs.contains(where: { $0.window == source && $0.tab == tab }),
+                      admission?(context, destination, tab) == 1,
+                      let index = Native.tabs.firstIndex(where: { $0.window == destination && $0.tab == tab }) else { return 0 }
+                if Native.tabs[index].flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 {
+                    Native.peekRoleClears += 1
+                    Native.tabs[index].flags &= ~UInt32(BARC_DISCOVERY_TAB_PEEK.rawValue)
+                    Native.tabs[index].peek_source_tab = 0
                 }
-                if Native.windows[source] != nil,
-                   Native.tabs.contains(where: { $0.window == destination && $0.tab == tab }) {
-                    let restore = Native.windows[destination]?.active_tab == tab
-                    Native.move(tab, to: source)
-                    if restore { Native.windows[destination]?.active_tab = previous }
+                return 1
+            }
+            let previous = Native.windows[destination]?.active_tab ?? 0
+            precondition(Native.tabs.contains { $0.window == source && $0.tab == tab })
+            Native.move(tab, to: destination)
+            Native.onTransferAdmission?()
+            let accepted = admission?(context, destination, tab) == 1
+            if accepted {
+                if let index = Native.tabs.firstIndex(where: { $0.window == destination && $0.tab == tab }),
+                   Native.tabs[index].flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 {
+                    Native.peekRoleClears += 1
+                    Native.tabs[index].flags &= ~UInt32(BARC_DISCOVERY_TAB_PEEK.rawValue)
+                    Native.tabs[index].peek_source_tab = 0
                 }
-                return 0
-            } })
-    }
-    static var closesShowing: [(tab: Int32, successor: Int32)] = []
-    static var navigation: ChromiumNavigationAPI {
-        var api = ChromiumNavigationAPI(observe: { window, tab, callback, context in MainActor.assumeIsolated {
+                if !Native.tabs.contains(where: { $0.window == source }) {
+                    Native.windows[source] = nil; Native.shells[source] = nil
+                }
+                return Native.tabs.contains { $0.window == destination && $0.tab == tab } ? 1 : 0
+            }
+            if Native.windows[source] != nil,
+               Native.tabs.contains(where: { $0.window == destination && $0.tab == tab }) {
+                let restore = Native.windows[destination]?.active_tab == tab
+                Native.move(tab, to: source)
+                if restore { Native.windows[destination]?.active_tab = previous }
+            }
+            return 0
+        } }
+        bridge.window_set_app_lifetime = { _ in 1 }
+        bridge.window_set_page_hidden = { _, _ in 1 }
+        bridge.window_new_peer_in_native_window = { _, _ in 0 }
+        bridge.window_set_native_header = { _, _, _, _, _ in 0 }
+        bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
             if Native.rejectNextObservation {
                 Native.rejectNextObservation = false
                 Native.onRejectedObserve?(window, tab); Native.onRejectedObserve = nil
@@ -296,38 +318,46 @@ import NookWeb
                 callback?(context, token, 0, window, tab, $0, nil, 0, 0)
             }
             return token
-        } }, unobserve: { token in MainActor.assumeIsolated { Native.observers[token] = nil } },
-            navigate: { window, tab, url in MainActor.assumeIsolated {
-                precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
-                Native.restoredURLs.append(String(cString: url!)); return 1
-            } },
-            back: { _, _ in 1 }, forward: { _, _ in 1 }, reload: { _, _ in preconditionFailure("Existing page was reloaded") },
-            stop: { _, _ in preconditionFailure("Existing page was stopped") },
-            select: { window, tab in MainActor.assumeIsolated {
-                precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
-                if let select = Native.onSelectWindow, select(window) != 1 { return 0 }
-                Native.windows[window]?.active_tab = tab; return 1
-            } },
-            close: { window, tab in MainActor.assumeIsolated {
-                precondition((Native.allowFailedPrivateClose && Native.privateIDs[window] != nil || Native.restoring) && Native.tabs.contains { $0.window == window && $0.tab == tab })
-                Native.failedPrivateCloses.append((window, tab)); Native.tabs.removeAll { $0.window == window && $0.tab == tab }; return 1
-            } },
-            captureThumbnail: { _, _, _ in 0 },
-            clearSiteData: { _, _, _, _ in 0 }, profileUUID: { window, output, capacity in MainActor.assumeIsolated {
-                guard let row = Native.windows[window], let profile = ChromiumDiscoveryAPI.profileID(row) else { return 0 }
-                let bytes = profile.uuidString.utf8CString
-                if let output, capacity >= bytes.count {
-                    for (index, byte) in bytes.enumerated() { output[index] = byte }
-                }
-                return bytes.count
-            } }, privateSessionUUID: { window, output, capacity in MainActor.assumeIsolated {
-                Native.copyPrivateID(window, output, capacity)
-            } })
-        api.closeSelecting = { token, successor in MainActor.assumeIsolated {
+        } }
+        bridge.tab_unobserve = { token in MainActor.assumeIsolated { Native.observers[token] = nil } }
+        bridge.tab_navigate = { window, tab, url in MainActor.assumeIsolated {
+            precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
+            Native.restoredURLs.append(String(cString: url!)); return 1
+        } }
+        bridge.tab_go_back = { _, _ in 1 }; bridge.tab_go_forward = { _, _ in 1 }
+        bridge.tab_reload = { _, _ in preconditionFailure("Existing page was reloaded") }
+        bridge.tab_stop = { _, _ in preconditionFailure("Existing page was stopped") }
+        bridge.tab_select = { window, tab in MainActor.assumeIsolated {
+            precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
+            if let select = Native.onSelectWindow, select(window) != 1 { return 0 }
+            Native.windows[window]?.active_tab = tab; return 1
+        } }
+        bridge.tab_close = { window, tab in MainActor.assumeIsolated {
+            precondition((Native.allowFailedPrivateClose && Native.privateIDs[window] != nil || Native.restoring) && Native.tabs.contains { $0.window == window && $0.tab == tab })
+            Native.failedPrivateCloses.append((window, tab)); Native.tabs.removeAll { $0.window == window && $0.tab == tab }; return 1
+        } }
+        bridge.tab_capture_thumbnail = { _, _, _ in 0 }
+        bridge.tab_clear_site_data = { _, _, _, _ in 0 }
+        bridge.window_profile_uuid = { window, output, capacity in MainActor.assumeIsolated {
+            guard let row = Native.windows[window], let profile = row.profileID else { return 0 }
+            let bytes = profile.uuidString.utf8CString
+            if let output, capacity >= bytes.count {
+                for (index, byte) in bytes.enumerated() { output[index] = byte }
+            }
+            return bytes.count
+        } }
+        bridge.tab_observe_media = { _, _ in 1 }
+        bridge.tab_observe_vault = { _, _ in 1 }
+        bridge.tab_observe_vault_save = { _, _ in 1 }
+        bridge.tab_observe_vault_passkeys = { _, _ in 1 }
+        bridge.tab_enable_peek = { _, _ in 0 }
+        bridge.blocker_set_tab_policy = { _, _, _, _, _ in 0 }
+        bridge.tab_set_user_css = { _, _, _, _, _ in 0 }
+        bridge.tab_close_selecting = { token, successor in MainActor.assumeIsolated {
             guard let observed = Native.observers[token], Native.tabs.contains(where: { $0.tab == successor }) else { return 0 }
             Native.closesShowing.append((observed.3, successor)); return 1
         } }
-        return api
+        return bridge
     }
     static var onAttach: ((Int32) -> Int32)?
     static func move(_ tab: Int32, to window: Int32) {
@@ -376,7 +406,7 @@ private struct NoTokens: KagiTokenStore {
         let tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-        let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        let host = ChromiumNativePageHost(bridge: Native.bridge)
         tabs.nativePageHost = host
         registry.onWindowClose = { [weak tabs, weak registry] id in
             guard let tabs, let registry else { return }
@@ -384,9 +414,9 @@ private struct NoTokens: KagiTokenStore {
         }
         var shellCount = 0
         var utilities: Set<Int32> = [80]
-        let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
             registry: registry, isUtility: { utilities.contains($0) }, makeShell: { _ in shellCount += 1; return NSView() })
-        let catalog = ChromiumWindowCatalog(api: Native.discovery)
+        let catalog = ChromiumWindowCatalog(bridge: Native.bridge)
         catalog.onSnapshot = { admission.apply($0) }
         precondition(catalog.start())
 
@@ -403,7 +433,8 @@ private struct NoTokens: KagiTokenStore {
         let initialTree = tabs.tree, initialDevice = tabs.device, initialAttachments = Native.attachments
         let membershipsBeforeUnchanged = Native.membershipChecks
         Native.publish()
-        precondition(Native.membershipChecks == membershipsBeforeUnchanged + 1,
+        // The catalog and the split reader each check the selected page once.
+        precondition(Native.membershipChecks == membershipsBeforeUnchanged + 2,
                      "Stable background tabs must not each validate native membership")
         precondition(tabs.tree == initialTree && tabs.device == initialDevice && Native.attachments == initialAttachments)
 
@@ -543,9 +574,9 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     func item(_ tab: Int32) -> UUID {
@@ -553,7 +584,7 @@ private struct NoTokens: KagiTokenStore {
     }
     Native.windows[601] = Native.window(601, group: 601, profile: Native.work, active: 6010)
     Native.tabs = [Native.tab(6010, window: 601), Native.tab(6011, window: 601), Native.tab(6012, window: 601)]
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let window = registry.allWindows.first!
     let closing = item(6010), neighbour = item(6011), recent = item(6012)
     precondition(window.selectedItemID == closing)
@@ -563,11 +594,11 @@ private struct NoTokens: KagiTokenStore {
     tabs.close(closing)
     precondition(Native.closesShowing.last! == (6010, 6012), "Chromium is to show Nook's live successor")
     precondition(window.selectedItemID == closing, "The page stays shown until it actually closes")
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.selectedItemID == closing)
     // The close goes ahead: Chromium shows the successor and the sidebar follows at once.
     Native.windows[601]?.active_tab = 6012
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.selectedItemID == recent, "The sidebar moves when Chromium shows the successor")
     func endTab(_ tab: Int32) {
         Native.tabs.removeAll { $0.tab == tab }
@@ -577,9 +608,9 @@ private struct NoTokens: KagiTokenStore {
         }
     }
     endTab(6010)
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     drain()
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(tabs.item(closing) == nil && window.selectedItemID == recent && window.spaceID == Native.work)
     precondition(Native.windows[601]?.active_tab == 6012)
 
@@ -593,10 +624,10 @@ private struct NoTokens: KagiTokenStore {
     precondition(window.selectedItemID == recent, "No live successor to show first")
     endTab(6012)
     Native.windows[601]?.active_tab = 6011
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.selectedItemID != neighbour, "Chromium's neighbour was mirrored while Nook chose")
     drain()
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(tabs.item(recent) == nil && window.selectedItemID == cold && window.spaceID == Native.work)
 
     // A page Chromium opens while the window shows an empty space takes the selection.
@@ -611,7 +642,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(route?.window == 601 && route?.profile == Native.work && route?.space == empty)
     Native.tabs.append(Native.tab(6013, window: 601))
     Native.windows[601]?.active_tab = 6013
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.selectedItemID == item(6013) && !window.showsNativeEmptySpace)
     Native.restoring = false
     Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
@@ -633,14 +664,14 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
     Native.windows[621] = Native.window(621, group: 621, profile: Native.work, active: 6210)
     Native.tabs = [Native.tab(6210, window: 621)]
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let window = registry.allWindows.first!
     let closing = window.selectedItemID!
     let shared = tabs.createSpace(name: "Shared", icon: "", accentHex: "#123456", after: Native.work, sharingLoginsWith: Native.work)!
@@ -656,11 +687,11 @@ private struct NoTokens: KagiTokenStore {
         observation.0?(observation.1, token, 7, 621, 6210, nil, nil, 0, 0)
     }
     Native.windows[621]?.active_tab = otherTab
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.spaceID == Native.work && window.selectedItemID != other,
                  "Chromium's neighbour carried the window into another space")
     drain()
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(tabs.item(closing) == nil && window.spaceID == Native.work && window.showsNativeEmptySpace)
     Native.restoring = false
     Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
@@ -683,18 +714,18 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     Native.windows[631] = Native.window(631, group: 631, profile: Native.work, active: 6310)
     Native.tabs = [Native.tab(6310, window: 631)]
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let window = registry.allWindows.first!
     registry.setActive(window)
     tabs.setSpace(Native.personal, in: window)
     precondition(window.showsNativeEmptySpace && window.spaceID == Native.personal)
-    var opened: [(Int32, ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)] = []
+    var opened: [(Int32, barc_profile_window_callback?, UnsafeMutableRawPointer?)] = []
     Native.onOpen = { owner, callback, pointer in opened.append((owner, callback, pointer)) }
     Native.onSelectWindow = { owner in
         guard let group = Native.windows[owner]?.physical_group else { return 0 }
@@ -712,7 +743,7 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[632] = Native.window(632, group: 631, profile: Native.personal, flags: 0, active: 6320)
     Native.windows[632]?.selected_client = 631
     Native.tabs.append(Native.tab(6320, window: 632))
-    opened[0].1?(0, 632, opened[0].2)
+    opened[0].1?(BARC_PROFILE_OK, 632, opened[0].2)
     precondition(!Native.tabs.contains { $0.window == 632 }, "The new client's blank is closed")
     Native.windows[632]?.active_tab = 0
     Native.windows[632]?.flags |= UInt32(BARC_DISCOVERY_EMPTY_STRIP.rawValue)
@@ -739,22 +770,22 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     registry.onWindowClose = { id in
         if let window = registry.windows[id], tabs.device.windows.contains(where: { $0.id == id }) { tabs.detach(window: window) }
     }
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     Native.windows[501] = Native.window(501, group: 501, profile: Native.work, active: 5010)
     Native.tabs = [Native.tab(5010, window: 501)]
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let source = registry.allWindows.first!, session = tabs.selectedSession(in: registry.allWindows.first!)!
     let page = session.navigation as! ChromiumPageNavigation, item = session.itemID
     precondition(registry.windows.count == 1 && tabs.device.windows.contains { $0.id == source.id })
     Native.windows[502] = Native.window(502, group: 502, profile: Native.work, active: 5010)
     Native.move(5010, to: 502); Native.end(501)
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows.count == 1 && registry.windows[source.id] == nil)
     precondition(tabs.device.windows.count == 1 && !tabs.device.windows.contains { $0.id == source.id })
     precondition(tabs.selectedSession(in: registry.allWindows.first!) === session && session.navigation === page)
@@ -776,10 +807,10 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     registry.onWindowClose = { id in if let window = registry.windows[id] { tabs.detach(window: window) } }
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let a = UUID(), b = UUID()
     func add(_ window: Int32, session: UUID?, factory: Bool = false) {
@@ -793,7 +824,7 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[704] = Native.window(704, group: 704, profile: nil, profileKind: BARC_DISCOVERY_INCOGNITO.rawValue, active: 7040)
     Native.tabs.append(Native.tab(7040, window: 704))
     let originalTree = tabs.tree, originalDevice = tabs.device
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows.count == 2 && tabs.privateWindows.count == 2)
     precondition(Native.admitted.contains(701) && Native.admitted.contains(702))
     precondition(!Native.admitted.contains(703) && !Native.admitted.contains(704))
@@ -802,12 +833,12 @@ private struct NoTokens: KagiTokenStore {
     precondition(page.isPrivateSession && originalSession.isPrivate && originalSession.profile?.webKitDataStore == nil)
     add(711, session: a)
     Native.tabs[Native.tabs.firstIndex { $0.tab == 7110 }!].opener_tab = 7010
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let child = tabs.privateWindows.first { $0 !== source && $0.ephemeralProfile?.id == a }!
     precondition(child.ephemeralProfile === source.ephemeralProfile && registry.windows.count == 3)
     let item = originalSession.itemID
     Native.move(7010, to: 711); Native.end(701)
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows[source.id] == nil && tabs.session(for: item) === originalSession)
     precondition(tabs.selectedSession(in: child) === originalSession && originalSession.navigation === page && !page.isClosed)
     registry.setActive(child)
@@ -883,7 +914,7 @@ private struct NoTokens: KagiTokenStore {
         Native.privateCallback = callback; Native.privateContext = pointer
     } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: { true })
     cancel(); add(721, session: UUID(), factory: true)
-    Native.privateCallback?(0, 721, Native.privateContext); Native.privateCallback = nil; Native.privateContext = nil
+    Native.privateCallback?(BARC_PROFILE_OK, 721, Native.privateContext); Native.privateCallback = nil; Native.privateContext = nil
     precondition(closed == [721] && registry.windows.count == count)
     var cancelDuringAdmission: (() -> Void)?
     cancelDuringAdmission = admission.openPrivateWindow(open: { callback, pointer in MainActor.assumeIsolated {
@@ -892,7 +923,7 @@ private struct NoTokens: KagiTokenStore {
         cancelDuringAdmission?(); return true
     })
     add(723, session: UUID(), factory: true)
-    Native.privateCallback?(0, 723, Native.privateContext); Native.privateCallback = nil; Native.privateContext = nil
+    Native.privateCallback?(BARC_PROFILE_OK, 723, Native.privateContext); Native.privateCallback = nil; Native.privateContext = nil
     precondition(closed == [721, 723] && registry.windows.count == count)
     cancelDuringAdmission = nil
     // Synchronous completion is also valid; the exact factory blank is adopted
@@ -900,7 +931,7 @@ private struct NoTokens: KagiTokenStore {
     add(722, session: UUID(), factory: true)
     Native.restoring = true
     let navigationsBefore = Native.restoredURLs.count
-    _ = admission.openPrivateWindow(open: { callback, pointer in callback(0, 722, pointer) },
+    _ = admission.openPrivateWindow(open: { callback, pointer in callback?(BARC_PROFILE_OK, 722, pointer) },
         close: { _ in preconditionFailure("Valid private factory was rejected") }, canPresent: { true })
     Native.restoring = false
     precondition(Native.restoredURLs.count == navigationsBefore + 1 &&
@@ -908,15 +939,15 @@ private struct NoTokens: KagiTokenStore {
                  "A private window opens WebKit's home page, not Chromium's")
     precondition(Native.admitted.contains(722))
     precondition(registry.windows.count == count + 1 && Native.shown == [722])
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows.count == count + 1 && tabs.tree == originalTree && tabs.device == originalDevice)
     let childItem = originalSession.itemID
     Native.end(711)
     precondition(originalSession.navigation == nil && page.isClosed)
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows[child.id] == nil && tabs.session(for: childItem) == nil)
     for id in Array(Native.windows.keys) { Native.end(id) }
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows.isEmpty && tabs.tree == originalTree && tabs.device == originalDevice && Native.observers.isEmpty)
     tabs.saveNow()
     let saved = TabStore(directory: root).load()
@@ -951,9 +982,9 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     registry.onWindowClose = { [weak admission, weak registry, weak tabs] id in
         guard let admission, let registry, let tabs, let state = registry.windows[id] else { return }
@@ -976,11 +1007,10 @@ private struct NoTokens: KagiTokenStore {
         let splitTabs = TabsController(settings: settings, windowRegistry: splitRegistry,
             blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: splitRoot)
-        let concrete = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation,
-                                              discoveryAPI: Native.discovery, splitAPI: Native.split)
+        let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete)
         splitTabs.nativePageHost = delivery
-        let splitAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: concrete, tabs: splitTabs,
+        let splitAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: concrete, tabs: splitTabs,
             registry: splitRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         let state = splitAdmission.prepareInitialWindow()!
         let native: Int32 = 1101 + Int32(["sync", "delayed", "refused", "closed", "new-selection"].firstIndex(of: mode)!)
@@ -1008,7 +1038,7 @@ private struct NoTokens: KagiTokenStore {
         if mode == "closed" { precondition(Native.failedPrivateCloses.count == closedPagesBefore + 1) }
         Native.allowSplit = true
         Native.end(native)
-        splitAdmission.apply(Native.discovery.readSnapshot()!)
+        splitAdmission.apply(Native.bridge.readSnapshot()!)
     }
     // Exercise SavedRequest itself: tabs.select cancels synchronously before
     // publishing its new item, and must not let old refusal cleanup close it.
@@ -1020,11 +1050,10 @@ private struct NoTokens: KagiTokenStore {
         let savedTabs = TabsController(settings: settings, windowRegistry: savedRegistry,
             blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: savedRoot)
-        let concrete = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation,
-                                              discoveryAPI: Native.discovery, splitAPI: Native.split)
+        let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete); delivery.delayedItem = splitOther
         savedTabs.nativePageHost = delivery
-        let savedAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: concrete, tabs: savedTabs,
+        let savedAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: concrete, tabs: savedTabs,
             registry: savedRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         var closedOwners: [Int32] = []
         var reentered = false
@@ -1041,7 +1070,7 @@ private struct NoTokens: KagiTokenStore {
         }
         Native.onCloseWindow = { owner in closedOwners.append(owner); return 1 }
         savedAdmission.restoreSavedWindows(open: { _, _, callback, pointer in MainActor.assumeIsolated {
-            factory(1110, profile: Native.work); callback?(0, 1110, pointer)
+            factory(1110, profile: Native.work); callback?(BARC_PROFILE_OK, 1110, pointer)
         } }, close: { owner in closedOwners.append(owner); return 1 }, canPresent: { true })
         let state = savedRegistry.windows[splitID]!
         precondition(delivery.isPending && !Native.shown.contains(1110))
@@ -1051,7 +1080,7 @@ private struct NoTokens: KagiTokenStore {
         precondition(closedOwners.isEmpty && state.selectedItemID == splitOther)
         precondition(savedRegistry.windows[splitID] === state && Native.windows[1110] != nil)
         Native.onCloseWindow = nil
-        Native.end(1110); savedAdmission.apply(Native.discovery.readSnapshot()!)
+        Native.end(1110); savedAdmission.apply(Native.bridge.readSnapshot()!)
     }
     // Initial startup follows a legitimate newer presentation, including a
     // different profile/client in the same physical group. Completion is the
@@ -1064,11 +1093,10 @@ private struct NoTokens: KagiTokenStore {
         let initialTabs = TabsController(settings: settings, windowRegistry: initialRegistry,
             blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: initialRoot)
-        let concrete = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation,
-                                              discoveryAPI: Native.discovery, splitAPI: Native.split)
+        let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete); delivery.delayedItem = splitOther
         initialTabs.nativePageHost = delivery
-        let coordinator = ChromiumCreatedPageAdmission(api: Native.discovery, host: concrete, tabs: initialTabs,
+        let coordinator = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: concrete, tabs: initialTabs,
             registry: initialRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         let state = coordinator.prepareInitialWindow()!
         factory(1120, profile: Native.work)
@@ -1080,7 +1108,7 @@ private struct NoTokens: KagiTokenStore {
             }))
         precondition(delivery.isPending && admitted.isEmpty)
         var selections: [Int32] = []
-        var pendingOpen: (ChromiumPageHostAPI.Callback?, UnsafeMutableRawPointer?)?
+        var pendingOpen: (barc_profile_window_callback?, UnsafeMutableRawPointer?)?
         if mode == "personal" || mode == "reentrant" || mode == "refused" {
             Native.windows[1121] = Native.window(1121, group: 1120, profile: Native.personal,
                 flags: mode == "reentrant" ? 4 | UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue) : 4, active: 11210)
@@ -1124,7 +1152,7 @@ private struct NoTokens: KagiTokenStore {
             Native.allowSplit = true
         } else {
             Native.onOpen = { _, callback, pointer in
-                if mode == "creation-refused" { callback?(3, 0, pointer) }
+                if mode == "creation-refused" { callback?(BARC_PROFILE_FAILED, 0, pointer) }
                 else { pendingOpen = (callback, pointer) }
             }
             initialTabs.select(selected, in: state)
@@ -1133,20 +1161,20 @@ private struct NoTokens: KagiTokenStore {
         }
         if mode == "shutdown" { coordinator.cancelPendingProductPresentation() }
         if mode == "retired" { Native.end(1120); Native.end(1121) }
-        coordinator.apply(Native.discovery.readSnapshot()!)
+        coordinator.apply(Native.bridge.readSnapshot()!)
         let expected: Int32? = mode == "personal" ? 1121 : (mode == "reentrant" ? 1120 : nil)
         precondition(admitted == [expected])
         if mode != "reentrant" { precondition(!selections.contains(1120)) }
         precondition(!Native.shown.contains(1120))
         delivery.resolve()
-        pendingOpen?.0?(3, 0, pendingOpen?.1)
+        pendingOpen?.0?(BARC_PROFILE_FAILED, 0, pendingOpen?.1)
         Native.onOpen = nil
-        coordinator.apply(Native.discovery.readSnapshot()!)
+        coordinator.apply(Native.bridge.readSnapshot()!)
         precondition(admitted.count == 1)
         Native.onSelectWindow = nil
         Native.onAdmit = nil
         Native.end(1120); Native.end(1121)
-        coordinator.apply(Native.discovery.readSnapshot()!)
+        coordinator.apply(Native.bridge.readSnapshot()!)
     }
     Native.restoredURLs.removeAll()
     do {
@@ -1158,7 +1186,7 @@ private struct NoTokens: KagiTokenStore {
         let openingTabs = TabsController(settings: settings, windowRegistry: openingRegistry,
             blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: openingRoot)
-        let openingAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: openingTabs,
+        let openingAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: openingTabs,
             registry: openingRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         let pending = openingAdmission.prepareInitialWindow()!
         precondition(openingAdmission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1)
@@ -1177,16 +1205,16 @@ private struct NoTokens: KagiTokenStore {
     precondition(initial.id == rootID && initial.selectedItemID == first && Native.restoredURLs == [rootURL.absoluteString])
     var canPresent = true, closed: [Int32] = []
     admission.restoreSavedWindows(open: { profile, destination, callback, pointer in MainActor.assumeIsolated {
-        precondition(destination == 5)
+        precondition(destination == BARC_PROFILE_BLANK)
         Native.savedRequests.append((UUID(uuidString: String(cString: profile!))!, callback, pointer))
     } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: { canPresent })
     precondition(Native.savedRequests.count == 4 && Native.savedRequests.prefix(3).allSatisfy { $0.0 == Native.personal })
     precondition(Native.savedRequests.last?.0 == Native.work)
     let requests = Native.savedRequests; Native.savedRequests = []
     // Explicit native factory refusal keeps the saved split available for retry.
-    requests[3].1?(3, 0, requests[3].2)
+    requests[3].1?(BARC_PROFILE_FAILED, 0, requests[3].2)
     precondition(registry.windows[splitID] == nil && tabs.device.windows.first { $0.id == splitID }?.split == split)
-    factory(1002, profile: Native.personal); requests[0].1?(0, 1002, requests[0].2)
+    factory(1002, profile: Native.personal); requests[0].1?(BARC_PROFILE_OK, 1002, requests[0].2)
     precondition(registry.windows[extraID]?.selectedItemID == selected)
     precondition(Native.restoredURLs == [rootURL.absoluteString, selectedURL.absoluteString])
     registry.setActive(initial)
@@ -1232,14 +1260,14 @@ private struct NoTokens: KagiTokenStore {
 
 
     factory(1003, profile: Native.personal); Native.rejectNextObservation = true
-    requests[1].1?(0, 1003, requests[1].2)
+    requests[1].1?(BARC_PROFILE_OK, 1003, requests[1].2)
     precondition(registry.windows[failedID] == nil && tabs.device.windows.contains { $0.id == failedID })
     canPresent = false; factory(1004, profile: Native.personal)
-    requests[2].1?(0, 1004, requests[2].2)
+    requests[2].1?(BARC_PROFILE_OK, 1004, requests[2].2)
     precondition(closed == [1003, 1004] && registry.windows[lateID] == nil)
     precondition(Native.restoredURLs == [rootURL.absoluteString, selectedURL.absoluteString])
     precondition(tabs.unclaimedWindowRecords().map(\.id).contains(failedID) && tabs.unclaimedWindowRecords().map(\.id).contains(lateID))
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(tabs.device.windows.count == 5 && tabs.tree.items.count == tree.items.count)
     // Show can reenter quit after product/host registration. Keep that model
     // registered while native close is pending or refused, and retry its same page.
@@ -1249,16 +1277,16 @@ private struct NoTokens: KagiTokenStore {
     } }, close: { _ in preconditionFailure("Bound restoration must retain its close observation") }, canPresent: { canPresent })
     let retries = Native.savedRequests; Native.savedRequests = []
     precondition(retries.count == 3)
-    retries[2].1?(3, 0, retries[2].2)
+    retries[2].1?(BARC_PROFILE_FAILED, 0, retries[2].2)
     var closeRequests: [Int32] = []
     Native.onCloseWindow = { id in closeRequests.append(id); return id == 1005 ? 1 : 0 }
     Native.onShow = { _ in canPresent = false; return 1 }
-    factory(1005, profile: Native.personal); retries[0].1?(0, 1005, retries[0].2)
+    factory(1005, profile: Native.personal); retries[0].1?(BARC_PROFILE_OK, 1005, retries[0].2)
     let pendingState = registry.windows[failedID]!
     let pendingPage = tabs.selectedSession(in: pendingState)!.navigation!
     precondition(closeRequests == [1005] && registry.windows[failedID] === pendingState)
     let loaded = Native.restoredURLs
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(!admission.shouldDetachModelWindow(pendingState))
     canPresent = true; Native.onShow = nil
     for (token, entry) in Native.observers.filter({ $0.value.2 == 1005 }) {
@@ -1268,15 +1296,15 @@ private struct NoTokens: KagiTokenStore {
     precondition(Native.restoredURLs == loaded && host.isNativeSelection(pendingPage, in: pendingState))
     // An immediate refusal also cannot unregister its still-live owner.
     Native.onShow = { _ in canPresent = false; return 1 }
-    factory(1006, profile: Native.personal); retries[1].1?(0, 1006, retries[1].2)
+    factory(1006, profile: Native.personal); retries[1].1?(BARC_PROFILE_OK, 1006, retries[1].2)
     let refusedState = registry.windows[lateID]!
     let refusedPage = tabs.selectedSession(in: refusedState)!.navigation!
     precondition(closeRequests == [1005, 1006] && registry.windows[lateID] === refusedState)
     precondition(host.isNativeSelection(refusedPage, in: refusedState))
     let retainedRecord = tabs.device.windows.first { $0.id == lateID }
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(!admission.shouldDetachModelWindow(refusedState))
-    Native.end(1006); admission.apply(Native.discovery.readSnapshot()!)
+    Native.end(1006); admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows[lateID] == nil && tabs.device.windows.first { $0.id == lateID } == retainedRecord)
     canPresent = true; Native.onShow = nil
     admission.resumeRestoredWindows(canPresent: { canPresent })
@@ -1284,7 +1312,7 @@ private struct NoTokens: KagiTokenStore {
     Native.onCloseWindow = nil
     tabs.flushSync() // Accepted app-close notification, before either group retires.
     Native.end(1001); Native.end(1002); Native.end(1005); Native.end(1006)
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(registry.windows.isEmpty && Set(tabs.device.windows.map(\.id)) == Set(device.windows.map(\.id)))
     let noWindow = admission.browserTarget(kind: 2, regularProfile: Native.personal)
     precondition(noWindow?.window == 0 && noWindow?.regularProfile == Native.personal)
@@ -1317,9 +1345,9 @@ private struct NoTokens: KagiTokenStore {
         let tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
-        let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+        let host = ChromiumNativePageHost(bridge: Native.bridge)
         tabs.nativePageHost = host
-        let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+        let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
             registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         return (admission, tabs, registry)
     }
@@ -1335,16 +1363,16 @@ private struct NoTokens: KagiTokenStore {
         Native.profileOpens = []
         precondition(admission.openNewWindow(open: { profile, destination, callback, pointer in MainActor.assumeIsolated {
             Native.profileOpens.append((String(cString: profile!), destination))
-            factory(1301, profile: Native.work); callback?(0, 1301, pointer)
+            factory(1301, profile: Native.work); callback?(BARC_PROFILE_OK, 1301, pointer)
         } }, close: { _ in preconditionFailure("The new window was closed") }, canPresent: { true }))
         let state = registry.windows.values.first!
-        precondition(registry.windows.count == 1 && Native.profileOpens.count == 1 && Native.profileOpens[0].1 == 5 &&
+        precondition(registry.windows.count == 1 && Native.profileOpens.count == 1 && Native.profileOpens[0].1 == BARC_PROFILE_BLANK &&
                      UUID(uuidString: Native.profileOpens[0].0) == Native.work)
         precondition(state.spaceID == Native.work && state.selectedItemID == first, "The first space's first tab shows")
         precondition(Set(tabs.items(inSpace: Native.work).map(\.id)) == [first, second] &&
                      tabs.items(inSpace: Native.personal).isEmpty, "New Window adds no tab")
         precondition(Native.shown.last == 1301)
-        Native.end(1301); admission.apply(Native.discovery.readSnapshot()!)
+        Native.end(1301); admission.apply(Native.bridge.readSnapshot()!)
     }
 
     // A saved window nobody claimed comes back; on an empty space it shows the panel.
@@ -1353,7 +1381,7 @@ private struct NoTokens: KagiTokenStore {
         let (admission, tabs, registry) = make("saved-empty", records: [record])
         precondition(admission.openNewWindow(open: { profile, _, callback, pointer in MainActor.assumeIsolated {
             precondition(UUID(uuidString: String(cString: profile!)) == Native.personal)
-            factory(1302, profile: Native.personal); callback?(0, 1302, pointer)
+            factory(1302, profile: Native.personal); callback?(BARC_PROFILE_OK, 1302, pointer)
         } }, close: { _ in preconditionFailure("The new window was closed") }, canPresent: { true }))
         let state = registry.windows.values.first!
         precondition(state.spaceID == Native.personal && state.selectedItemID == nil && state.showsNativeEmptySpace,
@@ -1361,7 +1389,7 @@ private struct NoTokens: KagiTokenStore {
         precondition(tabs.items(inSpace: Native.personal).isEmpty, "No blank tab is added to the empty space")
         precondition(tabs.device.windows.count == 1 && tabs.device.windows[0].id == state.id, "The saved window is claimed")
         precondition(Native.shown.last == 1302)
-        Native.end(1302); admission.apply(Native.discovery.readSnapshot()!)
+        Native.end(1302); admission.apply(Native.bridge.readSnapshot()!)
     }
 
     // The first tab is shown in another window: the new window says it is open there, as in
@@ -1374,7 +1402,7 @@ private struct NoTokens: KagiTokenStore {
         defer { Native.onSelectWindow = nil }
         Native.windows[1310] = Native.window(1310, group: 1310, profile: Native.work, active: 13100)
         Native.tabs += [Native.tab(13100, window: 1310), Native.tab(13101, window: 1310)]
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         let holder = registry.allWindows.first!
         let top = tabs.displayOrder(in: holder).first!
         tabs.select(top, in: holder)
@@ -1382,7 +1410,7 @@ private struct NoTokens: KagiTokenStore {
         precondition(holder.selectedItemID == top && page.nativeWindowID == 1310)
         let transfers = Native.transferCount
         precondition(admission.openNewWindow(open: { _, _, callback, pointer in MainActor.assumeIsolated {
-            factory(1311, profile: Native.work); callback?(0, 1311, pointer)
+            factory(1311, profile: Native.work); callback?(BARC_PROFILE_OK, 1311, pointer)
         } }, close: { _ in preconditionFailure("The new window was closed") }, canPresent: { true }))
         let state = registry.allWindows.first { $0 !== holder }!
         precondition(state.selectedItemID == top && tabs.showsPageElsewhere(in: state), "It is open in another window")
@@ -1393,18 +1421,18 @@ private struct NoTokens: KagiTokenStore {
         precondition(page.nativeWindowID == 1311 && tabs.pageOwnerWindow(of: top) === state, "Move Here moves the live page")
         precondition(tabs.showsPageElsewhere(in: holder) && !tabs.showsPageElsewhere(in: state))
         Native.windows[1310]?.active_tab = 13101
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         precondition(holder.selectedItemID == top, "Chromium's tab in the first window is not mirrored")
         tabs.takeControl(top, in: holder)
         precondition(page.nativeWindowID == 1310 && tabs.showsPageElsewhere(in: state))
 
         Native.end(1310)
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         precondition(registry.windows[holder.id] == nil && !tabs.showsPageElsewhere(in: state))
         tabs.showSelectedPageHere(in: state)
         let reopened = tabs.session(for: top)?.navigation as? ChromiumPageNavigation
         precondition(reopened?.nativeWindowID == 1311 && state.selectedItemID == top, "The page opens where it shows")
-        Native.end(1311); admission.apply(Native.discovery.readSnapshot()!)
+        Native.end(1311); admission.apply(Native.bridge.readSnapshot()!)
     }
 
     // Whatever it selects, a new window never waits forever: the first tab is live in a
@@ -1418,18 +1446,18 @@ private struct NoTokens: KagiTokenStore {
         defer { Native.onSelectWindow = nil; Native.onCloseWindow = nil }
         Native.windows[1320] = Native.window(1320, group: 1320, profile: Native.work, active: 13200)
         Native.tabs += [Native.tab(13200, window: 1320), Native.tab(13201, window: 1320)]
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         let holder = registry.allWindows.first!
         let order = tabs.displayOrder(in: holder)
         tabs.select(order[0], in: holder); tabs.select(order[1], in: holder)
         precondition(holder.selectedItemID == order[1] && tabs.session(for: order[0])?.navigation != nil)
         var closed: [Int32] = []
         _ = admission.openNewWindow(open: { _, _, callback, pointer in MainActor.assumeIsolated {
-            factory(1321, profile: Native.work); callback?(0, 1321, pointer)
+            factory(1321, profile: Native.work); callback?(BARC_PROFILE_OK, 1321, pointer)
         } }, close: { id in closed.append(id); Native.end(id); return 1 }, canPresent: { true })
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         precondition(closed == [1321] && registry.allWindows.count == 1, "The failed window closes")
-        Native.end(1320); admission.apply(Native.discovery.readSnapshot()!)
+        Native.end(1320); admission.apply(Native.bridge.readSnapshot()!)
     }
 }
 
@@ -1455,8 +1483,8 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in preconditionFailure("Recovery must not attach before native admission") })
     var reconciliations = 0, retries = 0
     tabs.onDeleteProfile = { intent, reconcileOnly, canDelete, done in
@@ -1484,7 +1512,7 @@ private struct NoTokens: KagiTokenStore {
     let nextTabs = TabsController(settings: settings, windowRegistry: nextRegistry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: alternate)
-    let nextAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: nextTabs,
+    let nextAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: nextTabs,
         registry: nextRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     precondition(nextAdmission.prepareInitialWindow()?.id == eligible.id)
     precondition(nextTabs.device.windows.first { $0.id == recordID } == retained)
@@ -1497,7 +1525,7 @@ private struct NoTokens: KagiTokenStore {
     let keptTabs = TabsController(settings: settings, windowRegistry: keptRegistry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: keptRoot)
-    let keptAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: keptTabs,
+    let keptAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: keptTabs,
         registry: keptRegistry, isUtility: { _ in false }, makeShell: { _ in preconditionFailure() })
     precondition(keptAdmission.prepareInitialWindow() == nil && keptRegistry.windows.isEmpty)
     precondition(keptTabs.tree == keptTree && keptTabs.device.windows == [retained])
@@ -1511,7 +1539,7 @@ private struct NoTokens: KagiTokenStore {
     let staleTabs = TabsController(settings: settings, windowRegistry: staleRegistry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: staleRoot)
-    let staleAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: staleTabs,
+    let staleAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: staleTabs,
         registry: staleRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let normalized = staleAdmission.prepareInitialWindow()
     precondition(normalized?.id == recordID && normalized?.spaceID == Native.work)
@@ -1535,7 +1563,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(tabs.tree.dataStoreID(for: Native.work) == survivor && tabs.tree.item(item) != nil)
     precondition(Native.savedRequests.count == 1 && Native.savedRequests[0].0 == survivor)
     let retry = Native.savedRequests.removeFirst()
-    retry.1?(4, 0, retry.2) // Bounded refused factory: keep the saved record for a later retry.
+    retry.1?(BARC_PROFILE_CANCELLED, 0, retry.2) // Bounded refused factory: keep the saved record for a later retry.
     precondition(tabs.device.windows.contains { $0.id == recordID })
 
 }
@@ -1564,7 +1592,7 @@ private struct NoTokens: KagiTokenStore {
                                       after: Native.work, sharingLoginsWith: Native.work)!
     let window = BrowserWindowState(); window.spaceID = Native.work
     registry.register(window); tabs.attach(window: window, restoringSavedState: false)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     Native.windows[2001] = Native.window(2001, group: 2001, profile: Native.work, kind: 1, active: 20001)
     Native.windows[2002] = Native.window(2002, group: 2002, profile: Native.work, active: 20002)
@@ -1572,23 +1600,25 @@ private struct NoTokens: KagiTokenStore {
     let shell = NSView()
     precondition(host.registerWindow(window, nativeOwner: 2002, shell: shell))
     let profile = tabs.profile(forSpace: Native.work)!
-    let navigation = try ChromiumPageNavigation(profileID: profile.id, window: 2001, tab: 20001, api: Native.navigation)
+    let navigation = try ChromiumPageNavigation(profileID: profile.id, window: 2001, tab: 20001, bridge: Native.bridge)
     let originalTree = tabs.tree, originalDevice = tabs.device
     var reject = true, ended = 0
     var keyHandler: ChromiumMiniWindowAPI.CommandOMonitor?
     var monitorInstalls = 0, monitorRemovals = 0, eventScopeMatches = true
     var shares: [(URL, NSView)] = []
     var copies: [UUID] = []
-    var api = ChromiumMiniWindowAPI(attach: Native.host.attach, ownsHeader: Native.host.shellIsOwned,
-        detach: Native.host.detachIfOwned, admit: { _, _ in 1 }, close: { _, _ in
-            MainActor.assumeIsolated { Native.miniCloseRequests += 1; return 1 }
-        }, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
+    var miniBridge = Native.bridge
+    miniBridge.window_admit_discovered = { _, _ in 1 }
+    miniBridge.tab_close = { _, _ in
+        MainActor.assumeIsolated { Native.miniCloseRequests += 1; return 1 }
+    }
+    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
     let defaultScope = api.eventBelongsToHeader
     api.installCommandOMonitor = { _, handler in monitorInstalls += 1; keyHandler = handler; return NSObject() }
     api.removeCommandOMonitor = { _ in monitorRemovals += 1; keyHandler = nil }
     api.eventBelongsToHeader = { _, _ in eventScopeMatches }
     api.shareURL = { url, header in shares.append((url, header)); return NSObject() }
-    let choices = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let choices = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let controller = ChromiumMiniWindowController(tabs: tabs, profile: profile, navigation: navigation,
         origin: window, api: api, promote: { session, requested in
@@ -1662,7 +1692,7 @@ private struct NoTokens: KagiTokenStore {
     registry.register(destination); tabs.attach(window: destination, restoringSavedState: false)
     let externalShell = NSView()
     precondition(host.registerWindow(destination, nativeOwner: 3002, shell: externalShell))
-    let external = try ChromiumPageNavigation(profileID: profile.id, window: 3001, tab: 30001, api: Native.navigation)
+    let external = try ChromiumPageNavigation(profileID: profile.id, window: 3001, tab: 30001, bridge: Native.bridge)
     var held: ChromiumMiniWindowController?, releases = 0
     let externalController = ChromiumMiniWindowController(tabs: tabs, profile: profile, navigation: external,
         origin: window, api: api, promote: { _, _ in false }, onEnd: { _ in releases += 1; held = nil })!
@@ -1670,7 +1700,7 @@ private struct NoTokens: KagiTokenStore {
     let externalSession = externalController.page
     precondition(externalController.present(canPresent: { true }))
     var excludeDestination = true
-    let externalAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let externalAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { excludeDestination && $0 == 3002 }, makeShell: { _ in NSView() },
         detachedPage: { $0 == 30001 ? held?.page : nil }, didAdoptDetached: { tab in
             precondition(tab == 30001 && tabs.isNativePageOwner(externalSession, in: destination))
@@ -1680,11 +1710,11 @@ private struct NoTokens: KagiTokenStore {
     precondition(externalAdmission.registerInitial(ChromiumProductWindow(state: destination, shell: externalShell), nativeWindow: 3002))
     Native.move(30001, to: 3002)
     Native.windows[3001] = nil
-    externalAdmission.apply(Native.discovery.readSnapshot()!)
+    externalAdmission.apply(Native.bridge.readSnapshot()!)
     precondition(held === externalController && releases == 0 && externalSession.isDetached)
     precondition(externalSession.navigation === external && !external.isClosed)
     excludeDestination = false
-    externalAdmission.apply(Native.discovery.readSnapshot()!)
+    externalAdmission.apply(Native.bridge.readSnapshot()!)
     precondition(held == nil && releases == 1 && tabs.session(for: externalSession.itemID) === externalSession)
     precondition(tabs.isNativePageOwner(externalSession, in: destination) && externalSession.navigation === external)
     precondition(Native.tabs.first(where: { $0.tab == 30001 })?.opener_tab == 30002)
@@ -1701,7 +1731,7 @@ private struct NoTokens: KagiTokenStore {
     let kept = tabs.profile(forStore: keptID)!
     precondition(kept.id == keptID && kept.webKitDataStore == nil && tabs.profiles.first(where: { $0.id == keptID })?.spaceIDs.isEmpty == true)
     let keptTree = tabs.tree, keptDevice = tabs.device
-    let keptPage = try ChromiumPageNavigation(profileID: keptID, window: 4001, tab: 40001, api: Native.navigation)
+    let keptPage = try ChromiumPageNavigation(profileID: keptID, window: 4001, tab: 40001, bridge: Native.bridge)
     let keptController = ChromiumMiniWindowController(tabs: tabs, profile: kept, navigation: keptPage,
         origin: nil, api: api, promote: { _, _ in preconditionFailure("Kept profile invented a space") },
         canPromote: { _ in false }, onEnd: { _ in })!
@@ -1712,7 +1742,7 @@ private struct NoTokens: KagiTokenStore {
 
     // Explicit cross-profile copy reuses normal factory admission. It never
     // consumes a saved window, moves the source, or creates a second source observer.
-    let copyAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let copyAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let beforeCopyRecords = tabs.device.windows
     let beforeCopyLoads = Native.restoredURLs.count
@@ -1721,7 +1751,7 @@ private struct NoTokens: KagiTokenStore {
     Native.savedRequests = []
     Native.restoring = true
     let openCopy: ChromiumCreatedPageAdmission.SavedOpen = { profile, destination, callback, context in MainActor.assumeIsolated {
-        precondition(destination == 5)
+        precondition(destination == BARC_PROFILE_BLANK)
         Native.savedRequests.append((UUID(uuidString: String(cString: profile!))!, callback, context))
     } }
     precondition(copyAdmission.openDetachedCopy(keptController.page, in: Native.personal,
@@ -1730,7 +1760,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(tabs.device.windows == beforeCopyRecords && tabs.device.windows.contains(untouchedSaved))
     Native.windows[6001] = Native.window(6001, group: 6001, profile: Native.personal, flags: 4 | 8, active: 60010)
     Native.tabs.append(Native.tab(60010, window: 6001, flags: 2))
-    let copy = Native.savedRequests.removeFirst(); copy.1?(0, 6001, copy.2)
+    let copy = Native.savedRequests.removeFirst(); copy.1?(BARC_PROFILE_OK, 6001, copy.2)
     precondition(Native.restoredURLs.count == beforeCopyLoads + 1 && Native.restoredURLs.last == copyURL.absoluteString)
     precondition(keptController.page.isDetached && keptController.page.navigation === keptPage && !keptPage.isClosed)
     precondition(Native.observers.values.filter { $0.3 == 40001 }.count == sourceObserverCount)
@@ -1740,7 +1770,7 @@ private struct NoTokens: KagiTokenStore {
 
     // Refusal before a fresh target can be published closes only that factory
     // result; the exact source and every old saved record remain available.
-    let failedCopyAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let failedCopyAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     var copyAllowed = true, closedCopies: [Int32] = []
     let savedBeforeFailure = tabs.device.windows, loadsBeforeFailure = Native.restoredURLs.count
@@ -1749,12 +1779,12 @@ private struct NoTokens: KagiTokenStore {
     let failedCopy = Native.savedRequests.removeFirst()
     Native.windows[6002] = Native.window(6002, group: 6002, profile: Native.personal, flags: 4 | 8, active: 60020)
     Native.tabs.append(Native.tab(60020, window: 6002, flags: 2))
-    copyAllowed = false; failedCopy.1?(0, 6002, failedCopy.2)
+    copyAllowed = false; failedCopy.1?(BARC_PROFILE_OK, 6002, failedCopy.2)
     precondition(closedCopies == [6002] && tabs.device.windows == savedBeforeFailure && Native.restoredURLs.count == loadsBeforeFailure)
     precondition(keptController.page.navigation === keptPage && !keptPage.isClosed)
     // Refusal from Show occurs after the copy's own item was published.
     // Retire only that unadmitted native owner, retaining the source and old records.
-    let showRefusalAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let showRefusalAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let recordsBeforeShowRefusal = tabs.device.windows
     var refusedState: BrowserWindowState?, refusedItem: UUID?
@@ -1779,7 +1809,7 @@ private struct NoTokens: KagiTokenStore {
     let showRefusal = Native.savedRequests.removeFirst()
     Native.windows[6010] = Native.window(6010, group: 6010, profile: Native.personal, flags: 4 | 8, active: 60100)
     Native.tabs.append(Native.tab(60100, window: 6010, flags: 2))
-    showRefusal.1?(0, 6010, showRefusal.2)
+    showRefusal.1?(BARC_PROFILE_OK, 6010, showRefusal.2)
     precondition(refusedState != nil && refusedItem != nil && showCloseRequests == [6010])
     precondition(Native.windows[6010] == nil && registry.windows[refusedState!.id] == nil)
     precondition(recordsBeforeShowRefusal.allSatisfy { tabs.device.windows.contains($0) })
@@ -1789,7 +1819,7 @@ private struct NoTokens: KagiTokenStore {
 
     // A newer user selection during Show owns the still-live copied window.
     // Refusal of the older copy presentation must not close or overwrite it.
-    let supersededCopyAdmission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let supersededCopyAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let recordsBeforeSupersession = tabs.device.windows
     var newerState: BrowserWindowState?, newerItem: UUID?, originalCopyItem: UUID?
@@ -1811,7 +1841,7 @@ private struct NoTokens: KagiTokenStore {
     let supersededCopy = Native.savedRequests.removeFirst()
     Native.windows[6011] = Native.window(6011, group: 6011, profile: Native.personal, flags: 4 | 8, active: 60110)
     Native.tabs.append(Native.tab(60110, window: 6011, flags: 2))
-    supersededCopy.1?(0, 6011, supersededCopy.2)
+    supersededCopy.1?(BARC_PROFILE_OK, 6011, supersededCopy.2)
     precondition(newerState != nil && newerItem != nil && originalCopyItem != nil && showCloseRequests.isEmpty)
     precondition(registry.windows[newerState!.id] === newerState && newerState!.selectedItemID == newerItem)
     precondition(Native.windows[6011] != nil && Native.windows[6011]?.active_tab != 60110)
@@ -1843,7 +1873,7 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[5001] = Native.window(5001, group: 5001, profile: nil, kind: BARC_DISCOVERY_POPUP.rawValue, profileKind: BARC_DISCOVERY_GUEST.rawValue, active: 50001)
     Native.tabs.append(Native.tab(50001, window: 5001))
     let privateProfile = Profile.createEphemeral(id: privateID, engine: .chromium)
-    let privatePage = try ChromiumPageNavigation(profileID: privateID, window: 5001, tab: 50001, api: Native.navigation, privateSession: true)
+    let privatePage = try ChromiumPageNavigation(profileID: privateID, window: 5001, tab: 50001, bridge: Native.bridge, privateSession: true)
     var privatePromotions = 0, privateCopies = 0
     let privateController = ChromiumMiniWindowController(tabs: tabs, profile: privateProfile, navigation: privatePage,
         origin: nil, api: api, promote: { page, space in
@@ -1880,17 +1910,16 @@ private struct NoTokens: KagiTokenStore {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation,
-        discoveryAPI: Native.discovery, splitAPI: Native.split)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     Native.windows = [7001: Native.window(7001, group: 7001, profile: Native.work, active: 70010),
                       7002: Native.window(7002, group: 7001, profile: Native.personal, active: 70020)]
     Native.windows[7002]?.selected_client = 7001
     Native.tabs = [Native.tab(70010, window: 7001), Native.tab(70020, window: 7002)]
     Native.splitLayouts = [:]; Native.allowSplit = true; Native.onAttach = nil
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let state = registry.allWindows.first!
     let work = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70010 }!
     let personal = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70020 }!
@@ -1918,7 +1947,7 @@ private struct NoTokens: KagiTokenStore {
     // A different pane can disappear at that callout; restore the old admitted
     // page/header/layout without creating or closing any native resource.
     Native.tabs.append(Native.tab(70029, window: 7002))
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let unavailable = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70029 }!
     let earlyRequest = SplitRecord([work.itemID, personal.itemID, unavailable.itemID])!
     let recordsBeforeEarlyRefusal = tabs.device.windows
@@ -1945,10 +1974,10 @@ private struct NoTokens: KagiTokenStore {
     // the model's live remainder instead of interpreting a restored owner-local
     // Chrome collection as the new product layout.
     Native.tabs.append(Native.tab(70012, window: 7001))
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     for added in [[Int32(70030)], [Int32(70031), 70040]] {
         for handle in added { Native.tabs.append(Native.tab(handle, window: 7002)) }
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         let extra = added.map { handle in tabs.sessions.first {
             ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == handle
         }! }
@@ -1969,7 +1998,7 @@ private struct NoTokens: KagiTokenStore {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         record = expanded.removing(removed.itemID)!
         precondition(tabs.item(removed.itemID) == nil && state.split == record)
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         precondition(state.split == record && Native.splitLayouts[7001]?.count == UInt32(record.itemIDs.count))
         precondition(work.navigation === workPage && personal.navigation === personalPage)
         precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
@@ -2009,7 +2038,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(results.last == false && Native.windows[7002]?.selected_client == 7002 &&
         Native.windows[7002]?.active_tab == 70021)
     Native.onAttach = nil
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     let newer = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70021 }!
     precondition(state.selectedItemID == newer.itemID && state.spaceID == Native.personal)
     precondition(host.isNativeSelection(newer.navigation!, in: state))
@@ -2035,7 +2064,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(!tabs.presentNativeSplit(remainder.record, activeItemID: work.itemID, in: state,
         liveAdmission: remainder.validate) { endedResults.append($0) })
     precondition(endedResults == [false] && state.split == liveRecord && tabs.item(personal.itemID) != nil)
-    admission.apply(Native.discovery.readSnapshot()!)
+    admission.apply(Native.bridge.readSnapshot()!)
     precondition(state.split == liveRecord && personal.navigation == nil && work.navigation === workPage)
     precondition(!host.needsInitialSplitRestore(in: state))
     precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
@@ -2068,7 +2097,7 @@ private struct NoTokens: KagiTokenStore {
         siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
     let window = BrowserWindowState(); window.spaceID = Native.work
     registry.register(window); registry.setActive(window); tabs.attach(window: window, restoringSavedState: false)
-    let host = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation, discoveryAPI: Native.discovery)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let shell = NSView(), profile = tabs.profile(forSpace: Native.work)!
     Native.windows[8100] = Native.window(8100, group: 8100, profile: profile.id, flags: 1 | 4, active: 81001)
@@ -2080,7 +2109,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(tabs.reflectNativeSelection(sourceID, in: window))
     let source = tabs.session(for: sourceID)!, sourceNavigation = source.navigation as! ChromiumPageNavigation
     var detached: PageSession?, adopted = 0, covered = false
-    let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: host, tabs: tabs, registry: registry,
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs, registry: registry,
         isUtility: { _ in false }, makeShell: { _ in NSView() },
         detachedPage: { tab in (detached?.navigation as? ChromiumPageNavigation)?.nativeTabID == tab ? detached : nil },
         didAdoptDetached: { tab in
@@ -2218,11 +2247,10 @@ private struct NoTokens: KagiTokenStore {
             blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
             sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
             profileEngine: .chromium, directory: root)
-        let concrete = ChromiumNativePageHost(api: Native.host, navigationAPI: Native.navigation,
-                                              discoveryAPI: Native.discovery, splitAPI: Native.split)
+        let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete); delivery.delayedItem = selected
         tabs.nativePageHost = delivery
-        let admission = ChromiumCreatedPageAdmission(api: Native.discovery, host: concrete, tabs: tabs,
+        let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: concrete, tabs: tabs,
             registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         let state = admission.prepareInitialWindow()!
         let native: Int32 = mixed ? 9601 : 9501
@@ -2277,7 +2305,7 @@ private struct NoTokens: KagiTokenStore {
             precondition(concrete.isSplit(layout, pages: pages, activeItemID: selected, in: state))
         }
         for owner in Array(Native.windows.keys) where Native.windows[owner]?.physical_group == UInt64(native) { Native.end(owner) }
-        admission.apply(Native.discovery.readSnapshot()!)
+        admission.apply(Native.bridge.readSnapshot()!)
         Native.onSelectWindow = nil; Native.restoring = false
     }
 }

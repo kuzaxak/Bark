@@ -1,0 +1,12 @@
+diff --git a/chrome/browser/extensions/chrome_extension_registrar_delegate.h b/chrome/browser/extensions/chrome_extension_registrar_delegate.h
+index 3c4784f0c2..e428954564 100644
+--- a/chrome/browser/extensions/chrome_extension_registrar_delegate.h
++++ b/chrome/browser/extensions/chrome_extension_registrar_delegate.h
+@@ -58,6 +58,7 @@ class ChromeExtensionRegistrarDelegate : public ExtensionRegistrar::Delegate {
+       const base::FilePath& path) override;
+   void ShowExtensionDisabledError(const Extension* extension,
+                                   bool is_remote_install) override;
++  bool CanAddExtension(const Extension* extension) override;
+   bool CanEnableExtension(const Extension* extension) override;
+   bool CanDisableExtension(const Extension* extension) override;
+   void GrantActivePermissions(const Extension* extension) override;

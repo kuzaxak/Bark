@@ -1,0 +1,85 @@
+diff --git a/chrome/browser/ui/navigator/browser_navigator.cc b/chrome/browser/ui/navigator/browser_navigator.cc
+index b95a279fab..f412bd3ef2 100644
+--- a/chrome/browser/ui/navigator/browser_navigator.cc
++++ b/chrome/browser/ui/navigator/browser_navigator.cc
+@@ -11,6 +11,7 @@
+ #include <string_view>
+ #include <utility>
+ 
++#include "base/command_line.h"
+ #include "base/feature_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/notimplemented.h"
+@@ -19,6 +20,10 @@
+ #include "base/task/single_thread_task_runner.h"
+ #include "base/trace_event/trace_event.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
++
+ #include "chrome/browser/apps/app_service/web_contents_app_id_utils.h"
+ #include "chrome/browser/apps/link_capturing/link_capturing_tab_data.h"
+ #include "chrome/browser/browser_about_handler.h"
+@@ -533,6 +538,17 @@ std::unique_ptr<content::WebContents> CreateTargetContents(
+ 
+ }  // namespace
+ 
++void SanitizeNavigationSourceForProfile(NavigateParams* params, Profile* target) {
++  if (GetSourceProfile(params) != target) {
++    // A tab is being opened from a link from a different profile, we must reset
++    // source information that may cause state to be shared.
++    params->opener = nullptr;
++    params->source_contents = nullptr;
++    params->source_site_instance = nullptr;
++    params->referrer = content::Referrer();
++  }
++}
++
+ namespace internal {
+ 
+ // This class makes sure the Browser object held in |params| is made visible
+@@ -597,6 +613,17 @@ base::WeakPtr<content::NavigationHandle> NavigateImpl(
+   TRACE_EVENT1("navigation", "chrome::Navigate", "disposition",
+                params->disposition);
+   CHECK(params);
++#if BUILDFLAG(IS_MAC)
++  // Supported Barc entrypoints resolve private sessions asynchronously first.
++  // Refuse residual OTR requests before URL adjustment can fall back to a
++  // regular profile or create Chromium's shared primary OTR.
++  if (params->disposition == WindowOpenDisposition::OFF_THE_RECORD &&
++      barc::IsNativeApplicationRegistered() &&
++      base::CommandLine::ForCurrentProcess()->HasSwitch(
++          "barc-shared-native-window")) {
++    return nullptr;
++  }
++#endif
+   BrowserWindowInterface* source_browser = params->browser;
+   if (source_browser) {
+     params->initiating_profile = source_browser->GetProfile();
+@@ -845,14 +872,7 @@ base::WeakPtr<content::NavigationHandle> NavigateImpl(
+ 
+   // Navigate() must not return early after this point.
+ 
+-  if (GetSourceProfile(params) != params->browser->GetProfile()) {
+-    // A tab is being opened from a link from a different profile, we must reset
+-    // source information that may cause state to be shared.
+-    params->opener = nullptr;
+-    params->source_contents = nullptr;
+-    params->source_site_instance = nullptr;
+-    params->referrer = content::Referrer();
+-  }
++  SanitizeNavigationSourceForProfile(params, params->browser->GetProfile());
+ 
+   // Make sure the Browser is shown if params call for it.
+   ScopedBrowserShower shower(*params, additional_params,
+@@ -1006,6 +1026,9 @@ base::WeakPtr<content::NavigationHandle> NavigateImpl(
+     // "already split" case is handled in
+     // BrowserWebContentsDelegate::OpenURLFromTab().
+     if (params->disposition == WindowOpenDisposition::NEW_SPLIT_VIEW &&
++#if BUILDFLAG(IS_MAC)
++        !barc::IsNativeApplicationMode() &&
++#endif
+         contents_to_navigate_or_insert) {
+       TabStripModel* const tab_strip_model =
+           params->browser->GetTabStripModel();

@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/tabs/tab_model.h b/chrome/browser/ui/tabs/tab_model.h
+index e7b5824cb2..3e9b63ffb6 100644
+--- a/chrome/browser/ui/tabs/tab_model.h
++++ b/chrome/browser/ui/tabs/tab_model.h
+@@ -52,6 +52,8 @@ class TabModel final : public TabInterface,
+ 
+   TabStripModel* owning_model() const { return owning_model_; }
+   tabs::TabInterface* opener() const;
++  bool barc_app_factory_origin() const { return barc_app_factory_origin_; }
++  void set_barc_app_factory_origin() { barc_app_factory_origin_ = true; }
+   bool reset_opener_on_active_tab_change() const {
+     return reset_opener_on_active_tab_change_;
+   }
+@@ -235,6 +237,7 @@ class TabModel final : public TabInterface,
+   raw_ptr<TabStripModel> owning_model_ = nullptr;
+   raw_ptr<TabStripModel> soon_to_be_owning_model_ = nullptr;
+   bool will_be_detaching_ = false;
++  bool barc_app_factory_origin_ = false;
+   tabs::TabHandle opener_handle_;
+   bool reset_opener_on_active_tab_change_ = false;
+   bool pinned_ = false;

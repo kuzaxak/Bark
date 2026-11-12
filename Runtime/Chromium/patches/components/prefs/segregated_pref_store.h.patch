@@ -1,0 +1,13 @@
+diff --git a/components/prefs/segregated_pref_store.h b/components/prefs/segregated_pref_store.h
+index 9a3f9a8893..99e8f3dcb5 100644
+--- a/components/prefs/segregated_pref_store.h
++++ b/components/prefs/segregated_pref_store.h
+@@ -132,6 +132,8 @@ class COMPONENTS_PREFS_EXPORT SegregatedPrefStore : public PersistentPrefStore {
+   std::optional<std::unique_ptr<PersistentPrefStore::ReadErrorDelegate>>
+       read_error_delegate_;
+   base::ObserverList<PrefStore::Observer, true> observers_;
++  // Failure is terminal; set before callbacks to suppress peer completion.
++  bool initialization_failed_ = false;
+   UnderlyingPrefStoreObserver default_observer_;
+   UnderlyingPrefStoreObserver selected_observer_;
+ };

@@ -1,0 +1,15 @@
+diff --git a/chrome/browser/resource_coordinator/tab_lifecycle_unit.cc b/chrome/browser/resource_coordinator/tab_lifecycle_unit.cc
+index 6f872ee5a8..c3f04d6f24 100644
+--- a/chrome/browser/resource_coordinator/tab_lifecycle_unit.cc
++++ b/chrome/browser/resource_coordinator/tab_lifecycle_unit.cc
+@@ -359,7 +359,9 @@ void TabLifecycleUnitSource::TabLifecycleUnit::
+ bool TabLifecycleUnitSource::TabLifecycleUnit::Discard(
+     LifecycleUnitDiscardReason reason,
+     uint64_t tab_memory_footprint_estimate) {
+-  if (IsDiscardBlockedByFeature(reason)) {
++  // Final admission also covers direct/manual callers that skip PM eligibility.
++  if (performance_manager::features::IsNativeResourceProtectionHeld() ||
++      IsDiscardBlockedByFeature(reason)) {
+     return false;
+   }
+ 

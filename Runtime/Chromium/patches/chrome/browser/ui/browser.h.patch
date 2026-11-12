@@ -1,0 +1,12 @@
+diff --git a/chrome/browser/ui/browser.h b/chrome/browser/ui/browser.h
+index 1c1beed970..a791ce51d4 100644
+--- a/chrome/browser/ui/browser.h
++++ b/chrome/browser/ui/browser.h
+@@ -165,6 +165,7 @@ class Browser : public TabStripModelObserver,
+   bool CreatedBySessionRestore() const override;
+   ui::BaseWindow* GetWindow() override;
+   const ui::BaseWindow* GetWindow() const override;
++  bool IsSelectedForNativeWindow() const override;
+   DesktopBrowserWindowCapabilities* capabilities() override;
+   const DesktopBrowserWindowCapabilities* capabilities() const override;
+ 

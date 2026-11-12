@@ -1,0 +1,70 @@
+diff --git a/extensions/browser/api/web_request/web_request_info_unittest.cc b/extensions/browser/api/web_request/web_request_info_unittest.cc
+index 14f28efe18..9e30393452 100644
+--- a/extensions/browser/api/web_request/web_request_info_unittest.cc
++++ b/extensions/browser/api/web_request/web_request_info_unittest.cc
+@@ -11,6 +11,8 @@
+ #include "content/public/test/mock_render_process_host.h"
+ #include "content/public/test/test_browser_context.h"
+ #include "extensions/browser/api/web_request/web_request_api_constants.h"
++#include "extensions/browser/api/web_request/web_request_api_helpers.h"
++#include "extensions/browser/api/web_request/web_request_event_details.h"
+ #include "extensions/browser/extension_navigation_ui_data.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "ipc/constants.mojom.h"
+@@ -53,6 +55,56 @@ TEST(WebRequestInfoTest, CreateRequestBodyDataFromFile) {
+   EXPECT_EQ(*value, expected_value);
+ }
+ 
++// A native-only proxy must not parse/copy an upload until an actual matching
++// extension listener requests requestBody, including listeners added later.
++TEST(WebRequestInfoTest, DeferredBodyWaitsForRequestBodyListener) {
++  content::BrowserTaskEnvironment task_environment;
++  network::ResourceRequest request;
++  request.url = GURL("https://example.test/upload");
++  request.method = "POST";
++  request.request_body = base::MakeRefCounted<network::ResourceRequestBody>();
++  request.request_body->AppendFileRange(base::FilePath::FromASCII(kFilePath), 0,
++                                       std::numeric_limits<uint64_t>::max(),
++                                       base::Time());
++  WebRequestInfo info(WebRequestInfoInitParams(
++      0, {}, nullptr, request, false, false, false, std::nullopt,
++      /*defer_request_body=*/true));
++  EXPECT_FALSE(info.request_body_data);
++  WebRequestEventDetails native_only(info, 0);
++  native_only.SetRequestBody(&info);
++  EXPECT_FALSE(info.request_body_data);
++
++  // A newly interested listener can materialize the retained upload exactly
++  // once; consuming that event must not cause a later read to parse it again.
++  WebRequestEventDetails interested(
++      info, extension_web_request_api_helpers::ExtraInfoSpec::REQUEST_BODY);
++  interested.SetRequestBody(&info);
++  auto event = interested.GetFilteredDict(
++      extension_web_request_api_helpers::ExtraInfoSpec::REQUEST_BODY, nullptr,
++      {}, false);
++  const auto* body = event.FindDict(
++      extension_web_request_api_constants::kRequestBodyKey);
++  ASSERT_TRUE(body);
++  EXPECT_TRUE(body->Find(
++      extension_web_request_api_constants::kRequestBodyRawKey));
++  EXPECT_FALSE(info.request_body_data);
++  info.EnsureRequestBodyData();
++  EXPECT_FALSE(info.request_body_data);
++}
++
++TEST(WebRequestInfoTest, DeferredEmptyBodyStaysAbsent) {
++  content::BrowserTaskEnvironment task_environment;
++  network::ResourceRequest request;
++  request.method = "POST";
++  WebRequestInfo info(WebRequestInfoInitParams(
++      0, {}, nullptr, request, false, false, false, std::nullopt,
++      /*defer_request_body=*/true));
++  info.EnsureRequestBodyData();
++  EXPECT_FALSE(info.request_body_data);
++  info.EnsureRequestBodyData();
++  EXPECT_FALSE(info.request_body_data);
++}
++
+ #if BUILDFLAG(ENABLE_GUEST_VIEW)
+ // Tests that requests originating from a guest-only process without a frame
+ // routing ID (e.g. Service Workers or Shared Workers) are correctly classified

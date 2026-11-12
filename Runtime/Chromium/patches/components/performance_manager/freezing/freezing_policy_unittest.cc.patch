@@ -1,0 +1,65 @@
+diff --git a/components/performance_manager/freezing/freezing_policy_unittest.cc b/components/performance_manager/freezing/freezing_policy_unittest.cc
+index 63f142606e..d1c2956634 100644
+--- a/components/performance_manager/freezing/freezing_policy_unittest.cc
++++ b/components/performance_manager/freezing/freezing_policy_unittest.cc
+@@ -17,6 +17,7 @@
+ #include "base/numerics/safe_conversions.h"
+ #include "base/rand_util.h"
+ #include "base/test/power_monitor_test.h"
++#include "base/test/scoped_command_line.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "base/time/time.h"
+ #include "base/unguessable_token.h"
+@@ -294,6 +295,52 @@ class FreezingPolicyTest : public FreezingPolicyTest_BaseWithNoPage {
+ 
+ // A page with no `CannotFreezeReason` that is alone in its browsing instance is
+ // frozen when it has a freezing vote.
++#if BUILDFLAG(IS_MAC)
++class NativeUnknownWorkFreezingPolicyTest : public FreezingPolicyTest {
++ public:
++  NativeUnknownWorkFreezingPolicyTest() {
++    command_.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++    command_.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  }
++
++ private:
++  base::test::ScopedCommandLine command_;
++};
++
++TEST_F(NativeUnknownWorkFreezingPolicyTest, DoesNotFreezeOnVote) {
++  auto* live = PageLiveStateDecorator::Data::GetOrCreateForPageNode(page_node());
++  live->SetIsActiveTabForTesting(true);
++  EXPECT_TRUE(live->IsActiveTab());
++  EXPECT_FALSE(page_node()->IsVisible());
++  EXPECT_CALL(*freezer(), MaybeFreezePageNode(page_node())).Times(0);
++  policy()->AddFreezeVote(page_node());
++  VerifyFreezerExpectations();
++  for (auto type : {FreezingType::kVoting, FreezingType::kBatterySaver,
++                    FreezingType::kInfiniteTabs}) {
++    ExpectCannotFreezeReasons(
++        page_node(), type,
++        ElementsAre(CannotFreezeReason::kUnknownNativeActivity));
++  }
++}
++TEST_F(NativeUnknownWorkFreezingPolicyTest, VisibilityAndAudioRemainTruthful) {
++  page_node()->SetIsVisible(true);
++  page_node()->SetIsAudible(true);
++  EXPECT_TRUE(page_node()->IsVisible());
++  EXPECT_TRUE(page_node()->IsAudible());
++  ExpectCannotFreezeReasons(page_node(), FreezingType::kVoting,
++      testing::UnorderedElementsAre(CannotFreezeReason::kUnknownNativeActivity,
++                           CannotFreezeReason::kVisible, CannotFreezeReason::kAudible));
++  page_node()->SetIsVisible(false);
++  page_node()->SetIsAudible(false);
++  EXPECT_FALSE(page_node()->IsVisible());
++  EXPECT_FALSE(page_node()->IsAudible());
++  // Cooling-down reasons remain native policy facts; the hold stays separate.
++  EXPECT_CALL(*freezer(), MaybeFreezePageNode(page_node())).Times(0);
++  policy()->AddFreezeVote(page_node());
++  VerifyFreezerExpectations();
++}
++#endif
++
+ TEST_F(FreezingPolicyTest, Basic) {
+   EXPECT_CALL(*freezer(), MaybeFreezePageNode(page_node()));
+   policy()->AddFreezeVote(page_node());

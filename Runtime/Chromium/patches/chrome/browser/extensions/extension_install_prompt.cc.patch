@@ -1,0 +1,63 @@
+diff --git a/chrome/browser/extensions/extension_install_prompt.cc b/chrome/browser/extensions/extension_install_prompt.cc
+index b07aaf556e..442cf2429d 100644
+--- a/chrome/browser/extensions/extension_install_prompt.cc
++++ b/chrome/browser/extensions/extension_install_prompt.cc
+@@ -91,12 +91,14 @@ ExtensionInstallPrompt::ExtensionInstallPrompt(
+ ExtensionInstallPrompt::ExtensionInstallPrompt(
+     Profile* profile,
+     gfx::NativeWindow native_window,
+-    std::unique_ptr<InstallPromptData> prompt)
++    std::unique_ptr<InstallPromptData> prompt,
++    std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner)
+     : profile_(profile),
+       extension_(nullptr),
+       install_ui_(ExtensionInstallUI::Create(profile_)),
+-      show_params_(
+-          new ExtensionInstallPromptShowParams(profile, native_window)),
++      show_params_(new ExtensionInstallPromptShowParams(profile,
++                                                        native_window,
++                                                        browser_owner)),
+       prompt_(std::move(prompt)),
+       did_call_show_dialog_(false) {}
+ 
+@@ -138,6 +140,14 @@ void ExtensionInstallPrompt::ShowDialog(
+     return;
+   }
+ 
++  // WebContents-owned tab prompts must not touch ImageLoader/profile state
++  // after their captured logical owner has become invalid or inactive.
++  if (!show_params_->CanShowForBrowserOwner()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(std::move(done_callback_),
++                                  DoneCallbackPayload(Result::ABORTED)));
++    return;
++  }
+   LoadImageIfNeeded();
+ }
+ 
+@@ -259,6 +269,13 @@ void ExtensionInstallPrompt::LoadImageIfNeeded() {
+ }
+ 
+ void ExtensionInstallPrompt::ShowConfirmation() {
++  if (show_params_->WasParentDestroyed() ||
++      !show_params_->CanShowForBrowserOwner()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE, base::BindOnce(std::move(done_callback_),
++                                  DoneCallbackPayload(Result::ABORTED)));
++    return;
++  }
+   std::unique_ptr<const PermissionSet> permissions_to_display;
+ 
+   if (custom_permissions_.get()) {
+@@ -276,11 +293,6 @@ void ExtensionInstallPrompt::ShowConfirmation() {
+ 
+   prompt_->set_icon(gfx::Image::CreateFrom1xBitmap(icon_));
+ 
+-  if (show_params_->WasParentDestroyed()) {
+-    std::move(done_callback_).Run(DoneCallbackPayload(Result::ABORTED));
+-    return;
+-  }
+-
+   g_last_prompt_type_for_tests = prompt_->type();
+   did_call_show_dialog_ = true;
+ 

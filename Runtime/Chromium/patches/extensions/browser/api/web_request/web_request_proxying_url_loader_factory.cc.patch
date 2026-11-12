@@ -1,0 +1,239 @@
+diff --git a/extensions/browser/api/web_request/web_request_proxying_url_loader_factory.cc b/extensions/browser/api/web_request/web_request_proxying_url_loader_factory.cc
+index 6cc25cdcf9..bdae0e33cb 100644
+--- a/extensions/browser/api/web_request/web_request_proxying_url_loader_factory.cc
++++ b/extensions/browser/api/web_request/web_request_proxying_url_loader_factory.cc
+@@ -29,11 +29,12 @@
+ #include "content/public/browser/browser_context.h"
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
++#include "content/public/browser/web_contents.h"
+ #include "content/public/browser/content_browser_client.h"
+ #include "content/public/browser/global_request_id.h"
+-#include "content/public/browser/navigation_handle.h"
+ #include "content/public/browser/network_service_instance.h"
+ #include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/navigation_handle.h"
+ #include "content/public/browser/storage_partition.h"
+ #include "content/public/common/child_process_id_util.h"
+ #include "content/public/common/url_utils.h"
+@@ -178,6 +179,7 @@ WebRequestProxyingURLLoaderFactory::InProgressRequest::InProgressRequest(
+           WebRequestEventRouter::Get(factory_->browser_context_)
+               ->HasAnySecurityInfoListener(factory_->browser_context_)),
+       navigation_response_task_runner_(navigation_response_task_runner) {
++  CaptureNativeDocument();
+   TRACE_EVENT(
+       "extensions",
+       "WebRequestProxyingURLLoaderFactory::InProgressRequest::"
+@@ -259,8 +261,52 @@ WebRequestProxyingURLLoaderFactory::InProgressRequest::~InProgressRequest() {
+   }
+ }
+ 
++void WebRequestProxyingURLLoaderFactory::InProgressRequest::CaptureNativeDocument() {
++  if (factory_->navigation_ui_data_) {
++    native_document_ = factory_->navigation_source_document_;
++    native_site_ = factory_->navigation_source_site_;
++    return;
++  }
++  const auto type = factory_->loader_factory_type_;
++  const bool attributable =
++      type == content::ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource ||
++      type == content::ContentBrowserClient::URLLoaderFactoryType::kWorkerSubResource ||
++      (type == content::ContentBrowserClient::URLLoaderFactoryType::kWorkerMainResource &&
++       request_.destination == network::mojom::RequestDestination::kWorker);
++  if (!attributable || !factory_->initiating_document_navigation_id_) return;
++  auto* frame = content::RenderFrameHost::FromID(
++      factory_->render_process_id_, factory_->frame_routing_id_);
++  if (!frame || frame->GetBrowserContext() != factory_->browser_context_ ||
++      frame->GetNavigationId() != *factory_->initiating_document_navigation_id_)
++    return;
++  native_document_ = frame->GetWeakDocumentPtr();
++  if (auto* contents = content::WebContents::FromRenderFrameHost(frame))
++    native_site_ = contents->GetLastCommittedURL();
++}
++
+ void WebRequestProxyingURLLoaderFactory::InProgressRequest::Restart() {
+   UpdateRequestInfo();
++  if (!body_observation_attempted_) {
++    body_observation_attempted_ = true;
++    if (request_.request_body && !for_cors_preflight_ &&
++        factory_->loader_factory_type_ ==
++            content::ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource &&
++        factory_->initiating_document_navigation_id_) {
++      auto* frame = content::RenderFrameHost::FromID(factory_->render_process_id_, factory_->frame_routing_id_);
++      if (frame && frame->GetNavigationId() == *factory_->initiating_document_navigation_id_ &&
++          frame->GetBrowserContext() == factory_->browser_context_) {
++        // Resolve only after the exact creating navigation has committed. A
++        // reused RFH's subsequent document is not the request's owner.
++        auto document = frame->GetWeakDocumentPtr();
++        auto weak_this = weak_factory_.GetWeakPtr();
++        auto observation = ExtensionsBrowserClient::Get()->ObserveNativeRequestBody(
++            factory_->browser_context_, document, request_.keepalive);
++        if (!weak_this) return;
++        document_body_observation_ = std::move(observation);
++      }
++    }
++  }
++
+   RestartInternal();
+ }
+ 
+@@ -292,7 +338,9 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::
+                                     : nullptr,
+       request_for_info, factory_->IsForDownload(),
+       !(options_ & network::mojom::kURLLoadOptionSynchronous),
+-      factory_->IsForServiceWorkerScript(), factory_->navigation_id_));
++      factory_->IsForServiceWorkerScript(), factory_->navigation_id_,
++      ExtensionsBrowserClient::Get()->HasNativeRequestPolicy(
++          factory_->browser_context_)));
+ 
+   // The value of `has_any_extra_headers_listeners_` is constant for the
+   // lifetime of InProgressRequest and determines whether the request is made
+@@ -337,6 +385,9 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::RestartInternal() {
+         base::BindRepeating(&InProgressRequest::ContinueToBeforeSendHeaders,
+                             weak_factory_.GetWeakPtr(), state_on_error);
+   }
++  continuation = base::BindRepeating(
++      &InProgressRequest::ContinueWithNativePolicy, weak_factory_.GetWeakPtr(),
++      std::move(continuation));
+   redirect_url_ = GURL();
+   bool should_collapse_initiator = false;
+   int result = WebRequestEventRouter::Get(factory_->browser_context_)
+@@ -375,6 +426,47 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::RestartInternal() {
+   continuation.Run(net::OK);
+ }
+ 
++void WebRequestProxyingURLLoaderFactory::InProgressRequest::
++    ContinueWithNativePolicy(base::RepeatingCallback<void(int)> continuation,
++                             int error_code) {
++  // Extension errors remain authoritative. A requested extension redirect is
++  // handled by the existing path; its destination is checked on Restart().
++  if (error_code != net::OK || !redirect_url_.is_empty() || for_cors_preflight_ ||
++      !ExtensionsBrowserClient::Get()->HasNativeRequestPolicy(
++          factory_->browser_context_)) {
++    continuation.Run(error_code);
++    return;
++  }
++  if (proxied_client_receiver_.is_bound()) {
++    proxied_client_receiver_.Pause();
++  }
++  if (header_client_receiver_.is_bound()) {
++    header_client_receiver_.Pause();
++    is_header_client_receiver_paused_ = true;
++  }
++  ExtensionsBrowserClient::Get()->CheckNativeRequestPolicy(
++      factory_->browser_context_,
++      native_document_, native_site_, *info_,
++      base::BindOnce(
++          [](base::WeakPtr<InProgressRequest> request, int redirect_count,
++             base::RepeatingCallback<void(int)> continuation, int result) {
++            if (!request || request->num_redirects_ != redirect_count) {
++              return;
++            }
++            if (result == net::ERR_BLOCKED_BY_CLIENT &&
++                request->info_->is_navigation_request &&
++                request->info_->web_request_type == WebRequestResourceType::MAIN_FRAME) {
++              ExtensionsBrowserClient::Get()->NativeNavigationBlocked(
++                  request->factory_->browser_context_, request->native_document_,
++                  *request->info_);
++              if (!request || request->num_redirects_ != redirect_count) return;
++            }
++            continuation.Run(result);
++          },
++          weak_factory_.GetWeakPtr(), num_redirects_, std::move(continuation)));
++  // A synchronous completion can destroy this request.
++}
++
+ void WebRequestProxyingURLLoaderFactory::InProgressRequest::FollowRedirect(
+     network::HttpRequestHeadersUpdateParams headers_update_params,
+     const std::optional<GURL>& new_url) {
+@@ -568,6 +660,12 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnComplete(
+       "error_code", status.error_code, "extended_error_code",
+       status.extended_error_code);
+ 
++  if (document_body_observation_) {
++    auto weak_this = weak_factory_.GetWeakPtr();
++    document_body_observation_.RunAndReset();
++    if (!weak_this) return;
++  }
++
+   if (status.error_code != net::OK) {
+     OnNetworkError(status);
+     return;
+@@ -1421,6 +1519,12 @@ void WebRequestProxyingURLLoaderFactory::InProgressRequest::OnRequestError(
+                                     kWebRequestProxyingURLLoaderFactoryScope),
+       "error_code", status.error_code, "state", state);
+ 
++  if (document_body_observation_) {
++    auto weak_this = weak_factory_.GetWeakPtr();
++    document_body_observation_.RunAndReset();
++    if (!weak_this) return;
++  }
++
+   if (target_client_) {
+     target_client_->OnComplete(status);
+   }
+@@ -1557,7 +1661,8 @@ WebRequestProxyingURLLoaderFactory::WebRequestProxyingURLLoaderFactory(
+         header_client_receiver,
+     WebRequestAPI::ProxySet* proxies,
+     content::ContentBrowserClient::URLLoaderFactoryType loader_factory_type,
+-    scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner)
++    scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
++    std::optional<int64_t> document_navigation_id)
+     : browser_context_(browser_context),
+       render_process_id_(render_process_id),
+       frame_routing_id_(frame_routing_id),
+@@ -1571,6 +1676,35 @@ WebRequestProxyingURLLoaderFactory::WebRequestProxyingURLLoaderFactory(
+       navigation_response_task_runner_(
+           std::move(navigation_response_task_runner)) {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  if (navigation_ui_data_) {
++    const auto node = navigation_ui_data_->frame_tree_node_id();
++    if (auto* contents = content::WebContents::FromFrameTreeNodeId(node)) {
++      // This lookup is synchronous and immediately weak-bound. Never resolve
++      // the node again after extensions can defer or replace its document.
++      auto* frame = contents->UnsafeFindFrameByFrameTreeNodeId(node);
++      if (frame && frame->GetBrowserContext() == browser_context_) {
++        navigation_source_document_ = frame->GetWeakDocumentPtr();
++        navigation_source_site_ = contents->GetLastCommittedURL();
++      }
++    }
++  }
++  if (document_navigation_id && loader_factory_type_ ==
++          content::ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource) {
++    initiating_document_navigation_id_ = document_navigation_id;
++  } else if (loader_factory_type_ == content::ContentBrowserClient::URLLoaderFactoryType::kDocumentSubResource ||
++      loader_factory_type_ == content::ContentBrowserClient::URLLoaderFactoryType::kWorkerSubResource ||
++      loader_factory_type_ == content::ContentBrowserClient::URLLoaderFactoryType::kWorkerMainResource) {
++    if (auto* frame = content::RenderFrameHost::FromID(render_process_id_, frame_routing_id_);
++        frame && frame->GetBrowserContext() == browser_context_) {
++      auto pending = frame->GetPendingCommitCrossDocumentNavigations();
++      if (pending.size() == 1 && frame->GetLifecycleState() ==
++              content::RenderFrameHost::LifecycleState::kPendingCommit) {
++        initiating_document_navigation_id_ = pending.front()->GetNavigationId();
++      } else if (pending.empty()) {
++        initiating_document_navigation_id_ = frame->GetNavigationId();
++      }
++    }
++  }
+   // base::Unretained is safe here because the callback will be
+   // canceled when |shutdown_notifier_subscription_| is destroyed, and
+   // |proxies_| owns this.
+@@ -1613,7 +1747,8 @@ void WebRequestProxyingURLLoaderFactory::StartProxying(
+         header_client_receiver,
+     WebRequestAPI::ProxySet* proxies,
+     content::ContentBrowserClient::URLLoaderFactoryType loader_factory_type,
+-    scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner) {
++    scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
++    std::optional<int64_t> document_navigation_id) {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+ 
+   TRACE_EVENT("extensions",
+@@ -1624,7 +1759,7 @@ void WebRequestProxyingURLLoaderFactory::StartProxying(
+       request_id_generator, std::move(navigation_ui_data),
+       std::move(navigation_id), ukm_source_id, factory_builder,
+       std::move(header_client_receiver), proxies, loader_factory_type,
+-      std::move(navigation_response_task_runner));
++      std::move(navigation_response_task_runner), document_navigation_id);
+ 
+   proxies->AddProxy(std::move(proxy));
+ }

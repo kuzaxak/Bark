@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import BarcChromium
 import Foundation
 import Network
 import OSLog
@@ -676,7 +677,8 @@ final class DevMCPServer {
             guard let navigation, await MainActor.run(body:canPublish) else { throw CancellationError() }
             let file = try await navigation.downloadFile(url,directory:directory)
             let status: String
-            switch file.result { case 0:status="ok";case 3:status="tooLarge";case 4:status="http";default:status="error" }
+            switch BarcFileResult(rawValue:UInt32(bitPattern:file.result)) {
+            case BARC_FILE_OK:status="ok";case BARC_FILE_TOO_LARGE:status="tooLarge";case BARC_FILE_HTTP:status="http";default:status="error" }
             return .init(temporary:file.temporary,status:status,httpStatus:Int(file.status),contentType:file.contentType,bytes:file.bytes)
         }
         // Existing jobs provide ordering for this exact adapter; there is no

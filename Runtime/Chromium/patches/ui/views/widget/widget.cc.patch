@@ -1,0 +1,159 @@
+diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
+index 35d5b656d9..ccc5f80825 100644
+--- a/ui/views/widget/widget.cc
++++ b/ui/views/widget/widget.cc
+@@ -59,6 +59,7 @@
+ #include "ui/views/input_protection/input_protection_event_handler.h"
+ #include "ui/views/input_protection/occluded_widget_input_protector.h"
+ #include "ui/views/input_protection/window_activation_input_protection_policy.h"
++#include "ui/views/view_utils.h"
+ #include "ui/views/views_delegate.h"
+ #include "ui/views/views_features.h"
+ #include "ui/views/widget/any_widget_observer_singleton.h"
+@@ -605,6 +606,7 @@ void Widget::Init(InitParams params) {
+     non_client_view_ =
+         new NonClientView(widget_delegate_->CreateClientView(this));
+     non_client_view_->SetFrameView(CreateFrameView());
++    non_client_view_->frame_view()->client_delegate_ = widget_delegate_;
+     non_client_view_->SetOverlayView(widget_delegate_->CreateOverlayView());
+ 
+     // Bypass the layout that happens in Widget::SetContentsView().
+@@ -1066,8 +1068,10 @@ void Widget::CloseWithReason(ClosedReason closed_reason) {
+ 
+   internal::AnyWidgetObserverSingleton::GetInstance()->OnAnyWidgetClosing(this);
+ 
+-  if (widget_delegate_) {
+-    widget_delegate_->WindowWillClose();
++  for (auto delegate : GetClientDelegates()) {
++    if (delegate) {
++      NotifyClientWillClose(delegate.get());
++    }
+   }
+ 
+   if (native_widget_) {
+@@ -1080,6 +1084,94 @@ void Widget::MakeCloseSynchronous(
+   override_close_ = std::move(override_close);
+ }
+ 
++std::vector<base::WeakPtr<WidgetDelegate>> Widget::GetClientDelegates() const {
++  std::vector<base::WeakPtr<WidgetDelegate>> delegates;
++  bool selected_found = false;
++  if (non_client_view_) {
++    for (View* child : non_client_view_->children()) {
++      auto* frame = AsViewClass<FrameView>(child);
++      if (frame && frame->client_delegate_) {
++        selected_found |=
++            frame->client_delegate_.get() == widget_delegate_.get();
++        delegates.push_back(frame->client_delegate_);
++      }
++    }
++  }
++  if (widget_delegate_ && !selected_found) {
++    delegates.push_back(widget_delegate_);
++  }
++  return delegates;
++}
++
++void Widget::RetainClientFrame(std::unique_ptr<FrameView> frame,
++                               std::unique_ptr<ClientView> client,
++                               WidgetDelegate* delegate) {
++  CHECK(non_client_view_);
++  CHECK(delegate);
++  CHECK(!delegate->widget_);
++  CHECK(!delegate->owned_by_widget_);
++  auto handle = delegate->AttachWidgetAndGetHandle(this);
++  frame->client_delegate_ = handle;
++  non_client_view_->RetainClientFrame(std::move(frame), std::move(client));
++  CHECK(handle);
++  delegate->WidgetInitialized();
++}
++
++void Widget::SelectClientDelegate(WidgetDelegate* delegate) {
++  CHECK(delegate);
++  CHECK_EQ(delegate->widget_, this);
++  CHECK(!delegate->widget_initialized_callbacks_);
++  CHECK(!delegate->can_delete_this_);
++  widget_delegate_ = delegate->weak_ptr_factory_.GetWeakPtr();
++}
++
++void Widget::NotifyClientWillClose(WidgetDelegate* delegate) {
++  CHECK(delegate);
++  CHECK_EQ(delegate->widget_, this);
++  if (non_client_view_) {
++    for (View* child : non_client_view_->children()) {
++      auto* frame = AsViewClass<FrameView>(child);
++      if (frame && frame->client_delegate_.get() == delegate) {
++        if (!frame->client_will_close_notified_) {
++          frame->client_will_close_notified_ = true;
++          delegate->WindowWillClose();
++        }
++        return;
++      }
++    }
++  }
++  delegate->WindowWillClose();
++}
++
++void Widget::FinalizeClientDelegate(ClientView* client,
++                                    WidgetDelegate* delegate) {
++  CHECK(client);
++  CHECK(delegate);
++  CHECK_NE(delegate, widget_delegate_.get());
++  CHECK_EQ(delegate->widget_, this);
++  CHECK(!delegate->owned_by_widget_);
++  CHECK(!delegate->widget_initialized_callbacks_);
++  auto* frame = AsViewClass<FrameView>(client->parent());
++  CHECK(frame);
++  CHECK(!frame->GetWidget());
++  CHECK_EQ(frame->client_delegate_.get(), delegate);
++  frame->client_delegate_.reset();
++  // The caller has accepted this logical close through its beforeunload/policy
++  // gates. Preserve the requested-close callback sequence without notifying the
++  // physical Widget's other clients or running its owned-child close loop.
++  if (!frame->client_will_close_notified_) {
++    frame->client_will_close_notified_ = true;
++    delegate->WindowWillClose();
++  }
++  client->WidgetClosing();
++  delegate->WindowClosing();
++  // Clear the physical host before DeleteDelegate so the normal
++  // CLIENT_OWNS_WIDGET zombie callback cannot tear down the surviving host.
++  delegate->WidgetDestroying();
++  delegate->DeleteDelegate();
++  // DeleteDelegate may destroy the delegate; do not access it afterward.
++}
++
+ void Widget::Close() {
+   CloseWithReason(ClosedReason::kUnspecified);
+ }
+@@ -3090,8 +3182,10 @@ void Widget::HandleWidgetDestroying() {
+   if (non_client_view_) {
+     non_client_view_->WindowClosing();
+   }
+-  if (widget_delegate_) {
+-    widget_delegate_->WindowClosing();
++  for (auto delegate : GetClientDelegates()) {
++    if (delegate) {
++      delegate->WindowClosing();
++    }
+   }
+ }
+ 
+@@ -3114,6 +3208,17 @@ void Widget::HandleWidgetDestroyed() {
+ 
+   native_widget_destroyed_ = true;
+   auto weak_ptr = GetWeakPtr();
++  for (auto delegate : GetClientDelegates()) {
++    if (delegate && delegate.get() != widget_delegate_.get()) {
++      // Final physical teardown has already notified all logical clients.
++      // Inactive delegates must not retain a host or receive zombie ownership.
++      delegate->WidgetDestroying();
++      delegate->DeleteDelegate();
++      if (!weak_ptr) {
++        return;
++      }
++    }
++  }
+   if (widget_delegate_) {
+     widget_delegate_->DeleteDelegate();
+   }

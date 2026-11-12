@@ -1,0 +1,16 @@
+diff --git a/components/performance_manager/freezing/freezing_policy.cc b/components/performance_manager/freezing/freezing_policy.cc
+index 407ceb2c97..ae68655e1a 100644
+--- a/components/performance_manager/freezing/freezing_policy.cc
++++ b/components/performance_manager/freezing/freezing_policy.cc
+@@ -609,6 +609,11 @@ void FreezingPolicy::OnPageNodeAdded(const PageNode* page_node) {
+   PageLiveStateDecorator::Data::GetOrCreateForPageNode(page_node)->AddObserver(
+       this);
+ 
++  if (features::IsNativeResourceProtectionHeld()) {
++    page_freezing_state.cannot_freeze_reasons.Put(
++        CannotFreezeReason::kUnknownNativeActivity);
++  }
++
+   if (page_node->IsVisible()) {
+     page_freezing_state.cannot_freeze_reasons.Put(CannotFreezeReason::kVisible);
+   }

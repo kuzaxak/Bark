@@ -75,7 +75,8 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   if (!library) {
     FatalError("dlopen %s: %s.", framework_path, dlerror());
   }
-  if (!dlsym(library, BARC_ENGINE_MAIN_SYMBOL)) {
+  const auto engine_main = reinterpret_cast<BarcEngineMain>(dlsym(library, BARC_ENGINE_MAIN_SYMBOL));
+  if (!engine_main) {
     FatalError("dlsym %s: %s. Bark Framework was built for another bridge version; this app needs version %d.",
                BARC_ENGINE_MAIN_SYMBOL, dlerror(), BARC_BRIDGE_VERSION);
   }
@@ -87,6 +88,16 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
     FatalError("Bark Framework was built from other public headers: its digest is %s; this app was compiled against %s.",
                engine_digest, BARC_PUBLIC_HEADERS_SHA256);
   }
+  const auto bridge_entry = reinterpret_cast<BarcBridgeEntry>(dlsym(library, BARC_BRIDGE_SYMBOL));
+  if (!bridge_entry) {
+    FatalError("dlsym %s: %s. Bark Framework has no bridge table for version %d.", BARC_BRIDGE_SYMBOL, dlerror(),
+               BARC_BRIDGE_VERSION);
+  }
+  const struct BarcBridge* bridge = bridge_entry();
+  if (!bridge || bridge->size < sizeof(struct BarcBridge)) {
+    FatalError("Bark Framework's bridge table is %zu bytes; this app needs at least %zu.", bridge ? bridge->size : 0,
+               sizeof(struct BarcBridge));
+  }
 
   char* native_path = JoinPath(
       parent_dir, "../Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell");
@@ -94,13 +105,13 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   if (!native_library) {
     FatalError("dlopen native shell %s: %s.", native_path, dlerror());
   }
-  using NativeMainPtr = int (*)(void*, int, const char**);
+  using NativeMainPtr = int (*)(const struct BarcBridge*, BarcEngineMain, int, const char**);
   const auto native_main = reinterpret_cast<NativeMainPtr>(dlsym(native_library, "barc_native_main"));
   if (!native_main) {
     FatalError("Native shell entry is missing.");
   }
 
-  rv = native_main(library, argc, const_cast<const char**>(argv));
+  rv = native_main(bridge, engine_main, argc, const_cast<const char**>(argv));
 
   // exit, don't return from main, to avoid the apparent removal of main from
   // stack backtraces under tail call optimization.

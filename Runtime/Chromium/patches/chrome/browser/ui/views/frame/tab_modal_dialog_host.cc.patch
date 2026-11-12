@@ -1,0 +1,41 @@
+diff --git a/chrome/browser/ui/views/frame/tab_modal_dialog_host.cc b/chrome/browser/ui/views/frame/tab_modal_dialog_host.cc
+index 7ad0e2b5aa..bedae5f997 100644
+--- a/chrome/browser/ui/views/frame/tab_modal_dialog_host.cc
++++ b/chrome/browser/ui/views/frame/tab_modal_dialog_host.cc
+@@ -4,7 +4,10 @@
+ 
+ #include "chrome/browser/ui/views/frame/tab_modal_dialog_host.h"
+ 
++#include <algorithm>
++
+ #include "base/feature_list.h"
++#include "ui/views/view_utils.h"
+ #include "base/scoped_observation.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface_iterator.h"
+ #include "chrome/browser/ui/ui_features.h"
+@@ -48,6 +51,14 @@ gfx::NativeView TabModalDialogHost::GetHostView() const {
+ }
+ 
+ gfx::Point TabModalDialogHost::GetDialogPosition(const gfx::Size& dialog_size) {
++  if (auto* physical = views::AsViewClass<MultiContentsView>(contents_container_view_->parent());
++      physical && physical->is_physical_presentation()) {
++    const gfx::Rect pane = contents_container_view_->ConvertRectToWidget(
++        contents_container_view_->GetLocalBounds());
++    return gfx::Point(std::clamp(pane.CenterPoint().x() - dialog_size.width() / 2,
++                                pane.x(), std::max(pane.x(), pane.right() - dialog_size.width())),
++                      pane.y());
++  }
+   gfx::Rect contents_container_view_coordinates_in_browser =
+       contents_container_view_->ConvertRectToWidget(
+           contents_container_view_->GetLocalBounds());
+@@ -84,6 +95,10 @@ void TabModalDialogHost::RemoveObserver(
+ }
+ 
+ gfx::Size TabModalDialogHost::GetMaximumDialogSize() {
++  if (auto* physical = views::AsViewClass<MultiContentsView>(contents_container_view_->parent());
++      physical && physical->is_physical_presentation()) {
++    return contents_container_view_->size();
++  }
+   // Modals use NativeWidget and cannot be rendered beyond the browser
+   // window boundaries. Restricting them to the browser window bottom
+   // boundary and let the dialog to figure out a good layout.

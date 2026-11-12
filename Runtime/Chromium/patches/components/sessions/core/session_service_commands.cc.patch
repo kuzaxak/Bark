@@ -1,0 +1,35 @@
+diff --git a/components/sessions/core/session_service_commands.cc b/components/sessions/core/session_service_commands.cc
+index 6832a5e8f4..b10ad001ed 100644
+--- a/components/sessions/core/session_service_commands.cc
++++ b/components/sessions/core/session_service_commands.cc
+@@ -8,6 +8,7 @@
+ #include <string.h>
+ 
+ #include <algorithm>
++#include <cmath>
+ #include <map>
+ #include <memory>
+ #include <set>
+@@ -847,8 +848,14 @@ bool CreateTabsAndWindows(
+           return false;
+         }
+ 
++        if (!std::isfinite(split_ratio) || split_ratio < 0 || split_ratio > 1) {
++          return false;
++        }
+         split->split_visual_data_ = split_tabs::SplitTabVisualData(
+             SplitTabLayoutFromString(split_layout_str), split_ratio);
++        if (!split->split_visual_data_.ReadAdditionalDividers(&iter)) {
++          return false;
++        }
+         break;
+       }
+ 
+@@ -1216,6 +1223,7 @@ std::unique_ptr<SessionCommand> CreateSplitTabDataUpdateCommand(
+   pickle.WriteDouble(split_tab_visual_data->split_ratio());
+   pickle.WriteString(
+       SplitTabLayoutToString(split_tab_visual_data->split_layout()));
++  split_tab_visual_data->WriteAdditionalDividers(&pickle);
+ 
+   return std::make_unique<SessionCommand>(kCommandSetSplitTabData, pickle);
+ }

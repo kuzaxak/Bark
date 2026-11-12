@@ -1,9 +1,37 @@
 #!/bin/bash
 # Stage an Intel candidate: the app target's Bark.app with the published engine framework inside it.
 # Sign the staged bundle through Chromium's signing flow before execution.
+# With --check-signed, check a signed candidate instead: one blocker library and no unsigned Mach-O.
 set -euo pipefail
+# Chromium's signing covers only the Mach-O files its config names, and codesign --verify --deep --strict
+# still passes with an unsigned extra one, so the bundle is walked file by file.
+check_bundle() {
+  python3 - "$1" "$2" <<'PY' || exit 1
+import os, subprocess, sys
+bundle, mode = sys.argv[1:3]
+MACH_O = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'}
+files = [os.path.join(root, name) for root, _, names in os.walk(bundle) for name in names]
+files = [path for path in files if not os.path.islink(path)]
+copies = [os.path.relpath(path, bundle) for path in files if os.path.basename(path) == 'libnook_adblock.dylib']
+problems = [] if len(copies) == 1 else [f'{bundle} holds {len(copies)} copies of libnook_adblock.dylib, not one: {copies}']
+if mode == 'signed':
+    for path in files:
+        with open(path, 'rb') as handle:
+            if handle.read(4) not in MACH_O:
+                continue
+        if subprocess.run(['/usr/bin/codesign', '--display', path], capture_output=True).returncode:
+            problems.append(f'Unsigned Mach-O: {os.path.relpath(path, bundle)}')
+sys.exit('\n'.join(problems) or None)
+PY
+}
+if [[ $# == 2 && $1 == --check-signed ]]; then
+  check_bundle "$2" signed
+  echo "One libnook_adblock.dylib and every Mach-O signed: $2"
+  exit 0
+fi
 if [[ $# != 4 ]]; then
   echo 'usage: bash scripts/stage-chromium-app.sh <app-target Bark.app> <engine artifact directory> <native-products-directory> <new-output.app>' >&2
+  echo '       bash scripts/stage-chromium-app.sh --check-signed <signed Bark.app>' >&2
   exit 2
 fi
 APP="$1"
@@ -26,14 +54,15 @@ NATIVE="$NATIVE_FRAMEWORK/Versions/A/NookNativeShell"
 [[ ! -e "$OUTPUT" ]] || refuse 'Output already exists; refusing replacement'
 
 [[ -d "$ENGINE_FRAMEWORK" ]] || refuse 'Missing Bark framework'
+check_bundle "$ENGINE_FRAMEWORK" unsigned
 LISTED=$(/usr/bin/awk '{ sub(/^[0-9a-f]+  /, ""); print }' "$ARTIFACT/SHA256SUMS" 2>/dev/null | /usr/bin/sort || true)
 PRESENT=$(cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS | /usr/bin/sort)
 { [[ -n "$LISTED" && "$LISTED" == "$PRESENT" ]] && (cd "$ARTIFACT" && /usr/bin/shasum -a 256 --check --quiet SHA256SUMS >/dev/null 2>&1); } ||
   refuse "Engine artifact does not match its SHA256SUMS: $ARTIFACT"
 ARTIFACT_SHA=$(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1)
 [[ -f "$ENGINE_PIN" && $(<"$ENGINE_PIN") == "$ARTIFACT_SHA" ]] || refuse 'App was built against another engine artifact'
-# The bridge's structs cross without a size argument, so a layout change with no version bump shows only here and in main's digest check.
-for header in barc_bridge_api.h barc_runtime_startup_api.h barc_page_tweaks.h barc_public_headers_sha256.h; do
+# main makes the same check at launch, against the digest the engine exports.
+for header in barc_bridge_api.h barc_public_headers_sha256.h; do
   /usr/bin/cmp -s "$ARTIFACT/Headers/$header" "$PRODUCTS/include/BarcChromium/$header" ||
     refuse "App was compiled against another $header than the engine's: $ARTIFACT/Headers/$header"
 done
@@ -88,12 +117,15 @@ MAIN_ZONE=$(zone_names "$APP_MAIN")
 [[ -n "$MAIN_ZONE" && "$MAIN_ZONE" == "$(zone_names "$ENGINE_BINARY")" ]] ||
   refuse 'App executable and framework must use the same malloc zone name'
 ENGINE_EXPORTS=$(/usr/bin/nm -gjU "$ENGINE_BINARY")
-for binary in "$APP_MAIN" "$NATIVE"; do
-  ENTRY=$(/usr/bin/strings -a "$binary" | /usr/bin/grep -oE 'barc_engine_main_v[0-9]+' | /usr/bin/sort -u || true)
-  [[ -n "$ENTRY" && "$ENTRY" != *$'\n'* ]] || refuse "Binary must name exactly one versioned engine entry: $binary"
-  /usr/bin/grep -x "_$ENTRY" <<<"$ENGINE_EXPORTS" > /dev/null ||
-    refuse "Engine does not export $ENTRY, which this binary enters: built for another bridge version: $binary"
+# main resolves the entry and the table and hands both to the shell, which names neither.
+for symbol in barc_engine_main barc_bridge; do
+  NAMED=$(/usr/bin/strings -a "$APP_MAIN" | /usr/bin/grep -oE "${symbol}_v[0-9]+" | /usr/bin/sort -u || true)
+  [[ -n "$NAMED" && "$NAMED" != *$'\n'* ]] || refuse "App executable must name exactly one versioned ${symbol}: $APP_MAIN"
+  /usr/bin/grep -x "_$NAMED" <<<"$ENGINE_EXPORTS" > /dev/null ||
+    refuse "Engine does not export $NAMED, which the app resolves: built for another bridge version"
 done
+! /usr/bin/strings -a "$NATIVE" | /usr/bin/grep -qE 'barc_(engine_main|bridge)_v[0-9]+' ||
+  refuse "Native shell names an engine symbol: only main resolves the engine: $NATIVE"
 /usr/bin/ditto "$APP" "$OUTPUT"
 /bin/mkdir -p "$OUTPUT/Contents/Frameworks"
 # Xcode/SPM dependencies and resources retain their existing names. Refuse

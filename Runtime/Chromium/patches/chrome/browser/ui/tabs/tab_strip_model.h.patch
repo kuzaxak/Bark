@@ -1,0 +1,78 @@
+diff --git a/chrome/browser/ui/tabs/tab_strip_model.h b/chrome/browser/ui/tabs/tab_strip_model.h
+index 6aa0e2168f..282980c573 100644
+--- a/chrome/browser/ui/tabs/tab_strip_model.h
++++ b/chrome/browser/ui/tabs/tab_strip_model.h
+@@ -155,6 +155,11 @@ struct DetachedTab {
+   // TODO(crbug.com/377537302): The ClosedTabCache feature is gone, but it's
+   // unclear if the session ID is needed for other things as well.
+   std::optional<SessionID> id;
++
++  // Operation-local split membership before removal. Detached tabs remain
++  // alive until the batched removal and retained-split notifications finish.
++  std::optional<split_tabs::SplitTabId> previous_split;
++  std::vector<std::pair<tabs::TabInterface*, int>> previous_split_tabs;
+ };
+ 
+ // A feature which wants to show tabstrip-modal UI should call
+@@ -344,8 +349,12 @@ class TabStripModel {
+       std::unique_ptr<content::WebContents> new_contents);
+ 
+   // Detaches the tab at the specified index for reinsertion into another tab
+-  // strip. Returns the detached tab.
+-  std::unique_ptr<tabs::TabModel> DetachTabAtForInsertion(int index);
++  // strip. Returns the detached tab. When notify_empty is false, the caller
++  // must synchronously call NotifyEmptyAfterDeferredDetach() after insertion
++  // or rollback. This keeps the last-tab source alive until the transfer ends.
++  std::unique_ptr<tabs::TabModel> DetachTabAtForInsertion(
++      int index, bool notify_empty = true);
++  void NotifyEmptyAfterDeferredDetach();
+ 
+   // Detaches the WebContents at the specified index for re-insertion into
+   // another browser of a different type, destroying the owning TabModel in the
+@@ -649,6 +658,11 @@ class TabStripModel {
+                         double start_content_ratio,
+                         bool is_intermediate = false);
+ 
++  // Updates all normalized divider positions for this split's existing panes.
++  void UpdateSplitDividers(split_tabs::SplitTabId split_id,
++                           base::span<const double> split_dividers,
++                           bool is_intermediate = false);
++
+   // Updates the split tab at index `split_index` with the tab at
+   // `update_index`. The split that includes `split_index` must include the
+   // active tab in the tab strip.
+@@ -672,6 +686,14 @@ class TabStripModel {
+   // Adds all the tabs in `indices` to a split with `split_id` and
+   // `visual_data`. `pivot_index` is the index in indices to determine the
+   // properties of the split like group, pin, destination index.
++  // Configure an ordered 2-4 pane split using the existing live tab models.
++  // All tabs and the active pane must belong to this strip. As with Chrome's
++  // AddToNewSplit, pin/group properties follow the first requested pane.
++  split_tabs::SplitTabId SetSplit(
++      const std::vector<tabs::TabInterface*>& ordered_tabs,
++      tabs::TabInterface* active_tab,
++      const split_tabs::SplitTabVisualData& visual_data);
++
+   void RestoreSplit(split_tabs::SplitTabId split_id,
+                     const std::vector<int>& indices,
+                     split_tabs::SplitTabVisualData visual_data);
+@@ -1038,7 +1060,8 @@ class TabStripModel {
+   std::unique_ptr<DetachedTab> DetachTabWithReasonAt(
+       int index,
+       TabRemovedReason web_contents_remove_reason,
+-      tabs::TabInterface::DetachReason tab_detach_reason);
++      tabs::TabInterface::DetachReason tab_detach_reason,
++      bool notify_empty = true);
+ 
+   // Performs all the work to detach a TabModel instance but avoids sending
+   // most notifications. TabClosingAt() and TabDetachedAt() are sent because
+@@ -1104,7 +1127,8 @@ class TabStripModel {
+   //   wouldn't be necessary because we would enforce that there is no
+   //   re-entrancy in the TabStripModel, but that condition is currently
+   //   violated in tests [and possibly in the wild as well].
+-  void SendDetachWebContentsNotifications(DetachNotifications* notifications);
++  void SendDetachWebContentsNotifications(DetachNotifications* notifications,
++                                         bool notify_empty = true);
+ 
+   bool RunUnloadListenerBeforeClosing(content::WebContents* contents);
+   bool ShouldRunUnloadListenerBeforeClosing(content::WebContents* contents);

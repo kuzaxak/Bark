@@ -1,0 +1,13 @@
+diff --git a/components/performance_manager/freezing/cannot_freeze_reason.cc b/components/performance_manager/freezing/cannot_freeze_reason.cc
+index e3306c548a..c2eea4c571 100644
+--- a/components/performance_manager/freezing/cannot_freeze_reason.cc
++++ b/components/performance_manager/freezing/cannot_freeze_reason.cc
+@@ -10,6 +10,8 @@ namespace performance_manager::freezing {
+ 
+ const char* CannotFreezeReasonToString(CannotFreezeReason reason) {
+   switch (reason) {
++    case CannotFreezeReason::kUnknownNativeActivity:
++      return "native upload activity is not yet observable";
+     case CannotFreezeReason::kVisible:
+       return "visible";
+     case CannotFreezeReason::kRecentlyVisible:

@@ -1,0 +1,12 @@
+diff --git a/chrome/renderer/resources/renderer_resources.grd b/chrome/renderer/resources/renderer_resources.grd
+index a5a885aa4a..9d21a3fe02 100644
+--- a/chrome/renderer/resources/renderer_resources.grd
++++ b/chrome/renderer/resources/renderer_resources.grd
+@@ -13,6 +13,7 @@
+       <include name="IDR_BLOCKED_PLUGIN_HTML" file="plugins/blocked_plugin.html" flattenhtml="true" type="BINDATA" />
+       <include name="IDR_DISABLED_PLUGIN_HTML" file="plugins/disabled_plugin.html" flattenhtml="true" type="BINDATA" />
+       <include name="IDR_PDF_PLUGIN_HTML" file="plugins/pdf_plugin.html" flattenhtml="true" type="BINDATA" />
++      <include name="IDR_NOOK_PAGE_TRANSLATE" file="../../../bark/resources/page-translate.js" type="BINDATA" />
+     </includes>
+   </release>
+ </grit>

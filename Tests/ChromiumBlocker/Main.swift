@@ -8,9 +8,9 @@ import WebKit
     struct Source {
         let revision: UInt64, generation: UInt64
         let bytes: UnsafePointer<UInt8>?, count: Int, checksum: UInt64
-        let callback: ChromiumBlockerAPI.Callback, reply: UnsafeMutableRawPointer?
+        let callback: BarcBlockerCallback, reply: UnsafeMutableRawPointer?
     }
-    struct Preparation { let window: Int32; let callback: ChromiumBlockerAPI.Callback; let reply: UnsafeMutableRawPointer? }
+    struct Preparation { let window: Int32; let callback: BarcBlockerCallback; let reply: UnsafeMutableRawPointer? }
     static var sources: [Source] = [], preparations: [Preparation] = []
     static var windows: [Int32: UInt64] = [1: 101, 2: 101]
     static var installed: [UInt64: UInt64] = [:]
@@ -30,32 +30,41 @@ import WebKit
         windows = [1: 101, 2: 101]; installed = [:]; revision = 0; generation = 0; serial = 0
         policy = -1; required = 0; failed = []; domains = []; policyCalls = 0; tabPolicies = []; onPolicy = nil; onGlobalPolicy = nil; refuseBytes = false
     }
-    static var api: ChromiumBlockerAPI { ChromiumBlockerAPI(publish: { bytes, count, generation, callback, reply in MainActor.assumeIsolated {
-        guard let callback, generation != 0, (bytes != nil || count == 0) else { return 0 }
-        if Native.refuseBytes && bytes != nil { return 0 }
-        Native.serial += 1
-        Native.sources.append(Source(revision: Native.serial, generation: generation, bytes: bytes, count: count,
-            checksum: bytes.map { Native.hash($0, count) } ?? 0, callback: callback, reply: reply)); return 1
-    } }, policy: { policy, required, domains, count in MainActor.assumeIsolated {
-        Native.policy = policy; Native.required = required; Native.domains = (0..<count).map { String(cString: domains![$0]!) }; Native.policyCalls += 1; Native.onGlobalPolicy?(); return 1
-    } }, prepare: { window, callback, reply in MainActor.assumeIsolated {
-        guard Native.windows[window] != nil, let callback else { return 0 }
-        if Native.failed.contains(Native.required), Native.policy == 1 {
-            callback(reply, 0, Int32(BARC_BLOCKER_INVALID_RULES.rawValue))
-        } else { Native.preparations.append(Preparation(window: window, callback: callback, reply: reply)) }
-        return 1
-    } }, tabPolicy: { window, tab, _, _, _ in MainActor.assumeIsolated {
-        guard Native.windows[window] != nil else { return 0 }
-        Native.tabPolicies.append((window, tab)); Native.onPolicy?(); return 1
-    } }, state: { window, output in MainActor.assumeIsolated {
-        guard let output, let id = Native.windows[window] else { return 0 }
-        output.pointee = BarcBlockerState(); output.pointee.context_id = id
-        output.pointee.publication_revision = Native.revision; output.pointee.source_generation = Native.generation
-        output.pointee.required_source_generation = Native.required
-        output.pointee.installed_revision = Native.installed[id] ?? 0; output.pointee.requested_policy = Native.policy
-        output.pointee.ready = Native.policy == 0 || (Native.policy == 1 && Native.generation == Native.required && Native.revision != 0 && Native.installed[id] == Native.revision) ? 1 : 0
-        return 1
-    } }) }
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.blocker_publish_rules = { bytes, count, generation, callback, reply in MainActor.assumeIsolated {
+            guard let callback, generation != 0, (bytes != nil || count == 0) else { return 0 }
+            if Native.refuseBytes && bytes != nil { return 0 }
+            Native.serial += 1
+            Native.sources.append(Source(revision: Native.serial, generation: generation, bytes: bytes, count: count,
+                checksum: bytes.map { Native.hash($0, count) } ?? 0, callback: callback, reply: reply)); return 1
+        } }
+        bridge.blocker_set_policy = { policy, required, domains, count in MainActor.assumeIsolated {
+            Native.policy = policy; Native.required = required; Native.domains = (0..<count).map { String(cString: domains![$0]!) }; Native.policyCalls += 1; Native.onGlobalPolicy?(); return 1
+        } }
+        bridge.blocker_prepare = { window, callback, reply in MainActor.assumeIsolated {
+            guard Native.windows[window] != nil, let callback else { return 0 }
+            if Native.failed.contains(Native.required), Native.policy == 1 {
+                callback(reply, 0, Int32(BARC_BLOCKER_INVALID_RULES.rawValue))
+            } else { Native.preparations.append(Preparation(window: window, callback: callback, reply: reply)) }
+            return 1
+        } }
+        bridge.blocker_set_tab_policy = { window, tab, _, _, _ in MainActor.assumeIsolated {
+            guard Native.windows[window] != nil else { return 0 }
+            Native.tabPolicies.append((window, tab)); Native.onPolicy?(); return 1
+        } }
+        bridge.blocker_state = { window, output in MainActor.assumeIsolated {
+            guard let output, output.pointee.size >= MemoryLayout<BarcBlockerState>.size, let id = Native.windows[window] else { return 0 }
+            let size = output.pointee.size
+            output.pointee = BarcBlockerState(); output.pointee.size = size; output.pointee.context_id = id
+            output.pointee.publication_revision = Native.revision; output.pointee.source_generation = Native.generation
+            output.pointee.required_source_generation = Native.required
+            output.pointee.installed_revision = Native.installed[id] ?? 0; output.pointee.requested_policy = Native.policy
+            output.pointee.ready = Native.policy == 0 || (Native.policy == 1 && Native.generation == Native.required && Native.revision != 0 && Native.installed[id] == Native.revision) ? 1 : 0
+            return 1
+        } }
+        return bridge
+    }
     static func finishSource(_ result: BarcBlockerResult, index: Int = 0) {
         precondition(sources.indices.contains(index), "Missing source callback")
         let source = sources.remove(at: index)
@@ -114,7 +123,7 @@ private func check(_ condition: Bool) { precondition(condition) }
     @MainActor static func main() async throws {
         let f = try Fixture(); defer { f.cleanup() }; await f.start()
         Native.reset(); Native.windows = [:]
-        var adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        var adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         // Proactive source publication does not depend on any browser/context.
         precondition(Native.sources.count == 1 && Native.policy == 1)
         Native.finishSource(BARC_BLOCKER_READY); await drain()
@@ -139,7 +148,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         // Disabled policy releases without bytes; later publication cannot
         // turn it back on. Borrowed bytes remain live through shutdown callback.
         f.manager.setEnabled(false); Native.reset()
-        adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         precondition(Native.policy == 0 && Native.sources.isEmpty)
         let disabled = Task { await adapter.prepare(in: 1) }; await drain()
         Native.finishPreparation(); check(await disabled.value)
@@ -150,7 +159,7 @@ private func check(_ condition: Bool) { precondition(condition) }
 
         // Source validation is intentionally suspended. Disabled readiness must
         // settle without completing that producer or consuming its borrowed bytes.
-        await f.start(); Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        await f.start(); Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         precondition(Native.revision == 0 && Native.sources.count == 1)
         let waitingForSource = Task { await adapter.prepare(in: 1) }; await drain()
         precondition(Native.preparations.count == 1)
@@ -161,7 +170,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         adapter.stop()
 
         // New source ordering is synchronous, independent of task scheduling.
-        await f.start(); Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        await f.start(); Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         let firstGeneration = Native.sources[0].generation
         f.manager.setEnabled(false); await f.start()
         precondition(Native.sources.count == 2 && Native.sources[1].generation != firstGeneration)
@@ -173,7 +182,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         adapter.stop()
 
         // Invalid source cannot earn readiness or duplicate publication.
-        Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         Native.finishSource(BARC_BLOCKER_INVALID_RULES); await drain()
         check(await !adapter.prepare(in: 1)); precondition(Native.sources.isEmpty && Native.preparations.isEmpty)
         adapter.stop()
@@ -181,7 +190,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         // Synchronous byte rejection owns no callback; the bounded failure
         // marker settles its requirement instead of leaving native waiters held.
         Native.reset(); Native.refuseBytes = true
-        adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         precondition(Native.sources.count == 1 && Native.sources[0].bytes == nil)
         let refusedBytes = Task { await adapter.prepare(in: 1) }; await drain()
         Native.finishSource(BARC_BLOCKER_INVALID_RULES); check(await !refusedBytes.value)
@@ -189,7 +198,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         adapter.stop()
 
         // Exact-context callback, supersession and shutdown each finish once.
-        Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         Native.finishSource(BARC_BLOCKER_READY); await drain()
         let changed = Task { await adapter.prepare(in: 1) }; await drain()
         Native.finishPreparation(); Native.windows[1] = 303
@@ -199,7 +208,7 @@ private func check(_ condition: Bool) { precondition(condition) }
 
         // Front-only admission retains a live peer, then cached preparation
         // publishes once and pure ready queries do not wake themselves.
-        Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         Native.finishSource(BARC_BLOCKER_READY); await drain()
         let peer = Page(); var live = true, livePeer = true
         precondition(adapter.admitApplicationPage(window: 1, tab: 10, session: page,
@@ -239,7 +248,7 @@ private func check(_ condition: Bool) { precondition(condition) }
 
         // Closed/superseded fronts and cancelled waiters never publish late
         // page readiness, while native completions retain exact-once ownership.
-        Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         Native.finishSource(BARC_BLOCKER_READY); await drain()
         live = true
         _ = adapter.admitApplicationPage(window: 1, tab: 10, session: page,
@@ -253,7 +262,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         precondition(Native.tabPolicies.isEmpty)
         adapter.stop()
 
-        Native.reset(); adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        Native.reset(); adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         Native.finishSource(BARC_BLOCKER_INVALID_RULES); await drain(); live = true
         _ = adapter.admitApplicationPage(window: 1, tab: 10, session: page,
             isPending: { live }, canAdmit: { true })
@@ -269,7 +278,7 @@ private func check(_ condition: Bool) { precondition(condition) }
             Native.onGlobalPolicy = nil
             f.manager.setEnabled(false)
         }
-        adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         precondition(Native.policy == 0 && Native.policyCalls == 2 && Native.sources.isEmpty)
         let reentrantDisabled = Task { await adapter.prepare(in: 1) }; await drain()
         Native.finishPreparation(); check(await reentrantDisabled.value)
@@ -278,7 +287,7 @@ private func check(_ condition: Bool) { precondition(condition) }
         // A current producer failure explicitly settles the native requirement
         // while retaining the prior accepted publication for future reuse.
         Native.reset(); await f.start()
-        adapter = ChromiumContentBlocker(api: Native.api, manager: f.manager)
+        adapter = ChromiumContentBlocker(bridge: Native.bridge, manager: f.manager)
         Native.finishSource(BARC_BLOCKER_READY)
         let accepted = Native.revision
         f.manager.setEnabled(false)

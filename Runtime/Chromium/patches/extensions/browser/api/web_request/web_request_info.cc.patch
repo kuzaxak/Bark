@@ -1,0 +1,59 @@
+diff --git a/extensions/browser/api/web_request/web_request_info.cc b/extensions/browser/api/web_request/web_request_info.cc
+index 13c8767ff9..d9da2e605f 100644
+--- a/extensions/browser/api/web_request/web_request_info.cc
++++ b/extensions/browser/api/web_request/web_request_info.cc
+@@ -35,6 +35,7 @@
+ #include "net/base/upload_data_stream.h"
+ #include "net/base/upload_file_element_reader.h"
+ #include "services/network/public/cpp/resource_request.h"
++#include "services/network/public/cpp/resource_request_body.h"
+ #include "services/network/public/mojom/fetch_api.mojom-shared.h"
+ #include "services/network/public/mojom/network_context.mojom.h"
+ #include "services/network/public/mojom/url_response_head.mojom.h"
+@@ -256,7 +257,8 @@ WebRequestInfoInitParams::WebRequestInfoInitParams(
+     bool is_download,
+     bool is_async,
+     bool is_service_worker_script,
+-    std::optional<int64_t> navigation_id)
++    std::optional<int64_t> navigation_id,
++    bool defer_request_body)
+     : id(request_id),
+       url(request.url),
+       global_id(global_id),
+@@ -288,6 +290,10 @@ WebRequestInfoInitParams::WebRequestInfoInitParams(
+     is_privileged = process->IsPrivileged();
+   }
+ 
++  if (defer_request_body) {
++    deferred_request_body = request.request_body;
++    return;
++  }
+   std::vector<std::unique_ptr<UploadDataSource>> data_sources;
+   if (CreateUploadDataSourcesFromResourceRequest(request, &data_sources)) {
+     request_body_data =
+@@ -372,10 +378,24 @@ WebRequestInfo::WebRequestInfo(WebRequestInfoInitParams params)
+       is_service_worker_script(params.is_service_worker_script),
+       navigation_id(std::move(params.navigation_id)),
+       parent_routing_id(params.parent_routing_id),
+-      is_privileged(params.is_privileged) {}
++      is_privileged(params.is_privileged),
++      deferred_request_body_(std::move(params.deferred_request_body)) {}
+ 
+ WebRequestInfo::~WebRequestInfo() = default;
+ 
++void WebRequestInfo::EnsureRequestBodyData() {
++  if (!deferred_request_body_) return;
++  // The refcounted body stays alive through presenter use of its byte views.
++  // Move first so repeated event-detail reads never parse/copy it again.
++  network::ResourceRequest request;
++  request.request_body = std::move(deferred_request_body_);
++  std::vector<std::unique_ptr<UploadDataSource>> data_sources;
++  if (CreateUploadDataSourcesFromResourceRequest(request, &data_sources)) {
++    request_body_data = CreateRequestBodyData(method, extra_request_headers,
++                                             data_sources);
++  }
++}
++
+ void WebRequestInfo::AddResponseInfoFromResourceResponse(
+     const network::mojom::URLResponseHead& response) {
+   response_headers = response.headers;

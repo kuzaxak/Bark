@@ -6,44 +6,20 @@ import NookWeb
 import Observation
 import SwiftUI
 
-private typealias ReadyCallback = @convention(c) (UnsafeMutableRawPointer?) -> Void
-private typealias CloseCallback = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Void
-private typealias WindowRequestCallback = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Void
-private typealias ProfileCallback = @convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void
-
 @MainActor
 final class ChromiumApplication: ChromiumStartupBridge {
-    private typealias Register = @convention(c) (ReadyCallback?, UnsafeMutableRawPointer?) -> Void
-    private typealias TargetCallback = @convention(c) (Int32, UnsafePointer<CChar>?, Int32, Int32, UnsafeMutablePointer<BarcApplicationTarget>?, UnsafeMutableRawPointer?) -> Int32
-    private typealias RegisterTarget = @convention(c) (TargetCallback?, UnsafeMutableRawPointer?) -> Void
-    private typealias RegisterClose = @convention(c) (CloseCallback?, UnsafeMutableRawPointer?) -> Void
-    private typealias RegisterWindowRequest = @convention(c) (WindowRequestCallback?, UnsafeMutableRawPointer?) -> Void
-    private typealias Open = @convention(c) (UnsafePointer<CChar>?, Int32, ProfileCallback?, UnsafeMutableRawPointer?) -> Void
-    private typealias Main = @convention(c) (Int32, UnsafeMutablePointer<UnsafePointer<CChar>?>?) -> Int32
-    private typealias Complete = @convention(c) (Int32) -> Void
-    private let registerCallback: Register
-    private let registerClose: RegisterClose
-    private let registerWindowRequest: RegisterWindowRequest
-    private let registerTarget: RegisterTarget
-    private let open: Open
-    private let privateOpen: ChromiumCreatedPageAdmission.PrivateOpen
-    private let closeWindow: @convention(c) (Int32) -> Int32
+    private let bridge: BarcBridge
+    private let engineMain: BarcEngineMain
     private var acceptsWindows = true
     private var didPresentInitialWindow = false
     private let miniAPI: ChromiumMiniWindowAPI
-    private let promotionPeer: @convention(c) (Int32, Int32) -> Int32
-    private let ordinaryPeer: @convention(c) (Int32) -> Int32
-    private let navigationAPI: ChromiumNavigationAPI
     private let configuration: ChromiumStartupConfiguration
     private let pageHost: ChromiumNativePageHost
-    private let discoveryAPI: ChromiumDiscoveryAPI
     private let catalog: ChromiumWindowCatalog
     private let profileDeletion: ChromiumProfileDeletion
     private let downloads: ChromiumDownloads
     private let liveFetch: ChromiumLiveFetch
-    private let blockerAPI: ChromiumBlockerAPI
     private var blocker: ChromiumContentBlocker?
-    private let pageTweaksPublish: ChromiumPageTweaks.Publish
     private var pageTweaks: ChromiumPageTweaks?
     private var blockerRegistered = false
     private var admission: ChromiumCreatedPageAdmission?
@@ -60,64 +36,35 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var appMenu: ChromiumAppMenu?
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
-    private let chromeMain: Main
-    private let complete: Complete
     private var ready: (@MainActor () -> Void)?
     private var opened: (@MainActor (Int32?) -> Void)?
 
-    private init(framework handle: UnsafeMutableRawPointer, configuration: ChromiumStartupConfiguration) throws {
+    private init(bridge: BarcBridge, engineMain: @escaping BarcEngineMain, configuration: ChromiumStartupConfiguration) {
+        self.bridge = bridge
+        self.engineMain = engineMain
         self.configuration = configuration
-        func symbol<T>(_ name: String, _: T.Type) throws -> T {
-            guard let pointer = dlsym(handle, name) else { throw LoaderError.missingSymbol(name) }
-            return unsafeBitCast(pointer, to: T.self)
-        }
-        let version = try symbol("barc_bridge_version", (@convention(c) () -> UInt32).self)
-        guard version() == configuration.requiredBridgeVersion else {
-            throw LoaderError.matchedApplicationProtocolRequired
-        }
-        navigationAPI = try ChromiumNavigationAPI(library: handle)
-        discoveryAPI = try ChromiumDiscoveryAPI(library: handle)
-        catalog = ChromiumWindowCatalog(api: discoveryAPI)
-        profileDeletion = try ChromiumProfileDeletion(library: handle)
-        downloads = ChromiumDownloads(api: try ChromiumDownloadAPI(library: handle))
-        liveFetch = try ChromiumLiveFetch(library: handle)
-        blockerAPI = try ChromiumBlockerAPI(library: handle)
-        pageTweaksPublish = try symbol("barc_page_tweaks_publish", ChromiumPageTweaks.Publish.self)
-        pageHost = try ChromiumNativePageHost(api: ChromiumPageHostAPI(library: handle),
-            navigationAPI: navigationAPI, discoveryAPI: discoveryAPI, splitAPI: ChromiumSplitAPI(library: handle),
-            peekAPI: ChromiumPeekAPI(library: handle))
-        profileSearch = try ChromiumProfileSearch(library: handle)
-        profilePages = try ChromiumProfilePagePresenter(api: ChromiumProfilePageAPI(library: handle), navigationAPI: navigationAPI)
-        let hostAPI = try ChromiumPageHostAPI(library: handle)
-        let discovery = discoveryAPI
-        miniAPI = ChromiumMiniWindowAPI(attach: hostAPI.attach,
-            ownsHeader: hostAPI.shellIsOwned, detach: hostAPI.detachIfOwned,
-            admit: discovery.admit, close: navigationAPI.close,
+        catalog = ChromiumWindowCatalog(bridge: bridge)
+        profileDeletion = ChromiumProfileDeletion(bridge: bridge)
+        downloads = ChromiumDownloads(bridge: bridge)
+        liveFetch = ChromiumLiveFetch(bridge: bridge)
+        pageHost = ChromiumNativePageHost(bridge: bridge)
+        profileSearch = ChromiumProfileSearch(bridge: bridge)
+        profilePages = ChromiumProfilePagePresenter(bridge: bridge)
+        miniAPI = ChromiumMiniWindowAPI(bridge: bridge,
             canUse: { window, tab in
-                guard let row = discovery.windowState(window) else { return false }
+                guard let row = bridge.windowState(window) else { return false }
                 return row.selected_client == window && row.active_tab == tab &&
                     row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 &&
                     row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0
-            }, applicationPending: { window, tab in discovery.applicationPending(window, tab) == 1 })
-        promotionPeer = try symbol("barc_window_new_peer_in_native_window", (@convention(c) (Int32, Int32) -> Int32).self)
-        ordinaryPeer = try symbol("barc_window_new_peer", (@convention(c) (Int32) -> Int32).self)
-        registerCallback = try symbol("barc_set_runtime_ready_callback", Register.self)
-        registerClose = try symbol("barc_set_runtime_close_callback", RegisterClose.self)
-        registerWindowRequest = try symbol("barc_set_runtime_window_request_callback", RegisterWindowRequest.self)
-        registerTarget = try symbol("barc_set_runtime_browser_target_callback", RegisterTarget.self)
-        open = try symbol("barc_profile_open_window", Open.self)
-        privateOpen = try symbol("barc_private_session_open_window", ChromiumCreatedPageAdmission.PrivateOpen.self)
-        closeWindow = try symbol("barc_window_close", (@convention(c) (Int32) -> Int32).self)
-        chromeMain = try symbol(BARC_ENGINE_MAIN_SYMBOL, Main.self)
-        complete = try symbol("barc_runtime_complete_startup", Complete.self)
+            }, applicationPending: { window, tab in bridge.tab_application_pending(window, tab) == 1 })
     }
 
-    // Entered only after stock main initialized allocator and loaded framework.
-    static func run(framework: UnsafeMutableRawPointer, arguments: [String]) -> Int32 {
+    // Entered only after stock main initialized allocator, loaded framework and checked its table.
+    static func run(bridge: BarcBridge, engineMain: @escaping BarcEngineMain, arguments: [String]) -> Int32 {
         do {
             let config = try ChromiumStartupConfiguration(arguments: arguments)
             try config.prepare()
-            let app = try ChromiumApplication(framework: framework, configuration: config)
+            let app = ChromiumApplication(bridge: bridge, engineMain: engineMain, configuration: config)
             let startup = ChromiumStartup(bridge: app, profile: config.profileID, prepareData: { proceed in
                 guard let conversion = ChromiumDataConversion(configuration: config), conversion.shouldOffer() else {
                     proceed()
@@ -134,7 +81,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             defer { strings.forEach { free($0) } }
             var argv: [UnsafePointer<CChar>?] = strings.map { UnsafePointer($0) } + [nil]
             return withExtendedLifetime((app, startup)) {
-                let code = app.chromeMain(Int32(engineArguments.count), &argv)
+                let code = app.engineMain(Int32(engineArguments.count), &argv)
                 // An OS logout ends the runtime without the close manager's accepted callback.
                 app.quitSave?.save()
                 app.acceptsWindows = false
@@ -186,7 +133,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         guard acceptsWindows, let manager = browserManager, let admission else { return }
         for row in snapshot.windows where row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 &&
             row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 {
-            guard let id = discoveryAPI.identity(row) else { continue }
+            guard let id = bridge.identity(row) else { continue }
             let profile: Profile
             if row.profile_kind == BARC_DISCOVERY_GUEST.rawValue {
                 profile = manager.tabs.privateWindows.compactMap(\.ephemeralProfile).first(where: { $0.id == id }) ??
@@ -202,17 +149,17 @@ final class ChromiumApplication: ChromiumStartupBridge {
             for tab in snapshot.tabs where tab.window == row.window {
                 guard manager.externalMiniWindowManager.nativeController(tab: tab.tab) == nil else { continue }
                 guard let navigation = try? ChromiumPageNavigation(profileID: id, window: row.window,
-                          tab: tab.tab, api: navigationAPI, privateSession: profile.isEphemeral),
+                          tab: tab.tab, bridge: bridge, privateSession: profile.isEphemeral),
                       let controller = ChromiumMiniWindowController(tabs: manager.tabs, profile: profile,
                         navigation: navigation, origin: registry.activeWindow, api: miniAPI,
                         promote: { [weak self, weak admission] page, space in
                             guard let self, let admission, self.acceptsWindows else { return false }
-                            return admission.promoteDetached(page, spaceID: space, peerInGroup: self.promotionPeer,
-                                newPeer: self.ordinaryPeer, close: self.closeWindow)
+                            return admission.promoteDetached(page, spaceID: space, peerInGroup: self.bridge.window_new_peer_in_native_window,
+                                newPeer: self.bridge.window_new_peer, close: self.bridge.window_close)
                         }, destinations: { [weak admission] page in admission?.miniDestinations(for: page) ?? [] },
                         openCopy: { [weak self, weak admission] page, space in
                             guard let self, let admission, self.acceptsWindows else { return false }
-                            return admission.openDetachedCopy(page, in: space, open: self.open, close: self.closeWindow,
+                            return admission.openDetachedCopy(page, in: space, open: self.bridge.profile_open_window, close: self.bridge.window_close,
                                 canPresent: { [weak self] in self?.acceptsWindows == true })
                         }, canPromote: { [weak manager] page in
                             guard let manager, let profile = page.profile else { return false }
@@ -242,76 +189,82 @@ final class ChromiumApplication: ChromiumStartupBridge {
 
     func registerReady(_ callback: @escaping @MainActor () -> Void) {
         ready = callback
-        registerTarget({ kind, url, pendingWindow, pendingTab, output, pointer in
+        bridge.set_runtime_browser_target_callback({ kind, url, pendingWindow, pendingTab, output, pointer in
             MainActor.assumeIsolated {
-                output?.pointee = BarcApplicationTarget()
-                guard let pointer, let output else { return 0 }
+                let refused = BARC_APPLICATION_TARGET_REFUSED.rawValue, found = BARC_APPLICATION_TARGET_FOUND.rawValue
+                let ordinaryWindow = BARC_APPLICATION_TARGET_ORDINARY_WINDOW.rawValue
+                guard let output, output.pointee.size >= MemoryLayout<BarcApplicationTarget>.size else { return refused }
+                let size = output.pointee.size
+                output.pointee = BarcApplicationTarget()
+                output.pointee.size = size
+                guard let pointer else { return refused }
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
-                guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return 0 }
-                guard app.pageTweaks?.isReady == true else { return -1 }
-                if kind == 3 {
-                    guard let row = app.discoveryAPI.windowState(pendingWindow),
+                guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return refused }
+                guard app.pageTweaks?.isReady == true else { return ordinaryWindow }
+                if kind == BARC_APPLICATION_TARGET_PENDING_PAGE.rawValue {
+                    guard let row = app.bridge.windowState(pendingWindow),
                           row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
-                          app.discoveryAPI.applicationPending(pendingWindow, pendingTab) == 1,
-                          !app.profilePages.ownsNativeWindow(pendingWindow) else { return 0 }
-                    let hint = app.discoveryAPI.requestedSpace(window: pendingWindow, tab: pendingTab)
+                          app.bridge.tab_application_pending(pendingWindow, pendingTab) == 1,
+                          !app.profilePages.ownsNativeWindow(pendingWindow) else { return refused }
+                    let hint = app.bridge.requestedSpace(window: pendingWindow, tab: pendingTab)
                     if hint.supplied {
                         guard let space = hint.id, manager.tabs.space(space) != nil,
                               let profile = manager.tabs.tree.dataStoreID(for: space),
-                              manager.tabs.isProfileAvailable(profile), app.discoveryAPI.identity(row) == profile else { return 0 }
+                              manager.tabs.isProfileAvailable(profile), app.bridge.identity(row) == profile else { return refused }
                     }
                     let pendingSession: PageSession?
                     if row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 {
-                        guard let mini = manager.externalMiniWindowManager.nativeController(tab: pendingTab) as? ChromiumMiniWindowController else { return -1 }
-                        guard mini.nativeWindowID == pendingWindow, !mini.presentationRefused else { return 0 }
-                        guard let selected = manager.externalMiniWindowManager.nativeController(tab: row.active_tab) as? ChromiumMiniWindowController else { return -1 }
-                        guard selected.nativeWindowID == pendingWindow, !selected.presentationRefused else { return 0 }
-                        guard selected.isPresented else { return -1 }
+                        guard let mini = manager.externalMiniWindowManager.nativeController(tab: pendingTab) as? ChromiumMiniWindowController else { return ordinaryWindow }
+                        guard mini.nativeWindowID == pendingWindow, !mini.presentationRefused else { return refused }
+                        guard let selected = manager.externalMiniWindowManager.nativeController(tab: row.active_tab) as? ChromiumMiniWindowController else { return ordinaryWindow }
+                        guard selected.nativeWindowID == pendingWindow, !selected.presentationRefused else { return refused }
+                        guard selected.isPresented else { return ordinaryWindow }
                         pendingSession = manager.externalMiniWindowManager.nativePage(tab: pendingTab)
                     } else {
                         pendingSession = admission.admittedApplicationSession(window: pendingWindow, tab: pendingTab)
-                        guard pendingSession != nil else { return -1 }
+                        guard pendingSession != nil else { return ordinaryWindow }
                     }
-                    guard let blocker = app.blocker, let session = pendingSession else { return 0 }
-                    guard let profileID = app.discoveryAPI.identity(row) else { return 0 }
+                    guard let blocker = app.blocker, let session = pendingSession else { return refused }
+                    guard let profileID = app.bridge.identity(row) else { return refused }
                     let privateSession = row.profile_kind == BARC_DISCOVERY_GUEST.rawValue
                     let outcome = blocker.admitApplicationPage(window: pendingWindow, tab: pendingTab, session: session,
                         isPending: { [weak app] in
                             guard let app, app.acceptsWindows,
-                                  app.discoveryAPI.applicationPending(pendingWindow, pendingTab) == 1,
-                                  let current = app.discoveryAPI.windowState(pendingWindow),
+                                  app.bridge.tab_application_pending(pendingWindow, pendingTab) == 1,
+                                  let current = app.bridge.windowState(pendingWindow),
                                   current.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return false }
-                            return app.discoveryAPI.identity(current) == profileID &&
+                            return app.bridge.identity(current) == profileID &&
                                 (current.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == privateSession
                         }, canAdmit: { [weak app, weak session] in
                             guard let app, let session else { return false }
                             return app.pendingApplicationSession(window: pendingWindow, tab: pendingTab) === session
                         })
-                    guard outcome == 1 else { return outcome }
+                    guard outcome == found else { return outcome }
                     output.pointee.window = pendingWindow
-                    output.pointee.presentation = row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 ? 1 : 0
-                    return 1
+                    output.pointee.presentation = (row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 ?
+                        BARC_APPLICATION_MINI : BARC_APPLICATION_CURRENT_SPACE).rawValue
+                    return found
                 }
-                if kind == 0, let url, let validatedURL = URL(string: String(cString: url)) {
+                if kind == BARC_APPLICATION_TARGET_URL.rawValue, let url, let validatedURL = URL(string: String(cString: url)) {
                     let rule = manager.siteRoutingManager.resolve(url: validatedURL)
                     guard let target = admission.incomingTarget(ruleSpace: rule?.targetSpaceId,
                         mini: manager.nookSettings?.externalLinkDestination != .currentSpace,
-                        regularProfile: manager.currentProfile?.id) else { return 0 }
-                    if target.window == -1 { return -1 }
+                        regularProfile: manager.currentProfile?.id) else { return refused }
+                    if target.window == -1 { return ordinaryWindow }
                     output.pointee.window = target.window
-                    output.pointee.presentation = target.mini ? 1 : 0
+                    output.pointee.presentation = (target.mini ? BARC_APPLICATION_MINI : BARC_APPLICATION_CURRENT_SPACE).rawValue
                     if let id = target.profile { ChromiumApplication.copyUUID(id, into: &output.pointee.regular_profile_uuid) }
                     if let id = target.space { ChromiumApplication.copyUUID(id, into: &output.pointee.space_uuid) }
-                    return 1
+                    return found
                 }
-                guard let target = admission.browserTarget(kind: kind, regularProfile: manager.currentProfile?.id) else { return 0 }
-                if target.window == -1 { return -1 }
+                guard let target = admission.browserTarget(kind: kind, regularProfile: manager.currentProfile?.id) else { return refused }
+                if target.window == -1 { return ordinaryWindow }
                 output.pointee.window = target.window
                 if let id = target.regularProfile { ChromiumApplication.copyUUID(id, into: &output.pointee.regular_profile_uuid) }
-                return 1
+                return found
             }
         }, Unmanaged.passUnretained(self).toOpaque())
-        registerClose({ accepted, pointer in
+        bridge.set_runtime_close_callback({ accepted, pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
@@ -333,14 +286,14 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 }
             }
         }, Unmanaged.passUnretained(self).toOpaque())
-        registerWindowRequest({ request, pointer in
+        bridge.set_runtime_window_request_callback({ request, pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
                 guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return }
                 switch request {
                 case Int32(BARC_APPLICATION_NEW_WINDOW.rawValue):
-                    admission.openNewWindow(open: app.open, close: app.closeWindow,
+                    admission.openNewWindow(open: app.bridge.profile_open_window, close: app.bridge.window_close,
                         canPresent: { [weak app] in app?.acceptsWindows == true })
                 case Int32(BARC_APPLICATION_NEW_PRIVATE_WINDOW.rawValue):
                     manager.createIncognitoWindow()
@@ -349,7 +302,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 }
             }
         }, Unmanaged.passUnretained(self).toOpaque())
-        registerCallback({ pointer in
+        bridge.set_runtime_ready_callback({ pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
@@ -360,22 +313,22 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }, Unmanaged.passUnretained(self).toOpaque())
         // No stores/settings exist before ChromeMain. Unknown is deliberately
         // distinct from the saved disabled policy published at runtime-ready.
-        blockerRegistered = blockerAPI.policy(Int32(BARC_BLOCKER_UNRESOLVED.rawValue), 0, nil, 0) == 1
+        blockerRegistered = bridge.blocker_set_policy(BARC_BLOCKER_UNRESOLVED.rawValue, 0, nil, 0) == 1
     }
 
     /// Read the existing admitted model owner, never construct or retarget one
     /// while an asynchronous first-request preparation is pending.
     private func pendingApplicationSession(window: Int32, tab: Int32) -> PageSession? {
         guard acceptsWindows, let manager = browserManager, let admission,
-              let row = discoveryAPI.windowState(window),
+              let row = bridge.windowState(window),
               row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
-              discoveryAPI.applicationPending(window, tab) == 1,
+              bridge.tab_application_pending(window, tab) == 1,
               !profilePages.ownsNativeWindow(window) else { return nil }
-        let hint = discoveryAPI.requestedSpace(window: window, tab: tab)
+        let hint = bridge.requestedSpace(window: window, tab: tab)
         if hint.supplied {
             guard let space = hint.id, manager.tabs.space(space) != nil,
                   let profile = manager.tabs.tree.dataStoreID(for: space),
-                  manager.tabs.isProfileAvailable(profile), discoveryAPI.identity(row) == profile else { return nil }
+                  manager.tabs.isProfileAvailable(profile), bridge.identity(row) == profile else { return nil }
         }
         if row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 {
             guard let mini = manager.externalMiniWindowManager.nativeController(tab: tab) as? ChromiumMiniWindowController,
@@ -397,7 +350,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
             manager.tabs.blocker.setEnabled(storage.settings.adBlockerEnabled)
-            let blocker = ChromiumContentBlocker(api: blockerAPI, manager: manager.tabs.blocker)
+            let blocker = ChromiumContentBlocker(bridge: bridge, manager: manager.tabs.blocker)
             guard blocker.synchronize(), pageHost.configureBlocker(blocker), downloads.start(manager: storage.downloads) else { completion(nil); return }
             self.blocker = blocker
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
@@ -475,7 +428,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     tabs.detach(window: state)
                 }
             }
-            let admission = ChromiumCreatedPageAdmission(api: discoveryAPI, host: pageHost,
+            let admission = ChromiumCreatedPageAdmission(bridge: bridge, host: pageHost,
                 tabs: manager.tabs, registry: registry,
                 isUtility: { [weak profilePages] in profilePages?.ownsNativeWindow($0) == true },
                 makeShell: { [unowned self, manager, storage, aiService] state in
@@ -493,13 +446,13 @@ final class ChromiumApplication: ChromiumStartupBridge {
             manager.peekManager.nativeAdmission = admission
             manager.tabs.onProfileWindowsNeedReload = { [weak self, weak admission] ids in
                 guard let self, let admission, self.acceptsWindows, self.didPresentInitialWindow else { return }
-                admission.reloadProfileWindows(ids, open: self.open, close: self.closeWindow,
+                admission.reloadProfileWindows(ids, open: self.bridge.profile_open_window, close: self.bridge.window_close,
                     canPresent: { [weak self] in self?.acceptsWindows == true })
             }
             manager.nativeCreateIncognitoWindow = { [weak self, weak admission] in
                 guard let self, let admission, self.acceptsWindows else { return }
                 let origin = self.registry.activeWindow, originID = origin?.id
-                _ = admission.openPrivateWindow(open: self.privateOpen, close: self.closeWindow,
+                _ = admission.openPrivateWindow(open: self.bridge.private_session_open_window, close: self.bridge.window_close,
                     canPresent: { [weak self, weak origin] in
                         guard let self, self.acceptsWindows else { return false }
                         guard let originID else { return true } // App menu with no product window.
@@ -517,7 +470,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     }
                 }
             }
-            let pageTweaks = ChromiumPageTweaks(publish: pageTweaksPublish, settings: storage.settings)
+            let pageTweaks = ChromiumPageTweaks(bridge: bridge, settings: storage.settings)
             self.pageTweaks = pageTweaks
             Task { @MainActor [weak self, weak manager] in
                 guard await pageTweaks.prepare(while: { [weak self, weak manager] in
@@ -560,13 +513,13 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
         opened = completion
         profile.id.uuidString.withCString { uuid in
-        open(uuid, 5, { status, window, pointer in
+        bridge.profile_open_window(uuid, BARC_PROFILE_BLANK, { status, window, pointer in
             MainActor.assumeIsolated {
                 guard let pointer else { return }
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
                 let completion = app.opened
                 app.opened = nil
-                completion?(status == 0 && window > 0 ? window : nil)
+                completion?(status == BARC_PROFILE_OK && window > 0 ? window : nil)
             }
         }, Unmanaged.passUnretained(self).toOpaque())
         }
@@ -578,11 +531,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
             admission?.cancelPendingProductPresentation()
             profilePages.cancelPending()
         }
-        complete(window)
+        bridge.runtime_complete_startup(window)
         guard window > 0, acceptsWindows,
-              let row = discoveryAPI.windowState(window), row.flags & 32 == 0 else { return }
+              let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
         didPresentInitialWindow = true
-        admission?.restoreSavedWindows(open: open, close: closeWindow, canPresent: { [weak self] in self?.acceptsWindows == true })
+        admission?.restoreSavedWindows(open: bridge.profile_open_window, close: bridge.window_close, canPresent: { [weak self] in self?.acceptsWindows == true })
     }
 
     private func makeShell(for state: BrowserWindowState, manager: BrowserManager,
@@ -612,15 +565,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
         if initialWindow == nil {
             guard let intent = manager.tabs.device.pendingProfileDeletion,
                   manager.tabs.isProfileAvailable(intent.survivor),
-                  let row = discoveryAPI.windowState(window),
-                  row.flags & 32 == 0, row.selected_client == window,
-                  ChromiumDiscoveryAPI.profileID(row) == intent.survivor,
+                  let row = bridge.windowState(window),
+                  row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0, row.selected_client == window,
+                  row.profileID == intent.survivor,
                   profilePages.ownsRecoveryWindow(window, profile: intent.survivor, activeTab: row.active_tab),
                   catalog.start() else { completion(nil); return }
             guard acceptsWindows, manager.tabs.device.pendingProfileDeletion == intent,
-                  let checked = discoveryAPI.windowState(window), checked.flags & 32 == 0,
+                  let checked = bridge.windowState(window), checked.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
                   checked.physical_group == row.physical_group, checked.selected_client == window,
-                  ChromiumDiscoveryAPI.profileID(checked) == intent.survivor,
+                  checked.profileID == intent.survivor,
                   profilePages.ownsRecoveryWindow(window, profile: intent.survivor, activeTab: checked.active_tab) else {
                 completion(nil); return
             }
@@ -696,21 +649,19 @@ final class ChromiumApplication: ChromiumStartupBridge {
         window.center()
         window.makeKeyAndOrderFront(nil)
     }
-
-    enum LoaderError: Error { case missingSymbol(String), matchedApplicationProtocolRequired }
 }
 
 @MainActor
 @_cdecl("barc_native_main")
 public func barcNativeMain(
-    _ framework: UnsafeMutableRawPointer?, _ argc: Int32,
+    _ bridge: UnsafePointer<BarcBridge>?, _ engineMain: BarcEngineMain?, _ argc: Int32,
     _ argv: UnsafePointer<UnsafePointer<CChar>?>?
 ) -> Int32 {
-    guard Thread.isMainThread, let framework, argc > 0, let argv else { return EXIT_FAILURE }
+    guard Thread.isMainThread, let bridge, let engineMain, argc > 0, let argv else { return EXIT_FAILURE }
     var arguments: [String] = []
     for index in 0..<Int(argc) {
         guard let value = argv[index] else { return EXIT_FAILURE }
         arguments.append(String(cString: value))
     }
-    return ChromiumApplication.run(framework: framework, arguments: arguments)
+    return ChromiumApplication.run(bridge: bridge.pointee, engineMain: engineMain, arguments: arguments)
 }

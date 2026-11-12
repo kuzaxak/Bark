@@ -1,0 +1,58 @@
+diff --git a/chrome/browser/ui/browser_live_tab_context.cc b/chrome/browser/ui/browser_live_tab_context.cc
+index d48ee3c659..7f90394b23 100644
+--- a/chrome/browser/ui/browser_live_tab_context.cc
++++ b/chrome/browser/ui/browser_live_tab_context.cc
+@@ -5,6 +5,7 @@
+ #include "chrome/browser/ui/browser_live_tab_context.h"
+ 
+ #include <algorithm>
++#include <array>
+ #include <memory>
+ #include <numeric>
+ #include <optional>
+@@ -476,21 +477,32 @@ void BrowserLiveTabContext::ReconstructSplit(
+     sessions::LiveTab* trailing_tab,
+     split_tabs::SplitTabId split_id,
+     const split_tabs::SplitTabVisualData& visual_data) {
+-  auto* leading_content_tab =
+-      static_cast<sessions::ContentLiveTab*>(leading_tab);
+-  auto* trailing_content_tab =
+-      static_cast<sessions::ContentLiveTab*>(trailing_tab);
++  const std::array<sessions::LiveTab*, 2> tabs{leading_tab, trailing_tab};
++  ReconstructSplitTabs(tabs, split_id, visual_data);
++}
+ 
+-  const int leading_index = tab_strip_model_->GetIndexOfWebContents(
+-      &leading_content_tab->GetWebContents());
+-  const int trailing_index = tab_strip_model_->GetIndexOfWebContents(
+-      &trailing_content_tab->GetWebContents());
+-
+-  if (leading_index != TabStripModel::kNoTab &&
+-      trailing_index != TabStripModel::kNoTab) {
+-    tab_strip_model_->RestoreSplit(split_id, {leading_index, trailing_index},
+-                                   visual_data);
++void BrowserLiveTabContext::ReconstructSplitTabs(
++    base::span<sessions::LiveTab* const> tabs,
++    split_tabs::SplitTabId split_id,
++    const split_tabs::SplitTabVisualData& visual_data) {
++  if (tabs.size() < 2 || tabs.size() > split_tabs::SplitTabVisualData::kMaxPanes ||
++      visual_data.pane_count() != tabs.size()) {
++    return;
+   }
++  std::vector<int> indices;
++  for (auto* tab : tabs) {
++    if (!tab) {
++      return;
++    }
++    auto* content_tab = static_cast<sessions::ContentLiveTab*>(tab);
++    const int index = tab_strip_model_->GetIndexOfWebContents(
++        &content_tab->GetWebContents());
++    if (index == TabStripModel::kNoTab || std::ranges::contains(indices, index)) {
++      return;
++    }
++    indices.push_back(index);
++  }
++  tab_strip_model_->RestoreSplit(split_id, indices, visual_data);
+ }
+ 
+ void BrowserLiveTabContext::CloseTab() {

@@ -1,0 +1,29 @@
+diff --git a/chrome/browser/ui/views/extensions/extension_install_dialog_view.h b/chrome/browser/ui/views/extensions/extension_install_dialog_view.h
+index bd3cc71d46..7eb88cd264 100644
+--- a/chrome/browser/ui/views/extensions/extension_install_dialog_view.h
++++ b/chrome/browser/ui/views/extensions/extension_install_dialog_view.h
+@@ -8,6 +8,7 @@
+ #include <optional>
+ #include <vector>
+ 
++#include "base/callback_list.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/scoped_observation.h"
+ #include "base/timer/elapsed_timer.h"
+@@ -26,6 +27,7 @@
+ #include "ui/views/view.h"
+ 
+ class PictureInPictureInputProtector;
++class BrowserWindowInterface;
+ class Profile;
+ class ExtensionJustificationView;
+ 
+@@ -82,6 +84,8 @@ class ExtensionInstallDialogView : public views::BubbleDialogDelegateView,
+ 
+  private:
+   void CloseDialog();
++  void OnBrowserOwnerClosed(BrowserWindowInterface* browser);
++  base::CallbackListSubscription browser_close_subscription_;
+ 
+   // extensions::ExtensionRegistryObserver:
+   void OnExtensionUninstalled(content::BrowserContext* browser_context,

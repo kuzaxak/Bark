@@ -1,0 +1,108 @@
+diff --git a/chrome/browser/ui/views/frame/contents_container_view.cc b/chrome/browser/ui/views/frame/contents_container_view.cc
+index febd158b3d..03c7dd3954 100644
+--- a/chrome/browser/ui/views/frame/contents_container_view.cc
++++ b/chrome/browser/ui/views/frame/contents_container_view.cc
+@@ -61,7 +61,7 @@ constexpr int kNewTabFooterHeight = 56;
+ 
+ ContentsContainerView::ContentsContainerView(BrowserView* browser_view)
+     : browser_view_(browser_view),
+-      web_contents_modal_dialog_host_(browser_view_, this) {
++      web_contents_modal_dialog_host_(std::in_place, browser_view_, this) {
+   SetLayoutManager(std::make_unique<views::DelegatingLayoutManager>(this));
+   SetProperty(views::kElementIdentifierKey, kContentsContainerViewElementId);
+ 
+@@ -182,8 +182,43 @@ ContentsContainerView::~ContentsContainerView() {
+   }
+ }
+ 
++void ContentsContainerView::DestroyOwnerBoundChildrenForRetirement() {
++  CHECK(!owner_retired_);
++  owner_retired_ = true;
++  // Preserve the normal ReadAnything-before-ContentsWebView destruction order.
++  // Modal observers are notified while the original owner is still valid.
++  web_contents_modal_dialog_host_.reset();
++  view_bounds_observer_.Reset();
++  SetLayoutManager(nullptr);
++  if (read_anything_immersive_overlay_view_) {
++    auto overlay = RemoveChildViewT(read_anything_immersive_overlay_view_);
++    read_anything_immersive_overlay_view_ = nullptr;
++  }
++  toast_anchor_view_ = nullptr;
++  contents_view_ = nullptr;
++  devtools_web_view_ = nullptr;
++  devtools_scrim_view_ = nullptr;
++  new_tab_footer_view_ = nullptr;
++  new_tab_footer_view_separator_ = nullptr;
++  data_protection_overlay_view_ = nullptr;
++  ai_overlay_dialog_view_ = nullptr;
++  contents_scrim_view_ = nullptr;
++  actor_overlay_web_view_ = nullptr;
++  glic_selection_overlay_view_ = nullptr;
++  glic_border_ = nullptr;
++  mini_toolbar_ = nullptr;
++  container_outline_ = nullptr;
++  capture_contents_border_view_ = nullptr;
++  indigo_overlay_view_ = nullptr;
++  RemoveAllChildViews();
++  browser_view_ = nullptr;
++}
++
+ std::vector<views::View*> ContentsContainerView::GetAccessiblePanes() {
+   std::vector<views::View*> accessible_panes;
++  if (owner_retired_) {
++    return accessible_panes;
++  }
+   if (contents_view_->GetVisible()) {
+     accessible_panes.push_back(contents_view_);
+   }
+@@ -313,6 +348,9 @@ void ContentsContainerView::UpdateBorderRoundedCorners() {
+ }
+ 
+ void ContentsContainerView::ChildVisibilityChanged(View* child) {
++  if (owner_retired_) {
++    return;
++  }
+   if ((child == new_tab_footer_view_ || child == devtools_web_view_) &&
+       !rounded_corner_radii_.IsEmpty()) {
+     UpdateBorderRoundedCorners();
+@@ -322,14 +360,18 @@ void ContentsContainerView::ChildVisibilityChanged(View* child) {
+ void ContentsContainerView::Layout(PassKey pass_key) {
+   LayoutSuperclass<views::View>(this);
+ 
+-  UpdateContentsClip();
++  if (!owner_retired_) {
++    UpdateContentsClip();
++  }
+ }
+ 
+ views::View::Views ContentsContainerView::GetChildrenInZOrder() {
+ #if DCHECK_IS_ON()
+   auto ordered_children = views::View::GetChildrenInZOrder();
+   // |capture_contents_border_view_| should have the highest z-order.
+-  DCHECK(ordered_children.back() == capture_contents_border_view_);
++  if (!owner_retired_) {
++    DCHECK(ordered_children.back() == capture_contents_border_view_);
++  }
+   return ordered_children;
+ #else
+   return views::View::GetChildrenInZOrder();
+@@ -337,6 +379,9 @@ views::View::Views ContentsContainerView::GetChildrenInZOrder() {
+ }
+ 
+ void ContentsContainerView::OnViewBoundsChanged(View* observed_view) {
++  if (owner_retired_) {
++    return;
++  }
+   if (observed_view == contents_view_) {
+     UpdateDevToolsDockedPlacement();
+     if (!rounded_corner_radii_.IsEmpty()) {
+@@ -465,6 +510,9 @@ void ContentsContainerView::UpdateContentsClip() {
+ views::ProposedLayout ContentsContainerView::CalculateProposedLayout(
+     const views::SizeBounds& size_bounds) const {
+   views::ProposedLayout layouts;
++  if (owner_retired_) {
++    return layouts;
++  }
+   if (!size_bounds.is_fully_bounded()) {
+     return layouts;
+   }

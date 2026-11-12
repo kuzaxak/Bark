@@ -1,0 +1,155 @@
+diff --git a/content/browser/renderer_host/render_frame_host_impl.cc b/content/browser/renderer_host/render_frame_host_impl.cc
+index 410948963a..fcff12acac 100644
+--- a/content/browser/renderer_host/render_frame_host_impl.cc
++++ b/content/browser/renderer_host/render_frame_host_impl.cc
+@@ -2024,6 +2024,7 @@ class RenderFrameHostImpl::SubresourceLoaderFactoriesConfig {
+   static SubresourceLoaderFactoriesConfig ForLastCommittedNavigation(
+       RenderFrameHostImpl& frame) {
+     SubresourceLoaderFactoriesConfig result;
++    result.document_navigation_id_ = frame.GetNavigationId();
+     result.origin_ = frame.GetLastCommittedOrigin();
+     result.isolation_info_ = frame.GetIsolationInfoForSubresources();
+     result.client_security_state_ = frame.BuildClientSecurityState();
+@@ -2079,6 +2080,7 @@ class RenderFrameHostImpl::SubresourceLoaderFactoriesConfig {
+   static SubresourceLoaderFactoriesConfig ForPendingNavigation(
+       NavigationRequest& navigation_request) {
+     SubresourceLoaderFactoriesConfig result;
++    result.document_navigation_id_ = navigation_request.GetNavigationId();
+     result.origin_ = navigation_request.GetOriginToCommit().value();
+     result.client_security_state_ =
+         navigation_request.BuildClientSecurityStateForCommittedDocument();
+@@ -2185,6 +2187,7 @@ class RenderFrameHostImpl::SubresourceLoaderFactoriesConfig {
+   SubresourceLoaderFactoriesConfig& operator=(
+       const SubresourceLoaderFactoriesConfig&) = delete;
+ 
++  int64_t document_navigation_id() const { return document_navigation_id_; }
+   const url::Origin& origin() const { return origin_; }
+   const net::IsolationInfo& isolation_info() const { return isolation_info_; }
+ 
+@@ -2235,6 +2238,7 @@ class RenderFrameHostImpl::SubresourceLoaderFactoriesConfig {
+   }
+ 
+  private:
++  int64_t document_navigation_id_ = -1;
+   // Private constructor - please go through the static For... methods.
+   SubresourceLoaderFactoriesConfig() = default;
+ 
+@@ -3706,7 +3710,8 @@ bool RenderFrameHostImpl::CreateNetworkServiceDefaultFactory(
+           subresource_loader_factories_config,
+           "RFHI::CreateNetworkServiceDefaultFactory"),
+       subresource_loader_factories_config.ukm_source_id(),
+-      std::move(default_factory_receiver));
++      std::move(default_factory_receiver),
++      subresource_loader_factories_config.document_navigation_id());
+ }
+ 
+ std::unique_ptr<blink::PendingURLLoaderFactoryBundle>
+@@ -3821,7 +3826,8 @@ RenderFrameHostImpl::CreateURLLoaderFactoriesForIsolatedWorlds(
+     CreateNetworkServiceDefaultFactoryAndObserve(
+         std::move(factory_params),
+         ukm::kInvalidSourceIdObj, /* isolated from page */
+-        factory_remote.InitWithNewPipeAndPassReceiver());
++        factory_remote.InitWithNewPipeAndPassReceiver(),
++        config.document_navigation_id());
+     result[isolated_world_origin] = std::move(factory_remote);
+   }
+   return result;
+@@ -5219,6 +5225,24 @@ RenderFrameHostImpl::GetPendingCommitCrossDocumentNavigations() const {
+   return handles;
+ }
+ 
++std::optional<GURL> RenderFrameHostImpl::GetCurrentOrPendingCommitDocumentURL(
++    const blink::DocumentToken& document) const {
++  for (const auto& request : navigation_requests_) {
++    const auto& expected = request.first->IsPageActivation()
++        ? GetDocumentTokenIgnoringSafetyRestrictions()
++        : request.first->GetDocumentToken();
++    // A reused active RFH already has the incoming token while its last URL
++    // is still outgoing. Return only that token's actual pending URL.
++    if (expected == document) return request.first->GetURL();
++  }
++  if ((lifecycle_state() == LifecycleStateImpl::kActive ||
++       lifecycle_state() == LifecycleStateImpl::kPrerendering ||
++       lifecycle_state() == LifecycleStateImpl::kInBackForwardCache) &&
++      GetDocumentToken() == document)
++    return GetLastCommittedURL();
++  return std::nullopt;
++}
++
+ void RenderFrameHostImpl::OnCreateChildFrame(
+     int new_routing_id,
+     mojo::PendingAssociatedRemote<mojom::Frame> frame_remote,
+@@ -8445,7 +8469,8 @@ void RenderFrameHostImpl::UpdateSubresourceLoaderFactories() {
+             subresource_loader_factories_config,
+             "RFHI::UpdateSubresourceLoaderFactories"),
+         subresource_loader_factories_config.ukm_source_id(),
+-        default_factory_remote.InitWithNewPipeAndPassReceiver());
++        default_factory_remote.InitWithNewPipeAndPassReceiver(),
++        subresource_loader_factories_config.document_navigation_id());
+   }
+ 
+   std::unique_ptr<blink::PendingURLLoaderFactoryBundle>
+@@ -10550,7 +10575,8 @@ RenderFrameHostImpl::CreateCrossOriginPrefetchLoaderFactoryBundle() {
+   bypass_redirect_checks = CreateNetworkServiceDefaultFactoryAndObserve(
+       std::move(factory_params),
+       subresource_loader_factories_config.ukm_source_id(),
+-      pending_default_factory.InitWithNewPipeAndPassReceiver());
++      pending_default_factory.InitWithNewPipeAndPassReceiver(),
++      subresource_loader_factories_config.document_navigation_id());
+ 
+   return std::make_unique<blink::PendingURLLoaderFactoryBundle>(
+       std::move(pending_default_factory),
+@@ -12913,7 +12939,8 @@ void RenderFrameHostImpl::CommitNavigation(
+                   subresource_loader_factories_config,
+                   "RFHI::CommitNavigation"),
+               subresource_loader_factories_config.ukm_source_id(),
+-              pending_default_factory.InitWithNewPipeAndPassReceiver());
++              pending_default_factory.InitWithNewPipeAndPassReceiver(),
++              subresource_loader_factories_config.document_navigation_id());
+       subresource_loader_factories->set_bypass_redirect_checks(
+           bypass_redirect_checks);
+     }
+@@ -13251,7 +13278,8 @@ void RenderFrameHostImpl::FailedNavigation(
+               *navigation_request),
+           "RFHI::FailedNavigation"),
+       ukm::kInvalidSourceIdObj,
+-      default_factory_remote.InitWithNewPipeAndPassReceiver());
++      default_factory_remote.InitWithNewPipeAndPassReceiver(),
++      navigation_request->GetNavigationId());
+   subresource_loader_factories =
+       std::make_unique<blink::PendingURLLoaderFactoryBundle>(
+           std::move(default_factory_remote),
+@@ -14205,9 +14233,11 @@ bool RenderFrameHostImpl::CreateNetworkServiceDefaultFactoryAndObserve(
+     network::mojom::URLLoaderFactoryParamsPtr params,
+     ukm::SourceIdObj ukm_source_id,
+     mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-        default_factory_receiver) {
++        default_factory_receiver,
++    int64_t document_navigation_id) {
+   bool bypass_redirect_checks = CreateNetworkServiceDefaultFactoryInternal(
+-      std::move(params), ukm_source_id, std::move(default_factory_receiver));
++      std::move(params), ukm_source_id, std::move(default_factory_receiver),
++      document_navigation_id);
+ 
+   // Add a disconnect handler when Network Service is running
+   // out-of-process.
+@@ -14245,7 +14275,8 @@ bool RenderFrameHostImpl::CreateNetworkServiceDefaultFactoryInternal(
+     network::mojom::URLLoaderFactoryParamsPtr params,
+     ukm::SourceIdObj ukm_source_id,
+     mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-        default_factory_receiver) {
++        default_factory_receiver,
++    int64_t document_navigation_id) {
+   CHECK(params->request_initiator_origin_lock.has_value());
+   const url::Origin request_initiator =
+       params->request_initiator_origin_lock.value();
+@@ -14263,7 +14294,8 @@ bool RenderFrameHostImpl::CreateNetworkServiceDefaultFactoryInternal(
+       url_loader_factory::ContentClientParams(
+           GetBrowserContext(), this, GetProcess()->GetDeprecatedID(),
+           request_initiator, isolation_info, ukm_source_id,
+-          &bypass_redirect_checks),
++          &bypass_redirect_checks, /*navigation_id=*/std::nullopt,
++          /*navigation_response_task_runner=*/nullptr, document_navigation_id),
+       devtools_instrumentation::WillCreateURLLoaderFactoryParams::ForFrame(
+           this));
+   return bypass_redirect_checks;

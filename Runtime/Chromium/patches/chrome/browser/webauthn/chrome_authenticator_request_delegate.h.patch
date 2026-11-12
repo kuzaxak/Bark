@@ -1,0 +1,23 @@
+diff --git a/chrome/browser/webauthn/chrome_authenticator_request_delegate.h b/chrome/browser/webauthn/chrome_authenticator_request_delegate.h
+index 0546c8a7f0..4f31034f18 100644
+--- a/chrome/browser/webauthn/chrome_authenticator_request_delegate.h
++++ b/chrome/browser/webauthn/chrome_authenticator_request_delegate.h
+@@ -205,6 +205,7 @@ class ChromeAuthenticatorRequestDelegate
+       std::optional<std::string_view> user_name,
+       bool is_enclave_authenticator_available,
+       device::FidoDiscoveryFactory* discovery_factory) override;
++  std::vector<std::unique_ptr<device::FidoDiscoveryBase>> CreatePlatformDiscoveries() override;
+   void SetHints(const Hints& hints) override;
+   void SelectAccount(
+       std::vector<device::AuthenticatorGetAssertionResponse> responses,
+@@ -362,6 +363,10 @@ class ChromeAuthenticatorRequestDelegate
+       const device::FidoRequestHandlerBase::TransportAvailabilityInfo& tai);
+ 
+   const content::GlobalRenderFrameHostId render_frame_host_id_;
++#if BUILDFLAG(IS_MAC)
++  std::optional<url::Origin> pawl_origin_;
++  std::string pawl_rp_;
++#endif
+   const scoped_refptr<AuthenticatorRequestDialogModel> dialog_model_;
+   std::unique_ptr<AuthenticatorRequestDialogController> dialog_controller_;
+   base::OnceClosure cancel_callback_;

@@ -1,0 +1,40 @@
+diff --git a/chrome/browser/sessions/session_data_service.cc b/chrome/browser/sessions/session_data_service.cc
+index a36b043f9c..38f688e14a 100644
+--- a/chrome/browser/sessions/session_data_service.cc
++++ b/chrome/browser/sessions/session_data_service.cc
+@@ -6,6 +6,7 @@
+ 
+ #include "base/feature_list.h"
+ #include "base/functional/bind.h"
++#include "build/build_config.h"
+ #include "chrome/browser/defaults.h"
+ #include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -20,6 +21,12 @@
+ #include "components/prefs/pref_service.h"
+ #include "storage/browser/quota/special_storage_policy.h"
+ 
++#if !BUILDFLAG(IS_ANDROID)
++#include "chrome/browser/browser_process.h"
++#include "chrome/browser/profiles/delete_profile_helper.h"
++#include "chrome/browser/profiles/profile_manager.h"
++#endif
++
+ namespace {
+ // Pref name for Status preference.
+ extern const char kSessionDataStatusPref[] = "sessions.session_data_status";
+@@ -146,6 +153,14 @@ void SessionDataService::StartCleanup() {
+ }
+ 
+ void SessionDataService::StartCleanupInternal(bool skip_session_cookies) {
++#if !BUILDFLAG(IS_ANDROID)
++  auto* manager = g_browser_process->profile_manager();
++  if (manager &&
++      manager->GetDeleteProfileHelper()
++          .ShouldPreserveSessionDataForExplicitDeletion(profile_->GetPath())) {
++    return;
++  }
++#endif
+   if (cleanup_started_)
+     return;
+ 

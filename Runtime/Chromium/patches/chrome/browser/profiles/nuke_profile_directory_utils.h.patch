@@ -1,0 +1,14 @@
+diff --git a/chrome/browser/profiles/nuke_profile_directory_utils.h b/chrome/browser/profiles/nuke_profile_directory_utils.h
+index 3719ad67a5..999c2142a9 100644
+--- a/chrome/browser/profiles/nuke_profile_directory_utils.h
++++ b/chrome/browser/profiles/nuke_profile_directory_utils.h
+@@ -22,6 +22,9 @@ void NukeProfileFromDisk(const base::FilePath& profile_path,
+ // Returns if profile is marked for deletion.
+ bool IsProfileDirectoryMarkedForDeletion(const base::FilePath& profile_path);
+ 
++// True during scheduling as well as marked deletion; admission must reject both.
++bool IsProfileDirectoryPendingDeletion(const base::FilePath& profile_path);
++
+ // Cancel a scheduling deletion, so ScheduleProfileDirectoryForDeletion can be
+ // called again successfully.
+ void CancelProfileDeletion(const base::FilePath& path);

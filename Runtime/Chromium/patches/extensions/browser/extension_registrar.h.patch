@@ -1,0 +1,15 @@
+diff --git a/extensions/browser/extension_registrar.h b/extensions/browser/extension_registrar.h
+index 11c4aaf941..11b34ec062 100644
+--- a/extensions/browser/extension_registrar.h
++++ b/extensions/browser/extension_registrar.h
+@@ -109,6 +109,10 @@ class ExtensionRegistrar : public KeyedService,
+     virtual void ShowExtensionDisabledError(const Extension* extension,
+                                             bool is_remote_install) = 0;
+ 
++    // Embedder admission checked before registration, including external and
++    // component load paths. Default preserves existing embedders.
++    virtual bool CanAddExtension(const Extension* extension);
++
+     // Returns true if the extension is allowed to be enabled or disabled,
+     // respectively.
+     virtual bool CanEnableExtension(const Extension* extension) = 0;

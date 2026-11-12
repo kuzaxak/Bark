@@ -1,0 +1,45 @@
+diff --git a/chrome/browser/extensions/extension_context_menu_model.cc b/chrome/browser/extensions/extension_context_menu_model.cc
+index 946494eefe..3dd8301057 100644
+--- a/chrome/browser/extensions/extension_context_menu_model.cc
++++ b/chrome/browser/extensions/extension_context_menu_model.cc
+@@ -316,10 +316,10 @@ class UninstallDialogHelper : public ExtensionUninstallDialog::Delegate {
+   // Kicks off the asynchronous process to confirm and uninstall the given
+   // |extension|.
+   static void UninstallExtension(Profile* profile,
+-                                 gfx::NativeWindow parent,
++                                 BrowserWindowInterface* browser,
+                                  const Extension* extension) {
+     UninstallDialogHelper* helper = new UninstallDialogHelper();
+-    helper->BeginUninstall(profile, parent, extension);
++    helper->BeginUninstall(profile, browser, extension);
+   }
+ 
+  private:
+@@ -328,9 +328,15 @@ class UninstallDialogHelper : public ExtensionUninstallDialog::Delegate {
+   ~UninstallDialogHelper() override = default;
+ 
+   void BeginUninstall(Profile* profile,
+-                      gfx::NativeWindow parent,
++                      BrowserWindowInterface* browser,
+                       const Extension* extension) {
+-    uninstall_dialog_ = ExtensionUninstallDialog::Create(profile, parent, this);
++#if BUILDFLAG(IS_ANDROID)
++    uninstall_dialog_ = ExtensionUninstallDialog::Create(
++        profile, browser->GetWindow()->GetNativeWindow(), this);
++#else
++    uninstall_dialog_ =
++        ExtensionUninstallDialog::CreateForBrowser(profile, browser, this);
++#endif
+     uninstall_dialog_->ConfirmUninstall(extension,
+                                         UNINSTALL_REASON_USER_INITIATED,
+                                         UNINSTALL_SOURCE_TOOLBAR_CONTEXT_MENU);
+@@ -565,8 +571,7 @@ void ExtensionContextMenuModel::ExecuteCommand(int command_id,
+       break;
+     }
+     case UNINSTALL: {
+-      UninstallDialogHelper::UninstallExtension(
+-          profile_, browser_->GetWindow()->GetNativeWindow(), extension);
++      UninstallDialogHelper::UninstallExtension(profile_, browser_, extension);
+       break;
+     }
+     case TOGGLE_SIDE_PANEL_VISIBILITY: {

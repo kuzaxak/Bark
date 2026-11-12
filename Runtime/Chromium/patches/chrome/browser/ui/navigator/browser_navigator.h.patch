@@ -1,0 +1,18 @@
+diff --git a/chrome/browser/ui/navigator/browser_navigator.h b/chrome/browser/ui/navigator/browser_navigator.h
+index bbc88725a8..028a49ad96 100644
+--- a/chrome/browser/ui/navigator/browser_navigator.h
++++ b/chrome/browser/ui/navigator/browser_navigator.h
+@@ -12,8 +12,13 @@ namespace content {
+ class NavigationHandle;
+ }
+ 
++class Profile;
+ struct NavigateParams;
+ 
++// Clears source state that cannot cross profiles, using the same precedence
++// as Navigate. A held native intent may then bind its exact target contents.
++void SanitizeNavigationSourceForProfile(NavigateParams* params, Profile* target);
++
+ // Navigates according to the configuration specified in |params|.
+ // Returns the NavigationHandle* for the started navigation, which might be null
+ // if the navigation couldn't be started.

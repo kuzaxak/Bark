@@ -1,0 +1,47 @@
+diff --git a/chrome/browser/ui/views/frame/contents_container_view.h b/chrome/browser/ui/views/frame/contents_container_view.h
+index e3ae9d104d..d51a438183 100644
+--- a/chrome/browser/ui/views/frame/contents_container_view.h
++++ b/chrome/browser/ui/views/frame/contents_container_view.h
+@@ -102,7 +102,8 @@ class ContentsContainerView : public views::View,
+     return container_outline_;
+   }
+   TabModalDialogHost* web_contents_modal_dialog_host() {
+-    return &web_contents_modal_dialog_host_;
++    return web_contents_modal_dialog_host_ ? &*web_contents_modal_dialog_host_
++                                           : nullptr;
+   }
+ 
+   views::View* indigo_overlay_view() { return indigo_overlay_view_; }
+@@ -143,7 +144,15 @@ class ContentsContainerView : public views::View,
+ 
+   views::View* GetToastAnchorView() { return toast_anchor_view_; }
+ 
++  // Immutable logical/profile owner, independent of temporary view parenting.
++  BrowserView* browser_view() const { return browser_view_; }
++
+  private:
++  friend class MultiContentsView;
++  void DestroyOwnerBoundChildrenForRetirement();
++  // Expiring naturally avoids writing through a child destroyed in a callout.
++  std::weak_ptr<void> hierarchy_mutation_;
++
+   void UpdateContentsClip();
+ 
+   // Updates the DevTools docked placement. It infers the docked placement from
+@@ -166,6 +175,7 @@ class ContentsContainerView : public views::View,
+   views::ProposedLayout CalculateProposedLayout(
+       const views::SizeBounds& size_bounds) const override;
+ 
++  bool owner_retired_ = false;
+   bool is_in_split_ = false;
+ 
+   raw_ptr<BrowserView> browser_view_ = nullptr;
+@@ -176,7 +186,7 @@ class ContentsContainerView : public views::View,
+ 
+   raw_ptr<ContentsWebView> contents_view_ = nullptr;
+ 
+-  TabModalDialogHost web_contents_modal_dialog_host_;
++  std::optional<TabModalDialogHost> web_contents_modal_dialog_host_;
+ 
+   // The view that contains devtools window for the WebContents.
+   raw_ptr<views::WebView> devtools_web_view_ = nullptr;

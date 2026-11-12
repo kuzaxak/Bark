@@ -1,0 +1,160 @@
+diff --git a/chrome/browser/ui/views/tabs/common/split_tab_view.cc b/chrome/browser/ui/views/tabs/common/split_tab_view.cc
+index a0df4945de..c8f9ad96e1 100644
+--- a/chrome/browser/ui/views/tabs/common/split_tab_view.cc
++++ b/chrome/browser/ui/views/tabs/common/split_tab_view.cc
+@@ -4,6 +4,7 @@
+ 
+ #include "chrome/browser/ui/views/tabs/common/split_tab_view.h"
+ 
++#include <limits>
+ #include <vector>
+ 
+ #include "chrome/browser/ui/color/chrome_color_id.h"
+@@ -133,7 +134,8 @@ gfx::Size SplitTabView::GetMinimumSize() const {
+       min_width += child->GetMinimumSize().width();
+     }
+     const int tab_overlap = TabStyle::Get()->GetTabOverlap();
+-    return gfx::Size(std::max(0, min_width - tab_overlap),
++    const int overlap_count = children().empty() ? 0 : children().size() - 1;
++    return gfx::Size(std::max(0, min_width - tab_overlap * overlap_count),
+                      TabStyle::Get()->GetStandardHeight());
+   }
+   return views::View::GetMinimumSize();
+@@ -145,27 +147,24 @@ std::optional<BrowserRootView::DropIndex> SplitTabView::GetLinkDropIndex(
+     return std::nullopt;
+   }
+ 
+-  CHECK_EQ(collection_node_->children().size(), 2ul);
+-
+-  const auto& start_node = collection_node_->children()[0];
+-  gfx::Point start_loc = views::View::ConvertPointToTarget(
+-      start_node->view(), this,
+-      start_node->view()->GetLocalBounds().CenterPoint());
+-  const auto& end_node = collection_node_->children()[1];
+-  gfx::Point end_loc = views::View::ConvertPointToTarget(
+-      end_node->view(), this, end_node->view()->GetLocalBounds().CenterPoint());
+-
+-  TabDragHandler& drag_handler =
+-      collection_node_->GetController()->GetDragHandler();
+-
+-  // Links can't be dropped between tabs in a split view so just determine the
+-  // closest tab to the drop point.
+-  if ((start_loc - loc_in_view).LengthSquared() <
+-      (end_loc - loc_in_view).LengthSquared()) {
+-    return drag_handler.GetLinkDropIndexForNode(*start_node, std::nullopt);
+-  } else {
+-    return drag_handler.GetLinkDropIndexForNode(*end_node, std::nullopt);
++  const auto& children = collection_node_->children();
++  if (children.empty()) {
++    return std::nullopt;
+   }
++  auto closest = children.begin();
++  int closest_distance = std::numeric_limits<int>::max();
++  for (auto it = children.begin(); it != children.end(); ++it) {
++    auto* view = (*it)->view();
++    const gfx::Point center = views::View::ConvertPointToTarget(
++        view, this, view->GetLocalBounds().CenterPoint());
++    const int distance = (center - loc_in_view).LengthSquared();
++    if (distance < closest_distance) {
++      closest = it;
++      closest_distance = distance;
++    }
++  }
++  return collection_node_->GetController()->GetDragHandler()
++      .GetLinkDropIndexForNode(**closest, std::nullopt);
+ }
+ 
+ double SplitTabView::GetHoverAnimationValue() const {
+@@ -246,7 +245,7 @@ views::ProposedLayout SplitTabView::CalculateHorizontalLayout(
+   views::ProposedLayout layouts;
+   const auto children = collection_node_ ? collection_node_->GetDirectChildren()
+                                          : TabCollectionNode::ChildViews();
+-  if (children.size() != 2) {
++  if (children.size() < 2) {
+     layouts.host_size = gfx::Size(0, 0);
+     return layouts;
+   }
+@@ -256,7 +255,6 @@ views::ProposedLayout SplitTabView::CalculateHorizontalLayout(
+ 
+   // Layout children horizontally side-by-side in order.
+   int x = 0;
+-  int first_child_width = 0;
+   for (size_t i = 0; i < children.size(); ++i) {
+     views::View* child = children[i];
+     gfx::Rect bounds = gfx::Rect(child->GetPreferredSize());
+@@ -265,11 +263,12 @@ views::ProposedLayout SplitTabView::CalculateHorizontalLayout(
+ 
+     // Fill available width evenly if bounded.
+     if (size_bounds.width().is_bounded()) {
+-      const int available_width = size_bounds.width().value() + tab_overlap;
+-      bounds.set_width(i == 0 ? std::floor(available_width / 2)
+-                              : available_width - first_child_width);
++      const int available_width = size_bounds.width().value() +
++          tab_overlap * static_cast<int>(children.size() - 1);
++      const int begin = available_width * i / children.size();
++      const int end = available_width * (i + 1) / children.size();
++      bounds.set_width(end - begin);
+     }
+-    first_child_width = bounds.width();
+     if (i < children.size() - 1) {
+       x += bounds.width() - tab_overlap;
+     } else {
+@@ -290,7 +289,7 @@ views::ProposedLayout SplitTabView::CalculateVerticalLayout(
+ 
+   const auto children = collection_node_ ? collection_node_->GetDirectChildren()
+                                          : TabCollectionNode::ChildViews();
+-  if (children.size() != 2) {
++  if (children.size() < 2) {
+     layouts.host_size = gfx::Size(0, 0);
+     return layouts;
+   }
+@@ -310,23 +309,19 @@ views::ProposedLayout SplitTabView::CalculateVerticalLayout(
+                GetLayoutConstant(LayoutConstant::kVerticalTabMinWidth) *
+                children.size()))) {
+     int x = 0;
+-    for (auto* child : children) {
+-      bool is_first_child = x == 0;
++    for (size_t i = 0; i < children.size(); ++i) {
++      auto* child = children[i];
+       gfx::Rect bounds = gfx::Rect(child->GetPreferredSize());
+       bounds.set_x(x);
+-      // Fill available width if bounded.
+       if (size_bounds.width().is_bounded()) {
+-        // Split available space between the two children. Once this calculation
+-        // is done for the first child, the second fills the remaining space.
+-        bounds.set_width(
+-            is_first_child ? (std::floor(size_bounds.width().value() +
+-                                         2 * border_thickness - kSplitViewGap) /
+-                              2)
+-                           : size_bounds.width().value() - x);
++        const int gaps = kSplitViewGap * static_cast<int>(children.size() - 1);
++        const int shared_width = std::max(0, size_bounds.width().value() - gaps);
++        const int begin = shared_width * i / children.size();
++        const int end = shared_width * (i + 1) / children.size();
++        bounds.set_width(end - begin + 2 * border_thickness);
+       }
+-      // Advance x position by child width, accounting for any border and gap.
+       x += bounds.width() - 2 * border_thickness +
+-           (is_first_child ? kSplitViewGap : 0);
++           (i + 1 < children.size() ? kSplitViewGap : 0);
+       height = std::max(height, bounds.height());
+       layouts.child_layouts.emplace_back(child, child->GetVisible(), bounds);
+     }
+@@ -340,7 +335,7 @@ views::ProposedLayout SplitTabView::CalculateVerticalLayout(
+       bounds.set_height(bounds.height());
+       // Advance y position by child height, accounting for any border and gap.
+       y +=
+-          bounds.height() - 2 * border_thickness + (y == 0 ? kSplitViewGap : 0);
++          bounds.height() - 2 * border_thickness + (child != children[children.size() - 1] ? kSplitViewGap : 0);
+       layouts.child_layouts.emplace_back(child, child->GetVisible(), bounds);
+     }
+     width = size_bounds.width().value();
+@@ -370,7 +365,7 @@ std::unique_ptr<views::View> SplitTabView::RemoveChildViewForReparenting(
+           // front first so it is necessary to test the number of children
+           // in the collection when computing the animation direction.
+           .animation_direction =
+-              (children.size() == 2 && children[0] == child_view)
++              (children.size() >= 2 && children[0] == child_view)
+                   ? TabCollectionAnimatingLayoutManager::AnimationDirection::
+                         kEndToStart
+                   : TabCollectionAnimatingLayoutManager::AnimationDirection::

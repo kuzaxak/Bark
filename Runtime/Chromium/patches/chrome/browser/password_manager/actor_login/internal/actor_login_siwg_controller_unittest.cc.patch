@@ -1,0 +1,36 @@
+diff --git a/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc b/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
+index 71c5c3139b..12f7dcc118 100644
+--- a/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
++++ b/chrome/browser/password_manager/actor_login/internal/actor_login_siwg_controller_unittest.cc
+@@ -74,12 +74,31 @@ class MockActionSequenceDelegate : public ActionSequenceDelegate {
+ 
+ class MockChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
+  public:
++  void ClearNookCosmetics(const blink::DocumentToken&, uint64_t) override {}
+   void BindPendingReceiver(mojo::ScopedInterfaceEndpointHandle handle) {
+     receivers_.Add(
+         this, mojo::PendingAssociatedReceiver<chrome::mojom::ChromeRenderFrame>(
+                   std::move(handle)));
+   }
+ 
++  MOCK_METHOD(void, NookEvaluateScript,
++      (const blink::DocumentToken&, uint64_t, uint64_t, int32_t, int32_t,
++       const std::string&, NookEvaluateScriptCallback), (override));
++  MOCK_METHOD(void, NookStartBoostPicker,
++      (const blink::DocumentToken&, uint64_t, uint64_t, NookStartBoostPickerCallback), (override));
++  MOCK_METHOD(void, ClearNookPageTweaks, (const blink::DocumentToken&), (override));
++  MOCK_METHOD(void, NookCancelBoostPicker,
++      (const blink::DocumentToken&, uint64_t, uint64_t), (override));
++  MOCK_METHOD(void, NookCancelScript,
++      (const blink::DocumentToken&, uint64_t, uint64_t), (override));
++  MOCK_METHOD(void, NookTranslate,
++              (const blink::DocumentToken&, uint64_t, int32_t,
++               std::vector<chrome::mojom::NookTranslationNodePtr>,
++               mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient>,
++               NookTranslateCallback), (override));
++  MOCK_METHOD(void, SetNookBoostStyle,
++              (const blink::DocumentToken&, const std::string&,
++               SetNookBoostStyleCallback), (override));
+   MOCK_METHOD(void,
+               SetWindowFeatures,
+               (blink::mojom::WindowFeaturesPtr),

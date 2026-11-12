@@ -1,0 +1,122 @@
+diff --git a/components/split_tabs/split_tab_visual_data.cc b/components/split_tabs/split_tab_visual_data.cc
+index f10ddcf5a8..2ee73f209c 100644
+--- a/components/split_tabs/split_tab_visual_data.cc
++++ b/components/split_tabs/split_tab_visual_data.cc
+@@ -4,6 +4,13 @@
+ 
+ #include "components/split_tabs/split_tab_visual_data.h"
+ 
++#include <algorithm>
++#include <cmath>
++
++#include "base/check.h"
++#include "base/check_op.h"
++#include "base/pickle.h"
++
+ namespace split_tabs {
+ 
+ SplitTabVisualData::SplitTabVisualData()
+@@ -14,7 +21,102 @@ SplitTabVisualData::SplitTabVisualData(SplitTabLayout split_layout)
+ 
+ SplitTabVisualData::SplitTabVisualData(SplitTabLayout split_layout,
+                                        double split_ratio)
+-    : split_layout_(split_layout), split_ratio_(split_ratio) {}
++    : split_layout_(split_layout), split_dividers_{split_ratio, 0, 0} {}
++
++SplitTabVisualData::SplitTabVisualData(
++    SplitTabLayout split_layout,
++    base::span<const double> split_dividers)
++    : split_layout_(split_layout) {
++  set_split_dividers(split_dividers);
++}
++
++// static
++bool SplitTabVisualData::AreValidDividers(
++    base::span<const double> split_dividers) {
++  if (split_dividers.empty() || split_dividers.size() >= kMaxPanes) {
++    return false;
++  }
++  if (split_dividers.size() > 1 &&
++      (split_dividers.front() <= 0 || split_dividers.back() >= 1)) {
++    return false;
++  }
++  double previous = -1;
++  for (double divider : split_dividers) {
++    // Endpoints remain accepted for legacy two-pane session data; the native
++    // layout still enforces nonzero minimum sizes for displayed contents.
++    if (!std::isfinite(divider) || divider < 0 || divider > 1 ||
++        divider <= previous) {
++      return false;
++    }
++    previous = divider;
++  }
++  return true;
++}
++
++// static
++SplitTabVisualData SplitTabVisualData::EqualSplit(SplitTabLayout split_layout,
++                                                  size_t pane_count) {
++  CHECK_GE(pane_count, 2u);
++  CHECK_LE(pane_count, kMaxPanes);
++  std::array<double, kMaxPanes - 1> dividers{};
++  for (size_t i = 1; i < pane_count; ++i) {
++    dividers[i - 1] = static_cast<double>(i) / pane_count;
++  }
++  return SplitTabVisualData(split_layout,
++                            base::span(dividers).first(pane_count - 1));
++}
++
++void SplitTabVisualData::set_split_ratio(double split_ratio) {
++  if (divider_count_ == 1) {
++    split_dividers_[0] = split_ratio;
++    return;
++  }
++  CHECK(std::isfinite(split_ratio));
++  split_dividers_[0] = std::clamp(
++      split_ratio, std::nextafter(0.0, 1.0),
++      std::nextafter(split_dividers_[1], 0.0));
++}
++
++void SplitTabVisualData::set_split_dividers(
++    base::span<const double> split_dividers) {
++  CHECK(AreValidDividers(split_dividers));
++  divider_count_ = split_dividers.size();
++  split_dividers_.fill(0);
++  std::ranges::copy(split_dividers, split_dividers_.begin());
++}
++
++void SplitTabVisualData::WriteAdditionalDividers(base::Pickle* pickle) const {
++  if (divider_count_ == 1) {
++    return;
++  }
++  pickle->WriteInt(static_cast<int>(divider_count_));
++  for (double divider : split_dividers().subspan(1u)) {
++    pickle->WriteDouble(divider);
++  }
++}
++
++bool SplitTabVisualData::ReadAdditionalDividers(base::PickleIterator* iter) {
++  if (iter->ReachedEnd()) {
++    return true;
++  }
++  int count = 0;
++  if (!iter->ReadInt(&count) || count < 2 || count >= static_cast<int>(kMaxPanes)) {
++    return false;
++  }
++  std::array<double, kMaxPanes - 1> dividers{};
++  dividers[0] = split_ratio();
++  auto values = base::span(dividers).first(static_cast<size_t>(count));
++  for (double& divider : values.subspan(1u)) {
++    if (!iter->ReadDouble(&divider)) {
++      return false;
++    }
++  }
++  if (!iter->ReachedEnd() || !AreValidDividers(values)) {
++    return false;
++  }
++  set_split_dividers(values);
++  return true;
++}
+ 
+ SplitTabVisualData::~SplitTabVisualData() = default;
+ 

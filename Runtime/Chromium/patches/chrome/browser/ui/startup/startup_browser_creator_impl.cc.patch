@@ -1,0 +1,113 @@
+diff --git a/chrome/browser/ui/startup/startup_browser_creator_impl.cc b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+index c19d4ba646..82bf493792 100644
+--- a/chrome/browser/ui/startup/startup_browser_creator_impl.cc
++++ b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
+@@ -103,7 +103,17 @@
+ #include "chrome/browser/ui/webui/whats_new/whats_new_fetcher.h"
+ #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_MAC) || BUILDFLAG(IS_LINUX)
+ 
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
++
+ namespace {
++bool IsStartupURLHandled(const GURL& url,
++                         custom_handlers::ProtocolHandlerRegistry* registry) {
++  return ProfileIOData::IsHandledURL(url) ||
++      (registry && registry->IsHandledProtocol(url.GetScheme()));
++}
++
+ 
+ // Utility functions ----------------------------------------------------------
+ 
+@@ -294,12 +304,34 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenURLsInBrowser(
+   return OpenTabsInBrowser(browser, process_startup, tabs, TabOverWrite::kNo);
+ }
+ 
++bool StartupBrowserCreatorImpl::CanOpenURL(Profile* profile, const GURL& url,
++    chrome::startup::IsProcessStartup process_startup) {
++  if (!profile) return false;
++  auto* registry = ProtocolHandlerRegistryFactory::GetForBrowserContext(profile);
++  return process_startup == chrome::startup::IsProcessStartup::kYes ||
++      IsStartupURLHandled(url, registry);
++}
++
+ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+     BrowserWindowInterface* browser,
+     chrome::startup::IsProcessStartup process_startup,
+     const StartupTabs& tabs,
+-    TabOverWrite is_active_tab_overwrite) {
++    TabOverWrite is_active_tab_overwrite,
++    bool existing_single_tab_popup,
++    content::WebContents* existing_contents) {
+   DCHECK(!tabs.empty());
++  if (existing_single_tab_popup) {
++#if BUILDFLAG(IS_MAC)
++    if (!browser || tabs.size() != 1 || !barc::IsApplicationMini(browser)) return nullptr;
++#else
++    return nullptr;
++#endif
++  }
++  if (existing_contents && (!browser || tabs.size() != 1 ||
++      browser->GetTabStripModel()->GetIndexOfWebContents(existing_contents) == TabStripModel::kNoTab))
++    return nullptr;
++  auto browser_alive = browser ? browser->GetWeakPtr() : base::WeakPtr<BrowserWindowInterface>();
++  auto contents_alive = existing_contents ? existing_contents->GetWeakPtr() : base::WeakPtr<content::WebContents>();
+ 
+   // If we don't yet have a profile, try to use the one we're given from
+   // |browser|. While we may not end up actually using |browser| (since it
+@@ -323,7 +355,8 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+ 
+   const bool create_new_browser =
+       !browser ||
+-      browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL;
++      (!existing_single_tab_popup &&
++       browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL);
+   if (create_new_browser) {
+     CHECK(profile_);
+     // In some conditions a new browser object cannot be created. The most
+@@ -371,9 +404,7 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+     // This avoids us getting into an infinite loop asking ourselves to open
+     // a URL, should the handler be (incorrectly) configured to be us. Anyone
+     // asking us to open such a URL should really ask the handler directly.
+-    bool handled_by_chrome =
+-        ProfileIOData::IsHandledURL(tab.url) ||
+-        (registry && registry->IsHandledProtocol(tab.url.GetScheme()));
++    bool handled_by_chrome = IsStartupURLHandled(tab.url, registry);
+     if (process_startup == chrome::startup::IsProcessStartup::kNo &&
+         !handled_by_chrome) {
+       continue;
+@@ -442,8 +473,11 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+       // user-typed omnibox navigation.
+       params.initiator_origin = url::Origin();
+     }
+-    params.disposition = first_tab ? WindowOpenDisposition::NEW_FOREGROUND_TAB
+-                                   : WindowOpenDisposition::NEW_BACKGROUND_TAB;
++    if (existing_contents) params.source_contents = existing_contents;
++    params.disposition = (existing_single_tab_popup || existing_contents)
++        ? WindowOpenDisposition::CURRENT_TAB
++        : first_tab ? WindowOpenDisposition::NEW_FOREGROUND_TAB
++                    : WindowOpenDisposition::NEW_BACKGROUND_TAB;
+     params.tabstrip_add_types = add_types;
+ 
+ #if BUILDFLAG(ENABLE_RLZ)
+@@ -454,9 +488,19 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+     }
+ #endif  // BUILDFLAG(ENABLE_RLZ)
+ 
++    if (existing_contents) params.tabstrip_add_types = ADD_NONE;
+     Navigate(&params);
+     first_tab = false;
+   }
++  if (existing_contents) {
++    if (!browser_alive || !contents_alive || browser_alive->IsDeleteScheduled() ||
++        browser_alive->GetTabStripModel()->GetIndexOfWebContents(contents_alive.get()) == TabStripModel::kNoTab)
++      return nullptr;
++    if (browser_alive->IsSelectedForNativeWindow() &&
++        browser_alive->GetTabStripModel()->GetActiveWebContents() == contents_alive.get())
++      browser_alive->GetWindow()->Show();
++    return browser_alive.get();
++  }
+   if (!browser->GetTabStripModel()->GetActiveWebContents() &&
+       !process_headless_commands) {
+     // TODO(sky): this is a work around for 110909. Figure out why it's needed.

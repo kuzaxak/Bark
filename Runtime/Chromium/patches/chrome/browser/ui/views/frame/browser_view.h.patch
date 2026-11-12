@@ -1,0 +1,183 @@
+diff --git a/chrome/browser/ui/views/frame/browser_view.h b/chrome/browser/ui/views/frame/browser_view.h
+index 6c4807bbaa..821b3a3ff4 100644
+--- a/chrome/browser/ui/views/frame/browser_view.h
++++ b/chrome/browser/ui/views/frame/browser_view.h
+@@ -58,6 +58,7 @@
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/base/mojom/window_show_state.mojom-forward.h"
+ #include "ui/base/pointer/touch_ui_controller.h"
++#include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+ #include "ui/gfx/native_ui_types.h"
+ #include "ui/views/controls/button/button.h"
+ #include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
+@@ -114,6 +115,7 @@ class VerticalTabStripStateController;
+ 
+ namespace ui {
+ class NativeTheme;
++class TrackedElement;
+ }  // namespace ui
+ 
+ namespace version_info {
+@@ -147,6 +149,8 @@ class BrowserView : public BrowserWindow,
+   METADATA_HEADER(BrowserView, views::ClientView)
+ 
+  public:
++  DECLARE_USER_DATA(BrowserView);
++
+   // The name of a key to store on the window handle so that other code can
+   // locate this object using just the handle.
+   static constexpr char kBrowserViewKey[] = "__BROWSER_VIEW__";
+@@ -157,13 +161,11 @@ class BrowserView : public BrowserWindow,
+   ~BrowserView() override;
+ 
+   void set_browser_widget(std::unique_ptr<BrowserWidget> widget) {
+-    browser_widget_ = std::move(widget);
+-    paint_as_active_subscription_ =
+-        browser_widget_->RegisterPaintAsActiveChangedCallback(
+-            base::BindRepeating(&BrowserView::PaintAsActiveChanged,
+-                                base::Unretained(this)));
++    CHECK(!browser_widget_);
++    owned_browser_widget_ = std::move(widget);
++    BindPhysicalBrowserWidget(owned_browser_widget_.get());
+   }
+-  BrowserWidget* browser_widget() const { return browser_widget_.get(); }
++  BrowserWidget* browser_widget() const { return browser_widget_; }
+ 
+   // Returns a pointer to the BrowserView* interface implementation (an
+   // instance of this object, typically) for a given native window, or null if
+@@ -189,6 +191,18 @@ class BrowserView : public BrowserWindow,
+   const BrowserWindowInterface* browser() const { return browser_; }
+ 
+   Profile* GetProfile() const;
++#if BUILDFLAG(IS_MAC)
++  views::NativeViewHost* barc_native_shell() const { return barc_native_shell_; }
++  views::NativeViewHost* barc_page_header() const { return barc_page_header_; }
++  bool barc_compact_shell() const { return barc_compact_shell_; }
++  bool InitializeBarcCompactShell();
++  bool HasConfirmedBarcCompactShell() const;
++  bool barc_app_factory_origin() const { return barc_app_factory_origin_; }
++  void MarkBarcAppFactoryOrigin();
++  bool BarcAwaitingNativeAdmission() const;
++  bool AdmitBarcNativeWindow(gfx::NativeView expected);
++  void BarcNativeShellWillChange();
++#endif
+ 
+   const TopControlsSlideController* top_controls_slide_controller() const {
+     return top_controls_slide_controller_.get();
+@@ -411,6 +425,9 @@ class BrowserView : public BrowserWindow,
+   // hosted in an OverlayWidget.
+   views::Widget* GetWidgetForAnchoring();
+ 
++  // Owner-local fallback for popups when their toolbar button is hidden.
++  ui::TrackedElement* GetFallbackPopupAnchor();
++
+   // Returns true if the view has been initialized.
+   bool initialized() const { return initialized_; }
+ 
+@@ -513,6 +530,7 @@ class BrowserView : public BrowserWindow,
+   void Activate() override;
+   void Deactivate() override;
+   bool IsActive() const override;
++  bool IsSelectedForNativeWindow() const override;
+   void FlashFrame(bool flash) override;
+   ui::ZOrderLevel GetZOrderLevel() const override;
+   void SetZOrderLevel(ui::ZOrderLevel order) override;
+@@ -597,6 +615,7 @@ class BrowserView : public BrowserWindow,
+       int download_count,
+       DownloadCloseType dialog_type,
+       base::OnceCallback<void(bool)> callback) override;
++  void CancelPendingDownloadWarning() override;
+   void ShowAppMenu() override;
+   content::KeyboardEventProcessingResult PreHandleKeyboardEvent(
+       const input::NativeWebKeyboardEvent& event) override;
+@@ -738,6 +757,7 @@ class BrowserView : public BrowserWindow,
+       ui::ElementIdentifier element_id) const override;
+ 
+   // ui::AcceleratorTarget:
++  bool CanHandleAccelerators() const override;
+   bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+ 
+   // GlobalErrorObserver:
+@@ -828,6 +848,26 @@ class BrowserView : public BrowserWindow,
+   void DeleteBrowserWindow() final;
+ 
+  private:
++  enum class BarcNativePresentation { kNone, kShow, kShowInactive, kActivate };
++  struct BarcPresentationGuard {
++    uint64_t sequence = 0;
++    uint64_t selection_epoch = 0;
++    uint64_t shell_epoch = 0;
++  };
++  bool BarcPresentationCurrent(const std::optional<BarcPresentationGuard>& guard) const;
++  bool BarcPresentationShouldStayInactive(const std::optional<BarcPresentationGuard>& guard) const;
++  bool SelectBarcPresentationClient(std::optional<BarcPresentationGuard>* guard);
++  void ShowImpl(std::optional<BarcPresentationGuard> guard);
++  void ShowInactiveImpl(std::optional<BarcPresentationGuard> guard);
++  void ActivateImpl(std::optional<BarcPresentationGuard> guard);
++#if BUILDFLAG(IS_MAC)
++  bool DeferBarcNativePresentation(BarcNativePresentation intent);
++#endif
++  friend class BrowserWidget;
++  void TransferPhysicalWidgetOwnershipTo(BrowserView* destination);
++  void SetOwnFrameView(BrowserFrameView* frame);
++  void BindPhysicalBrowserWidget(BrowserWidget* widget);
++
+   // Do not friend BrowserViewLayout. Use the BrowserViewLayoutDelegate
+   // interface to keep these two classes decoupled and testable.
+   friend class BrowserViewLayoutDelegateImpl;
+@@ -1093,12 +1133,24 @@ class BrowserView : public BrowserWindow,
+   class ExclusiveAccessContextImpl;
+   std::unique_ptr<ExclusiveAccessContextImpl> exclusive_access_context_;
+ 
+-  // The BrowserWidget that owns this view.
+-  std::unique_ptr<BrowserWidget> browser_widget_;
++  // The physical host, independent of which logical browser is selected.
++  // For a normal one-client window this view also owns the host below.
++  raw_ptr<BrowserWidget> browser_widget_ = nullptr;
++  // The frame belonging to this logical client, including while inactive.
++  views::ViewTracker own_frame_view_;
++
++  // Exactly one logical view owns the physical Widget. Shared-window lifetime
++  // handoff must move this owner before deleting that view; selection must
++  // never be inferred from ownership. The host owns its views via their frames.
++  std::unique_ptr<BrowserWidget> owned_browser_widget_;
+ 
+   // The owning BrowserWindowInterface object. `browser_` will outlive this.
+   const raw_ptr<BrowserWindowInterface> browser_;
+ 
++  // Browser owns its window and outlives this registration. Clear at the start
++  // of destruction so browser-bound lookups cannot expose a dying view.
++  std::optional<ui::ScopedUnownedUserData<BrowserView>> browser_view_data_;
++
+   base::CallbackListSubscription chip_visibility_subscription_;
+ 
+   // BrowserView layout (LTR one is pictured here).
+@@ -1224,6 +1276,18 @@ class BrowserView : public BrowserWindow,
+ 
+   // The view that contains all visible WebContents.
+   raw_ptr<MultiContentsView> multi_contents_view_ = nullptr;
++#if BUILDFLAG(IS_MAC)
++  raw_ptr<views::NativeViewHost> barc_native_shell_ = nullptr;
++  raw_ptr<views::NativeViewHost> barc_page_header_ = nullptr;
++  bool barc_compact_shell_ = false;
++  uint64_t barc_compact_admitted_epoch_ = 0;
++  bool barc_app_factory_origin_ = false;
++  bool barc_native_admitted_ = false;
++  uint64_t barc_presentation_sequence_ = 0;
++  uint64_t barc_shell_epoch_ = 0;
++  BarcNativePresentation barc_pending_presentation_ = BarcNativePresentation::kNone;
++  BarcPresentationGuard barc_pending_guard_;
++#endif
+ 
+   // The view responsible for housing the contents of the vertical tab strip.
+   raw_ptr<VerticalTabStripRegionView> vertical_tab_strip_region_view_ = nullptr;
+@@ -1413,6 +1477,9 @@ class BrowserView : public BrowserWindow,
+   base::EnumSet<TabStripAndWebAppViewsReparentedState>
+       tab_strip_web_apps_reparented_state_;
+ 
++  // Only the warning created for this logical browser; never sibling prompts.
++  base::WeakPtr<views::Widget> pending_download_warning_;
++
+   mutable base::WeakPtrFactory<BrowserView> weak_ptr_factory_{this};
+ };
+ 

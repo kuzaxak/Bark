@@ -1,0 +1,46 @@
+diff --git a/ui/views/window/frame_view.cc b/ui/views/window/frame_view.cc
+index 5d5d54dad2..2f00b6cc5a 100644
+--- a/ui/views/window/frame_view.cc
++++ b/ui/views/window/frame_view.cc
+@@ -120,7 +120,10 @@ void FrameView::Layout(PassKey) {
+     GetLayoutManager()->Layout(this);
+   }
+ 
+-  views::ClientView* client_view = GetWidget()->client_view();
++  views::ClientView* client_view = this->client_view();
++  if (!client_view) {
++    return;
++  }
+   client_view->SetBoundsRect(GetBoundsForClientView());
+   SkPath client_clip;
+   if (GetClientMask(client_view->size(), &client_clip)) {
+@@ -130,8 +133,7 @@ void FrameView::Layout(PassKey) {
+ 
+ View::Views FrameView::GetChildrenInZOrder() {
+   View::Views paint_order = View::GetChildrenInZOrder();
+-  views::ClientView* client_view =
+-      GetWidget() ? GetWidget()->client_view() : nullptr;
++  views::ClientView* client_view = this->client_view();
+ 
+   // Move the client view to the beginning of the Z-order to ensure that the
+   // other children of the frame view draw on top of it.
+@@ -143,9 +145,19 @@ View::Views FrameView::GetChildrenInZOrder() {
+ }
+ 
+ void FrameView::InsertClientView(ClientView* client_view) {
++  BindClientView(client_view);
+   AddChildViewRaw(client_view);
+ }
+ 
++ClientView* FrameView::client_view() const {
++  return const_cast<ClientView*>(
++      static_cast<const ClientView*>(client_view_.view()));
++}
++
++void FrameView::BindClientView(ClientView* client_view) {
++  client_view_.SetView(client_view);
++}
++
+ gfx::Rect FrameView::GetNonDecoratedClientAreaBoundsInScreen() const {
+   gfx::Rect bounds = GetBoundsForClientView();
+   View::ConvertRectToScreen(this, &bounds);

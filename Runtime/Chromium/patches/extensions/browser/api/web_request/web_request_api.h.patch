@@ -1,0 +1,36 @@
+diff --git a/extensions/browser/api/web_request/web_request_api.h b/extensions/browser/api/web_request/web_request_api.h
+index 918d533738..1af1a5410e 100644
+--- a/extensions/browser/api/web_request/web_request_api.h
++++ b/extensions/browser/api/web_request/web_request_api.h
+@@ -242,7 +242,8 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
+       mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+           header_client,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      const url::Origin& request_initiator = url::Origin());
++      const url::Origin& request_initiator = url::Origin(),
++      std::optional<int64_t> document_navigation_id = std::nullopt);
+ 
+   // Any request which requires authentication to complete will be bounced
+   // through this method.
+@@ -322,7 +323,10 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
+     // Proxy will be used for the telemetry service.
+     kWillProxyForTelemetry = 4,
+ 
+-    kMaxValue = kWillProxyForTelemetry,
++    // Proxy will be used for an explicitly enabled native request policy.
++    kWillProxyForNativePolicy = 5,
++
++    kMaxValue = kWillProxyForNativePolicy,
+   };
+   // LINT.ThenChange(/tools/metrics/histograms/metadata/extensions/enums.xml:WebRequestProxyDecision)
+ 
+@@ -391,7 +395,8 @@ class WebRequestAPI : public BrowserContextKeyedAPI,
+       mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
+           header_client,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      const url::Origin& request_initiator = url::Origin());
++      const url::Origin& request_initiator = url::Origin(),
++      std::optional<int64_t> document_navigation_id = std::nullopt);
+ 
+   // Returns true if the given `render_frame_host` is a guest frame embedded by
+   // a WebUI that has access to the `webRequestInternal` API.

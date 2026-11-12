@@ -1,0 +1,25 @@
+diff --git a/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc b/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc
+index 352402767d..0c72b1b071 100644
+--- a/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc
++++ b/chrome/browser/profiles/chrome_browser_main_extra_parts_profiles.cc
+@@ -10,6 +10,9 @@
+ #include "base/feature_list.h"
+ #include "base/no_destructor.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/content_blocking/native_content_blocker.h"
++#endif
+ #include "build/chromeos_buildflags.h"
+ #include "chrome/browser/accessibility/accessibility_labels_service_factory.h"
+ #include "chrome/browser/accessibility/page_colors_controller_factory.h"
+@@ -1181,6 +1184,10 @@ void ChromeBrowserMainExtraPartsProfiles::
+   web_app::IsolatedWebAppsWindowOpenPermissionServiceFactory::GetInstance();
+   web_app::IwaPermissionsPolicyCacheFactory::GetInstance();
+ #endif  // !BUILDFLAG(IS_ANDROID)
++#if BUILDFLAG(IS_MAC)
++  if (NativeContentBlocker::IsRegistered())
++    NativeContentBlocker::EnsureFactoryBuilt();
++#endif
+   NavigationPredictorKeyedServiceFactory::GetInstance();
+ #if BUILDFLAG(CHROME_ROOT_STORE_CERT_MANAGEMENT_UI)
+   net::ServerCertificateDatabaseServiceFactory::GetInstance();

@@ -1,0 +1,30 @@
+diff --git a/chrome/installer/mac/signing/signing_test.py b/chrome/installer/mac/signing/signing_test.py
+index 222232f79c..0fc6fce8bf 100644
+--- a/chrome/installer/mac/signing/signing_test.py
++++ b/chrome/installer/mac/signing/signing_test.py
+@@ -398,3 +398,25 @@ class TestSignPart(unittest.TestCase):
+                 ),
+             ],
+         )
++
++
++class TestNativeReplacement(unittest.TestCase):
++    @mock.patch('signing.commands.run_command')
++    def test_force_preserves_only_entitlements(self, run_command):
++        config = test_config.TestConfig(notarize=model.NotarizeAndStapleLevel.NONE)
++        part = model.CodeSignedProduct(
++            'Sparkle.framework', 'org.sparkle-project.Sparkle',
++            requirements='anchor apple generic',
++            replace_existing_signature=True, preserve_entitlements=True)
++        signing.sign_part(model.Paths('/i', '/o', '/w'), config, part)
++        self.assertEqual([
++            'codesign', '--sign', '[IDENTITY]', '--force',
++            '--preserve-metadata=entitlements',
++            '--requirements', '=' + part.requirements_string(config),
++            '/w/Sparkle.framework'], run_command.call_args.args[0])
++        self.assertNotIn('--deep', run_command.call_args.args[0])
++
++    def test_conflicting_entitlements_rejected(self):
++        with self.assertRaisesRegex(ValueError, 'conflict'):
++            model.CodeSignedProduct('A', 'A', entitlements='a.plist',
++                                    preserve_entitlements=True)

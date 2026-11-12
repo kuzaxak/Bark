@@ -1,0 +1,22 @@
+diff --git a/components/permissions/permissions_client.cc b/components/permissions/permissions_client.cc
+index 3519d16bc2..28a3324eda 100644
+--- a/components/permissions/permissions_client.cc
++++ b/components/permissions/permissions_client.cc
+@@ -38,6 +38,17 @@ PermissionsClient* PermissionsClient::Get() {
+   return g_client;
+ }
+ 
++bool PermissionsClient::IsPermissionPromptOwnerSelected(
++    tabs::TabInterface* tab) {
++  return true;
++}
++
++base::CallbackListSubscription
++PermissionsClient::RegisterPermissionPromptOwnerChanged(
++    tabs::TabInterface* tab, base::RepeatingClosure callback) {
++  return {};
++}
++
+ // static
+ bool PermissionsClient::AllowEmbeddedPermissionPromptForSurface(
+     content::WebContents* web_contents) {

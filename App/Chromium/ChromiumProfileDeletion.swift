@@ -1,48 +1,19 @@
-import Darwin
+import BarcChromium
 import Foundation
 import NookTabsCore
 import NookWeb
 
-typealias ProfileDeleteCallback = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Void
-
 /// One model-owned deletion at a time; Chromium owns profiles, closure and wipe.
 @MainActor
 final class ChromiumProfileDeletion {
-    typealias Delete = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32, ProfileDeleteCallback?, UnsafeMutableRawPointer?) -> Void
-    typealias Acknowledge = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Int32
-    typealias Continue = @convention(c) (UnsafePointer<CChar>?, UnsafePointer<CChar>?, ProfileDeleteCallback?, UnsafeMutableRawPointer?) -> Void
-    private let delete: Delete
-    private let prepare: Delete?
-    private let continueDeletion: Continue?
-    private let acknowledge: Acknowledge
+    private let bridge: BarcBridge
     private var intent: PendingProfileDeletion?
     private var completion: (@MainActor (ProfileDeletionOutcome) -> Void)?
     private var stopped = false
 
-    init(library: UnsafeMutableRawPointer) throws {
-        guard let symbol = dlsym(library, "barc_profile_delete_kept") else {
-            throw ChromiumNavigationError.missingSymbol("barc_profile_delete_kept")
-        }
-        delete = unsafeBitCast(symbol, to: Delete.self)
-        guard let ack = dlsym(library, "barc_profile_delete_cancel_ack") else {
-            throw ChromiumNavigationError.missingSymbol("barc_profile_delete_cancel_ack")
-        }
-        acknowledge = unsafeBitCast(ack, to: Acknowledge.self)
-        guard let preparation = dlsym(library, "barc_profile_prepare_reassignment"),
-              let continuation = dlsym(library, "barc_profile_continue_deletion") else {
-            throw ChromiumNavigationError.missingSymbol("barc_profile_prepare_reassignment/continue_deletion")
-        }
-        prepare = unsafeBitCast(preparation, to: Delete.self)
-        continueDeletion = unsafeBitCast(continuation, to: Continue.self)
-    }
+    init(bridge: BarcBridge) { self.bridge = bridge }
 
-    init(delete: @escaping Delete, acknowledge: @escaping Acknowledge,
-         prepare: Delete? = nil, continueDeletion: Continue? = nil) {
-        self.delete = delete; self.acknowledge = acknowledge
-        self.prepare = prepare; self.continueDeletion = continueDeletion
-    }
-
-    private static let callback: ProfileDeleteCallback = { result, pointer in
+    private static let callback: barc_profile_delete_callback = { result, pointer in
         MainActor.assumeIsolated {
             guard let pointer else { return }
             Unmanaged<ChromiumProfileDeletion>.fromOpaque(pointer).takeUnretainedValue().received(result)
@@ -52,11 +23,8 @@ final class ChromiumProfileDeletion {
     func request(_ intent: PendingProfileDeletion, reconcileOnly: Bool, canDelete: () -> Bool,
                  completion: @escaping @MainActor (ProfileDeletionOutcome) -> Void) {
         guard !stopped, self.completion == nil, canDelete() else { completion(.pending); return }
-        let call: Delete
-        if let change = intent.change {
-            guard change.kind == .deleteProfile, let prepare else { completion(.pending); return }
-            call = prepare
-        } else { call = delete }
+        if let change = intent.change, change.kind != .deleteProfile { completion(.pending); return }
+        let call = intent.change == nil ? bridge.profile_delete_kept : bridge.profile_prepare_reassignment
         self.completion = completion; self.intent = intent
         intent.target.uuidString.lowercased().withCString { target in
             intent.survivor.uuidString.lowercased().withCString { survivor in
@@ -66,33 +34,33 @@ final class ChromiumProfileDeletion {
         }
     }
 
-    private func received(_ result: Int32) {
+    private func received(_ result: barc_profile_delete_result) {
         let callback = completion, requested = intent
         completion = nil; intent = nil
         guard let callback, let requested else { return }
         switch result {
-        case 0: callback(.deleted)
-        case 1:
+        case BARC_PROFILE_DELETED: callback(.deleted)
+        case BARC_PROFILE_DELETE_CANCELLED:
             callback(.cancelled(acknowledge: { [weak self] in
                 guard let self, !self.stopped else { return false }
                 return requested.target.uuidString.lowercased().withCString { target in
                     requested.survivor.uuidString.lowercased().withCString { survivor in
-                        self.acknowledge(target, survivor) == 1
+                        self.bridge.profile_delete_cancel_ack(target, survivor) == 1
                     }
                 }
             }))
-        case 3 where requested.change?.kind == .deleteProfile:
+        case BARC_PROFILE_CLOSE_ADMITTED where requested.change?.kind == .deleteProfile:
             var continued = false
             callback(.closeAdmitted(continueCleanup: { [weak self] completion in
                 guard !continued else { completion(.pending); return }
                 continued = true
-                guard let self, !self.stopped, self.completion == nil, let continueDeletion = self.continueDeletion else {
+                guard let self, !self.stopped, self.completion == nil else {
                     completion(.pending); return
                 }
                 self.completion = completion; self.intent = requested
                 requested.target.uuidString.lowercased().withCString { target in
                     requested.survivor.uuidString.lowercased().withCString { survivor in
-                        continueDeletion(target, survivor, Self.callback,
+                        self.bridge.profile_continue_deletion(target, survivor, Self.callback,
                                          Unmanaged.passUnretained(self).toOpaque())
                     }
                 }

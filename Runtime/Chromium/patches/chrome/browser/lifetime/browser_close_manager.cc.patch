@@ -1,0 +1,24 @@
+diff --git a/chrome/browser/lifetime/browser_close_manager.cc b/chrome/browser/lifetime/browser_close_manager.cc
+index cfe9980736..fbc5e1f9fc 100644
+--- a/chrome/browser/lifetime/browser_close_manager.cc
++++ b/chrome/browser/lifetime/browser_close_manager.cc
+@@ -19,6 +19,7 @@
+ #include "chrome/browser/download/download_core_service_factory.h"
+ #include "chrome/browser/global_features.h"
+ #include "chrome/browser/lifetime/application_lifetime.h"
++#include "chrome/browser/lifetime/application_lifetime_desktop.h"
+ #include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/ui/browser_manager_service.h"
+@@ -189,6 +190,11 @@ void BrowserCloseManager::OnReportDownloadsCancellable(bool proceed) {
+ }
+ 
+ void BrowserCloseManager::CloseBrowsers() {
++#if BUILDFLAG(IS_MAC)
++  if (browser_shutdown::IsTryingToQuit()) {
++    chrome::OnAllBrowsersCloseAccepted();
++  }
++#endif
+ #if BUILDFLAG(ENABLE_SESSION_SERVICE)
+   // Before we close the browsers shutdown all session services. That way an
+   // exit can restore all browsers open before exiting.

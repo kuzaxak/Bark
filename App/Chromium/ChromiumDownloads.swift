@@ -1,69 +1,43 @@
 import BarcChromium
-import Darwin
 import Foundation
-
-struct ChromiumDownloadAPI {
-    typealias Observe = @convention(c) (BarcDownloadCallback?, UnsafeMutableRawPointer?) -> UInt64
-    typealias Unobserve = @convention(c) (UInt64) -> Void
-    typealias Action = @convention(c) (UInt64, UInt64, UnsafePointer<CChar>?, Int32) -> Int32
-    typealias Target = @convention(c) (UInt64, UInt64, UnsafePointer<CChar>?, UnsafeMutablePointer<CChar>?, Int) -> Int
-    let observe: Observe
-    let unobserve: Unobserve
-    let action: Action
-    let target: Target
-
-    init(library: UnsafeMutableRawPointer) throws {
-        func load<T>(_ name: String, _: T.Type) throws -> T {
-            guard let address = dlsym(library, name) else { throw ChromiumNavigationError.missingSymbol(name) }
-            return unsafeBitCast(address, to: T.self)
-        }
-        observe = try load("barc_downloads_observe", Observe.self)
-        unobserve = try load("barc_downloads_unobserve", Unobserve.self)
-        action = try load("barc_download_action", Action.self)
-        target = try load("barc_download_copy_safe_target", Target.self)
-    }
-    init(observe: @escaping Observe, unobserve: @escaping Unobserve,
-         action: @escaping Action, target: @escaping Target) {
-        self.observe = observe; self.unobserve = unobserve; self.action = action; self.target = target
-    }
-}
 
 /// Adapts one existing Chromium download subscription into the existing model.
 /// It neither chooses destinations nor owns download/history/profile objects.
 @MainActor
 final class ChromiumDownloads {
-    private let api: ChromiumDownloadAPI
+    private let bridge: BarcBridge
     private weak var manager: DownloadManager?
     private var observation: UInt64 = 0
     private var active = false
 
-    init(api: ChromiumDownloadAPI) { self.api = api }
+    init(bridge: BarcBridge) { self.bridge = bridge }
 
     func start(manager: DownloadManager) -> Bool {
         guard !active else { return self.manager === manager }
         self.manager = manager; active = true
-        let token = api.observe({ context, token, event, snapshot in
+        let token = bridge.downloads_observe({ context, token, event, snapshot in
             MainActor.assumeIsolated {
-                guard let context, let snapshot else { return }
+                guard let context, let snapshot,
+                      snapshot.pointee.size >= MemoryLayout<BarcDownloadSnapshot>.size else { return }
                 Unmanaged<ChromiumDownloads>.fromOpaque(context).takeUnretainedValue()
                     .receive(token: token, event: event, snapshot: snapshot.pointee)
             }
         }, Unmanaged.passUnretained(self).toOpaque())
         guard active, token != 0 else {
-            if token != 0 { api.unobserve(token) }
+            if token != 0 { bridge.downloads_unobserve(token) }
             active = false; self.manager = nil; return false
         }
-        guard observation == 0 || observation == token else { stop(); api.unobserve(token); return false }
+        guard observation == 0 || observation == token else { stop(); bridge.downloads_unobserve(token); return false }
         observation = token
         return true
     }
 
     func stop() {
         let token = observation; observation = 0; active = false
-        if token != 0 { api.unobserve(token) }
+        if token != 0 { bridge.downloads_unobserve(token) }
         manager?.stopNativeDownloads(observation: token); manager = nil
     }
-    isolated deinit { if observation != 0 { api.unobserve(observation) } }
+    isolated deinit { if observation != 0 { bridge.downloads_unobserve(observation) } }
 
     private func receive(token: UInt64, event: Int32, snapshot: BarcDownloadSnapshot) {
         guard active, token != 0, observation == 0 || observation == token,
@@ -101,15 +75,15 @@ final class ChromiumDownloads {
         let source = snapshot.manager
         manager.applyNativeDownload(update, action: { [weak self] remove in
             guard let self, self.active, self.observation == token else { return false }
-            return guid.withCString { self.api.action(token, source, $0,
+            return guid.withCString { self.bridge.download_action(token, source, $0,
                 Int32(remove ? BARC_DOWNLOAD_REMOVE.rawValue : BARC_DOWNLOAD_CANCEL.rawValue)) == 1 }
         }, safeTarget: { [weak self] in
             guard let self, self.active, self.observation == token else { return nil }
             return guid.withCString { guid in
-                let required = self.api.target(token, source, guid, nil, 0)
+                let required = self.bridge.download_copy_safe_target(token, source, guid, nil, 0)
                 guard required > 1, required <= 1024 * 1024 else { return nil }
                 var buffer = [CChar](repeating: 0, count: required)
-                guard self.api.target(token, source, guid, &buffer, buffer.count) == required,
+                guard self.bridge.download_copy_safe_target(token, source, guid, &buffer, buffer.count) == required,
                       buffer.last == 0 else { return nil }
                 guard let path = String(bytes: buffer.dropLast().map({ UInt8(bitPattern: $0) }), encoding: .utf8) else { return nil }
                 return URL(fileURLWithPath: path)

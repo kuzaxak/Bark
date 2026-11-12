@@ -10,27 +10,32 @@ import NookWeb
     static var safe: [UInt64: [String: String]] = [:]
     static var accepts = true
     static var token: UInt64 = 0
-    static var api: ChromiumDownloadAPI {
-        ChromiumDownloadAPI(observe: { callback, context in MainActor.assumeIsolated {
+    static var bridge: BarcBridge {
+        var bridge = trappingBridge
+        bridge.downloads_observe = { callback, context in MainActor.assumeIsolated {
             Native.token += 1; Native.callback = callback; Native.context = context; return Native.token
-        } }, unobserve: { _ in MainActor.assumeIsolated { Native.callback = nil; Native.context = nil } },
-            action: { _, source, guid, action in MainActor.assumeIsolated {
-                Native.actions.append((source, String(cString: guid!), action)); return Native.accepts ? 1 : 0
-            } }, target: { _, source, guid, buffer, capacity in MainActor.assumeIsolated {
-                guard let path = Native.safe[source]?[String(cString: guid!)] else { return 0 }
-                let bytes = path.utf8CString
-                if let buffer, capacity >= bytes.count {
-                    for (index, byte) in bytes.enumerated() { buffer[index] = byte }
-                }
-                return bytes.count
-            } })
+        } }
+        bridge.downloads_unobserve = { _ in MainActor.assumeIsolated { Native.callback = nil; Native.context = nil } }
+        bridge.download_action = { _, source, guid, action in MainActor.assumeIsolated {
+            Native.actions.append((source, String(cString: guid!), action)); return Native.accepts ? 1 : 0
+        } }
+        bridge.download_copy_safe_target = { _, source, guid, buffer, capacity in MainActor.assumeIsolated {
+            guard let path = Native.safe[source]?[String(cString: guid!)] else { return 0 }
+            let bytes = path.utf8CString
+            if let buffer, capacity >= bytes.count {
+                for (index, byte) in bytes.enumerated() { buffer[index] = byte }
+            }
+            return bytes.count
+        } }
+        return bridge
     }
     static func emit(profile: UUID, source: UInt64, guid: String, state: Int32 = 0,
                      flags: UInt32 = 0, target: String = "", event: Int32 = 0) {
         profile.uuidString.withCString { profile in guid.withCString { guid in
             "https://fixture.invalid/download".withCString { url in target.withCString { target in
                 "fixture.txt".withCString { filename in
-                    var row = BarcDownloadSnapshot(manager: source, profile_uuid: profile, guid: guid,
+                    var row = BarcDownloadSnapshot(size: MemoryLayout<BarcDownloadSnapshot>.size,
+                        manager: source, profile_uuid: profile, guid: guid,
                         url: url, target_path: target, filename: filename, state: state, error: 0,
                         flags: flags, received_bytes: 3, total_bytes: 9, started_unix: 1)
                     withUnsafePointer(to: &row) { callback?(context, token, event, $0) }
@@ -58,7 +63,7 @@ import NookWeb
         legacy.previewing = nil
         let manager = DownloadManager(historyFileURL: history, usesNativeDownloads: true)
         precondition(manager.allDownloads.isEmpty)
-        let bridge = ChromiumDownloads(api: Native.api)
+        let bridge = ChromiumDownloads(bridge: Native.bridge)
         precondition(bridge.start(manager: manager))
         let work = UUID(), personal = UUID(), guid = "same-guid"
         Native.emit(profile: work, source: 11, guid: guid)

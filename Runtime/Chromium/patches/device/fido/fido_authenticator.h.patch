@@ -1,0 +1,16 @@
+diff --git a/device/fido/fido_authenticator.h b/device/fido/fido_authenticator.h
+index 4dde169aa9..eca07299d5 100644
+--- a/device/fido/fido_authenticator.h
++++ b/device/fido/fido_authenticator.h
+@@ -180,6 +180,11 @@ class COMPONENT_EXPORT(DEVICE_FIDO) FidoAuthenticator {
+                             CtapGetAssertionOptions options,
+                             GetAssertionCallback callback) = 0;
+ 
++  // Some explicit platform providers cannot supply resident metadata. Skipping
++  // their probe must not overwrite another platform's status or hold readiness.
++  // Default true preserves all existing authenticator behavior.
++  virtual bool ShouldCheckPlatformCredentialStatus() const;
++
+   // GetPlatformCredentialInfoForRequest returns whether there are platform
+   // credentials applicable for |request|, and if supported, a list of the
+   // corresponding resident credential metadata for empty allow list requests.

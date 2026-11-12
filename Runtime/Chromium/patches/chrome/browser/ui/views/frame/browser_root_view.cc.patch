@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/ui/views/frame/browser_root_view.cc b/chrome/browser/ui/views/frame/browser_root_view.cc
+index 0b23cfc9f5..bbf755041c 100644
+--- a/chrome/browser/ui/views/frame/browser_root_view.cc
++++ b/chrome/browser/ui/views/frame/browser_root_view.cc
+@@ -184,6 +184,16 @@ BrowserRootView::BrowserRootView(BrowserView* browser_view,
+                                  views::Widget* widget)
+     : views::internal::RootView(widget), browser_view_(browser_view) {}
+ 
++void BrowserRootView::SelectBrowserView(BrowserView* browser_view) {
++  CHECK(browser_view);
++  OnDragExited();
++  weak_ptr_factory_.InvalidateWeakPtrs();
++  on_filtering_complete_closure_.Reset();
++  scroll_remainder_x_ = 0;
++  scroll_remainder_y_ = 0;
++  browser_view_ = browser_view;
++}
++
+ BrowserRootView::~BrowserRootView() {
+   // It's possible to destroy the browser while a drop is active.  In this case,
+   // |drop_info_| will be non-null, but its |target| likely points to an

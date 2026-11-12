@@ -1,0 +1,53 @@
+diff --git a/ui/views/window/frame_view.h b/ui/views/window/frame_view.h
+index e5fec4a471..c12471f760 100644
+--- a/ui/views/window/frame_view.h
++++ b/ui/views/window/frame_view.h
+@@ -8,6 +8,7 @@
+ #include <optional>
+ #include <utility>
+ 
++#include "base/memory/weak_ptr.h"
+ #include "third_party/skia/include/core/SkPath.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+ #include "ui/gfx/geometry/insets.h"
+@@ -17,10 +18,13 @@
+ #include "ui/views/metadata/view_factory.h"
+ #include "ui/views/view.h"
+ #include "ui/views/view_targeter_delegate.h"
++#include "ui/views/view_tracker.h"
+ #include "ui/views/views_export.h"
+ 
+ namespace views {
+ 
++class WidgetDelegate;
++
+ class ClientView;
+ 
+ ////////////////////////////////////////////////////////////////////////////////
+@@ -110,6 +114,11 @@ class VIEWS_EXPORT FrameView : public View, public ViewTargeterDelegate {
+   // view.
+   virtual void InsertClientView(ClientView* client_view);
+ 
++  // The client bound to this frame, including while the frame is inactive.
++  // This must not resolve through Widget::client_view(), which selects a
++  // different pair when multiple attached frame trees are retained.
++  ClientView* client_view() const;
++
+   // Returns the non decorated client area bounds, as perceived by the user
+   // (including title bar and excluding shadows), in screen coordinates.
+   virtual gfx::Rect GetNonDecoratedClientAreaBoundsInScreen() const;
+@@ -131,6 +140,14 @@ class VIEWS_EXPORT FrameView : public View, public ViewTargeterDelegate {
+   HitTestCallback non_client_hit_test_callback_;
+ 
+  private:
++  friend class NonClientView;
++  friend class Widget;
++  void BindClientView(ClientView* client_view);
++  ViewTracker client_view_;
++  // Weak lifetime handle for this existing frame/client pair, not a registry.
++  base::WeakPtr<WidgetDelegate> client_delegate_;
++  bool client_will_close_notified_ = false;
++
+ #if BUILDFLAG(IS_WIN)
+   // Returns the y coordinate, in local coordinates, at which the system menu
+   // should be opened.  Since this is in DIP, it does not include the 1 px

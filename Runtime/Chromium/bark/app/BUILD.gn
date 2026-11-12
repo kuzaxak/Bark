@@ -1,0 +1,16 @@
+assert(is_mac)
+
+action("public_headers_sha256") {
+  script = "barc_public_headers_sha256.py"
+  inputs = [ "//bark/bridge/barc_bridge_api.h" ]
+  outputs = [ "$target_gen_dir/barc_public_headers_sha256.h" ]
+  args = rebase_path(outputs + inputs, root_build_dir)
+}
+
+source_set("app") {
+  sources = [ "barc_engine_main.cc" ]
+  deps = [
+    ":public_headers_sha256",
+    "//base",
+  ]
+}

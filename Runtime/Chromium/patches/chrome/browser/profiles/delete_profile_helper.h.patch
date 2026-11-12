@@ -1,0 +1,81 @@
+diff --git a/chrome/browser/profiles/delete_profile_helper.h b/chrome/browser/profiles/delete_profile_helper.h
+index 9db0af7c65..08e79d722c 100644
+--- a/chrome/browser/profiles/delete_profile_helper.h
++++ b/chrome/browser/profiles/delete_profile_helper.h
+@@ -9,6 +9,7 @@
+ 
+ #include "base/functional/callback_forward.h"
+ #include "base/memory/raw_ref.h"
++#include "base/memory/weak_ptr.h"
+ #include "chrome/browser/profiles/profile_metrics.h"
+ 
+ namespace base {
+@@ -64,6 +65,10 @@ class DeleteProfileHelper {
+ 
+   ~DeleteProfileHelper();
+ 
++  // Owner calls before destroying its Profiles/removers. Stock operations keep
++  // their existing shutdown behavior; only the explicit completion is released.
++  void Shutdown();
++
+   DeleteProfileHelper(const DeleteProfileHelper&) = delete;
+   DeleteProfileHelper& operator=(const DeleteProfileHelper&) = delete;
+ 
+@@ -76,6 +81,34 @@ class DeleteProfileHelper {
+       ProfileLoadedCallback callback,
+       ProfileMetrics::ProfileDelete deletion_source);
+ 
++  enum class ExplicitDeletionResult { kDeleted, kCancelled, kPending, kCloseAdmitted };
++  using ExplicitDeletionCallback =
++      base::OnceCallback<void(ExplicitDeletionResult)>;
++  // Barc's model supplies an existing, distinct regular survivor. No fallback
++  // profile is generated. kCancelled is exclusively pre-mark/non-destructive;
++  // kPending must remain unavailable and may need restart disk cleanup.
++  void DeleteProfileWithExplicitSurvivor(
++      const base::FilePath& profile_dir,
++      const base::FilePath& survivor_dir,
++      bool reconcile_only,
++      ExplicitDeletionCallback callback,
++      bool defer_wipe = false);
++  // Only the exact suspended request can continue after model assignment is
++  // durable. The retained source Profile is never re-created or retargeted.
++  void ContinueExplicitDeletion(const base::FilePath& profile_dir,
++                               const base::FilePath& survivor_dir,
++                               ExplicitDeletionCallback callback);
++
++  // Clears only this operation's pre-mark cancellation reservation after the
++  // application has durably committed the cancellation. Never steals ownership.
++  bool AcknowledgeExplicitDeletionCancellation(
++      const base::FilePath& profile_dir, const base::FilePath& survivor_dir);
++
++  // Before explicit deletion is committed, closing or vetoing its windows
++  // must not discard session data owned by the existing reservation.
++  bool ShouldPreserveSessionDataForExplicitDeletion(
++      const base::FilePath& profile_dir) const;
++
+   // Schedules an ephemeral profile at `profile_dir` for deletion. No new
+   // profiles are created.
+   void ScheduleEphemeralProfileForDeletion(
+@@ -130,8 +163,22 @@ class DeleteProfileHelper {
+       std::unique_ptr<ScopedProfileKeepAlive> profile_keep_alive,
+       Profile* loaded_profile);
+ 
++  struct ExplicitDeletion;
++  void ExplicitSurvivorLoaded(Profile* survivor);
++  void ReleaseSurvivorInitialReference(base::WeakPtr<Profile> survivor);
++  void ExplicitBrowsersClosed(const base::FilePath& path);
++  void ExplicitCloseCancelled(const base::FilePath& path);
++  void ExplicitProfileLoaded(Profile* profile);
++  void ExplicitWipeDone(uint64_t failed_data_types);
++  void ExplicitPortsReleased();
++  void CheckExplicitMissing();
++  void ExplicitMissingChecked(bool absent);
++  void FinishExplicitDeletion(ExplicitDeletionResult result);
++
++  std::unique_ptr<ExplicitDeletion> explicit_deletion_;
+   const raw_ref<ProfileManager>
+       profile_manager_;  // Owns the `DeleteProfileHelper`.
++  base::WeakPtrFactory<DeleteProfileHelper> weak_factory_{this};
+ };
+ 
+ #endif  // CHROME_BROWSER_PROFILES_DELETE_PROFILE_HELPER_H_

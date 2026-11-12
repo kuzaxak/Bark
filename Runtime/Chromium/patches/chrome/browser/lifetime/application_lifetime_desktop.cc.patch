@@ -1,0 +1,59 @@
+diff --git a/chrome/browser/lifetime/application_lifetime_desktop.cc b/chrome/browser/lifetime/application_lifetime_desktop.cc
+index b1dca3d525..e3589892db 100644
+--- a/chrome/browser/lifetime/application_lifetime_desktop.cc
++++ b/chrome/browser/lifetime/application_lifetime_desktop.cc
+@@ -29,6 +29,7 @@
+ #include "chrome/browser/lifetime/browser_shutdown.h"
+ #include "chrome/browser/lifetime/termination_notification.h"
+ #include "chrome/browser/metrics/shutdown_watcher_helper.h"
++#include "chrome/browser/profiles/delete_profile_helper.h"
+ #include "chrome/browser/profiles/profile.h"
+ #include "chrome/browser/profiles/profile_manager.h"
+ #include "chrome/browser/sessions/app_session_service_factory.h"
+@@ -79,6 +80,13 @@ namespace chrome {
+ 
+ namespace {
+ 
++#if BUILDFLAG(IS_MAC)
++base::RepeatingClosureList& GetAllBrowsersCloseAcceptedCallbackList() {
++  static base::NoDestructor<base::RepeatingClosureList> callbacks;
++  return *callbacks;
++}
++#endif
++
+ base::RepeatingCallbackList<void(bool)>& GetClosingAllBrowsersCallbackList() {
+   static base::NoDestructor<base::RepeatingCallbackList<void(bool)>>
+       callback_list;
+@@ -476,6 +484,16 @@ base::CallbackListSubscription AddClosingAllBrowsersCallback(
+       std::move(closing_all_browsers_callback));
+ }
+ 
++#if BUILDFLAG(IS_MAC)
++void OnAllBrowsersCloseAccepted() {
++  GetAllBrowsersCloseAcceptedCallbackList().Notify();
++}
++base::CallbackListSubscription AddAllBrowsersCloseAcceptedCallback(
++    base::RepeatingClosure callback) {
++  return GetAllBrowsersCloseAcceptedCallbackList().Add(std::move(callback));
++}
++#endif
++
+ void MarkAsCleanShutdown() {
+ #if BUILDFLAG(IS_CHROMEOS)
+   LogMarkAsCleanShutdown();
+@@ -548,8 +566,13 @@ void CloseAllBrowsersWithProfile(
+     bool skip_beforeunload,
+     const ProfileBrowsersCloseCallback& on_close_success,
+     const ProfileBrowsersCloseCallback& on_close_aborted) {
+-  SessionServiceFactory::ShutdownForProfile(profile);
+-  AppSessionServiceFactory::ShutdownForProfile(profile);
++  auto* manager = g_browser_process->profile_manager();
++  if (!manager ||
++      !manager->GetDeleteProfileHelper()
++           .ShouldPreserveSessionDataForExplicitDeletion(profile->GetPath())) {
++    SessionServiceFactory::ShutdownForProfile(profile);
++    AppSessionServiceFactory::ShutdownForProfile(profile);
++  }
+ 
+   TryToCloseBrowsersForProfile(profile->GetOriginalProfile(),
+                                /*match_original_profile=*/true,

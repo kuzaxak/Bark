@@ -1,0 +1,42 @@
+diff --git a/content/browser/renderer_host/render_frame_host_impl.h b/content/browser/renderer_host/render_frame_host_impl.h
+index a28168d6ed..888e7c2845 100644
+--- a/content/browser/renderer_host/render_frame_host_impl.h
++++ b/content/browser/renderer_host/render_frame_host_impl.h
+@@ -645,7 +645,7 @@ class CONTENT_EXPORT RenderFrameHostImpl
+   //   acknowledge the commit, since the DocumentToken will change as soon as
+   //   the navigation actually commits.
+   // - the RenderFrameHost is speculative
+-  const blink::DocumentToken& GetDocumentToken() const;
++  const blink::DocumentToken& GetDocumentToken() const override;
+ 
+   const blink::InitiatorStateToken& current_initiator_state_token() const {
+     return current_initiator_state_token_;
+@@ -2181,6 +2181,8 @@ class CONTENT_EXPORT RenderFrameHostImpl
+ 
+   std::vector<base::SafeRef<NavigationHandle>>
+   GetPendingCommitCrossDocumentNavigations() const override;
++  std::optional<GURL> GetCurrentOrPendingCommitDocumentURL(
++      const blink::DocumentToken& document) const override;
+ 
+   net::CookieSettingOverrides GetCookieSettingOverrides() override;
+ 
+@@ -3633,7 +3635,8 @@ class CONTENT_EXPORT RenderFrameHostImpl
+       network::mojom::URLLoaderFactoryParamsPtr params,
+       ukm::SourceIdObj ukm_source_id,
+       mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-          default_factory_receiver);
++          default_factory_receiver,
++      int64_t document_navigation_id);
+ 
+   // Asks an appropriate `NetworkService` to create a new URLLoaderFactory with
+   // the given `params` and binds the factory to the `default_factory_receiver`.
+@@ -3650,7 +3653,8 @@ class CONTENT_EXPORT RenderFrameHostImpl
+       network::mojom::URLLoaderFactoryParamsPtr params,
+       ukm::SourceIdObj ukm_source_id,
+       mojo::PendingReceiver<network::mojom::URLLoaderFactory>
+-          default_factory_receiver);
++          default_factory_receiver,
++      int64_t document_navigation_id);
+ 
+   // Returns true if the ExecuteJavaScript() API can be used on this host.
+   // The checks do not apply to ExecuteJavaScriptInIsolatedWorld, nor to

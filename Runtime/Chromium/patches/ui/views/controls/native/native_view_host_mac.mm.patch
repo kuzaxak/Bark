@@ -1,0 +1,92 @@
+diff --git a/ui/views/controls/native/native_view_host_mac.mm b/ui/views/controls/native/native_view_host_mac.mm
+index 4245018fb6..08a615b182 100644
+--- a/ui/views/controls/native/native_view_host_mac.mm
++++ b/ui/views/controls/native/native_view_host_mac.mm
+@@ -16,6 +16,7 @@
+ #include "ui/views/controls/native/native_view_host.h"
+ #include "ui/views/widget/native_widget_mac.h"
+ #include "ui/views/widget/widget.h"
++#include "ui/views/view_tracker.h"
+ 
+ namespace views {
+ namespace {
+@@ -141,7 +142,10 @@ void NativeViewHostMac::AttachNativeView() {
+   // call below because of crashes being observed in the field.
+   NSView* superview =
+       window_host->native_widget_mac()->GetNativeView().GetNativeNSView();
++  ViewTracker alive(host_);
+   [superview addSubview:native_view_];
++  if (!alive.view())
++    return;
+ 
+   // If adding the native view to another view hierarchy removed it from its
+   // host window where it was the contentView (new AppKit behavior as of macOS
+@@ -155,12 +159,19 @@ void NativeViewHostMac::AttachNativeView() {
+ 
+   if (native_view_hostable_) {
+     native_view_hostable_->ViewsHostableAttach(this);
++    if (!alive.view())
++      return;
+     // Initially set the parent to match the views::Views parent. Note that this
+     // may be overridden (e.g, by views::WebView).
+     native_view_hostable_->ViewsHostableSetParentAccessible(
+         host_->parent()->GetNativeViewAccessible());
++    if (!alive.view())
++      return;
+   }
+ 
++  window_host = GetNSWindowHost();
++  if (!window_host)
++    return;
+   window_host->OnNativeViewHostAttach(host_, native_view_);
+ }
+ 
+@@ -179,12 +190,19 @@ void NativeViewHostMac::NativeViewDetaching(bool destroyed) {
+ 
+   DCHECK(native_view_ == host_native_view);
+ 
++  ViewTracker alive(host_);
+   if (native_view_hostable_) {
+     native_view_hostable_->ViewsHostableDetach();
++    if (!alive.view())
++      return;
+     native_view_hostable_ = nullptr;
+   } else {
+     [native_view_ setHidden:YES];
++    if (!alive.view())
++      return;
+     [native_view_ removeFromSuperview];
++    if (!alive.view())
++      return;
+   }
+ 
+   EnsureNativeViewHasNoChildWidgets(native_view_);
+@@ -192,6 +210,8 @@ void NativeViewHostMac::NativeViewDetaching(bool destroyed) {
+   // NativeWidgetNSWindowBridge can be null when Widget is closing.
+   if (window_host) {
+     window_host->OnNativeViewHostDetach(host_);
++    if (!alive.view())
++      return;
+   }
+ 
+   // If the previous call to AttachNativeView() removed the native_view_ from
+@@ -209,6 +229,8 @@ void NativeViewHostMac::NativeViewDetaching(bool destroyed) {
+   // preserves the pre-Ventura behavior of NativeViewDetaching().
+   if ([originating_window contentView] == nil) {
+     [originating_window setContentView:native_view_];
++    if (!alive.view())
++      return;
+   }
+ 
+   native_view_ = nil;
+@@ -219,7 +241,10 @@ void NativeViewHostMac::AddedToWidget() {
+     return;
+   }
+ 
++  ViewTracker alive(host_);
+   AttachNativeView();
++  if (!alive.view())
++    return;
+   host_->DeprecatedLayoutImmediately();
+ }
+ 

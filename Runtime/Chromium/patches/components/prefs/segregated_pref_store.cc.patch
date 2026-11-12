@@ -1,0 +1,55 @@
+diff --git a/components/prefs/segregated_pref_store.cc b/components/prefs/segregated_pref_store.cc
+index 8b2646a99a..82a875ee3a 100644
+--- a/components/prefs/segregated_pref_store.cc
++++ b/components/prefs/segregated_pref_store.cc
+@@ -35,13 +35,20 @@ void SegregatedPrefStore::UnderlyingPrefStoreObserver::
+     OnInitializationCompleted(bool succeeded) {
+   initialization_succeeded_ = succeeded;
+ 
+-  // Notify Observers only after all underlying PrefStores of the outer
+-  // SegregatedPrefStore are initialized.
+-  if (!outer_->IsInitializationComplete()) {
++  // Failure is terminal even when the failed store never becomes initialized.
++  // Successful completion still waits for both underlying stores.
++  if (outer_->initialization_failed_ ||
++      (succeeded && !outer_->IsInitializationComplete())) {
+     return;
+   }
++  if (!succeeded) {
++    outer_->initialization_failed_ = true;
++  }
++  scoped_refptr<SegregatedPrefStore> keep_alive(outer_.get());
+ 
+-  if (outer_->read_error_delegate_.has_value() &&
++  // Match JsonPrefStore: failed initialization notifies observers directly;
++  // read-error delegates describe errors in an otherwise completed read.
++  if (succeeded && outer_->read_error_delegate_.has_value() &&
+       outer_->read_error_delegate_.value()) {
+     PersistentPrefStore::PrefReadError read_error = outer_->GetReadError();
+     if (read_error != PersistentPrefStore::PREF_READ_ERROR_NONE) {
+@@ -50,7 +57,8 @@ void SegregatedPrefStore::UnderlyingPrefStoreObserver::
+   }
+ 
+   for (auto& observer : outer_->observers_) {
+-    observer.OnInitializationCompleted(outer_->IsInitializationSuccessful());
++    observer.OnInitializationCompleted(succeeded &&
++                                       outer_->IsInitializationSuccessful());
+   }
+ }
+ 
+@@ -160,6 +168,7 @@ PersistentPrefStore::PrefReadError SegregatedPrefStore::GetReadError() const {
+ }
+ 
+ PersistentPrefStore::PrefReadError SegregatedPrefStore::ReadPrefs() {
++  scoped_refptr<SegregatedPrefStore> keep_alive(this);
+   // Note: Both of these stores own PrefFilters which makes ReadPrefs
+   // asynchronous. This is okay in this case as only the first call will be
+   // truly asynchronous, the second call will then unblock the migration in
+@@ -174,6 +183,7 @@ PersistentPrefStore::PrefReadError SegregatedPrefStore::ReadPrefs() {
+ }
+ 
+ void SegregatedPrefStore::ReadPrefsAsync(ReadErrorDelegate* error_delegate) {
++  scoped_refptr<SegregatedPrefStore> keep_alive(this);
+   read_error_delegate_.emplace(error_delegate);
+   default_pref_store_->ReadPrefsAsync(nullptr);
+   selected_pref_store_->ReadPrefsAsync(nullptr);

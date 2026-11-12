@@ -1,0 +1,12 @@
+diff --git a/ui/views/cocoa/native_widget_mac_ns_window_host.h b/ui/views/cocoa/native_widget_mac_ns_window_host.h
+index aa953e712e..2da36feb40 100644
+--- a/ui/views/cocoa/native_widget_mac_ns_window_host.h
++++ b/ui/views/cocoa/native_widget_mac_ns_window_host.h
+@@ -191,6 +191,7 @@ class VIEWS_EXPORT NativeWidgetMacNSWindowHost
+   // The ultimate fullscreen state that is being targeted (irrespective of any
+   // active transitions).
+   bool target_fullscreen_state() const { return target_fullscreen_state_; }
++  bool in_fullscreen_transition() const { return in_fullscreen_transition_; }
+ 
+   // Set the root view (set during initialization and un-set during teardown).
+   void SetRootView(views::View* root_view);

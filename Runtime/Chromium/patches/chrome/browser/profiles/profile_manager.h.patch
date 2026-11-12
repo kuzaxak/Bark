@@ -1,0 +1,36 @@
+diff --git a/chrome/browser/profiles/profile_manager.h b/chrome/browser/profiles/profile_manager.h
+index 5f49c6e87f..a35291a076 100644
+--- a/chrome/browser/profiles/profile_manager.h
++++ b/chrome/browser/profiles/profile_manager.h
+@@ -265,6 +265,11 @@ class ProfileManager : public Profile::Delegate {
+   // fully initialized, return a pointer to the corresponding Profile object;
+   // otherwise return null.
+   Profile* GetProfileByPath(const base::FilePath& path) const;
++  // Includes registered in-progress Profiles. A null GetProfileByPath() is not
++  // sufficient proof that no BrowserContext/services are being initialized.
++  bool IsProfileLoadedOrLoading(const base::FilePath& path) const;
++  // The context has left profiles_info_ but is still owned by ProfileDestroyer.
++  bool IsProfilePendingDestruction(const base::FilePath& path) const;
+ 
+ #if !BUILDFLAG(IS_ANDROID)
+   // Asynchronously creates a new profile in the next available multiprofile
+@@ -293,6 +298,19 @@ class ProfileManager : public Profile::Delegate {
+   // Returns the full path to be used for guest profiles.
+   static base::FilePath GetGuestProfilePath();
+ 
++  // Reserved direct child of the configured user-data root, with a canonical
++  // generated UUID. Recognized before service initialization, including after
++  // a crash. Never accepts a caller-provided path for session creation.
++  static bool IsPrivateSessionProfilePath(const base::FilePath& path);
++#if BUILDFLAG(IS_MAC)
++  // Fresh hidden/ephemeral Guest parent, returning its primary OTR. Session
++  // windows/popups must reuse that exact OTR; this API never joins a session.
++  // The callback borrows Profile only for its invocation. It must synchronously
++  // establish a session Browser before returning; otherwise unused OTR is
++  // disposed. A caller must not retain the borrowed raw pointer across tasks.
++  void CreatePrivateSessionAsync(base::OnceCallback<void(Profile*)> callback);
++#endif
++
+ #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
+   // Returns the full path to be used for system profiles.
+   static base::FilePath GetSystemProfilePath();

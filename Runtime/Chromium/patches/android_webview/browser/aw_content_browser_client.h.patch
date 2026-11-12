@@ -1,0 +1,14 @@
+diff --git a/android_webview/browser/aw_content_browser_client.h b/android_webview/browser/aw_content_browser_client.h
+index 60e0e0bca9..6d65334e4a 100644
+--- a/android_webview/browser/aw_content_browser_client.h
++++ b/android_webview/browser/aw_content_browser_client.h
+@@ -248,7 +248,8 @@ class AwContentBrowserClient : public content::ContentBrowserClient {
+       bool* disable_secure_dns,
+       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      bool is_for_network_service) override;
++      bool is_for_network_service,
++      std::optional<int64_t> document_navigation_id = std::nullopt) override;
+   content::ContentBrowserClient::WebSocketOptions GetWebSocketOptions(
+       content::RenderFrameHost* frame) override;
+   bool WillCreateRestrictedCookieManager(

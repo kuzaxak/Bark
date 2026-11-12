@@ -1,0 +1,25 @@
+diff --git a/chrome/browser/extensions/chrome_extension_function_details.h b/chrome/browser/extensions/chrome_extension_function_details.h
+index 490ed6b92c..f6703843e2 100644
+--- a/chrome/browser/extensions/chrome_extension_function_details.h
++++ b/chrome/browser/extensions/chrome_extension_function_details.h
+@@ -12,6 +12,7 @@
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+ 
+ class ExtensionFunction;
++class BrowserWindowInterface;
+ 
+ namespace extensions {
+ class WindowController;
+@@ -61,7 +62,11 @@ class ChromeExtensionFunctionDetails {
+   // - The sender web contents
+   // - Open app windows
+   // - A browser with the same profile
+-  gfx::NativeWindow GetNativeWindowForUI();
++  // Optionally reports the logical browser selected by this same resolution.
++  // Native/non-browser surfaces leave it null; callers must not infer a browser
++  // back from the returned native window, which may be shared.
++  gfx::NativeWindow GetNativeWindowForUI(
++      BrowserWindowInterface** logical_browser = nullptr);
+ 
+   // Returns a pointer to the associated ExtensionFunction
+   ExtensionFunction* function() { return function_; }

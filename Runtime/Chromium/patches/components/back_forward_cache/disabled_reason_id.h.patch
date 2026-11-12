@@ -1,0 +1,15 @@
+diff --git a/components/back_forward_cache/disabled_reason_id.h b/components/back_forward_cache/disabled_reason_id.h
+index 5d96ab04d6..04b605d0b6 100644
+--- a/components/back_forward_cache/disabled_reason_id.h
++++ b/components/back_forward_cache/disabled_reason_id.h
+@@ -60,6 +60,10 @@ enum class DisabledReasonId : uint16_t {
+   // navigation and would skip the navigation gauntlet (throttles, process
+   // isolation). Not fixable by design; privileged content always reloads.
+   kPrivilegedWebContents = 19,
++  // An already-injected document's blocker policy/source changed. Its page-world
++  // scriptlet effects cannot be undone; a fresh navigation must use new rules.
++  // Unchanged-policy documents retain normal BFCache eligibility.
++  kNativeCosmeticPolicyChanged = 20,
+   // New reasons should be accompanied by a comment as to why BackForwardCache
+   // cannot be used in this case and a link to a bug to fix that if it is
+   // fixable.

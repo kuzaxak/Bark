@@ -1,0 +1,12 @@
+diff --git a/tools/metrics/histograms/metadata/extensions/enums.xml b/tools/metrics/histograms/metadata/extensions/enums.xml
+index 5435ee6ea2..49755fd421 100644
+--- a/tools/metrics/histograms/metadata/extensions/enums.xml
++++ b/tools/metrics/histograms/metadata/extensions/enums.xml
+@@ -3793,6 +3793,7 @@ Called by update_extension_permission.py.-->
+   <int value="2" label="kWillProxyForWebUI"/>
+   <int value="3" label="kWillProxyForEmbedderWebView"/>
+   <int value="4" label="kWillProxyForTelemetry"/>
++  <int value="5" label="kWillProxyForNativePolicy"/>
+ </enum>
+ 
+ <!-- LINT.ThenChange(/extensions/browser/api/web_request/web_request_api.h:ProxyDecision) -->

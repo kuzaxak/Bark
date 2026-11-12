@@ -16,24 +16,25 @@ SHIM = ROOT / 'ChromiumApp'
 APP_RESOURCES = SHIM / 'Resources'
 STAGE = ROOT / 'scripts/stage-chromium-app.sh'
 PUBLISH = ROOT / 'scripts/publish-chromium-engine.sh'
-RUNTIME = ROOT / 'Runtime/Chromium'
+RUNTIME = ROOT / 'Runtime/Chromium/bark/bridge'
 PACKAGE = ROOT / 'Packages/BarkEngine'
 XCFRAMEWORK = PACKAGE / 'BarkEngine.xcframework'
 SLICE_NAME = 'macos-x86_64'
 SLICE = XCFRAMEWORK / SLICE_NAME
 PUBLIC_HEADERS = SLICE / 'Headers'
 MODULE = PUBLIC_HEADERS / 'BarcChromium'
-HEADER_NAMES = ['barc_bridge_api.h', 'barc_runtime_startup_api.h', 'barc_page_tweaks.h']
+HEADER_NAMES = ['barc_bridge_api.h']
 DIGEST_HEADER = 'barc_public_headers_sha256.h'
-ENGINE_HEADER_DIRECTORIES = {'barc_bridge_api.h': 'chrome/browser/ui/views/frame', 'barc_runtime_startup_api.h': 'chrome/browser/ui/views/frame',
-                             'barc_page_tweaks.h': 'chrome/browser/content_blocking'}
-STARTUP = ROOT / 'App/Chromium/ChromiumStartup.swift'
+ENGINE_HEADER_DIRECTORIES = {'barc_bridge_api.h': 'bark/bridge'}
 VERSION = '156.0.8078.80'
 FRAMEWORK = 'Bark Framework.framework'
 BUNDLE_ID = 'ee.qdo.bark'
 DELEGATING_ZONE = 'DelegatingDefaultZoneForPartitionAlloc'
-BRIDGE_VERSION = 9
+BRIDGE_VERSION = 10
 ENTRY = f'barc_engine_main_v{BRIDGE_VERSION}'
+TABLE = f'barc_bridge_v{BRIDGE_VERSION}'
+# The last revision with the version 9 app, which a version 10 engine must refuse.
+V9_REVISION = 'd3d1e41c'
 ABORT_STATUS = 134
 
 ENGINE_PLIST = dict(CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundleName='Bark',
@@ -75,6 +76,15 @@ int ChromeMain(int argc, const char** argv) {
 #ifdef HEADERS_SHA256
 const char* barc_public_headers_sha256(void) { return HEADERS_SHA256; }
 #endif
+#ifdef TABLE_FUNCTION
+#include <stddef.h>
+struct FakeTable { size_t size; char members[TABLE_SIZE]; };
+static struct FakeTable table = { TABLE_SIZE };
+const struct FakeTable* TABLE_FUNCTION(void) {
+  record("bridge-table");
+  return &table;
+}
+#endif
 #ifdef ENTRY_FUNCTION
 int ENTRY_FUNCTION(int argc, const char** argv) {
   record("engine-main");
@@ -83,13 +93,12 @@ int ENTRY_FUNCTION(int argc, const char** argv) {
 #endif
 '''
 FAKE_SHELL = COMMON + r'''
-#include <dlfcn.h>
+#include <stddef.h>
 __attribute__((constructor)) static void loaded(void) { record("shell"); }
-int barc_native_main(void* library, int argc, const char** argv) {
+int barc_native_main(const size_t* bridge, int (*engine_main)(int, const char**), int argc, const char** argv) {
   char line[256];
-  snprintf(line, sizeof line, "native-main argc=%d last=%s", argc, argv[argc - 1]);
+  snprintf(line, sizeof line, "native-main argc=%d last=%s table=%zu", argc, argv[argc - 1], bridge ? *bridge : 0);
   record(line);
-  int (*engine_main)(int, const char**) = dlsym(library, ENTRY_NAME);
   return engine_main ? engine_main(argc, argv) : 99;
 }
 '''
@@ -137,17 +146,35 @@ def digest_in(header):
     return found and found[1]
 
 
-def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x86_64'), digest=headers_digest()):
+TABLE_SIZE = None
+
+
+def table_size():
+    """sizeof(struct BarcBridge) as the published header declares it."""
+    global TABLE_SIZE
+    if TABLE_SIZE is None:
+        with tempfile.TemporaryDirectory() as directory:
+            probe = Path(directory) / 'size'
+            compile_c('#include <stdio.h>\n#include "BarcChromium/barc_bridge_api.h"\n'
+                      'int main(void) { printf("%zu", sizeof(struct BarcBridge)); return 0; }\n', probe, f'-I{PUBLIC_HEADERS}')
+            TABLE_SIZE = int(subprocess.check_output([str(probe)], text=True))
+    return TABLE_SIZE
+
+
+def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x86_64'), digest=headers_digest(),
+                   table=TABLE, size=None):
     extra = ['-dynamiclib', f'-DZONE_NAME="{zone}"', *arch]
     if entry:
         extra.append(f'-DENTRY_FUNCTION={entry}')
     if digest:
         extra.append(f'-DHEADERS_SHA256="{digest}"')
+    if table:
+        extra += [f'-DTABLE_FUNCTION={table}', f'-DTABLE_SIZE={size if size is not None else table_size()}']
     compile_c(FAKE_FRAMEWORK, output, *extra)
 
 
 def fake_shell(output, arch=('-arch', 'x86_64')):
-    compile_c(FAKE_SHELL, output, '-dynamiclib', f'-DENTRY_NAME="{ENTRY}"', *arch)
+    compile_c(FAKE_SHELL, output, '-dynamiclib', *arch)
 
 
 def compile_shim(output, version=VERSION, headers=PUBLIC_HEADERS, extra=('-arch', 'x86_64'), libs=('-nostdlib++',)):
@@ -209,9 +236,10 @@ def header_cases(work):
         check(f'{name} holds no C++ and includes only C headers', not found, found)
     for name, marker in [('barc_bridge.h', 'bool CanRequestPeek'), ('barc_runtime_startup.h', 'bool IsNativeApplicationMode')]:
         private = (RUNTIME / name).read_text()
-        public_name = name.replace('.h', '_api.h')
-        check(f'{name} keeps the private C++ and includes its public header',
-              marker in private and 'namespace barc' in private and f'{public_name}"' in private)
+        check(f'{name} keeps the private C++ and includes the engine\'s declarations of the table\'s functions',
+              marker in private and 'namespace barc' in private and '#include "bark/bridge/barc_bridge_functions.h"' in private)
+    functions = (RUNTIME / 'barc_bridge_functions.h').read_text()
+    check('barc_bridge_functions.h builds on the public header', '#include "bark/bridge/barc_bridge_api.h"' in functions)
 
     header = (MODULE / 'barc_bridge_api.h').read_text()
     version = re.search(r'#define BARC_BRIDGE_VERSION (\d+)', header)
@@ -220,50 +248,84 @@ def header_cases(work):
           (version, symbol))
     check('entry is declared with the bridge\'s visibility', f'BARC_API int {ENTRY}(int argc, const char** argv);' in header)
     check('the bridge declares the digest of its public headers', 'BARC_API const char* barc_public_headers_sha256(void);' in header)
+    table_symbol = re.search(r'#define BARC_BRIDGE_SYMBOL "(\w+)"', header)
+    check('the table symbol names the bridge version', bool(table_symbol) and table_symbol[1] == TABLE, table_symbol)
+    check('the table is declared with the bridge\'s visibility', f'BARC_API const struct BarcBridge* {TABLE}(void);' in header)
+    outside_table = re.sub(r'struct BarcBridge \{.*?\n\};', '', code(header), flags=re.S)
+    declared = set(re.findall(r'\b(barc_\w+)\s*\(', re.sub(r'typedef[^;]*;', '', outside_table)))
+    check('outside the table the header declares only the entry, the digest and the table',
+          declared == {ENTRY, TABLE, 'barc_public_headers_sha256'}, declared)
+    table_body = re.search(r'struct BarcBridge \{(.*?)\n\};', header, re.S)[1]
+    members = re.findall(r'\(\* _Nonnull (\w+)\)', table_body)
+    check('after its size every table member is a function pointer the engine fills',
+          re.match(r'\s*size_t size;', table_body) is not None and len(members) == len(set(members)) > 0 and
+          table_body.count('(*') == len(members), (len(members), table_body.count('(*')))
     check('the package holds the digest of exactly these public headers', digest_in(MODULE / DIGEST_HEADER) == headers_digest(),
           (digest_in(MODULE / DIGEST_HEADER), headers_digest()))
 
     source = work / 'linkage.cc'
-    source.write_text(f'#include "BarcChromium/barc_bridge_api.h"\nint {ENTRY}(int argc, const char** argv) {{ return argc; }}\n')
+    source.write_text(f'#include "BarcChromium/barc_bridge_api.h"\nint {ENTRY}(int argc, const char** argv) {{ return argc; }}\n'
+                      f'const struct BarcBridge* {TABLE}(void) {{ return nullptr; }}\n')
     subprocess.run(['xcrun', 'clang++', '-arch', 'x86_64', '-std=c++20', f'-I{PUBLIC_HEADERS}', '-c', str(source), '-o', str(work / 'linkage.o')], check=True)
     symbols = subprocess.check_output(['nm', '-gjU', str(work / 'linkage.o')], text=True).split()
-    check('from C++ the entry keeps C linkage', symbols == [f'_{ENTRY}'], symbols)
+    check('from C++ the entry and the table keep C linkage', sorted(symbols) == sorted([f'_{ENTRY}', f'_{TABLE}']), symbols)
 
     swift = work / 'import.swift'
     swift.write_text('import BarcChromium\n'
                      'let entry: String = BARC_ENGINE_MAIN_SYMBOL\n'
-                     'let split = BarcSplitLayout()\n'
+                     'let symbol: String = BARC_BRIDGE_SYMBOL\n'
+                     'let loader: BarcBridgeEntry? = nil\n'
+                     'var split = BarcSplitLayout()\n'
+                     'split.size = MemoryLayout<BarcSplitLayout>.size\n'
                      'let target = BarcApplicationTarget()\n'
-                     'let publish = barc_page_tweaks_publish\n')
+                     'func publish(_ bridge: BarcBridge) -> Int32 { bridge.page_tweaks_publish(nil, 0) }\n')
     run = subprocess.run(['xcrun', 'swiftc', '-target', 'x86_64-apple-macosx15.5', '-typecheck', '-I', str(PUBLIC_HEADERS), str(swift)],
                          capture_output=True, text=True)
     check('Swift imports the module and its string entry name', run.returncode == 0, run.stderr[-600:])
 
 
-def startup_version_cases(work):
-    def required_version(name, headers):
-        probe = work / f'{name}.swift'
-        probe.parent.mkdir(exist_ok=True)
-        directory = work / name
-        directory.mkdir()
-        main_swift = directory / 'main.swift'
-        main_swift.write_text('import Foundation\n'
-                              'let config = try ChromiumStartupConfiguration(arguments: ["x", "--barc-app-data-dir=/private/tmp/nook-check-version", '
-                              '"--barc-app-profile=5068D9EB-6482-4F00-B743-6606EA7898F4"])\n'
-                              'print(config.requiredBridgeVersion)\n')
-        built = subprocess.run(['xcrun', 'swiftc', '-swift-version', '5', '-target', 'x86_64-apple-macosx15.5', '-I', str(headers),
-                                str(STARTUP), str(main_swift), '-o', str(directory / 'probe')], capture_output=True, text=True)
-        if built.returncode:
-            return built.stderr[-300:]
-        return subprocess.run([str(directory / 'probe')], capture_output=True, text=True).stdout.strip()
+APP_SOURCE_ROOTS = ['App', 'ChromiumApp', 'CommandPalette', 'Navigation', 'Nook', 'Onboarding', 'UI', 'Packages']
+SOURCE_SUFFIXES = ('.swift', '.m', '.mm', '.c', '.cc', '.h')
+# Objective-C method implementations cast for AppKit swizzles; they never reach the engine.
+APPKIT_SWIZZLES = {'App/Window/EscapeKey.swift', 'App/Window/TitlebarDragRegion.swift'}
 
-    check('the app requires the header\'s bridge version', required_version('startup-current', PUBLIC_HEADERS) == str(BRIDGE_VERSION))
-    bumped = work / 'bumped-headers/BarcChromium'
-    shutil.copytree(MODULE, bumped)
-    header = bumped / 'barc_bridge_api.h'
-    header.write_text(header.read_text().replace(f'BARC_BRIDGE_VERSION {BRIDGE_VERSION}', f'BARC_BRIDGE_VERSION {BRIDGE_VERSION + 1}'))
-    result = required_version('startup-bumped', work / 'bumped-headers')
-    check('a bumped header changes the version the app requires', result == str(BRIDGE_VERSION + 1), result)
+
+def app_sources():
+    for root in APP_SOURCE_ROOTS:
+        for path in sorted((ROOT / root).rglob('*')):
+            if path.suffix in SOURCE_SUFFIXES and path.is_file() and not {'.build', 'build'} & set(path.relative_to(ROOT).parts):
+                if 'BarkEngine.xcframework' not in path.parts:
+                    yield path
+
+
+def source_cases():
+    """The app reaches the engine only through the table main resolves."""
+    header = (MODULE / 'barc_bridge_api.h').read_text()
+    table_body = re.search(r'struct BarcBridge \{(.*?)\n\};', header, re.S)[1]
+    engine_functions = {'barc_' + m for m in re.findall(r'\(\* _Nonnull (\w+)\)', table_body)} | {'barc_bridge_version'}
+    main_cc = SHIM / 'main.cc'
+    resolved = re.findall(r'dlsym\(\w+, ([^)]+)\)', main_cc.read_text())
+    check('main resolves only the engine entry, the header digest, the table and the shell entry',
+          sorted(resolved) == sorted(['BARC_ENGINE_MAIN_SYMBOL', '"barc_public_headers_sha256"', 'BARC_BRIDGE_SYMBOL', '"barc_native_main"']),
+          resolved)
+    elsewhere, engine_named, typealiases = [], [], []
+    for path in app_sources():
+        if path == main_cc:
+            continue
+        text = path.read_text(errors='replace')
+        for number, line in enumerate(text.splitlines(), 1):
+            where = f'{path.relative_to(ROOT)}:{number}'
+            if 'dlsym' in line and (path.is_relative_to(ROOT / 'App') or re.search(r'barc|BARC|Bark', line)):
+                elsewhere.append(where)
+            if ('@convention(c)' in line and path.relative_to(ROOT).as_posix() not in APPKIT_SWIZZLES
+                    and (path.is_relative_to(ROOT / 'App') or re.search(r'barc|Barc|BARC', line))):
+                typealiases.append(where)
+            named = set(re.findall(r'\bbarc_\w+', line)) & engine_functions
+            if named:
+                engine_named.append(f'{where} {sorted(named)}')
+    check('no app source but main calls dlsym on the engine, and App/ calls it for nothing', not elsewhere, elsewhere)
+    check('no hand-written C function type reaches the engine', not typealiases, typealiases)
+    check('no app source names a function the engine exports through the table', not engine_named, engine_named[:10])
 
 
 def package_cases(work):
@@ -289,6 +351,24 @@ def package_cases(work):
     check('linking the package adds no library', linked == ['/usr/lib/libSystem.B.dylib'], linked)
 
 
+def v9_shim(output):
+    """The version 9 app's main and headers, from the last revision that had them."""
+    tree = output.parent / 'v9-tree'
+    module = tree / 'headers/BarcChromium'
+    module.mkdir(parents=True)
+    def show(path):
+        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{V9_REVISION}:{path}'], capture_output=True, check=True).stdout
+    for name in ['main.cc', 'early_zone_registration_apple.cc', 'early_zone_registration_apple.h', 'early_zone_registration_utils_apple.h']:
+        (tree / name).write_bytes(show(f'ChromiumApp/{name}'))
+    headers = f'Packages/BarkEngine/BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium'
+    for name in ['barc_bridge_api.h', 'barc_runtime_startup_api.h', 'barc_page_tweaks.h', 'barc_public_headers_sha256.h']:
+        (module / name).write_bytes(show(f'{headers}/{name}'))
+    subprocess.run(['xcrun', 'clang++', '-arch', 'x86_64', '-std=c++20', '-fno-exceptions', '-fno-rtti', '-nostdlib++', '-O2',
+                    f'-DENGINE_VERSION_STRING="{VERSION}"', f'-I{tree / "headers"}', f'-I{tree}',
+                    str(tree / 'main.cc'), str(tree / 'early_zone_registration_apple.cc'), '-o', str(output)], check=True)
+    return output
+
+
 def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     def launch(name, framework=framework_lib, shell=shell_lib, main=shim):
         contents = work / name / 'Bark.app/Contents'
@@ -308,8 +388,9 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     run, lines = launch('normal')
     check('zone is the delegating one when the framework loads, with one thread',
           lines[:1] == [f'framework zone={DELEGATING_ZONE} threads=1'], lines)
-    check('framework loads, then the shell, then the shell enters the engine through the versioned symbol',
-          lines[1:] == ['shell', 'native-main argc=3 last=last-argument', 'engine-main', 'chrome-main'], lines)
+    check('main reads the table, then loads the shell, which enters the engine through the entry main resolved',
+          lines[1:] == ['bridge-table', 'shell', f'native-main argc=3 last=last-argument table={table_size()}', 'engine-main', 'chrome-main'],
+          lines)
     check('exit status is what the shell returned', run.returncode == 23, run.returncode)
 
     run, lines = launch('no-shell', shell=None)
@@ -329,6 +410,41 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     check('an engine without the versioned entry aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
     check('that error names the missing entry', ENTRY in run.stderr, run.stderr)
+
+    v9_engine = work / 'framework-v9.dylib'
+    fake_framework(v9_engine, entry='barc_engine_main_v9', table=None, digest='9' * 64)
+    run, lines = launch('v10-app-v9-engine', framework=v9_engine)
+    check('a version 10 app with a version 9 engine aborts before the shell loads',
+          run.returncode == ABORT_STATUS and 'shell' not in lines and 'bridge-table' not in lines, (run.returncode, lines))
+    check('that error says the engine was built for another bridge version and names version 10',
+          ENTRY in run.stderr and 'another bridge version' in run.stderr and 'needs version 10' in run.stderr, run.stderr)
+
+    v9_app = v9_shim(work / 'v9-app')
+    run, lines = launch('v9-app-v10-engine', main=v9_app)
+    check('a version 9 app with a version 10 engine aborts before the shell loads',
+          run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines, (run.returncode, lines))
+    check('that error says the engine was built for another bridge version and names version 9',
+          'barc_engine_main_v9' in run.stderr and 'another bridge version' in run.stderr and 'needs version 9' in run.stderr, run.stderr)
+
+    no_table = work / 'framework-without-table.dylib'
+    fake_framework(no_table, table=None)
+    run, lines = launch('engine-without-table', framework=no_table)
+    check('an engine without the table aborts before the shell loads', run.returncode == ABORT_STATUS and 'shell' not in lines,
+          (run.returncode, lines))
+    check('that error names the missing table', TABLE in run.stderr and 'no bridge table' in run.stderr, run.stderr)
+
+    short = table_size() - 8
+    small_table = work / 'framework-small-table.dylib'
+    fake_framework(small_table, size=short)
+    run, lines = launch('engine-small-table', framework=small_table)
+    check('a table smaller than the app expects aborts before the shell loads',
+          run.returncode == ABORT_STATUS and lines[1:] == ['bridge-table'], (run.returncode, lines))
+    check('that error names both sizes', f'is {short} bytes' in run.stderr and f'needs at least {table_size()}' in run.stderr, run.stderr)
+
+    large_table = work / 'framework-large-table.dylib'
+    fake_framework(large_table, size=table_size() + 64)
+    run, lines = launch('engine-large-table', framework=large_table)
+    check('a larger table from a newer engine is accepted', run.returncode == 23 and 'chrome-main' in lines, (run.returncode, lines))
 
     for name, digest, why in [('engine-without-digest', None, 'an engine that exports no header digest'),
                               ('engine-other-digest', '0' * 64, 'an engine built from other public headers')]:
@@ -510,6 +626,9 @@ def publish_cases(work, framework_lib):
     no_entry = work / 'publish-no-entry.dylib'
     fake_framework(no_entry, entry=None)
     refused('publish-no-entry', 'an engine that does not export the header\'s entry', f'does not export {ENTRY}', framework=no_entry)
+    no_table = work / 'publish-no-table.dylib'
+    fake_framework(no_table, table=None)
+    refused('publish-no-table', 'an engine that does not export the header\'s table', f'does not export {TABLE}', framework=no_table)
     no_digest = work / 'publish-no-digest-export.dylib'
     fake_framework(no_digest, digest=None)
     refused('publish-no-digest-export', 'an engine that does not export its header digest', 'does not export barc_public_headers_sha256',
@@ -711,22 +830,28 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     fake_framework(no_entry, entry=None)
     refused('engine-no-entry', 'an engine that does not export main\'s entry', f'does not export {ENTRY}',
             lambda a, e, p: shutil.copy2(no_entry, versioned(e) / 'Bark Framework'))
+    no_table = work / 'stage-no-table.dylib'
+    fake_framework(no_table, table=None)
+    refused('engine-no-table', 'an engine that does not export main\'s table', f'does not export {TABLE}',
+            lambda a, e, p: shutil.copy2(no_table, versioned(e) / 'Bark Framework'))
     main_no_entry = work / 'main-no-entry-binary'
-    compile_c(MAIN_WITHOUT_ENTRY, main_no_entry)
-    refused('main-no-entry', 'a main that names no versioned entry', 'must name exactly one versioned engine entry',
+    compile_c(MAIN_WITHOUT_ENTRY + f'__attribute__((used)) static const char t[] = "{TABLE}";\n', main_no_entry)
+    refused('main-no-entry', 'a main that names no versioned entry', 'must name exactly one versioned barc_engine_main',
             lambda a, e, p: shutil.copy2(main_no_entry, a / 'Contents/MacOS/Bark'))
-    other_entry_shell = work / 'other-entry-shell.dylib'
-    compile_c(FAKE_SHELL, other_entry_shell, '-dynamiclib', '-arch', 'x86_64', '-DENTRY_NAME="barc_engine_main_v5"')
-    refused('shell-other-entry', 'a shell built for another bridge version', 'does not export barc_engine_main_v5',
-            lambda a, e, p: shutil.copy2(other_entry_shell, p / 'NookNativeShell.framework/Versions/A/NookNativeShell'))
-    no_entry_shell = work / 'no-entry-shell.dylib'
-    compile_c(FAKE_SHELL_NO_ENTRY, no_entry_shell, '-dynamiclib', '-arch', 'x86_64')
-    refused('shell-no-entry', 'a shell that names no versioned entry', 'must name exactly one versioned engine entry',
-            lambda a, e, p: shutil.copy2(no_entry_shell, p / 'NookNativeShell.framework/Versions/A/NookNativeShell'))
-    two_entries_shell = work / 'two-entries-shell.dylib'
-    compile_c(FAKE_SHELL + '__attribute__((used)) static const char other[] = "barc_engine_main_v5";\n', two_entries_shell, '-dynamiclib', '-arch', 'x86_64', f'-DENTRY_NAME="{ENTRY}"')
-    refused('shell-two-entries', 'a shell naming two entries', 'must name exactly one versioned engine entry',
-            lambda a, e, p: shutil.copy2(two_entries_shell, p / 'NookNativeShell.framework/Versions/A/NookNativeShell'))
+    main_no_table = work / 'main-no-table-binary'
+    compile_c(MAIN_WITHOUT_ENTRY + f'__attribute__((used)) static const char t[] = "{ENTRY}";\n', main_no_table)
+    refused('main-no-table', 'a main that names no versioned table', 'must name exactly one versioned barc_bridge',
+            lambda a, e, p: shutil.copy2(main_no_table, a / 'Contents/MacOS/Bark'))
+    main_two_tables = work / 'main-two-tables-binary'
+    compile_c(MAIN_WITHOUT_ENTRY + f'__attribute__((used)) static const char t[] = "{ENTRY}";\n'
+              f'__attribute__((used)) static const char u[] = "{TABLE}";\n'
+              '__attribute__((used)) static const char v[] = "barc_bridge_v5";\n', main_two_tables)
+    refused('main-two-tables', 'a main naming two tables', 'must name exactly one versioned barc_bridge',
+            lambda a, e, p: shutil.copy2(main_two_tables, a / 'Contents/MacOS/Bark'))
+    entry_shell = work / 'entry-shell.dylib'
+    compile_c(FAKE_SHELL + f'__attribute__((used)) static const char entry[] = "{ENTRY}";\n', entry_shell, '-dynamiclib', '-arch', 'x86_64')
+    refused('shell-names-entry', 'a shell that resolves the engine itself', 'Native shell names an engine symbol',
+            lambda a, e, p: shutil.copy2(entry_shell, p / 'NookNativeShell.framework/Versions/A/NookNativeShell'))
 
 
 def main():
@@ -747,7 +872,7 @@ def main():
         compile_c(FAKE_SHELL_NO_ENTRY, no_entry_lib, '-dynamiclib')
         compile_c(QUIET_ABORT, quiet_lib, '-dynamiclib', f'-DABORT_STATUS={ABORT_STATUS}')
         header_cases(work)
-        startup_version_cases(work)
+        source_cases()
         package_cases(work)
         if not compile_shim(shim):
             check('main compiles from ChromiumApp', False, 'no usable sources')

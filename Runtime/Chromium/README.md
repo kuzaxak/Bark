@@ -85,96 +85,87 @@ compatibility, signed distribution or either architecture's release qualificatio
 
 Upstream instructions: [Chromium macOS build](https://chromium.googlesource.com/chromium/src/+/fb096c0011f9d50f0a264a9376420cdea9c421e3/docs/mac_build_instructions.md).
 
-## Native bridge slice
+## Bark's tree and the patches
 
 Keep the unmodified browser-layer baseline distinct from this patched candidate.
 First wait for the baseline build to terminate and capture its artifact, source/
 toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
-candidate; do not modify sources or arguments under a running build. Use the complete reviewed `Runtime/Chromium` patch/source set
-from one revision; apply it once to the pinned source, in the following order.
-From `build/chromium-engine/checkout/src`, use this single stop-on-error
-procedure. The complete reviewed candidate has 57 ordered patches and 30 copied
-sources (the BRANDING file, 16 bridge sources, the existing translation script, two cosmetic resources
-the Boost picker resource, the native matcher header, the fixed-tweaks header, three tweak resources
-and the header digest script). Copies precede `lifecycle-close.patch`; the Swift overlay follows those
-copies. Do not recopy sources or reapply an overlay afterward. Start from the
-pinned unmodified source, not a partially patched checkout.
+candidate; do not modify sources or arguments under a running build.
+
+The recipe has three parts, all in this directory:
+
+- `bark/`: every file Bark owns, mounted at `src/bark`: the C bridge and its public header
+  (`bark/bridge/`), the engine entry and header digest (`bark/app/`), the content blocker,
+  vault authenticator and two upstream-class definitions Bark adds (`bark/browser/`), page
+  resources (`bark/resources/`), the browser tests (`bark/test/`) and the override tool
+  (`bark/tools/`). The GN arg `root_extra_deps = [ "//bark" ]` loads it, so no upstream
+  `BUILD.gn` names a Bark test or tool; the chrome framework links `//bark:engine`. Resource
+  files that other packages own are symlinks into those packages, so the mount copies with
+  `-L`.
+- `chromium_src/`: overrides, mounted at `src/chromium_src`; its `README.md` holds the rules
+  for writing one. The args set upstream's GN arg `cc_wrapper` to the redirect tool
+  `bark/tools/override_cc.c`, which the recipe builds into the output directory. The tool puts
+  `chromium_src` first on every compile's include path and compiles `chromium_src/<path>`
+  instead of `<path>` when that exists. It adds 2.4 ms to a compile, 0.07% of a build
+  (`build/native-slice1-v1/logs/override-microbench.txt`). Setting or clearing `cc_wrapper`
+  changes every compile command, so either costs one full rebuild.
+- `patches/`: one patch per upstream file, at `patches/<upstream path>.patch`. A patch only
+  adds hooks to upstream files; it never creates, deletes or renames a file, and patches do
+  not depend on each other's order.
+
+`BUDGET.json` caps what `patches/` and `chromium_src/` change upstream: patch files, upstream
+files, hunks, added lines, override files and files under `ui/views`, `content/`,
+`android_webview/`, `tools/metrics/` and upstream tests. `budget.py` prints the counts and
+`budget.py --check` fails above any cap, so raising one is a reviewed change.
+`CHROMIUM_VERSION` names the pinned version the patches apply to.
+
+From `build/chromium-engine/checkout/src`, starting from the pinned unmodified source:
 
 ```fish
 set barc_repo (realpath ../../../..)
-function prepare_native_candidate
-    set -l runtime "$argv[1]/Runtime/Chromium"
-    cp "$runtime/BRANDING" chrome/app/theme/chromium/BRANDING; or return 1
-    for patch in integration active-client active-client-mac native-window-selection native-owner native-routing native-close native-policy-routing native-factory native-transfer extension-selection native-element-ownership profile-initialization extension-dialog-owner private-sessions lifecycle-close owner-ended native-attach-lifetime swiftui-smoke swiftui-smoke-build signing runtime-startup native-keychain native-shutdown native-shell-signing native-discovery private-entrypoints native-permission-owner native-incoming-routing native-split native-profile-deletion native-profile-reassignment native-transfer-admission native-external-routing native-cross-profile-presentation native-boost-css native-page-translation native-resource-protection native-peek native-script-execution native-content-blocking native-blocked-navigation native-cosmetics native-profile-search native-boost-picker native-websocket-blocking native-page-tweaks native-pawl-passkeys native-devtools-panels native-tweaks-continuations native-hide-stock-chrome native-sdk-entry native-product-strings native-app-controlled-splits native-header-hash native-app-lifetime native-key-ownership
-        if test "$patch" = lifecycle-close
-            for source in barc_bridge_api.h barc_bridge.h barc_bridge.mm barc_bridge_browsertest.mm barc_profiles.h barc_profiles.mm barc_profiles_browsertest.mm barc_native_policy_browsertest.mm barc_extension_focus_browsertest.mm barc_extension_dialog_browsertest.mm barc_extension_storage_browsertest.mm barc_swiftui_smoke.h BarcSwiftUISmoke.swift barc_runtime_startup_api.h barc_runtime_startup.h barc_runtime_startup.cc
-                cp "$runtime/$source" chrome/browser/ui/views/frame/; or return 1
-            end
-        end
-        if test "$patch" = native-page-translation
-            cp "$argv[1]/Packages/NookWeb/Sources/NookWeb/Resources/page-translate.js" chrome/renderer/resources/; or return 1
-        end
-        if test "$patch" = native-cosmetics
-            mkdir -p chrome/common/resources/nook_cosmetics; or return 1
-            cp "$runtime/native_cosmetic_observer.js" chrome/common/resources/nook_cosmetics/observer.js; or return 1
-            cp "$argv[1]/Packages/NookBlocker/Sources/NookBlocker/Resources/scriptlets.json" chrome/common/resources/nook_cosmetics/scriptlets.json; or return 1
-            cp "$argv[1]/Nook/ThirdParty/AdblockRustFFI/include/nook_adblock.h" chrome/browser/content_blocking/nook_adblock/nook_adblock.h; or return 1
-        end
-        if test "$patch" = native-boost-picker
-            cp "$runtime/native_boost_picker.js" chrome/common/resources/nook_boost_picker.js; or return 1
-        end
-        if test "$patch" = native-page-tweaks
-            mkdir -p chrome/common/resources/nook_tweaks; or return 1
-            cp "$runtime/barc_page_tweaks.h" chrome/browser/content_blocking/; or return 1
-            cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/youtube-tweaks.js" chrome/common/resources/nook_tweaks/; or return 1
-            cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/reddit-tweaks.js" chrome/common/resources/nook_tweaks/; or return 1
-            cp "$argv[1]/Packages/NookBlocker/Sources/NookBlocker/Resources/facebook-feed-prune.js" chrome/common/resources/nook_tweaks/; or return 1
-        end
-        if test "$patch" = native-header-hash
-            cp "$runtime/barc_public_headers_sha256.py" chrome/browser/ui/views/frame/; or return 1
-        end
-        if test "$patch" = native-tweaks-continuations
-            cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/youtube-sponsorblock.js" chrome/common/resources/nook_tweaks/; or return 1
-            cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/social-image-download.js" chrome/common/resources/nook_tweaks/; or return 1
-            cp "$argv[1]/Packages/NookTweaks/Sources/NookTweaks/Resources/social-video-source.js" chrome/common/resources/nook_tweaks/; or return 1
-        end
-        git apply --check "$runtime/$patch.patch"; or return 1
-        git apply "$runtime/$patch.patch"; or return 1
+set runtime "$barc_repo/Runtime/Chromium"
+python3 "$runtime/budget.py" --check; and \
+    cp -RL "$runtime/bark" bark; and \
+    cp -RL "$runtime/chromium_src" chromium_src; and \
+    for patch in (find "$runtime/patches" -name '*.patch' | sort)
+        git apply --check "$patch"; and git apply "$patch"; or break
     end
-    # Isolate the pinned Rust runtime behind its fixed C ABI. Existing
-    # universal static archives remain unchanged.
-    set -l blocker_target "$argv[1]/build/native-adblock-x64"
-    env MACOSX_DEPLOYMENT_TARGET=13.0 cargo rustc --locked --release \
-        --target x86_64-apple-darwin --target-dir "$blocker_target" \
-        --manifest-path "$argv[1]/Nook/ThirdParty/AdblockRustFFI/Cargo.toml" \
-        --lib --crate-type cdylib -- \
-        -C 'link-arg=-Wl,-install_name,@loader_path/Libraries/libnook_adblock.dylib' \
-        -C "link-arg=-Wl,-exported_symbols_list,$argv[1]/Nook/ThirdParty/AdblockRustFFI/nook_adblock.exports"; or return 1
+# Isolate the pinned Rust runtime behind its fixed C ABI.
+set -l blocker_target "$barc_repo/build/native-adblock-x64"
+env MACOSX_DEPLOYMENT_TARGET=13.0 cargo rustc --locked --release \
+    --target x86_64-apple-darwin --target-dir "$blocker_target" \
+    --manifest-path "$barc_repo/Nook/ThirdParty/AdblockRustFFI/Cargo.toml" \
+    --lib --crate-type cdylib -- \
+    -C 'link-arg=-Wl,-install_name,@loader_path/Libraries/libnook_adblock.dylib' \
+    -C "link-arg=-Wl,-exported_symbols_list,$barc_repo/Nook/ThirdParty/AdblockRustFFI/nook_adblock.exports"; and \
     cp "$blocker_target/x86_64-apple-darwin/release/libnook_adblock.dylib" \
-        chrome/browser/content_blocking/nook_adblock/libnook_adblock.dylib; or return 1
-end
-if prepare_native_candidate "$barc_repo"
-    cp "$barc_repo/Runtime/Chromium/args-x64.gn" out/Barc-x64/args.gn; and \
-        gn gen out/Barc-x64 --fail-on-unused-args; and \
-        autoninja -C out/Barc-x64 -j 8 chrome chrome/installer/mac
-end
-functions -e prepare_native_candidate
+        bark/browser/content_blocking/nook_adblock/libnook_adblock.dylib; and \
+    cp "$runtime/args-x64.gn" out/Barc-x64/args.gn; and \
+    xcrun clang -O2 -Wall -Wextra -Werror -o out/Barc-x64/bark_override_cc bark/tools/override_cc.c; and \
+    gn gen out/Barc-x64 --fail-on-unused-args; and \
+    autoninja -C out/Barc-x64 -j 8 chrome chrome/installer/mac bark_browser_tests
 ```
 
 On failure, stop and inspect the checkout; this is not an idempotent resume
-command. No intermediate core-only full build is needed. Keep separate scratch
-outputs for GN-only configuration checks, not duplicate complete engines.
-The installer target generates `Bark Packaging/` from the same source and
-build properties, including the pinned signer and per-process entitlements.
+command. While changing Bark's own files, sync them into the checkout without
+keeping their old times, or the build keeps stale objects:
+`rsync -rlpc --copy-links --delete --exclude 'libnook_adblock.*' "$runtime/bark/" bark/`, and
+the same for `chromium_src`. Keep separate scratch outputs for GN-only configuration checks, not
+duplicate complete engines. The installer target generates `Bark Packaging/` from the same
+source and build properties, including the pinned signer and per-process entitlements.
 Compilation does not sign or notarize the app.
 
-### Native application and experimental smoke
+The replay gate proves the checkout is the recipe: `python3 "$runtime/replay_gate.py" "$PWD"`
+runs the budget check, replays pristine source plus `bark/`, `chromium_src/` and `patches/`
+into a throwaway index, and fails on any difference but the Rust matcher it builds.
+
+### Native application
 
 `Bark.app` is the outer bundle: the `NookChromiumApp` target owns its executable
 and `Info.plist`, and `Bark Framework.framework` is nested inside it. `BRANDING`
 sets the product name and the `ee.qdo.bark` bundle identifier in the engine's bundle,
-framework and helper names. It does not reach `chromium_strings.grd`, so
-`native-product-strings.patch` sets the product name, helper name, window title
+framework and helper names; its patch is `patches/chrome/app/theme/chromium/BRANDING.patch`.
+It does not reach `chromium_strings.grd`, so that file's patch sets the product name, helper name, window title
 formats and macOS permission reason there. Changing a translatable message drops its
 translations, so those strings show in English in every locale. The file's other
 messages still say Chromium.
@@ -186,32 +177,38 @@ entry; `ChromeMain` owns the sole application loop. Helpers keep Chromium's own 
 There is no core-only application launch path or WebKit fallback. Its copy of the
 zone registration must match the pinned revision, and `CHROMIUM_ENGINE_VERSION` in the
 target's build settings must match `chrome/VERSION`. The app enters the engine through
-`barc_engine_main_v<N>`, whose name carries the bridge version, so an app and framework
-built for different versions fail at `dlsym`. `ChromeMain` stays exported for the helpers.
+`barc_engine_main_v<N>` and calls it only through the table `barc_bridge_v<N>()` returns; both
+names carry the bridge version, so an app and framework built for different versions abort
+in main with a message naming the version the app needs. main also aborts when the table is
+smaller than the app's `struct BarcBridge`, then hands the table and the entry to the shell's
+`barc_native_main`. The shell calls `dlsym` for nothing. `ChromeMain` stays exported for the
+helpers.
 
 ### Publishing the engine
 
 The app builds without this checkout. It compiles against the `Packages/BarkEngine`
 binary target and never links the engine: `main` opens the framework after registering
-the malloc zone, and the shell resolves the bridge with `dlsym`. So the
-`BarkEngine.xcframework` slice is a library slice whose static library defines no symbols.
-Its public C headers (`barc_bridge_api.h`, `barc_runtime_startup_api.h`,
-`barc_page_tweaks.h`) and `engine-artifact.sha256` are committed. The engine itself sits in
+the malloc zone and finds the bridge table. So the `BarkEngine.xcframework` slice is a library
+slice whose static library defines no symbols. Its one public C header, `barc_bridge_api.h`
+(from `bark/bridge/`), and `engine-artifact.sha256` are committed. The engine itself sits in
 the same slice under the ignored `Engine/` directory: the framework, `Bark Packaging`, the
-engine's `Info.plist`, copies of those headers and `SHA256SUMS`. The private C++ stays in
-`barc_bridge.h` and `barc_runtime_startup.h`, which the engine alone includes. x86_64 only
-for now.
+engine's `Info.plist`, a copy of that header and `SHA256SUMS`. The engine's own declarations
+stay in `barc_bridge_functions.h`, `barc_bridge.h` and `barc_runtime_startup.h`, which the
+engine alone includes. x86_64 only for now.
 
-The bridge's structs cross without a size argument, so a layout change with no version bump
-would otherwise start fine and read the wrong layout. Publishing therefore refuses an engine
-unless siso's record of the last build (`siso fs export`) shows it compiled the same three
-headers as `Runtime/Chromium`, and no later change to them. It reads that record, not the
-source tree, because the tree may have moved on since the build. Staging refuses an app
-compiled against headers other than the ones in `Engine/`. The engine also exports
-`barc_public_headers_sha256`, a digest of the three headers it compiled that a GN action computes
-with `barc_public_headers_sha256.py`. Publishing writes the same digest from `Runtime/Chromium` as
-`barc_public_headers_sha256.h` beside the published headers, and `main.cc` aborts before the shell
-loads when the engine's digest differs from the one it was compiled with.
+The framework exports three Bark symbols: the entry, the table and the header digest. The
+table, `struct BarcBridge`, holds every call the app makes; Swift takes each member's type from
+the header. The table and every struct that crosses the bridge start with `size`, as the
+header describes, so a field added at the end needs no new version. Until a release relies on
+that, main still requires the exact header: publishing refuses an engine unless siso's record
+of the last build (`siso fs export`) shows it compiled the same `barc_bridge_api.h` as
+`bark/bridge`, and no later change to it. It reads that record, not the source tree, because
+the tree may have moved on since the build. Staging refuses an app compiled against another
+header than the one in `Engine/`. The engine also exports `barc_public_headers_sha256`, a
+digest of the header it compiled that `//bark/app:public_headers_sha256` computes with
+`barc_public_headers_sha256.py`. Publishing writes the same digest as
+`barc_public_headers_sha256.h` beside the published header, and `main.cc` aborts before the
+shell loads when the engine's digest differs from the one it was compiled with.
 
 The outer app's own resources (`app.icns`, `Assets.car`, `scripting.sdef`, the policy
 manifest and the `.lproj` strings) are committed in `ChromiumApp/Resources` and copied by
@@ -267,11 +264,11 @@ and signing. The signing patch retains pre-submission signature verification and
 moves Gatekeeper assessment after awaited notarization; it does not confer
 notarization or release acceptance.
 
-The retained `--barc-swiftui-smoke` counter/text-field view is experimental engine
-hosting material, not the native application. Its two patches are already in the
-ordered procedure above; do not apply them a second time. To compile that smoke,
-add `barc_enable_mac_swift_smoke = true` to candidate args before the single GN
-step, not after compilation. Leave it disabled for normal application builds.
+Staging refuses an engine framework that holds other than one `libnook_adblock.dylib`. After
+signing, `bash scripts/stage-chromium-app.sh --check-signed <signed Bark.app>` checks the same in
+the whole bundle and fails on any unsigned Mach-O file; `codesign --verify --deep --strict`
+passes with an unsigned library the signing config doesn't name.
+
 The native application supplies `--barc-native-shell` and
 `--barc-shared-native-window` through its validated startup configuration. Verify
 only with a fresh `/private/tmp` synthetic app root and explicit profile UUID;
@@ -280,7 +277,7 @@ not establish native interaction, media, profile isolation or release readiness.
 
 ### Regression scope and remaining qualification
 
-The maintained `barc_browser_tests` target has six sources, including
+The maintained `bark_browser_tests` target, in `bark/test/BUILD.gn`, has six sources, including
 `BarcBridgeBrowserTest`, `BarcSharedNativeWindowBrowserTest` and
 `BarcFourPaneBrowserTest` in
 `barc_bridge_browsertest.mm`, `BarcProfilesBrowserTest` in
@@ -296,8 +293,8 @@ graph/incremental estimate and compile added objects before committing to its
 separate build. Its ordinary launcher filter is:
 
 ```fish
-out/Barc-x64/barc_browser_tests --gtest_filter='Barc*' --gtest_list_tests
-out/Barc-x64/barc_browser_tests --test-launcher-jobs=1 --test-launcher-retry-limit=0 --gtest_filter='Barc*'
+out/Barc-x64/bark_browser_tests --gtest_filter='Barc*' --gtest_list_tests
+out/Barc-x64/bark_browser_tests --test-launcher-jobs=1 --test-launcher-retry-limit=0 --gtest_filter='Barc*'
 ```
 
 These regressions encode transfer/draft/scroll/history, profile binding,
@@ -371,7 +368,7 @@ import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
 `--barc-app-profile` remains temporary-root verification with mock keychain and
 isolated preferences; neither mode enables cloud sync.
 
-Normal startup requires bridge version 9 before ChromeMain. Native registration
+Normal startup requires bridge version 10 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default
@@ -396,7 +393,7 @@ checks do not qualify real multiwindow quit cancellation until engine execution.
 
 The app hands each product window to itself with `barc_window_set_app_lifetime`. From then
 on a client whose last tab closes or moves out stays open and selected, reports
-`BARC_DISCOVERY_EMPTY_STRIP` and takes new tabs: `native-app-lifetime.patch` keeps its
+`BARC_DISCOVERY_EMPTY_STRIP` and takes new tabs: the `unload_controller.cc` and `browser.cc` hooks keep its
 `UnloadController` idle and returns from `Browser::TabStripEmpty` before the close. The window
 still closes through `barc_window_close` of its last client, its close button or quit, with
 their prompts. `barc_tab_select` refuses bridge callbacks, because `TabStripModel::ActivateTab`
@@ -408,7 +405,7 @@ In native application mode a key reaches a Chromium command only when the comman
 the shown page (find, zoom, reload, stop, print, devtools, view source, back and forward),
 edits, or asks the app for a window (New Window and New Private Window). The app owns every
 other key, even one it has no action for. On Mac a key reaches commands four ways, and
-`native-key-ownership.patch` applies the rule to each: `ChromeCommandDispatcherDelegate` before
+the hooks in those four places apply the rule to each: `ChromeCommandDispatcherDelegate` before
 and after the page or field sees the key, the main menu's key equivalents (a key swallowed
 after the page never reaches the menu; with no browser window key, `AppController` drops a
 key equivalent but still runs a click), `BrowserView::LoadAccelerators`, and the renderer's
@@ -519,7 +516,7 @@ stale targets; they do not create WebKit pages or use its extension dispatcher.
 Audibility and mute do not establish capture or discard eligibility. Full native
 shortcut delivery, printing and DevTools presentation still need qualification.
 
-`native-split.patch` extends the existing same-profile tab collection and Views
+The split hooks extend the existing same-profile tab collection and Views
 content containers to two through four ordered live panes. The split C boundary
 validates exact logical owners, ordered handles, orientation, normalized dividers
 and active pane; Chrome pin/group rules follow the first pane. Native resize
@@ -528,23 +525,22 @@ collections without selection; cleanup requires the exact opaque collection
 identity, member order and geometry, so a recreated group wins over stale cleanup. All four container views are constructed
 before feature-controller enrollment; unused panes stay hidden and unbound. This
 adds two empty view trees, not extra pages; its allocation cost is unmeasured.
-`native-app-controlled-splits.patch`
-then replaces that collection in native windows: every split, same-profile, cross-profile or
+The app-controlled split hooks
+then replace that collection in native windows: every split, same-profile, cross-profile or
 private, is the app-positioned presentation of independent tabs, which `BarcSplitLayout`
-reports as kind 1 with a generation and no collection. Its public-header hunks live in
-`barc_bridge_api.h`. Peek covers the whole split and dims its panes with a compositor layer;
+reports as `BARC_SPLIT_PHYSICAL` with a generation and no collection. Peek covers the whole split and dims its panes with a compositor layer;
 an inactive pane's link selects that pane first. `barc_tab_enable_peek` takes a mask, so
 Option-click, and Shift-click when the app setting allows it, request Peek instead of a
 download or a window. Chromium's own split commands and menu items are gone from native windows.
 
-`native-profile-reassignment.patch` extends the existing profile deletion helper
+The profile-reassignment hooks extend the existing profile deletion helper
 with a close-admitted pause before data cleanup. The application commits the
 space assignment and source record before allowing cleanup to continue. Unmarked
 orphaned source bytes remain pending; missing metadata is not permission to wipe
 them. Its browser tests and the integrated startup recovery path still require
 runtime qualification.
 
-`native-content-blocking.patch` adds native website network matching to the
+The content-blocking hooks add native website network matching to the
 existing extension WebRequest proxy. One process policy owns immutable serialized
 rules; each actual regular/private context owns its mutable matcher. Startup
 registers unresolved policy before ChromeMain; enabled requests wait for the
@@ -556,8 +552,8 @@ for them. The captured private context-menu URL stays on its existing blank-page
 intent until exact context/model admission; cancellation never loads a replacement.
 
 The Intel C-only dylib above uses the same pinned adblock-rust serializer as the app,
-with an additive method-aware C entry point. `native-websocket-blocking.patch`
-handles WebSocket admission; `native-cosmetics.patch` delivers document-bound
+with an additive method-aware C entry point. The WebSocket hooks
+handle WebSocket admission; the cosmetics hooks deliver document-bound
 cosmetics and scriptlets before page scripts. These share the existing blocker
 policy and preserve extension rules. Native blocked-page Continue has a separate
 patch and runtime cases. Source integration does not qualify ARM.
@@ -621,7 +617,7 @@ unsent saves. A user-approved save already dispatched to Pawl may finish there;
 its late reply cannot dismiss a newer offer. Ordinary card interaction and Pawl
 authentication still require product qualification.
 
-`native-pawl-passkeys.patch` adds an explicit Pawl choice beside Chromium's stock
+The Pawl passkey hooks add an explicit Pawl choice beside Chromium's stock
 authenticators. The initial provider supports ES256 creation and assertions with
 a nonempty credential allow-list; Chromium retains RP, origin, script-policy and
 response validation. The current document/profile/owner owns consent and reply.
@@ -637,7 +633,7 @@ document, profile, owner or setting change. Private and Agent pages are excluded
 capture does not instantiate a WebKit page. Ordinary interactive qualification
 and the release matrix remain separate from focused native regression tests.
 
-`native-page-tweaks.patch` reuses the exact-document resource receiver for fixed
+The page-tweak hooks reuse the exact-document resource receiver for fixed
 YouTube/Facebook/Reddit configuration independently of blocker enablement. The
 saved Boost file is loaded before initial admission; invalid optional snapshots
 revoke scripts and leave ordinary browsing available after native acknowledgment.
@@ -652,7 +648,7 @@ query/fragment; existing click rewriting handles client routing. SponsorBlock,
 trusted social downloads and ClickUp's WebKit invalidation workaround are outside
 this slice. Source/syntax checks do not qualify runtime execution.
 
-`native-tweaks-continuations.patch` extends the same exact-document receiver,
+The tweak continuations extend the same exact-document receiver,
 not a generic page/native message channel. SponsorBlock uses fixed HTTPS hash-prefix
 lookup/report endpoints with credentials omitted, selected skip/mute categories,
 a 15-second/1-MiB response bound, at most 512 hash entries/256 eligible segments,
@@ -678,7 +674,7 @@ new profile registry, or additional renderer is used. The seven maintained nativ
 cases still require execution in the matched candidate; syntax is not runtime
 qualification. ARM and performance remain unqualified.
 
-`native-hide-stock-chrome.patch` removes Chromium's tab strip, toolbar and
+The stock-chrome hooks remove Chromium's tab strip, toolbar and
 bookmarks bar from every window that has a native shell: regular and private
 pages, splits, Peek, utility pages and compact minis. Nook's sidebar and optional
 header are the only browser chrome, so the page starts directly under the header,

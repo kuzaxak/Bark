@@ -1,0 +1,16 @@
+diff --git a/chrome/browser/ui/browser_live_tab_context.h b/chrome/browser/ui/browser_live_tab_context.h
+index 94bf57893c..df905476e6 100644
+--- a/chrome/browser/ui/browser_live_tab_context.h
++++ b/chrome/browser/ui/browser_live_tab_context.h
+@@ -112,6 +112,11 @@ class BrowserLiveTabContext : public sessions::LiveTabContext {
+       sessions::LiveTab* trailing_tab,
+       split_tabs::SplitTabId split_id,
+       const split_tabs::SplitTabVisualData& visual_data) override;
++  void ReconstructSplitTabs(
++      base::span<sessions::LiveTab* const> tabs,
++      split_tabs::SplitTabId split_id,
++      const split_tabs::SplitTabVisualData& visual_data) override;
++
+   void CloseTab() override;
+ 
+   // see Browser::Create

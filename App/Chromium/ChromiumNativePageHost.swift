@@ -4,120 +4,6 @@ import Darwin
 import NookWeb
 import NookTabsCore
 
-struct ChromiumPageHostAPI {
-    typealias Callback = @convention(c) (Int32, Int32, UnsafeMutableRawPointer?) -> Void
-    typealias Open = @convention(c) (Int32, UnsafePointer<CChar>?, Int32, Callback?, UnsafeMutableRawPointer?) -> Void
-    typealias Create = @convention(c) (Int32, UnsafePointer<CChar>?, Int32) -> Int32
-    typealias TabAt = @convention(c) (Int32, Int) -> Int32
-    typealias WindowCommand = @convention(c) (Int32) -> Int32
-    typealias TabTitle = @convention(c) (Int32, Int32, UnsafeMutablePointer<CChar>?, Int) -> Int
-    typealias Attach = @convention(c) (Int32, UnsafeMutableRawPointer?) -> Int32
-    typealias Header = @convention(c) (Int32, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, Int32) -> Int32
-    typealias Admission = @convention(c) (UnsafeMutableRawPointer?, Int32, Int32) -> Int32
-    typealias TransferAdmitting = @convention(c) (Int32, Int32, Int32, Admission?, UnsafeMutableRawPointer?) -> Int32
-    typealias PageHidden = @convention(c) (Int32, Int32) -> Int32
-    typealias NewPeer = @convention(c) (Int32, Int32) -> Int32
-    let open: Open
-    let create: Create
-    let tabAt: TabAt
-    let tabTitle: TabTitle
-    let selectWindow: WindowCommand
-    let closeWindow: WindowCommand
-    let setAppLifetime: WindowCommand
-    let setPageHidden: PageHidden
-    let attach: Attach
-    let shellIsOwned: Attach
-    let detachIfOwned: Attach
-    let setHeader: Header
-    let transferAdmitting: TransferAdmitting
-    let newPeer: NewPeer
-
-    init(library: UnsafeMutableRawPointer) throws {
-        func load<T>(_ name: String, _: T.Type) throws -> T {
-            guard let address = dlsym(library, name) else { throw ChromiumNavigationError.missingSymbol(name) }
-            return unsafeBitCast(address, to: T.self)
-        }
-        open = try load("barc_profile_open_in_native_window", Open.self)
-        create = try load("barc_tab_create", Create.self)
-        tabAt = try load("barc_window_tab_at", TabAt.self)
-        tabTitle = try load("barc_tab_copy_title", TabTitle.self)
-        selectWindow = try load("barc_window_select", WindowCommand.self)
-        closeWindow = try load("barc_window_close", WindowCommand.self)
-        setAppLifetime = try load("barc_window_set_app_lifetime", WindowCommand.self)
-        setPageHidden = try load("barc_window_set_page_hidden", PageHidden.self)
-        attach = try load("barc_window_attach_native_shell", Attach.self)
-        shellIsOwned = try load("barc_window_native_shell_is_owned", Attach.self)
-        detachIfOwned = try load("barc_window_detach_native_shell_if_owned", Attach.self)
-        transferAdmitting = try load("barc_tab_transfer_with_admission", TransferAdmitting.self)
-        newPeer = try load("barc_window_new_peer_in_native_window", NewPeer.self)
-        setHeader = try load("barc_window_set_native_header", Header.self)
-    }
-
-    init(open: @escaping Open, create: @escaping Create, tabAt: @escaping TabAt, tabTitle: @escaping TabTitle,
-         selectWindow: @escaping WindowCommand, closeWindow: @escaping WindowCommand,
-         setAppLifetime: @escaping WindowCommand = { _ in 1 },
-         setPageHidden: @escaping PageHidden = { _, _ in 1 },
-         attach: @escaping Attach, shellIsOwned: @escaping Attach, detachIfOwned: @escaping Attach,
-         transferAdmitting: @escaping TransferAdmitting = { _, _, _, _, _ in 0 },
-         newPeer: @escaping NewPeer = { _, _ in 0 },
-         setHeader: @escaping Header = { _, _, _, _, _ in 0 }) {
-        self.open = open; self.create = create; self.tabAt = tabAt; self.tabTitle = tabTitle
-        self.selectWindow = selectWindow; self.closeWindow = closeWindow
-        self.setAppLifetime = setAppLifetime; self.setPageHidden = setPageHidden; self.attach = attach
-        self.shellIsOwned = shellIsOwned; self.detachIfOwned = detachIfOwned
-        self.transferAdmitting = transferAdmitting
-        self.newPeer = newPeer
-        self.setHeader = setHeader
-    }
-}
-
-/// Typed access to the existing native split collection; no surface ownership.
-struct ChromiumSplitAPI {
-    typealias Set = @convention(c) (Int32, UnsafePointer<BarcSplitLayout>?) -> Int32
-    typealias Get = @convention(c) (Int32, Int32, UnsafeMutablePointer<BarcSplitLayout>?) -> Int32
-    typealias Clear = @convention(c) (Int32, Int32, UnsafePointer<BarcSplitLayout>?) -> Int32
-    let set: Set
-    let get: Get
-    let clear: Clear
-    init(library: UnsafeMutableRawPointer) throws {
-        func load<T>(_ name: String, _: T.Type) throws -> T {
-            guard let pointer = dlsym(library, name) else { throw ChromiumNavigationError.missingSymbol(name) }
-            return unsafeBitCast(pointer, to: T.self)
-        }
-        set = try load("barc_window_set_split", Set.self)
-        get = try load("barc_window_get_split", Get.self)
-        clear = try load("barc_window_clear_split", Clear.self)
-    }
-    init(set: @escaping Set, get: @escaping Get, clear: @escaping Clear) {
-        self.set = set; self.get = get; self.clear = clear
-    }
-}
-
-/// Mount existing app controls around the exact native Peek; Chromium owns layout.
-struct ChromiumPeekAPI {
-    typealias Present = @convention(c) (Int32, Int32, Int32, Int32,
-        UnsafeMutableRawPointer?, UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> UInt64
-    typealias Presentation = @convention(c) (Int32, Int32, Int32, Int32, UInt64,
-        UnsafeMutableRawPointer?, UnsafeMutableRawPointer?) -> Int32
-    let present: Present
-    let hide: Presentation
-    let isPresented: Presentation
-
-    init(library: UnsafeMutableRawPointer) throws {
-        func load<T>(_ name: String, _: T.Type) throws -> T {
-            guard let pointer = dlsym(library, name) else { throw ChromiumNavigationError.missingSymbol(name) }
-            return unsafeBitCast(pointer, to: T.self)
-        }
-        present = try load("barc_tab_present_peek", Present.self)
-        hide = try load("barc_tab_hide_peek", Presentation.self)
-        isPresented = try load("barc_tab_is_peek_presented", Presentation.self)
-    }
-
-    init(present: @escaping Present, hide: @escaping Presentation, isPresented: @escaping Presentation) {
-        self.present = present; self.hide = hide; self.isPresented = isPresented
-    }
-}
-
 /// One observation admission attempt. Finish after the synchronous model
 /// adoption result; abandoning it never closes the existing native contents.
 @MainActor
@@ -209,11 +95,7 @@ final class ChromiumNativePageHost: NativePageHost {
             if !invalidatesUnclaimed { priorCloseOutcome = page.onNativeCloseOutcome }
         }
     }
-    private let api: ChromiumPageHostAPI
-    private let navigationAPI: ChromiumNavigationAPI
-    private let discoveryAPI: ChromiumDiscoveryAPI
-    private let splitAPI: ChromiumSplitAPI?
-    private let peekAPI: ChromiumPeekAPI?
+    private let bridge: BarcBridge
     private var blocker: ChromiumContentBlocker?
     private struct BlankReservation { let tab: Int32; let group: UInt64 }
     private var mounts: [UUID: Mount] = [:]
@@ -241,12 +123,8 @@ final class ChromiumNativePageHost: NativePageHost {
     /// The window shows no page of its own: an empty space, or a page another window holds.
     var pageIsHidden: (BrowserWindowState) -> Bool = { $0.showsNativeEmptySpace }
 
-    init(api: ChromiumPageHostAPI, navigationAPI: ChromiumNavigationAPI, discoveryAPI: ChromiumDiscoveryAPI,
-         splitAPI: ChromiumSplitAPI? = nil, peekAPI: ChromiumPeekAPI? = nil,
-         blocker: ChromiumContentBlocker? = nil) {
-        self.api = api; self.navigationAPI = navigationAPI; self.discoveryAPI = discoveryAPI
-        self.splitAPI = splitAPI
-        self.peekAPI = peekAPI
+    init(bridge: BarcBridge, blocker: ChromiumContentBlocker? = nil) {
+        self.bridge = bridge
         self.blocker = blocker
     }
 
@@ -256,11 +134,11 @@ final class ChromiumNativePageHost: NativePageHost {
                         shell: NSView, initialBlankTab: Int32? = nil) -> Bool {
         guard mounts[window.id] == nil, let row = liveState(nativeOwner),
               !mounts.values.contains(where: { $0.shell === shell || $0.group == row.physical_group }),
-              api.setAppLifetime(nativeOwner) == 1 else { return false }
-        let owned = api.shellIsOwned(nativeOwner, Unmanaged.passUnretained(shell).toOpaque()) == 1
+              bridge.window_set_app_lifetime(nativeOwner) == 1 else { return false }
+        let owned = bridge.window_native_shell_is_owned(nativeOwner, Unmanaged.passUnretained(shell).toOpaque()) == 1
         mounts[window.id] = Mount(shell: shell, group: row.physical_group,
                                   attachedClient: owned ? nativeOwner : nil, model: window)
-        _ = api.setPageHidden(nativeOwner, pageIsHidden(window) ? 1 : 0)
+        _ = bridge.window_set_page_hidden(nativeOwner, pageIsHidden(window) ? 1 : 0)
         if let initialBlankTab { blankTabs[nativeOwner] = BlankReservation(tab: initialBlankTab, group: row.physical_group) }
         return true
     }
@@ -270,7 +148,7 @@ final class ChromiumNativePageHost: NativePageHost {
     func setPageHidden(_ hidden: Bool, in window: BrowserWindowState) {
         guard let mount = mounts[window.id], mount.model === window,
               let client = liveClient(in: window.id) else { return }
-        _ = api.setPageHidden(client, hidden ? 1 : 0)
+        _ = bridge.window_set_page_hidden(client, hidden ? 1 : 0)
     }
 
     /// Catalog disappearance ends registration, not any still-live moved tab.
@@ -342,7 +220,7 @@ final class ChromiumNativePageHost: NativePageHost {
             let batch = Batch(host: self, key: key, group: mount.group, request: request)
             opening[key] = batch
             profile.id.uuidString.withCString { uuid in
-                api.open(owner, uuid, 5, { status, native, pointer in
+                bridge.profile_open_in_native_window(owner, uuid, BARC_PROFILE_BLANK, { status, native, pointer in
                     MainActor.assumeIsolated {
                         guard let pointer else { return }
                         let batch = Unmanaged<Batch>.fromOpaque(pointer).takeUnretainedValue()
@@ -362,32 +240,32 @@ final class ChromiumNativePageHost: NativePageHost {
         return true
     }
 
-    private func opened(_ batch: Batch, status: Int32, native: Int32) {
+    private func opened(_ batch: Batch, status: barc_profile_status, native: Int32) {
         guard opening[batch.key] === batch else { return }
-        if blocker != nil, status == 0, let row = liveState(native),
+        if blocker != nil, status == BARC_PROFILE_OK, let row = liveState(native),
            row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
-           discoveryAPI.identity(row) == batch.key.profile, row.physical_group == batch.group,
+           bridge.identity(row) == batch.key.profile, row.physical_group == batch.group,
            !(mounts[batch.key.window] === batch.mount && batch.mount?.model != nil && batch.mount?.shell != nil) {
-            batch.native = native; batch.blank = api.tabAt(native, 0)
+            batch.native = native; batch.blank = bridge.window_tab_at(native, 0)
             if let blank = batch.blank, blank > 0 { blankTabs[native] = BlankReservation(tab: blank, group: batch.group) }
             failAdmission(batch, pages: [], error: HostError.creationRefused)
             return
         }
-        guard status == 0, let row = liveState(native),
+        guard status == BARC_PROFILE_OK, let row = liveState(native),
               row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
-              discoveryAPI.identity(row) == batch.key.profile,
+              bridge.identity(row) == batch.key.profile,
               row.physical_group == batch.group,
               let mount = mounts[batch.key.window], mount.group == batch.group,
               mount.model != nil, mount.shell != nil else {
-            if status == 0, let row = discoveryAPI.windowState(native),
+            if status == BARC_PROFILE_OK, let row = bridge.windowState(native),
                row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
-               discoveryAPI.identity(row) == batch.key.profile { _ = api.closeWindow(native) }
+               bridge.identity(row) == batch.key.profile { _ = bridge.window_close(native) }
             opening.removeValue(forKey: batch.key)
             batch.requests.forEach { $0.finish(.failure(HostError.creationRefused)) }
             return
         }
         batch.native = native
-        batch.blank = api.tabAt(native, 0)
+        batch.blank = bridge.window_tab_at(native, 0)
         blankTabs[native] = BlankReservation(tab: batch.blank!, group: batch.group)
         if let blocker {
             Task { @MainActor [weak self, batch] in
@@ -416,7 +294,7 @@ final class ChromiumNativePageHost: NativePageHost {
             }
         }
         if results.allSatisfy({ if case .failure = $0.1 { return true }; return false }) {
-            _ = api.closeWindow(native) // Verified, unclaimed fresh blank client.
+            _ = bridge.window_close(native) // Verified, unclaimed fresh blank client.
         }
     }
 
@@ -439,7 +317,7 @@ final class ChromiumNativePageHost: NativePageHost {
         let mounted = batch.mount != nil && mounts[batch.key.window] === batch.mount &&
             batch.mount?.model != nil && batch.mount?.shell != nil
         let validClient = current?.physical_group == batch.group && current.map {
-            discoveryAPI.identity($0) == batch.key.profile &&
+            bridge.identity($0) == batch.key.profile &&
                 ($0.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == (batch.mount?.model?.isIncognito == true)
         } == true
         guard ready, mounted, validClient else {
@@ -474,7 +352,7 @@ final class ChromiumNativePageHost: NativePageHost {
             else { return (request, result) }
             created.append((request, page))
             guard let session = request.session, requestIsCurrent(request, key: batch.key), !page.isClosed,
-                  page.nativeWindowID == client, api.tabTitle(client, page.nativeTabID, nil, 0) > 0,
+                  page.nativeWindowID == client, bridge.tab_copy_title(client, page.nativeTabID, nil, 0) > 0,
                   blocker?.apply(to: session, window: client, tab: page.nativeTabID) == true,
                   requestIsCurrent(request, key: batch.key) else {
                 return (request, .failure(HostError.blockerUnavailable))
@@ -498,7 +376,7 @@ final class ChromiumNativePageHost: NativePageHost {
         for (request, result) in results {
             if case .success(let navigation) = result, let page = navigation as? ChromiumPageNavigation,
                !(requestIsCurrent(request, key: batch.key) && !page.isClosed &&
-                 page.nativeWindowID == client && api.tabTitle(client, page.nativeTabID, nil, 0) > 0 &&
+                 page.nativeWindowID == client && bridge.tab_copy_title(client, page.nativeTabID, nil, 0) > 0 &&
                  request.session.map({ blocker?.apply(to: $0, window: client, tab: page.nativeTabID) == true }) == true &&
                  requestIsCurrent(request, key: batch.key)) {
                 // An earlier completion can change policy or retire a later
@@ -530,9 +408,9 @@ final class ChromiumNativePageHost: NativePageHost {
             // A missing immutable Browser SessionID, or its admitted terminal
             // flag, proves this owner's end. Missing tab membership alone does
             // not: the same tab may have moved to another live owner.
-            let row = discoveryAPI.windowState(native)
-            if row.map({ $0.flags & 32 != 0 }) == true ||
-                (row == nil && discoveryAPI.readSnapshot().map({ snapshot in
+            let row = bridge.windowState(native)
+            if row.map({ $0.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue != 0 }) == true ||
+                (row == nil && bridge.readSnapshot().map({ snapshot in
                     !snapshot.windows.contains(where: { $0.window == native })
                 }) == true) {
                 if blankTabs[native]?.tab == batch.blank { blankTabs.removeValue(forKey: native) }
@@ -546,10 +424,10 @@ final class ChromiumNativePageHost: NativePageHost {
             }
             for tab in batch.cleanupTabs {
                 guard let row = liveState(native), row.physical_group == batch.group,
-                      discoveryAPI.identity(row) == batch.key.profile,
-                      api.tabTitle(native, tab, nil, 0) > 0,
+                      bridge.identity(row) == batch.key.profile,
+                      bridge.tab_copy_title(native, tab, nil, 0) > 0,
                       let page = try? ChromiumPageNavigation(profileID: batch.key.profile, window: native, tab: tab,
-                          api: navigationAPI, privateSession: row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) else { continue }
+                          bridge: bridge, privateSession: row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) else { continue }
                 if blankTabs[native]?.tab == tab { blankTabs.removeValue(forKey: native) }
                 record(page, in: batch.key.window)
                 batch.cleanupTabs.remove(tab)
@@ -564,9 +442,9 @@ final class ChromiumNativePageHost: NativePageHost {
             let id = ObjectIdentifier(page)
             guard pages[id]?.cleanupBatch === batch, pages[id]?.admissionGeneration == 0,
                   page.nativeWindowID == batch.native, let row = liveState(page.nativeWindowID),
-                  row.physical_group == batch.group, discoveryAPI.identity(row) == batch.key.profile,
+                  row.physical_group == batch.group, bridge.identity(row) == batch.key.profile,
                   (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == page.isPrivateSession,
-                  api.tabTitle(page.nativeWindowID, page.nativeTabID, nil, 0) > 0,
+                  bridge.tab_copy_title(page.nativeWindowID, page.nativeTabID, nil, 0) > 0,
                   page.state.url == nil || page.state.url?.absoluteString == "about:blank" else { continue }
             batch.cleanupClosing.insert(id)
             closePage(page) { [weak self, weak batch, weak page] outcome in
@@ -594,25 +472,25 @@ final class ChromiumNativePageHost: NativePageHost {
     private func makePage(key: CreationKey, client: Int32, failedBlank: ((Int32) -> Void)? = nil) -> Result<any PageNavigation, Error> {
         guard let mount = mounts[key.window], let model = mount.model,
               let current = liveState(client), current.physical_group == mount.group,
-              discoveryAPI.identity(current) == key.profile,
+              bridge.identity(current) == key.profile,
               (current.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == model.isIncognito else {
             return .failure(HostError.creationRefused)
         }
         let privateSession = model.isIncognito
         let tab = blankTabs.removeValue(forKey: client)?.tab ??
-            "about:blank".withCString { api.create(client, $0, 0) }
+            "about:blank".withCString { bridge.tab_create(client, $0, 0) }
         guard tab > 0 else { return .failure(HostError.creationRefused) }
         do {
-            let page = try ChromiumPageNavigation(profileID: key.profile, window: client, tab: tab, api: navigationAPI, privateSession: privateSession)
+            let page = try ChromiumPageNavigation(profileID: key.profile, window: client, tab: tab, bridge: bridge, privateSession: privateSession)
             record(page, in: key.window)
             return .success(page)
         } catch {
             if let failedBlank { failedBlank(tab) }
             else if let current = liveState(client), current.physical_group == mount.group,
-               discoveryAPI.identity(current) == key.profile,
+               bridge.identity(current) == key.profile,
                (current.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == privateSession,
-               api.tabTitle(client, tab, nil, 0) > 0 {
-                _ = navigationAPI.close(client, tab)
+               bridge.tab_copy_title(client, tab, nil, 0) > 0 {
+                _ = bridge.tab_close(client, tab)
             }
             return .failure(error)
         }
@@ -654,9 +532,9 @@ final class ChromiumNativePageHost: NativePageHost {
         }
         guard let mount = mounts[window.id], mount.model === window, mount.shell != nil,
               let row = liveState(nativeWindow), row.physical_group == mount.group,
-              discoveryAPI.identity(row) == profile.id,
+              bridge.identity(row) == profile.id,
               (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == profile.isEphemeral,
-              tab > 0, api.tabTitle(nativeWindow, tab, nil, 0) > 0 else {
+              tab > 0, bridge.tab_copy_title(nativeWindow, tab, nil, 0) > 0 else {
             return .failure(HostError.existingPageRefused)
         }
         if let binding = pages.values.first(where: { $0.page.nativeTabID == tab }) {
@@ -684,11 +562,11 @@ final class ChromiumNativePageHost: NativePageHost {
                     return .failure(HostError.existingPageRefused)
                 }
             }
-            let page = try existingPage ?? ChromiumPageNavigation(profileID: profile.id, window: nativeWindow, tab: tab, api: navigationAPI, privateSession: profile.isEphemeral)
+            let page = try existingPage ?? ChromiumPageNavigation(profileID: profile.id, window: nativeWindow, tab: tab, bridge: bridge, privateSession: profile.isEphemeral)
             guard !page.isClosed, let current = liveState(page.nativeWindowID),
                   current.physical_group == mount.group,
-                  discoveryAPI.identity(current) == profile.id,
-                  api.tabTitle(page.nativeWindowID, tab, nil, 0) > 0 else {
+                  bridge.identity(current) == profile.id,
+                  bridge.tab_copy_title(page.nativeWindowID, tab, nil, 0) > 0 else {
                 if existingPage == nil { page.invalidate() }
                 return .failure(HostError.existingPageRefused)
             }
@@ -718,7 +596,7 @@ final class ChromiumNativePageHost: NativePageHost {
             guard let existingBinding, existingBinding.page === page, existingBinding.owned,
                   existingBinding.window == window.id, closing[ObjectIdentifier(page)] == nil,
                   peekSource.nativeWindowID == destination, admission(peekSource, in: window) != nil,
-                  discoveryAPI.readSnapshot()?.tabs.contains(where: {
+                  bridge.readSnapshot()?.tabs.contains(where: {
                       $0.window == source && $0.tab == page.nativeTabID && $0.peek_source_tab == peekSource.nativeTabID
                   }) == true else { return false }
         } else if existingBinding != nil { return false }
@@ -727,10 +605,10 @@ final class ChromiumNativePageHost: NativePageHost {
               !page.isClosed,
               let mount = mounts[window.id], mount.model === window,
               let target = liveState(destination), target.physical_group == mount.group,
-              discoveryAPI.identity(target) == profile.id,
+              bridge.identity(target) == profile.id,
               (target.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == profile.isEphemeral,
-              api.tabTitle(source, page.nativeTabID, nil, 0) > 0,
-              let origin = liveState(source), discoveryAPI.identity(origin) == profile.id,
+              bridge.tab_copy_title(source, page.nativeTabID, nil, 0) > 0,
+              let origin = liveState(source), bridge.identity(origin) == profile.id,
               (origin.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == profile.isEphemeral else { return false }
         let previousOutcome = page.onNativeCloseOutcome
         let request = DetachedAdmission { [weak self, weak page, weak window] actual, tab in
@@ -739,8 +617,8 @@ final class ChromiumNativePageHost: NativePageHost {
                   !page.isClosed, self.pages[ObjectIdentifier(page)] === existingBinding,
                   self.mounts[window.id] === mount, mount.model === window,
                   let current = self.liveState(actual), current.physical_group == mount.group,
-                  self.discoveryAPI.identity(current) == profile.id,
-                  self.api.tabTitle(actual, tab, nil, 0) > 0 else { return false }
+                  self.bridge.identity(current) == profile.id,
+                  self.bridge.tab_copy_title(actual, tab, nil, 0) > 0 else { return false }
             if existingBinding == nil {
                 self.record(page, in: window.id, owned: false, invalidatesUnclaimed: false)
             }
@@ -754,7 +632,7 @@ final class ChromiumNativePageHost: NativePageHost {
             return existingBinding == nil ? binding.owned : admitted
         }
         let result = withExtendedLifetime(request) {
-            api.transferAdmitting(source, page.nativeTabID, destination, { context, window, tab in
+            bridge.tab_transfer_with_admission(source, page.nativeTabID, destination, { context, window, tab in
                 MainActor.assumeIsolated {
                     guard let context else { return 0 }
                     let request = Unmanaged<DetachedAdmission>.fromOpaque(context).takeUnretainedValue()
@@ -786,7 +664,7 @@ final class ChromiumNativePageHost: NativePageHost {
             return commit()
         }
         return withExtendedLifetime(request) {
-            api.transferAdmitting(window, tab, window, { context, owner, tab in
+            bridge.tab_transfer_with_admission(window, tab, window, { context, owner, tab in
                 MainActor.assumeIsolated {
                     guard let context else { return 0 }
                     let request = Unmanaged<DetachedAdmission>.fromOpaque(context).takeUnretainedValue()
@@ -855,10 +733,10 @@ final class ChromiumNativePageHost: NativePageHost {
               binding.window == window.id, closing[ObjectIdentifier(page)] == nil,
               let mount = mounts[window.id], mount.model === window, mount.shell != nil,
               let row = liveState(page.nativeWindowID), row.physical_group == mount.group,
-              discoveryAPI.identity(row) == profile,
+              bridge.identity(row) == profile,
               (row.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == window.isIncognito,
               (!window.isIncognito || window.ephemeralProfile?.id == profile),
-              api.tabTitle(page.nativeWindowID, page.nativeTabID, nil, 0) > 0 else { return nil }
+              bridge.tab_copy_title(page.nativeWindowID, page.nativeTabID, nil, 0) > 0 else { return nil }
         return (mount, row)
     }
 
@@ -871,7 +749,7 @@ final class ChromiumNativePageHost: NativePageHost {
         guard let page = navigation as? ChromiumPageNavigation,
               let (mount, row) = admission(page, in: window), let shell = mount.shell,
               row.selected_client == page.nativeWindowID, row.active_tab == page.nativeTabID else { return false }
-        return api.shellIsOwned(page.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1
+        return bridge.window_native_shell_is_owned(page.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1
     }
 
     func acceptNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
@@ -892,13 +770,13 @@ final class ChromiumNativePageHost: NativePageHost {
         guard current() else { return false }
         reconcilePeekSidebar(mount)
         let target = page.nativeWindowID
-        if api.shellIsOwned(target, pointer) == 1 { mount.attachedClient = target; return current() }
-        if let old = mount.attachedClient, old != target, api.shellIsOwned(old, pointer) == 1 {
-            let detached = api.detachIfOwned(old, pointer)
+        if bridge.window_native_shell_is_owned(target, pointer) == 1 { mount.attachedClient = target; return current() }
+        if let old = mount.attachedClient, old != target, bridge.window_native_shell_is_owned(old, pointer) == 1 {
+            let detached = bridge.window_detach_native_shell_if_owned(old, pointer)
             guard current(), detached == 1 else { return false }
         }
-        let attached = api.attach(target, pointer)
-        let owns = api.shellIsOwned(target, pointer) == 1
+        let attached = bridge.window_attach_native_shell(target, pointer)
+        let owns = bridge.window_native_shell_is_owned(target, pointer) == 1
         // Native attachment may succeed physically but report supersession.
         // Remember that actual owner so the next reflection can detach it.
         if owns {
@@ -907,7 +785,7 @@ final class ChromiumNativePageHost: NativePageHost {
             } else if mount.attachedClient != target {
                 // A nested Swift mount already won. Release only this older
                 // call's exact view, never its newer destination's header.
-                _ = api.detachIfOwned(target, pointer)
+                _ = bridge.window_detach_native_shell_if_owned(target, pointer)
             }
         }
         return current() && attached == 1 && owns
@@ -922,8 +800,8 @@ final class ChromiumNativePageHost: NativePageHost {
         reconcilePeekSidebar(mount)
         guard let owner = mount.attachedClient else { return false }
         let sidebar = Unmanaged.passUnretained(shell).toOpaque()
-        guard api.shellIsOwned(owner, sidebar) == 1 else { return false }
-        return api.setHeader(owner, sidebar,
+        guard bridge.window_native_shell_is_owned(owner, sidebar) == 1 else { return false }
+        return bridge.window_set_native_header(owner, sidebar,
             expected.map { Unmanaged.passUnretained($0).toOpaque() },
             header.map { Unmanaged.passUnretained($0).toOpaque() }, height) == 1
     }
@@ -931,21 +809,21 @@ final class ChromiumNativePageHost: NativePageHost {
     private func reconcilePeekSidebar(_ mount: Mount) {
         guard let owners = mount.peekSidebarOwners, let shell = mount.shell else { return }
         let pointer = Unmanaged.passUnretained(shell).toOpaque()
-        if api.shellIsOwned(owners.source, pointer) == 1 { mount.attachedClient = owners.source }
-        else if api.shellIsOwned(owners.peek, pointer) == 1 { mount.attachedClient = owners.peek }
+        if bridge.window_native_shell_is_owned(owners.source, pointer) == 1 { mount.attachedClient = owners.source }
+        else if bridge.window_native_shell_is_owned(owners.peek, pointer) == 1 { mount.attachedClient = owners.peek }
         else { mount.peekSidebarOwners = nil }
     }
 
     func presentPeek(source: ChromiumPageNavigation, page: ChromiumPageNavigation,
                      header: NSView, actions: NSView, in window: BrowserWindowState) -> UInt64 {
-        guard let peekAPI, source !== page, source.profileID == page.profileID,
+        guard source !== page, source.profileID == page.profileID,
               let (mount, _) = admission(source, in: window),
               let (peekMount, _) = admission(page, in: window), mount === peekMount,
               let shell = mount.shell else { return 0 }
         mount.generation &+= 1
         let attempt = mount.generation
         let owners = (source: source.nativeWindowID, peek: page.nativeWindowID)
-        let generation = peekAPI.present(owners.source, source.nativeTabID, owners.peek, page.nativeTabID,
+        let generation = bridge.tab_present_peek(owners.source, source.nativeTabID, owners.peek, page.nativeTabID,
             Unmanaged.passUnretained(shell).toOpaque(), Unmanaged.passUnretained(header).toOpaque(),
             Unmanaged.passUnretained(actions).toOpaque())
         guard mount.generation == attempt else { return 0 }
@@ -956,15 +834,15 @@ final class ChromiumNativePageHost: NativePageHost {
 
     func isPeekPresented(sourceWindow: Int32, sourceTab: Int32, peekWindow: Int32, peekTab: Int32,
                          generation: UInt64, header: NSView, actions: NSView) -> Bool {
-        guard generation != 0, let peekAPI else { return false }
-        return peekAPI.isPresented(sourceWindow, sourceTab, peekWindow, peekTab, generation,
+        guard generation != 0 else { return false }
+        return bridge.tab_is_peek_presented(sourceWindow, sourceTab, peekWindow, peekTab, generation,
             Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque()) == 1
     }
 
     func hidePeek(sourceWindow: Int32, sourceTab: Int32, peekWindow: Int32, peekTab: Int32,
                   generation: UInt64, header: NSView, actions: NSView, in window: BrowserWindowState) {
-        guard generation != 0, let peekAPI else { return }
-        _ = peekAPI.hide(sourceWindow, sourceTab, peekWindow, peekTab, generation,
+        guard generation != 0 else { return }
+        _ = bridge.tab_hide_peek(sourceWindow, sourceTab, peekWindow, peekTab, generation,
             Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque())
         if let mount = mounts[window.id], mount.model === window { reconcilePeekSidebar(mount) }
     }
@@ -973,7 +851,7 @@ final class ChromiumNativePageHost: NativePageHost {
         guard let page = navigation as? ChromiumPageNavigation,
               admission(page, in: window) != nil || moveHere(page, in: window),
               let (mount, before) = admission(page, in: window) else { return false }
-        let previous = discoveryAPI.windowState(before.selected_client)
+        let previous = bridge.windowState(before.selected_client)
         mount.generation &+= 1
         let attempt = mount.generation
         guard page.selectNativePage(), mount.generation == attempt,
@@ -987,17 +865,17 @@ final class ChromiumNativePageHost: NativePageHost {
               let shell = mount.shell else { return false }
         let pointer = Unmanaged.passUnretained(shell).toOpaque()
         let target = page.nativeWindowID
-        if target != old.window, api.shellIsOwned(target, pointer) == 1 {
-            let detached = api.detachIfOwned(target, pointer)
+        if target != old.window, bridge.window_native_shell_is_owned(target, pointer) == 1 {
+            let detached = bridge.window_detach_native_shell_if_owned(target, pointer)
             guard detached == 1, mount.generation == attempt, selected(page, in: window) else { return false }
         }
-        guard api.selectWindow(old.window) == 1, mount.generation == attempt,
+        guard bridge.window_select(old.window) == 1, mount.generation == attempt,
               let restored = liveState(old.window), restored.physical_group == mount.group,
               restored.selected_client == old.window, restored.active_tab == previous.active_tab else { return false }
-        _ = api.attach(old.window, pointer)
-        if api.shellIsOwned(old.window, pointer) == 1 {
+        _ = bridge.window_attach_native_shell(old.window, pointer)
+        if bridge.window_native_shell_is_owned(old.window, pointer) == 1 {
             if mount.generation == attempt { mount.attachedClient = old.window }
-            else if mount.attachedClient != old.window { _ = api.detachIfOwned(old.window, pointer) }
+            else if mount.attachedClient != old.window { _ = bridge.window_detach_native_shell_if_owned(old.window, pointer) }
         }
         return false
     }
@@ -1009,13 +887,13 @@ final class ChromiumNativePageHost: NativePageHost {
               let binding = pages[id], binding.page === page, binding.owned, binding.window != window.id,
               closing[id] == nil, let mount = mounts[window.id], mount.model === window, mount.shell != nil,
               let source = liveState(page.nativeWindowID), source.physical_group != mount.group,
-              discoveryAPI.identity(source) == profile, let owner = liveClient(in: window.id) else { return false }
+              bridge.identity(source) == profile, let owner = liveClient(in: window.id) else { return false }
         var destination = liveClient(in: window.id, profile: profile) ?? 0
         let created = destination == 0
-        if created { destination = api.newPeer(page.nativeWindowID, owner) }
+        if created { destination = bridge.window_new_peer_in_native_window(page.nativeWindowID, owner) }
         guard destination > 0, let target = liveState(destination), target.physical_group == mount.group,
-              discoveryAPI.identity(target) == profile else {
-            if created && destination > 0 { _ = api.closeWindow(destination) }
+              bridge.identity(target) == profile else {
+            if created && destination > 0 { _ = bridge.window_close(destination) }
             return false
         }
         let previous = binding.window
@@ -1027,7 +905,7 @@ final class ChromiumNativePageHost: NativePageHost {
             return true
         }
         let moved = withExtendedLifetime(request) {
-            api.transferAdmitting(page.nativeWindowID, page.nativeTabID, destination, { context, owner, tab in
+            bridge.tab_transfer_with_admission(page.nativeWindowID, page.nativeTabID, destination, { context, owner, tab in
                 MainActor.assumeIsolated {
                     guard let context else { return 0 }
                     return Unmanaged<DetachedAdmission>.fromOpaque(context).takeUnretainedValue().commit(owner, tab) ? 1 : 0
@@ -1036,7 +914,7 @@ final class ChromiumNativePageHost: NativePageHost {
         } == 1
         guard moved else {
             if pages[id] === binding, page.nativeWindowID != destination { binding.window = previous }
-            if created { _ = api.closeWindow(destination) }
+            if created { _ = bridge.window_close(destination) }
             return false
         }
         return true
@@ -1061,14 +939,15 @@ final class ChromiumNativePageHost: NativePageHost {
               record.dividers.allSatisfy(\.isFinite),
               zip([0] + record.dividers, record.dividers + [1]).allSatisfy({ $0 < $1 }) else { return nil }
         let handles = pages.map(\.nativeTabID), cuts = record.dividers
-        return BarcSplitLayout(count: UInt32(pages.count), orientation: record.orientation == .horizontal ? 0 : 1,
+        let orientation = record.orientation == .horizontal ? BARC_SPLIT_SIDE_BY_SIDE : BARC_SPLIT_STACKED
+        return BarcSplitLayout(size: MemoryLayout<BarcSplitLayout>.size, count: UInt32(pages.count), orientation: orientation.rawValue,
             tabs: (handles[0], handles[1], handles.count > 2 ? handles[2] : 0, handles.count > 3 ? handles[3] : 0),
             dividers: (cuts[0], cuts.count > 1 ? cuts[1] : 0, cuts.count > 2 ? cuts[2] : 0),
-            active_tab: handles[index], collection: 0, kind: 1, generation: 0)
+            active_tab: handles[index], collection: 0, kind: BARC_SPLIT_PHYSICAL.rawValue, generation: 0)
     }
 
     private func validSplitIdentity(_ value: BarcSplitLayout) -> Bool {
-        value.kind == 1 && value.collection == 0 && value.generation > 0
+        value.kind == BARC_SPLIT_PHYSICAL.rawValue && value.collection == 0 && value.generation > 0
     }
 
     private func sameLayout(_ actual: BarcSplitLayout, _ requested: BarcSplitLayout,
@@ -1085,25 +964,24 @@ final class ChromiumNativePageHost: NativePageHost {
 
     func isSplit(_ record: SplitRecord?, pages: [UUID: PageSession], activeItemID: UUID?,
                  in window: BrowserWindowState) -> Bool {
-        guard let splitAPI else { return false }
         guard let record else {
             guard let activeItemID, let page = pages[activeItemID]?.navigation as? ChromiumPageNavigation else { return true }
             guard isNativeSelection(page, in: window) else { return false }
-            var actual = BarcSplitLayout()
-            return splitAPI.get(page.nativeWindowID, page.nativeTabID, &actual) == 0
+            var actual = BarcSplitLayout.sized
+            return bridge.window_get_split(page.nativeWindowID, page.nativeTabID, &actual) == 0
         }
         guard let native = splitPages(record, pages: pages, in: window),
               let request = layout(record, pages: native, active: activeItemID),
               let index = activeItemID.flatMap({ record.itemIDs.firstIndex(of: $0) }),
               isNativeSelection(native[index], in: window) else { return false }
-        var actual = BarcSplitLayout()
-        return splitAPI.get(native[index].nativeWindowID, 0, &actual) == 1 && validSplitIdentity(actual) && sameLayout(actual, request)
+        var actual = BarcSplitLayout.sized
+        return bridge.window_get_split(native[index].nativeWindowID, 0, &actual) == 1 && validSplitIdentity(actual) && sameLayout(actual, request)
     }
 
     func applySplit(_ record: SplitRecord?, replacing previous: SplitRecord?,
                     pages: [UUID: PageSession], activeItemID: UUID?,
                     in window: BrowserWindowState, isCurrent: () -> Bool) -> Bool {
-        guard let splitAPI, isCurrent(), let mount = mounts[window.id], mount.model === window else { return false }
+        guard isCurrent(), let mount = mounts[window.id], mount.model === window else { return false }
         var generation = mount.generation
         let selectedBefore = pages.values.compactMap { $0.navigation as? ChromiumPageNavigation }
             .first { self.isNativeSelection($0, in: window) }
@@ -1111,8 +989,8 @@ final class ChromiumNativePageHost: NativePageHost {
         var unknownLiveOldGroup = false
         if let previous, let native = splitPages(previous, pages: pages, in: window),
            let sample = layout(previous, pages: native, active: previous.itemIDs.first) {
-            var existing = BarcSplitLayout()
-            if splitAPI.get(native[0].nativeWindowID, native[0].nativeTabID, &existing) == 1 {
+            var existing = BarcSplitLayout.sized
+            if bridge.window_get_split(native[0].nativeWindowID, native[0].nativeTabID, &existing) == 1 {
                 if sameLayout(existing, sample, active: false) {
                     old = (native[0].nativeWindowID, native[0].nativeTabID, existing)
                 } else {
@@ -1125,8 +1003,8 @@ final class ChromiumNativePageHost: NativePageHost {
             for id in previous.itemIDs {
                 guard let page = pages[id]?.navigation as? ChromiumPageNavigation,
                       admission(page, in: window) != nil else { continue }
-                var actual = BarcSplitLayout()
-                if splitAPI.get(page.nativeWindowID, page.nativeTabID, &actual) == 1 {
+                var actual = BarcSplitLayout.sized
+                if bridge.window_get_split(page.nativeWindowID, page.nativeTabID, &actual) == 1 {
                     unknownLiveOldGroup = true
                 }
             }
@@ -1145,11 +1023,11 @@ final class ChromiumNativePageHost: NativePageHost {
             }
             if var previous = presentationBeforeSelection, previous.layout.active_tab == selectedBefore.nativeTabID,
                isCurrent(), mount.generation == generation,
-               splitAPI.set(selectedBefore.nativeWindowID, &previous.layout) == 1,
+               bridge.window_set_split(selectedBefore.nativeWindowID, &previous.layout) == 1,
                mounts[window.id] === mount, mount.generation == generation,
                isCurrent(), isNativeSelection(selectedBefore, in: window) {
-                var restored = BarcSplitLayout()
-                if splitAPI.get(selectedBefore.nativeWindowID, 0, &restored) == 1,
+                var restored = BarcSplitLayout.sized
+                if bridge.window_get_split(selectedBefore.nativeWindowID, 0, &restored) == 1,
                    sameLayout(restored, previous.layout), validSplitIdentity(restored) {
                     mount.presentedSplit = (selectedBefore.nativeWindowID, restored.tabs.0,
                         restored.collection, restored.kind, restored.generation, restored.count)
@@ -1174,8 +1052,8 @@ final class ChromiumNativePageHost: NativePageHost {
                 return false
             }
             if var captured = old {
-                var current = BarcSplitLayout()
-                if splitAPI.get(captured.window, captured.member, &current) == 1,
+                var current = BarcSplitLayout.sized
+                if bridge.window_get_split(captured.window, captured.member, &current) == 1,
                    current.kind == captured.layout.kind,
                    current.generation == captured.layout.generation,
                    current.collection == captured.layout.collection,
@@ -1193,13 +1071,13 @@ final class ChromiumNativePageHost: NativePageHost {
                   currentMount === mount, mounts[window.id] === mount,
                   row.selected_client == native[index].nativeWindowID,
                   let shell = mount.shell,
-                  api.shellIsOwned(native[index].nativeWindowID,
+                  bridge.window_native_shell_is_owned(native[index].nativeWindowID,
                       Unmanaged.passUnretained(shell).toOpaque()) == 1,
                   isCurrent() else {
                 restorePreviousSelection()
                 return false
             }
-            guard mount.generation == generation, splitAPI.set(native[index].nativeWindowID, &request) == 1,
+            guard mount.generation == generation, bridge.window_set_split(native[index].nativeWindowID, &request) == 1,
                   mounts[window.id] === mount, mount.generation == generation,
                   isCurrent(), isSplit(record, pages: pages, activeItemID: activeItemID, in: window) else {
                 restorePreviousSelection()
@@ -1213,15 +1091,15 @@ final class ChromiumNativePageHost: NativePageHost {
                     // expected own selection change is ours to reconcile.
                     old.layout.active_tab = 0
                 }
-                _ = splitAPI.clear(old.window, old.member, &old.layout)
+                _ = bridge.window_clear_split(old.window, old.member, &old.layout)
             }
             guard mounts[window.id] === mount, mount.generation == generation,
                   isCurrent(), isSplit(record, pages: pages, activeItemID: activeItemID, in: window) else {
                 restorePreviousSelection()
                 return false
             }
-            var admitted = BarcSplitLayout()
-            guard splitAPI.get(native[index].nativeWindowID, 0, &admitted) == 1,
+            var admitted = BarcSplitLayout.sized
+            guard bridge.window_get_split(native[index].nativeWindowID, 0, &admitted) == 1,
                   sameLayout(admitted, request), validSplitIdentity(admitted) else {
                 restorePreviousSelection()
                 return false
@@ -1234,18 +1112,18 @@ final class ChromiumNativePageHost: NativePageHost {
         if let active {
             guard let (currentMount, row) = admission(active, in: window), currentMount === mount,
                   row.selected_client == active.nativeWindowID, let shell = mount.shell,
-                  api.shellIsOwned(active.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1 else {
+                  bridge.window_native_shell_is_owned(active.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1 else {
                 restorePreviousSelection()
                 return false
             }
         }
         if var old {
-            guard splitAPI.clear(old.window, old.member, &old.layout) == 1 else {
+            guard bridge.window_clear_split(old.window, old.member, &old.layout) == 1 else {
                 // Restore only a still-unchanged refused presentation. If Clear
                 // returned views and a callback chose a newer native collection,
                 // preserve that actual state instead of remounting the old split.
-                var retained = BarcSplitLayout()
-                if splitAPI.get(old.window, old.member, &retained) == 1,
+                var retained = BarcSplitLayout.sized
+                if bridge.window_get_split(old.window, old.member, &retained) == 1,
                    retained.kind == old.layout.kind, retained.collection == old.layout.collection,
                    retained.generation == old.layout.generation, sameLayout(retained, old.layout) {
                     restorePreviousSelection()
@@ -1262,7 +1140,7 @@ final class ChromiumNativePageHost: NativePageHost {
             // after exact native clear succeeded. A refused clear never focuses it.
             guard let (_, row) = admission(active, in: window), row.selected_client == active.nativeWindowID,
                   let shell = mount.shell, mount.generation == generation,
-                  api.shellIsOwned(active.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1,
+                  bridge.window_native_shell_is_owned(active.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1,
                   active.selectNativePage(), mounts[window.id] === mount,
                   mount.generation == generation, isCurrent() else {
                 restorePreviousSelection()
@@ -1290,7 +1168,7 @@ final class ChromiumNativePageHost: NativePageHost {
     func nativeSplitUpdate(in window: BrowserWindowState, selected: BarcDiscoveryWindow,
                            sessions: [Int32: PageSession], savedPages: [PageSession])
         -> (record: SplitRecord?, validate: () -> Bool, remountLive: Bool)? {
-        guard let splitAPI, let mount = mounts[window.id], mount.model === window,
+        guard let mount = mounts[window.id], mount.model === window,
               let activeSession = sessions[selected.active_tab],
               let active = activeSession.navigation as? ChromiumPageNavigation,
               active.nativeWindowID == selected.window, isNativeSelection(active, in: window) else { return nil }
@@ -1300,11 +1178,11 @@ final class ChromiumNativePageHost: NativePageHost {
                 isNativeSelection(active, in: window)
         }
         func read(_ client: Int32, _ member: Int32) -> BarcSplitLayout? {
-            var value = BarcSplitLayout()
-            return splitAPI.get(client, member, &value) == 1 ? value : nil
+            var value = BarcSplitLayout.sized
+            return bridge.window_get_split(client, member, &value) == 1 ? value : nil
         }
         func decode(_ value: BarcSplitLayout) -> SplitRecord? {
-            guard (2...4).contains(value.count), validSplitIdentity(value), value.orientation <= 1 else { return nil }
+            guard (2...4).contains(value.count), validSplitIdentity(value), value.orientation <= BARC_SPLIT_STACKED.rawValue else { return nil }
             let ids = Array([value.tabs.0, value.tabs.1, value.tabs.2, value.tabs.3].prefix(Int(value.count)))
             let pages = ids.compactMap { sessions[$0] }
             guard pages.count == ids.count, pages.allSatisfy({ session in
@@ -1312,7 +1190,7 @@ final class ChromiumNativePageHost: NativePageHost {
                 return admission(page, in: window) != nil
             }) else { return nil }
             let cuts = Array([value.dividers.0, value.dividers.1, value.dividers.2].prefix(Int(value.count) - 1))
-            return SplitRecord(pages.map(\.itemID), orientation: value.orientation == 0 ? .horizontal : .vertical,
+            return SplitRecord(pages.map(\.itemID), orientation: value.orientation == BARC_SPLIT_SIDE_BY_SIDE.rawValue ? .horizontal : .vertical,
                                dividers: cuts)
         }
         func snapshot(_ value: BarcSplitLayout, client: Int32, member: Int32)
@@ -1326,11 +1204,11 @@ final class ChromiumNativePageHost: NativePageHost {
             }, false)
         }
         let hasLiveRemainder = mount.presentedSplit.map { presented in
-            presented.kind == 1 && window.split.map {
+            presented.kind == BARC_SPLIT_PHYSICAL.rawValue && window.split.map {
                 $0.contains(activeSession.itemID) && $0.itemIDs.count < Int(presented.count)
             } == true
         } ?? false
-        if let value = read(selected.window, 0), !hasLiveRemainder || value.kind == 1 {
+        if let value = read(selected.window, 0), !hasLiveRemainder || value.kind == BARC_SPLIT_PHYSICAL.rawValue {
             return snapshot(value, client: selected.window, member: value.tabs.0)
         }
         guard mount.presentedSplit != nil, let saved = window.split,
@@ -1345,11 +1223,11 @@ final class ChromiumNativePageHost: NativePageHost {
               }) else { return nil } // Owner ending/cold state preserves saved metadata.
         for session in oldPages {
             guard let page = session.navigation as? ChromiumPageNavigation else { continue }
-            if let value = read(page.nativeWindowID, page.nativeTabID), !hasLiveRemainder || value.kind == 1 {
+            if let value = read(page.nativeWindowID, page.nativeTabID), !hasLiveRemainder || value.kind == BARC_SPLIT_PHYSICAL.rawValue {
                 return snapshot(value, client: page.nativeWindowID, member: page.nativeTabID)
             }
         }
-        if let presented = mount.presentedSplit, presented.kind == 1,
+        if let presented = mount.presentedSplit, presented.kind == BARC_SPLIT_PHYSICAL.rawValue,
            saved.itemIDs.count < Int(presented.count) {
             // One live-only attempt for this ended presentation. Never turn an
             // admitted owner into a cold-start mount or recreate missing pages.
@@ -1383,10 +1261,10 @@ final class ChromiumNativePageHost: NativePageHost {
     /// never a replacement installed by a reentrant product admission.
     func canCloseUnadmittedWindow(_ native: Int32) -> Bool {
         guard let row = liveState(native) else { return false }
-        if api.shellIsOwned(native, nil) == 1 { return true }
+        if bridge.window_native_shell_is_owned(native, nil) == 1 { return true }
         guard let mount = mounts.values.first(where: { $0.group == row.physical_group }),
               let shell = mount.shell else { return false }
-        return api.shellIsOwned(native, Unmanaged.passUnretained(shell).toOpaque()) == 1
+        return bridge.window_native_shell_is_owned(native, Unmanaged.passUnretained(shell).toOpaque()) == 1
     }
 
     /// A failed restore closes its logical window but keeps the existing page
@@ -1399,7 +1277,7 @@ final class ChromiumNativePageHost: NativePageHost {
         guard pages[id]?.page === page, canCloseUnadmittedWindow(page.nativeWindowID) else { completion(.cancelled); return }
         if closing[id] != nil { closing[id]?.append(completion); return }
         closing[id] = [completion]
-        let accepted = api.closeWindow(page.nativeWindowID)
+        let accepted = bridge.window_close(page.nativeWindowID)
         if accepted != 1, let callbacks = closing.removeValue(forKey: id) {
             callbacks.forEach { $0(.cancelled) }
         }
@@ -1437,20 +1315,20 @@ final class ChromiumNativePageHost: NativePageHost {
     }
 
     private func liveState(_ native: Int32) -> BarcDiscoveryWindow? {
-        guard native > 0, let row = discoveryAPI.windowState(native), row.window == native,
-              row.physical_group != 0, row.flags & 32 == 0,
-              discoveryAPI.identity(row) != nil else { return nil }
+        guard native > 0, let row = bridge.windowState(native), row.window == native,
+              row.physical_group != 0, row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
+              bridge.identity(row) != nil else { return nil }
         return row
     }
 
     func liveClient(in window: UUID, profile: UUID? = nil) -> Int32? {
         guard let mount = mounts[window], mount.shell != nil,
-              let snapshot = discoveryAPI.readSnapshot() else { return nil }
+              let snapshot = bridge.readSnapshot() else { return nil }
         let candidates = snapshot.windows.filter {
-            $0.physical_group == mount.group && $0.flags & 32 == 0 &&
+            $0.physical_group == mount.group && $0.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 &&
             ($0.profile_kind == BARC_DISCOVERY_GUEST.rawValue) == (mount.model?.isIncognito == true) &&
-            discoveryAPI.identity($0) != nil &&
-            (profile == nil || discoveryAPI.identity($0) == profile) &&
+            bridge.identity($0) != nil &&
+            (profile == nil || bridge.identity($0) == profile) &&
             ($0.active_tab > 0 || $0.flags & BARC_DISCOVERY_EMPTY_STRIP.rawValue != 0)
         }
         return (candidates.first(where: { $0.selected_client == $0.window }) ?? candidates.first)?.window
@@ -1469,7 +1347,7 @@ final class ChromiumNativePageHost: NativePageHost {
         let request = EmptySpaceOpening(host: self, key: key, group: mount.group)
         emptySpaceOpening[key] = request
         profile.uuidString.withCString { uuid in
-            api.open(owner, uuid, 5, { status, native, pointer in
+            bridge.profile_open_in_native_window(owner, uuid, BARC_PROFILE_BLANK, { status, native, pointer in
                 MainActor.assumeIsolated {
                     guard let pointer else { return }
                     let request = Unmanaged<EmptySpaceOpening>.fromOpaque(pointer).takeUnretainedValue()
@@ -1480,25 +1358,25 @@ final class ChromiumNativePageHost: NativePageHost {
         return nil
     }
 
-    private func openedEmptySpaceClient(_ request: EmptySpaceOpening, status: Int32, native: Int32) {
+    private func openedEmptySpaceClient(_ request: EmptySpaceOpening, status: barc_profile_status, native: Int32) {
         guard emptySpaceOpening[request.key] === request else { return }
         emptySpaceOpening.removeValue(forKey: request.key)
-        guard status == 0, let row = liveState(native), row.physical_group == request.group,
-              discoveryAPI.identity(row) == request.key.profile,
+        guard status == BARC_PROFILE_OK, let row = liveState(native), row.physical_group == request.group,
+              bridge.identity(row) == request.key.profile,
               row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue else { return }
         var blanks: [Int32] = []
-        while case let tab = api.tabAt(native, blanks.count), tab > 0 { blanks.append(tab) }
-        for tab in blanks { _ = navigationAPI.close(native, tab) }
+        while case let tab = bridge.window_tab_at(native, blanks.count), tab > 0 { blanks.append(tab) }
+        for tab in blanks { _ = bridge.tab_close(native, tab) }
     }
 
     private func selectEmptySpaceClient(_ client: Int32, mount: Mount) -> Bool {
         guard let shell = mount.shell, let row = liveState(client), row.physical_group == mount.group else { return false }
         let pointer = Unmanaged.passUnretained(shell).toOpaque()
-        if row.selected_client != client, api.selectWindow(client) != 1 { return false }
-        if api.shellIsOwned(client, pointer) != 1 {
-            if let old = mount.attachedClient, old != client, api.shellIsOwned(old, pointer) == 1,
-               api.detachIfOwned(old, pointer) != 1 { return false }
-            guard api.attach(client, pointer) == 1, api.shellIsOwned(client, pointer) == 1 else { return false }
+        if row.selected_client != client, bridge.window_select(client) != 1 { return false }
+        if bridge.window_native_shell_is_owned(client, pointer) != 1 {
+            if let old = mount.attachedClient, old != client, bridge.window_native_shell_is_owned(old, pointer) == 1,
+               bridge.window_detach_native_shell_if_owned(old, pointer) != 1 { return false }
+            guard bridge.window_attach_native_shell(client, pointer) == 1, bridge.window_native_shell_is_owned(client, pointer) == 1 else { return false }
         }
         mount.attachedClient = client
         mount.generation &+= 1
@@ -1518,14 +1396,14 @@ final class ChromiumNativePageHost: NativePageHost {
         }
         var kept: Set<String> = []
         for row in rows {
-            guard let identity = discoveryAPI.identity(row) else { continue }
+            guard let identity = bridge.identity(row) else { continue }
             let key = "\(identity.uuidString)/\(row.profile_kind)"
             if kept.contains(key), row.flags & empty != 0, row.selected_client != row.window,
                row.window != mount.attachedClient, !busy.contains(row.window),
                row.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue == 0,
-               let current = discoveryAPI.windowState(row.window), current.flags & empty != 0,
-               current.selected_client != current.window, api.tabAt(row.window, 0) == 0 {
-                _ = api.closeWindow(row.window)
+               let current = bridge.windowState(row.window), current.flags & empty != 0,
+               current.selected_client != current.window, bridge.window_tab_at(row.window, 0) == 0 {
+                _ = bridge.window_close(row.window)
             } else {
                 kept.insert(key)
             }

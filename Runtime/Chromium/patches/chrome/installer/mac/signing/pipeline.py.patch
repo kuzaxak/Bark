@@ -1,0 +1,23 @@
+diff --git a/chrome/installer/mac/signing/pipeline.py b/chrome/installer/mac/signing/pipeline.py
+index 7aa84e2e9d..02b595711b 100644
+--- a/chrome/installer/mac/signing/pipeline.py
++++ b/chrome/installer/mac/signing/pipeline.py
+@@ -775,6 +775,18 @@ async def sign_all(
+                 )
+                 _staple_chrome(notary_paths.replace_work(dest_dir), dist_config)
+ 
++        # Notarization submissions above have completed successfully. Assess
++        # only now, after any requested stapling and before packaging the app.
++        if config.notarize.should_notarize():
++            for dist_config in dist_configs:
++                dest_dir = os.path.join(
++                    notary_paths.work,
++                    _intermediate_work_dir_name(dist_config.distribution),
++                )
++                await signing.assess_app(
++                    notary_paths.replace_work(dest_dir), dist_config,
++                    parts.get_parts(dist_config)['app'])
++
+         # After all apps are optionally notarized, package as required.
+         if not disable_packaging:
+             await asyncio.wait_for(

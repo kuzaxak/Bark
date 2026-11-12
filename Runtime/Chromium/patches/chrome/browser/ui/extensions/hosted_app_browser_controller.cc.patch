@@ -1,0 +1,18 @@
+diff --git a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc b/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
+index 52aad86bfb..875af8d21b 100644
+--- a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
++++ b/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
+@@ -186,11 +186,8 @@ void HostedAppBrowserController::Uninstall(
+   }
+ 
+   DCHECK(!uninstall_dialog_);
+-  uninstall_dialog_ = ExtensionUninstallDialog::Create(
+-      browser()->GetProfile(),
+-      browser()->GetWindow() ? browser()->GetWindow()->GetNativeWindow()
+-                             : gfx::NativeWindow(),
+-      this);
++  uninstall_dialog_ = ExtensionUninstallDialog::CreateForBrowser(
++      browser()->GetProfile(), browser(), this);
+ 
+   // The dialog can be closed by UI system whenever it likes, but
+   // OnExtensionUninstallDialogClosed will be called anyway.

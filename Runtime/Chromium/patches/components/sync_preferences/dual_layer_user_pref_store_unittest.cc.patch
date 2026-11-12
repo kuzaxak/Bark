@@ -1,0 +1,106 @@
+diff --git a/components/sync_preferences/dual_layer_user_pref_store_unittest.cc b/components/sync_preferences/dual_layer_user_pref_store_unittest.cc
+index 9dde6674ed..909fd235bd 100644
+--- a/components/sync_preferences/dual_layer_user_pref_store_unittest.cc
++++ b/components/sync_preferences/dual_layer_user_pref_store_unittest.cc
+@@ -159,6 +159,16 @@ testing::AssertionResult ValueInDictByDottedPathIs(
+   return testing::AssertionFailure();
+ }
+ 
++// JsonPrefStore intentionally remains uninitialized after a failed read.
++class FailedInitializationPrefStore : public TestingPrefStore {
++ public:
++  FailedInitializationPrefStore() { set_read_success(false); }
++  bool IsInitializationComplete() const override { return false; }
++
++ protected:
++  ~FailedInitializationPrefStore() override = default;
++};
++
+ class MockPrefStoreObserver : public PrefStore::Observer {
+  public:
+   ~MockPrefStoreObserver() override = default;
+@@ -299,6 +309,84 @@ TEST_F(DualLayerUserPrefStoreInitializationTest,
+   store()->RemoveObserver(&observer);
+ }
+ 
++TEST_F(DualLayerUserPrefStoreInitializationTest,
++       UninitializedFailureNotifiedOnce) {
++  for (bool fail_local : {false, true}) {
++    for (bool failure_first : {false, true}) {
++      SCOPED_TRACE(testing::Message() << "fail_local=" << fail_local
++                                      << " failure_first=" << failure_first);
++      auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++      auto peer = base::MakeRefCounted<TestingPrefStore>();
++      failed->set_read_error(
++          PersistentPrefStore::PREF_READ_ERROR_FILE_NOT_SPECIFIED);
++      failed->SetBlockAsyncRead(true);
++      peer->SetBlockAsyncRead(true);
++      auto pref_store = base::MakeRefCounted<DualLayerUserPrefStore>(
++          fail_local ? failed : peer, fail_local ? peer : failed,
++          pref_model_associator_client_);
++      testing::StrictMock<MockPrefStoreObserver> observer;
++      pref_store->AddObserver(&observer);
++      int completions = 0;
++      EXPECT_CALL(observer, OnInitializationCompleted(false))
++          .WillOnce([&](bool) { ++completions; });
++      pref_store->ReadPrefsAsync(
++          new testing::StrictMock<MockReadErrorDelegate>);
++      EXPECT_EQ(0, completions);
++      if (failure_first) {
++        failed->SetBlockAsyncRead(false);
++        EXPECT_EQ(1, completions);
++        peer->SetBlockAsyncRead(false);
++      } else {
++        peer->SetBlockAsyncRead(false);
++        EXPECT_EQ(0, completions);
++        failed->SetBlockAsyncRead(false);
++      }
++      EXPECT_EQ(1, completions);
++      EXPECT_FALSE(pref_store->IsInitializationComplete());
++      EXPECT_EQ(PersistentPrefStore::PREF_READ_ERROR_FILE_NOT_SPECIFIED,
++                pref_store->GetReadError());
++      pref_store->RemoveObserver(&observer);
++    }
++  }
++}
++
++TEST_F(DualLayerUserPrefStoreInitializationTest,
++       FailureCallbackCanCompletePeerReentrantly) {
++  auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++  auto peer = base::MakeRefCounted<TestingPrefStore>();
++  failed->SetBlockAsyncRead(true);
++  peer->SetBlockAsyncRead(true);
++  auto pref_store = base::MakeRefCounted<DualLayerUserPrefStore>(
++      failed, peer, pref_model_associator_client_);
++  testing::StrictMock<MockPrefStoreObserver> observer;
++  pref_store->AddObserver(&observer);
++  EXPECT_CALL(observer, OnInitializationCompleted(false)).WillOnce([&](bool) {
++    peer->SetBlockAsyncRead(false);
++  });
++  pref_store->ReadPrefsAsync(nullptr);
++  failed->SetBlockAsyncRead(false);
++  EXPECT_TRUE(peer->IsInitializationComplete());
++  EXPECT_FALSE(pref_store->IsInitializationComplete());
++  pref_store->RemoveObserver(&observer);
++}
++
++TEST_F(DualLayerUserPrefStoreInitializationTest,
++       FailureCallbackCanReleaseStoreDuringRead) {
++  auto failed = base::MakeRefCounted<FailedInitializationPrefStore>();
++  auto peer = base::MakeRefCounted<TestingPrefStore>();
++  auto pref_store = base::MakeRefCounted<DualLayerUserPrefStore>(
++      failed, peer, pref_model_associator_client_);
++  testing::StrictMock<MockPrefStoreObserver> observer;
++  pref_store->AddObserver(&observer);
++  EXPECT_CALL(observer, OnInitializationCompleted(false)).WillOnce([&](bool) {
++    pref_store->RemoveObserver(&observer);
++    pref_store.reset();
++  });
++  pref_store->ReadPrefsAsync(nullptr);
++  EXPECT_FALSE(pref_store);
++  EXPECT_TRUE(peer->IsInitializationComplete());
++}
++
+ TEST_F(DualLayerUserPrefStoreInitializationTest,
+        ShouldForwardLocalPrefStoreReadError) {
+   local_store()->set_read_error(

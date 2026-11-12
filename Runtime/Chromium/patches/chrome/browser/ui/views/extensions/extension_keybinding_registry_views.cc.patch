@@ -1,0 +1,57 @@
+diff --git a/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.cc b/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.cc
+index 2692110fe1..4ef167a0d5 100644
+--- a/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.cc
++++ b/chrome/browser/ui/views/extensions/extension_keybinding_registry_views.cc
+@@ -34,10 +34,13 @@ ExtensionKeybindingRegistryViews::ExtensionKeybindingRegistryViews(
+     BrowserWindowInterface* browser,
+     ExtensionFilter extension_filter,
+     views::FocusManager* focus_manager)
+-    : ExtensionKeybindingRegistryViews(browser->GetProfile(),
+-                                       TabListInterface::From(browser),
+-                                       extension_filter,
+-                                       focus_manager) {
++    : ExtensionKeybindingRegistry(browser->GetProfile(),
++                                  TabListInterface::From(browser),
++                                  extension_filter),
++      profile_(browser->GetProfile()),
++      focus_manager_(focus_manager),
++      browser_(browser) {
++  Init();
+   scoped_unowned_user_data_.emplace(browser->GetUnownedUserDataHost(), *this);
+ }
+ 
+@@ -86,22 +89,30 @@ void ExtensionKeybindingRegistryViews::UnregisterAccelerator(
+ 
+ void ExtensionKeybindingRegistryViews::OnShortcutHandlingSuspended(
+     bool suspended) {
+-  focus_manager_->set_shortcut_handling_suspended(suspended);
++  if (CanHandleAccelerators()) {
++    focus_manager_->set_shortcut_handling_suspended(suspended);
++  }
+ }
+ 
+ bool ExtensionKeybindingRegistryViews::AcceleratorPressed(
+     const ui::Accelerator& accelerator) {
+-  return ExtensionKeybindingRegistry::NotifyEventTargets(accelerator);
++  return CanHandleAccelerators() &&
++         ExtensionKeybindingRegistry::NotifyEventTargets(accelerator);
+ }
+ 
+ bool ExtensionKeybindingRegistryViews::CanHandleAccelerators() const {
+-  return true;
++  return !browser_ || browser_->IsSelectedForNativeWindow();
+ }
+ 
+ void ExtensionKeybindingRegistryViews::OnHostActivationChanged(bool active) {
++  const bool selected = CanHandleAccelerators();
++  if (browser_ && selected) {
++    focus_manager_->set_shortcut_handling_suspended(
++        shortcut_handling_suspended());
++  }
+   if (extensions::ExtensionCommandsGlobalRegistry* const global_registry =
+           extensions::ExtensionCommandsGlobalRegistry::Get(profile_)) {
+-    if (active) {
++    if (active && selected) {
+       global_registry->set_registry_for_active_window(this);
+     } else if (global_registry->registry_for_active_window() == this) {
+       global_registry->set_registry_for_active_window(nullptr);

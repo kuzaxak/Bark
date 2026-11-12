@@ -1,4 +1,5 @@
 import AppKit
+import BarcChromium
 import NookWeb
 import SwiftUI
 
@@ -10,11 +11,7 @@ struct ChromiumMiniDestination: Identifiable, Equatable {
 }
 
 struct ChromiumMiniWindowAPI {
-    let attach: ChromiumPageHostAPI.Attach
-    let ownsHeader: ChromiumPageHostAPI.Attach
-    let detach: ChromiumPageHostAPI.Attach
-    let admit: ChromiumPageHostAPI.Attach
-    let close: ChromiumNavigationAPI.Command
+    let bridge: BarcBridge
     let canUse: @MainActor (Int32, Int32) -> Bool
     typealias CommandOMonitor = @MainActor (NSEvent) -> NSEvent?
     var installCommandOMonitor: @MainActor (NSView, @escaping CommandOMonitor) -> Any? = { header, handler in
@@ -107,11 +104,11 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
             header = view
         }
         let pointer = Unmanaged.passUnretained(view).toOpaque()
-        guard api.ownsHeader(window, nil) == 1 || api.ownsHeader(window, pointer) == 1 else {
+        guard api.bridge.window_native_shell_is_owned(window, nil) == 1 || api.bridge.window_native_shell_is_owned(window, pointer) == 1 else {
             presentationRefused = true; clearHeaderServices(); return false
         }
-        guard api.attach(window, pointer) == 1, canPresent(), ownsControls(),
-              api.admit(window, pointer) == 1, canPresent(), ownsControls() else {
+        guard api.bridge.window_attach_native_shell(window, pointer) == 1, canPresent(), ownsControls(),
+              api.bridge.window_admit_discovered(window, pointer) == 1, canPresent(), ownsControls() else {
             presentationRefused = true
             detachHeader(); return false
         }
@@ -125,7 +122,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         guard !ended, let header, page.navigation === navigation,
               navigation.nativeWindowID == window, !navigation.isClosed,
               api.canUse(window, navigation.nativeTabID) else { return false }
-        return api.ownsHeader(window, Unmanaged.passUnretained(header).toOpaque()) == 1
+        return api.bridge.window_native_shell_is_owned(window, Unmanaged.passUnretained(header).toOpaque()) == 1
     }
 
     func close() {
@@ -137,7 +134,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
                    completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         guard page === navigation, ownsControls() else { completion(.cancelled); return }
         pending.append(completion)
-        if pending.count == 1, api.close(window, navigation.nativeTabID) == 0 {
+        if pending.count == 1, api.bridge.tab_close(window, navigation.nativeTabID) == 0 {
             completed(.cancelled)
         }
     }
@@ -224,7 +221,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         admitted = false
         clearHeaderServices()
         guard let header else { return }
-        _ = api.detach(window, Unmanaged.passUnretained(header).toOpaque())
+        _ = api.bridge.window_detach_native_shell_if_owned(window, Unmanaged.passUnretained(header).toOpaque())
     }
 }
 

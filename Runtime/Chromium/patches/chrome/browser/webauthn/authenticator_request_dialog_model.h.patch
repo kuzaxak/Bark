@@ -1,0 +1,22 @@
+diff --git a/chrome/browser/webauthn/authenticator_request_dialog_model.h b/chrome/browser/webauthn/authenticator_request_dialog_model.h
+index 23b40bc105..d7ee2ef5ae 100644
+--- a/chrome/browser/webauthn/authenticator_request_dialog_model.h
++++ b/chrome/browser/webauthn/authenticator_request_dialog_model.h
+@@ -349,6 +349,7 @@ struct AuthenticatorRequestDialogModel
+         base::StrongAlias<class iCloudKeychainTag, std::monostate>;
+     using Hybrid = base::StrongAlias<class HybridTag, std::monostate>;
+     using Enclave = base::StrongAlias<class EnclaveTag, std::monostate>;
++    using PawlVault = base::StrongAlias<class PawlVaultTag, std::monostate>;
+     using SignInAgain = base::StrongAlias<class SignInAgainTag, std::monostate>;
+     using Type = std::variant<Credential,
+                               Password,
+@@ -357,7 +358,8 @@ struct AuthenticatorRequestDialogModel
+                               Hybrid,
+                               ICloudKeychain,
+                               Enclave,
+-                              SignInAgain>;
++                              SignInAgain,
++                              PawlVault>;
+ 
+     Mechanism(Type type,
+               std::u16string name,

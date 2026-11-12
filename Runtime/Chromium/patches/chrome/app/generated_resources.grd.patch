@@ -1,0 +1,17 @@
+diff --git a/chrome/app/generated_resources.grd b/chrome/app/generated_resources.grd
+index 21e5fd0d92..31c2677ebd 100644
+--- a/chrome/app/generated_resources.grd
++++ b/chrome/app/generated_resources.grd
+@@ -20574,6 +20574,12 @@ Please help our engineers fix this problem. Tell us what happened right before y
+     <message name="IDS_OSCRYPTASYNC_AVAILABILITY_INFOBAR_BUTTON" desc="The text of the button to proceed with relaunching the entire browser to resolve keychain permission issues.">
+       Relaunch
+     </message>
++    <message name="IDS_TAB_AX_LABEL_SPLIT_TAB_HORIZONTAL_PANE_FORMAT" desc="Accessible name for a tab in a horizontal split of three or four panes. Panes are numbered in display order from left to right.">
++      <ph name="TAB_TITLE">$1<ex>Google</ex></ph> - Horizontal pane <ph name="PANE_NUMBER">$2<ex>3</ex></ph> of <ph name="PANE_COUNT">$3<ex>4</ex></ph>
++    </message>
++    <message name="IDS_TAB_AX_LABEL_SPLIT_TAB_VERTICAL_PANE_FORMAT" desc="Accessible name for a tab in a vertical split of three or four panes. Panes are numbered in display order from top to bottom.">
++      <ph name="TAB_TITLE">$1<ex>Google</ex></ph> - Vertical pane <ph name="PANE_NUMBER">$2<ex>3</ex></ph> of <ph name="PANE_COUNT">$3<ex>4</ex></ph>
++    </message>
+   </messages>
+ </release>
+ </grit>

@@ -1,0 +1,48 @@
+diff --git a/components/performance_manager/freezing/freezer_unittest.cc b/components/performance_manager/freezing/freezer_unittest.cc
+index 003e93aa18..92d796574f 100644
+--- a/components/performance_manager/freezing/freezer_unittest.cc
++++ b/components/performance_manager/freezing/freezer_unittest.cc
+@@ -4,6 +4,9 @@
+ 
+ #include "components/performance_manager/freezing/freezer.h"
+ 
++#include "base/test/scoped_command_line.h"
++#include "build/build_config.h"
++
+ #include "components/performance_manager/public/performance_manager.h"
+ #include "components/performance_manager/test_support/performance_manager_test_harness.h"
+ #include "components/performance_manager/test_support/test_harness_helper.h"
+@@ -11,6 +14,7 @@
+ #include "content/public/browser/browser_task_traits.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/visibility.h"
+ #include "content/public/test/mock_permission_controller.h"
+ #include "content/public/test/web_contents_tester.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+@@ -60,6 +64,25 @@ TEST_F(FreezerTest, FreezeAndUnfreezePage) {
+   EXPECT_FALSE(web_contents_tester->IsPageFrozen());
+ }
+ 
++#if BUILDFLAG(IS_MAC)
++TEST_F(FreezerTest, NativeUnknownWorkBlocksDirectFreezeButAllowsUnfreeze) {
++  base::test::ScopedCommandLine command;
++  command.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++  SetContents(CreateTestWebContents());
++  auto* tester = content::WebContentsTester::For(web_contents());
++  tester->NavigateAndCommit(GURL(kUrl));
++  web_contents()->WasHidden();
++  MaybeFreezePageNode(web_contents());
++  EXPECT_TRUE(tester->IsPageFrozen());
++  command.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  UnfreezePageNode(web_contents());
++  EXPECT_FALSE(tester->IsPageFrozen());
++  MaybeFreezePageNode(web_contents());
++  EXPECT_FALSE(tester->IsPageFrozen());
++  EXPECT_EQ(content::Visibility::HIDDEN, web_contents()->GetVisibility());
++}
++#endif
++
+ TEST_F(FreezerTest, CantFreezePageWithNotificationPermission) {
+   SetContents(CreateTestWebContents());
+ 

@@ -1,0 +1,19 @@
+diff --git a/components/performance_manager/worker_watcher.cc b/components/performance_manager/worker_watcher.cc
+index 9bfdd5a709..9f89261f12 100644
+--- a/components/performance_manager/worker_watcher.cc
++++ b/components/performance_manager/worker_watcher.cc
+@@ -366,10 +366,11 @@ void WorkerWatcher::OnVersionStoppedRunning(int64_t version_id) {
+   auto it = service_worker_nodes_.find(version_id);
+   CHECK(it != service_worker_nodes_.end());
+ 
+-  auto service_worker_node = std::move(it->second);
++  // Keep this node discoverable while disconnecting missing worker clients:
++  // their consistency checks use service_worker_nodes_ as the authority.
++  DisconnectAllServiceWorkerClients(it->second.get(), version_id);
+ 
+-  // First, disconnect all current clients of this service worker.
+-  DisconnectAllServiceWorkerClients(service_worker_node.get(), version_id);
++  auto service_worker_node = std::move(it->second);
+ 
+ #if DCHECK_IS_ON()
+   DCHECK(!detached_frame_count_per_worker_.contains(service_worker_node.get()));

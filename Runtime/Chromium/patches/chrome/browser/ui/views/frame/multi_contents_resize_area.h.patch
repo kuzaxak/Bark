@@ -1,0 +1,48 @@
+diff --git a/chrome/browser/ui/views/frame/multi_contents_resize_area.h b/chrome/browser/ui/views/frame/multi_contents_resize_area.h
+index 460c40a7c5..00a3d62cb0 100644
+--- a/chrome/browser/ui/views/frame/multi_contents_resize_area.h
++++ b/chrome/browser/ui/views/frame/multi_contents_resize_area.h
+@@ -5,11 +5,14 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_MULTI_CONTENTS_RESIZE_AREA_H_
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_MULTI_CONTENTS_RESIZE_AREA_H_
+ 
++#include <cstddef>
++
+ #include "base/memory/raw_ptr.h"
+ #include "components/split_tabs/split_tab_visual_data.h"
+ #include "ui/base/interaction/element_identifier.h"
+ #include "ui/events/keycodes/keyboard_codes.h"
+ #include "ui/views/controls/resize_area.h"
++#include "ui/views/controls/resize_area_delegate.h"
+ #include "ui/views/focus/focus_manager.h"
+ #include "ui/views/view.h"
+ 
+@@ -46,7 +49,8 @@ class MultiContentsResizeHandle : public views::View,
+ 
+ // ResizeArea meant to draw in between WebContents within a MultiContentsView,
+ // and responsiveness to key events via a focusable MultiContentsResizeHandle.
+-class MultiContentsResizeArea : public views::ResizeArea {
++class MultiContentsResizeArea : public views::ResizeArea,
++                                public views::ResizeAreaDelegate {
+   METADATA_HEADER(MultiContentsResizeArea, ResizeArea)
+ 
+  public:
+@@ -55,7 +59,9 @@ class MultiContentsResizeArea : public views::ResizeArea {
+ 
+   DECLARE_CLASS_ELEMENT_IDENTIFIER_VALUE(kMultiContentsResizeAreaElementId);
+ 
+-  explicit MultiContentsResizeArea(MultiContentsView* multi_contents_view);
++  explicit MultiContentsResizeArea(MultiContentsView* multi_contents_view,
++                                   size_t divider_index = 0);
++  void OnResize(int resize_amount, bool done_resizing) override;
+ 
+   void SetLayout(split_tabs::SplitTabLayout layout);
+ 
+@@ -78,6 +84,7 @@ class MultiContentsResizeArea : public views::ResizeArea {
+   std::pair<int, int> GetAccessibleAlertStringIds();
+ 
+   raw_ptr<MultiContentsView> multi_contents_view_;
++  const size_t divider_index_;
+   raw_ptr<MultiContentsResizeHandle> resize_handle_;
+ 
+   raw_ptr<views::FlexLayout> flex_layout_manager_;

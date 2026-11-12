@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/browser_window/internal/browser_collection.cc b/chrome/browser/ui/browser_window/internal/browser_collection.cc
+index c534a9e4a6..fe93d4be26 100644
+--- a/chrome/browser/ui/browser_window/internal/browser_collection.cc
++++ b/chrome/browser/ui/browser_window/internal/browser_collection.cc
+@@ -86,7 +86,7 @@ BrowserWindowInterface* BrowserCollection::FindBrowserWithWindow(
+   }
+   BrowserWindowInterface* found = nullptr;
+   ForEach([&found, &window](BrowserWindowInterface* browser) {
+-    if (browser->GetWindow() &&
++    if (browser->IsSelectedForNativeWindow() && browser->GetWindow() &&
+         browser->GetWindow()->GetNativeWindow() == window) {
+       found = browser;
+       return false;

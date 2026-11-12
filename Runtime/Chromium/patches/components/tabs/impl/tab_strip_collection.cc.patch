@@ -1,0 +1,36 @@
+diff --git a/components/tabs/impl/tab_strip_collection.cc b/components/tabs/impl/tab_strip_collection.cc
+index bfb0b51275..9b4d787b9d 100644
+--- a/components/tabs/impl/tab_strip_collection.cc
++++ b/components/tabs/impl/tab_strip_collection.cc
+@@ -453,11 +453,26 @@ void TabStripCollection::CreateSplit(
+ 
+ void TabStripCollection::ReverseSplit(split_tabs::SplitTabId split_id) {
+   SplitTabCollection* split = GetSplitTabCollection(split_id);
+-  // MoveTabImpl requires the position's index to be prior to the tab being
+-  // moved, so use the final index of the split + 1.
+-  TabCollection::Position positon = {split->GetHandle(),
+-                                     split->TabCountRecursive()};
+-  MoveTabImpl(split->GetTabAtIndexRecursive(0), positon);
++  const auto tabs = split->GetTabsRecursive();
++  for (size_t i = 1; i < tabs.size(); ++i) {
++    MoveTabInSplit(split_id, tabs[i], 0);
++  }
++}
++
++void TabStripCollection::MoveTabInSplit(split_tabs::SplitTabId split_id,
++                                        TabInterface* tab,
++                                        size_t final_index) {
++  auto* split = GetSplitTabCollection(split_id);
++  const size_t current_index = split->GetIndexOfTab(tab).value();
++  CHECK_LT(final_index, split->TabCountRecursive());
++  if (current_index == final_index) {
++    return;
++  }
++  // MoveTabImpl positions are expressed before removal of the moving child.
++  const size_t before_removal =
++      final_index + (final_index > current_index ? 1u : 0u);
++  TabCollection::Position position{split->GetHandle(), before_removal};
++  MoveTabImpl(tab, position);
+ }
+ 
+ void TabStripCollection::Unsplit(split_tabs::SplitTabId split_id) {

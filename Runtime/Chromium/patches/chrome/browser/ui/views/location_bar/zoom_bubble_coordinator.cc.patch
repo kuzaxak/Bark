@@ -1,0 +1,17 @@
+diff --git a/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.cc b/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.cc
+index adc4773b28..9119bb11b8 100644
+--- a/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.cc
++++ b/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.cc
+@@ -220,6 +220,12 @@ ZoomBubbleView* ZoomBubbleCoordinator::bubble() {
+       widget_observation_.GetSource()->GetClientContentsView());
+ }
+ 
++base::WeakPtr<views::Widget> ZoomBubbleCoordinator::GetBubbleWidget() {
++  return widget_observation_.IsObserving()
++             ? widget_observation_.GetSource()->GetWeakPtr()
++             : base::WeakPtr<views::Widget>();
++}
++
+ bool ZoomBubbleCoordinator::CanRefresh(ZoomBubbleView* current_bubble,
+                                        content::WebContents* web_contents) {
+   // Can't refresh when there's not already a bubble for this tab.

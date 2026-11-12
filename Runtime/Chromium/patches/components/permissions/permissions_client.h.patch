@@ -1,0 +1,37 @@
+diff --git a/components/permissions/permissions_client.h b/components/permissions/permissions_client.h
+index 1ae4030847..20efdaa15a 100644
+--- a/components/permissions/permissions_client.h
++++ b/components/permissions/permissions_client.h
+@@ -7,6 +7,7 @@
+ 
+ #include <optional>
+ 
++#include "base/callback_list.h"
+ #include "base/functional/callback_forward.h"
+ #include "base/memory/weak_ptr.h"
+ #include "build/build_config.h"
+@@ -43,6 +44,10 @@ namespace content_settings {
+ class CookieSettings;
+ }
+ 
++namespace tabs {
++class TabInterface;
++}
++
+ namespace permissions {
+ class ObjectPermissionContextBase;
+ class PermissionActionsHistory;
+@@ -77,6 +82,13 @@ class PermissionsClient {
+ 
+   virtual bool IsOmniboxEverywhere(content::WebContents* web_contents);
+ 
++  // Embedders with multiple logical owners in one native window can defer
++  // prompts without changing permission decisions or tab-strip selection.
++  // Defaults preserve embedders without logical native-window selection.
++  virtual bool IsPermissionPromptOwnerSelected(tabs::TabInterface* tab);
++  virtual base::CallbackListSubscription RegisterPermissionPromptOwnerChanged(
++      tabs::TabInterface* tab, base::RepeatingClosure callback);
++
+   // Retrieves the HostContentSettingsMap for this context. The returned pointer
+   // has the same lifetime as |browser_context|.
+   virtual HostContentSettingsMap* GetSettingsMap(

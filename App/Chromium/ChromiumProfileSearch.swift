@@ -1,22 +1,12 @@
 // Licensed under GPL-3.0. See LICENSE.
-import Darwin
+import BarcChromium
 import Foundation
 import NookWeb
 
 /// Borrowed callback contexts only; no provider/profile cache or registry.
 @MainActor
 struct ChromiumProfileSearch {
-    typealias Callback = @convention(c) (UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?) -> Void
-    typealias State = @convention(c) (UnsafePointer<CChar>?, Int32, Int32, UnsafePointer<CChar>?,
-                                     UnsafePointer<CChar>?, Int32, Callback?, UnsafeMutableRawPointer?) -> Void
-    let state: State
-    init(library: UnsafeMutableRawPointer) throws {
-        guard let pointer = dlsym(library, "barc_profile_search_state") else {
-            throw ChromiumNavigationError.missingSymbol("barc_profile_search_state")
-        }
-        state = unsafeBitCast(pointer, to: State.self)
-    }
-    init(state: @escaping State) { self.state = state }
+    let bridge: BarcBridge
     private final class Request {
         let completion: @MainActor (Int32, String) -> Void
         init(_ completion: @escaping @MainActor (Int32, String) -> Void) { self.completion = completion }
@@ -31,17 +21,17 @@ struct ChromiumProfileSearch {
         guard native == nil || native?.profileID == profile else {
             completion(.failure(ProfileSearchError.unavailable)); return
         }
-        let command = state
+        let command = bridge.profile_search_state
         let owner = native?.nativeWindowID ?? 0
         let kind: Int32 = native?.isPrivateSession == true ? 1 : 0
         func run(_ imported: String?, retry: Bool) {
             let request = Request { status, json in
-                if status == 3 && !retry, let initial = seed() {
+                if status == BARC_SEARCH_NEEDS_SEED.rawValue && !retry, let initial = seed() {
                     // Native asks only for an uninitialized fallback provider.
                     // Every retry keeps the original exact owner and identity.
                     run(initial, retry: true); return
                 }
-                guard status == 0,
+                guard status == BARC_SEARCH_OK.rawValue,
                       let value = try? JSONDecoder().decode(ProfileSearchState.self, from: Data(json.utf8)) else {
                     completion(.failure(ProfileSearchError.refused)); return
                 }

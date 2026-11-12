@@ -1,0 +1,23 @@
+diff --git a/chrome/browser/ui/views/frame/browser_native_widget.h b/chrome/browser/ui/views/frame/browser_native_widget.h
+index 4a4a0c0eb3..c9f677f465 100644
+--- a/chrome/browser/ui/views/frame/browser_native_widget.h
++++ b/chrome/browser/ui/views/frame/browser_native_widget.h
+@@ -13,6 +13,7 @@
+ #include "ui/views/widget/widget.h"
+ 
+ class BrowserWidget;
++class BrowserView;
+ enum class TabDragKind;
+ 
+ namespace input {
+@@ -73,6 +74,10 @@ class BrowserNativeWidget {
+   virtual void TabDraggingKindChanged(TabDragKind tab_drag_kind) {}
+ 
+ #if BUILDFLAG(IS_MAC)
++  // Rebind native command/UI subscriptions to an attached normal logical view.
++  virtual bool CanSelectBrowserView() = 0;
++  virtual void SelectBrowserView(BrowserView* browser_view) = 0;
++
+   // Causes the screen reader to announce |text| against the remote window. If
+   // the current user is not using a screen reader or if there is no remote
+   // window, has no effect. This enables screen reader announcements for

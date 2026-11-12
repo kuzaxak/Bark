@@ -1,0 +1,55 @@
+diff --git a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
+index 64cc5836fa..308a2fcb7b 100644
+--- a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
++++ b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
+@@ -3,6 +3,9 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/webauthn/barc_vault_authenticator.h"
++#endif
+ 
+ #include <algorithm>
+ #include <array>
+@@ -532,6 +535,9 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
+     std::optional<std::string_view> user_name,
+     bool browser_provided_passkeys_available,
+     device::FidoDiscoveryFactory* discovery_factory) {
++#if BUILDFLAG(IS_MAC)
++  pawl_origin_.reset(); pawl_rp_.clear();
++#endif
+   DCHECK(request_type == device::FidoRequestType::kGetAssertion ||
+          resident_key_requirement.has_value());
+ 
+@@ -548,6 +554,11 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
+     return;
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (request_source == RequestSource::kWebAuthentication &&
++      dialog_controller_->ui_presentation() == UIPresentation::kModal &&
++      !IsVirtualEnvironmentEnabled()) { pawl_origin_ = origin; pawl_rp_ = rp_id; }
++#endif
+   // Configure the enclave authenticator.
+   if (browser_provided_passkeys_available && !IsVirtualEnvironmentEnabled() &&
+       request_source == RequestSource::kWebAuthentication) {
+@@ -767,6 +778,18 @@ void ChromeAuthenticatorRequestDelegate::OnTransportAvailabilityEnumerated(
+   barrier_->SetTransportAvailabilityInfo(std::move(data));
+ }
+ 
++std::vector<std::unique_ptr<device::FidoDiscoveryBase>>
++ChromeAuthenticatorRequestDelegate::CreatePlatformDiscoveries() {
++  auto discoveries = content::AuthenticatorRequestClientDelegate::CreatePlatformDiscoveries();
++#if BUILDFLAG(IS_MAC)
++  if (pawl_origin_) {
++    if (auto discovery = barc::CreateVaultPasskeyDiscovery(GetRenderFrameHost(),*pawl_origin_,pawl_rp_))
++      discoveries.push_back(std::move(discovery));
++  }
++#endif
++  return discoveries;
++}
++
+ bool ChromeAuthenticatorRequestDelegate::EmbedderControlsAuthenticatorDispatch(
+     const device::FidoAuthenticator& authenticator) {
+   // Decide whether the //device/fido code should dispatch the current

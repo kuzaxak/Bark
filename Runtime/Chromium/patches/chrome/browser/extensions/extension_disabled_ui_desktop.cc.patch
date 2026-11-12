@@ -1,0 +1,15 @@
+diff --git a/chrome/browser/extensions/extension_disabled_ui_desktop.cc b/chrome/browser/extensions/extension_disabled_ui_desktop.cc
+index 8cd41f3281..03550ad6d6 100644
+--- a/chrome/browser/extensions/extension_disabled_ui_desktop.cc
++++ b/chrome/browser/extensions/extension_disabled_ui_desktop.cc
+@@ -230,8 +230,8 @@ void ExtensionDisabledGlobalError::BubbleViewAcceptButtonPressed(
+ 
+ void ExtensionDisabledGlobalError::BubbleViewCancelButtonPressed(
+     BrowserWindowInterface* browser) {
+-  uninstall_dialog_ = ExtensionUninstallDialog::Create(
+-      profile_, browser->GetWindow()->GetNativeWindow(), this);
++  uninstall_dialog_ =
++      ExtensionUninstallDialog::CreateForBrowser(profile_, browser, this);
+   // Delay showing the uninstall dialog, so that this function returns
+   // immediately, to close the bubble properly. See crbug.com/40184398.
+   base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(

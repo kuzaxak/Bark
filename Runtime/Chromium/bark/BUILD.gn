@@ -1,0 +1,22 @@
+# Bark's engine sources. Loaded through `root_extra_deps = [ "//bark" ]`; the
+# chrome framework links :engine.
+assert(is_mac)
+
+group("bark") {
+  testonly = true
+  deps = [
+    ":engine",
+    "//bark/test:bark_browser_tests",
+  ]
+}
+
+group("engine") {
+  public_deps = [
+    "//bark/app",
+    "//bark/bridge",
+    "//bark/browser/content_blocking:native_content_blocker",
+    "//bark/browser/sessions",
+    "//bark/browser/ui",
+    "//bark/browser/webauthn",
+  ]
+}

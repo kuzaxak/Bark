@@ -1,0 +1,61 @@
+diff --git a/chrome/browser/extensions/extension_uninstall_dialog.h b/chrome/browser/extensions/extension_uninstall_dialog.h
+index 7d4532e1d9..3c70448568 100644
+--- a/chrome/browser/extensions/extension_uninstall_dialog.h
++++ b/chrome/browser/extensions/extension_uninstall_dialog.h
+@@ -6,12 +6,14 @@
+ #define CHROME_BROWSER_EXTENSIONS_EXTENSION_UNINSTALL_DIALOG_H_
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ 
+ #include "base/memory/raw_ptr.h"
+ #include "base/memory/weak_ptr.h"
+ #include "base/scoped_observation.h"
+ #include "base/threading/thread_checker.h"
++#include "build/build_config.h"
+ #include "chrome/browser/extensions/chrome_app_icon.h"
+ #include "chrome/browser/extensions/chrome_app_icon_delegate.h"
+ #include "chrome/browser/profiles/profile.h"
+@@ -26,6 +28,8 @@
+ 
+ static_assert(BUILDFLAG(ENABLE_EXTENSIONS_CORE));
+ 
++class BrowserWindowInterface;
++
+ namespace ui {
+ class NativeWindowTracker;
+ }
+@@ -69,6 +73,15 @@ class ExtensionUninstallDialog : public ChromeAppIconDelegate,
+   static std::unique_ptr<ExtensionUninstallDialog>
+   Create(Profile* profile, gfx::NativeWindow parent, Delegate* delegate);
+ 
++#if !BUILDFLAG(IS_ANDROID)
++  // Browser-origin prompts retain logical ownership across asynchronous icon
++  // loading; an inactive or destroyed owner cancels instead of rebinding.
++  static std::unique_ptr<ExtensionUninstallDialog> CreateForBrowser(
++      Profile* profile,
++      BrowserWindowInterface* browser,
++      Delegate* delegate);
++#endif
++
+   ExtensionUninstallDialog(const ExtensionUninstallDialog&) = delete;
+   ExtensionUninstallDialog& operator=(const ExtensionUninstallDialog&) = delete;
+ 
+@@ -115,6 +128,8 @@ class ExtensionUninstallDialog : public ChromeAppIconDelegate,
+       return triggering_extension_.get(); }
+   const gfx::ImageSkia& icon() const { return icon_->image_skia(); }
+   gfx::NativeWindow parent() { return parent_; }
++  BrowserWindowInterface* browser_owner() const;
++  bool CanShowForBrowserOwner() const;
+ 
+  private:
+   // Uninstalls the extension. Returns true on success, and populates `error` on
+@@ -148,6 +163,7 @@ class ExtensionUninstallDialog : public ChromeAppIconDelegate,
+ 
+   // The dialog's parent window.
+   gfx::NativeWindow parent_;
++  std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner_;
+ 
+   // The delegate we will call Accepted/Canceled on after confirmation dialog.
+   raw_ptr<Delegate> delegate_;

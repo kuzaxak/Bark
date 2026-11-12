@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/webui/downloads/downloads_list_tracker.cc b/chrome/browser/ui/webui/downloads/downloads_list_tracker.cc
+index 3db0daa4c7..cdbbc53e15 100644
+--- a/chrome/browser/ui/webui/downloads/downloads_list_tracker.cc
++++ b/chrome/browser/ui/webui/downloads/downloads_list_tracker.cc
+@@ -488,7 +488,7 @@ downloads::mojom::DataPtr DownloadsListTracker::CreateDownloadData(
+   file_value->progress_status_text = base::UTF16ToUTF8(progress_status_text);
+   file_value->show_in_folder_text =
+       base::UTF16ToUTF8(download_model.GetShowInFolderText());
+-  file_value->retry = retry;
++  file_value->retry = retry && download_item->GetDownloadSource() != download::DownloadSource::NATIVE_SOCIAL_MEDIA;
+   file_value->state = *state;
+ 
+   // Note that the safe_browsing_state is the state of the download's profile

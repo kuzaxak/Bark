@@ -1,0 +1,12 @@
+diff --git a/chrome/browser/ui/browser_window/BUILD.gn b/chrome/browser/ui/browser_window/BUILD.gn
+index 6b598cd678..823f67c5ef 100644
+--- a/chrome/browser/ui/browser_window/BUILD.gn
++++ b/chrome/browser/ui/browser_window/BUILD.gn
+@@ -46,6 +46,7 @@ source_set("create_browser_window") {
+ 
+   public_deps = [
+     "//chrome/browser/ui/browser_window",
++    "//components/sessions:session_id",
+     "//components/tab_groups",
+     "//ui/base/mojom:ui_base_types",
+   ]

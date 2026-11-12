@@ -15,3 +15,7 @@ mac_min_system_version = "15.5"
 is_chrome_branded = false
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
+# Bark's engine sources and tests, mounted at //bark.
+root_extra_deps = [ "//bark" ]
+# Compiles Bark's chromium_src overrides; the recipe builds the tool into each output directory.
+cc_wrapper = "./bark_override_cc"

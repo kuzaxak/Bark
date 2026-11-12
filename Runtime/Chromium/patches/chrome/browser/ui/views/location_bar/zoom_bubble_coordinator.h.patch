@@ -1,0 +1,16 @@
+diff --git a/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h b/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h
+index 45dfffa4a3..f4d643dc12 100644
+--- a/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h
++++ b/chrome/browser/ui/views/location_bar/zoom_bubble_coordinator.h
+@@ -71,6 +71,11 @@ class ZoomBubbleCoordinator : public views::WidgetObserver,
+   // Returns a pointer to the currently showing bubble, or nullptr if none.
+   ZoomBubbleView* bubble();
+ 
++  // Returns the exact observed widget, including one pending asynchronous
++  // close. Native client handoff can hide that widget without touching a
++  // replacement bubble created by a close callback.
++  base::WeakPtr<views::Widget> GetBubbleWidget();
++
+  private:
+   // ImmersiveModeController::Observer:
+   void OnImmersiveRevealStarted() override;

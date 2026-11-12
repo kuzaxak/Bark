@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/webui/downloads/downloads_dom_handler.cc b/chrome/browser/ui/webui/downloads/downloads_dom_handler.cc
+index 049825d73c..391ba95615 100644
+--- a/chrome/browser/ui/webui/downloads/downloads_dom_handler.cc
++++ b/chrome/browser/ui/webui/downloads/downloads_dom_handler.cc
+@@ -421,7 +421,7 @@ void DownloadsDOMHandler::RetryDownload(const std::string& id) {
+   CountDownloadsDOMEvents(DOWNLOADS_DOM_EVENT_RETRY_DOWNLOAD);
+ 
+   download::DownloadItem* file = GetDownloadByStringId(id);
+-  if (!file) {
++  if (!file || file->GetDownloadSource() == download::DownloadSource::NATIVE_SOCIAL_MEDIA) {
+     return;
+   }
+   content::WebContents* web_contents = GetWebUIWebContents();

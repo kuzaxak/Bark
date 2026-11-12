@@ -1,0 +1,33 @@
+diff --git a/chrome/browser/ui/tabs/split_tab_util.cc b/chrome/browser/ui/tabs/split_tab_util.cc
+index 6382385b3f..c6fc83c3e7 100644
+--- a/chrome/browser/ui/tabs/split_tab_util.cc
++++ b/chrome/browser/ui/tabs/split_tab_util.cc
+@@ -51,14 +51,26 @@ SplitTabActiveLocation GetLastActiveTabLocation(
+   split_tabs::SplitTabData* const split_tab_data =
+       tab_strip_model->GetSplitData(split_id);
+   std::vector<tabs::TabInterface*> tabs_in_split = split_tab_data->ListTabs();
+-  CHECK_EQ(tabs_in_split.size(), 2U);
++  CHECK_GE(tabs_in_split.size(), 2u);
++  CHECK_LE(tabs_in_split.size(), SplitTabVisualData::kMaxPanes);
+ 
+   const int last_active_index =
+       GetIndexOfLastActiveTab(tab_strip_model, split_id);
+   CHECK_NE(last_active_index, TabStripModel::kNoTab);
+ 
+   const int first_tab_index = tab_strip_model->GetIndexOfTab(tabs_in_split[0]);
+-  const bool first_tab_activated = last_active_index == first_tab_index;
++  bool first_tab_activated = last_active_index == first_tab_index;
++  if (tabs_in_split.size() > 2) {
++    // Stock toolbar glyphs describe leading/trailing halves. Use the active
++    // pane's normalized center for N-pane layouts, without changing its actual
++    // active tab or conflating it with the first/last pane.
++    const size_t position = last_active_index - first_tab_index;
++    CHECK_LT(position, tabs_in_split.size());
++    const auto dividers = split_tab_data->visual_data()->split_dividers();
++    const double start = position == 0 ? 0 : dividers[position - 1];
++    const double end = position == dividers.size() ? 1 : dividers[position];
++    first_tab_activated = (start + end) / 2 < 0.5;
++  }
+ 
+   if (split_tab_data->visual_data()->split_layout() ==
+       SplitTabLayout::kSideBySide) {

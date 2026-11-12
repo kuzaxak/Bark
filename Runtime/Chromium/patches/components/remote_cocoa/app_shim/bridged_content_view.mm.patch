@@ -1,0 +1,22 @@
+diff --git a/components/remote_cocoa/app_shim/bridged_content_view.mm b/components/remote_cocoa/app_shim/bridged_content_view.mm
+index 58c8f6da2e..ade5e87436 100644
+--- a/components/remote_cocoa/app_shim/bridged_content_view.mm
++++ b/components/remote_cocoa/app_shim/bridged_content_view.mm
+@@ -1668,6 +1668,17 @@ ui::TextEditCommand GetTextEditCommandForMenuAction(SEL action) {
+ 
+ // NSUserInterfaceValidations protocol implementation.
+ 
++// AppKit text views leave undo: and redo: to the responder chain, where the
++// window's undo reaches their own undo stack. Answer them only while a views
++// text field, whose input runs through this view, is editing.
++- (BOOL)respondsToSelector:(SEL)selector {
++  if ((selector == @selector(undo:) || selector == @selector(redo:)) &&
++      self.window.firstResponder != self) {
++    return NO;
++  }
++  return [super respondsToSelector:selector];
++}
++
+ - (BOOL)validateUserInterfaceItem:(id<NSValidatedUserInterfaceItem>)item {
+   // Special case this, since there's no cross-platform text command for it.
+   if (item.action == @selector(copyToFindPboard:))

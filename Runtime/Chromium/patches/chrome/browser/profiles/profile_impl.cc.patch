@@ -1,0 +1,51 @@
+diff --git a/chrome/browser/profiles/profile_impl.cc b/chrome/browser/profiles/profile_impl.cc
+index 81e83a8848..c7e600a9e3 100644
+--- a/chrome/browser/profiles/profile_impl.cc
++++ b/chrome/browser/profiles/profile_impl.cc
+@@ -495,7 +495,8 @@ ProfileImpl::ProfileImpl(
+                               ash::switches::kGuestSession) &&
+                           ash::IsUserBrowserContextBaseName(path_.BaseName());
+ #else
+-  bool is_guest_session = path == ProfileManager::GetGuestProfilePath();
++  bool is_guest_session = path == ProfileManager::GetGuestProfilePath() ||
++                          ProfileManager::IsPrivateSessionProfilePath(path);
+ #endif
+ 
+   if (is_guest_session) {
+@@ -1223,18 +1224,24 @@ void ProfileImpl::OnSyncToSigninMigrationMaybeCompleted(
+ 
+ void ProfileImpl::OnPrefsLoaded(CreateMode create_mode, bool success) {
+   TRACE_EVENT0("browser", "ProfileImpl::OnPrefsLoaded");
+-  if (!success) {
+-    if (delegate_)
+-      delegate_->OnProfileCreationFinished(this, create_mode, false, false);
+-    return;
+-  }
+-
+-  // Fail fast if the browser is shutting down. We want to avoid launching new
+-  // UI, finalising profile creation, etc. which would trigger a crash down the
+-  // the line. See crbug.com/40475418
+-  if (g_browser_process->IsShuttingDown()) {
+-    if (delegate_)
+-      delegate_->OnProfileCreationFinished(this, create_mode, false, false);
++  // A failed read or shutdown must not initialize profile UI. The delegate can
++  // destroy this profile and its PrefService, so asynchronous completion waits
++  // until the pref-store/filter observer stack releases temporary references.
++  if (!success || g_browser_process->IsShuttingDown()) {
++    auto notify_failure = base::BindOnce(
++        [](base::WeakPtr<ProfileImpl> profile, CreateMode create_mode) {
++          if (profile && profile->delegate_) {
++            profile->delegate_->OnProfileCreationFinished(
++                profile.get(), create_mode, false, false);
++          }
++        },
++        weak_ptr_factory_.GetWeakPtr(), create_mode);
++    if (create_mode == CreateMode::kAsynchronous) {
++      base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++          FROM_HERE, std::move(notify_failure));
++    } else {
++      std::move(notify_failure).Run();
++    }
+     return;
+   }
+ 

@@ -1,0 +1,38 @@
+diff --git a/chrome/browser/extensions/chrome_extensions_browser_client.h b/chrome/browser/extensions/chrome_extensions_browser_client.h
+index 32b50235b5..c8e59721aa 100644
+--- a/chrome/browser/extensions/chrome_extensions_browser_client.h
++++ b/chrome/browser/extensions/chrome_extensions_browser_client.h
+@@ -209,6 +209,20 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
+   bool IsExtensionEnabled(const ExtensionId& extension_id,
+                           content::BrowserContext* context) const override;
+   bool IsWebUIAllowedToMakeNetworkRequests(const url::Origin& origin) override;
++  base::ScopedClosureRunner ObserveNativeRequestBody(
++      content::BrowserContext* context,
++      const content::WeakDocumentPtr& document,
++      bool keepalive) override;
++  bool HasNativeRequestPolicy(content::BrowserContext* context) const override;
++  void CheckNativeRequestPolicy(
++      content::BrowserContext* context,
++      const content::WeakDocumentPtr& document,
++      const GURL& document_site,
++      const WebRequestInfo& request,
++      base::OnceCallback<void(int)> callback) override;
++  void NativeNavigationBlocked(content::BrowserContext* context,
++      const content::WeakDocumentPtr& document,
++      const WebRequestInfo& request) override;
+   network::mojom::NetworkContext* GetSystemNetworkContext() override;
+   UserScriptListener* GetUserScriptListener() override;
+   void SignalContentScriptsLoaded(content::BrowserContext* context) override;
+@@ -336,10 +350,8 @@ class ChromeExtensionsBrowserClient : public ExtensionsBrowserClient {
+   std::unique_ptr<ExtensionInstallPromptClient> CreateInstallPrompt(
+       content::WebContents* web_contents,
+       std::unique_ptr<InstallPromptData> prompt) override;
+-  std::unique_ptr<ExtensionInstallPromptClient>
+-  CreateInstallPromptForNativeWindow(
+-      gfx::NativeWindow native_window,
+-      content::BrowserContext& browser_context,
++  std::unique_ptr<ExtensionInstallPromptClient> CreateInstallPromptForFunction(
++      ExtensionFunction& function,
+       std::unique_ptr<InstallPromptData> prompt) override;
+   gfx::NativeWindow GetNativeWindowForFunction(
+       ExtensionFunction& function) override;

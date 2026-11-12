@@ -1,0 +1,26 @@
+diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+index 3bc40bcc91..b61f9ac31c 100644
+--- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
++++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
+@@ -118,6 +118,7 @@
+ #endif
+ 
+ #if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_bridge.h"
+ #include "ui/display/display.h"
+ #include "ui/display/screen.h"
+ #include "ui/display/types/display_constants.h"
+@@ -568,6 +569,13 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
+     }
+   }
+ 
++#if BUILDFLAG(IS_MAC)
++  if (params.disposition == WindowOpenDisposition::NEW_WINDOW &&
++      barc::RequestPeekForShiftClick(source, params)) {
++    return nullptr;
++  }
++#endif
++
+   NavigateParams nav_params(&*browser_, params.url, params.transition);
+   nav_params.FillNavigateParamsFromOpenURLParams(params);
+   nav_params.source_contents = source;

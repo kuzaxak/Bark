@@ -1,0 +1,231 @@
+diff --git a/chrome/browser/ui/views/frame/browser_widget.h b/chrome/browser/ui/views/frame/browser_widget.h
+index d384a2c99a..98054677c1 100644
+--- a/chrome/browser/ui/views/frame/browser_widget.h
++++ b/chrome/browser/ui/views/frame/browser_widget.h
+@@ -5,7 +5,15 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_WIDGET_H_
+ #define CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_WIDGET_H_
+ 
++#include <memory>
++#include <vector>
++
+ #include "base/memory/raw_ptr.h"
++#include "base/callback_list.h"
++#include "base/containers/span.h"
++#include "base/memory/weak_ptr.h"
++#include "components/split_tabs/split_tab_visual_data.h"
++#include "base/scoped_observation.h"
+ #include "build/build_config.h"
+ #include "content/public/browser/keyboard_event_processing_result.h"
+ #include "ui/base/mojom/menu_source_type.mojom-forward.h"
+@@ -13,6 +21,7 @@
+ #include "ui/base/pointer/touch_ui_controller.h"
+ #include "ui/views/context_menu_controller.h"
+ #include "ui/views/widget/widget.h"
++#include "ui/views/widget/widget_observer.h"
+ 
+ #if BUILDFLAG(IS_CHROMEOS)
+ #include <optional>
+@@ -22,6 +31,11 @@ class BrowserFrameView;
+ class BrowserRootView;
+ enum class BrowserThemeChangeType;
+ class BrowserView;
++class MultiContentsView;
++struct BarcPeekPresentation;
++namespace tabs { class TabInterface; }
++namespace content { class WebContents; }
++class BrowserWindowInterface;
+ class BrowserNativeWidget;
+ class SystemMenuModelBuilder;
+ 
+@@ -56,6 +70,7 @@ enum class TabDragKind {
+ 
+ // This is a virtual interface that allows system specific browser widgets.
+ class BrowserWidget : public views::Widget,
++                      public views::WidgetObserver,
+                       public views::ContextMenuController {
+  public:
+   explicit BrowserWidget(BrowserView* browser_view);
+@@ -74,6 +89,81 @@ class BrowserWidget : public views::Widget,
+   // Initialize the frame (creates the underlying native window).
+   void InitBrowserWidget();
+ 
++  // Selection is independent of which logical view uniquely owns this Widget.
++  BrowserView* selected_browser_view() const { return browser_view_; }
++  uint64_t barc_physical_group() const { return barc_physical_group_; }
++  bool barc_page_hidden() const { return barc_page_hidden_; }
++  void set_barc_page_hidden(bool hidden) { barc_page_hidden_ = hidden; }
++  uint64_t barc_selection_epoch() const { return barc_selection_epoch_; }
++
++  // One physical presentation, with tab/model/profile ownership unchanged.
++  // Admission currently requires each requested document already be mounted
++  // in its own profile-owned container in this Widget.
++  bool PresentBarcTabs(base::span<tabs::TabInterface* const> panes,
++                       const split_tabs::SplitTabVisualData& visual_data,
++                       tabs::TabInterface* active);
++  // Pure actual mounted-state read; output remains untouched on refusal.
++  bool GetBarcPresentedTabs(std::vector<tabs::TabInterface*>* panes,
++                           split_tabs::SplitTabVisualData* visual_data,
++                           tabs::TabInterface** active,
++                           uint64_t* generation) const;
++  bool HasBarcPresentedTabs() const;
++  // Prepare existing owner-bound containers without changing TabStripModel.
++  // Replaces only while the operation still owns physical selection.
++  bool SetBarcPresentedTabs(base::span<tabs::TabInterface* const> panes,
++                           const split_tabs::SplitTabVisualData& visual_data,
++                           tabs::TabInterface* active);
++  void ClearBarcPresentedTabs();
++  bool HasBarcPresentedContents(const BrowserView* owner) const;
++  bool IsChangingBarcPresentation() const { return changing_barc_presentation_; }
++  void SelectBarcPresentedContents(content::WebContents* contents);
++  void ReconcileBarcActiveTab(BrowserView* owner, content::WebContents* contents);
++  void ResizeBarcPresentedContents(base::span<const double> dividers, bool done_resizing);
++  // Called from BrowserView::Layout, so it must not lay out the root view again.
++  void SyncBarcPresentedBounds();
++  bool IsBarcPresentedPane(const tabs::TabInterface* tab) const;
++  void ReverseBarcPresentedContents();
++  void UpdateBarcPresentedScreenshotPolicy();
++
++  // One transient card borrows the exact Peek container, never its tab/profile.
++  uint64_t PresentBarcPeek(tabs::TabInterface* source, tabs::TabInterface* peek,
++                          gfx::NativeView sidebar, gfx::NativeView header,
++                          gfx::NativeView actions);
++  bool IsBarcPeekPresented(tabs::TabInterface* source, tabs::TabInterface* peek,
++                           uint64_t generation, gfx::NativeView header,
++                           gfx::NativeView actions) const;
++  bool HideBarcPeek(tabs::TabInterface* source, tabs::TabInterface* peek,
++                    uint64_t generation, gfx::NativeView header,
++                    gfx::NativeView actions);
++  bool HasBarcPeek() const;
++  bool IsBarcPeekVisible(tabs::TabInterface* peek) const;
++
++  // Grouped physical-close preflight never unloads a participant until all
++  // warning and beforeunload decisions succeed. Ordinary one-client close
++  // remains on its existing path.
++  views::CloseRequestResult PreparePhysicalClose();
++  // The existing local close owner preflights only this exact intrinsic pair.
++  // Neither page is closed until both consent; whole-window/app close preempts.
++  bool RequestPeekPairClose(tabs::TabInterface* source,
++                            tabs::TabInterface* peek,
++                            base::OnceCallback<void(bool)> on_cancelled);
++  bool IsPhysicalCloseCommitted() const;
++  bool HasPhysicalClosePending() const;
++  bool IsPhysicalCloseTarget(tabs::TabInterface* tab) const;
++  void RequestLogicalClose(BrowserView* view);
++  void RemoveLogicalBrowserView(BrowserView* view);
++
++  bool CanAcceptLogicalBrowser();
++  // Production creation path: mount a normal BrowserView/frame inactive. The
++  // new Browser finishes post-window initialization before Show selects it.
++  bool AttachLogicalBrowserView(BrowserView* view);
++
++  // Select an attached logical client; does not transfer unique ownership.
++  bool SelectLogicalBrowserView(BrowserView* view);
++
++  // Derived from attached frame/client trees, never a second browser registry.
++  std::vector<BrowserView*> GetLogicalBrowserViews() const;
++
+   // Returns the FrameView of this frame.
+   BrowserFrameView* GetFrameView() const;
+ 
+@@ -109,6 +199,9 @@ class BrowserWidget : public views::Widget,
+   ui::ColorProviderKey::ThemeInitializerSupplier* GetCustomTheme()
+       const override;
+   void OnNativeWidgetWorkspaceChanged() override;
++  bool OnNativeWidgetActivationChanged(bool active) override;
++  void OnNativeWidgetDestroying() override;
++  void OnNativeWidgetSizeChanged(const gfx::Size& new_size) override;
+   void OnNativeWidgetDestroyed() override;
+ 
+   // views::ContextMenuController:
+@@ -138,6 +231,29 @@ class BrowserWidget : public views::Widget,
+   ui::ColorProviderKey GetColorProviderKey() const override;
+ 
+  private:
++  bool PresentBarcTabsImpl(base::span<tabs::TabInterface* const> panes,
++                           const split_tabs::SplitTabVisualData& visual_data,
++                           tabs::TabInterface* active,
++                           uint64_t* created_generation);
++  bool RestoreBarcOwnerContents(BrowserView* owner);
++  void LayoutBarcPresentedContents();
++  void ClearBarcPresentedTabsImpl(bool native_destroying);
++  // The constructing call retains a retired view until hierarchy callbacks unwind.
++  std::weak_ptr<std::unique_ptr<MultiContentsView>> barc_presentation_retirement_;
++  raw_ptr<MultiContentsView> barc_presented_contents_ = nullptr;
++  std::vector<base::WeakPtr<tabs::TabInterface>> barc_presented_tabs_;
++  std::vector<base::CallbackListSubscription> barc_presented_subscriptions_;
++  uint64_t barc_presentation_generation_ = 0;
++  bool changing_barc_presentation_ = false;
++  bool clearing_barc_presentation_ = false;
++
++  void ClearBarcPeek(bool native_destroying, bool restore_source);
++  void LayoutBarcPeek();
++  std::shared_ptr<BarcPeekPresentation> barc_peek_;
++  uint64_t barc_peek_generation_ = 0;
++  bool changing_barc_peek_ = false;
++  bool clearing_barc_peek_ = false;
++
+   const ui::ThemeProvider* GetBaseThemeProvider() const;
+ 
+   void OnTouchUiChanged();
+@@ -162,6 +278,37 @@ class BrowserWidget : public views::Widget,
+   // profile.
+   bool IsEnterpriseIsolatedModeBrowser() const;
+ 
++  enum class PhysicalClosePhase { kIdle, kWarnings, kBeforeUnload, kCommitted };
++  bool SelectLogicalBrowserViewInternal(BrowserView* view,
++                                        bool closing_current);
++  void OnClosingAllBrowsers(bool closing);
++  bool RefreshSelectedLogicalBrowserView();
++  void ContinuePhysicalClose();
++  void OnPhysicalWarning(size_t index, bool proceed);
++  void ResumeAfterPhysicalWarningDismissed();
++  void OnWidgetVisibilityChanged(views::Widget* widget, bool visible) override;
++  void OnWidgetDestroying(views::Widget* widget) override;
++  void OnPhysicalBeforeUnload(size_t index, bool proceed);
++  bool ValidatePhysicalCloseParticipants() const;
++  bool RequestLogicalPeekClose(BrowserView* owner);
++  std::vector<content::WebContents*> PhysicalCloseContentsFor(
++      BrowserWindowInterface* owner) const;
++  base::WeakPtr<BrowserWindowInterface> logical_peek_close_owner_;
++
++  void CancelPhysicalClose();
++  void CommitPhysicalClose();
++
++  PhysicalClosePhase physical_close_phase_ = PhysicalClosePhase::kIdle;
++  std::vector<base::WeakPtr<BrowserWindowInterface>>
++      physical_close_participants_;
++  size_t physical_close_index_ = 0;
++  bool physical_close_waiting_ = false;
++  // Empty means whole physical window; otherwise exactly source + Peek.
++  std::vector<base::WeakPtr<tabs::TabInterface>> physical_close_tabs_;
++  base::OnceCallback<void(bool)> peek_close_cancelled_;
++  base::ScopedObservation<views::Widget, views::WidgetObserver>
++      physical_warning_observation_{this};
++
+   raw_ptr<BrowserNativeWidget> browser_native_widget_;
+ 
+   // A weak reference to the root view associated with the window. We save a
+@@ -172,8 +319,12 @@ class BrowserWidget : public views::Widget,
+   // A pointer to our FrameView as a BrowserFrameView.
+   raw_ptr<BrowserFrameView> browser_frame_view_;
+ 
+-  // The BrowserView is our ClientView. This is a pointer to it.
++  // The explicitly selected logical client, independently of unique ownership.
+   raw_ptr<BrowserView> browser_view_;
++  const uint64_t barc_physical_group_;
++  bool barc_page_hidden_ = false;
++  uint64_t barc_selection_epoch_ = 0;
++  bool selecting_logical_view_ = false;
+ 
+   std::unique_ptr<SystemMenuModelBuilder> menu_model_builder_;
+ 
+@@ -201,6 +352,8 @@ class BrowserWidget : public views::Widget,
+ #if BUILDFLAG(IS_LINUX)
+   bool tiled_ = false;
+ #endif
++  base::CallbackListSubscription closing_all_browsers_subscription_;
++  base::WeakPtrFactory<BrowserWidget> physical_close_weak_factory_{this};
+ };
+ 
+ #endif  // CHROME_BROWSER_UI_VIEWS_FRAME_BROWSER_WIDGET_H_

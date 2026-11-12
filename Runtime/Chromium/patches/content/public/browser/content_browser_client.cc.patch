@@ -1,0 +1,31 @@
+diff --git a/content/public/browser/content_browser_client.cc b/content/public/browser/content_browser_client.cc
+index 9fdb8a4b7b..f6e4cd51ff 100644
+--- a/content/public/browser/content_browser_client.cc
++++ b/content/public/browser/content_browser_client.cc
+@@ -69,6 +69,7 @@
+ #include "media/mojo/mojom/speech_recognizer.mojom.h"
+ #include "mojo/public/cpp/bindings/message.h"
+ #include "net/base/isolation_info.h"
++#include "net/base/net_errors.h"
+ #include "net/cookies/cookie_setting_override.h"
+ #include "net/cookies/site_for_cookies.h"
+ #include "net/ssl/client_cert_identity.h"
+@@ -1102,10 +1103,17 @@ void ContentBrowserClient::WillCreateURLLoaderFactory(
+     bool* disable_secure_dns,
+     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-    bool is_for_network_service) {
++    bool is_for_network_service,
++    std::optional<int64_t> document_navigation_id) {
+   DCHECK(browser_context);
+ }
+ 
++void ContentBrowserClient::CheckWebSocketConnection(
++    BrowserContext*, RenderFrameHost*, const GURL&, const url::Origin&,
++    base::OnceCallback<void(int)> callback) {
++  std::move(callback).Run(net::OK);
++}
++
+ bool ContentBrowserClient::WillInterceptWebSocket(RenderFrameHost*) {
+   return false;
+ }

@@ -1,0 +1,14 @@
+diff --git a/chrome/browser/extensions/api/search/search_api.cc b/chrome/browser/extensions/api/search/search_api.cc
+index 087cec7896..f0cc91edfd 100644
+--- a/chrome/browser/extensions/api/search/search_api.cc
++++ b/chrome/browser/extensions/api/search/search_api.cc
+@@ -132,6 +132,9 @@ ExtensionFunction::ResponseAction SearchQueryFunction::Run() {
+         return RespondNow(Error("No active browser."));
+       }
+       web_contents = browser->GetTabStripModel()->GetActiveWebContents();
++      if (!web_contents) {
++        return RespondNow(Error("No active tab."));
++      }
+     }
+ #else
+     TabModel* tab_model = nullptr;

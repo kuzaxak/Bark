@@ -1,0 +1,198 @@
+diff --git a/chrome/renderer/chrome_render_frame_observer.h b/chrome/renderer/chrome_render_frame_observer.h
+index 80e224f9bc..bd22835899 100644
+--- a/chrome/renderer/chrome_render_frame_observer.h
++++ b/chrome/renderer/chrome_render_frame_observer.h
+@@ -6,10 +6,15 @@
+ #define CHROME_RENDERER_CHROME_RENDER_FRAME_OBSERVER_H_
+ 
+ #include <memory>
++#include <optional>
++#include <set>
+ #include <string>
+ #include <vector>
+ 
+ #include "base/memory/raw_ptr.h"
++#include "base/memory/weak_ptr.h"
++#include "mojo/public/cpp/bindings/associated_remote.h"
++#include "v8/include/v8-persistent-handle.h"
+ #include "build/build_config.h"
+ #include "chrome/common/actor.mojom.h"
+ #include "chrome/common/buildflags.h"
+@@ -19,13 +24,17 @@
+ #include "components/page_content_annotations/content/mojom/page_stability.mojom.h"
+ #include "components/safe_browsing/buildflags.h"
+ #include "content/public/renderer/render_frame_observer.h"
++#include "content/public/renderer/render_frame_observer_tracker.h"
++#include "mojo/public/cpp/bindings/remote.h"
+ #include "mojo/public/cpp/bindings/associated_receiver_set.h"
+ #include "mojo/public/cpp/bindings/pending_associated_receiver.h"
+ #include "pdf/buildflags.h"
+ #include "services/service_manager/public/cpp/binder_registry.h"
+ #include "third_party/blink/public/common/associated_interfaces/associated_interface_registry.h"
++#include "third_party/blink/public/platform/web_string.h"
+ 
+ class SkBitmap;
++namespace gin { class Arguments; }
+ 
+ namespace actor {
+ class Journal;
+@@ -59,7 +68,9 @@ class WebCacheImpl;
+ // This class holds the Chrome specific parts of RenderFrame, and has the same
+ // lifetime.
+ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+-                                  public chrome::mojom::ChromeRenderFrame {
++                                  public chrome::mojom::ChromeRenderFrame,
++                                  public content::RenderFrameObserverTracker<
++                                      ChromeRenderFrameObserver> {
+  public:
+   ChromeRenderFrameObserver(content::RenderFrame* render_frame,
+                             web_cache::WebCacheImpl* web_cache_impl);
+@@ -70,6 +81,9 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+ 
+   ~ChromeRenderFrameObserver() override;
+ 
++  // Returns false only if native page-world scriptlets destroyed the frame.
++  bool RunNookCosmeticsAtDocumentStart();
++
+   service_manager::BinderRegistry* registry() { return &registry_; }
+   blink::AssociatedInterfaceRegistry* associated_interfaces() {
+     return &associated_interfaces_;
+@@ -109,6 +123,26 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+   void WillDetach(blink::DetachReason detach_reason) override;
+ 
+   // chrome::mojom::ChromeRenderFrame:
++  void ClearNookCosmetics(const blink::DocumentToken& document,
++                           uint64_t policy_generation) override;
++  void PrepareNookCosmetics();
++  void ResetNookPageTweaks(bool cleanup_document = true);
++  void ResetNookDocumentResources(bool cleanup_document = true);
++  void StartNookSponsorBlock();
++  void StartNookSocialDownload();
++  bool NookSocialDownload(const std::string& url);
++  void NookSponsorRequest(const std::string& video, const std::string& uuid);
++  bool RunNookPageTweaksAtDocumentStart();
++  void RunNookBoostScriptsAfterLoad();
++  void RunNookBoostScript(size_t index);
++  void ExecuteNookBoostScript(size_t index);
++  void ClearNookPageTweaks(const blink::DocumentToken& document) override;
++  void ResetNookCosmetics();
++  void NookCosmeticSelectors(gin::Arguments* arguments);
++  void CompleteNookCosmeticBatch(bool more);
++  void SetNookBoostStyle(const blink::DocumentToken& document,
++                         const std::string& css,
++                         SetNookBoostStyleCallback callback) override;
+   void SetWindowFeatures(
+       blink::mojom::WindowFeaturesPtr window_features) override;
+   void ExecuteWebUIJavaScript(const std::u16string& javascript) override;
+@@ -204,6 +238,70 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+   // feature flag
+   static bool IsAnimatedWebp(const std::vector<uint8_t>& image_data);
+ 
++  void NookEvaluateScript(const blink::DocumentToken& document,
++      uint64_t owner, uint64_t request, int32_t mode, int32_t world,
++      const std::string& source, NookEvaluateScriptCallback callback) override;
++  void NookCancelScript(const blink::DocumentToken& document,
++      uint64_t owner, uint64_t request) override;
++  void NookScriptDispatch(const blink::DocumentToken& document,
++                          gin::Arguments* arguments);
++  void NookScriptRun(uint64_t generation, v8::Local<v8::Context> context);
++  void NookScriptComplete(chrome::mojom::NookScriptStatus status,
++                          v8::Local<v8::Value> value = {});
++  void ResetNookScript();
++  void NookStartBoostPicker(const blink::DocumentToken& document, uint64_t owner,
++      uint64_t request, NookStartBoostPickerCallback callback) override;
++  void NookCancelBoostPicker(const blink::DocumentToken& document,
++      uint64_t owner, uint64_t request) override;
++  void ResetNookBoostPicker(bool cleanup_document = true);
++  void FinishNookBoostPicker(const std::string& selector);
++  struct NookBoostPicker {
++    blink::DocumentToken document;
++    uint64_t owner;
++    uint64_t request;
++    NookStartBoostPickerCallback callback;
++  };
++  std::optional<NookBoostPicker> nook_boost_picker_;
++  v8::Global<v8::Object> nook_boost_picker_controller_;
++  static void NookScriptThunk(const v8::FunctionCallbackInfo<v8::Value>& info);
++  struct NookPendingScript {
++    blink::DocumentToken document;
++    uint64_t owner;
++    uint64_t request;
++    uint64_t generation;
++    int32_t mode;
++    int32_t world;
++    std::string source;
++    bool ran = false;
++    NookEvaluateScriptCallback callback;
++  };
++  std::optional<NookPendingScript> nook_script_;
++  std::optional<blink::DocumentToken> nook_script_document_;
++  v8::Global<v8::Function> nook_script_sink_;
++  uint64_t nook_script_generation_ = 0;
++  // Cancellation releases the request but cannot enqueue another suspended thunk.
++  uint64_t nook_script_queued_ = 0;
++
++  void NookTranslate(const blink::DocumentToken& document, uint64_t generation,
++                     int32_t operation,
++                     std::vector<chrome::mojom::NookTranslationNodePtr> pairs,
++                     mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient> client,
++                     NookTranslateCallback callback) override;
++  void NookTranslateNow(
++      const blink::DocumentToken& document, uint64_t generation, int32_t operation,
++      std::vector<chrome::mojom::NookTranslationNodePtr> pairs,
++      mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient> client,
++      NookTranslateCallback callback);
++  void NookTranslationNodes(gin::Arguments* arguments);
++  void ResetNookTranslation();
++  void NookTranslationDisconnected();
++  std::optional<blink::DocumentToken> nook_translation_cleanup_document_;
++  std::optional<blink::DocumentToken> nook_translation_document_;
++  uint64_t nook_translation_generation_ = 0;
++  uint64_t nook_translation_request_ = 0;
++  v8::Global<v8::Object> nook_translation_object_;
++  mojo::AssociatedRemote<chrome::mojom::NookTranslationClient> nook_translation_client_;
++
+   // Have the same lifetime as us.
+   raw_ptr<translate::TranslateAgent> translate_agent_;
+   raw_ptr<optimization_guide::PageTextAgent> page_text_agent_;
+@@ -214,6 +312,8 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+       phishing_image_embedder_ = nullptr;
+ #endif
+ 
++  // Key belongs only to the current main document, never a cross-frame map.
++  blink::WebString nook_boost_style_;
+   std::unique_ptr<actor::Journal> actor_journal_;
+ 
+   // Owned by ChromeContentRendererClient and outlive us.
+@@ -232,6 +332,31 @@ class ChromeRenderFrameObserver : public content::RenderFrameObserver,
+ 
+   service_manager::BinderRegistry registry_;
+   blink::AssociatedInterfaceRegistry associated_interfaces_;
++#if BUILDFLAG(IS_MAC)
++  mojo::Remote<chrome::mojom::NookCosmeticResourcesHost> nook_document_resources_;
++  chrome::mojom::NookCosmeticResourcesPtr nook_cosmetics_;
++  std::optional<blink::DocumentToken> nook_cosmetic_document_;
++  std::vector<blink::WebString> nook_cosmetic_styles_;
++  v8::Global<v8::Object> nook_cosmetic_observer_;
++  v8::Global<v8::Function> nook_cosmetic_ack_;
++  std::set<std::string> nook_cosmetic_selectors_;
++  std::string nook_cosmetic_generic_css_;
++  blink::WebString nook_cosmetic_generic_style_;
++  bool nook_cosmetics_started_ = false;
++  chrome::mojom::NookPageTweaksPtr nook_page_tweaks_;
++  v8::Global<v8::Object> nook_sponsor_controller_;
++  v8::Global<v8::Object> nook_social_controller_;
++  v8::Global<v8::Object> nook_social_video_controller_;
++  std::optional<blink::DocumentToken> nook_page_tweaks_document_;
++  std::optional<size_t> nook_boost_script_next_;
++#endif
++  // Retires deferred cosmetic work on reset. Document-start uses its local
++  // FrameToken to distinguish policy reset from actual frame destruction.
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_cosmetic_weak_{this};
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_translation_weak_{this};
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_boost_picker_weak_{this};
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_script_weak_{this};
++  base::WeakPtrFactory<ChromeRenderFrameObserver> nook_page_tweaks_weak_{this};
+ };
+ 
+ #endif  // CHROME_RENDERER_CHROME_RENDER_FRAME_OBSERVER_H_

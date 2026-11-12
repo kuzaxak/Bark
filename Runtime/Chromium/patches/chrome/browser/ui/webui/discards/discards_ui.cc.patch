@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/webui/discards/discards_ui.cc b/chrome/browser/ui/webui/discards/discards_ui.cc
+index fd8c922239..7c9bcb6da6 100644
+--- a/chrome/browser/ui/webui/discards/discards_ui.cc
++++ b/chrome/browser/ui/webui/discards/discards_ui.cc
+@@ -505,6 +505,8 @@ class DiscardsDetailsProviderImpl
+   }
+ 
+   void FreezeById(int32_t id) override {
++    // This manual route bypasses FreezingPolicy/Freezer.
++    if (performance_manager::features::IsNativeResourceProtectionHeld()) return;
+     auto it = page_nodes_by_id_.find(id);
+     if (it != page_nodes_by_id_.end() && it->second) {
+       const PageNode* page_node = it->second.get();

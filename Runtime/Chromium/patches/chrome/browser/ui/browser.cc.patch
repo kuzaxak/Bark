@@ -1,0 +1,110 @@
+diff --git a/chrome/browser/ui/browser.cc b/chrome/browser/ui/browser.cc
+index 07de580deb..fe455e0ff6 100644
+--- a/chrome/browser/ui/browser.cc
++++ b/chrome/browser/ui/browser.cc
+@@ -240,10 +240,14 @@ Browser* Browser::Create(BrowserWindowCreateParams params) {
+   Profile* const profile_ptr = &*params.profile;
+   std::unique_ptr<Browser> browser =
+       base::WrapUnique(new Browser(std::move(params)));
+-  Browser* const browser_ptr = browser.get();
++  if (!browser->is_initialized_) {
++    return nullptr;
++  }
++  auto browser_alive = browser->weak_factory_.GetWeakPtr();
+   BrowserManagerServiceFactory::GetForProfile(profile_ptr)
+       ->AddBrowser(std::move(browser));
+-  return browser_ptr;
++  // Created observers may synchronously close the newly registered browser.
++  return browser_alive.get();
+ }
+ 
+ // static
+@@ -259,6 +263,9 @@ std::unique_ptr<Browser> Browser::DeprecatedCreateOwnedForTesting(
+   Profile* const profile_ptr = &*params.profile;
+   std::unique_ptr<Browser> browser =
+       base::WrapUnique(new Browser(std::move(params)));
++  if (!browser->is_initialized_) {
++    return nullptr;
++  }
+   BrowserManagerServiceFactory::GetForProfile(profile_ptr)
+       ->AddBrowserForTesting(browser.get());
+   return browser;
+@@ -315,6 +322,14 @@ Browser::Browser(BrowserWindowCreateParams params)
+           : BrowserWindow::CreateBrowserWindow(this, user_gesture,
+                                                in_tab_dragging);
+ 
++  if (!window_ || (init_state_->create_params().native_window_owner &&
++                   !window_->GetNativeWindow())) {
++    // Only the explicit shared-host path can refuse creation after completed
++    // feature Init. Keep an unattached real view alive for ordered cleanup.
++    CHECK(init_state_->create_params().native_window_owner);
++    return;
++  }
++
+   if (auto* const app_browser_controller =
+           web_app::AppBrowserController::From(this)) {
+     app_browser_controller->UpdateCustomTabBarVisibility(false);
+@@ -352,6 +367,15 @@ Browser::Browser(BrowserWindowCreateParams params)
+ }
+ 
+ Browser::~Browser() {
++  if (!is_initialized_) {
++    // This browser never opened a session window or entered BrowserManager.
++    // Completed Init features must outlive cleanup of any unattached view.
++    tab_strip_model_->RemoveObserver(this);
++    features_->TearDownPreBrowserWindowDestruction();
++    window_.reset();
++    features_.reset();
++    return;
++  }
+   if (!IsDeleteScheduled()) {
+     // Guarantee the Browser has performed the necessary cleanup in the
+     // `OnWindowClosing()` lifecycle hook. This may not be invoked during
+@@ -359,6 +383,12 @@ Browser::~Browser() {
+     // the Browser unique_ptr.
+     UnloadController::From(this)->set_force_skip_warning_user_on_close(true);
+     UnloadController::From(this)->OnWindowClosing();
++    // A hierarchy mutation may defer the window Close requested by
++    // TabStripEmpty(). Complete its stock empty-strip retirement while the
++    // window still exists, before active-browser observers can query it.
++    if (!IsDeleteScheduled() && tab_strip_model_->empty()) {
++      UnloadController::From(this)->OnWindowClosing();
++    }
+   }
+ 
+   // Stop observing notifications and destroy the tab monitor before continuing
+@@ -534,6 +564,10 @@ const ui::BaseWindow* Browser::GetWindow() const {
+   return window_.get();
+ }
+ 
++bool Browser::IsSelectedForNativeWindow() const {
++  return window_ && window_->IsSelectedForNativeWindow();
++}
++
+ DesktopBrowserWindowCapabilities* Browser::capabilities() {
+   return DesktopBrowserWindowCapabilities::From(this);
+ }
+@@ -623,6 +657,11 @@ void Browser::TabStripEmpty() {
+     return;
+   }
+ 
++  if (auto* unload = UnloadController::From(this);
++      unload && unload->RetainsEmptyTabStrip()) {
++    return;
++  }
++
+   // Note: even though the tab strip is empty, the call to Close() may not
+   // result in closing this Browser. This can happen in the case of closing
+   // the last Browser with ongoing downloads.
+@@ -768,6 +807,11 @@ void Browser::OnActiveTabChanged(const TabStripModelChange& change,
+   }
+ 
+   if (tab_strip_model_->empty()) {
++    if (UnloadController::From(this)->RetainsEmptyTabStrip()) {
++      auto* const commands = chrome::BrowserCommandController::From(this);
++      commands->LoadingStateChanged(/*is_loading=*/false, /*force=*/true);
++      commands->TabStateChanged();
++    }
+     return;
+   }
+ 

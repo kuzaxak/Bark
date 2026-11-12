@@ -1,0 +1,25 @@
+diff --git a/extensions/browser/extension_registrar.cc b/extensions/browser/extension_registrar.cc
+index cd8cfec774..4764788525 100644
+--- a/extensions/browser/extension_registrar.cc
++++ b/extensions/browser/extension_registrar.cc
+@@ -79,6 +79,10 @@ base::flat_set<int> ExtensionRegistrar::Delegate::GetDisableReasonsOnInstalled(
+   return {};
+ }
+ 
++bool ExtensionRegistrar::Delegate::CanAddExtension(const Extension* extension) {
++  return true;
++}
++
+ ExtensionRegistrar::ExtensionRegistrar(content::BrowserContext* browser_context)
+     : browser_context_(browser_context),
+       extension_system_(ExtensionSystem::Get(browser_context)),
+@@ -1395,6 +1399,9 @@ void ExtensionRegistrar::OnStartedTrackingServiceWorkerInstance(
+ }
+ 
+ bool ExtensionRegistrar::CanAddExtension(const Extension* extension) const {
++  if (!delegate_->CanAddExtension(extension)) {
++    return false;
++  }
+   // TODO(jstritar): We may be able to get rid of this branch by overriding the
+   // default extension state to DISABLED when the --disable-extensions flag
+   // is set (http://crbug.com/29067).

@@ -1,0 +1,191 @@
+diff --git a/chrome/browser/extensions/chrome_extensions_browser_client.cc b/chrome/browser/extensions/chrome_extensions_browser_client.cc
+index 982247172e..3bbbbb30e5 100644
+--- a/chrome/browser/extensions/chrome_extensions_browser_client.cc
++++ b/chrome/browser/extensions/chrome_extensions_browser_client.cc
+@@ -20,6 +20,9 @@
+ #include "base/version.h"
+ #include "build/android_buildflags.h"
+ #include "build/build_config.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
+ #include "build/chromeos_buildflags.h"
+ #include "chrome/browser/app_mode/app_mode_utils.h"
+ #include "chrome/browser/browser_process.h"
+@@ -81,6 +84,7 @@
+ #include "chrome/browser/safe_browsing/safe_browsing_service.h"
+ #include "chrome/browser/search_engines/template_url_service_factory.h"
+ #include "chrome/browser/task_manager/web_contents_tags.h"
++#include "components/tabs/public/tab_interface.h"
+ #include "extensions/buildflags/buildflags.h"
+ #include "ui/base/page_transition_types.h"
+ #if !BUILDFLAG(IS_ANDROID)
+@@ -113,6 +117,12 @@
+ #include "components/update_client/configurator.h"
+ #include "components/update_client/update_client.h"
+ #include "components/version_info/version_info.h"
++#if BUILDFLAG(IS_MAC)
++#include "components/performance_manager/public/decorators/page_live_state_decorator.h"
++#include "components/performance_manager/public/features.h"
++#endif
++#include "content/public/browser/weak_document_ptr.h"
++#include "content/public/browser/render_frame_host.h"
+ #include "content/public/browser/browser_context.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/render_process_host.h"
+@@ -168,6 +178,14 @@
+ #include "chrome/common/extensions/manifest_handlers/settings_overrides_handler.h"
+ #endif
+ 
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/content_blocking/native_content_blocker.h"
++#include "content/public/common/url_constants.h"
++#include "content/public/common/url_utils.h"
++#include "extensions/browser/api/web_request/web_request_info.h"
++#include "net/base/net_errors.h"
++#endif
++
+ namespace extensions {
+ 
+ namespace {
+@@ -762,6 +780,110 @@ bool ChromeExtensionsBrowserClient::IsWebUIAllowedToMakeNetworkRequests(
+       origin);
+ }
+ 
++base::ScopedClosureRunner ChromeExtensionsBrowserClient::ObserveNativeRequestBody(
++    content::BrowserContext* context,
++    const content::WeakDocumentPtr& document,
++    bool keepalive) {
++#if BUILDFLAG(IS_MAC)
++  // Keepalive can outlive client disconnection. Workers, SW interception and
++  // browser POSTs have no proven originating document at this hook.
++  auto* frame = document.AsRenderFrameHostIfValid();
++  if (!keepalive && frame && frame->GetBrowserContext() == context &&
++      frame->GetLifecycleState() == content::RenderFrameHost::LifecycleState::kActive &&
++      !frame->GetLastCommittedURL().is_empty() &&
++      performance_manager::features::IsNativeResourceProtectionHeld()) {
++    return performance_manager::PageLiveStateDecorator::ObserveDocumentRequestBody(document);
++  }
++#endif
++  return {};
++}
++
++bool ChromeExtensionsBrowserClient::HasNativeRequestPolicy(
++    content::BrowserContext* context) const {
++#if BUILDFLAG(IS_MAC)
++  if (!NativeContentBlocker::IsRegistered()) return false;
++  auto* profile = Profile::FromBrowserContext(context);
++  if (profile->ShutdownStarted())
++    return NativeContentBlocker::RequiresInterception();
++  // Even disabled contexts subscribe cheaply, without a matcher allocation.
++  // A future enable can reset their existing factories without an owner map.
++  auto* service = NativeContentBlocker::Get(profile, true);
++  return service && service->ShouldProxy();
++#else
++  return false;
++#endif
++}
++
++void ChromeExtensionsBrowserClient::CheckNativeRequestPolicy(
++    content::BrowserContext* context,
++    const content::WeakDocumentPtr& document,
++    const GURL& document_site,
++    const WebRequestInfo& request,
++    base::OnceCallback<void(int)> callback) {
++#if BUILDFLAG(IS_MAC)
++  if (!NativeContentBlocker::IsRegistered() || request.is_privileged) {
++    std::move(callback).Run(net::OK);
++    return;
++  }
++  const GURL initiator = request.initiator && !request.initiator->opaque()
++                            ? request.initiator->GetURL() : GURL();
++  // Extension background fetches are outside eligible website traffic. Real
++  // website navigations remain eligible even when opened by an extension.
++  if (!request.is_navigation_request &&
++      (initiator.SchemeIs(extensions::kExtensionScheme) ||
++       document_site.SchemeIs(extensions::kExtensionScheme))) {
++    std::move(callback).Run(net::OK);
++    return;
++  }
++  // Opaque/about:blank/data website documents can issue their first HTTP
++  // request before a committed HTTP URL exists. They must still wait for policy.
++  // Preserve browser UI traffic rather than treating it as website content.
++  if (!request.is_navigation_request &&
++      (content::HasWebUIScheme(initiator) ||
++       content::HasWebUIScheme(document_site) ||
++       initiator.SchemeIs(content::kChromeDevToolsScheme) ||
++       document_site.SchemeIs(content::kChromeDevToolsScheme))) {
++    std::move(callback).Run(net::OK);
++    return;
++  }
++  if (!NativeContentBlocker::RequiresInterception()) {
++    std::move(callback).Run(net::OK);
++    return;
++  }
++  auto* frame = document.AsRenderFrameHostIfValid();
++  if ((frame && frame->GetBrowserContext() != context) ||
++      Profile::FromBrowserContext(context)->ShutdownStarted()) {
++    std::move(callback).Run(net::ERR_ABORTED);
++    return;
++  }
++  auto* contents = frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr;
++  auto client = NativeContentBlocker::CaptureClient(
++      contents, frame, document_site.is_empty() ? initiator : document_site);
++  // Never consult a replacement WebContents URL after the extension delay.
++  client.document = document;
++  client.site = document_site.is_empty() ? initiator : document_site;
++  auto* service = NativeContentBlocker::Get(Profile::FromBrowserContext(context), true);
++  service->Check(request.url, initiator, std::move(client),
++                WebRequestResourceTypeToString(request.web_request_type),
++                request.method, std::move(callback));
++#else
++  std::move(callback).Run(net::OK);
++#endif
++}
++
++void ChromeExtensionsBrowserClient::NativeNavigationBlocked(
++    content::BrowserContext* context, const content::WeakDocumentPtr& document,
++    const WebRequestInfo& request) {
++#if BUILDFLAG(IS_MAC)
++  auto* frame = document.AsRenderFrameHostIfValid();
++  if (!frame || frame->GetBrowserContext() != context || !request.navigation_id ||
++      !request.is_navigation_request ||
++      request.web_request_type != WebRequestResourceType::MAIN_FRAME) return;
++  barc::RecordNativeNavigationBlock(content::WebContents::FromRenderFrameHost(frame),
++                                   *request.navigation_id, request.url);
++#endif
++}
++
+ network::mojom::NetworkContext*
+ ChromeExtensionsBrowserClient::GetSystemNetworkContext() {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+@@ -1326,13 +1448,24 @@ ChromeExtensionsBrowserClient::CreateInstallPrompt(
+ }
+ 
+ std::unique_ptr<ExtensionInstallPromptClient>
+-ChromeExtensionsBrowserClient::CreateInstallPromptForNativeWindow(
+-    gfx::NativeWindow native_window,
+-    content::BrowserContext& browser_context,
++ChromeExtensionsBrowserClient::CreateInstallPromptForFunction(
++    ExtensionFunction& function,
+     std::unique_ptr<InstallPromptData> prompt) {
++  auto* sender = function.GetSenderWebContents();
++  if (sender && tabs::TabInterface::MaybeGetFromContents(sender)) {
++    // ShowParams retains the identified tab even when currently detached; it
++    // must not fall back to another logical browser of the native window.
++    return std::make_unique<ExtensionInstallPrompt>(sender, std::move(prompt));
++  }
++  BrowserWindowInterface* owner = nullptr;
++  const auto native_window =
++      ChromeExtensionFunctionDetails(&function).GetNativeWindowForUI(&owner);
++  std::optional<base::WeakPtr<BrowserWindowInterface>> browser_owner;
++  if (owner)
++    browser_owner = owner->GetWeakPtr();
+   return std::make_unique<ExtensionInstallPrompt>(
+-      Profile::FromBrowserContext(&browser_context), native_window,
+-      std::move(prompt));
++      Profile::FromBrowserContext(function.browser_context()), native_window,
++      std::move(prompt), browser_owner);
+ }
+ 
+ gfx::NativeWindow ChromeExtensionsBrowserClient::GetNativeWindowForFunction(

@@ -1,0 +1,25 @@
+diff --git a/chrome/browser/chrome_content_browser_client.h b/chrome/browser/chrome_content_browser_client.h
+index 1c972e4e27..a9e5214aba 100644
+--- a/chrome/browser/chrome_content_browser_client.h
++++ b/chrome/browser/chrome_content_browser_client.h
+@@ -706,7 +706,8 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
+       bool* disable_secure_dns,
+       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      bool is_for_network_service) override;
++      bool is_for_network_service,
++      std::optional<int64_t> document_navigation_id = std::nullopt) override;
+   std::vector<std::unique_ptr<content::URLLoaderRequestInterceptor>>
+   WillCreateURLLoaderRequestInterceptors(
+       content::NavigationUIData* navigation_ui_data,
+@@ -722,6 +723,10 @@ class ChromeContentBrowserClient : public content::ContentBrowserClient {
+       int64_t navigation_id,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner)
+       override;
++  void CheckWebSocketConnection(
++      content::BrowserContext* browser_context, content::RenderFrameHost* frame,
++      const GURL& url, const url::Origin& initiator,
++      base::OnceCallback<void(int)> callback) override;
+   bool WillInterceptWebSocket(content::RenderFrameHost* frame) override;
+   content::ContentBrowserClient::WebSocketOptions GetWebSocketOptions(
+       content::RenderFrameHost* frame) override;

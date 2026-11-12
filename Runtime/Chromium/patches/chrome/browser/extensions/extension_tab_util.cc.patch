@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/extensions/extension_tab_util.cc b/chrome/browser/extensions/extension_tab_util.cc
+index dd919b9675..c6f2702436 100644
+--- a/chrome/browser/extensions/extension_tab_util.cc
++++ b/chrome/browser/extensions/extension_tab_util.cc
+@@ -1032,7 +1032,7 @@ ExtensionTabUtil::GetAllActiveWebContentsForContext(
+         if (browser_profile == profile ||
+             browser_profile == incognito_profile) {
+           TabListInterface* tab_list = TabListInterface::From(browser);
+-          if (tab_list) {
++          if (tab_list && tab_list->GetActiveTab()) {
+             content::WebContents* tab_contents =
+                 tab_list->GetActiveTab()->GetContents();
+             CHECK(tab_contents);

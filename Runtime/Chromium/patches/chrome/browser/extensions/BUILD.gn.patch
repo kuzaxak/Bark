@@ -1,0 +1,15 @@
+diff --git a/chrome/browser/extensions/BUILD.gn b/chrome/browser/extensions/BUILD.gn
+index bd3a172183..17d135e4e5 100644
+--- a/chrome/browser/extensions/BUILD.gn
++++ b/chrome/browser/extensions/BUILD.gn
+@@ -1843,6 +1843,10 @@ source_set("chrome_extensions_browser_client") {
+     "//extensions/browser/updater",
+   ]
+ 
++  if (is_mac) {
++    deps += [ "//components/performance_manager" ]
++  }
++
+   if (is_android) {
+     sources += [ "chrome_extensions_browser_client_android.cc" ]
+ 

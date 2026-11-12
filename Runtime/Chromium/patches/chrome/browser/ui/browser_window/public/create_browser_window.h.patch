@@ -1,0 +1,24 @@
+diff --git a/chrome/browser/ui/browser_window/public/create_browser_window.h b/chrome/browser/ui/browser_window/public/create_browser_window.h
+index 6ecba965f8..2ac701f30a 100644
+--- a/chrome/browser/ui/browser_window/public/create_browser_window.h
++++ b/chrome/browser/ui/browser_window/public/create_browser_window.h
+@@ -14,6 +14,7 @@
+ #include "base/memory/raw_ref.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
++#include "components/sessions/core/session_id.h"
+ #include "ui/base/mojom/window_show_state.mojom.h"
+ #include "ui/gfx/geometry/rect.h"
+ 
+@@ -142,6 +143,11 @@ struct BrowserWindowCreateParams {
+   // Whether this browser was created specifically for dragged tab(s).
+   bool in_tab_dragging = false;
+ 
++  // Opt-in macOS feasibility host: create a real logical Browser/View in this
++  // existing native window. No effect when absent; caller must validate the
++  // live owner synchronously using BrowserWindow::CanCreateInNativeWindow.
++  std::optional<SessionID> native_window_owner;
++
+   // Supply a custom BrowserWindow implementation, to be used instead of the
+   // default. Intended for testing.
+   raw_ptr<BrowserWindow, DanglingUntriaged> window = nullptr;

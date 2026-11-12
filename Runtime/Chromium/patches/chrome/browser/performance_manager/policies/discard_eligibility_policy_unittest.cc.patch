@@ -1,0 +1,34 @@
+diff --git a/chrome/browser/performance_manager/policies/discard_eligibility_policy_unittest.cc b/chrome/browser/performance_manager/policies/discard_eligibility_policy_unittest.cc
+index f4322ccaef..8fbce51155 100644
+--- a/chrome/browser/performance_manager/policies/discard_eligibility_policy_unittest.cc
++++ b/chrome/browser/performance_manager/policies/discard_eligibility_policy_unittest.cc
+@@ -10,6 +10,7 @@
+ 
+ #include "base/strings/string_number_conversions.h"
+ #include "base/test/metrics/histogram_tester.h"
++#include "base/test/scoped_command_line.h"
+ #include "base/test/scoped_feature_list.h"
+ #include "base/time/time.h"
+ #include "build/build_config.h"
+@@ -122,6 +123,21 @@ class DiscardEligibilityPolicyTest
+   }
+ };
+ 
++#if BUILDFLAG(IS_MAC)
++TEST_F(DiscardEligibilityPolicyTest, NativeUnknownWorkDisallowsEveryReason) {
++  base::test::ScopedCommandLine command;
++  command.GetProcessCommandLine()->AppendSwitch("barc-native-shell");
++  ExpectCanDiscardEligibleAllReasons(page_node());
++  command.GetProcessCommandLine()->AppendSwitch("barc-shared-native-window");
++  auto* live = PageLiveStateDecorator::Data::GetOrCreateForPageNode(page_node());
++  live->SetIsActiveTabForTesting(true);
++  EXPECT_TRUE(live->IsActiveTab());
++  EXPECT_FALSE(page_node()->IsVisible());
++  ExpectCanDiscardDisallowedAllReasons(
++      page_node(), CannotDiscardReason::kUnknownNativeActivity);
++}
++#endif
++
+ TEST_F(DiscardEligibilityPolicyTest, TestCanDiscardMultipleActiveMainFrames) {
+   // Multiple main frames can transiently be marked "active" during a frame
+   // swap. Make sure CanDiscard works around it. (See comment on

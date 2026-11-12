@@ -1,0 +1,35 @@
+diff --git a/chrome/installer/mac/signing/model.py b/chrome/installer/mac/signing/model.py
+index 8207e4afe6..6456c6bd32 100644
+--- a/chrome/installer/mac/signing/model.py
++++ b/chrome/installer/mac/signing/model.py
+@@ -90,6 +90,8 @@ class CodeSignedProduct(object):
+         sign_with_identifier=False,
+         entitlements=None,
+         verify_options=None,
++        replace_existing_signature=False,
++        preserve_entitlements=False,
+     ):
+         """A build product to be codesigned.
+ 
+@@ -111,6 +113,9 @@ class CodeSignedProduct(object):
+             sign_with_identifier: If True, then the identifier will be specified
+                 when running the `codesign` command. If False, `codesign` will
+                 infer the identifier itself.
++            replace_existing_signature: Replace a pre-existing signature.
++            preserve_entitlements: Keep only embedded entitlements when replacing
++                vendor signatures; never preserve requirements or team identity.
+             entitlements: File name of the entitlements file to sign the product
+                 with. The file should reside in the |Paths.packaging_dir|.
+             verify_options: |VerifyOptions| flags to pass to `codesign
+@@ -124,7 +129,11 @@ class CodeSignedProduct(object):
+         self.requirements = requirements
+         self.identifier_requirement = identifier_requirement
+         self.sign_with_identifier = sign_with_identifier
++        if entitlements and preserve_entitlements:
++            raise ValueError('Explicit and preserved entitlements conflict')
+         self.entitlements = entitlements
++        self.replace_existing_signature = replace_existing_signature
++        self.preserve_entitlements = preserve_entitlements
+         if verify_options and not isinstance(verify_options, VerifyOptions):
+             raise ValueError('Must be a VerifyOptions')
+         self.verify_options = verify_options

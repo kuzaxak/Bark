@@ -1,0 +1,60 @@
+diff --git a/ui/views/widget/widget.h b/ui/views/widget/widget.h
+index b0896143e1..03da90118c 100644
+--- a/ui/views/widget/widget.h
++++ b/ui/views/widget/widget.h
+@@ -79,6 +79,8 @@ class BubbleLocking;
+ 
+ namespace views {
+ 
++class ClientView;
++class FrameView;
+ class DesktopWindowTreeHost;
+ class InputProtectionEventHandler;
+ class NativeWidget;
+@@ -735,6 +737,35 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
+   // Gets/Sets the WidgetDelegate.
+   WidgetDelegate* widget_delegate() const { return widget_delegate_.get(); }
+ 
++  // Attach and initialize an additional frame/client delegate exactly once.
++  // All objects must have been constructed for this Widget; the frame owns its
++  // client, and the delegate must live with that client (not be Widget-owned).
++  // As with NonClientView frame mutation, callbacks must preserve View
++  // lifetime.
++  void RetainClientFrame(std::unique_ptr<FrameView> frame,
++                         std::unique_ptr<ClientView> client,
++                         WidgetDelegate* delegate);
++
++  // Select an already attached logical delegate without replaying
++  // initialization callbacks. The caller selects its matching NonClientView
++  // frame separately and must preserve coherent native command/focus routing
++  // during the switch.
++  void SelectClientDelegate(WidgetDelegate* delegate);
++
++  // Notify an accepted logical close before its controllers are torn down.
++  // Frame attachment lifetime tracks exactly-once delivery through theme
++  // changes.
++  void NotifyClientWillClose(WidgetDelegate* delegate);
++
++  // Finalize an accepted requested logical close, only for an inactive client.
++  // The caller first completes beforeunload/policy gates and releases its
++  // frame. Runs WindowWillClose, ClientView::WidgetClosing, WindowClosing, then
++  // DeleteDelegate exactly once for this attached delegate. DeleteDelegate may
++  // destroy it; the caller must not assume it survives. Never closes the
++  // physical Widget or notifies its other clients. Destroy the released frame
++  // before it.
++  void FinalizeClientDelegate(ClientView* client, WidgetDelegate* delegate);
++
+   // Sets the specified view as the contents of this Widget. There can only
+   // be one contents view child of this Widget's RootView. This view is sized to
+   // fit the entire size of the RootView. The RootView takes ownership of this
+@@ -1612,6 +1643,10 @@ class VIEWS_EXPORT Widget : public internal::NativeWidgetDelegate,
+   void set_widget_closed() { widget_closed_ = true; }
+ 
+  private:
++  // Snapshot weak handles derived from attached frame/client bindings. Includes
++  // the selected delegate for widgets without a NonClientView.
++  std::vector<base::WeakPtr<WidgetDelegate>> GetClientDelegates() const;
++
+   // Type of ways to ignore activation changes.
+   enum class DisableActivationChangeHandlingType {
+     kNone = 0,  // Don't ignore any activation changes.

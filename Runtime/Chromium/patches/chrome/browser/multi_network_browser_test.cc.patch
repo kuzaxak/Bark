@@ -1,0 +1,21 @@
+diff --git a/chrome/browser/multi_network_browser_test.cc b/chrome/browser/multi_network_browser_test.cc
+index 0fb6368c6d..da43f092e6 100644
+--- a/chrome/browser/multi_network_browser_test.cc
++++ b/chrome/browser/multi_network_browser_test.cc
+@@ -106,13 +106,14 @@ class TestChromeContentBrowserClient : public ChromeContentBrowserClient {
+       bool* disable_secure_dns,
+       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      bool is_for_network_service) override {
++      bool is_for_network_service,
++      std::optional<int64_t> document_navigation_id) override {
+     ChromeContentBrowserClient::WillCreateURLLoaderFactory(
+         browser_context, frame, render_process_id, type, request_initiator,
+         isolation_info, navigation_id, ukm_source_id, factory_builder,
+         header_client, bypass_redirect_checks, disable_secure_dns,
+         factory_override, navigation_response_task_runner,
+-        is_for_network_service);
++        is_for_network_service, document_navigation_id);
+     factory_bound_networks_[type].push_back(
+         factory_builder.target_network_for_testing());
+     factory_is_for_network_service_[type].push_back(is_for_network_service);

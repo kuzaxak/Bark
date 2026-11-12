@@ -1,0 +1,26 @@
+diff --git a/chrome/common/chrome_isolated_world_ids.h b/chrome/common/chrome_isolated_world_ids.h
+index 846e4777c4..1feeea3a26 100644
+--- a/chrome/common/chrome_isolated_world_ids.h
++++ b/chrome/common/chrome_isolated_world_ids.h
+@@ -19,9 +19,21 @@ enum ChromeIsolatedWorldIDs {
+   // Isolated world ID for internal Chrome features.
+   ISOLATED_WORLD_ID_CHROME_INTERNAL,
+ 
++  // Nook fixed page translation; separate from Chrome Translate and extensions.
++  ISOLATED_WORLD_ID_NOOK_TRANSLATE,
++
+ #if BUILDFLAG(IS_MAC)
+   // Isolated world ID for AppleScript.
+   ISOLATED_WORLD_ID_APPLESCRIPT,
++
++  // Nook authorized browser automation; separate from translation and extensions.
++  ISOLATED_WORLD_ID_NOOK_AUTOMATION,
++
++  // Native generic cosmetic DOM observation; never page-world globals.
++  ISOLATED_WORLD_ID_NOOK_COSMETICS,
++  ISOLATED_WORLD_ID_NOOK_BOOST_PICKER,
++  ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS,
++  ISOLATED_WORLD_ID_NOOK_BOOST_SCRIPTS,
+ #endif  // BUILDFLAG(IS_MAC)
+ 
+   // Numbers for isolated worlds for extensions are set in

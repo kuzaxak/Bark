@@ -1,0 +1,138 @@
+diff --git a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
+index 83ce5b59c1..cac422869b 100644
+--- a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
++++ b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
+@@ -12,6 +12,7 @@
+ #include "base/i18n/message_formatter.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/strings/utf_string_conversions.h"
++#include "base/task/single_thread_task_runner.h"
+ #include "chrome/browser/extensions/extension_install_prompt.h"
+ #include "chrome/browser/extensions/extension_install_prompt_show_params.h"
+ #include "chrome/browser/picture_in_picture/picture_in_picture_input_protector.h"
+@@ -24,6 +25,7 @@
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+ #include "chrome/browser/ui/views/chrome_typography.h"
+ #include "chrome/browser/ui/views/extensions/extension_permissions_view.h"
++#include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/grit/generated_resources.h"
+ #include "chrome/grit/theme_resources.h"
+ #include "components/constrained_window/constrained_window_views.h"
+@@ -56,6 +58,7 @@
+ #include "ui/views/layout/table_layout.h"
+ #include "ui/views/layout/table_layout_view.h"
+ #include "ui/views/metadata/view_factory.h"
++#include "ui/views/view_tracker.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/widget/widget_delegate.h"
+ #include "ui/views/window/dialog_delegate.h"
+@@ -88,6 +91,25 @@ void ShowExtensionInstallDialogImpl(
+     std::unique_ptr<InstallPromptData> prompt) {
+   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+ 
++  if (show_params->WasParentDestroyed() ||
++      !show_params->CanShowForBrowserOwner()) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(done_callback),
++                       ExtensionInstallPrompt::DoneCallbackPayload(
++                           ExtensionInstallPrompt::Result::ABORTED)));
++    return;
++  }
++  auto* owner = show_params->GetBrowserOwner();
++  if (owner && !BrowserView::GetBrowserViewForBrowser(owner)) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(done_callback),
++                       ExtensionInstallPrompt::DoneCallbackPayload(
++                           ExtensionInstallPrompt::Result::ABORTED)));
++    return;
++  }
++
+   // If the dialog has to be parented to WebContents, force activate the
+   // contents. See crbug.com/40059470.
+   content::WebContents* web_contents = show_params->GetParentWebContents();
+@@ -101,6 +123,18 @@ void ShowExtensionInstallDialogImpl(
+     BrowserWebContentsDelegate::From(browser)->ActivateContents(web_contents);
+   }
+ 
++  // Activation may invoke observers that close/reparent the tab. Never use a
++  // native parent left behind by that outgoing logical owner.
++  if (show_params->WasParentDestroyed() ||
++      !show_params->CanShowForBrowserOwner() ||
++      (owner && !BrowserView::GetBrowserViewForBrowser(owner))) {
++    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++        FROM_HERE,
++        base::BindOnce(std::move(done_callback),
++                       ExtensionInstallPrompt::DoneCallbackPayload(
++                           ExtensionInstallPrompt::Result::ABORTED)));
++    return;
++  }
+   gfx::NativeWindow parent_window = show_params->GetParentWindow();
+   auto dialog = std::make_unique<ExtensionInstallDialogView>(
+       std::move(show_params), std::move(done_callback), std::move(prompt));
+@@ -372,6 +406,11 @@ void ExtensionInstallDialogView::VisibilityChanged(views::View* starting_from,
+ }
+ 
+ void ExtensionInstallDialogView::AddedToWidget() {
++  if (auto* owner = show_params_->GetBrowserOwner()) {
++    browser_close_subscription_ = owner->RegisterBrowserDidClose(
++        base::BindRepeating(&ExtensionInstallDialogView::OnBrowserOwnerClosed,
++                            base::Unretained(this)));
++  }
+   auto title_container = CreateTitleContainer();
+   GetBubbleFrameView()->SetTitleView(std::move(title_container));
+ 
+@@ -382,6 +421,7 @@ void ExtensionInstallDialogView::AddedToWidget() {
+ 
+ void ExtensionInstallDialogView::OnDialogCanceled() {
+   DCHECK(done_callback_);
++  browser_close_subscription_ = {};
+ 
+   // The dialog will be closed, so stop observing for any extension changes
+   // that could potentially crop up during that process (like the extension
+@@ -396,6 +436,12 @@ void ExtensionInstallDialogView::OnDialogCanceled() {
+ 
+ void ExtensionInstallDialogView::OnDialogAccepted() {
+   DCHECK(done_callback_);
++  if (show_params_->WasParentDestroyed() ||
++      !show_params_->CanShowForBrowserOwner()) {
++    OnDialogCanceled();
++    return;
++  }
++  browser_close_subscription_ = {};
+ 
+   // The dialog will be closed, so stop observing for any extension changes
+   // that could potentially crop up during that process (like the extension
+@@ -406,7 +452,19 @@ void ExtensionInstallDialogView::OnDialogAccepted() {
+       prompt_->type() == InstallPromptData::EXTENSION_REQUEST_PROMPT;
+   DCHECK(expect_justification == !!justification_view_);
+ 
++  views::ViewTracker alive(this);
+   prompt_->OnDialogAccepted();
++  if (!alive.view() || !done_callback_)
++    return;
++  // Prompt observers can close the owner or move its source tab. Never grant
++  // permissions after such a callback invalidated the original admission.
++  if (show_params_->WasParentDestroyed() ||
++      !show_params_->CanShowForBrowserOwner()) {
++    std::move(done_callback_)
++        .Run(ExtensionInstallPrompt::DoneCallbackPayload(
++            ExtensionInstallPrompt::Result::ABORTED));
++    return;
++  }
+ 
+   // Permissions are withheld at installation when the prompt specifies it and
+   // `grant_permissions_checkbox_` wasn't selected.
+@@ -451,6 +509,11 @@ bool ExtensionInstallDialogView::ShouldAllowKeyEventsDuringInputProtection()
+   return false;
+ }
+ 
++void ExtensionInstallDialogView::OnBrowserOwnerClosed(
++    BrowserWindowInterface* browser) {
++  CloseDialog();
++}
++
+ void ExtensionInstallDialogView::CloseDialog() {
+   GetWidget()->Close();
+ }

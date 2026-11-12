@@ -1,0 +1,40 @@
+diff --git a/chrome/browser/actor/execution_engine_unittest.cc b/chrome/browser/actor/execution_engine_unittest.cc
+index 9693a95a25..e450937503 100644
+--- a/chrome/browser/actor/execution_engine_unittest.cc
++++ b/chrome/browser/actor/execution_engine_unittest.cc
+@@ -137,6 +137,7 @@ class MockAutofillSelectionDialogEventHandler
+ 
+ class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
+  public:
++  void ClearNookCosmetics(const blink::DocumentToken&, uint64_t) override {}
+   FakeChromeRenderFrame() = default;
+   ~FakeChromeRenderFrame() override = default;
+ 
+@@ -150,6 +151,27 @@ class FakeChromeRenderFrame : public chrome::mojom::ChromeRenderFrame {
+   }
+ 
+   // chrome::mojom::ChromeRenderFrame:
++  void NookEvaluateScript(const blink::DocumentToken&, uint64_t, uint64_t,
++      int32_t, int32_t, const std::string&,
++      NookEvaluateScriptCallback callback) override {
++    std::move(callback).Run(chrome::mojom::NookScriptResult::New(
++        chrome::mojom::NookScriptStatus::kUnavailable, "", "", false));
++  }
++  void NookStartBoostPicker(const blink::DocumentToken&, uint64_t, uint64_t,
++      NookStartBoostPickerCallback callback) override { std::move(callback).Run(""); }
++  void ClearNookPageTweaks(const blink::DocumentToken&) override {}
++  void NookCancelBoostPicker(const blink::DocumentToken&, uint64_t, uint64_t) override {}
++  void NookCancelScript(const blink::DocumentToken&, uint64_t, uint64_t) override {}
++  void NookTranslate(const blink::DocumentToken&, uint64_t, int32_t,
++                     std::vector<chrome::mojom::NookTranslationNodePtr>,
++                     mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient>,
++                     NookTranslateCallback callback) override {
++    std::move(callback).Run(false, "", "", {});
++  }
++  void SetNookBoostStyle(const blink::DocumentToken&, const std::string&,
++                         SetNookBoostStyleCallback callback) override {
++    std::move(callback).Run(false);
++  }
+   void SetWindowFeatures(
+       blink::mojom::WindowFeaturesPtr window_features) override {}
+   void RequestReloadImageForContextNode() override {}

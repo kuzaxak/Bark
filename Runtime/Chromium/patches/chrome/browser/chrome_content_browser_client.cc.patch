@@ -1,0 +1,97 @@
+diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
+index aa8b16f467..16072ad57a 100644
+--- a/chrome/browser/chrome_content_browser_client.cc
++++ b/chrome/browser/chrome_content_browser_client.cc
+@@ -4,6 +4,10 @@
+ 
+ #include "chrome/browser/chrome_content_browser_client.h"
+ 
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/content_blocking/native_content_blocker.h"
++#endif
++
+ #include <algorithm>
+ #include <iterator>
+ #include <map>
+@@ -390,6 +394,7 @@
+ #include "content/public/common/content_features.h"
+ #include "content/public/common/content_switches.h"
+ #include "content/public/common/url_constants.h"
++#include "content/public/common/url_utils.h"
+ #include "content/public/common/window_container_type.mojom-shared.h"
+ #include "device/vr/buildflags/buildflags.h"
+ #include "extensions/browser/browser_frame_context_data.h"
+@@ -6109,6 +6114,13 @@ ChromeContentBrowserClient::CreateURLLoaderThrottles(
+   DCHECK_CURRENTLY_ON(BrowserThread::UI);
+ 
+   std::vector<std::unique_ptr<blink::URLLoaderThrottle>> result;
++#if BUILDFLAG(IS_MAC)
++  if (navigation_id && request.is_outermost_main_frame) {
++    if (auto tweak = NativeContentBlocker::CreatePageTweaksThrottle())
++      result.push_back(std::move(tweak));
++  }
++#endif
++
+ 
+   DCHECK(browser_context);
+   Profile* profile = Profile::FromBrowserContext(browser_context);
+@@ -6802,7 +6814,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
+     bool* disable_secure_dns,
+     network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+     scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-    bool is_for_network_service) {
++    bool is_for_network_service,
++    std::optional<int64_t> document_navigation_id) {
+ #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
+   auto* web_request_api =
+       extensions::BrowserContextKeyedAPIFactory<extensions::WebRequestAPI>::Get(
+@@ -6815,7 +6828,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
+         web_request_api->MaybeProxyURLLoaderFactory(
+             browser_context, frame, render_process_id, type,
+             std::move(navigation_id), ukm_source_id, factory_builder,
+-            header_client, navigation_response_task_runner, request_initiator);
++            header_client, navigation_response_task_runner, request_initiator,
++            document_navigation_id);
+     if (bypass_redirect_checks) {
+       *bypass_redirect_checks = use_proxy_for_web_request;
+     }
+@@ -6952,6 +6966,39 @@ ChromeContentBrowserClient::
+   return prefetch_handler;
+ }
+ 
++void ChromeContentBrowserClient::CheckWebSocketConnection(
++    content::BrowserContext* browser_context, content::RenderFrameHost* frame,
++    const GURL& url, const url::Origin& initiator,
++    base::OnceCallback<void(int)> callback) {
++#if BUILDFLAG(IS_MAC)
++  const GURL source = initiator.GetURL();
++  const GURL document_site = frame ? frame->GetLastCommittedURL() : GURL();
++  // Match website-request scope; browser UI and extension background traffic
++  // retain upstream handling and extension filtering.
++  if (!NativeContentBlocker::RequiresInterception() ||
++      source.SchemeIs("chrome-extension") || document_site.SchemeIs("chrome-extension") ||
++      content::HasWebUIScheme(source) || content::HasWebUIScheme(document_site) ||
++      source.SchemeIs(content::kChromeDevToolsScheme) ||
++      document_site.SchemeIs(content::kChromeDevToolsScheme)) {
++    std::move(callback).Run(net::OK);
++    return;
++  }
++  auto* profile = Profile::FromBrowserContext(browser_context);
++  if (profile->ShutdownStarted()) {
++    std::move(callback).Run(net::ERR_ABORTED);
++    return;
++  }
++  auto* blocker = NativeContentBlocker::Get(profile, true);
++  auto client = NativeContentBlocker::CaptureClient(
++      frame ? content::WebContents::FromRenderFrameHost(frame) : nullptr,
++      frame, document_site.is_empty() ? source : document_site);
++  blocker->Check(url, initiator.GetURL(), std::move(client), "websocket", "GET",
++                 std::move(callback));
++#else
++  std::move(callback).Run(net::OK);
++#endif
++}
++
+ bool ChromeContentBrowserClient::WillInterceptWebSocket(
+     content::RenderFrameHost* frame) {
+ #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)

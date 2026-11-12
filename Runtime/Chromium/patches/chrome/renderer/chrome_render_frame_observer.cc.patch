@@ -1,0 +1,1524 @@
+diff --git a/chrome/renderer/chrome_render_frame_observer.cc b/chrome/renderer/chrome_render_frame_observer.cc
+index 6f3034c426..2d77bb89fb 100644
+--- a/chrome/renderer/chrome_render_frame_observer.cc
++++ b/chrome/renderer/chrome_render_frame_observer.cc
+@@ -3,6 +3,17 @@
+ // found in the LICENSE file.
+ 
+ #include "chrome/renderer/chrome_render_frame_observer.h"
++#include "chrome/common/chrome_isolated_world_ids.h"
++#include "chrome/grit/renderer_resources.h"
++#include "chrome/grit/common_resources.h"
++#include "content/public/renderer/v8_value_converter.h"
++#include "gin/arguments.h"
++#include "gin/function_template.h"
++#include "third_party/blink/public/web/web_script_source.h"
++#include "third_party/blink/public/common/web_preferences/web_preferences.h"
++#include "ui/base/resource/resource_bundle.h"
++#include "v8/include/v8.h"
++#include <array>
+ 
+ #include <stddef.h>
+ #include <string.h>
+@@ -17,6 +28,8 @@
+ #include "base/command_line.h"
+ #include "base/functional/bind.h"
+ #include "base/no_destructor.h"
++#include "base/json/json_writer.h"
++#include "base/containers/span.h"
+ #include "base/strings/string_number_conversions.h"
+ #include "base/strings/string_util.h"
+ #include "base/strings/utf_string_conversions.h"
+@@ -217,6 +230,7 @@ ChromeRenderFrameObserver::ChromeRenderFrameObserver(
+     content::RenderFrame* render_frame,
+     web_cache::WebCacheImpl* web_cache_impl)
+     : content::RenderFrameObserver(render_frame),
++      content::RenderFrameObserverTracker<ChromeRenderFrameObserver>(render_frame),
+       translate_agent_(nullptr),
+       page_text_agent_(new optimization_guide::PageTextAgent(render_frame)),
+       actor_journal_(std::make_unique<actor::Journal>()),
+@@ -290,6 +304,7 @@ void ChromeRenderFrameObserver::ReadyToCommitNavigation(
+   if (translate_agent_) {
+     translate_agent_->PrepareForNewDocument();
+   }
++  PrepareNookCosmetics();
+ }
+ 
+ void ChromeRenderFrameObserver::DidSetPageLifecycleState(
+@@ -312,6 +327,10 @@ void ChromeRenderFrameObserver::DidSetPageLifecycleState(
+ 
+ void ChromeRenderFrameObserver::DidFinishLoad() {
+   WebLocalFrame* frame = render_frame()->GetWebFrame();
++  const auto frame_token = frame->GetLocalFrameToken();
++  RunNookBoostScriptsAfterLoad();
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame) return;
+   // Don't do anything for subframes.
+   if (frame->Parent() || frame->IsInFencedFrameTree())
+     return;
+@@ -328,6 +347,11 @@ void ChromeRenderFrameObserver::DidFinishLoad() {
+ }
+ 
+ void ChromeRenderFrameObserver::DidCreateNewDocument() {
++  ResetNookBoostPicker();
++  ResetNookScript();
++  ResetNookTranslation();
++  nook_translation_cleanup_document_.reset();
++  nook_boost_style_ = blink::WebString();
+ #if BUILDFLAG(ENABLE_OFFLINE_PAGES)
+   DCHECK(render_frame());
+   if (!render_frame()->IsMainFrame())
+@@ -412,15 +436,43 @@ void ChromeRenderFrameObserver::DidMeaningfulLayout(
+ }
+ 
+ void ChromeRenderFrameObserver::OnDestruct() {
++  // FrameDetached already closed/cleared the Blink frame before deleting us.
++  ResetNookDocumentResources(false);
++  ResetNookBoostPicker(false);
++  ResetNookScript();
+   delete this;
+ }
+ 
+ void ChromeRenderFrameObserver::WillDetach(blink::DetachReason detach_reason) {
++  ResetNookBoostPicker();
++  ResetNookScript();
+ #if BUILDFLAG(IS_ANDROID)
+   base::AutoLock auto_lock(GetFrameHeaderMapLock());
+   GetFrameHeaderMap().erase(
+       render_frame()->GetWebFrame()->GetLocalFrameToken());
+ #endif
++  ResetNookDocumentResources();
++}
++
++void ChromeRenderFrameObserver::SetNookBoostStyle(
++    const blink::DocumentToken& expected, const std::string& css,
++    SetNookBoostStyleCallback callback) {
++  auto* frame = render_frame()->GetWebFrame();
++  auto document = frame->GetDocument();
++  if (!render_frame()->IsMainFrame() || document.IsNull() ||
++      document.Token() != expected ||
++      !GURL(document.Url()).SchemeIsHTTPOrHTTPS() || css.size() > 16 * 1024 * 1024) {
++    std::move(callback).Run(false);
++    return;
++  }
++  if (!nook_boost_style_.IsEmpty()) {
++    document.RemoveInsertedStyleSheet(nook_boost_style_);
++    nook_boost_style_ = blink::WebString();
++  }
++  if (!css.empty()) {
++    nook_boost_style_ = document.InsertStyleSheet(blink::WebString::FromUtf8(css));
++  }
++  std::move(callback).Run(true);
+ }
+ 
+ void ChromeRenderFrameObserver::SetWindowFeatures(
+@@ -959,3 +1011,1409 @@ bool ChromeRenderFrameObserver::IsAnimatedWebp(
+       WebPGetFeatures(image_data.data(), image_data.size(), &features);
+   return status == VP8_STATUS_OK && features.has_animation;
+ }
++
++namespace {
++std::vector<chrome::mojom::NookTranslationNodePtr> NookTranslationNodesFromValue(
++    const base::Value& value) {
++  std::vector<chrome::mojom::NookTranslationNodePtr> nodes;
++  if (!value.is_list() || value.GetList().size() > 128) return nodes;
++  size_t bytes = 0;
++  for (const auto& entry : value.GetList()) {
++    if (!entry.is_dict()) return {};
++    const auto* id = entry.GetDict().FindString("id");
++    const auto* text = entry.GetDict().FindString("text");
++    if (!id || !text || id->size() > 32 || text->size() > 131072) return {};
++    bytes += id->size() + text->size();
++    if (bytes > 512 * 1024) return {};
++    nodes.push_back(chrome::mojom::NookTranslationNode::New(*id, *text));
++  }
++  return nodes;
++}
++}  // namespace
++
++void ChromeRenderFrameObserver::ResetNookTranslation() {
++  nook_translation_weak_.InvalidateWeakPtrs();
++  nook_translation_client_.reset();
++  nook_translation_object_.Reset();
++  nook_translation_document_.reset();
++  nook_translation_generation_ = 0;
++}
++
++void ChromeRenderFrameObserver::NookTranslationDisconnected() {
++  auto* frame = render_frame()->GetWebFrame();
++  if (frame && nook_translation_document_ &&
++      frame->GetDocument().Token() == *nook_translation_document_ && !nook_translation_object_.IsEmpty()) {
++    auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++    v8::HandleScope handles(isolate);
++    v8::TryCatch errors(isolate);
++    auto context = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_TRANSLATE);
++    if (!context.IsEmpty()) {
++      v8::Context::Scope scope(context);
++      auto object = nook_translation_object_.Get(isolate);
++      v8::Local<v8::Value> method;
++      if (object->Get(context, v8::String::NewFromUtf8Literal(isolate, "restore")).ToLocal(&method) &&
++          method->IsFunction()) {
++        // Rebinding the same document must wait for this old instance's
++        // restoration; otherwise a suspended cleanup could overwrite new work.
++        const auto document = *nook_translation_document_;
++        nook_translation_cleanup_document_ = document;
++        ResetNookTranslation();
++        frame->RequestExecuteV8Function(context, method.As<v8::Function>(), object, 0, nullptr,
++            base::BindOnce([](base::WeakPtr<ChromeRenderFrameObserver> self,
++                              blink::DocumentToken document,
++                              std::optional<base::Value>, base::TimeTicks) {
++              if (self && self->nook_translation_cleanup_document_ == document)
++                self->nook_translation_cleanup_document_.reset();
++            }, nook_translation_weak_.GetWeakPtr(), document));
++        return;
++      }
++    }
++  }
++  ResetNookTranslation();
++}
++
++void ChromeRenderFrameObserver::NookTranslationNodes(gin::Arguments* arguments) {
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || !render_frame()->IsMainFrame() ||
++      !nook_translation_document_ ||
++      frame->GetDocument().Token() != *nook_translation_document_ ||
++      !nook_translation_client_.is_bound()) return;
++  v8::Local<v8::Value> input;
++  if (!arguments->GetNext(&input)) return;
++  if (input->IsNull()) {
++    nook_translation_client_->NodesChanged(*nook_translation_document_, nook_translation_generation_, true, {});
++    nook_translation_client_.reset();
++    return;
++  }
++  auto value = content::V8ValueConverter::Create()->FromV8Value(
++      input, frame->GetScriptContextFromWorldId(arguments->isolate(),
++                                              ISOLATED_WORLD_ID_NOOK_TRANSLATE));
++  if (!value) return;
++  auto nodes = NookTranslationNodesFromValue(*value);
++  if (!nodes.empty()) nook_translation_client_->NodesChanged(
++      *nook_translation_document_, nook_translation_generation_, false, std::move(nodes));
++}
++
++void ChromeRenderFrameObserver::NookTranslate(
++    const blink::DocumentToken& document, uint64_t generation, int32_t operation,
++    std::vector<chrome::mojom::NookTranslationNodePtr> pairs,
++    mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient> client,
++    NookTranslateCallback callback) {
++  // Creating the isolated context evaluates no page/controller code. Actual
++  // factory and operation calls run through Blink's suspension-aware executor.
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || !render_frame()->IsMainFrame() ||
++      frame->GetDocument().Token() != document || !generation ||
++      !GURL(frame->GetDocument().Url()).SchemeIsHTTPOrHTTPS()) {
++    std::move(callback).Run(false, "", "", {});
++    return;
++  }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto context = frame->GetScriptContextFromWorldId(
++      isolate, ISOLATED_WORLD_ID_NOOK_TRANSLATE);
++  if (context.IsEmpty()) {
++    std::ignore = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++        ISOLATED_WORLD_ID_NOOK_TRANSLATE,
++        blink::WebScriptSource(blink::WebString::FromUtf8("void 0")),
++        blink::BackForwardCacheAware::kAllow);
++    context = frame->GetScriptContextFromWorldId(
++        isolate, ISOLATED_WORLD_ID_NOOK_TRANSLATE);
++  }
++  if (context.IsEmpty()) {
++    std::move(callback).Run(false, "", "", {});
++    return;
++  }
++  struct PendingOperation {
++    std::vector<chrome::mojom::NookTranslationNodePtr> pairs;
++    mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient> client;
++    NookTranslateCallback callback;
++  };
++  auto pending = std::make_shared<PendingOperation>(
++      PendingOperation{std::move(pairs), std::move(client), std::move(callback)});
++  const uint64_t request = ++nook_translation_request_;
++  v8::Context::Scope context_scope(context);
++  v8::MicrotasksScope microtasks_scope(
++      context, v8::MicrotasksScope::kDoNotRunMicrotasks);
++  v8::Local<v8::Function> execute;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self,
++             blink::DocumentToken document, uint64_t generation,
++             uint64_t request, int32_t operation,
++             std::shared_ptr<PendingOperation> pending,
++             gin::Arguments* arguments) {
++            if (!self || !pending->callback ||
++                self->nook_translation_request_ != request) return;
++            auto* frame = self->render_frame()->GetWebFrame();
++            if (!frame || frame->GetDocument().Token() != document ||
++                frame->GetScriptContextFromWorldId(arguments->isolate(),
++                    ISOLATED_WORLD_ID_NOOK_TRANSLATE) !=
++                    arguments->isolate()->GetCurrentContext()) return;
++            self->NookTranslateNow(document, generation, operation,
++                std::move(pending->pairs), std::move(pending->client),
++                std::move(pending->callback));
++          }, nook_translation_weak_.GetWeakPtr(), document, generation,
++          request, operation, pending))->GetFunction(context).ToLocal(&execute)) {
++    std::move(pending->callback).Run(false, "", "", {});
++    return;
++  }
++  frame->RequestExecuteV8Function(context, execute, context->Global(), 0, nullptr,
++      base::BindOnce([](std::shared_ptr<PendingOperation> pending,
++                        std::optional<base::Value>, base::TimeTicks) {
++        // Context destruction, supersession and rejected execution still own
++        // the exact Mojo response, even when the observer has gone away.
++        if (pending->callback)
++          std::move(pending->callback).Run(false, "", "", {});
++      }, std::move(pending)));
++}
++
++void ChromeRenderFrameObserver::NookTranslateNow(
++    const blink::DocumentToken& document, uint64_t generation, int32_t operation,
++    std::vector<chrome::mojom::NookTranslationNodePtr> pairs,
++    mojo::PendingAssociatedRemote<chrome::mojom::NookTranslationClient> client,
++    NookTranslateCallback callback) {
++  auto fail = [&] { std::move(callback).Run(false, "", "", {}); };
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || !render_frame()->IsMainFrame() || operation < 0 || operation > 3 ||
++      !generation || nook_translation_cleanup_document_ == document || frame->GetDocument().IsNull() ||
++      frame->GetDocument().Token() != document ||
++      !GURL(frame->GetDocument().Url()).SchemeIsHTTPOrHTTPS() || pairs.size() > 128) {
++    fail(); return;
++  }
++  // Only sampling may establish a fresh document/generation. Delayed translated
++  // text never creates a replacement instance in a new document.
++  if (nook_translation_document_ != document || nook_translation_generation_ != generation) {
++    if (operation != 0) { fail(); return; }
++    ResetNookTranslation();
++    nook_translation_document_ = document;
++    nook_translation_generation_ = generation;
++  }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  v8::TryCatch errors(isolate);
++  if (nook_translation_object_.IsEmpty()) {
++    const auto source = ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(IDR_NOOK_PAGE_TRANSLATE);
++    auto factory = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++        ISOLATED_WORLD_ID_NOOK_TRANSLATE,
++        blink::WebScriptSource(blink::WebString::FromUtf8(source)),
++        blink::BackForwardCacheAware::kAllow);
++    if (factory.IsEmpty() || !factory->IsFunction()) { fail(); return; }
++    auto context = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_TRANSLATE);
++    if (context.IsEmpty()) { fail(); return; }
++    v8::Context::Scope scope(context);
++    v8::Local<v8::Function> notify;
++    if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          &ChromeRenderFrameObserver::NookTranslationNodes, nook_translation_weak_.GetWeakPtr()))
++          ->GetFunction(context).ToLocal(&notify)) { fail(); return; }
++    v8::Local<v8::Value> argument = notify;
++    v8::Local<v8::Value> object;
++    if (!factory.As<v8::Function>()->Call(context, context->Global(), 1, &argument).ToLocal(&object) ||
++        !object->IsObject()) { fail(); return; }
++    nook_translation_object_.Reset(isolate, object.As<v8::Object>());
++  }
++  auto context = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_TRANSLATE);
++  if (context.IsEmpty()) { fail(); return; }
++  v8::Context::Scope scope(context);
++  auto object = nook_translation_object_.Get(isolate);
++  constexpr std::array<const char*, 4> names = {"sample", "start", "apply", "restore"};
++  v8::Local<v8::Value> method;
++  if (!object->Get(context, v8::String::NewFromUtf8(isolate, names[operation]).ToLocalChecked()).ToLocal(&method) ||
++      !method->IsFunction()) { fail(); return; }
++  if (operation == 1) {
++    if (client.is_valid()) {
++      nook_translation_client_.reset();
++      nook_translation_client_.Bind(std::move(client));
++      nook_translation_client_.set_disconnect_handler(base::BindOnce(
++          &ChromeRenderFrameObserver::NookTranslationDisconnected, nook_translation_weak_.GetWeakPtr()));
++    } else if (!nook_translation_client_.is_bound() || !nook_translation_client_.is_connected()) {
++      fail(); return;
++    }
++  }
++  base::ListValue translated;
++  size_t bytes = 0;
++  for (const auto& pair : pairs) {
++    bytes += pair->id.size() + pair->text.size();
++    if (pair->id.size() > 32 || pair->text.size() > 131072 || bytes > 512 * 1024) { fail(); return; }
++    base::ListValue entry;
++    entry.Append(pair->id); entry.Append(pair->text);
++    translated.Append(std::move(entry));
++  }
++  auto argument = content::V8ValueConverter::Create()->ToV8Value(base::Value(std::move(translated)), context);
++  v8::Local<v8::Value> result;
++  if (!method.As<v8::Function>()->Call(context, object, operation == 2 ? 1 : 0, &argument).ToLocal(&result)) {
++    // start() restored locally before throwing. Drop queued old batches and
++    // cancel its disconnect handler rather than scheduling redundant cleanup.
++    if (operation == 1) nook_translation_client_.reset();
++    fail(); return;
++  }
++  auto value = content::V8ValueConverter::Create()->FromV8Value(result, context);
++  std::string text, language;
++  std::vector<chrome::mojom::NookTranslationNodePtr> nodes;
++  if (operation == 0 && value && value->is_dict()) {
++    const auto* sample = value->GetDict().FindString("text");
++    const auto* lang = value->GetDict().FindString("lang");
++    if (!sample || !lang || sample->size() > 8192 || lang->size() > 256) { fail(); return; }
++    text = *sample; language = *lang;
++  } else if (operation == 1 && value) nodes = NookTranslationNodesFromValue(*value);
++  if (operation == 3) nook_translation_client_.reset();
++  std::move(callback).Run(true, text, language, std::move(nodes));
++}
++
++namespace {
++constexpr size_t kNookScriptSourceLimit = 128 * 1024;
++constexpr size_t kNookScriptResultLimit = 1024 * 1024;
++chrome::mojom::NookScriptResultPtr NookScriptFailure(
++    chrome::mojom::NookScriptStatus status) {
++  return chrome::mojom::NookScriptResult::New(status, "", "", false);
++}
++}
++
++
++void ChromeRenderFrameObserver::ResetNookBoostPicker(bool cleanup_document) {
++  nook_boost_picker_weak_.InvalidateWeakPtrs();
++  auto pending = std::move(nook_boost_picker_);
++  nook_boost_picker_.reset();
++  v8::Global<v8::Object> controller = std::move(nook_boost_picker_controller_);
++#if BUILDFLAG(IS_MAC)
++  // OnDestruct has no Blink frame; idle resets need no frame access either.
++  // Retire native ownership before Blink execution or the reply can reenter us.
++  if (cleanup_document && pending && !controller.IsEmpty()) {
++    auto* frame = render_frame()->GetWebFrame();
++    if (frame && frame->GetDocument().Token() == pending->document) {
++      auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++      v8::HandleScope handles(isolate);
++      const auto frame_token = frame->GetLocalFrameToken();
++      auto context = frame->GetScriptContextFromWorldId(
++          isolate, ISOLATED_WORLD_ID_NOOK_BOOST_PICKER);
++      if (!context.IsEmpty()) {
++        v8::Context::Scope entered(context);
++        auto object = controller.Get(isolate);
++        v8::Local<v8::Value> stop;
++        if (object->Get(context, v8::String::NewFromUtf8Literal(isolate, "stop"))
++                .ToLocal(&stop) && stop->IsFunction()) {
++          frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++          if (frame && frame->GetDocument().Token() == pending->document)
++            frame->RequestExecuteV8Function(context, stop.As<v8::Function>(),
++                                            object, 0, nullptr, {});
++        }
++      }
++    }
++  }
++#endif
++  if (pending) std::move(pending->callback).Run("");
++}
++
++void ChromeRenderFrameObserver::FinishNookBoostPicker(const std::string& selector) {
++  if (!nook_boost_picker_) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const bool current = frame && frame->GetDocument().Token() == nook_boost_picker_->document;
++  auto callback = std::move(nook_boost_picker_->callback);
++  nook_boost_picker_.reset();
++  nook_boost_picker_controller_.Reset();
++  nook_boost_picker_weak_.InvalidateWeakPtrs();
++  std::move(callback).Run(current && selector.size() <= 2048 ? selector : "");
++}
++
++void ChromeRenderFrameObserver::NookCancelBoostPicker(
++    const blink::DocumentToken& document, uint64_t owner, uint64_t request) {
++  if (nook_boost_picker_ && nook_boost_picker_->document == document &&
++      nook_boost_picker_->owner == owner && nook_boost_picker_->request == request)
++    ResetNookBoostPicker();
++}
++
++void ChromeRenderFrameObserver::NookStartBoostPicker(
++    const blink::DocumentToken& document, uint64_t owner, uint64_t request,
++    NookStartBoostPickerCallback callback) {
++#if !BUILDFLAG(IS_MAC)
++  std::move(callback).Run("");
++#else
++  auto* frame = render_frame()->GetWebFrame();
++  if (nook_boost_picker_ || !frame || !render_frame()->IsMainFrame() || !owner || !request ||
++      frame->GetDocument().Token() != document ||
++      !GURL(frame->GetDocument().Url()).SchemeIsHTTPOrHTTPS() ||
++      !render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) {
++    std::move(callback).Run(""); return;
++  }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  v8::TryCatch errors(isolate);
++  const auto frame_token = frame->GetLocalFrameToken();
++  auto alive = nook_boost_picker_weak_.GetWeakPtr();
++  // The ordinary Blink path enforces sandbox/script policy; no policy bypass.
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive) { std::move(callback).Run(""); return; }
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document || allowed.IsEmpty() || !allowed->IsTrue()) {
++    std::move(callback).Run(""); return;
++  }
++  const auto source = ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(IDR_NOOK_BOOST_PICKER);
++  auto factory = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++      ISOLATED_WORLD_ID_NOOK_BOOST_PICKER,
++      blink::WebScriptSource(blink::WebString::FromUtf8(source)),
++      blink::BackForwardCacheAware::kAllow);
++  if (!alive) { std::move(callback).Run(""); return; }
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document || factory.IsEmpty() || !factory->IsFunction()) {
++    std::move(callback).Run(""); return;
++  }
++  auto context = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_BOOST_PICKER);
++  if (context.IsEmpty()) { std::move(callback).Run(""); return; }
++  v8::Context::Scope entered(context);
++  nook_boost_picker_.emplace(NookBoostPicker{document, owner, request, std::move(callback)});
++  v8::Local<v8::Function> send, install;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++         const std::string& selector) {
++        if (self && self->nook_boost_picker_ && self->nook_boost_picker_->document == document)
++          self->FinishNookBoostPicker(selector);
++      }, alive, document))->GetFunction(context).ToLocal(&send) ||
++      !gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++         gin::Arguments* args) {
++        if (!self || !self->nook_boost_picker_ || self->nook_boost_picker_->document != document) {
++          args->Return(false); return;
++        }
++        auto* frame = self->render_frame()->GetWebFrame();
++        if (!frame || frame->GetDocument().Token() != document ||
++            !self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++            (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script) ||
++            frame->GetScriptContextFromWorldId(args->isolate(), ISOLATED_WORLD_ID_NOOK_BOOST_PICKER)
++                != args->isolate()->GetCurrentContext()) { args->Return(false); return; }
++        v8::Local<v8::Value> object;
++        if (args->Length() && args->GetNext(&object) && object->IsObject())
++          self->nook_boost_picker_controller_.Reset(args->isolate(), object.As<v8::Object>());
++        args->Return(true);
++      }, alive, document))->GetFunction(context).ToLocal(&install)) {
++    ResetNookBoostPicker(); return;
++  }
++  v8::Local<v8::Value> args[] = {send, install};
++  frame->RequestExecuteV8Function(context, factory.As<v8::Function>(),
++      v8::Undefined(isolate), 2, args, base::BindOnce(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, std::optional<base::Value>, base::TimeTicks) {
++        if (self && self->nook_boost_picker_controller_.IsEmpty()) self->ResetNookBoostPicker();
++      }, alive));
++#endif
++}
++
++void ChromeRenderFrameObserver::ResetNookScript() {
++  nook_script_weak_.InvalidateWeakPtrs();
++  auto pending = std::move(nook_script_);
++  nook_script_.reset();
++  nook_script_sink_.Reset();
++  nook_script_document_.reset();
++  nook_script_queued_ = 0;
++  if (pending) std::move(pending->callback).Run(
++      NookScriptFailure(chrome::mojom::NookScriptStatus::kCancelled));
++}
++
++void ChromeRenderFrameObserver::NookCancelScript(
++    const blink::DocumentToken& document, uint64_t owner, uint64_t request) {
++  if (!nook_script_ || nook_script_->document != document ||
++      nook_script_->owner != owner || nook_script_->request != request) return;
++  auto callback = std::move(nook_script_->callback);
++  nook_script_.reset();
++  // Keep the suspended-thunk gate until Blink retires that exact thunk.
++  std::move(callback).Run(NookScriptFailure(
++      chrome::mojom::NookScriptStatus::kCancelled));
++}
++
++void ChromeRenderFrameObserver::NookScriptThunk(
++    const v8::FunctionCallbackInfo<v8::Value>& info) {
++  auto context = info.GetIsolate()->GetCurrentContext();
++  auto data = info.Data().As<v8::Array>();
++  v8::Local<v8::Value> sink, generation, phase;
++  if (!data->Get(context, 0).ToLocal(&sink) || !sink->IsFunction() ||
++      !data->Get(context, 1).ToLocal(&generation) ||
++      !data->Get(context, 2).ToLocal(&phase)) return;
++  v8::Local<v8::Value> args[] = {
++      generation, phase, info.Length() ? info[0] :
++          v8::Undefined(info.GetIsolate()).As<v8::Value>()};
++  v8::Local<v8::Value> ignored;
++  std::ignore = sink.As<v8::Function>()->Call(context, v8::Undefined(
++      info.GetIsolate()), 3, args).ToLocal(&ignored);
++}
++
++void ChromeRenderFrameObserver::NookEvaluateScript(
++    const blink::DocumentToken& document, uint64_t owner, uint64_t request,
++    int32_t mode, int32_t world, const std::string& source,
++    NookEvaluateScriptCallback callback) {
++  using Status = chrome::mojom::NookScriptStatus;
++  auto* frame = render_frame()->GetWebFrame();
++  if (nook_script_ || nook_script_queued_) {
++    std::move(callback).Run(NookScriptFailure(Status::kBusy)); return;
++  }
++  if (!frame || !render_frame()->IsMainFrame() ||
++      frame->GetDocument().Token() != document || !owner || !request ||
++      !GURL(frame->GetDocument().Url()).SchemeIsHTTPOrHTTPS() ||
++      source.size() > kNookScriptSourceLimit || (mode != 0 && mode != 1) ||
++      (world != 0 && world != 1)) {
++    std::move(callback).Run(NookScriptFailure(Status::kUnavailable)); return;
++  }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto context = frame->MainWorldScriptContext();
++  if (context.IsEmpty()) {
++    std::move(callback).Run(NookScriptFailure(Status::kUnavailable)); return;
++  }
++  v8::Context::Scope entered(context);
++  if (!nook_script_document_ || *nook_script_document_ != document ||
++      nook_script_sink_.IsEmpty()) {
++    v8::Local<v8::Function> sink;
++    if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++            &ChromeRenderFrameObserver::NookScriptDispatch,
++            nook_script_weak_.GetWeakPtr(), document))
++            ->GetFunction(context).ToLocal(&sink)) {
++      std::move(callback).Run(NookScriptFailure(Status::kUnavailable)); return;
++    }
++    nook_script_sink_.Reset(isolate, sink);
++    nook_script_document_ = document;
++  }
++  const uint64_t generation = ++nook_script_generation_;
++  nook_script_.emplace(NookPendingScript{document, owner, request, generation,
++                                       mode, world, source, false, std::move(callback)});
++  v8::Local<v8::Value> metadata[] = {nook_script_sink_.Get(isolate),
++      v8::BigInt::NewFromUnsigned(isolate, generation), v8::Integer::New(isolate, 0)};
++  auto data = v8::Array::New(isolate, metadata, 3);
++  v8::Local<v8::Function> thunk;
++  if (!v8::Function::New(context, NookScriptThunk, data).ToLocal(&thunk)) {
++    NookScriptComplete(Status::kUnavailable); return;
++  }
++  nook_script_queued_ = generation;
++  frame->RequestExecuteV8Function(context, thunk, context->Global(), 0, nullptr,
++      base::BindOnce([](base::WeakPtr<ChromeRenderFrameObserver> self,
++          blink::DocumentToken document, uint64_t generation,
++          std::optional<base::Value>, base::TimeTicks) {
++        if (!self || self->nook_script_document_ != document) return;
++        if (self->nook_script_queued_ == generation)
++          self->nook_script_queued_ = 0;
++        // A thunk that ran has either completed or installed promise reactions.
++        if (self->nook_script_ &&
++            self->nook_script_->generation == generation &&
++            !self->nook_script_->ran)
++          self->NookScriptComplete(Status::kUnavailable);
++      }, nook_script_weak_.GetWeakPtr(), document, generation));
++}
++
++void ChromeRenderFrameObserver::NookScriptDispatch(
++    const blink::DocumentToken& document, gin::Arguments* arguments) {
++  v8::Local<v8::Value> id, phase, value;
++  if (!arguments->GetNext(&id) || !id->IsBigInt() ||
++      !arguments->GetNext(&phase) || !phase->IsInt32() ||
++      !arguments->GetNext(&value)) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const uint64_t generation = id.As<v8::BigInt>()->Uint64Value();
++  if (!frame || frame->GetDocument().Token() != document ||
++      !nook_script_ || nook_script_->document != document ||
++      nook_script_->generation != generation) return;
++  const int operation = phase.As<v8::Int32>()->Value();
++  auto context = frame->MainWorldScriptContext();
++  if (context.IsEmpty()) { NookScriptComplete(
++      chrome::mojom::NookScriptStatus::kUnavailable); return; }
++  v8::Context::Scope page(context);
++  if (!operation) {
++    NookScriptRun(generation, context);
++  } else {
++#if BUILDFLAG(IS_MAC)
++    if (nook_script_->world == 1) context = frame->GetScriptContextFromWorldId(
++        arguments->isolate(), ISOLATED_WORLD_ID_NOOK_AUTOMATION);
++#endif
++    if (context.IsEmpty()) { NookScriptComplete(
++        chrome::mojom::NookScriptStatus::kUnavailable); return; }
++    v8::Context::Scope requested_world(context);
++    NookScriptComplete(operation == 1 ? chrome::mojom::NookScriptStatus::kValue
++                                     : chrome::mojom::NookScriptStatus::kRejected,
++                       value);
++  }
++}
++
++void ChromeRenderFrameObserver::NookScriptRun(
++    uint64_t generation, v8::Local<v8::Context> context) {
++  using Status = chrome::mojom::NookScriptStatus;
++  auto* frame = render_frame()->GetWebFrame();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  const auto alive = nook_script_weak_.GetWeakPtr();
++  // Enter the actual page context for Blink's normal sandbox/content policy
++  // probe, even when the requested execution world is isolated.
++  auto main = frame->MainWorldScriptContext();
++  if (main.IsEmpty()) { NookScriptComplete(Status::kUnavailable); return; }
++  {
++    v8::Context::Scope page(main);
++    const auto& settings = frame->GetContentSettings();
++    if (!render_frame()->GetBlinkPreferences().javascript_enabled ||
++        (settings && !settings->allow_script)) {
++      NookScriptComplete(Status::kUnavailable); return;
++    }
++    auto allowed = frame->ExecuteScriptAndReturnValue(
++        blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++    if (!alive) return;
++    if (allowed.IsEmpty() || !allowed->IsTrue()) {
++      NookScriptComplete(Status::kUnavailable); return;
++    }
++  }
++  if (!nook_script_ || nook_script_->generation != generation ||
++      frame->GetDocument().Token() != nook_script_->document) return;
++  if (nook_script_->world == 1) {
++#if BUILDFLAG(IS_MAC)
++    context = frame->GetScriptContextFromWorldId(
++        isolate, ISOLATED_WORLD_ID_NOOK_AUTOMATION);
++    if (context.IsEmpty()) {
++      std::ignore = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++          ISOLATED_WORLD_ID_NOOK_AUTOMATION,
++          blink::WebScriptSource(blink::WebString::FromUtf8("void 0")),
++          blink::BackForwardCacheAware::kAllow);
++      if (!alive || !nook_script_ || nook_script_->generation != generation ||
++          frame->GetDocument().Token() != nook_script_->document) return;
++      context = frame->GetScriptContextFromWorldId(
++          isolate, ISOLATED_WORLD_ID_NOOK_AUTOMATION);
++    }
++#else
++    context = {};
++#endif
++  }
++  if (context.IsEmpty()) { NookScriptComplete(Status::kUnavailable); return; }
++  nook_script_->ran = true;
++  std::string source = std::move(nook_script_->source);
++  nook_script_->source.clear();
++  if (nook_script_->mode == 1) source = "(async () => {\n" + source + "\n})()";
++  v8::Context::Scope entered(context);
++  v8::TryCatch caught(isolate);
++  v8::Local<v8::String> text;
++  v8::Local<v8::Script> script;
++  v8::Local<v8::Value> value;
++  if (!v8::String::NewFromUtf8(isolate, source.data(), v8::NewStringType::kNormal,
++                             source.size()).ToLocal(&text)) {
++    NookScriptComplete(Status::kUnavailable); return;
++  }
++  v8::ScriptCompiler::Source input(text);
++  if (!v8::ScriptCompiler::Compile(context, &input).ToLocal(&script) ||
++      !script->Run(context).ToLocal(&value)) {
++    if (alive) NookScriptComplete(Status::kException, caught.Exception());
++    return;
++  }
++  if (!alive) return;
++  if (!nook_script_ || nook_script_->generation != generation) return;
++  // Promise resolution also handles thenables, preserving async-body semantics.
++  v8::Local<v8::Promise::Resolver> resolver;
++  if (!v8::Promise::Resolver::New(context).ToLocal(&resolver) ||
++      resolver->Resolve(context, value).IsNothing()) {
++    if (alive && nook_script_ && nook_script_->generation == generation)
++      NookScriptComplete(Status::kException, caught.Exception());
++    return;
++  }
++  if (!alive || !nook_script_ || nook_script_->generation != generation ||
++      frame->GetDocument().Token() != nook_script_->document) return;
++  std::array<v8::Local<v8::Function>, 2> reactions;
++  for (int i = 0; i < 2; ++i) {
++    v8::Local<v8::Value> metadata[] = {nook_script_sink_.Get(isolate),
++        v8::BigInt::NewFromUnsigned(isolate, generation),
++        v8::Integer::New(isolate, i + 1)};
++    auto data = v8::Array::New(isolate, metadata, 3);
++    if (!v8::Function::New(context, NookScriptThunk, data).ToLocal(&reactions[i])) {
++      NookScriptComplete(Status::kUnavailable); return;
++    }
++  }
++  v8::Local<v8::Promise> ignored;
++  if (!resolver->GetPromise()->Then(context, reactions[0], reactions[1])
++           .ToLocal(&ignored) && alive) NookScriptComplete(Status::kUnavailable);
++}
++
++void ChromeRenderFrameObserver::NookScriptComplete(
++    chrome::mojom::NookScriptStatus status, v8::Local<v8::Value> value) {
++  if (!nook_script_) return;
++  const auto alive = nook_script_weak_.GetWeakPtr();
++  const auto document = nook_script_->document;
++  const uint64_t generation = nook_script_->generation;
++  auto callback = std::move(nook_script_->callback);
++  nook_script_.reset();
++  // Serialization may invoke page hooks. Keep admission busy until it retires.
++  nook_script_queued_ = generation;
++  auto result = NookScriptFailure(status);
++  auto* isolate = render_frame()->GetWebFrame()->GetAgentGroupScheduler()->Isolate();
++  auto context = isolate->GetCurrentContext();
++  const auto current = [&]() {
++    return alive && alive->render_frame()->GetWebFrame() &&
++        alive->render_frame()->GetWebFrame()->GetDocument().Token() == document;
++  };
++  v8::TryCatch caught(isolate);
++  auto copy = [&](v8::Local<v8::String> string, std::string& target) {
++    if (string->Utf8Length(isolate) > static_cast<int>(kNookScriptResultLimit)) {
++      result->status = chrome::mojom::NookScriptStatus::kUnserializable;
++      return;
++    }
++    v8::String::Utf8Value utf8(isolate, string);
++    target.assign(*utf8, utf8.length());
++  };
++  if (!value.IsEmpty()) {
++    if (status == chrome::mojom::NookScriptStatus::kValue && value->IsUndefined())
++      result->status = chrome::mojom::NookScriptStatus::kUndefined;
++    result->is_string = value->IsString();
++    if (value->IsString() && value.As<v8::String>()->Utf8Length(isolate) >
++            static_cast<int>(kNookScriptResultLimit)) {
++      result->status = chrome::mojom::NookScriptStatus::kUnserializable;
++      if (alive && alive->nook_script_queued_ == generation)
++        alive->nook_script_queued_ = 0;
++      std::move(callback).Run(std::move(result));
++      return;
++    }
++    // Match DevMCP's JSON-first formatting; do not invoke a page toString hook
++    // when JSON already represents the value. Raw strings retain saveTo bytes.
++    if (status == chrome::mojom::NookScriptStatus::kValue && !value->IsUndefined()) {
++      v8::Local<v8::String> json;
++      if (v8::JSON::Stringify(context, value,
++          v8::String::NewFromUtf8Literal(isolate, "  ")).ToLocal(&json))
++        copy(json, result->json);
++      else caught.Reset();  // Legacy formatting falls back for cyclic values.
++    }
++    if (current() && (result->is_string || result->json.empty() || value->IsNumber())) {
++      v8::Local<v8::String> text;
++      if (value->ToString(context).ToLocal(&text)) copy(text, result->text);
++      else result->status = chrome::mojom::NookScriptStatus::kUnserializable;
++    }
++  }
++  if (!current()) result = NookScriptFailure(
++      chrome::mojom::NookScriptStatus::kCancelled);
++  if (alive && alive->nook_script_queued_ == generation)
++    alive->nook_script_queued_ = 0;
++  std::move(callback).Run(std::move(result));
++}
++
++
++
++void ChromeRenderFrameObserver::ResetNookDocumentResources(bool cleanup_document) {
++  // One document receiver also carries independent tweak invalidations. Never
++  // drop it merely because the ad blocker changed/reset its cosmetic state.
++  nook_cosmetic_weak_.InvalidateWeakPtrs();
++#if BUILDFLAG(IS_MAC)
++  nook_document_resources_.reset();
++#endif
++  // This final cleanup may synchronously execute old-document JavaScript.
++  ResetNookPageTweaks(cleanup_document);
++}
++
++void ChromeRenderFrameObserver::ResetNookPageTweaks(bool cleanup_document) {
++  nook_page_tweaks_weak_.InvalidateWeakPtrs();
++#if BUILDFLAG(IS_MAC)
++  const auto reset_state = [this] {
++    nook_sponsor_controller_.Reset();
++    nook_social_controller_.Reset();
++    nook_social_video_controller_.Reset();
++    nook_page_tweaks_.reset();
++    nook_page_tweaks_document_.reset();
++    nook_boost_script_next_.reset();
++  };
++  // Destruction has no Blink frame. Idle/native-only retirement must not even
++  // query it; document replacement already discarded the old DOM/listeners.
++  if (!cleanup_document || (nook_sponsor_controller_.IsEmpty() && nook_social_controller_.IsEmpty() && nook_social_video_controller_.IsEmpty())) { reset_state(); return; }
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame) { reset_state(); return; }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  const auto token = frame->GetLocalFrameToken();
++  const auto document = nook_page_tweaks_document_;
++  const std::array<v8::Local<v8::Object>, 3> objects = {
++      nook_sponsor_controller_.IsEmpty() ? v8::Local<v8::Object>() : nook_sponsor_controller_.Get(isolate),
++      nook_social_controller_.IsEmpty() ? v8::Local<v8::Object>() : nook_social_controller_.Get(isolate),
++      nook_social_video_controller_.IsEmpty() ? v8::Local<v8::Object>() : nook_social_video_controller_.Get(isolate)};
++  const auto isolated = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS);
++  const std::array<v8::Local<v8::Context>, 3> contexts = {isolated, isolated, frame->MainWorldScriptContext()};
++  reset_state();
++  // Stop handles may synchronously replace/destroy the document, including
++  // through an accessor. All native ownership is retired before any callout.
++  // Only operation-local old handles remain; never access this below.
++  for (size_t i = 0; i < objects.size(); ++i) {
++    frame = blink::WebLocalFrame::FromFrameToken(token);
++    if (!frame || !document || frame->GetDocument().Token() != *document) return;
++    if (objects[i].IsEmpty() || contexts[i].IsEmpty()) continue;
++    v8::Context::Scope entered(contexts[i]);
++    v8::Local<v8::Value> stop;
++    if (!objects[i]->Get(contexts[i], gin::StringToV8(isolate, "stop")).ToLocal(&stop) || !stop->IsFunction()) continue;
++    frame = blink::WebLocalFrame::FromFrameToken(token);
++    if (!frame || frame->GetDocument().Token() != *document) return;
++    frame->RequestExecuteV8Function(contexts[i], stop.As<v8::Function>(), objects[i], 0, nullptr, {});
++  }
++#endif
++}
++
++void ChromeRenderFrameObserver::ClearNookPageTweaks(const blink::DocumentToken& document) {
++#if BUILDFLAG(IS_MAC)
++  if (nook_page_tweaks_document_ == document) ResetNookPageTweaks();
++#endif
++}
++
++bool ChromeRenderFrameObserver::NookSocialDownload(const std::string& url) {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_->social_download || !nook_page_tweaks_document_ ||
++      !nook_document_resources_ || url.size() > 8192) return false;
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || !render_frame()->IsMainFrame() || !frame->HasTransientUserActivation() ||
++      frame->GetDocument().Token() != *nook_page_tweaks_document_ ||
++      !GURL(url).SchemeIs("https") || !render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) return false;
++  const auto document = *nook_page_tweaks_document_;
++  const auto token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto allowed = frame->ExecuteScriptAndReturnValue(blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive || allowed.IsEmpty() || !allowed->IsTrue()) return false;
++  frame = blink::WebLocalFrame::FromFrameToken(token);
++  if (!frame || frame->GetDocument().Token() != document) return false;
++  // Only the fixed isolated controller receives this closure. Page-world URL
++  // data cannot call it; the browser separately consumes actual activation.
++  nook_document_resources_->SaveSocialMedia(*nook_page_tweaks_document_, url,
++      static_cast<int32_t>(frame->GetDocument().GetReferrerPolicy()), base::DoNothing());
++  return true;
++#else
++  return false;
++#endif
++}
++
++void ChromeRenderFrameObserver::StartNookSocialDownload() {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_->social_download || !nook_page_tweaks_document_ ||
++      !nook_social_controller_.IsEmpty()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_page_tweaks_document_;
++  if (!frame || frame->GetDocument().Token() != document) return;
++  const auto token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  base::ListValue hosts; hosts.Append(std::string(GURL(frame->GetDocument().Url()).host()));
++  const auto sites = base::WriteJson(hosts).value_or("[]");
++  // The page-world function reads React data only; it never receives send.
++  for (const bool page_world : {true, false}) {
++    frame = blink::WebLocalFrame::FromFrameToken(token);
++    if (!alive || !frame || frame->GetDocument().Token() != document) return;
++    const auto resource = ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(
++        page_world ? IDR_NOOK_SOCIAL_VIDEO : IDR_NOOK_SOCIAL_DOWNLOAD);
++    const std::string source = page_world
++        ? "(function(install){if(!install())return;const controller=" + resource +
++            "if(controller&&!install(controller))controller.stop();})"
++        : "(function(send,install){if(!install())return;const nookSocialDownloadNative=send;const NOOK_DOWNLOAD_SITES=" +
++            sites + ";const controller=" + resource + "if(controller&&!install(controller))controller.stop();})";
++    auto factory = page_world
++        ? frame->ExecuteScriptAndReturnValue(blink::WebScriptSource(blink::WebString::FromUtf8(source)))
++        : frame->ExecuteScriptInIsolatedWorldAndReturnValue(ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS,
++            blink::WebScriptSource(blink::WebString::FromUtf8(source)), blink::BackForwardCacheAware::kAllow);
++    if (!alive || factory.IsEmpty() || !factory->IsFunction()) return;
++    frame = blink::WebLocalFrame::FromFrameToken(token);
++    if (!frame || frame->GetDocument().Token() != document) return;
++    auto context = page_world ? frame->MainWorldScriptContext()
++        : frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS);
++    if (context.IsEmpty()) return;
++    v8::Context::Scope entered(context);
++    v8::Local<v8::Function> send, install;
++    if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++        [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++           bool page_world, gin::Arguments* args) {
++          if (!self || !self->nook_page_tweaks_ || !self->nook_page_tweaks_->social_download ||
++              self->nook_page_tweaks_document_ != document) { args->Return(false); return; }
++          auto* frame = self->render_frame()->GetWebFrame();
++          if (!frame || frame->GetDocument().Token() != document ||
++              !self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++              (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) { args->Return(false); return; }
++          const auto token = frame->GetLocalFrameToken();
++          v8::HandleScope handles(args->isolate());
++          auto allowed = frame->ExecuteScriptAndReturnValue(blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++          if (!self || allowed.IsEmpty() || !allowed->IsTrue()) { args->Return(false); return; }
++          frame = blink::WebLocalFrame::FromFrameToken(token);
++          if (!frame || frame->GetDocument().Token() != document) { args->Return(false); return; }
++          const auto context = page_world ? frame->MainWorldScriptContext()
++              : frame->GetScriptContextFromWorldId(args->isolate(), ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS);
++          if (context.IsEmpty() || context != args->isolate()->GetCurrentContext()) { args->Return(false); return; }
++          v8::Local<v8::Value> object;
++          if (args->Length() && args->GetNext(&object) && object->IsObject())
++            (page_world ? self->nook_social_video_controller_ : self->nook_social_controller_)
++                .Reset(args->isolate(), object.As<v8::Object>());
++          args->Return(true);
++        }, alive, document, page_world))->GetFunction(context).ToLocal(&install)) return;
++    if (page_world) {
++      v8::Local<v8::Value> args[] = {install};
++      frame->RequestExecuteV8Function(context, factory.As<v8::Function>(), v8::Undefined(isolate), 1, args, {});
++    } else {
++      if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self, const std::string& url) {
++            return self && self->NookSocialDownload(url);
++          }, alive))->GetFunction(context).ToLocal(&send)) return;
++      v8::Local<v8::Value> args[] = {send, install};
++      frame->RequestExecuteV8Function(context, factory.As<v8::Function>(), v8::Undefined(isolate), 2, args, {});
++    }
++  }
++#endif
++}
++
++void ChromeRenderFrameObserver::StartNookSponsorBlock() {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_sponsor_controller_.IsEmpty() || !nook_page_tweaks_ ||
++      !nook_page_tweaks_document_ || nook_page_tweaks_->sponsor_block.empty()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || frame->GetDocument().Token() != *nook_page_tweaks_document_) return;
++  const auto document = *nook_page_tweaks_document_;
++  const auto token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  const std::string source = "(function(send,install){if(!install())return;const nookSponsorBlockNative=send;const controller=" +
++      ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(IDR_NOOK_SPONSOR_BLOCK) +
++      "if(!install(controller)&&controller)controller.stop();})";
++  auto factory = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++      ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS, blink::WebScriptSource(blink::WebString::FromUtf8(source)),
++      blink::BackForwardCacheAware::kAllow);
++  if (!alive || factory.IsEmpty() || !factory->IsFunction()) return;
++  frame = blink::WebLocalFrame::FromFrameToken(token);
++  if (!frame || frame->GetDocument().Token() != document) return;
++  auto context = frame->GetScriptContextFromWorldId(isolate, ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS);
++  if (context.IsEmpty()) return;
++  v8::Context::Scope entered(context);
++  v8::Local<v8::Function> send, install;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          &ChromeRenderFrameObserver::NookSponsorRequest, alive))->GetFunction(context).ToLocal(&send) ||
++      !gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++             gin::Arguments* args) {
++            if (!self || !self->nook_page_tweaks_ || self->nook_page_tweaks_document_ != document ||
++                self->nook_page_tweaks_->sponsor_block.empty()) { args->Return(false); return; }
++            auto* frame = self->render_frame()->GetWebFrame();
++            if (!frame || frame->GetDocument().Token() != document ||
++                !self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++                (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) {
++              args->Return(false); return;
++            }
++            v8::Local<v8::Value> object;
++            if (args->Length() && args->GetNext(&object) && object->IsObject())
++              self->nook_sponsor_controller_.Reset(args->isolate(), object.As<v8::Object>());
++            args->Return(true);
++          }, alive, document))->GetFunction(context).ToLocal(&install)) return;
++  v8::Local<v8::Value> args[] = {send, install};
++  frame->RequestExecuteV8Function(context, factory.As<v8::Function>(), v8::Undefined(isolate), 2, args, {});
++#endif
++}
++
++void ChromeRenderFrameObserver::NookSponsorRequest(const std::string& video, const std::string& uuid) {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || nook_page_tweaks_->sponsor_block.empty() ||
++      !nook_page_tweaks_document_ || !nook_document_resources_ || video.size() != 11 || uuid.size() > 64) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_page_tweaks_document_;
++  if (!frame || frame->GetDocument().Token() != document ||
++      !render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) return;
++  if (!uuid.empty()) { nook_document_resources_->ReportSponsorSegment(document, video, uuid); return; }
++  nook_document_resources_->GetSponsorSegments(document, video, base::BindOnce(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++         chrome::mojom::NookSponsorReplyPtr reply) {
++        if (!self || !reply || self->nook_page_tweaks_document_ != document ||
++            !self->nook_page_tweaks_ || self->nook_page_tweaks_->sponsor_block.empty()) return;
++        auto* frame = self->render_frame()->GetWebFrame();
++        if (!frame || frame->GetDocument().Token() != document || self->nook_sponsor_controller_.IsEmpty()) return;
++        base::ListValue segments;
++        for (const auto& segment : reply->segments) {
++          base::DictValue item; item.Set("UUID", segment->uuid);
++          item.Set("segment", base::ListValue().Append(segment->start).Append(segment->end));
++          item.Set("category", segment->category); item.Set("actionType", segment->action);
++          segments.Append(std::move(item));
++        }
++        base::DictValue options;
++        for (const auto& [key, value] : reply->options) options.Set(key, value);
++        base::ListValue args; args.Append(std::move(segments)); args.Append(std::move(options)); args.Append(reply->video);
++        const auto source = "(function(){const a=" + base::WriteJson(args).value_or("[]") +
++            ";window.__nookSponsorBlock?.receiveSegments(...a)})()";
++        auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++        v8::HandleScope handles(isolate);
++        auto context = frame->MainWorldScriptContext();
++        if (context.IsEmpty()) return;
++        v8::Context::Scope entered(context);
++        v8::Local<v8::Function> gate;
++        if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++            [](base::WeakPtr<ChromeRenderFrameObserver> current, blink::DocumentToken document,
++               std::string source) {
++              if (!current || current->nook_page_tweaks_document_ != document ||
++                  current->nook_sponsor_controller_.IsEmpty()) return;
++              auto* frame = current->render_frame()->GetWebFrame();
++              if (!frame || frame->GetDocument().Token() != document ||
++                  !current->render_frame()->GetBlinkPreferences().javascript_enabled ||
++                  (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) return;
++              const auto token = frame->GetLocalFrameToken();
++              auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++              v8::HandleScope handles(isolate);
++              auto allowed = frame->ExecuteScriptAndReturnValue(
++                  blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++              if (!current || allowed.IsEmpty() || !allowed->IsTrue()) return;
++              frame = blink::WebLocalFrame::FromFrameToken(token);
++              if (!frame || frame->GetDocument().Token() != document) return;
++              const blink::WebScriptSource script(blink::WebString::FromUtf8(source));
++              frame->RequestExecuteScript(ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS, base::span_from_ref(script),
++                  blink::mojom::UserActivationOption::kDoNotActivate, blink::mojom::EvaluationTiming::kSynchronous,
++                  blink::mojom::LoadEventBlockingOption::kDoNotBlock, {}, blink::BackForwardCacheAware::kAllow,
++                  blink::mojom::WantResultOption::kNoResult, blink::mojom::PromiseResultOption::kDoNotWait, {});
++            }, self->nook_page_tweaks_weak_.GetWeakPtr(), document, source))->GetFunction(context).ToLocal(&gate)) return;
++        frame->RequestExecuteV8Function(context, gate, v8::Undefined(isolate), 0, nullptr, {});
++      }, nook_page_tweaks_weak_.GetWeakPtr(), document));
++#endif
++}
++
++bool ChromeRenderFrameObserver::RunNookPageTweaksAtDocumentStart() {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_) return true;
++  // Consume fixed document-start fields once; keep only after-load scripts.
++  const auto config = nook_page_tweaks_.Clone();
++  nook_page_tweaks_->youtube_css.clear();
++  nook_page_tweaks_->youtube_frames = nook_page_tweaks_->youtube_no_hover = false;
++  nook_page_tweaks_->facebook_reels = nook_page_tweaks_->facebook_suggested = false;
++  nook_page_tweaks_->reddit_hot = false;
++  if (config->youtube_css.empty() && !config->youtube_frames && !config->youtube_no_hover &&
++      !config->facebook_reels && !config->facebook_suggested && !config->reddit_hot &&
++      config->sponsor_block.empty() && !config->social_download) return true;
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame || frame->GetDocument().Token() != *nook_page_tweaks_document_) return true;
++  const auto document = *nook_page_tweaks_document_;
++  const auto frame_token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  const auto& settings = frame->GetContentSettings();
++  if (!render_frame()->IsMainFrame() || !render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (settings && !settings->allow_script)) return true;
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return frame != nullptr;
++  if (allowed.IsEmpty() || !allowed->IsTrue()) return true;
++  if (config->social_download) StartNookSocialDownload();
++  if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return frame != nullptr;
++  if (!config->sponsor_block.empty()) StartNookSponsorBlock();
++  if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return frame != nullptr;
++  auto resource = [](int id) { return ui::ResourceBundle::GetSharedInstance().LoadDataResourceString(id); };
++  if (config->facebook_reels || config->facebook_suggested) {
++    const std::string source = "(()=>{const f=window.__nookFBFilter=window.__nookFBFilter||{};f.reels=" +
++        std::string(config->facebook_reels ? "true" : "false") + ";f.suggested=" +
++        std::string(config->facebook_suggested ? "true" : "false") + ";\n" +
++        resource(IDR_NOOK_FACEBOOK_TWEAKS) + "\n})()";
++    // Facebook's JSON.parse hook must precede the first page inline script.
++    frame->ExecuteScript(blink::WebScriptSource(blink::WebString::FromUtf8(source)));
++    if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++    frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++    if (!frame || frame->GetDocument().Token() != document) return frame != nullptr;
++  }
++  std::string source;
++  if (!config->youtube_css.empty() || config->youtube_frames || config->youtube_no_hover) {
++    base::DictValue options;
++    options.Set("css", config->youtube_css);
++    options.Set("frameThumbnails", config->youtube_frames);
++    options.Set("noHoverPreview", config->youtube_no_hover);
++    source += "(" + resource(IDR_NOOK_YOUTUBE_TWEAKS) + ")(" +
++        base::WriteJson(options).value_or("{}") + ");\n";
++  }
++  if (config->reddit_hot) source += resource(IDR_NOOK_REDDIT_TWEAKS);
++  if (!source.empty()) {
++    auto context = frame->MainWorldScriptContext();
++    if (!context.IsEmpty()) {
++      v8::Context::Scope entered(context);
++      v8::Local<v8::Function> gate;
++      if (gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document,
++             std::string source) {
++            if (!self || self->nook_page_tweaks_document_ != document || !self->nook_page_tweaks_) return;
++            auto* frame = self->render_frame()->GetWebFrame();
++            if (!frame || frame->GetDocument().Token() != document ||
++                !self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++                (frame->GetContentSettings() && !frame->GetContentSettings()->allow_script)) return;
++            const auto frame_token = frame->GetLocalFrameToken();
++            auto alive = self->nook_page_tweaks_weak_.GetWeakPtr();
++            auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++            v8::HandleScope handles(isolate);
++            auto allowed = frame->ExecuteScriptAndReturnValue(
++                blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++            if (!alive || allowed.IsEmpty() || !allowed->IsTrue()) return;
++            frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++            if (!frame || frame->GetDocument().Token() != document) return;
++            // This gate just resumed through Blink. Submit synchronously: the
++            // isolated API alone otherwise bypasses the page's script policy.
++            const blink::WebScriptSource script(blink::WebString::FromUtf8(source));
++            frame->RequestExecuteScript(ISOLATED_WORLD_ID_NOOK_PAGE_TWEAKS,
++                base::span_from_ref(script), blink::mojom::UserActivationOption::kDoNotActivate,
++                blink::mojom::EvaluationTiming::kSynchronous,
++                blink::mojom::LoadEventBlockingOption::kDoNotBlock, {}, blink::BackForwardCacheAware::kAllow,
++                blink::mojom::WantResultOption::kNoResult, blink::mojom::PromiseResultOption::kDoNotWait, {});
++          }, alive, document, source))->GetFunction(context).ToLocal(&gate))
++        frame->RequestExecuteV8Function(context, gate, v8::Undefined(isolate), 0, nullptr, {});
++    }
++  }
++  return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++#else
++  return true;
++#endif
++}
++
++void ChromeRenderFrameObserver::RunNookBoostScriptsAfterLoad() {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_ || nook_boost_script_next_.has_value() ||
++      nook_page_tweaks_->boost_scripts.empty()) return;
++  nook_boost_script_next_ = 0;
++  RunNookBoostScript(0);
++#endif
++}
++
++void ChromeRenderFrameObserver::RunNookBoostScript(size_t index) {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_ ||
++      nook_boost_script_next_ != index || index >= nook_page_tweaks_->boost_scripts.size()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_page_tweaks_document_;
++  if (!frame || frame->GetDocument().Token() != document || !render_frame()->IsMainFrame()) return;
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto context = frame->MainWorldScriptContext();
++  if (context.IsEmpty()) return;
++  v8::Context::Scope entered(context);
++  v8::Local<v8::Function> gate;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++      [](base::WeakPtr<ChromeRenderFrameObserver> self, blink::DocumentToken document, size_t index) {
++        if (self && self->nook_page_tweaks_document_ == document) self->ExecuteNookBoostScript(index);
++      }, nook_page_tweaks_weak_.GetWeakPtr(), document, index))->GetFunction(context).ToLocal(&gate)) return;
++  // The scoped main-world gate is never exported or passed to user code.
++  frame->RequestExecuteV8Function(context, gate, v8::Undefined(isolate), 0, nullptr, {});
++#endif
++}
++
++void ChromeRenderFrameObserver::ExecuteNookBoostScript(size_t index) {
++#if BUILDFLAG(IS_MAC)
++  if (!nook_page_tweaks_ || !nook_page_tweaks_document_ ||
++      nook_boost_script_next_ != index || index >= nook_page_tweaks_->boost_scripts.size()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_page_tweaks_document_;
++  if (!frame || frame->GetDocument().Token() != document || !render_frame()->IsMainFrame()) return;
++  const auto& settings = frame->GetContentSettings();
++  if (!render_frame()->GetBlinkPreferences().javascript_enabled || (settings && !settings->allow_script)) return;
++  const auto frame_token = frame->GetLocalFrameToken();
++  auto alive = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive || allowed.IsEmpty() || !allowed->IsTrue()) return;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return;
++  // One async body at a time, as WK callAsyncJavaScript. No native binding is
++  // installed in this separate user-code world. Blink owns the awaited reply.
++  const std::string source = "(async()=>{try{\n" + nook_page_tweaks_->boost_scripts[index] +
++      "\n}catch(e){console.error('Nook Boost script:',e)}})()";
++  const blink::WebScriptSource script(blink::WebString::FromUtf8(source));
++  nook_boost_script_next_ = index + 1;
++  frame->RequestExecuteScript(ISOLATED_WORLD_ID_NOOK_BOOST_SCRIPTS,
++      base::span_from_ref(script), blink::mojom::UserActivationOption::kDoNotActivate,
++      blink::mojom::EvaluationTiming::kSynchronous,
++      blink::mojom::LoadEventBlockingOption::kDoNotBlock,
++      base::BindOnce([](base::WeakPtr<ChromeRenderFrameObserver> self,
++          blink::DocumentToken document, size_t next, std::optional<base::Value>, base::TimeTicks) {
++        if (!self || self->nook_page_tweaks_document_ != document) return;
++        self->RunNookBoostScript(next);
++      }, nook_page_tweaks_weak_.GetWeakPtr(), document, index + 1),
++      blink::BackForwardCacheAware::kAllow, blink::mojom::WantResultOption::kNoResult,
++      blink::mojom::PromiseResultOption::kAwait, {});
++#endif
++}
++
++
++void ChromeRenderFrameObserver::PrepareNookCosmetics() {
++#if BUILDFLAG(IS_MAC)
++  // ReadyToCommit runs before DidCreateNewDocument. Retire old native resources
++  // here, before obtaining the incoming document's one resource receiver.
++  ResetNookDocumentResources(false);
++  auto current = nook_page_tweaks_weak_.GetWeakPtr();
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame) return;
++  const auto frame_token = frame->GetLocalFrameToken();
++  const auto document = frame->GetDocument().Token();
++  ResetNookCosmetics();
++  // Cleanup may execute JavaScript and reenter preparation, even with a reused
++  // document token. Both the existing weak epoch and exact frame must survive.
++  if (!current) return;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return;
++  const GURL url(frame->GetDocument().Url());
++  if (!url.SchemeIsHTTPOrHTTPS()) return;
++  // Blink has installed the incoming Document before this observer callback.
++  // Browser authority checks its pending commit token, never only this URL.
++  auto alive = nook_cosmetic_weak_.GetWeakPtr();
++  mojo::Remote<chrome::mojom::NookCosmeticResourcesHost> host;
++  render_frame()->GetBrowserInterfaceBroker().GetInterface(
++      host.BindNewPipeAndPassReceiver());
++  chrome::mojom::NookCosmeticResourcesPtr resources;
++  if (!host->GetResources(document, &resources) || !alive || !resources)
++    return;
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (!frame || frame->GetDocument().Token() != document) return;
++  nook_page_tweaks_ = std::move(resources->page_tweaks);
++  nook_page_tweaks_document_ = document;
++  nook_document_resources_ = std::move(host);
++  nook_cosmetics_ = std::move(resources);
++  nook_cosmetic_document_ = document;
++#endif
++}
++
++void ChromeRenderFrameObserver::ResetNookCosmetics() {
++#if BUILDFLAG(IS_MAC)
++  // Retire deferred installs/acks before cleanup can execute JS or reenter us.
++  nook_cosmetic_weak_.InvalidateWeakPtrs();
++  const auto reset_state = [this] {
++    nook_cosmetic_styles_.clear();
++    nook_cosmetic_observer_.Reset();
++    nook_cosmetic_ack_.Reset();
++    nook_cosmetic_selectors_.clear();
++    nook_cosmetic_generic_css_.clear();
++    nook_cosmetic_generic_style_ = blink::WebString();
++    nook_cosmetics_.reset();
++    nook_cosmetic_document_.reset();
++    nook_cosmetics_started_ = false;
++  };
++  auto* frame = render_frame()->GetWebFrame();
++  if (!frame) { reset_state(); return; }
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  v8::TryCatch errors(isolate);
++  const auto frame_token = frame->GetLocalFrameToken();
++  const auto document_token = nook_cosmetic_document_;
++  v8::Local<v8::Context> context;
++  v8::Local<v8::Object> object;
++  v8::Local<v8::Function> stop;
++  if (document_token && frame->GetDocument().Token() == *document_token) {
++    auto document = frame->GetDocument();
++    for (const auto& key : nook_cosmetic_styles_)
++      document.RemoveInsertedStyleSheet(key, blink::WebCssOrigin::kUser);
++    if (!nook_cosmetic_generic_style_.IsNull())
++      document.RemoveInsertedStyleSheet(nook_cosmetic_generic_style_,
++                                       blink::WebCssOrigin::kUser);
++    if (!nook_cosmetic_observer_.IsEmpty()) {
++      context = frame->GetScriptContextFromWorldId(
++          isolate, ISOLATED_WORLD_ID_NOOK_COSMETICS);
++      if (!context.IsEmpty()) {
++        v8::Context::Scope entered(context);
++        object = nook_cosmetic_observer_.Get(isolate);
++        v8::Local<v8::Value> method;
++        if (object->Get(context, v8::String::NewFromUtf8Literal(isolate, "stop"))
++                .ToLocal(&method) && method->IsFunction())
++          stop = method.As<v8::Function>();
++      }
++    }
++  }
++  reset_state();
++  // Blink retains this exact old ScriptState/function/object, not a later
++  // document's observer. Clear our state first: execution may be synchronous.
++  frame = blink::WebLocalFrame::FromFrameToken(frame_token);
++  if (frame && document_token && frame->GetDocument().Token() == *document_token &&
++      !context.IsEmpty() && !stop.IsEmpty())
++    frame->RequestExecuteV8Function(context, stop, object, 0, nullptr, {});
++  // No member access after entering JavaScript.
++#endif
++}
++
++void ChromeRenderFrameObserver::ClearNookCosmetics(
++    const blink::DocumentToken& document, uint64_t policy_generation) {
++#if BUILDFLAG(IS_MAC)
++  if (nook_cosmetic_document_ && *nook_cosmetic_document_ == document &&
++      (!nook_cosmetics_ || policy_generation > nook_cosmetics_->policy_generation))
++    ResetNookCosmetics();
++#endif
++}
++
++bool ChromeRenderFrameObserver::RunNookCosmeticsAtDocumentStart() {
++  if (!RunNookPageTweaksAtDocumentStart()) return false;
++#if BUILDFLAG(IS_MAC)
++  if (!nook_cosmetics_ || nook_cosmetics_started_ || !nook_cosmetic_document_)
++    return true;
++  auto* frame = render_frame()->GetWebFrame();
++  const auto document = *nook_cosmetic_document_;
++  const auto frame_token = frame->GetLocalFrameToken();
++  if (frame->GetDocument().Token() != document) return true;
++  nook_cosmetics_started_ = true;
++  if (!nook_cosmetics_->apply) return true;
++  if (!nook_cosmetics_->css.empty()) {
++    nook_cosmetic_styles_.push_back(frame->GetDocument().InsertStyleSheet(
++        blink::WebString::FromUtf8(nook_cosmetics_->css), nullptr,
++        blink::WebCssOrigin::kUser));
++  }
++  const auto& settings = frame->GetContentSettings();
++  if (!render_frame()->GetBlinkPreferences().javascript_enabled ||
++      (settings && !settings->allow_script)) return true;
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  const auto alive = nook_cosmetic_weak_.GetWeakPtr();
++  // Main-world execution uses Blink's normal sandbox/script policy, without
++  // granting activation. Do not call through a bypass/suspended-script API.
++  if (!nook_cosmetics_->scriptlets.empty()) {
++    const std::string source = "(function(){const scriptletGlobals={};\n" +
++        nook_cosmetics_->scriptlets + "\n})()";
++    frame->ExecuteScript(blink::WebScriptSource(blink::WebString::FromUtf8(source)));
++    if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++    if (!nook_cosmetics_ || frame->GetDocument().Token() != document) return true;
++  }
++  if (nook_cosmetics_->generichide) return true;
++  // Probe the main-world sandbox before using the isolated generic observer.
++  auto allowed = frame->ExecuteScriptAndReturnValue(
++      blink::WebScriptSource(blink::WebString::FromUtf8("true")));
++  if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++  if (allowed.IsEmpty() || !allowed->IsTrue() || !nook_cosmetics_ ||
++      frame->GetDocument().Token() != document) return true;
++  const auto observer_source = ui::ResourceBundle::GetSharedInstance()
++      .LoadDataResourceString(IDR_NOOK_COSMETIC_OBSERVER);
++  // The scoped install callback checks ownership again if Blink suspends this
++  // function. No object is installed after reset or into a replacement document.
++  const std::string source = "(function(send,install){if(!install())return;"
++      "const observer=(" + observer_source + ")(send);"
++      "if(!install(observer))observer.stop();})";
++  v8::TryCatch errors(isolate);
++  auto factory = frame->ExecuteScriptInIsolatedWorldAndReturnValue(
++      ISOLATED_WORLD_ID_NOOK_COSMETICS,
++      blink::WebScriptSource(blink::WebString::FromUtf8(source)),
++      blink::BackForwardCacheAware::kAllow);
++  if (!alive) return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++  if (factory.IsEmpty() || !factory->IsFunction() || !nook_cosmetics_ ||
++      frame->GetDocument().Token() != document) return true;
++  auto context = frame->GetScriptContextFromWorldId(
++      isolate, ISOLATED_WORLD_ID_NOOK_COSMETICS);
++  if (context.IsEmpty()) return true;
++  v8::Context::Scope entered(context);
++  v8::Local<v8::Function> callback, install;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          &ChromeRenderFrameObserver::NookCosmeticSelectors, alive))
++          ->GetFunction(context).ToLocal(&callback)) return true;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self,
++             blink::DocumentToken document, gin::Arguments* arguments) {
++            if (!self || !self->nook_cosmetics_ ||
++                self->nook_cosmetic_document_ != document) {
++              arguments->Return(false); return;
++            }
++            auto* frame = self->render_frame()->GetWebFrame();
++            auto context = frame->GetScriptContextFromWorldId(
++                arguments->isolate(), ISOLATED_WORLD_ID_NOOK_COSMETICS);
++            if (frame->GetDocument().Token() != document || context.IsEmpty() ||
++                arguments->isolate()->GetCurrentContext() != context) {
++              arguments->Return(false); return;
++            }
++            const auto& settings = frame->GetContentSettings();
++            if (!self->render_frame()->GetBlinkPreferences().javascript_enabled ||
++                (settings && !settings->allow_script)) {
++              arguments->Return(false); return;
++            }
++            v8::Local<v8::Value> object;
++            if (arguments->Length() > 0 && arguments->GetNext(&object) && object->IsObject())
++              self->nook_cosmetic_observer_.Reset(arguments->isolate(),
++                                                 object.As<v8::Object>());
++            arguments->Return(true);
++          }, alive, document))->GetFunction(context).ToLocal(&install)) return true;
++  v8::Local<v8::Value> args[] = {callback, install};
++  frame->RequestExecuteV8Function(context, factory.As<v8::Function>(),
++                                  v8::Undefined(isolate), 2, args, {});
++  // A policy reset invalidates `alive` without destroying the frame; it must
++  // not suppress the other document-start consumers on that surviving frame.
++  return blink::WebLocalFrame::FromFrameToken(frame_token) != nullptr;
++#else
++  return true;
++#endif
++}
++
++
++void ChromeRenderFrameObserver::NookCosmeticSelectors(gin::Arguments* arguments) {
++#if BUILDFLAG(IS_MAC)
++  std::vector<std::string> classes, ids;
++  v8::Local<v8::Function> ack;
++  if (!nook_cosmetics_ || !nook_cosmetic_document_ || !nook_document_resources_ ||
++      !nook_cosmetic_ack_.IsEmpty() || !arguments->GetNext(&classes) ||
++      !arguments->GetNext(&ids) || !arguments->GetNext(&ack) ||
++      classes.size() + ids.size() > 128) return;
++  const auto document = *nook_cosmetic_document_;
++  const auto source_identity = nook_cosmetics_->source_identity;
++  nook_cosmetic_ack_.Reset(arguments->isolate(), ack);
++  nook_document_resources_->GetGenericSelectors(document, classes, ids,
++      base::BindOnce([](base::WeakPtr<ChromeRenderFrameObserver> self,
++          blink::DocumentToken document, uint64_t source_identity,
++          chrome::mojom::NookCosmeticResourcesPtr resources) {
++        if (!self || !self->nook_cosmetics_ || !self->nook_cosmetic_document_ ||
++            *self->nook_cosmetic_document_ != document) return;
++        if (!resources || resources->policy_generation < self->nook_cosmetics_->policy_generation ||
++            (resources->apply && resources->source_identity != source_identity) ||
++            self->render_frame()->GetWebFrame()->GetDocument().Token() != document) {
++          self->CompleteNookCosmeticBatch(false); return;
++        }
++        if (!resources->apply) { self->ResetNookCosmetics(); return; }
++        self->nook_cosmetics_->policy_generation = resources->policy_generation;
++        self->nook_cosmetics_->revision = resources->revision;
++        constexpr size_t kMaxSelectors = 4096, kMaxBytes = 512 * 1024;
++        bool more = true, changed = false;
++        for (const auto& selector : resources->generic_selectors) {
++          if (selector.size() > 4096 || self->nook_cosmetic_selectors_.contains(selector)) continue;
++          const std::string css = selector + "{display:none !important;}\n";
++          if (self->nook_cosmetic_selectors_.size() == kMaxSelectors ||
++              self->nook_cosmetic_generic_css_.size() + css.size() > kMaxBytes) {
++            more = false; break;
++          }
++          self->nook_cosmetic_selectors_.insert(selector);
++          self->nook_cosmetic_generic_css_ += css;
++          changed = true;
++        }
++        if (changed) {
++          auto doc = self->render_frame()->GetWebFrame()->GetDocument();
++          if (!self->nook_cosmetic_generic_style_.IsNull())
++            doc.RemoveInsertedStyleSheet(self->nook_cosmetic_generic_style_,
++                                         blink::WebCssOrigin::kUser);
++          self->nook_cosmetic_generic_style_ = doc.InsertStyleSheet(
++              blink::WebString::FromUtf8(self->nook_cosmetic_generic_css_), nullptr,
++              blink::WebCssOrigin::kUser);
++        }
++        self->CompleteNookCosmeticBatch(more);
++      }, nook_cosmetic_weak_.GetWeakPtr(), document, source_identity));
++#endif
++}
++
++void ChromeRenderFrameObserver::CompleteNookCosmeticBatch(bool more) {
++#if BUILDFLAG(IS_MAC)
++  if (nook_cosmetic_ack_.IsEmpty()) return;
++  auto* frame = render_frame()->GetWebFrame();
++  auto* isolate = frame->GetAgentGroupScheduler()->Isolate();
++  v8::HandleScope handles(isolate);
++  auto context = frame->GetScriptContextFromWorldId(
++      isolate, ISOLATED_WORLD_ID_NOOK_COSMETICS);
++  if (context.IsEmpty()) { nook_cosmetic_ack_.Reset(); return; }
++  v8::Context::Scope entered(context);
++  v8::TryCatch errors(isolate);
++  auto ack = nook_cosmetic_ack_.Get(isolate);
++  nook_cosmetic_ack_.Reset();
++  if (!nook_cosmetic_document_) return;
++  const auto document = *nook_cosmetic_document_;
++  auto retained = std::make_shared<v8::Global<v8::Function>>(isolate, ack);
++  v8::Local<v8::Function> execute;
++  if (!gin::CreateFunctionTemplate(isolate, base::BindRepeating(
++          [](base::WeakPtr<ChromeRenderFrameObserver> self,
++             blink::DocumentToken document,
++             std::shared_ptr<v8::Global<v8::Function>> ack, bool more,
++             gin::Arguments* arguments) {
++            if (!self || self->nook_cosmetic_document_ != document ||
++                !self->nook_cosmetics_) return;
++            auto* frame = self->render_frame()->GetWebFrame();
++            auto context = frame->GetScriptContextFromWorldId(
++                arguments->isolate(), ISOLATED_WORLD_ID_NOOK_COSMETICS);
++            if (frame->GetDocument().Token() != document || context.IsEmpty() ||
++                arguments->isolate()->GetCurrentContext() != context) return;
++            v8::Local<v8::Value> args[] = {
++                v8::Boolean::New(arguments->isolate(), more)}, ignored;
++            // This native thunk is entered by Blink's script executor, which
++            // supplies the required microtask scope (as for translation).
++            std::ignore = ack->Get(arguments->isolate())->Call(
++                context, v8::Undefined(arguments->isolate()), 1, args).ToLocal(&ignored);
++            // No observer member access after JavaScript.
++          }, nook_cosmetic_weak_.GetWeakPtr(), document, retained, more))
++          ->GetFunction(context).ToLocal(&execute)) return;
++  frame->RequestExecuteV8Function(context, execute, v8::Undefined(isolate),
++                                  0, nullptr, {});
++#endif
++}

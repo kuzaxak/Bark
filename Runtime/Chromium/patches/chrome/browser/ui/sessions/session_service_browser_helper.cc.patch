@@ -1,0 +1,15 @@
+diff --git a/chrome/browser/ui/sessions/session_service_browser_helper.cc b/chrome/browser/ui/sessions/session_service_browser_helper.cc
+index 8844199eba..7f191c5f7e 100644
+--- a/chrome/browser/ui/sessions/session_service_browser_helper.cc
++++ b/chrome/browser/ui/sessions/session_service_browser_helper.cc
+@@ -262,8 +262,8 @@ void SessionServiceBrowserHelper::OnSplitTabChanged(
+     }
+ 
+     case SplitTabChange::Type::kContentsChanged: {
+-      // No need to do anything here since split is still present and no visual
+-      // information changed.
++      // Removing a pane retains the split and resets its normalized dividers.
++      UpdateSplitTabSessionVisualData(change.split_id);
+       break;
+     }
+ 

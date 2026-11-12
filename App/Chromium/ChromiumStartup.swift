@@ -1,4 +1,3 @@
-import BarcChromium
 import CryptoKit
 import Foundation
 
@@ -10,9 +9,6 @@ struct ChromiumStartupConfiguration {
     let isVerification: Bool
     let launchArguments: [String]
     let legacySupport: URL?
-    // C structs cross this boundary without a size argument. Require the exact
-    // paired ABI so a newer engine cannot write into an older app's layout.
-    var requiredBridgeVersion: UInt32 { UInt32(BARC_BRIDGE_VERSION) }
 
     var rootDigest: String {
         SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }.joined()

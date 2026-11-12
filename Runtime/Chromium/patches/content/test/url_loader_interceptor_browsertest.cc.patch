@@ -1,0 +1,14 @@
+diff --git a/content/test/url_loader_interceptor_browsertest.cc b/content/test/url_loader_interceptor_browsertest.cc
+index a3e3d3f476..5e67d6566b 100644
+--- a/content/test/url_loader_interceptor_browsertest.cc
++++ b/content/test/url_loader_interceptor_browsertest.cc
+@@ -176,7 +176,8 @@ class TestBrowserClientWithHeaderClient
+       bool* disable_secure_dns,
+       network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+       scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-      bool is_for_network_service) override {
++      bool is_for_network_service,
++      std::optional<int64_t> document_navigation_id) override {
+     if (header_client) {
+       receivers_.Add(this, header_client->InitWithNewPipeAndPassReceiver());
+     }

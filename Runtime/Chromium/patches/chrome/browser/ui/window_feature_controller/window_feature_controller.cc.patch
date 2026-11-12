@@ -1,0 +1,33 @@
+diff --git a/chrome/browser/ui/window_feature_controller/window_feature_controller.cc b/chrome/browser/ui/window_feature_controller/window_feature_controller.cc
+index ec7bd3ea6c..879e5e9c12 100644
+--- a/chrome/browser/ui/window_feature_controller/window_feature_controller.cc
++++ b/chrome/browser/ui/window_feature_controller/window_feature_controller.cc
+@@ -8,6 +8,9 @@
+ #include "base/check_deref.h"
+ #include "build/build_config.h"
+ #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
++#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
++#endif
+ #include "chrome/browser/ui/web_applications/app_browser_controller.h"
+ 
+ DEFINE_USER_DATA(WindowFeatureController);
+@@ -62,14 +65,16 @@ bool WindowFeatureController::IsTrustedSource() const {
+ bool WindowFeatureController::UsesImmersiveFullscreenMode() const {
+   const bool is_pwa = app_controller_ != nullptr;
+   const bool is_tabbed_window =
+-      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip);
++      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip) &&
++      !barc::IsNativeApplicationMode();
+   return is_pwa || is_tabbed_window;
+ }
+ 
+ bool WindowFeatureController::UsesImmersiveFullscreenTabbedMode() const {
+   const bool is_pwa = app_controller_ != nullptr;
+   const bool is_tabbed_window =
+-      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip);
++      CanSupportWindowFeature(WindowFeature::kFeatureTabStrip) &&
++      !barc::IsNativeApplicationMode();
+   return is_tabbed_window && !is_pwa;
+ }
+ #endif

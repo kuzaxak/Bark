@@ -1,0 +1,62 @@
+diff --git a/chrome/installer/mac/signing/signing.py b/chrome/installer/mac/signing/signing.py
+index d5aa93b7d1..2de065a9c6 100644
+--- a/chrome/installer/mac/signing/signing.py
++++ b/chrome/installer/mac/signing/signing.py
+@@ -25,6 +25,10 @@ class InvalidAppGeometryException(ValueError):
+ class Invoker(invoker.Base):
+     def codesign(self, config, product, path):
+         command = ['codesign', '--sign', config.identity]
++        if product.replace_existing_signature:
++            command.append('--force')
++        if product.preserve_entitlements:
++            command.append('--preserve-metadata=entitlements')
+         if config.notarize.should_notarize():
+             # If the products will be notarized, the signature requires a secure
+             # timestamp.
+@@ -154,23 +158,30 @@ async def validate_app(paths, config, part):
+             app_path,
+         ]
+     )
+-    tasks = [
+-        asyncio.create_task(
+-            commands.run_command_all_output_async(
+-                ['codesign', '--verify', '--verbose=6']
+-                + verify_opts
+-                + [app_path]
+-            )
+-        )
+-    ]
++    checks = [['codesign', '--verify', '--verbose=6'] + verify_opts + [app_path]]
++    # Gatekeeper requires an accepted notarization ticket for a fresh release.
++    # Keep signature verification here; assess notarized apps in the pipeline.
++    # The base config owns the pipeline mode; distribution configs retain
++    # their constructor defaults for notarize. Do not alter signing options.
++    pipeline_config = getattr(config, "base_config", config)
++    if config.run_spctl_assess and not pipeline_config.notarize.should_notarize():
++        checks.append(['spctl', '--assess', '-vv', app_path])
++    await _validate_commands(checks)
++
++
++async def assess_app(paths, config, part):
++    """Assesses an app after awaited notarization and optional stapling."""
+     if config.run_spctl_assess:
+-        tasks += [
+-            asyncio.create_task(
+-                commands.run_command_all_output_async(
+-                    ['spctl', '--assess', '-vv', app_path]
+-                )
+-            )
+-        ]
++        await _validate_commands(
++            [['spctl', '--assess', '-vv', os.path.join(paths.work, part.path)]]
++        )
++
++
++async def _validate_commands(checks):
++    tasks = [
++        asyncio.create_task(commands.run_command_all_output_async(command))
++        for command in checks
++    ]
+     await asyncio.sleep(0)  # Allow commands to start.
+     for task in tasks:
+         command, exit_code, stdout, stderr = await task

@@ -1,0 +1,26 @@
+diff --git a/chrome/browser/performance_manager/policies/discard_eligibility_policy.cc b/chrome/browser/performance_manager/policies/discard_eligibility_policy.cc
+index 7d1974430b..9be4f766d4 100644
+--- a/chrome/browser/performance_manager/policies/discard_eligibility_policy.cc
++++ b/chrome/browser/performance_manager/policies/discard_eligibility_policy.cc
+@@ -11,6 +11,7 @@
+ #include "chrome/browser/glic/public/service/glic_instance_coordinator.h"
+ #include "chrome/common/buildflags.h"
+ #include "components/performance_manager/graph/page_node_impl.h"
++#include "components/performance_manager/public/features.h"
+ #include "components/performance_manager/public/decorators/page_live_state_decorator.h"
+ #include "components/performance_manager/public/graph/node_data_describer_registry.h"
+ #include "components/tabs/public/tab_interface.h"
+@@ -218,6 +219,13 @@ DiscardEligibilityPolicy::CanDiscardWithCustomRecentVisibilityWindow(
+     }
+   };
+ 
++  // Disallowed, rather than Protected: urgent callers may discard protected
++  // pages, and EXTERNAL/growing-memory reasons bypass normal exclusions below.
++  if (features::IsNativeResourceProtectionHeld()) {
++    add_reason(CannotDiscardReason::kUnknownNativeActivity);
++    return CanDiscardResult::kDisallowed;
++  }
++
+   // Don't discard pages which aren't tabs.
+   if (page_node->GetType() != PageType::kTab) {
+     add_reason(CannotDiscardReason::kNotATab);

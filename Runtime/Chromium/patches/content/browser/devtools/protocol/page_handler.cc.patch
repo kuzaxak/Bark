@@ -1,0 +1,14 @@
+diff --git a/content/browser/devtools/protocol/page_handler.cc b/content/browser/devtools/protocol/page_handler.cc
+index c750e9a4e2..da3d47e647 100644
+--- a/content/browser/devtools/protocol/page_handler.cc
++++ b/content/browser/devtools/protocol/page_handler.cc
+@@ -2464,6 +2464,9 @@ DisableForRenderFrameHostReasonToProtocol(
+       }
+     case BackForwardCache::DisabledSource::kEmbedder:
+       switch (static_cast<back_forward_cache::DisabledReasonId>(reason.id)) {
++        case back_forward_cache::DisabledReasonId::kNativeCosmeticPolicyChanged:
++          // The DevTools protocol has no dedicated native cosmetic reason.
++          return Page::BackForwardCacheNotRestoredReasonEnum::Unknown;
+         case back_forward_cache::DisabledReasonId::kUnknown:
+           return Page::BackForwardCacheNotRestoredReasonEnum::Unknown;
+         case back_forward_cache::DisabledReasonId::kPopupBlockerTabHelper:

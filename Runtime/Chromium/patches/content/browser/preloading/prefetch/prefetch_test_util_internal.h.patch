@@ -1,0 +1,49 @@
+diff --git a/content/browser/preloading/prefetch/prefetch_test_util_internal.h b/content/browser/preloading/prefetch/prefetch_test_util_internal.h
+index 6516fbad4c..bd48781c33 100644
+--- a/content/browser/preloading/prefetch/prefetch_test_util_internal.h
++++ b/content/browser/preloading/prefetch/prefetch_test_util_internal.h
+@@ -183,6 +183,34 @@ class ScopedMockContentBrowserClient : public TestContentBrowserClient {
+   ScopedMockContentBrowserClient();
+   ~ScopedMockContentBrowserClient() override;
+ 
++  // gMock supports at most 15 arguments. Preserve the existing prefetch mock
++  // contract; only real browser clients consume document factory attribution.
++  void WillCreateURLLoaderFactory(
++      BrowserContext* browser_context,
++      RenderFrameHost* frame,
++      int render_process_id,
++      URLLoaderFactoryType type,
++      const url::Origin& request_initiator,
++      const net::IsolationInfo& isolation_info,
++      std::optional<int64_t> navigation_id,
++      ukm::SourceIdObj ukm_source_id,
++      network::URLLoaderFactoryBuilder& factory_builder,
++      mojo::PendingRemote<network::mojom::TrustedURLLoaderHeaderClient>*
++          header_client,
++      bool* bypass_redirect_checks,
++      bool* disable_secure_dns,
++      network::mojom::URLLoaderFactoryOverridePtr* factory_override,
++      scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
++      bool is_for_network_service,
++      std::optional<int64_t> /*document_navigation_id*/) override {
++    WillCreateURLLoaderFactory(
++        browser_context, frame, render_process_id, type, request_initiator,
++        isolation_info, navigation_id, ukm_source_id, factory_builder,
++        header_client, bypass_redirect_checks, disable_secure_dns,
++        factory_override, std::move(navigation_response_task_runner),
++        is_for_network_service);
++  }
++
+   MOCK_METHOD(
+       void,
+       WillCreateURLLoaderFactory,
+@@ -201,8 +229,7 @@ class ScopedMockContentBrowserClient : public TestContentBrowserClient {
+        bool* disable_secure_dns,
+        network::mojom::URLLoaderFactoryOverridePtr* factory_override,
+        scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
+-       bool is_for_network_service),
+-      (override));
++       bool is_for_network_service));
+ 
+  private:
+   raw_ptr<ContentBrowserClient> old_browser_client_;

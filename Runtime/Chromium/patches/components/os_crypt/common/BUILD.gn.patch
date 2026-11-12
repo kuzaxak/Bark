@@ -1,0 +1,20 @@
+diff --git a/components/os_crypt/common/BUILD.gn b/components/os_crypt/common/BUILD.gn
+index 10db068710..4f6ed79b1a 100644
+--- a/components/os_crypt/common/BUILD.gn
++++ b/components/os_crypt/common/BUILD.gn
+@@ -17,7 +17,15 @@ group("crypto_lib") {
+ }
+ 
+ if (is_apple) {
++  if (is_mac) {
++    config("runtime_configurable_key_storage") {
++      defines = [ "ALLOW_RUNTIME_CONFIGURABLE_KEY_STORAGE" ]
++    }
++  }
+   source_set("keychain_password_mac") {
++    if (is_mac) {
++      public_configs = [ ":runtime_configurable_key_storage" ]
++    }
+     sources = [
+       "keychain_password_mac.h",
+       "keychain_password_mac.mm",

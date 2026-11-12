@@ -1,0 +1,177 @@
+diff --git a/ui/views/window/non_client_view.cc b/ui/views/window/non_client_view.cc
+index a2f1617725..7f17a1ca0b 100644
+--- a/ui/views/window/non_client_view.cc
++++ b/ui/views/window/non_client_view.cc
+@@ -4,18 +4,22 @@
+ 
+ #include "ui/views/window/non_client_view.h"
+ 
++#include <algorithm>
+ #include <memory>
+ #include <utility>
+ #include <vector>
+ 
++#include "base/check.h"
+ #include "ui/accessibility/ax_enums.mojom.h"
+ #include "ui/accessibility/ax_node_data.h"
+ #include "ui/base/hit_test.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+ #include "ui/gfx/geometry/rect_conversions.h"
++#include "ui/views/focus/focus_manager.h"
+ #include "ui/views/layout/fill_layout.h"
+ #include "ui/views/rect_based_targeting_utils.h"
+ #include "ui/views/view_targeter.h"
++#include "ui/views/view_tracker.h"
+ #include "ui/views/widget/root_view.h"
+ #include "ui/views/widget/widget.h"
+ #include "ui/views/window/client_view.h"
+@@ -36,15 +40,34 @@ NonClientView::NonClientView(views::ClientView* client_view)
+ NonClientView::~NonClientView() {
+   // This value may have been reset before the window hierarchy shuts down,
+   // so we need to manually remove it.
++  for (const auto& frame : retained_frame_views_) {
++    RemoveChildView(frame.get());
++  }
++  retained_frame_views_.clear();
+   RemoveChildView(frame_view_.get());
+ }
+ 
+ void NonClientView::SetFrameView(std::unique_ptr<FrameView> frame_view) {
++  CHECK(!switching_client_frame_);
++  switching_client_frame_ = true;
+   // If there is an existing frame view, ensure that the ClientView remains
+   // attached to the Widget by moving the ClientView to the new frame before
+   // removing the old frame from the view hierarchy. Also copy the focus state.
+   std::unique_ptr<FrameView> old_frame_view = std::move(frame_view_);
++  // Clear the outgoing binding before reparent callbacks can run. Retained
++  // inactive pairs are not affected by replacing the selected theme frame.
++  base::WeakPtr<WidgetDelegate> client_delegate;
++  if (old_frame_view) {
++    old_frame_view->BindClientView(nullptr);
++    client_delegate = std::move(old_frame_view->client_delegate_);
++  }
+   frame_view_ = std::move(frame_view);
++  frame_view_->client_delegate_ = std::move(client_delegate);
++  if (old_frame_view) {
++    frame_view_->client_will_close_notified_ =
++        std::exchange(old_frame_view->client_will_close_notified_, false);
++  }
++  frame_view_->BindClientView(client_view_);
+   if (parent()) {
+     views::View* focused_view =
+         old_frame_view->GetFocusManager()->GetFocusedView();
+@@ -58,6 +81,94 @@ void NonClientView::SetFrameView(std::unique_ptr<FrameView> frame_view) {
+   if (old_frame_view) {
+     RemoveChildView(old_frame_view.get());
+   }
++  switching_client_frame_ = false;
++}
++
++void NonClientView::RetainClientFrame(std::unique_ptr<FrameView> frame,
++                                      std::unique_ptr<ClientView> client) {
++  CHECK(GetWidget());
++  CHECK(frame_view_);
++  CHECK(frame);
++  CHECK(client);
++  CHECK(!frame->parent());
++  CHECK(!client->parent());
++  CHECK(!switching_client_frame_);
++  switching_client_frame_ = true;
++  frame->BindClientView(client.get());
++  frame->SetVisible(false);
++  auto* frame_ptr = frame.get();
++  retained_frame_views_.push_back(std::move(frame));
++  // Attach the frame before inserting its client: ClientView initialization
++  // requires a valid Widget, even for the initially hidden pair.
++  AddChildViewAt(frame_ptr, 0);
++  frame_ptr->InsertClientView(client.release());
++  switching_client_frame_ = false;
++}
++
++bool NonClientView::SelectClientFrame(ClientView* client) {
++  if (client == client_view_) {
++    return true;
++  }
++  CHECK(!switching_client_frame_);
++  auto found = std::ranges::find_if(
++      retained_frame_views_,
++      [client](const auto& frame) { return frame->client_view() == client; });
++  if (found == retained_frame_views_.end()) {
++    return false;
++  }
++  switching_client_frame_ = true;
++  // Selection does not change the hierarchy. Defensive lifetime checks avoid
++  // accessing a deleted owner after callbacks. Callbacks must still respect
++  // View focus/visibility propagation lifetimes (Close(), not CloseNow()).
++  ViewTracker alive(this);
++  auto* focus = GetWidget()->GetFocusManager();
++  if (focus && frame_view_->Contains(focus->GetFocusedView())) {
++    focus->ClearFocus();
++    if (!alive) {
++      return false;
++    }
++  }
++  auto incoming = std::move(*found);
++  retained_frame_views_.erase(found);
++  auto outgoing = std::move(frame_view_);
++  frame_view_ = std::move(incoming);
++  client_view_ = frame_view_->client_view();
++  retained_frame_views_.push_back(std::move(outgoing));
++  retained_frame_views_.back()->SetVisible(false);
++  if (!alive) {
++    return false;
++  }
++  // A retained frame may have missed a hidden-window resize. Observers must
++  // see current geometry when the incoming subtree becomes visible.
++  frame_view_->SetBoundsRect(GetLocalBounds());
++  if (!alive) {
++    return false;
++  }
++  frame_view_->SetVisible(true);
++  if (!alive) {
++    return false;
++  }
++  InvalidateLayout();
++  SchedulePaint();
++  switching_client_frame_ = false;
++  return true;
++}
++
++std::unique_ptr<FrameView> NonClientView::ReleaseClientFrame(
++    ClientView* client) {
++  CHECK(!switching_client_frame_);
++  auto found = std::ranges::find_if(
++      retained_frame_views_,
++      [client](const auto& frame) { return frame->client_view() == client; });
++  if (found == retained_frame_views_.end()) {
++    return nullptr;
++  }
++  switching_client_frame_ = true;
++  auto released = std::move(*found);
++  retained_frame_views_.erase(found);
++  RemoveChildView(released.get());
++  switching_client_frame_ = false;
++  return released;
+ }
+ 
+ void NonClientView::SetOverlayView(View* view) {
+@@ -81,6 +192,11 @@ CloseRequestResult NonClientView::OnWindowCloseRequested() {
+ 
+ void NonClientView::WindowClosing() {
+   client_view_->WidgetClosing();
++  for (const auto& frame : retained_frame_views_) {
++    if (auto* client = frame->client_view()) {
++      client->WidgetClosing();
++    }
++  }
+ }
+ 
+ void NonClientView::UpdateFrame() {
+@@ -177,6 +293,7 @@ void NonClientView::ViewHierarchyChanged(
+   // the various setters, and create and add children directly in the
+   // constructor.
+   if (details.is_add && GetWidget() && details.child == this) {
++    frame_view_->BindClientView(client_view_);
+     AddChildViewAt(frame_view_.get(), 0);
+     frame_view_->InsertClientView(client_view_);
+     if (overlay_view_) {

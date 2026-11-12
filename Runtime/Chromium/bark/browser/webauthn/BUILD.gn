@@ -1,0 +1,14 @@
+assert(is_mac)
+
+source_set("webauthn") {
+  sources = [
+    "barc_vault_authenticator.cc",
+    "barc_vault_authenticator.h",
+  ]
+  deps = [
+    "//base",
+    "//components/cbor",
+    "//content/public/browser",
+    "//device/fido",
+  ]
+}

@@ -1,0 +1,33 @@
+diff --git a/chrome/browser/extensions/chrome_extension_function_details.cc b/chrome/browser/extensions/chrome_extension_function_details.cc
+index 9cfacb4358..e27029131c 100644
+--- a/chrome/browser/extensions/chrome_extension_function_details.cc
++++ b/chrome/browser/extensions/chrome_extension_function_details.cc
+@@ -79,13 +79,18 @@ WindowController* ChromeExtensionFunctionDetails::GetCurrentWindowController()
+   return window_controller;
+ }
+ 
+-gfx::NativeWindow ChromeExtensionFunctionDetails::GetNativeWindowForUI() {
++gfx::NativeWindow ChromeExtensionFunctionDetails::GetNativeWindowForUI(
++    BrowserWindowInterface** logical_browser) {
++  if (logical_browser)
++    *logical_browser = nullptr;
+   // Try to use WindowControllerList first because WebContents's
+   // GetTopLevelNativeWindow() can't return the top level window when the tab
+   // is not focused.
+   WindowController* controller =
+       WindowControllerList::GetInstance()->CurrentWindowForFunction(function_);
+   if (controller) {
++    if (logical_browser)
++      *logical_browser = controller->GetBrowserWindowInterface();
+     return controller->window()->GetNativeWindow();
+   }
+ 
+@@ -129,6 +134,8 @@ gfx::NativeWindow ChromeExtensionFunctionDetails::GetNativeWindowForUI() {
+     }
+   }
+   if (browser) {
++    if (logical_browser)
++      *logical_browser = browser;
+     return browser->GetWindow()->GetNativeWindow();
+   }
+ 

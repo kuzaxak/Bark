@@ -1,0 +1,45 @@
+diff --git a/chrome/browser/ui/browser_window.h b/chrome/browser/ui/browser_window.h
+index 6e4b4388d9..a91fd5cc20 100644
+--- a/chrome/browser/ui/browser_window.h
++++ b/chrome/browser/ui/browser_window.h
+@@ -34,6 +34,7 @@
+ 
+ class BrowserView;
+ class BrowserWindowInterface;
++class SessionID;
+ class DownloadBubbleUIController;
+ class ExclusiveAccessContext;
+ class FindBar;
+@@ -112,6 +113,11 @@ class BrowserWindow : public ui::BaseWindow {
+  public:
+   virtual ~BrowserWindow() = default;
+ 
++  // Logical selection within a shared native window, independent of native
++  // activity/visibility. Shared implementations override using explicit owner
++  // state; ordinary single-client windows remain selected by default.
++  virtual bool IsSelectedForNativeWindow() const;
++
+   //////////////////////////////////////////////////////////////////////////////
+   // ui::BaseWindow interface notes:
+ 
+@@ -386,6 +392,10 @@ class BrowserWindow : public ui::BaseWindow {
+       DownloadCloseType dialog_type,
+       base::OnceCallback<void(bool)> callback) = 0;
+ 
++  // Dismisses this browser's pending download warning after a local grouped
++  // close is cancelled or preempted. Other close paths retain their behavior.
++  virtual void CancelPendingDownloadWarning() {}
++
+   // Shows the app menu (for accessibility).
+   virtual void ShowAppMenu() = 0;
+ 
+@@ -428,6 +438,9 @@ class BrowserWindow : public ui::BaseWindow {
+                       bool user_gesture,
+                       bool in_tab_dragging);
+ 
++  // Admission for the explicit macOS shared-native-window feasibility path.
++  static bool CanCreateInNativeWindow(const SessionID& owner);
++
+   virtual void ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) = 0;
+ 
+   // Attempts showing the In-Product-Help for profile Switching. This is called

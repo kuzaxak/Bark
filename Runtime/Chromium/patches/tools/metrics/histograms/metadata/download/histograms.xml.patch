@@ -1,0 +1,12 @@
+diff --git a/tools/metrics/histograms/metadata/download/histograms.xml b/tools/metrics/histograms/metadata/download/histograms.xml
+index 61562e5eb5..1b2d4f2d3a 100644
+--- a/tools/metrics/histograms/metadata/download/histograms.xml
++++ b/tools/metrics/histograms/metadata/download/histograms.xml
+@@ -74,6 +74,7 @@ chromium-metrics-reviews@google.com.
+   <variant name=".ExtensionInstaller" summary="ExtensionInstaller."/>
+   <variant name=".FromRenderer" summary="FromRenderer."/>
+   <variant name=".InternalAPI" summary="InternalAPI."/>
++  <variant name=".NativeSocialMedia" summary="NativeSocialMedia."/>
+   <variant name=".Navigation" summary="Navigation."/>
+   <variant name=".OfflinePage" summary="OfflinePage."/>
+   <variant name=".Retry" summary="Retry."/>

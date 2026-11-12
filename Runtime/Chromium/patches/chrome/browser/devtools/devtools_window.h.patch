@@ -1,0 +1,33 @@
+diff --git a/chrome/browser/devtools/devtools_window.h b/chrome/browser/devtools/devtools_window.h
+index e44b0c31ee..c449178a9e 100644
+--- a/chrome/browser/devtools/devtools_window.h
++++ b/chrome/browser/devtools/devtools_window.h
+@@ -6,6 +6,7 @@
+ #define CHROME_BROWSER_DEVTOOLS_DEVTOOLS_WINDOW_H_
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
+ 
+ #include "base/callback_list.h"
+@@ -508,7 +509,9 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
+   // ownership of owned_main_web_contents_ to the tab strip of the Browser.
+   void CreateDevToolsBrowser();
+   BrowserWindow* GetInspectedBrowserWindow();
+-  void ScheduleShow(const DevToolsToggleAction& action);
++  void ScheduleShow(
++      const DevToolsToggleAction& action,
++      std::optional<std::string> requested_panel = std::nullopt);
+   void Show(const DevToolsToggleAction& action);
+   void DoAction(const DevToolsToggleAction& action);
+   void LoadCompleted();
+@@ -582,6 +585,9 @@ class DevToolsWindow : public DevToolsUIBindings::Delegate,
+   bool close_on_detach_;
+   LifeStage life_stage_;
+   DevToolsToggleAction action_on_load_;
++
++  // Latest explicit panel request, consumed after the existing frontend readiness gate.
++  std::optional<std::string> requested_panel_;
+   DevToolsContentsResizingStrategy contents_resizing_strategy_;
+   // True if we're in the process of handling a beforeunload event originating
+   // from the inspected webcontents, see InterceptPageBeforeUnload for details.

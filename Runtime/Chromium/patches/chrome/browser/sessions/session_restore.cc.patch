@@ -1,0 +1,41 @@
+diff --git a/chrome/browser/sessions/session_restore.cc b/chrome/browser/sessions/session_restore.cc
+index e21bf8de37..1e2ce10acc 100644
+--- a/chrome/browser/sessions/session_restore.cc
++++ b/chrome/browser/sessions/session_restore.cc
+@@ -103,6 +103,7 @@
+ #include "components/tabs/public/tab_collection.h"
+ #include "components/tabs/public/tab_group.h"
+ #include "components/tabs/public/tab_interface.h"
++#include "components/tabs/public/split_tab_data.h"
+ #include "content/public/browser/child_process_security_policy.h"
+ #include "content/public/browser/dom_storage_context.h"
+ #include "content/public/browser/navigation_controller.h"
+@@ -1084,9 +1085,8 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
+             browser->GetTabStripModel()->GetIndexOfTab(tab));
+       }
+ 
+-      // The number of supported split tabs is 2. Do not attempt to restore
+-      // more than this to future proof it.
+-      if (tab_contents_list.size() == 2) {
++      if (tab_contents_list.size() >= 2 &&
++          tab_contents_list.size() <= split_tabs::SplitTabVisualData::kMaxPanes) {
+         browser->GetTabStripModel()->RestoreSplit(
+             split_id, tab_index_list, split_tabs::SplitTabVisualData());
+       }
+@@ -1192,9 +1192,13 @@ class SessionRestoreImpl : public BrowserCollectionObserver {
+       browser->GetTabStripModel()->UpdateSplitLayout(
+           session_split_tab->id_,
+           session_split_tab->split_visual_data_.split_layout());
+-      browser->GetTabStripModel()->UpdateSplitRatio(
+-          session_split_tab->id_,
+-          session_split_tab->split_visual_data_.split_ratio());
++      if (session_split_tab->split_visual_data_.pane_count() ==
++          browser->GetTabStripModel()->GetSplitData(session_split_tab->id_)
++              ->ListTabs().size()) {
++        browser->GetTabStripModel()->UpdateSplitDividers(
++            session_split_tab->id_,
++            session_split_tab->split_visual_data_.split_dividers());
++      }
+     }
+   }
+ 

@@ -1,0 +1,12 @@
+diff --git a/extensions/browser/api/web_request/web_request_event_details.cc b/extensions/browser/api/web_request/web_request_event_details.cc
+index 79d52d95dc..690f4d009c 100644
+--- a/extensions/browser/api/web_request/web_request_event_details.cc
++++ b/extensions/browser/api/web_request/web_request_event_details.cc
+@@ -131,6 +131,7 @@ void WebRequestEventDetails::SetRequestBody(WebRequestInfo* request) {
+   if (!(extra_info_spec_ & ExtraInfoSpec::REQUEST_BODY)) {
+     return;
+   }
++  request->EnsureRequestBodyData();
+   request_body_ = std::nullopt;
+   if (request->request_body_data) {
+     request_body_ = std::move(request->request_body_data);

@@ -1,0 +1,72 @@
+diff --git a/components/performance_manager/decorators/page_live_state_decorator_unittest.cc b/components/performance_manager/decorators/page_live_state_decorator_unittest.cc
+index 31152bc14a..b752ae310a 100644
+--- a/components/performance_manager/decorators/page_live_state_decorator_unittest.cc
++++ b/components/performance_manager/decorators/page_live_state_decorator_unittest.cc
+@@ -24,6 +24,9 @@
+ #include "components/performance_manager/test_support/decorators_utils.h"
+ #include "components/performance_manager/test_support/performance_manager_test_harness.h"
+ #include "content/public/browser/web_contents.h"
++#include "content/public/browser/render_frame_host.h"
++#include "content/public/browser/weak_document_ptr.h"
++#include "content/public/test/navigation_simulator.h"
+ #include "content/public/browser/web_contents_capability_type.h"
+ #include "testing/gmock/include/gmock/gmock.h"
+ #include "testing/gtest/include/gtest/gtest.h"
+@@ -445,6 +448,57 @@ TEST_F(PageLiveStateDecoratorTest, OnIsDevToolsOpenChanged) {
+ 
+ #endif  // !BUILDFLAG(IS_ANDROID)
+ 
++TEST_F(PageLiveStateDecoratorTest, ObservedDocumentBodyTokensReleaseExactlyOnce) {
++  content::NavigationSimulator::NavigateAndCommitFromBrowser(
++      web_contents(), GURL("https://body.test/"));
++  auto page = PerformanceManager::GetPrimaryPageNodeForWebContents(web_contents());
++  ASSERT_TRUE(page);
++  auto* data = PageLiveStateDecorator::Data::GetOrCreateForPageNode(page.get());
++  const bool visible = page->IsVisible();
++  auto document = web_contents()->GetPrimaryMainFrame()->GetWeakDocumentPtr();
++  EXPECT_FALSE(data->HasObservedDocumentBodyWork());
++  auto first = PageLiveStateDecorator::ObserveDocumentRequestBody(document);
++  auto second = PageLiveStateDecorator::ObserveDocumentRequestBody(document);
++  ASSERT_TRUE(first);
++  ASSERT_TRUE(second);
++  EXPECT_TRUE(data->HasObservedDocumentBodyWork());
++  first.RunAndReset();
++  first.RunAndReset();
++  task_environment()->RunUntilIdle();
++  EXPECT_TRUE(data->HasObservedDocumentBodyWork());
++  second.RunAndReset();
++  EXPECT_TRUE(data->HasObservedDocumentBodyWork());  // Teardown never synchronously notifies.
++  task_environment()->RunUntilIdle();
++  EXPECT_FALSE(data->HasObservedDocumentBodyWork());
++  EXPECT_EQ(visible, page->IsVisible());
++  // This zero counts only observed proxy segments; no eligibility is granted.
++  EXPECT_FALSE(PageLiveStateDecorator::ObserveDocumentRequestBody(content::WeakDocumentPtr()));
++}
++
++TEST_F(PageLiveStateDecoratorTest, ObservedDocumentBodyDoesNotRetargetOrKeepPageAlive) {
++  content::NavigationSimulator::NavigateAndCommitFromBrowser(
++      web_contents(), GURL("https://body.test/first"));
++  auto document = web_contents()->GetPrimaryMainFrame()->GetWeakDocumentPtr();
++  auto first = PageLiveStateDecorator::ObserveDocumentRequestBody(document);
++  ASSERT_TRUE(first);
++  content::NavigationSimulator::NavigateAndCommitFromBrowser(
++      web_contents(), GURL("https://other.test/second"));
++  auto replacement = PerformanceManager::GetPrimaryPageNodeForWebContents(web_contents());
++  ASSERT_TRUE(replacement);
++  auto* data = PageLiveStateDecorator::Data::GetOrCreateForPageNode(replacement.get());
++  EXPECT_FALSE(data->HasObservedDocumentBodyWork());
++  EXPECT_FALSE(PageLiveStateDecorator::ObserveDocumentRequestBody(document));
++  first.RunAndReset();
++  task_environment()->RunUntilIdle();
++  EXPECT_FALSE(data->HasObservedDocumentBodyWork());
++  auto live = PageLiveStateDecorator::ObserveDocumentRequestBody(
++      web_contents()->GetPrimaryMainFrame()->GetWeakDocumentPtr());
++  ASSERT_TRUE(live);
++  live.RunAndReset();
++  DeleteObservedWebContents();
++  task_environment()->RunUntilIdle();
++}
++
+ TEST_F(PageLiveStateDecoratorTest, WithheldFromView) {
+   EXPECT_FALSE(PageLiveStateDecorator::IsWithheldFromView(web_contents()));
+   testing::TestPageNodeProperty(

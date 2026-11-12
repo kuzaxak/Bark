@@ -1,0 +1,302 @@
+diff --git a/ui/views/widget/widget_unittest.cc b/ui/views/widget/widget_unittest.cc
+index 1b14038e59..64c1f7f64c 100644
+--- a/ui/views/widget/widget_unittest.cc
++++ b/ui/views/widget/widget_unittest.cc
+@@ -74,6 +74,7 @@
+ #include "ui/views/test/widget_activation_waiter.h"
+ #include "ui/views/test/widget_test.h"
+ #include "ui/views/view_test_api.h"
++#include "ui/views/view_tracker.h"
+ #include "ui/views/views_features.h"
+ #include "ui/views/views_test_suite.h"
+ #include "ui/views/widget/native_widget_delegate.h"
+@@ -84,8 +85,11 @@
+ #include "ui/views/widget/widget_deletion_observer.h"
+ #include "ui/views/widget/widget_removals_observer.h"
+ #include "ui/views/widget/widget_utils.h"
++#include "ui/views/window/client_view.h"
+ #include "ui/views/window/dialog_delegate.h"
++#include "ui/views/window/frame_view.h"
+ #include "ui/views/window/native_frame_view.h"
++#include "ui/views/window/non_client_view.h"
+ 
+ #if defined(USE_AURA)
+ #include "ui/aura/window.h"
+@@ -267,6 +271,277 @@ class EventCountHandler : public ui::EventHandler {
+   std::map<ui::EventType, int> event_count_;
+ };
+ 
++namespace {
++class RetainedClientTestFrame : public FrameView {
++ public:
++  gfx::Rect GetBoundsForClientView() const override { return GetLocalBounds(); }
++};
++
++class RetainedClientTestClient : public ClientView {
++ public:
++  RetainedClientTestClient(Widget* widget, View* contents)
++      : ClientView(widget, contents) {}
++  gfx::Size CalculatePreferredSize(const SizeBounds&) const override {
++    return gfx::Size(263, 197);
++  }
++  gfx::Size GetMinimumSize() const override { return gfx::Size(171, 183); }
++  gfx::Size GetMaximumSize() const override { return gfx::Size(901, 811); }
++  int NonClientHitTest(const gfx::Point&) override { return HTCAPTION; }
++};
++
++class UnboundClientFrameObserver : public ViewObserver {
++ public:
++  UnboundClientFrameObserver(FrameView* frame, ClientView* inactive)
++      : inactive_(inactive), observation_(this) {
++    observation_.Observe(frame);
++  }
++  void OnChildViewRemoved(View* view, View* child) override {
++    auto* frame = static_cast<FrameView*>(view);
++    EXPECT_EQ(nullptr, frame->client_view());
++    EXPECT_EQ(gfx::Size(), frame->GetPreferredSize());
++    EXPECT_EQ(gfx::Size(), frame->GetMinimumSize());
++    EXPECT_EQ(gfx::Size(), frame->GetMaximumSize());
++    EXPECT_EQ(HTNOWHERE, frame->NonClientHitTest(gfx::Point(5, 5)));
++    const gfx::Rect inactive_bounds = inactive_->bounds();
++    const gfx::Rect moved_bounds = child->bounds();
++    frame->SetBoundsRect(gfx::Rect(0, 0, 287, 219));
++    frame->DeprecatedLayoutImmediately();
++    EXPECT_EQ(inactive_bounds, inactive_->bounds());
++    EXPECT_EQ(moved_bounds, child->bounds());
++    ++removals;
++  }
++  void OnViewIsDeleting(View* view) override { observation_.Reset(); }
++  int removals = 0;
++
++ private:
++  raw_ptr<ClientView> inactive_;
++  base::ScopedObservation<View, ViewObserver> observation_;
++};
++
++class ClientFrameVisibilityObserver : public ViewObserver {
++ public:
++  explicit ClientFrameVisibilityObserver(FrameView* frame)
++      : observation_(this) {
++    observation_.Observe(frame);
++  }
++  void OnViewVisibilityChanged(View* view,
++                               View* starting_view,
++                               bool visible) override {
++    if (visible && starting_view == view) {
++      EXPECT_EQ(view->parent()->GetLocalBounds(), view->bounds());
++      ++shows;
++      if (close_on_show) {
++        view->GetWidget()->Close();
++      }
++    }
++  }
++  void OnViewIsDeleting(View* view) override { observation_.Reset(); }
++  int shows = 0;
++  bool close_on_show = false;
++
++ private:
++  base::ScopedObservation<View, ViewObserver> observation_;
++};
++}  // namespace
++
++TEST_F(WidgetTest, RetainedClientFramesShareOneWidget) {
++  auto widget = base::WrapUnique(
++      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
++  widget->SetBounds(gfx::Rect(40, 40, 640, 480));
++  auto* owner = widget->non_client_view();
++  auto* first = owner->client_view();
++  auto* first_frame = owner->frame_view();
++  auto* first_field = first->AddChildView(std::make_unique<Textfield>());
++  first_field->SetText(u"first draft");
++  first_field->SetBounds(0, 0, 100, 30);
++  auto second_field = std::make_unique<Textfield>();
++  auto* second_field_ptr = second_field.get();
++  second_field->SetText(u"second draft");
++  auto second = std::make_unique<RetainedClientTestClient>(
++      widget.get(), second_field.release());
++  auto* second_ptr = second.get();
++  auto frame = std::make_unique<NativeFrameView>(widget.get());
++  auto* second_frame = frame.get();
++  ClientFrameVisibilityObserver shown(second_frame);
++  owner->RetainClientFrame(std::move(frame), std::move(second));
++  const auto native_window = widget->GetNativeWindow();
++  widget->Show();
++  RunScheduledLayout(owner);
++  EXPECT_EQ(widget.get(), second_ptr->GetWidget());
++  EXPECT_FALSE(second_field_ptr->IsDrawn());
++  EXPECT_FALSE(second_field_ptr->IsFocusable());
++  for (int i = 0; i < 3; ++i) {
++    widget->SetBounds(gfx::Rect(40, 40, 700 + i * 20, 500 + i * 20));
++    RunScheduledLayout(owner);
++    // An inactive frame must lay out and query its own client, even though
++    // Widget::client_view() still returns the first selected client.
++    const gfx::Rect first_bounds = first->bounds();
++    const gfx::Rect inactive_bounds(0, 0, 431 + i, 337 + i);
++    second_frame->SetBoundsRect(inactive_bounds);
++    second_frame->DeprecatedLayoutImmediately();
++    EXPECT_EQ(first_bounds, first->bounds());
++    EXPECT_EQ(inactive_bounds, second_ptr->bounds());
++    EXPECT_EQ(gfx::Size(263, 197), second_frame->GetPreferredSize({}));
++    EXPECT_EQ(gfx::Size(171, 183), second_frame->GetMinimumSize());
++    EXPECT_EQ(gfx::Size(901, 811), second_frame->GetMaximumSize());
++    EXPECT_EQ(HTCAPTION, second_frame->NonClientHitTest(gfx::Point(5, 5)));
++    ASSERT_TRUE(owner->SelectClientFrame(second_ptr));
++    RunScheduledLayout(owner);
++    EXPECT_TRUE(second_field_ptr->IsDrawn());
++    EXPECT_FALSE(first_field->IsDrawn());
++    EXPECT_FALSE(first_field->IsFocusable());
++    second_field_ptr->RequestFocus();
++    EXPECT_EQ(second_field_ptr, widget->GetFocusManager()->GetFocusedView());
++    EXPECT_TRUE(second_frame->Contains(
++        owner->GetEventHandlerForPoint(gfx::Point(5, 5))));
++    ASSERT_TRUE(owner->SelectClientFrame(first));
++    EXPECT_FALSE(second_field_ptr->IsFocusable());
++    EXPECT_EQ(widget.get(), second_ptr->GetWidget());
++    EXPECT_EQ(native_window, widget->GetNativeWindow());
++    EXPECT_EQ(first_frame, owner->frame_view());
++  }
++  EXPECT_EQ(3, shown.shows);
++  EXPECT_EQ(u"first draft", first_field->GetText());
++  EXPECT_EQ(u"second draft", second_field_ptr->GetText());
++  // Replacing the active theme frame must leave the inactive pair attached.
++  owner->SetFrameView(std::make_unique<RetainedClientTestFrame>());
++  EXPECT_EQ(widget.get(), second_ptr->GetWidget());
++  ASSERT_TRUE(owner->SelectClientFrame(second_ptr));
++  // The outgoing native frame is unbound before its client is reparented.
++  // Its callbacks must not borrow the retained inactive client's geometry.
++  UnboundClientFrameObserver unbound(second_frame, first);
++  owner->SetFrameView(std::make_unique<RetainedClientTestFrame>());
++  EXPECT_EQ(1, unbound.removals);
++  ASSERT_TRUE(owner->SelectClientFrame(first));
++  ViewTracker active(first);
++  ViewTracker inactive(second_ptr);
++  auto released = owner->ReleaseClientFrame(second_ptr);
++  ASSERT_TRUE(released);
++  EXPECT_EQ(nullptr, released->GetWidget());
++  EXPECT_TRUE(active);
++  released.reset();
++  EXPECT_FALSE(inactive);
++  EXPECT_TRUE(active);
++}
++
++TEST_F(WidgetTest, RetainedClientSelectionAllowsDeferredClose) {
++  auto widget = base::WrapUnique(
++      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
++  auto* owner = widget->non_client_view();
++  auto client = std::make_unique<ClientView>(widget.get(), new View());
++  auto* client_ptr = client.get();
++  auto frame = std::make_unique<RetainedClientTestFrame>();
++  ClientFrameVisibilityObserver shown(frame.get());
++  owner->RetainClientFrame(std::move(frame), std::move(client));
++  widget->Show();
++  shown.close_on_show = true;
++  EXPECT_TRUE(owner->SelectClientFrame(client_ptr));
++  EXPECT_EQ(1, shown.shows);
++  RunPendingMessages();
++  EXPECT_TRUE(widget->IsClosed());
++}
++
++TEST_F(WidgetTest, RetainedClientDelegateLifetime) {
++  int primary_initialized = 0;
++  auto primary_delegate_owner = std::make_unique<WidgetDelegate>();
++  primary_delegate_owner->RegisterWidgetInitializedCallback(
++      base::BindLambdaForTesting([&] { ++primary_initialized; }));
++  auto widget = std::make_unique<Widget>();
++  auto params = CreateParams(Widget::InitParams::CLIENT_OWNS_WIDGET,
++                             Widget::InitParams::TYPE_WINDOW);
++  params.delegate = primary_delegate_owner.get();
++  params.native_widget =
++      CreatePlatformNativeWidgetImpl(widget.get(), kStubCapture, nullptr);
++  widget->Init(std::move(params));
++  ASSERT_EQ(1, primary_initialized);
++  auto* owner = widget->non_client_view();
++  auto* primary_client = owner->client_view();
++  auto* primary_delegate = widget->widget_delegate();
++  auto secondary_delegate = std::make_unique<WidgetDelegate>();
++  int initialized = 0;
++  int closing = 0;
++  int client_closing = 0;
++  secondary_delegate->RegisterWidgetInitializedCallback(
++      base::BindLambdaForTesting([&] { ++initialized; }));
++  secondary_delegate->RegisterWindowClosingCallback(
++      base::BindLambdaForTesting([&] {
++        EXPECT_EQ(1, client_closing);
++        ++closing;
++      }));
++  class ClosingClient : public ClientView {
++   public:
++    ClosingClient(Widget* widget, base::OnceClosure on_close)
++        : ClientView(widget, new View()), on_close_(std::move(on_close)) {}
++    void WidgetClosing() override { std::move(on_close_).Run(); }
++
++   private:
++    base::OnceClosure on_close_;
++  };
++  auto client = std::make_unique<ClosingClient>(widget.get(),
++                                                base::BindLambdaForTesting([&] {
++                                                  EXPECT_EQ(0, closing);
++                                                  ++client_closing;
++                                                }));
++  auto* secondary_client = client.get();
++  widget->RetainClientFrame(std::make_unique<NativeFrameView>(widget.get()),
++                            std::move(client), secondary_delegate.get());
++  EXPECT_EQ(1, initialized);
++  EXPECT_EQ(widget.get(), secondary_delegate->GetWidget());
++  const auto native_window = widget->GetNativeWindow();
++  for (int i = 0; i < 3; ++i) {
++    widget->SelectClientDelegate(secondary_delegate.get());
++    ASSERT_TRUE(owner->SelectClientFrame(secondary_client));
++    EXPECT_EQ(secondary_delegate.get(), widget->widget_delegate());
++    widget->SelectClientDelegate(primary_delegate);
++    ASSERT_TRUE(owner->SelectClientFrame(primary_client));
++  }
++  EXPECT_EQ(1, initialized);
++  EXPECT_EQ(1, primary_initialized);
++  EXPECT_EQ(0, closing);
++  auto released = owner->ReleaseClientFrame(secondary_client);
++  ASSERT_TRUE(released);
++  widget->FinalizeClientDelegate(secondary_client, secondary_delegate.get());
++  EXPECT_EQ(nullptr, secondary_delegate->GetWidget());
++  EXPECT_EQ(1, closing);
++  EXPECT_EQ(1, client_closing);
++  released.reset();
++  secondary_delegate.reset();
++  EXPECT_FALSE(widget->IsClosed());
++  EXPECT_EQ(primary_delegate, widget->widget_delegate());
++  EXPECT_EQ(primary_client, owner->client_view());
++  EXPECT_EQ(native_window, widget->GetNativeWindow());
++}
++
++TEST_F(WidgetTest, PhysicalCloseFinalizesRetainedDelegates) {
++  int primary_closing = 0;
++  int secondary_closing = 0;
++  auto secondary_delegate = std::make_unique<WidgetDelegate>();
++  auto widget = base::WrapUnique(
++      CreateTopLevelPlatformWidget(Widget::InitParams::CLIENT_OWNS_WIDGET));
++  auto* owner = widget->non_client_view();
++  auto* primary_delegate = widget->widget_delegate();
++  primary_delegate->RegisterWindowClosingCallback(
++      base::BindLambdaForTesting([&] { ++primary_closing; }));
++  secondary_delegate->RegisterWindowClosingCallback(
++      base::BindLambdaForTesting([&] { ++secondary_closing; }));
++  auto client = std::make_unique<ClientView>(widget.get(), new View());
++  auto* secondary_client = client.get();
++  widget->RetainClientFrame(std::make_unique<NativeFrameView>(widget.get()),
++                            std::move(client), secondary_delegate.get());
++  // The delegate lifetime binding must survive active frame/theme replacement.
++  owner->SetFrameView(std::make_unique<NativeFrameView>(widget.get()));
++  widget->SelectClientDelegate(secondary_delegate.get());
++  ASSERT_TRUE(owner->SelectClientFrame(secondary_client));
++  widget->CloseNow();
++  EXPECT_EQ(1, primary_closing);
++  EXPECT_EQ(1, secondary_closing);
++  EXPECT_EQ(nullptr, secondary_delegate->GetWidget());
++  widget.reset();
++  // Both inactive and selected delegates were finalized before frames died.
++  // Destruction would CHECK otherwise; the physical host was closed only once.
++  secondary_delegate.reset();
++}
++
+ TEST_F(WidgetTest, WidgetInitParams) {
+   // Widgets are not transparent by default.
+   Widget::InitParams init1(Widget::InitParams::CLIENT_OWNS_WIDGET);

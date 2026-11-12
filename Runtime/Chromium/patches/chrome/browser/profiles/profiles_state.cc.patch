@@ -1,0 +1,35 @@
+diff --git a/chrome/browser/profiles/profiles_state.cc b/chrome/browser/profiles/profiles_state.cc
+index d1fcd93ded..6aa3c9c582 100644
+--- a/chrome/browser/profiles/profiles_state.cc
++++ b/chrome/browser/profiles/profiles_state.cc
+@@ -100,6 +100,12 @@ void SetLastUsedProfile(const base::FilePath& profile_dir) {
+   // shouldn't have a browser.
+   if (profile_dir == base::FilePath(chrome::kSystemProfileDir))
+     return;
++  auto* manager = g_browser_process ? g_browser_process->profile_manager()
++                                    : nullptr;
++  if (manager && ProfileManager::IsPrivateSessionProfilePath(
++                     manager->user_data_dir().Append(profile_dir))) {
++    return;
++  }
+ 
+   PrefService* local_state = g_browser_process->local_state();
+   DCHECK(local_state);
+@@ -299,8 +305,15 @@ void RemoveBrowsingDataForProfile(const base::FilePath& profile_path) {
+     return;
+ 
+   // For guest profiles the browsing data is in the OTR profile.
+-  if (profile->IsGuestSession())
+-    profile = profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
++  if (profile->IsGuestSession()) {
++    // Deleting a completed session's backing parent must not create a new OTR
++    // (which would acquire another parent keepalive and restart the session).
++    profile = profile->GetPrimaryOTRProfile(
++        !ProfileManager::IsPrivateSessionProfilePath(profile_path));
++    if (!profile) {
++      return;
++    }
++  }
+ 
+   profile->Wipe();
+ }

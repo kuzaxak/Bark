@@ -1,0 +1,53 @@
+diff --git a/chrome/browser/ui/views/frame/BUILD.gn b/chrome/browser/ui/views/frame/BUILD.gn
+index d1973034ee..72848bce8e 100644
+--- a/chrome/browser/ui/views/frame/BUILD.gn
++++ b/chrome/browser/ui/views/frame/BUILD.gn
+@@ -1098,6 +1098,7 @@ source_set("multi_contents_view_delegate") {
+     ":multi_contents_view_drop_target_controller",
+     "//base",
+     "//chrome/browser/ui/views/tabs/dragging:tab_drag_target",
++    "//components/split_tabs",
+   ]
+   deps = [
+     "//chrome/browser/profiles:profile",
+@@ -1107,7 +1108,6 @@ source_set("multi_contents_view_delegate") {
+     "//chrome/browser/ui/tabs",
+     "//chrome/browser/ui/tabs:tab_enums",
+     "//chrome/browser/ui/tabs:tab_strip",
+-    "//components/split_tabs",
+     "//components/tabs:public",
+     "//content/public/browser",
+     "//content/public/common",
+@@ -2718,6 +2718,7 @@ source_set("browser_widget") {
+   public_deps = [
+     "//base",
+     "//build:buildflag_header_h",
++    "//components/split_tabs",
+     "//content/public/browser",
+     "//ui/base",
+     "//ui/base/mojom:ui_base_types",
+@@ -2738,12 +2739,15 @@ source_set("browser_widget_impl") {
+     ":browser_root_view",
+     ":browser_view_header",
+     ":glass_frame_service",
++    ":multi_contents_view",
++    ":multi_contents_view_delegate",
+     ":system_menu_model_builder",
+     ":top_container_view",
+     "//base",
+     "//build:buildflag_header_h",
+     "//chrome/app:command_ids",
+     "//chrome/browser/app_mode",
++    "//chrome/browser/lifetime",
+     "//chrome/browser/profiles:profile",
+     "//chrome/browser/themes",
+     "//chrome/browser/ui:browser_init_state",
+@@ -2753,6 +2757,8 @@ source_set("browser_widget_impl") {
+     "//chrome/browser/ui/browser_window",
+     "//chrome/browser/ui/immersive:immersive_mode_controller",
+     "//chrome/browser/ui/sessions",
++    "//chrome/browser/ui/tabs:tab_strip",
++    "//chrome/browser/ui/views/location_bar",
+     "//chrome/browser/ui/web_applications",
+     "//chrome/common:constants",
+     "//content/public/browser",

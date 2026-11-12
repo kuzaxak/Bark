@@ -1,0 +1,14 @@
+diff --git a/components/download/public/common/download_source.h b/components/download/public/common/download_source.h
+index 320e1f2990..1ca377bacb 100644
+--- a/components/download/public/common/download_source.h
++++ b/components/download/public/common/download_source.h
+@@ -52,6 +52,9 @@ enum class DownloadSource {
+ 
+   // Toolbar menu, only available on Android.
+   TOOLBAR_MENU = 12,
++
++  // Trusted configured-site media save. Response-restricted, never restarted.
++  NATIVE_SOCIAL_MEDIA = 13,
+ };
+ 
+ }  // namespace download

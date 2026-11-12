@@ -1,0 +1,15 @@
+diff --git a/chrome/browser/performance_manager/policies/cannot_discard_reason.h b/chrome/browser/performance_manager/policies/cannot_discard_reason.h
+index 91527dfe8d..084a894eba 100644
+--- a/chrome/browser/performance_manager/policies/cannot_discard_reason.h
++++ b/chrome/browser/performance_manager/policies/cannot_discard_reason.h
+@@ -42,7 +42,9 @@ enum class CannotDiscardReason {
+   kGlicShared = 28,
+   kWebApp = 29,
+ 
+-  kMaxValue = kWebApp,
++  kUnknownNativeActivity = 30,
++
++  kMaxValue = kUnknownNativeActivity,
+ };
+ // LINT.ThenChange(//tools/metrics/histograms/enums.xml:CannotDiscardReason)
+ 

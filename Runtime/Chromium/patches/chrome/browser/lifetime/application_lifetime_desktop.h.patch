@@ -1,0 +1,19 @@
+diff --git a/chrome/browser/lifetime/application_lifetime_desktop.h b/chrome/browser/lifetime/application_lifetime_desktop.h
+index 7f7c941441..3e1f2e7b59 100644
+--- a/chrome/browser/lifetime/application_lifetime_desktop.h
++++ b/chrome/browser/lifetime/application_lifetime_desktop.h
+@@ -68,6 +68,14 @@ void OnClosingAllBrowsers(bool closing);
+ base::CallbackListSubscription AddClosingAllBrowsersCallback(
+     base::RepeatingCallback<void(bool)> closing_all_browsers_callback);
+ 
++#if BUILDFLAG(IS_MAC)
++// Current beforeunload/download decisions have succeeded, before session/window
++// teardown. A late-created browser can still veto; closing=false reverses it.
++void OnAllBrowsersCloseAccepted();
++base::CallbackListSubscription AddAllBrowsersCloseAcceptedCallback(
++    base::RepeatingClosure callback);
++#endif
++
+ // Sets the exit type to `ExitType::kClean` for all browser profiles.
+ void MarkAsCleanShutdown();
+ 
