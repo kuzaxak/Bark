@@ -372,6 +372,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let appMenu = ChromiumAppMenu { [weak manager, weak shortcuts] command in
                 guard let manager, let shortcuts else { return }
                 switch command {
+                case .about: NSApp.orderFrontStandardAboutPanel(nil)
                 case .settings: manager.openSettings(tab: .general)
                 case .quit: manager.showQuitDialog()
                 case .newTab: shortcuts.perform(.newTab)
@@ -391,6 +392,16 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }
             if let mainMenu = NSApp.mainMenu { appMenu.install(in: mainMenu) }
             self.appMenu = appMenu
+            let menuShortcuts: [ChromiumAppMenu.Command: ShortcutAction] = [
+                .quit: .closeBrowser, .newTab: .newTab, .focusAddress: .focusAddressBar, .closeTab: .closeTab,
+                .history: .viewHistory, .downloads: .viewDownloads,
+            ]
+            let showMenuKeys = { [weak appMenu, weak shortcuts] in
+                guard let appMenu, let shortcuts else { return }
+                appMenu.showKeys(menuShortcuts.mapValues { shortcuts.menuKey(for: $0) })
+            }
+            shortcuts.onShortcutsChanged = showMenuKeys
+            showMenuKeys()
             manager.tabs.nativePageHost = pageHost
             pageHost.pageIsHidden = { [weak tabs = manager.tabs] state in
                 state.showsNativeEmptySpace || tabs?.showsPageElsewhere(in: state) == true
@@ -690,6 +701,19 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
         window.center()
         window.makeKeyAndOrderFront(nil)
+    }
+}
+
+private extension KeyboardShortcutManager {
+    func menuKey(for action: ShortcutAction) -> ChromiumAppMenu.Key {
+        guard let key = keyEquivalent(for: action) else { return ChromiumAppMenu.Key(equivalent: "", modifiers: []) }
+        let modifiers = eventModifiers(for: action)
+        var flags: NSEvent.ModifierFlags = []
+        if modifiers.contains(.command) { flags.insert(.command) }
+        if modifiers.contains(.option) { flags.insert(.option) }
+        if modifiers.contains(.control) { flags.insert(.control) }
+        if modifiers.contains(.shift) { flags.insert(.shift) }
+        return ChromiumAppMenu.Key(equivalent: String(key.character), modifiers: flags)
     }
 }
 

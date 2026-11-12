@@ -18,16 +18,29 @@ enum Check {
             item.submenu = menu
             main.addItem(item)
         }
-        top(57325, "Chromium", [(40015, "Settings…"), (34031, "Quit Chromium")])
-        top(57326, "File", [(34014, "New Tab"), (34000, "New Window"), (34028, "Reopen Closed Tab"), (39001, "Open Location…"), (34015, "Close Tab")])
+        top(57325, "Chromium", [(40018, "About Chromium"), (40015, "Settings…"), (40013, "Delete Browsing Data…"), (40014, "Import Bookmarks and Settings…"), (34031, "Quit Chromium")])
+        let warn = NSMenuItem(title: "Warn Before Quitting", action: NSSelectorFromString("toggleConfirmToQuit:"), keyEquivalent: "")
+        main.item(withTag: 57325)!.submenu!.insertItem(warn, at: 4)
+        top(57326, "File", [(34014, "New Tab"), (34000, "New Window"), (34028, "Reopen Closed Tab"), (40000, "Open File…"), (39001, "Open Location…"), (34015, "Close Tab")])
+        main.item(withTag: 57326)!.submenu!.item(withTag: 40000)!.keyEquivalent = "o"
+        for (top, tag, key) in [(57325, 40015, ","), (57325, 34031, "q"), (57326, 34014, "t"), (57326, 39001, "l"), (57326, 34015, "w")] {
+            main.item(withTag: top)!.submenu!.item(withTag: tag)!.keyEquivalent = key
+        }
+        main.item(withTag: 57325)!.submenu!.item(withTag: 40013)!.keyEquivalent = "\u{8}"
         top(57343, "Edit", [(50100, "Copy")])
-        top(57327, "View", [(40009, "Always Show Bookmarks Bar"), (40250, "Always Show Toolbar"), (40259, "Always Show Full URLs"), (40251, "Customize Touch Bar"), (34058, "Vertical Tabs"), (34061, "Collapse Vertical Tabs"), (34030, "Enter Full Screen")])
-        top(57324, "History", [(40010, "Show Full History")])
+        let find = NSMenuItem(title: "Find", action: nil, keyEquivalent: "")
+        find.submenu = NSMenu(title: "Find")
+        let searchWeb = NSMenuItem(title: "Search the Web…", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "")
+        searchWeb.tag = 39002
+        find.submenu!.addItem(searchWeb)
+        main.item(withTag: 57343)!.submenu!.addItem(find)
+        top(57327, "View", [(40009, "Always Show Bookmarks Bar"), (40250, "Always Show Toolbar"), (40259, "Always Show Full URLs"), (40251, "Customize Touch Bar"), (40282, "Always Show Image Search Shortcut"), (40299, "Always Show AI Mode"), (40296, "Show Search Shortcuts"), (34058, "Vertical Tabs"), (34061, "Collapse Vertical Tabs"), (34030, "Enter Full Screen"), (35011, "Cast…"), (35002, "View Source")])
+        top(57324, "History", [(33003, "Home"), (40010, "Show Full History")])
         top(57333, "Bookmarks", [])
         top(57322, "Profiles", [])
         top(57323, "Tab", [(34016, "Next Tab")])
         top(57321, "Window", [(40012, "Downloads")])
-        top(57330, "Help", [])
+        top(57330, "Help", [(40020, "Chromium Help")])
         return main
     }
 
@@ -36,6 +49,7 @@ enum Check {
     }
 
     static func main() {
+        _ = NSApplication.shared
         var ran: [ChromiumAppMenu.Command] = []
         let main = stockMenu()
         let installer = ChromiumAppMenu { ran.append($0) }
@@ -45,12 +59,37 @@ enum Check {
         for tag in [57333, 57322, 57323] {
             precondition(main.item(withTag: tag)?.isHidden == true, "tag \(tag) must be hidden, not removed")
         }
-        for tag in [40009, 40250, 40259, 40251, 34058, 34061] {
-            precondition(item(main, 57327, tag).isHidden, "stock toolbar option \(tag) must be hidden")
+        for tag in [40009, 40250, 40259, 40251, 40282, 40299, 40296, 34058, 34061, 35011] {
+            precondition(item(main, 57327, tag).isHidden, "View item \(tag) must be hidden")
         }
+        for (top, tag) in [(57325, 40014), (57324, 33003), (57330, 40020)] {
+            precondition(item(main, top, tag).isHidden, "item \(tag) must be hidden")
+        }
+        precondition(main.item(withTag: 57343)!.submenu!.items.last!.submenu!.item(withTag: 39002)!.isHidden, "Search the Web must be hidden")
+        let warn = main.item(withTag: 57325)!.submenu!.items.first { $0.title == "Warn Before Quitting" }!
+        precondition(warn.isHidden, "Chromium's Warn Before Quitting must be hidden; Nook asks before quitting itself")
+        precondition(!item(main, 57327, 35002).isHidden && !item(main, 57327, 34030).isHidden, "View Source and Full Screen stay")
+
+        // Chromium validates a hidden item and may show it again; a hidden item no longer reaches it.
+        for tag in [34058, 35011] {
+            let entry = item(main, 57327, tag)
+            precondition(entry.action != #selector(NSApplication.terminate(_:)) && entry.target != nil, "item \(tag) still reaches Chromium")
+        }
+        // Chromium shows the Profiles menu again when it rebuilds it, and the History menu's items when history changes.
+        main.item(withTag: 57322)!.isHidden = false
+        precondition(main.item(withTag: 57322)!.isHidden, "the Profiles menu must stay hidden after Chromium shows it")
+        item(main, 57324, 33003).isHidden = false
+        precondition(item(main, 57324, 33003).isHidden, "Home must stay hidden after Chromium shows it")
+        item(main, 57324, 40010).isHidden = true
+        item(main, 57324, 40010).isHidden = false
+        precondition(!item(main, 57324, 40010).isHidden, "Show Full History is not held hidden")
+
+        precondition(item(main, 57326, 40000).keyEquivalent.isEmpty && item(main, 57325, 40013).keyEquivalent.isEmpty,
+                     "Open File and Delete Browsing Data show no key Chromium never receives")
+        precondition(item(main, 57326, 40000).action == #selector(NSApplication.terminate(_:)), "Open File still goes to Chromium")
 
         let routed: [(Int, Int, ChromiumAppMenu.Command)] = [
-            (57325, 40015, .settings), (57325, 34031, .quit), (57326, 34014, .newTab), (57326, 34028, .reopenClosedTab),
+            (57325, 40018, .about), (57325, 40015, .settings), (57325, 34031, .quit), (57326, 34014, .newTab), (57326, 34028, .reopenClosedTab),
             (57326, 39001, .focusAddress), (57326, 34015, .closeTab), (57324, 40010, .history),
             (57321, 40012, .downloads),
         ]
@@ -61,6 +100,23 @@ enum Check {
             _ = entry.target?.perform(entry.action, with: entry)
             precondition(ran == [command], "\(command) ran \(ran)")
         }
+
+        // A key the person moved in Settings > Shortcuts: the menu shows the new one and no longer runs the old one.
+        installer.showKeys([.closeTab: .init(equivalent: "k", modifiers: [.command, .option]), .newTab: .init(equivalent: "", modifiers: [])])
+        func press(_ key: String, _ modifiers: NSEvent.ModifierFlags) -> [ChromiumAppMenu.Command] {
+            ran = []
+            let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: 0, context: nil,
+                                         characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)!
+            _ = main.performKeyEquivalent(with: event)
+            return ran
+        }
+        precondition(press("w", .command).isEmpty, "the old Close Tab key runs nothing")
+        precondition(press("t", .command).isEmpty, "the old New Tab key runs nothing")
+        precondition(press("k", [.command, .option]) == [.closeTab], "the bound key runs Close Tab")
+        precondition(item(main, 57326, 34015).keyEquivalent == "k" && item(main, 57326, 34015).keyEquivalentModifierMask == [.command, .option],
+                     "Close Tab shows the key the person bound")
+        precondition(item(main, 57326, 34014).keyEquivalent.isEmpty, "New Tab, left unbound, shows no key")
+        precondition(item(main, 57325, 40015).keyEquivalent == "," && item(main, 57326, 39001).keyEquivalent == "l", "Commands not given keep Chromium's key")
 
         precondition(item(main, 57326, 34000).action == #selector(NSApplication.terminate(_:)), "New Window stays Chromium's")
         precondition(item(main, 57343, 50100).action == #selector(NSApplication.terminate(_:)), "Edit stays Chromium's")

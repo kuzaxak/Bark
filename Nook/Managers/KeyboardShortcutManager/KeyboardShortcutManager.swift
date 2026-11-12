@@ -43,6 +43,7 @@ class KeyboardShortcutManager {
 
     weak var browserManager: BrowserManager?
     weak var windowRegistry: WindowRegistry?
+    @ObservationIgnored var onShortcutsChanged: (() -> Void)?
     
     /// Detector for website keyboard shortcut conflicts
     let websiteShortcutDetector: WebsiteShortcutDetector?
@@ -138,6 +139,7 @@ class KeyboardShortcutManager {
         if let encoded = try? JSONEncoder().encode(shortcuts) {
             userDefaults.set(encoded, forKey: shortcutsKey)
         }
+        onShortcutsChanged?()
     }
 
     // MARK: - Public Interface
