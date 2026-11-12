@@ -916,6 +916,7 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
   ASSERT_TRUE(content::WaitForLoadStop(contents));
   {
     content::TestNavigationObserver navigated(contents);
+    navigated.set_expected_initial_url(second_url);
     ASSERT_EQ(1, barc_tab_navigate(source, page, second_url.spec().c_str()));
     navigated.Wait();
   }
@@ -1226,11 +1227,15 @@ class BarcSharedNativeWindowBrowserTest : public BarcBridgeBrowserTest {
   void Navigate(BrowserWindowInterface* window, const GURL& url) {
     auto* contents = window->GetTabStripModel()->GetActiveWebContents();
     content::TestNavigationObserver navigated(contents);
+    // A new tab's own blank load can still be finishing; wait for this URL's.
+    navigated.set_expected_initial_url(url);
     ASSERT_EQ(
         1, barc_tab_navigate(window->GetSessionID().id(),
                              barc_window_tab_at(window->GetSessionID().id(), 0),
                              url.spec().c_str()));
     navigated.Wait();
+    ASSERT_TRUE(navigated.last_navigation_succeeded()) << url;
+    ASSERT_EQ(navigated.last_navigation_url(), contents->GetLastCommittedURL());
     ASSERT_TRUE(content::WaitForLoadStop(contents));
   }
 };
@@ -5848,8 +5853,9 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
   }
   for (size_t i = 0; i < handles.size(); ++i) {
     auto* contents = tabs::TabHandle(handles[i]).Get()->GetContents();
-    content::TestNavigationObserver navigation(contents);
     const GURL url = i == 3 ? blocked : embedded_test_server()->GetURL("/title1.html");
+    content::TestNavigationObserver navigation(contents);
+    navigation.set_expected_initial_url(url);
     ASSERT_EQ(1, barc_tab_navigate(window, handles[i], url.spec().c_str()));
     navigation.Wait();
     ASSERT_TRUE(content::WaitForLoadStop(contents));
@@ -6426,6 +6432,7 @@ IN_PROC_BROWSER_TEST_F(BarcPresentedPaneCommandsBrowserTest,
     const GURL url = embedded_test_server()->GetURL(
         "cross-pane-" + std::to_string(i) + ".test", "/title1.html");
     content::TestNavigationObserver navigated(contents);
+    navigated.set_expected_initial_url(url);
     ASSERT_EQ(1, barc_tab_navigate(
         panes[i]->GetBrowserWindowInterface()->GetSessionID().id(),
         panes[i]->GetHandle().raw_value(), url.spec().c_str()));
@@ -7845,6 +7852,7 @@ class BarcAppSplitBrowserTest : public BarcPeekBrowserTest {
     const GURL url = embedded_test_server()->GetURL(
         "app-split-" + std::to_string(pane) + ".test", "/title1.html");
     content::TestNavigationObserver navigated(contents);
+    navigated.set_expected_initial_url(url);
     ASSERT_EQ(1, barc_tab_navigate(window, tab, url.spec().c_str()));
     navigated.Wait();
     ASSERT_TRUE(content::WaitForLoadStop(contents));
@@ -9205,6 +9213,7 @@ ConfirmInfoBarDelegate* NativeBlockNotice(content::WebContents* contents) {
 void NavigateNativeDenied(BrowserWindowInterface* window, const GURL& url) {
   auto* contents = window->GetTabStripModel()->GetActiveWebContents();
   content::TestNavigationObserver navigation(contents);
+  navigation.set_expected_initial_url(url);
   ASSERT_EQ(1, barc_tab_navigate(window->GetSessionID().id(),
       barc_window_tab_at(window->GetSessionID().id(), 0), url.spec().c_str()));
   navigation.Wait();
