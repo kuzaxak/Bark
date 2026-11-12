@@ -173,10 +173,16 @@ class NativeBlockInfoBar final : public ConfirmInfoBarDelegate {
   std::u16string GetButtonLabel(InfoBarButton) const override { return u"Continue"; }
   bool Accept() override {
     // The exact app page owns the exception. Keep the bar if it refuses the
-    // request; a successful navigation expires it through Chromium normally.
+    // request; the navigation it starts expires the bar.
     auto request = continue_request_;
     request.Run();
     return false;
+  }
+  // Shown after its blocked page committed, so any later page leaves that one.
+  // Continuing loads the same URL, which replaces the blocked page's entry, and
+  // Chromium's default keeps a bar across a replacement.
+  bool ShouldExpire(const NavigationDetails& details) const override {
+    return details.is_navigation_to_different_page;
   }
  private:
   const base::RepeatingClosure continue_request_;
