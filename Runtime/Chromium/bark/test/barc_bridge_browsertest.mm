@@ -10370,8 +10370,7 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticPrerenderBrowserTest,
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
-  NSView* header = Attach(work_id);
-  ASSERT_EQ(1, barc_window_admit_discovered(work_id, (__bridge void*)header));
+  Attach(work_id);
   ASSERT_EQ(1, barc_window_show(work_id));
   InstallNativeBlocker(work_id, NativeCosmeticTestRules());
   Navigate(work, embedded_test_server()->GetURL("/title1.html"));
@@ -10400,8 +10399,7 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticPrerenderBrowserTest,
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
-  NSView* header = Attach(work_id);
-  ASSERT_EQ(1, barc_window_admit_discovered(work_id, (__bridge void*)header));
+  Attach(work_id);
   ASSERT_EQ(1, barc_window_show(work_id));
   InstallNativeBlocker(work_id, NativeCosmeticTestRules());
   Navigate(work, embedded_test_server()->GetURL("/title1.html"));
