@@ -10057,8 +10057,10 @@ IN_PROC_BROWSER_TEST_F(BarcNativeBlockerBrowserTest,
   EXPECT_EQ(true, content::EvalJs(child, "firstInlineSawNative"));
   EXPECT_EQ(true, content::EvalJs(child, "firstInlineSawCss"));
   const auto previous = page->GetPrimaryMainFrame()->GetWeakDocumentPtr();
-  Navigate(work, url);  // Same URL is still a new, separately authorized document.
-  EXPECT_FALSE(previous.AsRenderFrameHostIfValid());
+  // Loading the URL again makes a new, separately authorized document. The
+  // pushState above left another URL current, so the old one may stay cached.
+  Navigate(work, url);
+  EXPECT_NE(previous.AsRenderFrameHostIfValid(), page->GetPrimaryMainFrame());
   EXPECT_EQ(true, content::EvalJs(page, "firstInlineSawNative"));
   EXPECT_EQ(1, content::EvalJs(page, "bootstrapCount"));
   Navigate(work, embedded_test_server()->GetURL("cosmetic.test", "/native-cosmetics-sandbox"));
