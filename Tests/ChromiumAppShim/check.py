@@ -205,6 +205,8 @@ def versioned_framework(root, binary=None):
     (framework / 'Bark Framework').symlink_to('Versions/Current/Bark Framework')
     write_plist(framework / f'Versions/{VERSION}/Resources/Info.plist', CFBundleShortVersionString=VERSION)
     (framework / 'Resources').symlink_to('Versions/Current/Resources')
+    (framework / f'Versions/{VERSION}/Libraries').mkdir()
+    (framework / f'Versions/{VERSION}/Libraries/libnook_adblock.dylib').write_text('blocker library')
     if binary:
         shutil.copy2(binary, framework / f'Versions/{VERSION}/Bark Framework')
     return framework
@@ -852,6 +854,52 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     compile_c(FAKE_SHELL + f'__attribute__((used)) static const char entry[] = "{ENTRY}";\n', entry_shell, '-dynamiclib', '-arch', 'x86_64')
     refused('shell-names-entry', 'a shell that resolves the engine itself', 'Native shell names an engine symbol',
             lambda a, e, p: shutil.copy2(entry_shell, p / 'NookNativeShell.framework/Versions/A/NookNativeShell'))
+    library = lambda e: versioned(e) / 'Libraries/libnook_adblock.dylib'
+    refused('blocker-none', 'an engine without the blocker library', 'holds 0 copies of libnook_adblock.dylib',
+            lambda a, e, p: library(e).unlink())
+
+    def second_library(app, artifact, products):
+        helper = versioned(artifact) / 'Helpers/Bark Helper.app/Contents/Libraries'
+        helper.mkdir(parents=True)
+        shutil.copy2(library(artifact), helper / 'libnook_adblock.dylib')
+    refused('blocker-two', 'an engine with a second blocker library', 'holds 2 copies of libnook_adblock.dylib', second_library)
+
+
+def signed_cases(work, mach_o):
+    """`--check-signed` on a signed candidate: one blocker library, and no Mach-O left unsigned."""
+    libraries = f'Contents/Frameworks/{FRAMEWORK}/Versions/{VERSION}/Libraries'
+
+    def check_signed(name, mutate=None):
+        app = work / name / 'Bark.app'
+        (app / libraries).mkdir(parents=True)
+        shutil.copy2(mach_o, app / libraries / 'libnook_adblock.dylib')
+        shutil.copy2(mach_o, app / 'Contents/Frameworks/signed.dylib')
+        for path in [app / libraries / 'libnook_adblock.dylib', app / 'Contents/Frameworks/signed.dylib']:
+            subprocess.run(['codesign', '--force', '--sign', '-', str(path)], capture_output=True, check=True)
+        if mutate:
+            mutate(app)
+        return subprocess.run(['bash', str(STAGE), '--check-signed', str(app)], capture_output=True, text=True)
+
+    run = check_signed('signed-one')
+    check('a signed bundle with one blocker library passes --check-signed', run.returncode == 0, run.stderr)
+    run = check_signed('signed-none', lambda app: (app / libraries / 'libnook_adblock.dylib').unlink())
+    check('--check-signed refuses a bundle without the blocker library',
+          run.returncode != 0 and 'holds 0 copies of libnook_adblock.dylib' in run.stderr, (run.returncode, run.stderr))
+
+    def second_library(app):
+        helper = app / f'Contents/Frameworks/{FRAMEWORK}/Versions/{VERSION}/Helpers/Bark Helper.app/Contents/Libraries'
+        helper.mkdir(parents=True)
+        shutil.copy2(app / libraries / 'libnook_adblock.dylib', helper / 'libnook_adblock.dylib')
+    run = check_signed('signed-two', second_library)
+    check('--check-signed refuses a second, signed blocker library',
+          run.returncode != 0 and 'holds 2 copies of libnook_adblock.dylib' in run.stderr, (run.returncode, run.stderr))
+
+    def unsigned(app):
+        shutil.copy2(mach_o, app / 'Contents/Frameworks/extra.dylib')
+        subprocess.run(['codesign', '--remove-signature', str(app / 'Contents/Frameworks/extra.dylib')], capture_output=True)
+    run = check_signed('signed-unsigned', unsigned)
+    check('--check-signed refuses an unsigned Mach-O',
+          run.returncode != 0 and 'Unsigned Mach-O: Contents/Frameworks/extra.dylib' in run.stderr, (run.returncode, run.stderr))
 
 
 def main():
@@ -880,6 +928,7 @@ def main():
             launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib)
             publish_cases(work, framework_lib)
             stage_cases(work, shim, framework_lib, shell_lib)
+        signed_cases(work, shell_lib)
         make_writable(work)
     print(f'{len(failures)} failed')
     sys.exit(1 if failures else 0)
