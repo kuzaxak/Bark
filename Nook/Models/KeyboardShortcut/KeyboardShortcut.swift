@@ -149,7 +149,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
         case .moveToSpace: return "Move to Space…"
         case .renameTab: return "Rename Tab"
         case .translatePage: return "Translate Page"
-        case .toggleExtensionLibrary: return "Toggle Extension Library"
+        case .toggleExtensionLibrary: return "Toggle Site Controls"
         case .manageExtensions: return "Manage Extensions"
         case .toggleDarkMode: return "Toggle Dark Mode"
         case .toggleDeveloperMode: return "Toggle Developer Mode for Site"

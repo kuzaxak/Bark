@@ -143,14 +143,6 @@ extension BrowserManager {
             showWindowToast("This action is not available yet", in: window)
             return false
         }
-        if nookSettings?.developerModeEnabled != true {
-            switch command {
-            case .developerConsole: toggleDevPanel(.console); return true
-            case .developerNetwork: toggleDevPanel(.network); return true
-            case .developerPerformance: toggleDevPanel(.perf); return true
-            default: break
-            }
-        }
         // Back also owns the existing no-history return-to-opener behavior.
         if command == .goBack { page.goBack(); return true }
         if command == .copyURL { copyURL(of: page, in: window); return true }

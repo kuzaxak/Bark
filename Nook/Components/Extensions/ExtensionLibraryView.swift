@@ -48,7 +48,8 @@ struct ExtensionLibraryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.md + NookDesign.Spacing.xxs) {
             actionTiles
-            extensionsSection
+            // The bridge cannot list Chromium's extensions or run their actions.
+            if !isChromium { extensionsSection }
             settingsSection
             Rectangle().fill(NookDesign.Surface.hairline).frame(height: 1)
             footer
@@ -265,9 +266,11 @@ struct ExtensionLibraryView: View {
                 }
                 .disabled(boostHost == nil)
                 Divider()
-                Button("Manage Extensions…") {
-                    browserManager.manageExtensions()
-                    onDismiss()
+                if ShortcutAction.manageExtensions.isOffered(chromium: isChromium, privateWindow: isPrivate) {
+                    Button("Manage Extensions…") {
+                        browserManager.manageExtensions()
+                        onDismiss()
+                    }
                 }
                 Button("Add Extension…", action: openWebStore)
                 if !isPrivate {

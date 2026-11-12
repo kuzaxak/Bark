@@ -64,12 +64,13 @@ extension BrowserManager {
         nookSettings?.topBarAddressView == true && !showsDeveloperBar(in: windowState)
     }
 
-    /// Runs a tool that needs page capture (Settings > Developer > Developer Mode). On a site with
-    /// Developer Mode on, the bar's tools ask to turn it on rather than sit greyed out; turning it
-    /// on here does what the Settings toggle does, Browser Control included.
+    /// Runs a developer tool. WebKit pages capture for these tools only with Developer Mode on
+    /// (Settings > Developer); Chromium's tools need nothing. On a site with Developer Mode on,
+    /// the bar's tools ask to turn it on rather than sit greyed out; turning it on here does what
+    /// the Settings toggle does, Browser Control included.
     func withDeveloperCapture(_ action: @escaping () -> Void) {
         guard let settings = nookSettings else { return }
-        if settings.developerModeEnabled { action(); return }
+        if settings.developerModeEnabled || tabs.profileEngine == .chromium { action(); return }
         guard let windowState = windowRegistry?.activeWindow, showsDeveloperBar(in: windowState),
               let window = windowState.windowHandle as? NSWindow else { return }
         let alert = NSAlert()
@@ -126,18 +127,8 @@ struct DeveloperBar: View {
         HStack(spacing: NookDesign.Spacing.md) {
             // Arc's lock opens the site's controls, as the sidebar's site controls button does.
             Button {
-                if browserManager.engine == .chromium {
-                    guard nativeCurrent, !session.isPrivate, let profile = session.profile else { return }
-                    browserManager.tabs.openProfilePage(profileID: profile.id, destination: .siteSettings) { [weak windowState] result in
-                        if case .failure(let error) = result {
-                            windowState?.copyToastText = error.localizedDescription
-                            windowState?.isShowingCopyURLToast = true
-                        }
-                    }
-                } else {
-                    withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
-                        windowState.isExtensionLibraryVisible.toggle()
-                    }
+                withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
+                    windowState.isExtensionLibraryVisible = true
                 }
             } label: {
                 Image(systemName: session.url.scheme == "https" ? "lock.fill" : "lock.open.fill")
