@@ -106,7 +106,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
     case printPage = "print_page"                              // Cmd+P
     case hardReload = "hard_reload"                            // Cmd+Shift+R
     case muteUnmuteAudio = "mute_unmute_audio"                 // Cmd+M
-    case installExtension = "install_extension"                // Cmd+Shift+E
+    case installExtension = "install_extension"
     case customizeSpaceGradient = "customize_space_gradient"   // Cmd+Shift+G
     case organizeTabs = "organize_tabs"                        // Cmd+Shift+Option+O
 
@@ -118,7 +118,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
     case renameTab = "rename_tab"
     case translatePage = "translate_page"
     case toggleExtensionLibrary = "toggle_extension_library"
-    case manageExtensions = "manage_extensions"
+    case manageExtensions = "manage_extensions"                // Cmd+Shift+E
     case toggleDarkMode = "toggle_dark_mode"
     case toggleDeveloperMode = "toggle_developer_mode"
 
@@ -287,6 +287,22 @@ extension ShortcutAction {
     /// Organize Tabs needs the on-device model and its setting in Settings > AI. Without them the
     /// command bar leaves it out and its key goes to the page.
     func isAvailable(organizerModel: Bool, organizerEnabled: Bool) -> Bool { self != .organizeTabs || organizerModel && organizerEnabled }
+
+    /// Chromium installs extensions from its Extensions page, which Manage Extensions opens and a
+    /// private window cannot.
+    func isOffered(chromium: Bool, privateWindow: Bool) -> Bool {
+        guard chromium else { return true }
+        switch self {
+        case .installExtension: return false
+        case .manageExtensions: return !privateWindow
+        default: return true
+        }
+    }
+
+    /// The key the command bar shows beside the action: one that runs it.
+    func showsKey(_ key: KeyCombination, chromium: Bool) -> Bool {
+        !chromium || self != .undoCloseTab || takesKeyInChromium(key)
+    }
 
     /// Actions on the sidebar and its windows, whose keys the app takes before Chromium. Chromium's
     /// accelerators for them would act on its own hidden tab order, or ignore a key the person rebound.
@@ -478,7 +494,9 @@ extension KeyboardShortcut {
             KeyboardShortcut(action: .renameTab, keyCombination: KeyCombination(key: "")),
             KeyboardShortcut(action: .translatePage, keyCombination: KeyCombination(key: "")),
             KeyboardShortcut(action: .toggleExtensionLibrary, keyCombination: KeyCombination(key: "")),
-            KeyboardShortcut(action: .manageExtensions, keyCombination: KeyCombination(key: "")),
+            KeyboardShortcut(action: .installExtension, keyCombination: KeyCombination(key: "")),
+            KeyboardShortcut(action: .openCommandPalette, keyCombination: KeyCombination(key: "")),
+            KeyboardShortcut(action: .expandAllFolders, keyCombination: KeyCombination(key: "")),
             KeyboardShortcut(action: .toggleDarkMode, keyCombination: KeyCombination(key: "")),
             KeyboardShortcut(action: .toggleDeveloperMode, keyCombination: KeyCombination(key: "d", modifiers: [.control])),
             // Arc's Cmd+Shift+D moves the address and buttons between the sidebar and a toolbar above the page.
@@ -505,7 +523,6 @@ extension KeyboardShortcut {
             KeyboardShortcut(action: .addSplitView, keyCombination: KeyCombination(key: "=", modifiers: [.control, .shift])),
 
             // Tools & Features
-            KeyboardShortcut(action: .openCommandPalette, keyCombination: KeyCombination(key: "p", modifiers: [.command, .shift])),
             KeyboardShortcut(action: .openDevTools, keyCombination: KeyCombination(key: "i", modifiers: [.command, .option])),
             KeyboardShortcut(action: .openDevPanel, keyCombination: KeyCombination(key: "j", modifiers: [.command, .option])),
             KeyboardShortcut(action: .pickElement, keyCombination: KeyCombination(key: "x", modifiers: [.command, .shift])),
@@ -515,7 +532,6 @@ extension KeyboardShortcut {
             KeyboardShortcut(action: .capturePortrait, keyCombination: KeyCombination(key: "p", modifiers: [.command, .option])),
             KeyboardShortcut(action: .viewDownloads, keyCombination: KeyCombination(key: "j", modifiers: [.command, .shift])),
             KeyboardShortcut(action: .viewHistory, keyCombination: KeyCombination(key: "y", modifiers: [.command])),
-            KeyboardShortcut(action: .expandAllFolders, keyCombination: KeyCombination(key: "e", modifiers: [.command, .shift])),
 
             // Missing shortcuts that exist in NookCommands
             KeyboardShortcut(action: .focusAddressBar, keyCombination: KeyCombination(key: "l", modifiers: [.command])),
@@ -532,7 +548,7 @@ extension KeyboardShortcut {
             KeyboardShortcut(action: .printPage, keyCombination: KeyCombination(key: "p", modifiers: [.command])),
             KeyboardShortcut(action: .hardReload, keyCombination: KeyCombination(key: "r", modifiers: [.command, .shift])),
             KeyboardShortcut(action: .muteUnmuteAudio, keyCombination: KeyCombination(key: "m", modifiers: [.command])),
-            KeyboardShortcut(action: .installExtension, keyCombination: KeyCombination(key: "e", modifiers: [.command, .shift])),
+            KeyboardShortcut(action: .manageExtensions, keyCombination: KeyCombination(key: "e", modifiers: [.command, .shift])),
             KeyboardShortcut(action: .customizeSpaceGradient, keyCombination: KeyCombination(key: "g", modifiers: [.command, .shift])),
             KeyboardShortcut(action: .organizeTabs, keyCombination: KeyCombination(key: "o", modifiers: [.command, .shift, .option]))
         ]

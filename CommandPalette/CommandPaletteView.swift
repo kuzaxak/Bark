@@ -905,12 +905,17 @@ struct CommandPaletteView: View {
     private func actionRows(matching query: String, wordPrefixOnly: Bool) -> [SearchManager.SearchSuggestion] {
         let manager = browserManager.keyboardShortcutManager
         let canAddSplit = browserManager.splitManager.offersAddSplitView(in: windowState) && commandPalette.addSplit == nil
+        let chromium = browserManager.tabs.profileEngine == .chromium
         let scored = Self.barActions.filter {
-            ($0 != .addSplitView || canAddSplit) && $0.isAvailable(organizerModel: TabOrganizationModel.isAvailable, organizerEnabled: nookSettings.tabOrganizerEnabled)
+            ($0 != .addSplitView || canAddSplit) && $0.isOffered(chromium: chromium, privateWindow: windowState.isIncognito) &&
+                $0.isAvailable(organizerModel: TabOrganizationModel.isAvailable, organizerEnabled: nookSettings.tabOrganizerEnabled)
         }.compactMap { action -> (row: SearchManager.SearchSuggestion, score: Int)? in
             guard let score = PaletteText.matchScore(query: query, title: action.displayName, detail: nil),
                   !wordPrefixOnly || score == 2 else { return nil }
-            let shortcut = manager?.shortcut(for: action).flatMap { $0.isEnabled && !$0.keyCombination.key.isEmpty ? $0.keyCombination.displayString : nil }
+            let shortcut = manager?.shortcut(for: action).flatMap {
+                $0.isEnabled && !$0.keyCombination.key.isEmpty && action.showsKey($0.keyCombination, chromium: chromium)
+                    ? $0.keyCombination.displayString : nil
+            }
             let match = SearchManager.ActionMatch(id: action.rawValue, title: action.displayName, detail: shortcut,
                                                   icon: action.category.icon, takesChoice: action == .addToFolder || action == .moveToSpace)
             return (SearchManager.SearchSuggestion(text: action.displayName, type: .action(match), section: "Actions"), score)

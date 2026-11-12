@@ -15,8 +15,10 @@ struct ShortcutsSettingsView: View {
     @Environment(KeyboardShortcutManager.self) var keyboardShortcutManager
 
     private var shortcutsByCategory: [ShortcutCategory: [KeyboardShortcut]] {
+        let chromium = keyboardShortcutManager.browserManager?.tabs.profileEngine == .chromium
         let matching = keyboardShortcutManager.shortcuts.filter {
-            searchText.isEmpty || $0.action.displayName.localizedCaseInsensitiveContains(searchText)
+            $0.action.isOffered(chromium: chromium, privateWindow: false) &&
+                (searchText.isEmpty || $0.action.displayName.localizedCaseInsensitiveContains(searchText))
         }
         return Dictionary(grouping: matching, by: { $0.action.category })
     }
@@ -73,7 +75,8 @@ private struct ShortcutRowView: View {
     @Environment(KeyboardShortcutManager.self) var keyboardShortcutManager
 
     private var keys: KeyCombination? {
-        shortcut.isEnabled && !shortcut.keyCombination.key.isEmpty ? shortcut.keyCombination : nil
+        shortcut.isEnabled && !shortcut.keyCombination.key.isEmpty && shortcut.action.showsKey(shortcut.keyCombination,
+            chromium: keyboardShortcutManager.browserManager?.tabs.profileEngine == .chromium) ? shortcut.keyCombination : nil
     }
 
     var body: some View {

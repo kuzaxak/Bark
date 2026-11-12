@@ -37,8 +37,10 @@ final class ChromiumAppMenu: NSObject {
 
     private static let addedIdentifier = NSUserInterfaceItemIdentifier("ee.qdo.nook.menu")
     private let perform: (Command) -> Void
+    private let isOffered: (Command) -> Bool
 
-    init(perform: @escaping (Command) -> Void) {
+    init(isOffered: @escaping (Command) -> Bool = { _ in true }, perform: @escaping (Command) -> Void) {
+        self.isOffered = isOffered
         self.perform = perform
     }
 
@@ -133,5 +135,12 @@ final class ChromiumAppMenu: NSObject {
             if let submenu = item.submenu, let found = Self.item(withTag: tag, in: submenu) { return found }
         }
         return nil
+    }
+}
+
+extension ChromiumAppMenu: NSMenuItemValidation {
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        guard let command = item.representedObject as? Command else { return true }
+        return isOffered(command)
     }
 }

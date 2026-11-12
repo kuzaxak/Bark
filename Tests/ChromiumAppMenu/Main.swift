@@ -52,7 +52,8 @@ enum Check {
         _ = NSApplication.shared
         var ran: [ChromiumAppMenu.Command] = []
         let main = stockMenu()
-        let installer = ChromiumAppMenu { ran.append($0) }
+        var privateWindow = false
+        let installer = ChromiumAppMenu(isOffered: { $0 != .manageExtensions || !privateWindow }) { ran.append($0) }
         installer.install(in: main)
 
         // Chromium looks these menus up by tag at runtime, so they stay in the menu, hidden.
@@ -137,6 +138,13 @@ enum Check {
         precondition(added("Previous Space", in: spaces) == .previousSpace)
         let extensions = main.items.first { $0.title == "Extensions" }?.submenu
         precondition(added("Manage Extensions", in: extensions) == .manageExtensions)
+        let manage = extensions!.items.first { $0.title == "Manage Extensions" }!
+        privateWindow = true
+        extensions!.update()
+        precondition(!manage.isEnabled, "Manage Extensions is off while the window in front is private")
+        privateWindow = false
+        extensions!.update()
+        precondition(manage.isEnabled, "Manage Extensions is on in a regular window")
         let order = main.items.map(\.title)
         precondition(order.firstIndex(of: "Spaces")! < order.firstIndex(of: "Window")!, "Spaces belongs before Window")
 

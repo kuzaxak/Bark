@@ -369,7 +369,10 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
-            let appMenu = ChromiumAppMenu { [weak manager, weak shortcuts] command in
+            let appMenu = ChromiumAppMenu(isOffered: { [weak manager] command in
+                command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
+                    chromium: true, privateWindow: manager?.windowRegistry?.activeWindow?.isIncognito == true)
+            }) { [weak manager, weak shortcuts] command in
                 guard let manager, let shortcuts else { return }
                 switch command {
                 case .about: NSApp.orderFrontStandardAboutPanel(nil)
