@@ -336,6 +336,12 @@ void AddHiddenSelectors(const base::ListValue* selectors, std::string& css) {
       css += value.GetString() + "{display:none !important;}\n";
   }
 }
+// adblock-rust writes each operator and action as {"type": <kebab-case name>, "arg": <value>}.
+const std::string* TaggedArgument(const base::Value& value, std::string_view type) {
+  if (!value.is_dict()) return nullptr;
+  const auto* tag = value.GetDict().FindString("type");
+  return tag && *tag == type ? value.GetDict().FindString("arg") : nullptr;
+}
 void AddSupportedProcedural(const base::ListValue* actions, std::string& css) {
   if (!actions) return;
   for (const auto& encoded : *actions) {
@@ -347,20 +353,17 @@ void AddSupportedProcedural(const base::ListValue* actions, std::string& css) {
     if (!operators || operators->empty()) continue;
     std::string selector;
     for (const auto& op : *operators) {
-      const auto* part = op.is_dict() ? op.GetDict().FindString("CssSelector") : nullptr;
+      const auto* part = TaggedArgument(op, "css-selector");
       if (!part) { selector.clear(); break; }
       selector += *part;
     }
     if (selector.empty()) continue;
-    auto* operation = action->FindDict("action");
-    if (!operation) {
-      // A missing action means hide; Remove/RemoveAttr are intentionally absent.
-      const auto* value = action->Find("action");
-      if (!value || value->is_none())
-        css += selector + "{display:none !important;}\n";
-    } else if (const auto* style = operation->FindString("Style")) {
+    // A missing action means hide; remove actions are intentionally absent.
+    const auto* operation = action->Find("action");
+    if (!operation || operation->is_none())
+      css += selector + "{display:none !important;}\n";
+    else if (const auto* style = TaggedArgument(*operation, "style"))
       css += selector + "{" + *style + "}\n";
-    }
   }
 }
 }
