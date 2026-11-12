@@ -104,16 +104,6 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionFocusBrowserTest,
   ASSERT_EQ(work_view->GetWidget(), personal_view->GetWidget());
   ASSERT_EQ(work->GetWindow()->GetNativeWindow(),
             personal->GetWindow()->GetNativeWindow());
-  ASSERT_EQ(1, barc_window_select(work_id));
-  work_view->GetWidget()
-      ->Activate();  // The only physical activation in this test.
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    return work_view->IsActive() &&
-           NSApp.keyWindow ==
-               work->GetWindow()->GetNativeWindow().GetNativeNSWindow();
-  }));
-  NSWindow* const physical_window = NSApp.keyWindow;
-
   extensions::TestExtensionDir extension_dir;
   extension_dir.WriteManifest(
       R"({"manifest_version":3,"name":"Barc focus probe",
@@ -148,6 +138,22 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionFocusBrowserTest,
   ASSERT_TRUE(work_ready.WaitUntilSatisfied());
   ASSERT_TRUE(personal_ready.WaitUntilSatisfied());
   const std::string extension_id = work_extension->id();
+  // A profile's windows.onFocusChanged router hears activations only once an
+  // extension listens, so the probes load before the window is activated.
+  {
+    ExtensionTestMessageListener work_focus("focus:" + std::to_string(work_id));
+    ScopeListener(work_focus, work->GetProfile(), extension_id);
+    ASSERT_EQ(1, barc_window_select(work_id));
+    work_view->GetWidget()
+        ->Activate();  // The only physical activation in this test.
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return work_view->IsActive() &&
+             NSApp.keyWindow ==
+                 work->GetWindow()->GetNativeWindow().GetNativeNSWindow();
+    }));
+    ASSERT_TRUE(work_focus.WaitUntilSatisfied());
+  }
+  NSWindow* const physical_window = NSApp.keyWindow;
   for (Profile* profile : {work->GetProfile(), personal->GetProfile()}) {
     EXPECT_EQ(base::Value(true), Worker(profile, extension_id, R"(
       observations = observations.then(async () => {
