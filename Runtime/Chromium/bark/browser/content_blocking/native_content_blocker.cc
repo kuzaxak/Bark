@@ -23,7 +23,6 @@
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
 #include "mojo/public/cpp/bindings/associated_remote.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
-#include "content/public/browser/document_service.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/disallow_activation_reason.h"
 #include "content/public/browser/web_contents_observer.h"
@@ -42,6 +41,7 @@
 #include "content/public/browser/browser_context.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/render_frame_host.h"
+#include "mojo/public/cpp/bindings/receiver.h"
 #include "content/public/browser/storage_partition.h"
 #include "content/public/browser/web_contents.h"
 #include "net/base/net_errors.h"
@@ -864,16 +864,21 @@ void NativeContentBlocker::CheckCaptured(Request request) {
                                                           : net::OK);
           }, weak_factory_.GetWeakPtr(), revision, std::move(request)));
 }
+// Lives as long as the renderer keeps its pipe, which it holds for exactly one
+// document. A document committing into a reused RenderFrameHost asks for this
+// host before commit, while the frame still holds the outgoing document, so the
+// host must not end with that outgoing document.
 class NativeContentBlocker::CosmeticResourcesHost final
-    : public content::DocumentService<chrome::mojom::NookCosmeticResourcesHost>,
+    : public chrome::mojom::NookCosmeticResourcesHost,
       public content::WebContentsObserver {
  public:
   CosmeticResourcesHost(content::RenderFrameHost& frame,
                         NativeContentBlocker& service,
                         mojo::PendingReceiver<chrome::mojom::NookCosmeticResourcesHost> receiver)
-      : content::DocumentService<chrome::mojom::NookCosmeticResourcesHost>(
-            frame, std::move(receiver)),
-        frame_(frame.GetGlobalId()), service_(service.weak_factory_.GetWeakPtr()) {
+      : frame_(frame.GetGlobalId()), service_(service.weak_factory_.GetWeakPtr()),
+        receiver_(this, std::move(receiver)) {
+    receiver_.set_disconnect_handler(base::BindOnce(
+        [](CosmeticResourcesHost* self) { delete self; }, base::Unretained(this)));
     subscription_ = service.ObserveCosmeticPolicy(base::BindRepeating(
         &CosmeticResourcesHost::Invalidate, base::Unretained(this)));
   }
@@ -940,7 +945,7 @@ class NativeContentBlocker::CosmeticResourcesHost final
     if (sponsor_loader_ && sponsor_video_ == video && sponsor_callback_) { std::move(callback).Run(nullptr); return; }
     CancelSponsor();
     sponsor_video_ = video;
-    Observe(content::WebContents::FromRenderFrameHost(&render_frame_host()));
+    Observe(content::WebContents::FromRenderFrameHost(content::RenderFrameHost::FromID(frame_)));
     sponsor_callback_ = mojo::WrapCallbackWithDefaultInvokeIfNotRun(std::move(callback), nullptr);
     const auto digest = crypto::hash::Sha256(video);
     const std::string hash = base::HexEncodeLower(digest);
@@ -950,13 +955,13 @@ class NativeContentBlocker::CosmeticResourcesHost final
     const GURL url("https://sponsor.ajay.app/api/skipSegments/" + hash.substr(0, 4));
     sponsor_loader_ = SponsorLoader(net::AppendQueryParameter(url, "categories", query));
     sponsor_loader_->DownloadToString(
-        render_frame_host().GetStoragePartition()->GetURLLoaderFactoryForBrowserProcess().get(),
+        content::RenderFrameHost::FromID(frame_)->GetStoragePartition()->GetURLLoaderFactoryForBrowserProcess().get(),
         base::BindOnce(&CosmeticResourcesHost::SponsorComplete,
             weak_factory_.GetWeakPtr(), document, video, hash), 1024 * 1024);
   }
   void ReportSponsorSegment(const blink::DocumentToken& document, const std::string& video,
                             const std::string& uuid) override {
-    if (!SponsorCurrent(document, video) || service_->profile_->IsOffTheRecord() || !render_frame_host().IsActive() ||
+    if (!SponsorCurrent(document, video) || service_->profile_->IsOffTheRecord() || !content::RenderFrameHost::FromID(frame_)->IsActive() ||
         sponsor_loader_ || !sponsor_cache_ || sponsor_cache_->video != video ||
         !sponsor_uuids_.contains(uuid) || sponsor_reported_.size() >= 256 ||
         sponsor_reported_.contains(video + "\n" + uuid)) return;
@@ -964,7 +969,7 @@ class NativeContentBlocker::CosmeticResourcesHost final
     sponsor_loader_ = SponsorLoader(net::AppendQueryParameter(
         GURL("https://sponsor.ajay.app/api/viewedVideoSponsorTime"), "UUID", uuid), "POST");
     sponsor_loader_->DownloadHeadersOnly(
-        render_frame_host().GetStoragePartition()->GetURLLoaderFactoryForBrowserProcess().get(),
+        content::RenderFrameHost::FromID(frame_)->GetStoragePartition()->GetURLLoaderFactoryForBrowserProcess().get(),
         base::BindOnce([](base::WeakPtr<CosmeticResourcesHost> self,
                          scoped_refptr<net::HttpResponseHeaders>) {
           if (self) self->sponsor_loader_.reset();
@@ -1185,6 +1190,7 @@ class NativeContentBlocker::CosmeticResourcesHost final
   size_t generic_tokens_ = 0;
   size_t generic_bytes_ = 0;
   base::WeakPtr<NativeContentBlocker> service_;
+  mojo::Receiver<chrome::mojom::NookCosmeticResourcesHost> receiver_;
   base::CallbackListSubscription subscription_;
   std::unique_ptr<network::SimpleURLLoader> sponsor_loader_;
   GetSponsorSegmentsCallback sponsor_callback_;
@@ -1204,8 +1210,6 @@ void NativeContentBlocker::BindCosmeticResources(
   auto alive = service->weak_factory_.GetWeakPtr();
   frame = content::RenderFrameHost::FromID(frame_id);
   if (!alive || !frame || frame->GetBrowserContext() != alive->profile_) return;
-  // The pending incoming DocumentAssociatedData already exists before commit
-  // IPC; DocumentService binds to it and closes the pipe on cancellation/death.
   new CosmeticResourcesHost(*frame, *alive, std::move(receiver));
 }
 base::CallbackListSubscription NativeContentBlocker::ObserveCosmeticPolicy(
