@@ -21,6 +21,7 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
 #include "chrome/browser/ui/interaction/browser_elements.h"
+#include "chrome/browser/ui/sad_tab.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/download/download_in_progress_dialog_view.h"
@@ -30,6 +31,7 @@
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/web_contents_observer.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
@@ -91,6 +93,33 @@ BarkBrowserWindow* BarkBrowserWindow::FromBrowser(
                  : nullptr;
 }
 
+// Tells the app when a page's renderer dies and when the page has one again,
+// by SadTabHelper's rule; a host window has no sad tab of its own.
+class BarkBrowserWindow::CrashWatcher : public content::WebContentsObserver {
+ public:
+  CrashWatcher(BarkBrowserWindow* window, content::WebContents* contents)
+      : content::WebContentsObserver(contents),
+        window_(window),
+        crashed_(contents->IsCrashed()) {}
+
+  void PrimaryMainFrameRenderProcessGone(
+      base::TerminationStatus status) override {
+    if (SadTab::ShouldShow(status)) {
+      crashed_ = true;
+      window_->NotifyPageCrashed(web_contents(), true);
+    }
+  }
+  void RenderViewReady() override {
+    if (std::exchange(crashed_, false)) {
+      window_->NotifyPageCrashed(web_contents(), false);
+    }
+  }
+
+ private:
+  const raw_ptr<BarkBrowserWindow> window_;
+  bool crashed_;
+};
+
 BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser)
     : browser_(browser),
       scoped_user_data_(browser->GetUnownedUserDataHost(), *this) {
@@ -107,6 +136,7 @@ BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser)
 }
 
 BarkBrowserWindow::~BarkBrowserWindow() {
+  crash_watchers_.clear();
   browser_->GetFeatures().TearDownPreBrowserWindowDestruction();
   if (auto warning = std::exchange(pending_download_warning_, {})) {
     warning->CloseNow();
@@ -639,8 +669,13 @@ void BarkBrowserWindow::OnTabStripModelChanged(
     TabStripModel* tab_strip_model,
     const TabStripModelChange& change,
     const TabStripSelectionChange& selection) {
-  if (change.type() == TabStripModelChange::kRemoved) {
+  if (change.type() == TabStripModelChange::kInserted) {
+    for (const auto& inserted : change.GetInsert()->contents) {
+      WatchForCrash(inserted.contents);
+    }
+  } else if (change.type() == TabStripModelChange::kRemoved) {
     for (const auto& removed : change.GetRemove()->contents) {
+      crash_watchers_.erase(removed.contents);
       if (removed.tab && removed.contents) {
         host_->NotifyPageViewRetiring(browser_->GetSessionID().id(),
                                       removed.tab->GetHandle().raw_value(),
@@ -649,11 +684,33 @@ void BarkBrowserWindow::OnTabStripModelChanged(
     }
   } else if (change.type() == TabStripModelChange::kReplaced) {
     const auto* replace = change.GetReplace();
+    crash_watchers_.erase(replace->old_contents);
+    WatchForCrash(replace->new_contents);
     if (replace->tab && replace->old_contents) {
       host_->NotifyPageViewRetiring(browser_->GetSessionID().id(),
                                     replace->tab->GetHandle().raw_value(),
                                     replace->old_contents->GetNativeView());
     }
+  }
+}
+
+void BarkBrowserWindow::WatchForCrash(content::WebContents* contents) {
+  if (!contents) {
+    return;
+  }
+  crash_watchers_[contents] = std::make_unique<CrashWatcher>(this, contents);
+  if (contents->IsCrashed()) {
+    NotifyPageCrashed(contents, true);
+  }
+}
+
+void BarkBrowserWindow::NotifyPageCrashed(content::WebContents* contents,
+                                          bool crashed) {
+  auto* tab = tabs::TabInterface::MaybeGetFromContents(contents);
+  if (tab && host_) {
+    host_->NotifyPageCrashed(browser_->GetSessionID().id(),
+                             tab->GetHandle().raw_value(),
+                             contents->GetNativeView(), crashed);
   }
 }
 

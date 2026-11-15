@@ -3168,6 +3168,27 @@ struct NativePageLifecycleTests {
         #expect(page.profileID == fixture.tabs.profile(forSpace: fresh)?.id)
     }
 
+    @Test func aSpaceInAProfileTheWindowRefusesLeavesTheWindowOnItsSpace() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let shown = try #require(fixture.window.selectedItemID)
+        _ = fixture.host.finishCreate(0)
+        let work = try #require(fixture.window.spaceID)
+        let personal = try #require(fixture.tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: work))
+        let profile = try #require(fixture.tabs.profile(forSpace: personal)?.id)
+        #expect(profile != fixture.tabs.profile(forSpace: work)?.id)
+        fixture.host.refusedProfiles = [profile]
+        let creates = fixture.host.creates.count
+        fixture.tabs.setSpace(personal, in: fixture.window)
+        #expect(fixture.window.spaceID == work && fixture.window.selectedItemID == shown, "The window stays on its space")
+        #expect(fixture.host.refusals == [profile], "The host was asked, and says why")
+        #expect(fixture.host.creates.count == creates, "No page of the refused profile is made")
+        let sibling = try #require(fixture.tabs.createSpace(name: "Sibling", icon: "house", accentHex: "#654321", after: work,
+                                                             sharingLoginsWith: work))
+        fixture.tabs.setSpace(sibling, in: fixture.window)
+        #expect(fixture.window.spaceID == sibling && fixture.host.refusals == [profile], "A space in the same profile still opens")
+    }
+
     @Test func closingLastTabLeavesItsSpaceEmptyAndIgnoresChromiumFallback() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
@@ -4401,6 +4422,13 @@ private final class ControlledNativeHost: NativePageHost {
     }
     var creates: [Creation] = []
     var closes: [Closing] = []
+    var refusedProfiles: Set<UUID> = []
+    var refusals: [UUID] = []
+    func refusesProfile(_ profile: UUID, in window: BrowserWindowState) -> Bool {
+        guard refusedProfiles.contains(profile) else { return false }
+        refusals.append(profile)
+        return true
+    }
     var synchronous = false
     var admitSelection = true
     var onSelect: ((any PageNavigation, BrowserWindowState) -> Void)?

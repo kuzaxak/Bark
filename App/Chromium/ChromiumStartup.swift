@@ -9,6 +9,8 @@ struct ChromiumStartupConfiguration {
     let isVerification: Bool
     let launchArguments: [String]
     let legacySupport: URL?
+    /// `--bark-window=host`: Bark's own window host instead of Chromium's window.
+    let hostsWindows: Bool
 
     var rootDigest: String {
         SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -42,6 +44,11 @@ struct ChromiumStartupConfiguration {
             if literal || !argument.hasPrefix("-") { positional.append(argument) }
         }
         launchArguments = positional
+        switch try value("--bark-window") {
+        case nil: hostsWindows = false
+        case "host": hostsWindows = true
+        default: throw StartupError.invalidConfiguration
+        }
         let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
         let source = try value("--barc-conversion-source")
         if path != nil || hint != nil {
@@ -108,6 +115,7 @@ struct ChromiumStartupConfiguration {
                       "--disable-sync", "--barc-shared-native-window", "--barc-native-shell",
                       "--user-data-dir=" + root.appendingPathComponent("Engine").path]
         if isVerification { result.append("--use-mock-keychain") }
+        if hostsWindows { result.append("--bark-window=host") }
         if !launchArguments.isEmpty { result.append("--"); result += launchArguments }
         return result
     }

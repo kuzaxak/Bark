@@ -44,6 +44,9 @@ private enum Native {
     static var rejectsObservation = false
     static var catalogAvailable = true
     static var onNavigate: ((Int32, Int32, String) -> Int32)?
+    /// Clients whose window is Bark's own (`--bark-window=host`), and their tabs' page views.
+    static var hostWindows: Set<Int32> = []
+    static var pageViews: [Int32: NSView] = [:]
 
     static func row(_ window: Int32) -> BarcDiscoveryWindow? {
         let group = groups[window] ?? 1
@@ -110,6 +113,14 @@ private enum Native {
         bridge.tab_transfer_with_admission = { _, _, _, _, _ in 0 }
         bridge.window_new_peer_in_native_window = { _, _ in 0 }
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
+        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
+        bridge.window_host_unobserve = { _ in }
+        bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
+        bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
+        bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
+            guard Native.hostWindows.contains(window), Native.tabs[window]?.contains(tab) == true else { return nil }
+            return Native.pageViews[tab].map { Unmanaged.passUnretained($0).toOpaque() }
+        } }
         bridge.discovery_snapshot = { windows, capacity, _, _, output in MainActor.assumeIsolated {
             guard let output, output.pointee.size >= MemoryLayout<BarcDiscoverySnapshot>.size,
                   capacity == 0 || windows![0].size >= MemoryLayout<BarcDiscoveryWindow>.size else {
@@ -274,6 +285,54 @@ private enum Native {
 #endif
 
 #if !BLOCKER_HOST_CHECKS
+/// In host mode the window's root view holds the sidebar and the selected page; none of the old
+/// path's sidebar, header or hidden-page calls reach Chromium.
+@MainActor private func hostWindowPresents() throws {
+    let profile = Profile(id: Native.first, engine: .chromium)
+    Native.hostWindows = [80]
+    Native.profiles[80] = Native.first; Native.tabs[80] = [800]; Native.groups[80] = 80; Native.selected = 80
+    let page800 = NSView(), page801 = NSView()
+    Native.pageViews = [800: page800, 801: page801]
+    let attachments = Native.attachmentCalls
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
+    let window = BrowserWindowState(), shell = NSView()
+    precondition(host.registerWindow(window, nativeOwner: 80, shell: shell, initialBlankTab: 800))
+    let root = shell.superview?.superview as? ChromiumWindowRoot
+    precondition(root?.holdsSidebar(shell) == true, "A host window's root view holds the sidebar")
+    var page: ChromiumPageNavigation!
+    _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
+                        profile: profile, in: window) { page = try! $0.get() as? ChromiumPageNavigation }
+    precondition(page.nativeWindowID == 80 && page.nativeTabID == 800)
+    precondition(host.acceptNativeSelection(page, in: window), "The selected page is accepted")
+    precondition(page800.isDescendant(of: root!) && root!.shownTab == 800, "The root shows the selected page")
+    precondition(host.isNativeSelection(page, in: window), "The host window's client shows the sidebar and its page")
+    Native.tabs[80] = [800, 801]
+    var second: ChromiumPageNavigation!
+    _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
+                        profile: profile, in: window) { second = try! $0.get() as? ChromiumPageNavigation }
+    if second.nativeTabID != 801 { Native.tabs[80] = [800, second.nativeTabID]; Native.pageViews[second.nativeTabID] = page801 }
+    precondition(host.selectPage(second, in: window), "Selecting another page succeeds")
+    precondition(page801.isDescendant(of: root!) && page800.superview == nil, "The root shows the newly selected page instead")
+    host.setPageHidden(true, in: window)
+    precondition(page801.isHidden && Native.pageHidden[80] == nil, "An empty space hides the page in the root, not in Chromium")
+    host.setPageHidden(false, in: window)
+    precondition(!page801.isHidden)
+    let bar = NSView()
+    precondition(host.setPageHeader(bar, replacing: nil, height: 40, in: window) && bar.isDescendant(of: root!),
+                 "The top bar goes into the root above the page")
+    precondition(host.setPageHeader(nil, replacing: bar, height: 0, in: window) && bar.superview == nil)
+    precondition(Native.attachmentCalls == attachments, "Host mode never attaches the sidebar through Chromium")
+    var refused: [UUID] = []
+    host.refused = { refused.append($0.id) }
+    precondition(host.refusesProfile(Native.second, in: window) && refused == [window.id],
+                 "A host window refuses a space in another profile, and says so")
+    precondition(!host.refusesProfile(Native.first, in: window) && refused.count == 1, "Its own profile is not refused")
+    precondition(host.refusesSplit(in: window) && refused.count == 2, "A host window refuses a split, and says so")
+    Native.hostWindows = []; Native.pageViews = [:]
+    Native.profiles[80] = nil; Native.tabs[80] = nil; Native.appLifetime = []; Native.selected = 10
+    print("Chromium host window checks PASS")
+}
+
 @main
 private enum HostChecks {
     @MainActor static func main() throws {
@@ -298,6 +357,9 @@ private enum HostChecks {
         precondition(Native.pageHidden[10] == 1, "An empty space hides the page from its commands")
         host.setPageHidden(false, in: window)
         precondition(Native.pageHidden[10] == 0)
+        host.refused = { _ in preconditionFailure("Chromium's own window refuses nothing here") }
+        precondition(!host.refusesProfile(Native.second, in: window) && !host.refusesSplit(in: window))
+        host.refused = { _ in }
         host.setPageHidden(true, in: BrowserWindowState(id: window.id))
         precondition(Native.pageHidden[10] == 0, "Only the registered model window decides")
         let reservedHost = ChromiumNativePageHost(bridge: Native.bridge)
@@ -509,6 +571,7 @@ private enum HostChecks {
         try checkActualModelAdoption()
         print("Chromium page host checks passed")
         try lastPageKeepsItsWindow()
+        try hostWindowPresents()
     }
 }
 

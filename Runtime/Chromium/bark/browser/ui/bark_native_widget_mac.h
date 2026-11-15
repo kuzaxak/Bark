@@ -2,6 +2,7 @@
 #define BARK_BROWSER_UI_BARK_NATIVE_WIDGET_MAC_H_
 
 #include "base/memory/weak_ptr.h"
+#include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/native_widget_mac.h"
 
 class BrowserWindowInterface;
@@ -9,6 +10,13 @@ class BrowserWindowInterface;
 namespace bark {
 
 class BarkWindowHost;
+
+// Centres the window's traffic lights in a titlebar `titlebar_height` tall,
+// the first one `leading_inset` from the window's leading edge. False for a
+// window that is not a Bark host window.
+bool SetWindowChrome(gfx::NativeWindow window,
+                     double titlebar_height,
+                     double leading_inset);
 
 // The host widget's native side: Bark's NSWindow class, the command
 // dispatcher and the app's key filter, after WebUIBrowserNativeWidgetMac.

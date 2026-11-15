@@ -204,8 +204,18 @@ struct ChromiumSidebarShell: View {
             }
     }
 
+    /// Where the host-mode root puts this sidebar: beside the page, out of the window, or floating
+    /// over the page while the pointer is at the window's leading edge.
+    private var hostedSidebar: ChromiumWindowRoot.Sidebar {
+        if window.isSidebarVisible { return .shown }
+        return hover.isOverlayVisible && registry.activeWindowId == window.id ? .revealed : .hidden
+    }
+
     var body: some View {
         paneledLayers
+            .background(ChromiumWindowRootLink(sidebar: hostedSidebar, hover: hover,
+                backdrop: AnyView(ChromiumSpaceBackground(chrome: spaceChrome, isActive: registry.activeWindowId == window.id)
+                    .environment(\.nookSettings, storage.settings))))
             .onChange(of: window.isBoostPanelVisible) { _, visible in
                 if visible { window.isPortraitCaptureVisible = false }
             }
@@ -314,6 +324,47 @@ private struct ChromiumSpaceBackground: View {
             .backgroundDraggable()
             .ignoresSafeArea()
             .animation(NookDesign.Motion.standard, value: isActive)
+    }
+}
+
+/// Gives the host-mode root view around the sidebar its state and the space's background, and starts
+/// the leading-edge tracking that reveals a hidden sidebar. In Chromium's own window there is no such
+/// root and it does nothing.
+private struct ChromiumWindowRootLink: NSViewRepresentable {
+    let sidebar: ChromiumWindowRoot.Sidebar
+    let hover: HoverSidebarManager
+    let backdrop: AnyView
+
+    final class Link: NSView {
+        var sidebar = ChromiumWindowRoot.Sidebar.shown
+        weak var hover: HoverSidebarManager?
+        var backdrop: AnyView?
+        private var backdropHost: NSHostingView<AnyView>?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); apply() }
+        func apply() {
+            var ancestor = superview
+            while let view = ancestor, !(view is ChromiumWindowRoot) { ancestor = view.superview }
+            guard let root = ancestor as? ChromiumWindowRoot else { return }
+            hover?.start()
+            if let backdrop {
+                if let backdropHost { backdropHost.rootView = backdrop } else {
+                    let host = NSHostingView(rootView: backdrop)
+                    host.safeAreaRegions = []
+                    backdropHost = host
+                }
+            }
+            if let backdropHost { root.setBackdrop(backdropHost) }
+            root.sidebar = sidebar
+        }
+    }
+
+    func makeNSView(context: Context) -> Link { Link() }
+    func updateNSView(_ link: Link, context: Context) {
+        link.hover = hover
+        link.sidebar = sidebar
+        link.backdrop = backdrop
+        link.apply()
     }
 }
 

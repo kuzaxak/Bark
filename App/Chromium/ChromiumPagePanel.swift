@@ -1,10 +1,20 @@
 import AppKit
 import SwiftUI
 
+enum ChromiumPanelFill { case fitted, window, page }
+
+/// A window root that lays out the page itself (`ChromiumWindowRoot`, host mode). Panels declared in
+/// its sidebar go where it says, whether the sidebar is shown, hidden or floating.
+@MainActor
+protocol ChromiumPanelHost: NSView {
+    /// The view a panel of `fill` goes into: the page frame, or the whole window for `.window`.
+    func panelContainer(for fill: ChromiumPanelFill) -> NSView
+}
+
 /// A bounded sibling above Chromium's surface, like the existing address editor.
 /// Only the panel receives input; no full-window overlay or second window.
 struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
-    enum Fill { case fitted, window, page }
+    typealias Fill = ChromiumPanelFill
 
     let content: Content
     var fill = Fill.fitted
@@ -43,6 +53,10 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
         override func layout() { super.layout(); updatePanel() }
 
         func updatePanel() {
+            if let panelHost {
+                place(in: panelHost)
+                return
+            }
             guard !updating, !isHiddenOrHasHiddenAncestor, let window, window !== closedWindow,
                   let root = window.contentView,
                   bounds.height > 0, let content else { return }
@@ -84,6 +98,49 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
             let top = root.isFlipped ? region.minY + 12 : region.maxY - 12
             panel.frame = NSRect(x: root.bounds.maxX - width - 12,
                 y: root.isFlipped ? top : top - panelHeight, width: width, height: panelHeight)
+        }
+
+        private var panelHost: (any ChromiumPanelHost)? {
+            var ancestor = superview
+            while let view = ancestor {
+                if let host = view as? any ChromiumPanelHost { return host }
+                ancestor = view.superview
+            }
+            return nil
+        }
+
+        /// In the container the host gives this panel's fill, at that container's size.
+        private func place(in panelHost: any ChromiumPanelHost) {
+            guard !updating, !isHiddenOrHasHiddenAncestor, let window, window !== closedWindow, let content else { return }
+            updating = true
+            defer { updating = false }
+            let container = panelHost.panelContainer(for: fill)
+            let area = container.bounds
+            let height = max(0, area.height - 24)
+            let view = fill == .fitted ? AnyView(content.frame(maxHeight: height, alignment: .top)) : AnyView(content)
+            if host?.superview !== container { removePanel() }
+            let panel: NSHostingView<AnyView>
+            if let host {
+                panel = host
+                if heightLimit != height { panel.rootView = view }
+            } else {
+                panel = NSHostingView(rootView: view)
+                panel.safeAreaRegions = []
+                host = panel
+                container.addSubview(panel, positioned: .above, relativeTo: nil)
+            }
+            heightLimit = height
+            guard fill == .fitted else {
+                panel.frame = area
+                panel.autoresizingMask = [.width, .height]
+                return
+            }
+            let size = panel.fittingSize
+            let width = min(size.width, max(0, area.width - 24))
+            let panelHeight = min(size.height, height)
+            panel.frame = NSRect(x: area.maxX - width - 12, y: container.isFlipped ? area.minY + 12 : area.maxY - 12 - panelHeight,
+                                 width: width, height: panelHeight)
+            panel.autoresizingMask = [.minXMargin, container.isFlipped ? .maxYMargin : .minYMargin]
         }
 
         func removePanel() {

@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 
+#include <cmath>
 #include <map>
 #include <memory>
 
@@ -65,6 +66,17 @@ class HostObservation : public bark::BarkWindowHost::Observer {
                              .tab = tab},
          view.GetNativeNSView());
   }
+  void OnPageCrashed(int32_t window,
+                     int32_t tab,
+                     gfx::NativeView view,
+                     bool crashed) override {
+    Post(BarcWindowHostEvent{.size = sizeof(BarcWindowHostEvent),
+                             .kind = crashed ? BARC_WINDOW_HOST_PAGE_CRASHED
+                                             : BARC_WINDOW_HOST_PAGE_RESTORED,
+                             .window = window,
+                             .tab = tab},
+         view.GetNativeNSView());
+  }
   void OnFullscreenChanged(int32_t window,
                            bark::HostFullscreen fullscreen) override {
     Post(BarcWindowHostEvent{.size = sizeof(BarcWindowHostEvent),
@@ -79,7 +91,7 @@ class HostObservation : public bark::BarkWindowHost::Observer {
   }
 
  private:
-  // Keeps a retiring page view alive until its event is delivered.
+  // Keeps the event's page view alive until it is delivered.
   void Post(BarcWindowHostEvent event, NSView* view);
 
   const uint64_t token_;
@@ -132,7 +144,16 @@ void* barc_tab_native_view(int32_t id, int32_t tab_id) {
 }
 
 int barc_window_set_chrome(int32_t id, const BarcWindowChrome* chrome) {
-  return 0;
+  if (!OnUIThread() || !chrome || chrome->size < sizeof(BarcWindowChrome) ||
+      !std::isfinite(chrome->titlebar_height) ||
+      !std::isfinite(chrome->leading_inset) || chrome->titlebar_height <= 0 ||
+      chrome->leading_inset < 0) {
+    return 0;
+  }
+  auto* host = bark::BarkWindowHost::ForBrowser(Window(id));
+  return host && host->SetChrome(chrome->titlebar_height, chrome->leading_inset)
+             ? 1
+             : 0;
 }
 
 uint64_t barc_window_host_observe(int32_t id,

@@ -29,6 +29,7 @@ final class ChromiumNativePageHost: NativePageHost {
     @MainActor private final class Mount {
         weak var shell: NSView?
         weak var model: BrowserWindowState?
+        let presenter: any ChromiumWindowPresenter
         let group: UInt64
         // Only our last successful header attachment, never native selection.
         var attachedClient: Int32?
@@ -39,8 +40,8 @@ final class ChromiumNativePageHost: NativePageHost {
         // reflection. These two owners suffice to reconcile the existing mount.
         var peekSidebarOwners: (source: Int32, peek: Int32)?
         var attemptedLiveRemainder: UInt64?
-        init(shell: NSView, group: UInt64, attachedClient: Int32?, model: BrowserWindowState) {
-            self.shell = shell; self.group = group; self.attachedClient = attachedClient; self.model = model
+        init(shell: NSView, presenter: any ChromiumWindowPresenter, group: UInt64, attachedClient: Int32?, model: BrowserWindowState) {
+            self.shell = shell; self.presenter = presenter; self.group = group; self.attachedClient = attachedClient; self.model = model
         }
     }
     @MainActor private final class Request {
@@ -135,10 +136,11 @@ final class ChromiumNativePageHost: NativePageHost {
         guard mounts[window.id] == nil, let row = liveState(nativeOwner),
               !mounts.values.contains(where: { $0.shell === shell || $0.group == row.physical_group }),
               bridge.window_set_app_lifetime(nativeOwner) == 1 else { return false }
-        let owned = bridge.window_native_shell_is_owned(nativeOwner, Unmanaged.passUnretained(shell).toOpaque()) == 1
-        mounts[window.id] = Mount(shell: shell, group: row.physical_group,
+        let presenter = ChromiumWindowPresenters.make(bridge: bridge, client: nativeOwner, sidebar: shell)
+        let owned = presenter.ownsSidebar(nativeOwner)
+        mounts[window.id] = Mount(shell: shell, presenter: presenter, group: row.physical_group,
                                   attachedClient: owned ? nativeOwner : nil, model: window)
-        _ = bridge.window_set_page_hidden(nativeOwner, pageIsHidden(window) ? 1 : 0)
+        presenter.setPageHidden(pageIsHidden(window), client: nativeOwner)
         if let initialBlankTab { blankTabs[nativeOwner] = BlankReservation(tab: initialBlankTab, group: row.physical_group) }
         return true
     }
@@ -148,7 +150,7 @@ final class ChromiumNativePageHost: NativePageHost {
     func setPageHidden(_ hidden: Bool, in window: BrowserWindowState) {
         guard let mount = mounts[window.id], mount.model === window,
               let client = liveClient(in: window.id) else { return }
-        _ = bridge.window_set_page_hidden(client, hidden ? 1 : 0)
+        mount.presenter.setPageHidden(hidden, client: client)
     }
 
     /// Catalog disappearance ends registration, not any still-live moved tab.
@@ -747,9 +749,9 @@ final class ChromiumNativePageHost: NativePageHost {
 
     func isNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
         guard let page = navigation as? ChromiumPageNavigation,
-              let (mount, row) = admission(page, in: window), let shell = mount.shell,
+              let (mount, row) = admission(page, in: window), mount.shell != nil,
               row.selected_client == page.nativeWindowID, row.active_tab == page.nativeTabID else { return false }
-        return bridge.window_native_shell_is_owned(page.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1
+        return mount.presenter.ownsSidebar(page.nativeWindowID)
     }
 
     func acceptNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
@@ -762,21 +764,24 @@ final class ChromiumNativePageHost: NativePageHost {
 
     private func attachSelected(_ page: ChromiumPageNavigation, in window: BrowserWindowState,
                                 mount: Mount, attempt: UInt64) -> Bool {
-        guard let shell = mount.shell else { return false }
-        let pointer = Unmanaged.passUnretained(shell).toOpaque()
+        guard mount.shell != nil else { return false }
+        let presenter = mount.presenter
         func current() -> Bool {
             mounts[window.id] === mount && mount.generation == attempt && selected(page, in: window)
         }
         guard current() else { return false }
         reconcilePeekSidebar(mount)
         let target = page.nativeWindowID
-        if bridge.window_native_shell_is_owned(target, pointer) == 1 { mount.attachedClient = target; return current() }
-        if let old = mount.attachedClient, old != target, bridge.window_native_shell_is_owned(old, pointer) == 1 {
-            let detached = bridge.window_detach_native_shell_if_owned(old, pointer)
-            guard current(), detached == 1 else { return false }
+        if presenter.ownsSidebar(target) {
+            mount.attachedClient = target
+            return current() && presenter.showPage(page.nativeTabID, of: target)
         }
-        let attached = bridge.window_attach_native_shell(target, pointer)
-        let owns = bridge.window_native_shell_is_owned(target, pointer) == 1
+        if let old = mount.attachedClient, old != target, presenter.ownsSidebar(old) {
+            let detached = presenter.detachSidebar(from: old)
+            guard current(), detached else { return false }
+        }
+        let attached = presenter.attachSidebar(to: target)
+        let owns = presenter.ownsSidebar(target)
         // Native attachment may succeed physically but report supersession.
         // Remember that actual owner so the next reflection can detach it.
         if owns {
@@ -785,32 +790,26 @@ final class ChromiumNativePageHost: NativePageHost {
             } else if mount.attachedClient != target {
                 // A nested Swift mount already won. Release only this older
                 // call's exact view, never its newer destination's header.
-                _ = bridge.window_detach_native_shell_if_owned(target, pointer)
+                _ = presenter.detachSidebar(from: target)
             }
         }
-        return current() && attached == 1 && owns
+        return current() && attached && owns && presenter.showPage(page.nativeTabID, of: target)
     }
 
     /// Header view ownership only; the existing sidebar is the physical-group
     /// authority. Native attachment carries this exact pair through Peek/moves.
     func setPageHeader(_ header: NSView?, replacing expected: NSView?, height: Int32,
                        in window: BrowserWindowState) -> Bool {
-        guard let mount = mounts[window.id], mount.model === window,
-              let shell = mount.shell else { return false }
+        guard let mount = mounts[window.id], mount.model === window, mount.shell != nil else { return false }
         reconcilePeekSidebar(mount)
         guard let owner = mount.attachedClient else { return false }
-        let sidebar = Unmanaged.passUnretained(shell).toOpaque()
-        guard bridge.window_native_shell_is_owned(owner, sidebar) == 1 else { return false }
-        return bridge.window_set_native_header(owner, sidebar,
-            expected.map { Unmanaged.passUnretained($0).toOpaque() },
-            header.map { Unmanaged.passUnretained($0).toOpaque() }, height) == 1
+        return mount.presenter.setHeader(header, replacing: expected, height: height, owner: owner)
     }
 
     private func reconcilePeekSidebar(_ mount: Mount) {
-        guard let owners = mount.peekSidebarOwners, let shell = mount.shell else { return }
-        let pointer = Unmanaged.passUnretained(shell).toOpaque()
-        if bridge.window_native_shell_is_owned(owners.source, pointer) == 1 { mount.attachedClient = owners.source }
-        else if bridge.window_native_shell_is_owned(owners.peek, pointer) == 1 { mount.attachedClient = owners.peek }
+        guard let owners = mount.peekSidebarOwners, mount.shell != nil else { return }
+        if mount.presenter.ownsSidebar(owners.source) { mount.attachedClient = owners.source }
+        else if mount.presenter.ownsSidebar(owners.peek) { mount.attachedClient = owners.peek }
         else { mount.peekSidebarOwners = nil }
     }
 
@@ -862,20 +861,20 @@ final class ChromiumNativePageHost: NativePageHost {
         guard mount.generation == attempt, selected(page, in: window),
               let previous, let old = liveState(previous.window),
               old.physical_group == mount.group, old.active_tab == previous.active_tab,
-              let shell = mount.shell else { return false }
-        let pointer = Unmanaged.passUnretained(shell).toOpaque()
+              mount.shell != nil else { return false }
+        let presenter = mount.presenter
         let target = page.nativeWindowID
-        if target != old.window, bridge.window_native_shell_is_owned(target, pointer) == 1 {
-            let detached = bridge.window_detach_native_shell_if_owned(target, pointer)
-            guard detached == 1, mount.generation == attempt, selected(page, in: window) else { return false }
+        if target != old.window, presenter.ownsSidebar(target) {
+            let detached = presenter.detachSidebar(from: target)
+            guard detached, mount.generation == attempt, selected(page, in: window) else { return false }
         }
         guard bridge.window_select(old.window) == 1, mount.generation == attempt,
               let restored = liveState(old.window), restored.physical_group == mount.group,
               restored.selected_client == old.window, restored.active_tab == previous.active_tab else { return false }
-        _ = bridge.window_attach_native_shell(old.window, pointer)
-        if bridge.window_native_shell_is_owned(old.window, pointer) == 1 {
+        _ = presenter.attachSidebar(to: old.window)
+        if presenter.ownsSidebar(old.window) {
             if mount.generation == attempt { mount.attachedClient = old.window }
-            else if mount.attachedClient != old.window { _ = bridge.window_detach_native_shell_if_owned(old.window, pointer) }
+            else if mount.attachedClient != old.window { _ = presenter.detachSidebar(from: old.window) }
         }
         return false
     }
@@ -1070,9 +1069,8 @@ final class ChromiumNativePageHost: NativePageHost {
                   let (currentMount, row) = admission(native[index], in: window),
                   currentMount === mount, mounts[window.id] === mount,
                   row.selected_client == native[index].nativeWindowID,
-                  let shell = mount.shell,
-                  bridge.window_native_shell_is_owned(native[index].nativeWindowID,
-                      Unmanaged.passUnretained(shell).toOpaque()) == 1,
+                  mount.shell != nil,
+                  mount.presenter.ownsSidebar(native[index].nativeWindowID),
                   isCurrent() else {
                 restorePreviousSelection()
                 return false
@@ -1111,8 +1109,8 @@ final class ChromiumNativePageHost: NativePageHost {
         let active = activeItemID.flatMap { pages[$0]?.navigation as? ChromiumPageNavigation }
         if let active {
             guard let (currentMount, row) = admission(active, in: window), currentMount === mount,
-                  row.selected_client == active.nativeWindowID, let shell = mount.shell,
-                  bridge.window_native_shell_is_owned(active.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1 else {
+                  row.selected_client == active.nativeWindowID, mount.shell != nil,
+                  mount.presenter.ownsSidebar(active.nativeWindowID) else {
                 restorePreviousSelection()
                 return false
             }
@@ -1139,8 +1137,8 @@ final class ChromiumNativePageHost: NativePageHost {
             // Separating the selected pane can choose its neighbour, but only
             // after exact native clear succeeded. A refused clear never focuses it.
             guard let (_, row) = admission(active, in: window), row.selected_client == active.nativeWindowID,
-                  let shell = mount.shell, mount.generation == generation,
-                  bridge.window_native_shell_is_owned(active.nativeWindowID, Unmanaged.passUnretained(shell).toOpaque()) == 1,
+                  mount.shell != nil, mount.generation == generation,
+                  mount.presenter.ownsSidebar(active.nativeWindowID),
                   active.selectNativePage(), mounts[window.id] === mount,
                   mount.generation == generation, isCurrent() else {
                 restorePreviousSelection()
@@ -1263,8 +1261,8 @@ final class ChromiumNativePageHost: NativePageHost {
         guard let row = liveState(native) else { return false }
         if bridge.window_native_shell_is_owned(native, nil) == 1 { return true }
         guard let mount = mounts.values.first(where: { $0.group == row.physical_group }),
-              let shell = mount.shell else { return false }
-        return bridge.window_native_shell_is_owned(native, Unmanaged.passUnretained(shell).toOpaque()) == 1
+              mount.shell != nil else { return false }
+        return mount.presenter.ownsSidebar(native)
     }
 
     /// A failed restore closes its logical window but keeps the existing page
@@ -1334,6 +1332,24 @@ final class ChromiumNativePageHost: NativePageHost {
         return (candidates.first(where: { $0.selected_client == $0.window }) ?? candidates.first)?.window
     }
 
+    /// Shows the person that an action they asked for cannot run in `window`.
+    var refused: (BrowserWindowState) -> Void = { _ in }
+
+    /// A window with a single client shows only that client's profile.
+    func refusesProfile(_ profile: UUID, in window: BrowserWindowState) -> Bool {
+        guard let mount = mounts[window.id], mount.model === window, let only = mount.presenter.onlyClient,
+              let row = liveState(only), bridge.identity(row) != profile else { return false }
+        refused(window)
+        return true
+    }
+
+    /// Panes are separate clients, so a window with a single client shows no split.
+    func refusesSplit(in window: BrowserWindowState) -> Bool {
+        guard let mount = mounts[window.id], mount.model === window, mount.presenter.onlyClient != nil else { return false }
+        refused(window)
+        return true
+    }
+
     /// Chromium routes a link only to the selected client, so an empty space shows its own
     /// profile's client with the sidebar. Without one, `open` starts it and nil means wait.
     func emptySpaceClient(in window: BrowserWindowState, profile: UUID, open: Bool) -> Int32? {
@@ -1370,13 +1386,13 @@ final class ChromiumNativePageHost: NativePageHost {
     }
 
     private func selectEmptySpaceClient(_ client: Int32, mount: Mount) -> Bool {
-        guard let shell = mount.shell, let row = liveState(client), row.physical_group == mount.group else { return false }
-        let pointer = Unmanaged.passUnretained(shell).toOpaque()
+        guard mount.shell != nil, let row = liveState(client), row.physical_group == mount.group else { return false }
+        let presenter = mount.presenter
         if row.selected_client != client, bridge.window_select(client) != 1 { return false }
-        if bridge.window_native_shell_is_owned(client, pointer) != 1 {
-            if let old = mount.attachedClient, old != client, bridge.window_native_shell_is_owned(old, pointer) == 1,
-               bridge.window_detach_native_shell_if_owned(old, pointer) != 1 { return false }
-            guard bridge.window_attach_native_shell(client, pointer) == 1, bridge.window_native_shell_is_owned(client, pointer) == 1 else { return false }
+        if !presenter.ownsSidebar(client) {
+            if let old = mount.attachedClient, old != client, presenter.ownsSidebar(old),
+               !presenter.detachSidebar(from: old) { return false }
+            guard presenter.attachSidebar(to: client), presenter.ownsSidebar(client) else { return false }
         }
         mount.attachedClient = client
         mount.generation &+= 1

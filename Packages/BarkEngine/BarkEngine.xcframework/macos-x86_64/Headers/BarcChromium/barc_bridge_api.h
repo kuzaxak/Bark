@@ -496,12 +496,19 @@ typedef struct BarcWindowChrome {
   double leading_inset;
 } BarcWindowChrome;
 
+// Kinds are appended without a new version; an app ignores a kind it does not
+// know.
 enum BarcWindowHostEventKind {
   // `tab`'s page view `view` leaves the window: the tab closes, moves to another
   // window or replaces its contents.
   BARC_WINDOW_HOST_PAGE_VIEW_RETIRED = 1,
   // The window entered or left full screen; `fullscreen` says which kind.
-  BARC_WINDOW_HOST_FULLSCREEN_CHANGED = 2
+  BARC_WINDOW_HOST_FULLSCREEN_CHANGED = 2,
+  // `tab`'s renderer is gone and its page view `view` shows nothing; the app
+  // draws its own crashed state over it.
+  BARC_WINDOW_HOST_PAGE_CRASHED = 3,
+  // `tab`'s page has a renderer again, after a reload.
+  BARC_WINDOW_HOST_PAGE_RESTORED = 4
 };
 enum BarcFullscreenKind {
   BARC_FULLSCREEN_NONE = 0,
@@ -513,10 +520,11 @@ typedef struct BarcWindowHostEvent {
   size_t size;
   int32_t kind;        // BarcWindowHostEventKind.
   int32_t window;      // The logical window the event concerns.
-  int32_t tab;         // PAGE_VIEW_RETIRED only, else 0.
+  int32_t tab;         // The page events only, else 0.
   int32_t fullscreen;  // FULLSCREEN_CHANGED only: BarcFullscreenKind.
-  // PAGE_VIEW_RETIRED only: the page view leaving, as tab_native_view returned
-  // it; alive during the call. Remove it only if the app still shows it there.
+  // The page events only: the tab's page view, as tab_native_view returned it;
+  // alive during the call. On PAGE_VIEW_RETIRED, remove it only if the app
+  // still shows it there.
   void* view;
 } BarcWindowHostEvent;
 // Borrowed event, valid during the call. Delivered from a posted task, never

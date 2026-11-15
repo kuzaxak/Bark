@@ -27,6 +27,7 @@ final class ChromiumProfilePagePresenter {
     private final class Page {
         let navigation: ChromiumPageNavigation
         var view: NSView?
+        var presenter: (any ChromiumWindowPresenter)?
         var attemptedAttach = false
         let isRecovery: Bool
         init(navigation: ChromiumPageNavigation, isRecovery: Bool) { self.navigation = navigation; self.isRecovery = isRecovery }
@@ -133,9 +134,12 @@ final class ChromiumProfilePagePresenter {
                 refuse(request, window: window, page: page); return
             }
             page.attemptedAttach = true
-            let attached = bridge.window_attach_native_shell(window, Unmanaged.passUnretained(view).toOpaque()) == 1
+            let presenter = ChromiumWindowPresenters.make(bridge: bridge, client: window, sidebar: view)
+            page.presenter = presenter
+            let attached = presenter.attachSidebar(to: window)
             guard attached, !request.cancelled, request.canPresent(), ownsControls(page, window: window),
-                  bridge.window_select(window) == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window) else {
+                  bridge.window_select(window) == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window),
+                  presenter.showPage(tab, of: window) else {
                 refuse(request, window: window, page: page); return
             }
             let accepted = request.destination.nativeURL.withCString { bridge.tab_navigate(window, tab, $0) }
@@ -163,16 +167,16 @@ final class ChromiumProfilePagePresenter {
     }
 
     private func ownsControls(_ page: Page, window: Int32) -> Bool {
-        guard ownsPage(page, window: window), let view = page.view else { return false }
-        return bridge.window_native_shell_is_owned(window, Unmanaged.passUnretained(view).toOpaque()) == 1
+        guard ownsPage(page, window: window) else { return false }
+        return page.presenter?.ownsSidebar(window) == true
     }
 
     private func release(_ page: Page, window: Int32, detachHeader: Bool = true) {
         if pages[window] === page { pages.removeValue(forKey: window) }
         // Revoke controls before AppKit/native detachment callbacks can reenter.
         page.navigation.invalidate()
-        if detachHeader, page.navigation.nativeCloseOutcome != .ownerEnded, let view = page.view {
-            _ = bridge.window_detach_native_shell_if_owned(window, Unmanaged.passUnretained(view).toOpaque())
+        if detachHeader, page.navigation.nativeCloseOutcome != .ownerEnded {
+            _ = page.presenter?.detachSidebar(from: window)
         }
     }
 

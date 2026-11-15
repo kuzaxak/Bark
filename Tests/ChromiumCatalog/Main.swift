@@ -306,6 +306,7 @@ import NookWeb
         bridge.window_set_page_hidden = { _, _ in 1 }
         bridge.window_new_peer_in_native_window = { _, _ in 0 }
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
+        bridge.window_host_observe = { _, _, _ in 0 }
         bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
             if Native.rejectNextObservation {
                 Native.rejectNextObservation = false

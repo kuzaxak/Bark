@@ -5,6 +5,7 @@
 #include "bark/bridge/barc_runtime_startup.h"
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_window_host.h"
+#include "base/apple/foundation_util.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -19,13 +20,93 @@
 #import "ui/base/cocoa/window_size_constants.h"
 #include "ui/base/window_open_disposition.h"
 
+@interface NSWindow (BarkPrivateAppKit)
++ (Class)frameViewClassForStyleMask:(NSUInteger)style_mask;
+- (BOOL)_hasActiveAppearanceForStandardWindowButton:(NSWindowButton)button;
+@end
+
+@interface NSThemeFrame (BarkPrivateAppKit)
+- (CGFloat)_titlebarHeight;
+- (CGFloat)_minXTitlebarWidgetInset;
+- (BOOL)_shouldCenterTrafficLights;
+- (void)_updateButtonPositions;
+@end
+
 @interface BarkNSWindow : NativeWidgetMacNSWindow
+// The app's titlebar height and first light's inset; 0 height leaves AppKit's.
+@property(nonatomic) CGFloat barkTitlebarHeight;
+@property(nonatomic) CGFloat barkLeadingInset;
+@end
+
+// AppKit reads these while it lays out the titlebar, as it does for
+// BrowserWindowFrame in browser_native_widget_window_mac.mm.
+@interface BarkWindowFrame : NativeWidgetMacNSWindowTitledFrame
+@end
+
+@implementation BarkWindowFrame
+
+- (BarkNSWindow*)barkWindow {
+  return base::apple::ObjCCast<BarkNSWindow>(self.window);
+}
+
+- (BOOL)usesAppChrome {
+  return [self barkWindow].barkTitlebarHeight > 0;
+}
+
+- (CGFloat)_titlebarHeight {
+  return [self usesAppChrome] ? [self barkWindow].barkTitlebarHeight
+                              : [super _titlebarHeight];
+}
+
+- (CGFloat)_minXTitlebarWidgetInset {
+  return [self usesAppChrome] ? [self barkWindow].barkLeadingInset
+                              : [super _minXTitlebarWidgetInset];
+}
+
+- (BOOL)_shouldCenterTrafficLights {
+  return [self usesAppChrome] || [super _shouldCenterTrafficLights];
+}
+
 @end
 
 @implementation BarkNSWindow
+
+@synthesize barkTitlebarHeight = _barkTitlebarHeight;
+@synthesize barkLeadingInset = _barkLeadingInset;
+
++ (Class)frameViewClassForStyleMask:(NSUInteger)style_mask {
+  if (style_mask & NSWindowStyleMaskTitled) {
+    return [BarkWindowFrame class];
+  }
+  return [super frameViewClassForStyleMask:style_mask];
+}
+
+// The lights draw as in an inactive window, grey, until the pointer is over
+// them, when AppKit draws them coloured with their glyphs, as Arc's do.
+- (BOOL)_hasActiveAppearanceForStandardWindowButton:(NSWindowButton)button {
+  return NO;
+}
+
 @end
 
 namespace bark {
+
+bool SetWindowChrome(gfx::NativeWindow native_window,
+                     double titlebar_height,
+                     double leading_inset) {
+  BarkNSWindow* window =
+      base::apple::ObjCCast<BarkNSWindow>(native_window.GetNativeNSWindow());
+  if (!window) {
+    return false;
+  }
+  window.barkTitlebarHeight = titlebar_height;
+  window.barkLeadingInset = leading_inset;
+  NSView* frame = window.contentView.superview;
+  if ([frame respondsToSelector:@selector(_updateButtonPositions)]) {
+    [(NSThemeFrame*)frame _updateButtonPositions];
+  }
+  return true;
+}
 
 BarkNativeWidgetMac::BarkNativeWidgetMac(base::WeakPtr<BarkWindowHost> host,
                                          views::Widget* widget)

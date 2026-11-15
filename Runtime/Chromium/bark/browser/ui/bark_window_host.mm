@@ -185,6 +185,12 @@ gfx::NativeView BarkWindowHost::root_view() const {
   return root_host_ ? root_host_->native_view() : gfx::NativeView();
 }
 
+bool BarkWindowHost::SetChrome(double titlebar_height, double leading_inset) {
+  return !closing_ && widget_ &&
+         SetWindowChrome(widget_->GetNativeWindow(), titlebar_height,
+                         leading_inset);
+}
+
 void BarkWindowHost::AddObserver(Observer* observer) {
   observers_.AddObserver(observer);
 }
@@ -197,6 +203,13 @@ void BarkWindowHost::NotifyPageViewRetiring(int32_t window,
                                             int32_t tab,
                                             gfx::NativeView view) {
   observers_.Notify(&Observer::OnPageViewRetiring, window, tab, view);
+}
+
+void BarkWindowHost::NotifyPageCrashed(int32_t window,
+                                       int32_t tab,
+                                       gfx::NativeView view,
+                                       bool crashed) {
+  observers_.Notify(&Observer::OnPageCrashed, window, tab, view, crashed);
 }
 
 void BarkWindowHost::SetFullscreen(BarkBrowserWindow* client,

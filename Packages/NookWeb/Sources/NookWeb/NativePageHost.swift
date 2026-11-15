@@ -59,6 +59,12 @@ public protocol NativePageHost: NativePageResourceOwner {
     /// Pure current layout/header/active-pane validation after native callouts.
     func isSplit(_ record: SplitRecord?, pages: [UUID: PageSession],
                  activeItemID: UUID?, in window: BrowserWindowState) -> Bool
+    /// True when `window` cannot show a page of `profile`; the host then tells the person.
+    func refusesProfile(_ profile: UUID, in window: BrowserWindowState) -> Bool
+}
+
+public extension NativePageHost {
+    func refusesProfile(_ profile: UUID, in window: BrowserWindowState) -> Bool { false }
 }
 
 struct NativePageCreation {

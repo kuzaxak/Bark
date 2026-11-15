@@ -1,5 +1,7 @@
 #import <AppKit/AppKit.h>
 
+#include <cmath>
+#include <limits>
 #include <set>
 #include <string>
 #include <vector>
@@ -39,6 +41,11 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
+
+@interface NSWindow (BarkWindowHostTest)
+- (BOOL)_hasActiveAppearance;
+- (BOOL)_hasActiveAppearanceForStandardWindowButton:(NSWindowButton)button;
+@end
 
 namespace {
 
@@ -85,6 +92,15 @@ struct HostEvents {
     }
     return kinds;
   }
+  std::vector<const Row*> Of(int32_t kind) const {
+    std::vector<const Row*> found;
+    for (const auto& row : rows) {
+      if (row.event.kind == kind) {
+        found.push_back(&row);
+      }
+    }
+    return found;
+  }
   const Row* Retired(int32_t tab) const {
     for (const auto& row : rows) {
       if (row.event.kind == BARC_WINDOW_HOST_PAGE_VIEW_RETIRED &&
@@ -98,6 +114,47 @@ struct HostEvents {
 
 int InnerWidth(content::WebContents* contents) {
   return content::EvalJs(contents, "innerWidth").ExtractInt();
+}
+
+// A traffic light's frame in its window, with a top-left origin.
+NSRect LightFrame(NSWindow* window, NSWindowButton type) {
+  NSButton* button = [window standardWindowButton:type];
+  NSRect frame = [button convertRect:button.bounds toView:nil];
+  frame.origin.y = NSHeight(window.frame) - NSMaxY(frame);
+  return frame;
+}
+
+// The close light's top-left corner, after checking that the other two follow
+// it at AppKit's 20 pt pitch on the same row.
+NSPoint LightsOrigin(NSWindow* window) {
+  const NSRect close = LightFrame(window, NSWindowCloseButton);
+  const NSRect minimize = LightFrame(window, NSWindowMiniaturizeButton);
+  const NSRect zoom = LightFrame(window, NSWindowZoomButton);
+  EXPECT_EQ(NSMinX(close) + 20, NSMinX(minimize));
+  EXPECT_EQ(NSMinX(close) + 40, NSMinX(zoom));
+  EXPECT_EQ(NSMinY(close), NSMinY(minimize));
+  EXPECT_EQ(NSMinY(close), NSMinY(zoom));
+  return close.origin;
+}
+
+void WaitForFullscreen(NSWindow* window, bool fullscreen) {
+  NSString* name = fullscreen ? NSWindowDidEnterFullScreenNotification
+                              : NSWindowDidExitFullScreenNotification;
+  base::RunLoop loop;
+  base::OnceClosure quit = loop.QuitClosure();
+  __block base::OnceClosure block_quit = std::move(quit);
+  id observer = [NSNotificationCenter.defaultCenter
+      addObserverForName:name
+                  object:window
+                   queue:nil
+              usingBlock:^(NSNotification*) {
+                if (block_quit) {
+                  std::move(block_quit).Run();
+                }
+              }];
+  [window toggleFullScreen:nil];
+  loop.Run();
+  [NSNotificationCenter.defaultCenter removeObserver:observer];
 }
 
 }  // namespace
@@ -648,4 +705,142 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
                                   BARC_FULLSCREEN_WINDOW,
                                   BARC_FULLSCREEN_NONE}),
             events.Fullscreen());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ChromeMetricsMoveLights) {
+  const int32_t peer = OpenHostWindow();
+  NSWindow* window =
+      HostOf(peer)->widget()->GetNativeWindow().GetNativeNSWindow();
+  ASSERT_FALSE(window.visible);
+  BarcWindowChrome chrome = {.size = sizeof(BarcWindowChrome),
+                             .titlebar_height = 48,
+                             .leading_inset = 13};
+  ASSERT_EQ(1, barc_window_set_chrome(peer, &chrome));
+  EXPECT_NSEQ(NSMakePoint(13, 16), LightsOrigin(window));
+
+  ASSERT_EQ(1, barc_window_show(peer));
+  ASSERT_TRUE(base::test::RunUntil([&] { return window.visible; }));
+  EXPECT_NSEQ(NSMakePoint(13, 16), LightsOrigin(window));
+
+  chrome.titlebar_height = 40;
+  chrome.leading_inset = 20;
+  ASSERT_EQ(1, barc_window_set_chrome(peer, &chrome));
+  EXPECT_NSEQ(NSMakePoint(20, 12), LightsOrigin(window));
+
+  chrome.titlebar_height = 48;
+  chrome.leading_inset = 13;
+  ASSERT_EQ(1, barc_window_set_chrome(peer, &chrome));
+  WaitForFullscreen(window, true);
+  EXPECT_TRUE(window.styleMask & NSWindowStyleMaskFullScreen);
+  WaitForFullscreen(window, false);
+  EXPECT_FALSE(window.styleMask & NSWindowStyleMaskFullScreen);
+  EXPECT_NSEQ(NSMakePoint(13, 16), LightsOrigin(window));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, LightsGreyUntilHovered) {
+  NSWindow* old_path =
+      browser()->GetWindow()->GetNativeWindow().GetNativeNSWindow();
+  const int32_t peer = OpenHostWindow();
+  NSWindow* window =
+      HostOf(peer)->widget()->GetNativeWindow().GetNativeNSWindow();
+  ASSERT_EQ(1, barc_window_show(peer));
+  for (NSWindow* key : {old_path, window}) {
+    [NSApp activateIgnoringOtherApps:YES];
+    [key makeKeyAndOrderFront:nil];
+    ASSERT_TRUE(base::test::RunUntil(
+        [&] { return key.isKeyWindow && [key _hasActiveAppearance]; }));
+    for (NSWindowButton type : {NSWindowCloseButton, NSWindowMiniaturizeButton,
+                                NSWindowZoomButton}) {
+      EXPECT_EQ(key == old_path,
+                [key _hasActiveAppearanceForStandardWindowButton:type])
+          << (key == window ? "host " : "old path ") << type;
+    }
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, WindowChromeRefusesBadInput) {
+  const int32_t peer = OpenHostWindow();
+  const BarcWindowChrome good = {.size = sizeof(BarcWindowChrome),
+                                 .titlebar_height = 48,
+                                 .leading_inset = 13};
+  EXPECT_EQ(0, barc_window_set_chrome(peer, nullptr));
+  EXPECT_EQ(0, barc_window_set_chrome(-1, &good));
+  EXPECT_EQ(0, barc_window_set_chrome(browser()->GetSessionID().id(), &good));
+  const double nan = std::numeric_limits<double>::quiet_NaN();
+  const double inf = std::numeric_limits<double>::infinity();
+  for (BarcWindowChrome bad :
+       {BarcWindowChrome{.size = 0, .titlebar_height = 48, .leading_inset = 13},
+        BarcWindowChrome{.size = sizeof(size_t) + sizeof(double),
+                         .titlebar_height = 48,
+                         .leading_inset = 13},
+        BarcWindowChrome{good.size, 0, 13}, BarcWindowChrome{good.size, -48, 13},
+        BarcWindowChrome{good.size, nan, 13}, BarcWindowChrome{good.size, inf, 13},
+        BarcWindowChrome{good.size, 48, -1}, BarcWindowChrome{good.size, 48, nan},
+        BarcWindowChrome{good.size, 48, inf}}) {
+    EXPECT_EQ(0, barc_window_set_chrome(peer, &bad))
+        << bad.size << " " << bad.titlebar_height << " " << bad.leading_inset;
+  }
+  EXPECT_EQ(1, barc_window_set_chrome(peer, &good));
+  auto* browser = FindBrowser(peer);
+  ui_test_utils::BrowserDestroyedObserver closed(browser);
+  ASSERT_EQ(1, barc_window_close(peer));
+  closed.Wait();
+  EXPECT_EQ(0, barc_window_set_chrome(peer, &good));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, CrashedPageEventsFollowTheRenderer) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t peer = OpenHostWindow();
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t tab = OpenPage(peer, root, "/title1.html");
+  NSView* page = Place(peer, tab, root);
+  auto* contents = TabContents(tab);
+  HostEvents events;
+  ASSERT_TRUE(events.Observe(peer));
+  events.watched = page;
+  content::CrashTab(contents);
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !events.Of(BARC_WINDOW_HOST_PAGE_CRASHED).empty(); }));
+  const auto* crashed = events.Of(BARC_WINDOW_HOST_PAGE_CRASHED).front();
+  EXPECT_EQ(peer, crashed->event.window);
+  EXPECT_EQ(tab, crashed->event.tab);
+  EXPECT_EQ((__bridge void*)page, crashed->event.view);
+  EXPECT_TRUE(events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).empty());
+
+  ASSERT_EQ(1, barc_tab_reload(peer, tab));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).empty(); }));
+  const auto* restored = events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).front();
+  EXPECT_EQ(tab, restored->event.tab);
+  EXPECT_EQ((__bridge void*)page, restored->event.view);
+  EXPECT_EQ(1u, events.Of(BARC_WINDOW_HOST_PAGE_CRASHED).size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       CrashedTabMovedToAnotherWindowIsRestoredOnReload) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t first = OpenHostWindow();
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t tab = OpenPage(first, root, "/title1.html");
+  Place(first, tab, root);
+  auto* contents = TabContents(tab);
+  content::CrashTab(contents);
+  ASSERT_TRUE(contents->IsCrashed());
+
+  const int32_t second = OpenHostWindow();
+  NSView* other = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  ASSERT_EQ(1, barc_window_set_root_view(second, (__bridge void*)other));
+  HostEvents events;
+  ASSERT_TRUE(events.Observe(second));
+  ASSERT_EQ(1, barc_tab_transfer(first, tab, second));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !events.Of(BARC_WINDOW_HOST_PAGE_CRASHED).empty(); }));
+  EXPECT_EQ(tab, events.Of(BARC_WINDOW_HOST_PAGE_CRASHED).front()->event.tab);
+
+  ASSERT_EQ(1, barc_tab_reload(second, tab));
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).empty(); }));
+  EXPECT_EQ(tab, events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).front()->event.tab);
 }

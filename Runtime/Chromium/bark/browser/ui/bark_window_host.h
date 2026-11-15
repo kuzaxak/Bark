@@ -45,6 +45,11 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
                                     gfx::NativeView view) {}
     // `window` is the selected client's session id.
     virtual void OnFullscreenChanged(int32_t window, HostFullscreen kind) {}
+    // `tab`'s renderer died (`crashed`) or its page has one again.
+    virtual void OnPageCrashed(int32_t window,
+                               int32_t tab,
+                               gfx::NativeView view,
+                               bool crashed) {}
   };
 
   static BarkWindowHost* ForBrowser(const BrowserWindowInterface* browser);
@@ -70,12 +75,19 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   bool SetRootView(gfx::NativeView root);
   gfx::NativeView root_view() const;
 
+  // Places the traffic lights; see bark::SetWindowChrome.
+  bool SetChrome(double titlebar_height, double leading_inset);
+
   // True once the widget began closing for good; no client may reopen it.
   bool closing() const { return closing_; }
 
   void AddObserver(Observer* observer);
   void RemoveObserver(Observer* observer);
   void NotifyPageViewRetiring(int32_t window, int32_t tab, gfx::NativeView view);
+  void NotifyPageCrashed(int32_t window,
+                         int32_t tab,
+                         gfx::NativeView view,
+                         bool crashed);
   base::WeakPtr<BarkWindowHost> GetWeakPtr() {
     return weak_factory_.GetWeakPtr();
   }

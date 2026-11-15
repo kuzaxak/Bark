@@ -1,6 +1,7 @@
 #ifndef BARK_BROWSER_UI_BARK_BROWSER_WINDOW_H_
 #define BARK_BROWSER_UI_BARK_BROWSER_WINDOW_H_
 
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -14,6 +15,10 @@
 #include "chrome/browser/ui/unload_controller.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+
+namespace content {
+class WebContents;
+}  // namespace content
 
 namespace views {
 class Widget;
@@ -201,7 +206,11 @@ class BarkBrowserWindow : public BrowserWindow,
   void DeleteBrowserWindow() final;
 
  private:
+  class CrashWatcher;
+
   void EnsureActiveTabHasNonZeroSize();
+  void WatchForCrash(content::WebContents* contents);
+  void NotifyPageCrashed(content::WebContents* contents, bool crashed);
 
   const raw_ptr<BrowserWindowInterface> browser_;
   scoped_refptr<BarkWindowHost> host_;
@@ -210,6 +219,8 @@ class BarkBrowserWindow : public BrowserWindow,
   std::unique_ptr<BarkExclusiveAccessContext> exclusive_access_context_;
   std::unique_ptr<BarkFindBarOwner> find_bar_owner_;
   std::unique_ptr<BarkSidePanelUI> side_panel_ui_;
+  std::map<content::WebContents*, std::unique_ptr<CrashWatcher>>
+      crash_watchers_;
   base::WeakPtr<views::Widget> pending_download_warning_;
   ui::ScopedUnownedUserData<BarkBrowserWindow> scoped_user_data_;
   base::WeakPtrFactory<BarkBrowserWindow> weak_factory_{this};

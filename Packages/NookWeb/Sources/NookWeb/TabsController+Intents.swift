@@ -354,6 +354,7 @@ extension TabsController {
         let source = tree(owner(of: window))
         guard source.space(spaceID) != nil else { return }
         if profileEngine == .chromium {
+            if let profile = profile(forSpace: spaceID)?.id, nativePageHost?.refusesProfile(profile, in: window) == true { return }
             let order = displayOrder(inSpace: spaceID)
             if let remembered = window.selectedItemBySpace[spaceID], order.contains(remembered) {
                 select(remembered, in: window, leaving: selectedSession(in: window), showingAgentSpace: true)

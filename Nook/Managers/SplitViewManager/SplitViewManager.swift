@@ -32,6 +32,10 @@ final class SplitViewManager: ObservableObject {
 
     private var tabs: TabsController? { browserManager?.tabs }
 
+    private func refused(in window: BrowserWindowState) -> Bool {
+        (tabs?.nativePageHost as? ChromiumNativePageHost)?.refusesSplit(in: window) == true
+    }
+
     // MARK: - State
 
     /// The split `window` shows: its saved one while one of its panes is selected.
@@ -72,7 +76,7 @@ final class SplitViewManager: ObservableObject {
     /// What `SplitDrop` decided for a tab dropped on the page. A new split keeps the selected tab
     /// selected; a tab that opens in a pane or takes one becomes the selection.
     func drop(_ itemID: UUID, _ outcome: SplitDrop.Outcome, in window: BrowserWindowState) {
-        guard let tabs else { return }
+        guard let tabs, !refused(in: window) else { return }
         switch outcome {
         case .split(let edge):
             guard let current = window.selectedItemID,
@@ -119,7 +123,7 @@ final class SplitViewManager: ObservableObject {
     /// Arc's Add Split View, for ⌃⇧=, the command bar and the sidebar's New Split: the command bar
     /// opens over an empty pane after the window's tab, or after its split's last pane.
     func addSplitView(in window: BrowserWindowState) {
-        guard let addSplit = AddSplit.start(selectedItemID: window.selectedItemID, split: window.splitLayout) else { return }
+        guard !refused(in: window), let addSplit = AddSplit.start(selectedItemID: window.selectedItemID, split: window.splitLayout) else { return }
         window.commandPalette?.open(addSplit: addSplit)
     }
 
@@ -129,7 +133,7 @@ final class SplitViewManager: ObservableObject {
 
     /// A pane's Add Right Split or Add Left Split: the empty pane beside that pane.
     func addSplit(beside itemID: UUID, after: Bool, in window: BrowserWindowState) {
-        guard let addSplit = AddSplit.start(beside: itemID, after: after, selectedItemID: window.selectedItemID,
+        guard !refused(in: window), let addSplit = AddSplit.start(beside: itemID, after: after, selectedItemID: window.selectedItemID,
                                             split: window.splitLayout) else { return }
         window.commandPalette?.open(addSplit: addSplit)
     }

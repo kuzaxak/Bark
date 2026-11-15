@@ -60,6 +60,24 @@ struct StartupTests {
             applicationSupportDirectory: normalRoot)
         precondition(!literal.isVerification && literal.launchArguments == ["--barc-app-profile=literal"])
         precondition(config.launchArguments.isEmpty)
+        precondition(!config.engineArguments(executable: "Nook").contains { $0.hasPrefix("--bark-window") },
+                     "a default launch keeps the old window path")
+        let host = try ChromiumStartupConfiguration(arguments: ["Nook", "--bark-window=host"],
+            applicationSupportDirectory: normalRoot)
+        precondition(host.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
+                     "host mode reaches the engine")
+        precondition(!host.engineArguments(executable: "Nook").contains("--"), "host mode is an engine switch, not a page to open")
+        for bad in ["--bark-window=other", "--bark-window", "--bark-window="] {
+            do {
+                _ = try ChromiumStartupConfiguration(arguments: ["Nook", bad], applicationSupportDirectory: normalRoot)
+                preconditionFailure("\(bad) is refused")
+            } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
+        }
+        let literalHost = try ChromiumStartupConfiguration(arguments: ["Nook", "--", "--bark-window=host"],
+            applicationSupportDirectory: normalRoot)
+        precondition(literalHost.engineArguments(executable: "Nook").filter { $0 == "--bark-window=host" }.count == 1
+                     && literalHost.engineArguments(executable: "Nook").last == "--bark-window=host",
+                     "a literal argument stays a page to open")
         try normal.prepare()
         precondition(FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("Engine").path))
         let redirected = normalRoot.appendingPathComponent("RedirectedSupport")

@@ -19,6 +19,9 @@ private enum Native {
     static var headers: [Int32: NSView] = [:]
     static var members: [Int32: Set<Int32>] = [:]
     static var detachAttempts = 0
+    /// Windows that are Bark's own (`--bark-window=host`), and their tabs' page views.
+    static var hostWindows: Set<Int32> = []
+    static var pageViews: [Int32: NSView] = [:]
 
     static var bridge: BarcBridge {
         var bridge = trappingBridge
@@ -44,8 +47,17 @@ private enum Native {
             return Unmanaged.passUnretained(current).toOpaque() == expected ? 1 : 0
         } }
         bridge.window_tab_at = { window, _ in MainActor.assumeIsolated { Native.members[window]?.first ?? 0 } }
+        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
+        bridge.window_host_unobserve = { _ in }
+        bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
+        bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
+        bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
+            guard Native.hostWindows.contains(window), Native.members[window]?.contains(tab) == true else { return nil }
+            return Native.pageViews[tab].map { Unmanaged.passUnretained($0).toOpaque() }
+        } }
         bridge.window_attach_native_shell = { window, pointer in MainActor.assumeIsolated {
             guard let pointer else { preconditionFailure("Unconditional header detach is forbidden") }
+            if Native.hostWindows.contains(window) { Native.calls.append("attach refused"); return 0 }
             if Native.attachAccepted { Native.headers[window] = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue() }
             Native.calls.append("attach"); Native.onAttach?()
             return Native.attachAccepted ? 1 : 0
@@ -144,6 +156,25 @@ private enum ProfileChecks {
             precondition(!presenter.ownsNativeWindow(window))
             precondition(Native.calls.last == "detach")
         }
+
+        // In host mode the window's root view holds the controls and the page; Chromium is never
+        // asked to attach or detach a sidebar.
+        Native.hostWindows = [50]
+        let hostPage = NSView()
+        Native.pageViews = [500: hostPage]
+        Native.calls = []
+        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(50)
+        guard case .success = outcomes.removeLast() else { preconditionFailure("A host window opens the profile page") }
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "select", "navigate:chrome://extensions/", "show"], "\(Native.calls)")
+        let hostRoot = hostPage.superview?.superview as? ChromiumWindowRoot
+        precondition(hostRoot != nil && presenter.ownsNativeWindow(50), "The root shows the profile page")
+        precondition(hostRoot!.subviews.contains { $0.subviews.first is NSHostingView<ChromiumProfilePageView> },
+                     "The root holds the page's controls")
+        Native.close(50, flags: 0)
+        for _ in 0..<8 where presenter.ownsNativeWindow(50) { await Task.yield() }
+        precondition(!presenter.ownsNativeWindow(50) && !Native.calls.contains("detach"), "Closing needs no detach")
+        Native.hostWindows = []; Native.pageViews = [:]
 
         // A kept/no-space identity is presented directly, never under the active space.
         let kept = TabTree().profiles(keeping: [KeptProfile(profile)]).first!
