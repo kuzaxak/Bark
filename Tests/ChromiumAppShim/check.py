@@ -40,9 +40,22 @@ ABORT_STATUS = 134
 ENGINE_PLIST = dict(CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundleName='Bark',
                     NSPrincipalClass='BrowserCrApplication', CFBundleShortVersionString=VERSION,
                     LSEnvironment={'MallocNanoZone': '0'},
-                    CFBundleURLTypes=[{'CFBundleURLSchemes': ['http', 'https']}])
+                    CFBundleURLTypes=[{'CFBundleURLSchemes': ['http', 'https']}],
+                    CFBundleDocumentTypes=[{'CFBundleTypeRole': 'Viewer', 'LSItemContentTypes': ['public.html']}])
 XCODE_ONLY_KEYS = dict(DTXcode='2630', DTSDKName='macosx26.2', BuildMachineOSBuild='24G',
                        CFBundleSupportedPlatforms=['MacOSX'])
+ENGINE_DOCUMENT = {'CFBundleTypeRole': 'Viewer', 'LSItemContentTypes': ['public.html']}
+ENGINE_ENTITLEMENTS = {'com.apple.security.device.camera': True, 'com.apple.security.device.audio-input': True}
+SHIPPED_ADDITIONS = ROOT / 'ChromiumApp/Additions.plist'
+CALENDAR = 'com.apple.security.personal-information.calendars'
+SPACE_DOCUMENT = {'CFBundleTypeName': 'Nook Space', 'CFBundleTypeRole': 'Viewer', 'LSHandlerRank': 'Alternate',
+                  'LSItemContentTypes': ['ee.qdo.nook.space']}
+SPACE_TYPE = {'UTTypeConformsTo': ['public.json'], 'UTTypeDescription': 'Nook Space', 'UTTypeIdentifier': 'ee.qdo.nook.space',
+              'UTTypeTagSpecification': {'public.filename-extension': ['nookspace']}}
+FIXTURE_ADDITIONS = {'Info': {'NSCalendarsUsageDescription': 'Fixture calendars', 'CFBundleDocumentTypes': [SPACE_DOCUMENT],
+                              'UTImportedTypeDeclarations': [SPACE_TYPE]},
+                     'Entitlements': {CALENDAR: True}}
+UPDATE_ADDITIONS = {'Info': {'SUFeedURL': 'https://updates.fixture.invalid/appcast.xml', 'SUPublicEDKey': 'Zml4dHVyZSBrZXk='}}
 
 COMMON = r'''
 #include <mach/mach.h>
@@ -524,6 +537,7 @@ def fake_engine_build(root, framework_lib):
     (build / 'Bark Packaging/signing').mkdir(parents=True)
     (build / 'Bark Packaging/sign_chrome.py').write_text('import signing\n')
     (build / 'Bark Packaging/signing/__init__.py').write_text('')
+    write_plist(build / 'Bark Packaging/app-entitlements.plist', **ENGINE_ENTITLEMENTS)
     write_build_record(build)
     return build
 
@@ -573,9 +587,15 @@ def make_inputs(root, shim, framework_lib, shell_lib, writable=True):
     return root / 'app/Bark.app', artifact, products
 
 
-def stage(app, artifact, products, output):
-    return subprocess.run(['bash', str(STAGE), str(app), str(artifact), str(products), str(output)],
-                          capture_output=True, text=True)
+def stage(app, artifact, products, output, additions=None):
+    return subprocess.run(['bash', str(STAGE), str(app), str(artifact), str(products), str(output),
+                           *([str(additions)] if additions else [])], capture_output=True, text=True)
+
+
+def additions_file(path, values):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(plistlib.dumps(values))
+    return path
 
 
 def publish_cases(work, framework_lib):
@@ -700,16 +720,56 @@ def stage_cases(work, shim, framework_lib, shell_lib):
           all((contents / 'Frameworks' / n).is_dir() for n in ['NookNativeShell.framework', 'Sparkle.framework', 'Packaged.framework']))
     check('the app\'s own resources and native bundles are inside',
           all((contents / 'Resources' / n).exists() for n in ['app.icns', 'en.lproj/InfoPlist.strings', 'NookWeb_NookWeb.bundle']))
+    shipped = read_plist(SHIPPED_ADDITIONS) if SHIPPED_ADDITIONS.is_file() else {}
+    staged_info = read_plist(info)
+    check('the shipped additions land in the staged Info.plist',
+          bool(shipped.get('Info')) and all(staged_info.get(k) == (ENGINE_PLIST.get(k, []) + v if isinstance(v, list) else v)
+                                            for k, v in shipped.get('Info', {}).items()), staged_info)
+    check('row 22 is plumbing only: the shipped additions carry no update feed or key',
+          bool(shipped) and not {'SUFeedURL', 'SUPublicEDKey'} & set(shipped.get('Info', {})) and 'SUFeedURL' not in staged_info)
 
-    def refused(name, why, reason, mutate, sealed=True):
+    app, artifact, products = inputs('listed')
+    listed = work / 'listed/out/Bark.app'
+    listed.parent.mkdir()
+    run = stage(app, artifact, products, listed, additions_file(work / 'listed/Additions.plist', FIXTURE_ADDITIONS))
+    check('a listed addition stages', run.returncode == 0, run.stderr)
+    staged = read_plist(listed / 'Contents/Info.plist') if run.returncode == 0 else {}
+    check('a listed key lands in the staged Info.plist', staged.get('NSCalendarsUsageDescription') == 'Fixture calendars', staged)
+    check('a listed entry joins the engine\'s list after its own entries',
+          staged.get('CFBundleDocumentTypes') == [ENGINE_DOCUMENT, SPACE_DOCUMENT] and staged.get('UTImportedTypeDeclarations') == [SPACE_TYPE],
+          staged.get('CFBundleDocumentTypes'))
+    unlisted = {k: v for k, v in staged.items() if k not in FIXTURE_ADDITIONS['Info']}
+    check('every other key is the app target\'s',
+          unlisted == {k: v for k, v in {**ENGINE_PLIST, **XCODE_ONLY_KEYS}.items() if k not in FIXTURE_ADDITIONS['Info']}, unlisted)
+    packaging = listed.parent / 'Bark Packaging'
+    entitlements = read_plist(packaging / 'app-entitlements.plist') if (packaging / 'app-entitlements.plist').is_file() else None
+    check('a listed entitlement lands in the staged packaging beside the app, after the engine\'s',
+          entitlements == {**ENGINE_ENTITLEMENTS, CALENDAR: True}, entitlements)
+    check('the staged packaging is the engine\'s otherwise, and writable for signing',
+          (packaging / 'sign_chrome.py').is_file() and (packaging / 'signing/__init__.py').is_file() and os.access(packaging / 'app-entitlements.plist', os.W_OK)
+          and read_plist(artifact / 'Bark Packaging/app-entitlements.plist') == ENGINE_ENTITLEMENTS)
+
+    app, artifact, products = inputs('updates')
+    updates = work / 'updates/out/Bark.app'
+    updates.parent.mkdir()
+    run = stage(app, artifact, products, updates, additions_file(work / 'updates/Additions.plist', UPDATE_ADDITIONS))
+    staged = read_plist(updates / 'Contents/Info.plist') if run.returncode == 0 else {}
+    check('row 22: a list with an update feed and key stages both', run.returncode == 0
+          and staged.get('SUFeedURL') == UPDATE_ADDITIONS['Info']['SUFeedURL'] and staged.get('SUPublicEDKey') == UPDATE_ADDITIONS['Info']['SUPublicEDKey'],
+          (run.stderr, staged))
+
+    def refused(name, why, reason, mutate, sealed=True, additions=None):
         app, artifact, products = inputs(name)
         mutate(app, artifact, products)
         if sealed:
             seal(artifact, products)
         out = work / name / 'out/Bark.app'
-        out.parent.mkdir()
-        run = stage(app, artifact, products, out)
-        check(f'refuses {why}', run.returncode != 0 and reason in run.stderr and not out.exists(), (run.returncode, run.stderr))
+        out.parent.mkdir(exist_ok=True)
+        listed = (work / name / 'Missing.plist' if additions is False
+                  else additions_file(work / name / 'Additions.plist', additions) if additions is not None else None)
+        run = stage(app, artifact, products, out, listed)
+        check(f'refuses {why}', run.returncode != 0 and reason in run.stderr and not out.exists()
+              and (name == 'packaging-exists' or not (out.parent / 'Bark Packaging').exists()), (run.returncode, run.stderr))
 
     versioned = lambda a: a / FRAMEWORK / f'Versions/{VERSION}'
 
@@ -806,6 +866,27 @@ def stage_cases(work, shim, framework_lib, shell_lib):
             lambda a, e, p: edit_plist(a / 'Contents/Info.plist', AppOnlyKey='value'))
     refused('plist-changed-value', 'a value that differs', 'differs from the engine: CFBundleURLTypes',
             lambda a, e, p: edit_plist(a / 'Contents/Info.plist', CFBundleURLTypes=[]))
+    refused('plist-key-outside-list', 'an app Info.plist key outside the declared additions', 'differs from the engine: AppOnlyKey',
+            lambda a, e, p: edit_plist(a / 'Contents/Info.plist', AppOnlyKey='value'), additions=FIXTURE_ADDITIONS)
+    refused('plist-listed-key-in-app', 'a listed key written into the app\'s Info.plist instead of the list',
+            'differs from the engine: NSCalendarsUsageDescription',
+            lambda a, e, p: edit_plist(a / 'Contents/Info.plist', NSCalendarsUsageDescription='Fixture calendars'), additions=FIXTURE_ADDITIONS)
+    refused('additions-replace-key', 'an addition that would replace an engine key', 'would replace the engine\'s Info.plist key: CFBundleName',
+            lambda a, e, p: None, additions={'Info': {'CFBundleName': 'Other'}})
+    refused('additions-repeat-entry', 'an addition the engine\'s list already holds', 'already in the engine\'s CFBundleDocumentTypes',
+            lambda a, e, p: None, additions={'Info': {'CFBundleDocumentTypes': [ENGINE_DOCUMENT]}})
+    refused('additions-replace-entitlement', 'an entitlement the engine already grants', 'would replace the engine\'s entitlement: com.apple.security.device.camera',
+            lambda a, e, p: None, additions={'Entitlements': {'com.apple.security.device.camera': False}})
+    refused('additions-other-part', 'an additions list with a part other than Info and Entitlements', 'holds other than Info and Entitlements: Helpers',
+            lambda a, e, p: None, additions={'Helpers': {}})
+    refused('additions-missing', 'staging without the app\'s additions', 'Missing the app\'s additions',
+            lambda a, e, p: None, additions=False)
+    refused('no-engine-entitlements', 'an engine without its app entitlements', 'Missing the engine\'s app entitlements',
+            lambda a, e, p: (e / 'Bark Packaging/app-entitlements.plist').unlink())
+    refused('packaging-exists', 'a packaging output that already exists', 'Packaging output already exists',
+            lambda a, e, p: (a.parent.parent / 'out/Bark Packaging').mkdir(parents=True))
+    refused('additions-merge-fails', 'an addition that cannot merge into the staged app, leaving neither output',
+            'Cannot merge ChromiumApp/Additions.plist into', lambda a, e, p: None, additions={'Info': {'DTXcode': ['merged into a string']}})
 
     fat_main = work / 'fat-main-binary'
     assert compile_shim(fat_main, extra=('-arch', 'x86_64', '-arch', 'arm64'))
@@ -866,11 +947,27 @@ def stage_cases(work, shim, framework_lib, shell_lib):
 
 
 def signed_cases(work, mach_o):
-    """`--check-signed` on a signed candidate: one blocker library, and no Mach-O left unsigned."""
+    """`--check-signed` on a signed candidate: one blocker library, no Mach-O left unsigned, and the engine's
+    entitlements and the declared additions, nothing else."""
     libraries = f'Contents/Frameworks/{FRAMEWORK}/Versions/{VERSION}/Libraries'
+    artifact = work / 'signed-engine'
+    write_plist(artifact / 'Bark Packaging/app-entitlements.plist', **ENGINE_ENTITLEMENTS)
+    additions = additions_file(work / 'signed-additions.plist', FIXTURE_ADDITIONS)
+    listed_info = {'NSCalendarsUsageDescription': 'Fixture calendars', 'CFBundleDocumentTypes': [ENGINE_DOCUMENT, SPACE_DOCUMENT],
+                   'UTImportedTypeDeclarations': [SPACE_TYPE]}
+    listed_entitlements = {**ENGINE_ENTITLEMENTS, CALENDAR: True}
+    main_binary = work / 'signed-main'
+    compile_c('int main(void) { return 0; }\n', main_binary)
 
-    def check_signed(name, mutate=None):
+    def check_signed(name, mutate=None, info=listed_info, entitlements=listed_entitlements):
         app = work / name / 'Bark.app'
+        (app / 'Contents/MacOS').mkdir(parents=True)
+        shutil.copy2(main_binary, app / 'Contents/MacOS/Bark')
+        write_plist(app / 'Contents/Info.plist', CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundlePackageType='APPL', **info)
+        write_plist(work / name / 'entitlements.plist', **entitlements)
+        # codesign refuses a bundle whose fake framework is not a framework, so the app is signed before it is added.
+        subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(work / name / 'entitlements.plist'), str(app)],
+                       capture_output=True, check=True)
         (app / libraries).mkdir(parents=True)
         shutil.copy2(mach_o, app / libraries / 'libnook_adblock.dylib')
         shutil.copy2(mach_o, app / 'Contents/Frameworks/signed.dylib')
@@ -878,10 +975,10 @@ def signed_cases(work, mach_o):
             subprocess.run(['codesign', '--force', '--sign', '-', str(path)], capture_output=True, check=True)
         if mutate:
             mutate(app)
-        return subprocess.run(['bash', str(STAGE), '--check-signed', str(app)], capture_output=True, text=True)
+        return subprocess.run(['bash', str(STAGE), '--check-signed', str(app), str(additions), str(artifact)], capture_output=True, text=True)
 
     run = check_signed('signed-one')
-    check('a signed bundle with one blocker library passes --check-signed', run.returncode == 0, run.stderr)
+    check('a signed bundle with one blocker library and the listed additions passes --check-signed', run.returncode == 0, run.stderr)
     run = check_signed('signed-none', lambda app: (app / libraries / 'libnook_adblock.dylib').unlink())
     check('--check-signed refuses a bundle without the blocker library',
           run.returncode != 0 and 'holds 0 copies of libnook_adblock.dylib' in run.stderr, (run.returncode, run.stderr))
@@ -900,6 +997,20 @@ def signed_cases(work, mach_o):
     run = check_signed('signed-unsigned', unsigned)
     check('--check-signed refuses an unsigned Mach-O',
           run.returncode != 0 and 'Unsigned Mach-O: Contents/Frameworks/extra.dylib' in run.stderr, (run.returncode, run.stderr))
+
+    run = check_signed('signed-extra-entitlement', entitlements={**listed_entitlements, 'com.apple.security.cs.disable-library-validation': True})
+    check('--check-signed refuses an entitlement outside the engine\'s and the list',
+          run.returncode != 0 and 'outside the engine\'s and the declared additions: com.apple.security.cs.disable-library-validation' in run.stderr,
+          (run.returncode, run.stderr))
+    run = check_signed('signed-no-listed-entitlement', entitlements=ENGINE_ENTITLEMENTS)
+    check('--check-signed refuses a bundle without a listed entitlement',
+          run.returncode != 0 and f'lacks the listed entitlement: {CALENDAR}' in run.stderr, (run.returncode, run.stderr))
+    run = check_signed('signed-no-listed-key', info={k: v for k, v in listed_info.items() if k != 'NSCalendarsUsageDescription'})
+    check('--check-signed refuses an Info.plist without a listed key',
+          run.returncode != 0 and 'lacks the listed Info.plist addition: NSCalendarsUsageDescription' in run.stderr, (run.returncode, run.stderr))
+    run = check_signed('signed-no-listed-entry', info={**listed_info, 'CFBundleDocumentTypes': [ENGINE_DOCUMENT]})
+    check('--check-signed refuses an Info.plist without a listed entry',
+          run.returncode != 0 and 'lacks the listed Info.plist addition: CFBundleDocumentTypes' in run.stderr, (run.returncode, run.stderr))
 
 
 def main():

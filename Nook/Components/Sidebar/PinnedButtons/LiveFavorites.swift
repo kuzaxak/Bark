@@ -64,6 +64,8 @@ final class LiveFavorites {
     /// A hover or a title change reads the feed again after this long, unless the last read failed.
     private static let mailSoon: TimeInterval = 15
 
+    nonisolated static let declaresCalendarAccess = Bundle.main.object(forInfoDictionaryKey: "NSCalendarsFullAccessUsageDescription") != nil
+
     private static let privacySettings = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Calendars")!
 
     func start(tabs: TabsController, windows: WindowRegistry) {
@@ -89,7 +91,7 @@ final class LiveFavorites {
               let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false,
               let kind = GoogleFavorite(url: item.url) else { return nil }
         if tabs.profileEngine == .chromium {
-            guard case .mail = kind, tabs.nativeLiveFetch != nil else { return nil }
+            guard kind.isLiveInChromium(engineFetch: tabs.nativeLiveFetch != nil, declaresCalendarAccess: Self.declaresCalendarAccess) else { return nil }
         }
         return kind
     }
@@ -226,7 +228,7 @@ final class LiveFavorites {
             guard seen.insert(item.id).inserted, let kind = GoogleFavorite(url: item.url),
                   let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false else { return nil }
             if tabs.profileEngine == .chromium {
-                guard case .mail = kind, tabs.nativeLiveFetch != nil else { return nil }
+                guard kind.isLiveInChromium(engineFetch: tabs.nativeLiveFetch != nil, declaresCalendarAccess: Self.declaresCalendarAccess) else { return nil }
             }
             return (item.id, spaceID, kind)
         }

@@ -31,6 +31,14 @@ struct GoogleFavoriteTests {
         #expect(favorite("https://calendar.google.com/mail/u/0/") == nil)
     }
 
+    @Test func chromiumShowsCalendarOnceTheAppDeclaresCalendarAccess() {
+        #expect(GoogleFavorite.calendar(account: 0).isLiveInChromium(engineFetch: true, declaresCalendarAccess: true))
+        #expect(GoogleFavorite.calendar(account: 2).isLiveInChromium(engineFetch: false, declaresCalendarAccess: true))
+        #expect(!GoogleFavorite.calendar(account: 0).isLiveInChromium(engineFetch: true, declaresCalendarAccess: false))
+        #expect(GoogleFavorite.mail(account: 1).isLiveInChromium(engineFetch: true, declaresCalendarAccess: false))
+        #expect(!GoogleFavorite.mail(account: 1).isLiveInChromium(engineFetch: false, declaresCalendarAccess: true))
+    }
+
     @Test func otherSitesAreNotGoogleFavorites() {
         #expect(favorite("https://www.google.com/mail/u/1/") == nil)
         #expect(favorite("https://mail.google.com.example.com/mail/") == nil)

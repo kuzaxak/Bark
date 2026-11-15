@@ -1,8 +1,15 @@
 #!/bin/bash
-# Stage an Intel candidate: the app target's Bark.app with the published engine framework inside it.
+# Stage an Intel candidate: the app target's Bark.app with the published engine framework inside it, and
+# the engine's Bark Packaging beside it. The app's Info.plist keys and entitlements beyond the engine's are
+# declared in ChromiumApp/Additions.plist and merged here, into the staged Info.plist and the staged
+# packaging's app-entitlements.plist.
 # Sign the staged bundle through Chromium's signing flow before execution.
-# With --check-signed, check a signed candidate instead: one blocker library and no unsigned Mach-O.
+# With --check-signed, check a signed candidate instead: one blocker library, no unsigned Mach-O, and
+# the engine's entitlements plus the declared additions, nothing else.
 set -euo pipefail
+REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+DEFAULT_ADDITIONS="$REPO/ChromiumApp/Additions.plist"
+refuse() { echo "$1" >&2; exit 1; }
 # Chromium's signing covers only the Mach-O files its config names, and codesign --verify --deep --strict
 # still passes with an unsigned extra one, so the bundle is walked file by file.
 check_bundle() {
@@ -24,21 +31,86 @@ if mode == 'signed':
 sys.exit('\n'.join(problems) or None)
 PY
 }
-if [[ $# == 2 && $1 == --check-signed ]]; then
+# ChromiumApp/Additions.plist: an Info dictionary, whose keys the engine's Info.plist lacks or whose arrays
+# add entries to the engine's, and an Entitlements dictionary of entitlements the engine does not grant.
+additions() {
+  python3 - "$@" <<'PY' || exit 1
+import os, plistlib, subprocess, sys
+mode, path = sys.argv[1:3]
+def load(path):
+    if not os.path.exists(path):
+        return {}
+    try:
+        with open(path, 'rb') as handle:
+            return plistlib.load(handle)
+    except Exception as error:
+        sys.exit(f'Cannot read {path}: {error}')
+listed = load(path)
+other = sorted(set(listed) - {'Info', 'Entitlements'})
+if other:
+    sys.exit('ChromiumApp/Additions.plist holds other than Info and Entitlements: ' + ', '.join(other))
+info, entitlements = listed.get('Info', {}), listed.get('Entitlements', {})
+def merged(base, added):
+    return {**base, **{key: base.get(key, []) + value if isinstance(value, list) else value for key, value in added.items()}}
+if mode == 'validate':
+    engine_info, engine_entitlements = load(sys.argv[3]), load(sys.argv[4])
+    for key, value in info.items():
+        if key in engine_info and not (isinstance(value, list) and isinstance(engine_info[key], list)):
+            sys.exit(f"ChromiumApp/Additions.plist would replace the engine's Info.plist key: {key}")
+        if isinstance(value, list) and any(entry in engine_info.get(key, []) for entry in value):
+            sys.exit(f"ChromiumApp/Additions.plist lists an entry already in the engine's {key}")
+    for key in entitlements:
+        if key in engine_entitlements:
+            sys.exit(f"ChromiumApp/Additions.plist would replace the engine's entitlement: {key}")
+elif mode == 'apply':
+    for target, added in ((sys.argv[3], info), (sys.argv[4], entitlements)):
+        raw = open(target, 'rb').read() if os.path.exists(target) else b''
+        try:
+            result = merged(plistlib.loads(raw) if raw else {}, added)
+        except Exception as error:
+            sys.exit(f'Cannot merge ChromiumApp/Additions.plist into {target}: {error}')
+        with open(target, 'wb') as handle:
+            plistlib.dump(result, handle, fmt=plistlib.FMT_BINARY if raw.startswith(b'bplist') else plistlib.FMT_XML)
+elif mode == 'signed':
+    app, engine_entitlements = sys.argv[3], load(sys.argv[4])
+    signed_info = load(os.path.join(app, 'Contents/Info.plist'))
+    executable = os.path.join(app, 'Contents/MacOS', signed_info.get('CFBundleExecutable', ''))
+    shown = subprocess.run(['/usr/bin/codesign', '-d', '--entitlements', ':-', executable], capture_output=True).stdout
+    signed = plistlib.loads(shown) if shown.strip() else {}
+    expected = merged(engine_entitlements, entitlements)
+    problems = []
+    for key, value in info.items():
+        present = signed_info.get(key)
+        if not (isinstance(present, list) and all(entry in present for entry in value) if isinstance(value, list) else present == value):
+            problems.append(f'The signed Info.plist lacks the listed Info.plist addition: {key}')
+    for key in sorted(expected):
+        if signed.get(key) != expected[key]:
+            problems.append(('The signed app lacks the listed entitlement: ' if key in entitlements else "The signed app lacks the engine's entitlement: ") + key)
+    problems += [f"Entitlement outside the engine's and the declared additions: {key}" for key in sorted(set(signed) - set(expected))]
+    sys.exit('\n'.join(problems) or None)
+PY
+}
+if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
+  ADDITIONS="${3:-$DEFAULT_ADDITIONS}"
+  ENGINE_ENTITLEMENTS="${4:-$REPO/Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Engine}/Bark Packaging/app-entitlements.plist"
+  [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
+  [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
   check_bundle "$2" signed
-  echo "One libnook_adblock.dylib and every Mach-O signed: $2"
+  additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
+  echo "One libnook_adblock.dylib, every Mach-O signed, and the engine's entitlements plus the declared additions: $2"
   exit 0
 fi
-if [[ $# != 4 ]]; then
-  echo 'usage: bash scripts/stage-chromium-app.sh <app-target Bark.app> <engine artifact directory> <native-products-directory> <new-output.app>' >&2
-  echo '       bash scripts/stage-chromium-app.sh --check-signed <signed Bark.app>' >&2
+if [[ $# != 4 && $# != 5 ]]; then
+  echo 'usage: bash scripts/stage-chromium-app.sh <app-target Bark.app> <engine artifact directory> <native-products-directory> <new-output.app> [<Additions.plist>]' >&2
+  echo '       bash scripts/stage-chromium-app.sh --check-signed <signed Bark.app> [<Additions.plist> [<engine artifact directory>]]' >&2
   exit 2
 fi
 APP="$1"
 ARTIFACT="$2"
 PRODUCTS="$3"
 OUTPUT="$4"
-refuse() { echo "$1" >&2; exit 1; }
+ADDITIONS="${5:-$DEFAULT_ADDITIONS}"
+PACKAGING="$(dirname "$OUTPUT")/Bark Packaging"
 plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true; }
 archs_are_x86_64() { [[ $(/usr/bin/lipo -archs "$1" 2>/dev/null || true) == x86_64 ]] || refuse "Binary must be exactly x86_64: $1"; }
 zone_names() { /usr/bin/strings -a "$1" | /usr/bin/grep -xE '[A-Za-z]*Delegating[A-Za-z]*Zone[A-Za-z]*' | /usr/bin/sort -u || true; }
@@ -52,6 +124,8 @@ APP_RESOURCES="$APP/Contents/Resources"
 NATIVE_FRAMEWORK="$PRODUCTS/NookNativeShell.framework"
 NATIVE="$NATIVE_FRAMEWORK/Versions/A/NookNativeShell"
 [[ ! -e "$OUTPUT" ]] || refuse 'Output already exists; refusing replacement'
+[[ ! -e "$PACKAGING" ]] || refuse 'Packaging output already exists; refusing replacement'
+[[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
 
 [[ -d "$ENGINE_FRAMEWORK" ]] || refuse 'Missing Bark framework'
 check_bundle "$ENGINE_FRAMEWORK" unsigned
@@ -60,6 +134,8 @@ PRESENT=$(cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS | /usr/bi
 { [[ -n "$LISTED" && "$LISTED" == "$PRESENT" ]] && (cd "$ARTIFACT" && /usr/bin/shasum -a 256 --check --quiet SHA256SUMS >/dev/null 2>&1); } ||
   refuse "Engine artifact does not match its SHA256SUMS: $ARTIFACT"
 ARTIFACT_SHA=$(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1)
+ENGINE_ENTITLEMENTS="$ARTIFACT/Bark Packaging/app-entitlements.plist"
+[[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
 [[ -f "$ENGINE_PIN" && $(<"$ENGINE_PIN") == "$ARTIFACT_SHA" ]] || refuse 'App was built against another engine artifact'
 # main makes the same check at launch, against the digest the engine exports.
 for header in barc_bridge_api.h barc_public_headers_sha256.h; do
@@ -78,8 +154,9 @@ app, engine = (plistlib.load(open(path, 'rb')) for path in sys.argv[1:3])
 ignored = lambda key: key.startswith('DT') or key in ('BuildMachineOSBuild', 'CFBundleSupportedPlatforms')
 differing = sorted(key for key in app.keys() | engine.keys() if not ignored(key) and app.get(key) != engine.get(key))
 if differing:
-    sys.exit('ChromiumApp/Info.plist differs from the engine: ' + ', '.join(differing))
+    sys.exit('ChromiumApp/Info.plist differs from the engine: ' + ', '.join(differing) + '; ChromiumApp/Additions.plist declares what the app adds')
 PY
+additions validate "$ADDITIONS" "$ENGINE_INFO" "$ENGINE_ENTITLEMENTS"
 for resource in app.icns Assets.car scripting.sdef en.lproj/InfoPlist.strings; do
   [[ -f "$APP_RESOURCES/$resource" ]] || refuse "Missing outer resource: $resource"
 done
@@ -126,6 +203,7 @@ for symbol in barc_engine_main barc_bridge; do
 done
 ! /usr/bin/strings -a "$NATIVE" | /usr/bin/grep -qE 'barc_(engine_main|bridge)_v[0-9]+' ||
   refuse "Native shell names an engine symbol: only main resolves the engine: $NATIVE"
+trap '/bin/rm -rf "$OUTPUT" "$PACKAGING"' EXIT
 /usr/bin/ditto "$APP" "$OUTPUT"
 /bin/mkdir -p "$OUTPUT/Contents/Frameworks"
 # Xcode/SPM dependencies and resources retain their existing names. Refuse
@@ -133,7 +211,7 @@ done
 for framework in "$ENGINE_FRAMEWORK" "$PRODUCTS/"*.framework "$PRODUCTS/PackageFrameworks/"*.framework; do
   [[ -d "$framework" ]] || continue
   name=$(basename "$framework")
-  [[ ! -e "$OUTPUT/Contents/Frameworks/$name" ]] || { /bin/rm -rf "$OUTPUT"; refuse "Framework collision: $name"; }
+  [[ ! -e "$OUTPUT/Contents/Frameworks/$name" ]] || refuse "Framework collision: $name"
   /usr/bin/ditto "$framework" "$OUTPUT/Contents/Frameworks/$name"
   # The engine artifact is read-only and signing rewrites what is staged from it.
   /bin/chmod -R u+w "$OUTPUT/Contents/Frameworks/$name"
@@ -142,7 +220,11 @@ done
 for resource in "$PRODUCTS/"*.bundle; do
   [[ -e "$resource" ]] || continue
   name=$(basename "$resource")
-  [[ ! -e "$OUTPUT/Contents/Resources/$name" ]] || { /bin/rm -rf "$OUTPUT"; refuse "Resource collision: $name"; }
+  [[ ! -e "$OUTPUT/Contents/Resources/$name" ]] || refuse "Resource collision: $name"
   /usr/bin/ditto "$resource" "$OUTPUT/Contents/Resources/$name"
 done
-printf '%s\n' "Staged unsigned candidate: $OUTPUT" 'Chromium signing is required before launch; no signing was performed.'
+/usr/bin/ditto "$ARTIFACT/Bark Packaging" "$PACKAGING"
+/bin/chmod -R u+w "$PACKAGING"
+additions apply "$ADDITIONS" "$OUTPUT/Contents/Info.plist" "$PACKAGING/app-entitlements.plist"
+trap - EXIT
+printf '%s\n' "Staged unsigned candidate: $OUTPUT" "Staged its packaging: $PACKAGING" 'Chromium signing is required before launch; no signing was performed.'

@@ -27,6 +27,16 @@ public enum GoogleFavorite: Equatable, Sendable {
         }
     }
 
+    /// Whether a Chromium window shows this favorite live. Gmail reads its feed through the engine's
+    /// cookies; Calendar reads macOS Calendar, which macOS lets only an app that declares calendar
+    /// access ask for.
+    public func isLiveInChromium(engineFetch: Bool, declaresCalendarAccess: Bool) -> Bool {
+        switch self {
+        case .mail: engineFetch
+        case .calendar: declaresCalendarAccess
+        }
+    }
+
     public var account: Int {
         switch self {
         case .calendar(let account), .mail(let account): return account
