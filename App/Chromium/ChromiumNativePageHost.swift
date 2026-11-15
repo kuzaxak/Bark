@@ -213,7 +213,7 @@ final class ChromiumNativePageHost: NativePageHost {
         } else {
             // Private pages may only reuse this session's exact live client;
             // a regular UUID factory must never recreate a private identity.
-            guard !profile.isEphemeral else {
+            guard !profile.isEphemeral, !refusesProfile(profile.id, in: window) else {
                 request.finish(.failure(HostError.unsupportedProfile)); return
             }
             guard let owner = liveClient(in: window.id) else {
@@ -1351,7 +1351,8 @@ final class ChromiumNativePageHost: NativePageHost {
     }
 
     /// Chromium routes a link only to the selected client, so an empty space shows its own
-    /// profile's client with the sidebar. Without one, `open` starts it and nil means wait.
+    /// profile's client with the sidebar. Without one, `open` starts it and nil means wait; a
+    /// window that shows a single client refuses another profile's and says so.
     func emptySpaceClient(in window: BrowserWindowState, profile: UUID, open: Bool) -> Int32? {
         guard let mount = mounts[window.id], mount.model === window, mount.shell != nil else { return nil }
         if let client = liveClient(in: window.id, profile: profile) {
@@ -1359,7 +1360,7 @@ final class ChromiumNativePageHost: NativePageHost {
         }
         let key = CreationKey(window: window.id, profile: profile)
         guard open, !window.isIncognito, emptySpaceOpening[key] == nil, opening[key] == nil,
-              let owner = liveClient(in: window.id) else { return nil }
+              let owner = liveClient(in: window.id), !refusesProfile(profile, in: window) else { return nil }
         let request = EmptySpaceOpening(host: self, key: key, group: mount.group)
         emptySpaceOpening[key] = request
         profile.uuidString.withCString { uuid in

@@ -328,6 +328,17 @@ private enum Native {
                  "A host window refuses a space in another profile, and says so")
     precondition(!host.refusesProfile(Native.first, in: window) && refused.count == 1, "Its own profile is not refused")
     precondition(host.refusesSplit(in: window) && refused.count == 2, "A host window refuses a split, and says so")
+    let opens = Native.opens
+    var other: Result<any PageNavigation, Error>?
+    _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
+                        profile: Profile(id: Native.second, engine: .chromium), in: window) { other = $0 }
+    precondition(Native.opens == opens, "A page in another profile never joins that profile to a host window, which shows one client")
+    precondition(other.map { if case .failure = $0 { true } else { false } } == true && refused == [window.id, window.id, window.id],
+                 "The page is refused, and the window says so")
+    precondition(host.emptySpaceClient(in: window, profile: Native.second, open: true) == nil && Native.opens == opens
+                 && refused.count == 4, "A link for another profile's empty space never joins that profile to a host window, and the window says so")
+    precondition(host.emptySpaceClient(in: window, profile: Native.second, open: false) == nil && refused.count == 4,
+                 "Asking without opening refuses nothing")
     Native.hostWindows = []; Native.pageViews = [:]
     Native.profiles[80] = nil; Native.tabs[80] = nil; Native.appLifetime = []; Native.selected = 10
     print("Chromium host window checks PASS")
