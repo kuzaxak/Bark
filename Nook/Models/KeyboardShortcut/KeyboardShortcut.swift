@@ -89,6 +89,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
     case capturePortrait = "capture_portrait"
     case viewDownloads = "view_downloads"
     case viewHistory = "view_history"
+    case openLibrary = "open_library"
     case expandAllFolders = "expand_all_folders"
 
     // Missing actions that exist in NookCommands but not here
@@ -181,6 +182,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
         case .capturePortrait: return "Capture in Portrait Mode"
         case .viewDownloads: return "View Downloads"
         case .viewHistory: return "View History"
+        case .openLibrary: return "Open Library"
         case .expandAllFolders: return "Expand All Folders"
         case .focusAddressBar: return "Focus Address Bar"
         case .findInPage: return "Find in Page"
@@ -217,7 +219,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
         case .newWindow, .closeWindow, .closeBrowser, .toggleFullScreen, .addSplitView:
             return .window
         case .openCommandPalette, .openDevTools, .openDevPanel, .pickElement, .openNetworkPanel, .openPerformancePanel,
-             .copyScreenshot, .capturePortrait, .viewDownloads, .viewHistory, .expandAllFolders,
+             .copyScreenshot, .capturePortrait, .viewDownloads, .viewHistory, .openLibrary, .expandAllFolders,
              .translatePage, .toggleExtensionLibrary, .manageExtensions, .toggleDarkMode, .toggleDeveloperMode:
             return .tools
         case .focusAddressBar, .findInPage:
@@ -311,7 +313,7 @@ extension ShortcutAction {
         case .closeTab, .nextTab, .previousTab, .goToLastTab, .nextSpace, .previousSpace, .addSplitView,
              .goToTab1, .goToTab2, .goToTab3, .goToTab4, .goToTab5, .goToTab6, .goToTab7, .goToTab8,
              .goToSpace1, .goToSpace2, .goToSpace3, .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8, .goToSpace9,
-             .toggleSidebar, .toggleAIAssistant, .viewDownloads, .viewHistory, .expandAllFolders, .duplicateTab,
+             .toggleSidebar, .toggleAIAssistant, .viewDownloads, .viewHistory, .openLibrary, .expandAllFolders, .duplicateTab,
              .toggleTopBarAddressView, .toggleDarkMode, .pinToSpace, .addToFavorites, .addToFolder, .moveToSpace,
              .renameTab, .organizeTabs, .customizeSpaceGradient, .manageExtensions, .toggleExtensionLibrary, .installExtension,
              .closeBrowser, .toggleBookmark, .newWindow, .closeWindow, .toggleFullScreen, .capturePortrait:
@@ -461,6 +463,20 @@ struct Modifiers: OptionSet, Hashable, Codable {
 
 // MARK: - Default Shortcuts
 extension KeyboardShortcut {
+    /// A saved list keyed by `lookupKey`, with each default whose action it lacks added. Saved
+    /// shortcuts are kept as they are; a default whose key the person gave another action is
+    /// added unbound, so Settings still offers it.
+    static func addingMissingDefaults(to saved: [String: KeyboardShortcut],
+                                      defaults: [KeyboardShortcut] = defaultShortcuts) -> [String: KeyboardShortcut] {
+        var merged = saved
+        for shortcut in defaults where !merged.values.contains(where: { $0.action == shortcut.action }) {
+            var added = shortcut
+            if merged[added.lookupKey] != nil { added.keyCombination = KeyCombination(key: "") }
+            merged[added.lookupKey] = added
+        }
+        return merged
+    }
+
     static var defaultShortcuts: [KeyboardShortcut] {
         [
             // Navigation
@@ -532,6 +548,8 @@ extension KeyboardShortcut {
             KeyboardShortcut(action: .capturePortrait, keyCombination: KeyCombination(key: "p", modifiers: [.command, .option])),
             KeyboardShortcut(action: .viewDownloads, keyCombination: KeyCombination(key: "j", modifiers: [.command, .shift])),
             KeyboardShortcut(action: .viewHistory, keyCombination: KeyCombination(key: "y", modifiers: [.command])),
+            // Arc's Open Library.
+            KeyboardShortcut(action: .openLibrary, keyCombination: KeyCombination(key: "l", modifiers: [.command, .shift])),
 
             // Missing shortcuts that exist in NookCommands
             KeyboardShortcut(action: .focusAddressBar, keyCombination: KeyCombination(key: "l", modifiers: [.command])),

@@ -1385,6 +1385,12 @@ class BrowserManager: ObservableObject {
         LibraryMotion.present(windowState)
     }
 
+    /// Opens the Library on the page it last showed; again puts it away.
+    func toggleLibrary() {
+        guard let windowState = windowRegistry?.activeWindow else { return }
+        if windowState.isSidebarMenuVisible { LibraryMotion.close(windowState) } else { LibraryMotion.present(windowState) }
+    }
+
     /// Shows History as a page over the web content, as Arc does; again hides it.
     func showHistory() {
         guard let windowState = windowRegistry?.activeWindow else { return }

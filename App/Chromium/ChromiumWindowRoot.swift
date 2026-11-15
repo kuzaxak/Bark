@@ -11,6 +11,8 @@ final class ChromiumWindowRoot: NSView {
         /// The first light centred at (20, 24); with the revealed sidebar, at (25, 28.5).
         static let lights = Lights(titlebarHeight: 48, leadingInset: 13)
         static let revealedLights = Lights(titlebarHeight: 57, leadingInset: 18)
+        /// With the Library out, at (23, 28).
+        static let libraryLights = Lights(titlebarHeight: 56, leadingInset: 16)
         static let sidebarWidth: CGFloat = 247
         static let pageMargin: CGFloat = 10
         static let pageCornerRadius: CGFloat = 7
@@ -25,36 +27,85 @@ final class ChromiumWindowRoot: NSView {
 
     enum Sidebar: Equatable { case shown, hidden, revealed }
 
+    /// The Library (History, Spaces, Downloads), which comes out in the sidebar's column.
+    struct Library: Equatable {
+        /// The width its page asks for; the window's width limits it.
+        var preferredWidth: CGFloat
+        /// How far out it is: 0 shut, 1 open, past 1 while a swipe pulls it further.
+        var progress: CGFloat
+
+        static let shut = Library(preferredWidth: 0, progress: 0)
+
+        nonisolated func width(in windowWidth: CGFloat) -> CGFloat {
+            CGFloat(LibrarySwipeDecision.width(preferred: Double(preferredWidth), windowWidth: Double(windowWidth)))
+        }
+    }
+
     struct Layout: Equatable {
         /// Nil while the sidebar is out of the window.
         var sidebar: CGRect?
         var page: CGRect
         var pageCornerRadius: CGFloat
+        var sidebarCornerRadius: CGFloat = 0
     }
 
-    /// Where the sidebar and the page frame go in `bounds`, with a top-left origin. The page frame
-    /// keeps its place when the hidden sidebar floats in over it.
-    nonisolated static func layout(in bounds: CGRect, sidebar: Sidebar, pageFullscreen: Bool) -> Layout {
+    struct LightsPlacement: Equatable {
+        /// Nil hides them.
+        var lights: Lights?
+        var alpha: CGFloat
+    }
+
+    /// Where the lights sit and how strongly they show. As in Arc, they fade out where they are over
+    /// the first half of the Library's pull and back in with the Library over the second.
+    nonisolated static func lights(for sidebar: Sidebar, library progress: CGFloat) -> LightsPlacement {
+        let out = min(max(progress, 0), 1)
+        if out >= 0.5 { return LightsPlacement(lights: Arc.libraryLights, alpha: 2 * out - 1) }
+        let lights = lights(for: sidebar)
+        return LightsPlacement(lights: lights, alpha: lights == nil ? 1 : 1 - 2 * out)
+    }
+
+    /// Where the sidebar's column and the page frame go in `bounds`, with a top-left origin. The page
+    /// frame keeps its place when the hidden sidebar floats in over it. The Library comes out in the
+    /// column and pushes the page to the Library's edge beside a shown sidebar, and by the Library's
+    /// whole width otherwise.
+    nonisolated static func layout(in bounds: CGRect, sidebar: Sidebar, sidebarWidth: CGFloat = Arc.sidebarWidth,
+                                   library: Library = .shut, pageFullscreen: Bool) -> Layout {
         if pageFullscreen { return Layout(sidebar: nil, page: bounds, pageCornerRadius: 0) }
         let margin = Arc.pageMargin
         let height = max(0, bounds.height - 2 * margin)
-        let unsided = CGRect(x: bounds.minX + margin, y: bounds.minY + margin,
-                             width: max(0, bounds.width - 2 * margin), height: height)
+        let progress = max(library.progress, 0)
+        let libraryWidth = library.width(in: bounds.width)
+        let out = progress * libraryWidth
         switch sidebar {
         case .shown:
-            let width = min(Arc.sidebarWidth, bounds.width)
+            let rest = min(sidebarWidth, bounds.width)
+            let width = min(bounds.width, rest + max(0, out - rest * progress))
             return Layout(sidebar: CGRect(x: bounds.minX, y: bounds.minY, width: width, height: bounds.height),
                           page: CGRect(x: bounds.minX + width, y: bounds.minY + margin,
                                        width: max(0, bounds.width - width - margin), height: height),
                           pageCornerRadius: Arc.pageCornerRadius)
-        case .hidden:
-            return Layout(sidebar: nil, page: unsided, pageCornerRadius: Arc.pageCornerRadius)
-        case .revealed:
+        case .hidden, .revealed:
+            let page = CGRect(x: bounds.minX + margin + out, y: bounds.minY + margin,
+                              width: max(0, bounds.width - 2 * margin - out), height: height)
             let inset = Arc.revealMargin
-            return Layout(sidebar: CGRect(x: bounds.minX + inset, y: bounds.minY + inset,
-                                          width: min(Arc.sidebarWidth, max(0, bounds.width - 2 * inset)),
-                                          height: max(0, bounds.height - 2 * inset)),
-                          page: unsided, pageCornerRadius: Arc.pageCornerRadius)
+            let floating = CGRect(x: bounds.minX + inset, y: bounds.minY + inset,
+                                  width: min(sidebarWidth, max(0, bounds.width - 2 * inset)), height: max(0, bounds.height - 2 * inset))
+            if out == 0 {
+                return sidebar == .revealed
+                    ? Layout(sidebar: floating, page: page, pageCornerRadius: Arc.pageCornerRadius, sidebarCornerRadius: Arc.revealCornerRadius)
+                    : Layout(sidebar: nil, page: page, pageCornerRadius: Arc.pageCornerRadius)
+            }
+            if sidebar == .hidden {
+                let width = max(libraryWidth, out)
+                return Layout(sidebar: CGRect(x: bounds.minX + out - width, y: bounds.minY, width: width, height: bounds.height),
+                              page: page, pageCornerRadius: Arc.pageCornerRadius)
+            }
+            let settled = min(progress, 1)
+            let lead = inset * (1 - settled)
+            return Layout(sidebar: CGRect(x: bounds.minX + lead, y: bounds.minY + lead,
+                                          width: floating.width + progress * (libraryWidth - floating.width),
+                                          height: max(0, bounds.height - 2 * lead)),
+                          page: page, pageCornerRadius: Arc.pageCornerRadius, sidebarCornerRadius: Arc.revealCornerRadius * (1 - settled))
         }
     }
 
@@ -73,7 +124,10 @@ final class ChromiumWindowRoot: NSView {
     private weak var page: NSView?
     private var observation: UInt64 = 0
     private let pageFrame = Container()
+    private let libraryDismissal = LibraryDismissal()
     private let sidebarColumn = Container()
+    private weak var librarySwipeSurface: NSView?
+    private var placedLights: Lights?
     private let crashedPage = CrashedPage()
     private weak var sidebarView: NSView?
     private weak var backdrop: NSView?
@@ -89,6 +143,38 @@ final class ChromiumWindowRoot: NSView {
             applyLayout()
             applyLights()
         }
+    }
+
+    /// The sidebar's column at rest.
+    var sidebarWidth: CGFloat = Arc.sidebarWidth {
+        didSet { if sidebarWidth != oldValue { applyLayout() } }
+    }
+
+    var library = Library.shut {
+        didSet {
+            guard library != oldValue else { return }
+            applyLayout()
+            applyLights(replacing: false)
+        }
+    }
+
+    /// Puts the Library away; a click beside it while it is out calls this.
+    var dismissLibrary: (() -> Void)? {
+        get { libraryDismissal.dismiss }
+        set { libraryDismissal.dismiss = newValue }
+    }
+
+    var libraryWidth: CGFloat { library.width(in: bounds.width) }
+
+    /// The view that takes the open Library's sideways swipe, over the whole window. It decides
+    /// which events it takes; the root only keeps it above the sidebar and the page.
+    func setLibrarySwipeSurface(_ view: NSView) {
+        guard view !== librarySwipeSurface else { return }
+        librarySwipeSurface?.removeFromSuperview()
+        view.frame = bounds
+        view.autoresizingMask = [.width, .height]
+        addSubview(view, positioned: .above, relativeTo: sidebarColumn)
+        librarySwipeSurface = view
     }
 
     /// The window shows no page of its own: an empty space, or a page another window holds.
@@ -118,6 +204,8 @@ final class ChromiumWindowRoot: NSView {
             _ = self.bridge.tab_reload(self.nativeWindow, self.shownTab)
         }
         pageFrame.addSubview(crashedPage)
+        libraryDismissal.isHidden = true
+        addSubview(libraryDismissal)
         sidebarColumn.wantsLayer = true
         sidebarColumn.autoresizingMask = [.height]
         addSubview(sidebarColumn)
@@ -276,19 +364,22 @@ final class ChromiumWindowRoot: NSView {
     }
 
     private func applyLayout() {
-        let layout = Self.layout(in: bounds, sidebar: sidebar, pageFullscreen: pageFullscreen)
+        let layout = Self.layout(in: bounds, sidebar: sidebar, sidebarWidth: sidebarWidth, library: library, pageFullscreen: pageFullscreen)
         pageFrame.frame = layout.page
         pageFrame.layer?.cornerRadius = layout.pageCornerRadius
         sidebarColumn.frame = layout.sidebar ?? waitingSidebarFrame
-        let floating = sidebar == .revealed && !pageFullscreen
-        sidebarColumn.layer?.cornerRadius = floating ? Arc.revealCornerRadius : 0
-        sidebarColumn.layer?.masksToBounds = floating
+        sidebarView?.frame = sidebarColumn.bounds
+        sidebarColumn.layer?.cornerRadius = layout.sidebarCornerRadius
+        sidebarColumn.layer?.masksToBounds = layout.sidebarCornerRadius > 0
+        let besideLibrary = layout.sidebar?.maxX ?? bounds.minX
+        libraryDismissal.isHidden = pageFullscreen || library.progress <= 0
+        libraryDismissal.frame = CGRect(x: besideLibrary, y: bounds.minY, width: max(0, bounds.maxX - besideLibrary), height: bounds.height)
         layoutPageArea()
     }
 
     /// Beside the window's leading edge, where a hidden sidebar waits for the pointer.
     private var waitingSidebarFrame: CGRect {
-        CGRect(x: bounds.minX - Arc.sidebarWidth - Arc.revealMargin, y: bounds.minY, width: Arc.sidebarWidth, height: bounds.height)
+        CGRect(x: bounds.minX - sidebarWidth - Arc.revealMargin, y: bounds.minY, width: sidebarWidth, height: bounds.height)
     }
 
     private func layoutPageArea() {
@@ -299,16 +390,21 @@ final class ChromiumWindowRoot: NSView {
         crashedPage.frame = area
     }
 
-    private func applyLights() {
+    /// `replacing` places the lights even where they already are, which AppKit needs after it
+    /// rebuilds the titlebar.
+    private func applyLights(replacing: Bool = true) {
         guard observation != 0 else { return }
-        let lights = Self.lights(for: pageFullscreen ? .hidden : sidebar)
-        if let lights {
+        let placement = pageFullscreen ? LightsPlacement(lights: nil, alpha: 1) : Self.lights(for: sidebar, library: library.progress)
+        if let lights = placement.lights, replacing || lights != placedLights {
             var chrome = BarcWindowChrome(size: MemoryLayout<BarcWindowChrome>.size,
                                           titlebar_height: lights.titlebarHeight, leading_inset: lights.leadingInset)
             _ = bridge.window_set_chrome(nativeWindow, &chrome)
+            placedLights = lights
         }
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            window?.standardWindowButton(kind)?.isHidden = lights == nil
+            guard let button = window?.standardWindowButton(kind) else { continue }
+            button.isHidden = placement.lights == nil
+            button.alphaValue = placement.alpha
         }
     }
 
@@ -337,6 +433,13 @@ final class ChromiumWindowRoot: NSView {
 
     private final class Container: NSView {
         override var isFlipped: Bool { true }
+    }
+
+    /// Beside the Library while it is out: a click there puts the Library away.
+    private final class LibraryDismissal: NSView {
+        var dismiss: (() -> Void)?
+        override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+        override func mouseDown(with event: NSEvent) { dismiss?() }
     }
 
     /// What the page frame shows while the shown tab's renderer is gone.

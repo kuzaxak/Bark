@@ -55,9 +55,45 @@ enum Check {
         precondition(commandShift("p") == .togglePictureInPicture, "Command-Shift-P toggles picture in picture, as on develop")
         precondition(commandShift("e") == .manageExtensions,
                      "Command-Shift-E opens the Extensions page, where Chromium installs extensions, for develop's Install Extension")
+        let library = commandShift("l")
+        precondition(library?.rawValue == "open_library" && library?.runsInChromiumSidebar == true,
+                     "Command-Shift-L opens the Library, as Arc's Open Library, and the app takes the key before the page: \(String(describing: library))")
         for action in [ShortcutAction.openCommandPalette, .expandAllFolders, .installExtension] {
             precondition(defaults.contains { $0.action == action && $0.keyCombination.key.isEmpty }, "\(action) is listed unbound, so Settings offers it")
         }
+        migrationCases(defaults: defaults)
         print("PASS")
+    }
+
+    /// Version 18's migration: a version-17 list gets Open Library, and every shortcut the person set stays as set.
+    static func migrationCases(defaults: [KeyboardShortcut]) {
+        let openLibrary = KeyCombination(key: "l", modifiers: [.command, .shift])
+        let bookmark = KeyCombination(key: "b", modifiers: [.command, .option])
+        func saved(_ change: (inout [KeyboardShortcut]) -> Void) -> [String: KeyboardShortcut] {
+            var list = defaults.filter { $0.action != .openLibrary }
+            change(&list)
+            return Dictionary(uniqueKeysWithValues: list.map { ($0.lookupKey, $0) })
+        }
+        func rebind(_ action: ShortcutAction, to key: KeyCombination) -> (inout [KeyboardShortcut]) -> Void {
+            { list in
+                let index = list.firstIndex { $0.action == action }!
+                list[index].keyCombination = key
+            }
+        }
+
+        let customized = saved(rebind(.toggleBookmark, to: bookmark))
+        var merged = KeyboardShortcut.addingMissingDefaults(to: customized)
+        precondition(merged[openLibrary.lookupKey]?.action == .openLibrary, "A version-17 list gets Open Library on Command-Shift-L")
+        precondition(merged.filter { $0.key != openLibrary.lookupKey } == customized,
+                     "Every saved shortcut stays as the person set it: \(merged.filter { $0.key != openLibrary.lookupKey && customized[$0.key] != $0.value })")
+        precondition(merged.values.filter { $0.action == .toggleBookmark }.map(\.keyCombination) == [bookmark],
+                     "A rebound default is not added again on its old key")
+
+        let taken = saved(rebind(.toggleBookmark, to: openLibrary))
+        merged = KeyboardShortcut.addingMissingDefaults(to: taken)
+        precondition(merged[openLibrary.lookupKey]?.action == .toggleBookmark, "Command-Shift-L stays with the action the person gave it")
+        precondition(merged["none:open_library"]?.action == .openLibrary && merged.count == taken.count + 1,
+                     "Open Library is listed unbound, so Settings offers it: \(merged.values.filter { $0.action == .openLibrary })")
+        precondition(merged.filter { $0.key != "none:open_library" } == taken, "Every saved shortcut stays as the person set it")
     }
 }

@@ -18,7 +18,7 @@ struct SidebarMenu: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(\.nookSettings) var nookSettings
 
-    private let tabColumnWidth: CGFloat = 110
+    private let tabColumnWidth: CGFloat = 113
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {

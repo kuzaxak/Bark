@@ -1,4 +1,5 @@
 import NookDesign
+import NookTabsCore
 import NookSettings
 import NookUI
 import NookWeb
@@ -53,8 +54,10 @@ struct ChromiumSidebarShell: View {
                 .background(SidebarTitleBandReader { titleBand = $0 ?? .design })
                 // Chromium's title bar band is the lights' row, which the title row shares.
                 .ignoresSafeArea(.container, edges: .top)
-                .opacity(window.isSidebarMenuVisible ? 0 : 1)
-                .allowsHitTesting(!window.isSidebarMenuVisible)
+                .frame(maxWidth: ChromiumWindowRoot.Arc.sidebarWidth)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .modifier(ChromiumSidebarFade(outOfWindow: hostedSidebar == .hidden))
+                .environment(\.sidebarOutOfWindow, hostedSidebar == .hidden)
             if let page = browserManager.tabs.selectedSession(in:window), let notice = page.nativeVaultNotice {
                 VStack {
                     HStack(alignment:.top) {
@@ -65,10 +68,7 @@ struct ChromiumSidebarShell: View {
                     Spacer()
                 }.padding(8)
             }
-            if window.isSidebarMenuVisible {
-                SidebarMenu()
-                    .spaceThemeAppearance(spaceChrome.theme)
-            }
+            ChromiumLibraryColumn(theme: spaceChrome.theme)
             if window.isSidebarAIChatVisible {
                 SidebarAIChat()
                     .environment(aiService)
@@ -76,6 +76,7 @@ struct ChromiumSidebarShell: View {
                     .background(Color(nsColor: .windowBackgroundColor))
                     // The traffic lights and the sidebar's title row stay reachable above the chat.
                     .padding(.top, storage.settings.sidebarPosition == .left ? NookDesign.Spacing.sidebarTop : 0)
+                    .modifier(ChromiumSidebarFade(outOfWindow: hostedSidebar == .hidden))
             }
             if let offer = browserManager.autofillManager.saveOffer,
                let page = browserManager.frontPage(in:window), offer.itemID == page.itemID {
@@ -212,36 +213,43 @@ struct ChromiumSidebarShell: View {
     }
 
     var body: some View {
-        paneledLayers
-            .background(ChromiumWindowRootLink(sidebar: hostedSidebar, hover: hover,
-                backdrop: AnyView(ChromiumSpaceBackground(chrome: spaceChrome, isActive: registry.activeWindowId == window.id)
-                    .environment(\.nookSettings, storage.settings))))
-            .onChange(of: window.isBoostPanelVisible) { _, visible in
-                if visible { window.isPortraitCaptureVisible = false }
+        let sidebar = hostedSidebar
+        let backdrop = AnyView(ChromiumSpaceBackground(chrome: spaceChrome, isActive: registry.activeWindowId == window.id)
+            .environment(\.nookSettings, storage.settings))
+        ChromiumLibraryPush(window: window, link: { [window, hover] library, open in
+            ChromiumWindowRootLink(sidebar: sidebar, hover: hover, backdrop: backdrop, library: library, libraryOpen: open,
+                closeLibrary: { LibraryMotion.close(window) },
+                swipeChanged: { window.libraryDrag = max($0, 0) },
+                swipeEnded: { LibraryMotion.release(window, distance: $0, velocity: $1, width: $2) })
+        }) {
+            paneledLayers
+        }
+        .onChange(of: window.isBoostPanelVisible) { _, visible in
+            if visible { window.isPortraitCaptureVisible = false }
+        }
+        .onChange(of: window.isPortraitCaptureVisible) { _, visible in
+            if visible { window.isBoostPanelVisible = false }
+        }
+        .popover(isPresented: Binding(
+            get: { browserManager.downloadManager.previewing != nil && browserManager.downloadManager.previewWindowID == window.id },
+            set: { if !$0 { browserManager.downloadManager.dismissPreview(in: window) } }
+        )) {
+            if let download = browserManager.downloadManager.previewing,
+               browserManager.downloadManager.previewWindowID == window.id {
+                DownloadPreviewOverlay(downloads: browserManager.downloadManager, download: download, window: window)
+                    .frame(width: min(900, max(1, window.window?.contentView?.bounds.width ?? 780)),
+                           height: min(650, max(1, window.window?.contentView?.bounds.height ?? 540)))
             }
-            .onChange(of: window.isPortraitCaptureVisible) { _, visible in
-                if visible { window.isBoostPanelVisible = false }
-            }
-            .popover(isPresented: Binding(
-                get: { browserManager.downloadManager.previewing != nil && browserManager.downloadManager.previewWindowID == window.id },
-                set: { if !$0 { browserManager.downloadManager.dismissPreview(in: window) } }
-            )) {
-                if let download = browserManager.downloadManager.previewing,
-                   browserManager.downloadManager.previewWindowID == window.id {
-                    DownloadPreviewOverlay(downloads: browserManager.downloadManager, download: download, window: window)
-                        .frame(width: min(900, max(1, window.window?.contentView?.bounds.width ?? 780)),
-                               height: min(650, max(1, window.window?.contentView?.bounds.height ?? 540)))
-                }
-            }
-            .onDisappear { browserManager.downloadManager.dismissPreview(in: window) }
-            .onChange(of: window.spaceID) { _, _ in
-                dismissPagePanels()
-                browserManager.windowSpaceChanged(window)
-            }
-            .onChange(of: window.selectedItemID) { _, _ in
-                dismissPagePanels()
-                browserManager.peekManager.refreshNativePresentation(in: window)
-            }
+        }
+        .onDisappear { browserManager.downloadManager.dismissPreview(in: window) }
+        .onChange(of: window.spaceID) { _, _ in
+            dismissPagePanels()
+            browserManager.windowSpaceChanged(window)
+        }
+        .onChange(of: window.selectedItemID) { _, _ in
+            dismissPagePanels()
+            browserManager.peekManager.refreshNativePresentation(in: window)
+        }
     }
     private var headerHeight: Int32 {
         if browserManager.showsDeveloperBar(in: window) { return Int32(DeveloperBar.height) }
@@ -327,19 +335,94 @@ private struct ChromiumSpaceBackground: View {
     }
 }
 
-/// Gives the host-mode root view around the sidebar its state and the space's background, and starts
-/// the leading-edge tracking that reveals a hidden sidebar. In Chromium's own window there is no such
-/// root and it does nothing.
+/// How far the window's Library is out, read here alone so a swipe re-renders this and not the
+/// shell.
+private struct ChromiumLibraryPush<Content: View>: View {
+    let window: BrowserWindowState
+    let link: (ChromiumWindowRoot.Library, Bool) -> ChromiumWindowRootLink
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        let tab = window.sidebarMenuSelectedTab
+        let width = LibraryMotion.width(for: tab, windowWidth: window.window?.contentView?.bounds.width ?? .greatestFiniteMagnitude)
+        let open = window.isSidebarMenuVisible
+        content.modifier(ChromiumLibraryProgress(progress: width > 0 ? LibraryMotion.shown(window, width: width) / width : 0) {
+            link(ChromiumWindowRoot.Library(preferredWidth: LibraryMotion.preferredWidth(for: tab), progress: $0), open)
+        })
+    }
+}
+
+/// Steps the Library's progress frame by frame while it springs open or shut, so the host root lays
+/// the column and the page out at every step and the sidebar fades with it.
+private struct ChromiumLibraryProgress: ViewModifier, Animatable {
+    var progress: CGFloat
+    let link: (CGFloat) -> ChromiumWindowRootLink
+
+    var animatableData: CGFloat {
+        get { progress }
+        set { progress = newValue }
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .environment(\.libraryProgress, min(progress, 1))
+            .background(link(progress))
+    }
+}
+
+/// The sidebar, or the AI Assistant in its place, giving way to the Library. A hidden sidebar stays
+/// out of sight while the Library comes in through its column.
+private struct ChromiumSidebarFade: ViewModifier {
+    @Environment(\.libraryProgress) private var progress
+    let outOfWindow: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .modifier(LibraryFade())
+            .opacity(outOfWindow && progress > 0 ? 0 : 1)
+    }
+}
+
+/// The Library in the sidebar's column, fading in as it comes out.
+private struct ChromiumLibraryColumn: View {
+    @Environment(\.libraryProgress) private var progress
+    let theme: SpaceTheme?
+
+    var body: some View {
+        if progress > 0 {
+            SidebarMenu()
+                .spaceThemeAppearance(theme)
+                .opacity(min(1, progress * 2))
+        }
+    }
+}
+
+/// Gives the host-mode root view around the sidebar its state, the Library's and the space's
+/// background, and starts the leading-edge tracking that reveals a hidden sidebar. In Chromium's own
+/// window there is no such root and it does nothing.
 private struct ChromiumWindowRootLink: NSViewRepresentable {
     let sidebar: ChromiumWindowRoot.Sidebar
     let hover: HoverSidebarManager
     let backdrop: AnyView
+    let library: ChromiumWindowRoot.Library
+    /// While the Library is open a sideways swipe anywhere in the window pushes it shut.
+    let libraryOpen: Bool
+    let closeLibrary: () -> Void
+    let swipeChanged: (CGFloat) -> Void
+    /// The swipe's distance and velocity, and the Library's width it was measured against.
+    let swipeEnded: (CGFloat, CGFloat, CGFloat) -> Void
 
     final class Link: NSView {
         var sidebar = ChromiumWindowRoot.Sidebar.shown
         weak var hover: HoverSidebarManager?
         var backdrop: AnyView?
+        var library = ChromiumWindowRoot.Library.shut
+        var libraryOpen = false
+        var closeLibrary: () -> Void = {}
+        var swipeChanged: (CGFloat) -> Void = { _ in }
+        var swipeEnded: (CGFloat, CGFloat, CGFloat) -> Void = { _, _, _ in }
         private var backdropHost: NSHostingView<AnyView>?
+        private let swipeSurface = LibrarySwipeSurfaceView()
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); apply() }
         func apply() {
@@ -355,7 +438,16 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
                 }
             }
             if let backdropHost { root.setBackdrop(backdropHost) }
+            root.sidebarWidth = ChromiumWindowRoot.Arc.sidebarWidth
+            root.library = library
             root.sidebar = sidebar
+            root.dismissLibrary = closeLibrary
+            let width = root.libraryWidth
+            swipeSurface.width = width
+            swipeSurface.onChange = swipeChanged
+            swipeSurface.onEnd = { [swipeEnded] in swipeEnded($0, $1, width) }
+            swipeSurface.isHidden = !libraryOpen
+            root.setLibrarySwipeSurface(swipeSurface)
         }
     }
 
@@ -364,6 +456,11 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
         link.hover = hover
         link.sidebar = sidebar
         link.backdrop = backdrop
+        link.library = library
+        link.libraryOpen = libraryOpen
+        link.closeLibrary = closeLibrary
+        link.swipeChanged = swipeChanged
+        link.swipeEnded = swipeEnded
         link.apply()
     }
 }

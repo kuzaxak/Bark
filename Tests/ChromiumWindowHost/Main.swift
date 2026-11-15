@@ -69,6 +69,7 @@ private final class PageView: NSView {
     @MainActor static func main() {
         _ = NSApplication.shared
         layoutCases()
+        libraryLayoutCases()
         lightsCases()
 
         Engine.rootAccepted = 0
@@ -154,6 +155,11 @@ private final class PageView: NSView {
             root.sidebar = .shown
             precondition(inRoot(second, root) == shown && Engine.chrome.last == ChromiumWindowRoot.Arc.lights,
                          "showing the sidebar again restores the page frame and the lights")
+
+            libraryCases(root: root, sidebar: sidebar, page: second, lights: lights)
+            root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+            root.layoutSubtreeIfNeeded()
+            precondition(inRoot(second, root) == shown, "the Library shut leaves the page frame as it was")
 
             Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_PAGE)
             precondition(root.pageFullscreen && inRoot(second, root) == root.bounds && inRoot(sidebar, root).maxX <= 0,
@@ -248,7 +254,7 @@ private final class PageView: NSView {
         }
         precondition(released == nil, "the root is not retained by its observation")
         precondition(Engine.unobserved == [Engine.token], "a released root stops observing")
-        print("Window host root: Arc's sidebar, page frame and lights; hides, reveals and full screen; one page at a time, crashed and retired pages, observes until released")
+        print("Window host root: Arc's sidebar, page frame and lights; the Library in the sidebar's column; hides, reveals and full screen; one page at a time, crashed and retired pages, observes until released")
     }
 
     @MainActor static func layoutCases() {
@@ -259,7 +265,7 @@ private final class PageView: NSView {
                                       page: CGRect(x: 247, y: 10, width: 1663, height: 971), pageCornerRadius: 7)),
             (window, .hidden, false, L(sidebar: nil, page: CGRect(x: 10, y: 10, width: 1900, height: 971), pageCornerRadius: 7)),
             (window, .revealed, false, L(sidebar: CGRect(x: 5, y: 5, width: 247, height: 981),
-                                         page: CGRect(x: 10, y: 10, width: 1900, height: 971), pageCornerRadius: 7)),
+                                         page: CGRect(x: 10, y: 10, width: 1900, height: 971), pageCornerRadius: 7, sidebarCornerRadius: 10)),
             (window, .shown, true, L(sidebar: nil, page: window, pageCornerRadius: 0)),
             (window, .revealed, true, L(sidebar: nil, page: window, pageCornerRadius: 0)),
             (.zero, .shown, false, L(sidebar: .zero, page: CGRect(x: 0, y: 10, width: 0, height: 0), pageCornerRadius: 7)),
@@ -276,5 +282,164 @@ private final class PageView: NSView {
         precondition(ChromiumWindowRoot.lights(for: .shown) == .init(titlebarHeight: 48, leadingInset: 13), "Arc's lights centre (20, 24)")
         precondition(ChromiumWindowRoot.lights(for: .revealed) == .init(titlebarHeight: 57, leadingInset: 18), "revealed, (25, 28.5)")
         precondition(ChromiumWindowRoot.lights(for: .hidden) == nil, "no lights with the sidebar hidden")
+
+        typealias P = ChromiumWindowRoot.LightsPlacement
+        let arc = ChromiumWindowRoot.Arc.self
+        precondition(arc.libraryLights == .init(titlebarHeight: 56, leadingInset: 16), "with the Library out Arc's first light is at (23, 28)")
+        let cases: [(ChromiumWindowRoot.Sidebar, CGFloat, P)] = [
+            (.shown, 0, P(lights: arc.lights, alpha: 1)),
+            (.shown, 0.25, P(lights: arc.lights, alpha: 0.5)),
+            (.shown, 0.75, P(lights: arc.libraryLights, alpha: 0.5)),
+            (.shown, 1, P(lights: arc.libraryLights, alpha: 1)),
+            (.shown, 1.5, P(lights: arc.libraryLights, alpha: 1)),
+            (.revealed, 0.25, P(lights: arc.revealedLights, alpha: 0.5)),
+            (.revealed, 1, P(lights: arc.libraryLights, alpha: 1)),
+            (.hidden, 0, P(lights: nil, alpha: 1)),
+            (.hidden, 0.25, P(lights: nil, alpha: 1)),
+            (.hidden, 0.75, P(lights: arc.libraryLights, alpha: 0.5)),
+            (.hidden, 1, P(lights: arc.libraryLights, alpha: 1)),
+        ]
+        for (sidebar, progress, expected) in cases {
+            let actual = ChromiumWindowRoot.lights(for: sidebar, library: progress)
+            precondition(actual == expected, "lights \(sidebar) with the Library \(progress) out: \(actual)")
+        }
     }
+
+    /// The Library comes out in the sidebar's column and pushes the page, as Arc's does; the sidebar's
+    /// width is an input.
+    @MainActor static func libraryLayoutCases() {
+        let window = CGRect(x: 0, y: 0, width: 1920, height: 991)
+        typealias L = ChromiumWindowRoot.Layout
+        typealias Library = ChromiumWindowRoot.Library
+        let list: CGFloat = 417, spaces: CGFloat = 840
+        let cases: [(String, CGRect, ChromiumWindowRoot.Sidebar, CGFloat, Library, Bool, L)] = [
+            ("open", window, .shown, 247, .init(preferredWidth: list, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 417, height: 991), page: CGRect(x: 417, y: 10, width: 1493, height: 971), pageCornerRadius: 7)),
+            ("half out", window, .shown, 247, .init(preferredWidth: list, progress: 0.5), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 332, height: 991), page: CGRect(x: 332, y: 10, width: 1578, height: 971), pageCornerRadius: 7)),
+            ("pulled past open", window, .shown, 247, .init(preferredWidth: list, progress: 1.5), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 502, height: 991), page: CGRect(x: 502, y: 10, width: 1408, height: 971), pageCornerRadius: 7)),
+            ("Spaces", window, .shown, 247, .init(preferredWidth: spaces, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 840, height: 991), page: CGRect(x: 840, y: 10, width: 1070, height: 971), pageCornerRadius: 7)),
+            ("wider sidebar, shut", window, .shown, 300, .init(preferredWidth: list, progress: 0), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 300, height: 991), page: CGRect(x: 300, y: 10, width: 1610, height: 971), pageCornerRadius: 7)),
+            ("wider sidebar, open", window, .shown, 300, .init(preferredWidth: list, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 417, height: 991), page: CGRect(x: 417, y: 10, width: 1493, height: 971), pageCornerRadius: 7)),
+            ("sidebar wider than the Library", window, .shown, 500, .init(preferredWidth: list, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 500, height: 991), page: CGRect(x: 500, y: 10, width: 1410, height: 971), pageCornerRadius: 7)),
+            ("window narrower than Spaces", CGRect(x: 0, y: 0, width: 450, height: 600), .shown, 247, .init(preferredWidth: spaces, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 417, height: 600), page: CGRect(x: 417, y: 10, width: 23, height: 580), pageCornerRadius: 7)),
+            ("window narrower than the Library", CGRect(x: 0, y: 0, width: 400, height: 600), .shown, 247, .init(preferredWidth: list, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 400, height: 600), page: CGRect(x: 400, y: 10, width: 0, height: 580), pageCornerRadius: 7)),
+            ("hidden, open", window, .hidden, 247, .init(preferredWidth: list, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 417, height: 991), page: CGRect(x: 427, y: 10, width: 1483, height: 971), pageCornerRadius: 7)),
+            ("hidden, half out", window, .hidden, 247, .init(preferredWidth: list, progress: 0.5), false,
+             L(sidebar: CGRect(x: -208.5, y: 0, width: 417, height: 991), page: CGRect(x: 218.5, y: 10, width: 1691.5, height: 971), pageCornerRadius: 7)),
+            ("hidden, pulled past open", window, .hidden, 247, .init(preferredWidth: list, progress: 1.5), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 625.5, height: 991), page: CGRect(x: 635.5, y: 10, width: 1274.5, height: 971), pageCornerRadius: 7)),
+            ("revealed, open", window, .revealed, 247, .init(preferredWidth: list, progress: 1), false,
+             L(sidebar: CGRect(x: 0, y: 0, width: 417, height: 991), page: CGRect(x: 427, y: 10, width: 1483, height: 971), pageCornerRadius: 7)),
+            ("revealed, half out", window, .revealed, 247, .init(preferredWidth: list, progress: 0.5), false,
+             L(sidebar: CGRect(x: 2.5, y: 2.5, width: 332, height: 986), page: CGRect(x: 218.5, y: 10, width: 1691.5, height: 971),
+               pageCornerRadius: 7, sidebarCornerRadius: 5)),
+            ("page full screen", window, .shown, 247, .init(preferredWidth: list, progress: 1), true, L(sidebar: nil, page: window, pageCornerRadius: 0)),
+        ]
+        for (name, bounds, sidebar, width, library, fullscreen, expected) in cases {
+            let actual = ChromiumWindowRoot.layout(in: bounds, sidebar: sidebar, sidebarWidth: width, library: library, pageFullscreen: fullscreen)
+            precondition(actual == expected, "library layout, \(name): \(actual)")
+        }
+    }
+
+    /// The Library in a real root: one pass moves the column and the page, the page stays live beside it,
+    /// a click beside it puts it away, and full screen and resizes keep it.
+    @MainActor static func libraryCases(root: ChromiumWindowRoot, sidebar: NSView, page: NSView, lights: [NSButton]) {
+        typealias Library = ChromiumWindowRoot.Library
+        let arc = ChromiumWindowRoot.Arc.self
+        let list: CGFloat = 417, spaces: CGFloat = 840
+        var dismissed = 0
+        root.dismissLibrary = { dismissed += 1 }
+        let surface = ScrollOnly()
+        root.setLibrarySwipeSurface(surface)
+        let order = root.subviews
+        precondition(surface.superview === root && surface.frame == root.bounds
+                     && order.firstIndex(of: surface)! > order.firstIndex(of: sidebar.superview!)!
+                     && order.firstIndex(of: surface)! > order.firstIndex(of: page.superview!)!,
+                     "the Library's swipe surface covers the window above the sidebar and the page")
+        func hit(_ point: NSPoint) -> NSView? { root.hitTest(root.superview!.convert(point, from: root)) }
+        let beside = NSPoint(x: 700, y: 400)
+        precondition(hit(beside)?.isDescendant(of: page) == true, "with the Library shut the page takes clicks")
+
+        root.library = Library(preferredWidth: list, progress: 1)
+        precondition(inRoot(sidebar, root) == CGRect(x: 0, y: 0, width: 417, height: 800)
+                     && inRoot(page, root) == CGRect(x: 417, y: 10, width: 773, height: 780),
+                     "the Library widens the sidebar's column to 417 and the page moves beside it in the same pass: \(inRoot(sidebar, root)) \(inRoot(page, root))")
+        precondition(page.isDescendant(of: root) && !page.isHidden && root.shownTab == 11, "the page stays placed and live beside the Library")
+        precondition(Engine.chrome.last == arc.libraryLights && lights.allSatisfy { !$0.isHidden && $0.alphaValue == 1 },
+                     "the lights sit with the Library at (23, 28)")
+        precondition(root.libraryWidth == 417, "the root says how wide its Library is")
+        let catcher = hit(beside)
+        precondition(catcher != nil && catcher?.isDescendant(of: page) == false && catcher !== root,
+                     "beside the open Library a click does not reach the page: \(String(describing: catcher))")
+        catcher?.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                    windowNumber: root.window!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+        precondition(dismissed == 1, "a click beside the Library puts it away")
+        precondition(hit(NSPoint(x: 200, y: 400))?.isDescendant(of: sidebar) == true, "the Library takes its own clicks")
+
+        root.library = Library(preferredWidth: list, progress: 0.25)
+        precondition(inRoot(sidebar, root).width == 289.5 && inRoot(page, root).minX == 289.5, "a quarter out, the column and the page a quarter of the way: \(inRoot(sidebar, root)) \(inRoot(page, root))")
+        precondition(Engine.chrome.last == arc.lights && lights.allSatisfy { !$0.isHidden && $0.alphaValue == 0.5 },
+                     "the lights fade out where they were over the first half")
+        root.library = Library(preferredWidth: list, progress: 0.75)
+        precondition(Engine.chrome.last == arc.libraryLights && lights.allSatisfy { $0.alphaValue == 0.5 },
+                     "and fade back in with the Library over the second")
+        let placed = Engine.chrome.count
+        root.library = Library(preferredWidth: list, progress: 0.8)
+        precondition(Engine.chrome.count == placed, "a pull that keeps the lights where they are does not place them again")
+
+        root.library = Library(preferredWidth: spaces, progress: 1)
+        precondition(inRoot(sidebar, root).width == 840 && inRoot(page, root) == CGRect(x: 840, y: 10, width: 350, height: 780), "Spaces asks for 840")
+        root.frame = NSRect(x: 0, y: 0, width: 800, height: 800)
+        precondition(inRoot(sidebar, root).width == 744 && inRoot(page, root) == CGRect(x: 744, y: 10, width: 46, height: 780)
+                     && surface.frame == root.bounds, "a narrower window leaves 56 beside the Library: \(inRoot(sidebar, root))")
+        root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
+
+        root.library = Library(preferredWidth: list, progress: 1)
+        root.sidebar = .hidden
+        precondition(inRoot(sidebar, root) == CGRect(x: 0, y: 0, width: 417, height: 800)
+                     && inRoot(page, root) == CGRect(x: 427, y: 10, width: 763, height: 780),
+                     "with the sidebar hidden the Library comes out at the window's edge and the page keeps its margin")
+        precondition(lights.allSatisfy { !$0.isHidden } && Engine.chrome.last == arc.libraryLights,
+                     "the lights come with the Library while the sidebar is hidden")
+        root.library = Library(preferredWidth: list, progress: 0.25)
+        precondition(lights.allSatisfy(\.isHidden) && inRoot(sidebar, root).maxX == 104.25, "a quarter out: no lights, a quarter of the Library in")
+        root.library = Library(preferredWidth: list, progress: 0)
+        precondition(inRoot(sidebar, root).maxX <= 0 && lights.allSatisfy(\.isHidden) && hit(beside)?.isDescendant(of: page) == true,
+                     "shut again, the hidden sidebar's column leaves the window and the page takes clicks")
+        root.sidebar = .shown
+
+        root.library = Library(preferredWidth: list, progress: 1)
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_PAGE)
+        precondition(inRoot(page, root) == root.bounds && inRoot(sidebar, root).maxX <= 0 && hit(beside)?.isDescendant(of: page) == true
+                     && lights.allSatisfy(\.isHidden), "a full-screen page covers the Library and takes its clicks")
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
+        precondition(inRoot(sidebar, root).width == 417 && inRoot(page, root).minX == 417 && Engine.chrome.last == arc.libraryLights,
+                     "leaving full screen brings the Library back")
+
+        root.library = Library(preferredWidth: list, progress: 0)
+        precondition(inRoot(sidebar, root) == CGRect(x: 0, y: 0, width: 247, height: 800) && hit(beside)?.isDescendant(of: page) == true
+                     && Engine.chrome.last == arc.lights && lights.allSatisfy { !$0.isHidden && $0.alphaValue == 1 },
+                     "shut, the sidebar, the page and the lights are back")
+        root.sidebarWidth = 300
+        precondition(inRoot(sidebar, root).width == 300 && inRoot(page, root).minX == 300, "the column follows the sidebar's width")
+        root.library = Library(preferredWidth: list, progress: 1)
+        precondition(inRoot(sidebar, root).width == 417 && inRoot(page, root).minX == 417, "and the Library still opens to its own width")
+        root.library = Library(preferredWidth: list, progress: 0)
+        root.sidebarWidth = arc.sidebarWidth
+        precondition(dismissed == 1, "only the click put the Library away")
+    }
+}
+
+/// Stands in for the Library's swipe surface, which takes scroll events only.
+private final class ScrollOnly: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

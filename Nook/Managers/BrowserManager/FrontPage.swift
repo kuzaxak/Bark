@@ -71,7 +71,7 @@ extension ShortcutAction {
              .goToSpace1, .goToSpace2, .goToSpace3, .goToSpace4, .goToSpace5, .goToSpace6, .goToSpace7, .goToSpace8, .goToSpace9,
              .newWindow, .closeWindow, .closeBrowser, .toggleFullScreen, .addSplitView, .openCommandPalette, .focusAddressBar,
              .capturePortrait,
-             .viewDownloads, .viewHistory, .expandAllFolders, .toggleSidebar, .toggleAIAssistant, .installExtension,
+             .viewDownloads, .viewHistory, .openLibrary, .expandAllFolders, .toggleSidebar, .toggleAIAssistant, .installExtension,
              .customizeSpaceGradient, .organizeTabs, .toggleExtensionLibrary, .manageExtensions, .toggleDarkMode:
             nil
         }

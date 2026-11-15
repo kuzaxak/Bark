@@ -8,7 +8,7 @@ binary = out / 'chromium-window-host-check'
 c = ['swiftc', '-swift-version', '5', '-target', 'x86_64-apple-macosx15.5', '-parse-as-library',
      '-I', str(root / 'Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Headers'),
      str(root / 'App/Chromium/ChromiumWindowRoot.swift'), str(root / 'App/Window/WindowFrameInteraction.swift'),
-     str(root / 'App/Chromium/ChromiumPagePanel.swift'),
+     str(root / 'App/Chromium/ChromiumPagePanel.swift'), str(root / 'Nook/Components/Sidebar/Menu/LibrarySwipeDecision.swift'),
      str(root / 'Tests/Shared/BridgeTable.swift'),
      str(root / 'Tests/ChromiumWindowHost/Main.swift'), '-framework', 'AppKit', '-o', str(binary)]
 p = subprocess.run(c, capture_output=True, text=True)

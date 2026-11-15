@@ -245,6 +245,7 @@ struct URLBarView: View {
                 .modifier(AddressActivationAccessibility(enabled: !isEditing) {
                     beginEditing(session?.url.absoluteString ?? "")
                 })
+                .modifier(RenewedWhenSidebarShows())
 
                 // Copy link button (show on hover when tab is selected)
                 if !isEditing, isHovering, let session {
@@ -679,6 +680,18 @@ struct URLBarView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
             windowState.isShowingCopyURLToast = false
         }
+    }
+}
+
+/// SwiftUI reports the sidebar's whole frame as this element's once the element changed, or was made,
+/// while the sidebar was faded out under the Library or out of the window. Made anew each time the
+/// sidebar shows again, it reports its own frame.
+private struct RenewedWhenSidebarShows: ViewModifier {
+    @Environment(\.libraryProgress) private var progress
+    @Environment(\.sidebarOutOfWindow) private var outOfWindow
+
+    func body(content: Content) -> some View {
+        content.id(progress > 0 || outOfWindow)
     }
 }
 

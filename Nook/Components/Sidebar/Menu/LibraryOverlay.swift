@@ -138,8 +138,10 @@ struct LibraryPushContainer<Content: View>: View {
 }
 
 extension EnvironmentValues {
-    /// How far the library is out, 0...1. Only `LibraryFade` reads it, so a swipe redraws that alone.
+    /// How far the library is out, 0...1. Only small modifiers read it, so a swipe redraws them alone.
     @Entry var libraryProgress: CGFloat = 0
+    /// Whether the window's sidebar is outside it, hidden until the pointer reaches the edge.
+    @Entry var sidebarOutOfWindow = false
 }
 
 /// The sidebar giving way to the library: fading and drifting toward it, gone once it is out.

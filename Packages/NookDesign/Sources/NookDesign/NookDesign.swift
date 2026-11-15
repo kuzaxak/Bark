@@ -97,7 +97,7 @@ public enum NookDesign {
         public static let pipScrub: CGFloat = 4        // PiP scrubber track
         public static let mediaControl: CGFloat = 24   // the sidebar mini player's buttons
         public static let spaceTarget: CGFloat = 32    // space switcher button
-        public static let libraryList: CGFloat = 420   // preferred width of the library's History and Downloads
+        public static let libraryList: CGFloat = 417   // preferred width of the library's History and Downloads, as Arc's
         public static let librarySpaces: CGFloat = 840 // ...and of its Spaces page
         public static let libraryMin: CGFloat = 417    // narrowest the library gets, whatever the window
         public static let libraryEdgeGap: CGFloat = 56 // window width the library leaves uncovered
