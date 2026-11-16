@@ -20,6 +20,9 @@ protocol ChromiumWindowPresenter: AnyObject {
     func setPageHidden(_ hidden: Bool, client: Int32)
     /// The optional bar above the page; `expected` is the bar installed before.
     func setHeader(_ header: NSView?, replacing expected: NSView?, height: Int32, owner: Int32) -> Bool
+    /// The window and the point in it a download that starts now flies from; nil where the app
+    /// does not lay out the page.
+    func downloadLaunch() -> (window: NSWindow, point: NSPoint)?
 }
 
 enum ChromiumWindowPresenters {
@@ -72,6 +75,8 @@ final class ChromiumLegacyPresenter: ChromiumWindowPresenter {
         return bridge.window_set_native_header(owner, pointer, expected.map { Unmanaged.passUnretained($0).toOpaque() },
                                                header.map { Unmanaged.passUnretained($0).toOpaque() }, height) == 1
     }
+
+    func downloadLaunch() -> (window: NSWindow, point: NSPoint)? { nil }
 }
 
 /// Bark's own window, with one client, whose root view holds the sidebar and the page the app places.
@@ -104,5 +109,11 @@ final class ChromiumHostPresenter: ChromiumWindowPresenter {
 
     func setHeader(_ header: NSView?, replacing expected: NSView?, height: Int32, owner: Int32) -> Bool {
         ownsSidebar(owner) && root.setHeader(header, replacing: expected, height: CGFloat(height))
+    }
+
+    func downloadLaunch() -> (window: NSWindow, point: NSPoint)? {
+        guard let window = root.window,
+              let point = root.downloadLaunchPoint(pointer: window.mouseLocationOutsideOfEventStream) else { return nil }
+        return (window, point)
     }
 }

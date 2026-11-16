@@ -67,7 +67,7 @@ struct WindowView: View {
         }
 
         .overlayPreferenceValue(DownloadsButtonAnchorKey.self) { anchor in
-            DownloadFlightOverlay(target: anchor)
+            DownloadFlightOverlay(target: .button(anchor))
                 .zIndex(8000)
         }
         // In-window, not a panel; see ExtensionLibraryOverlay.

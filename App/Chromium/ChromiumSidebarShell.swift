@@ -125,6 +125,9 @@ struct ChromiumSidebarShell: View {
             .overlayPreferenceValue(FavoritePreviewAnchorKey.self) {
                 ChromiumFavoriteCard(anchor: $0, window: window, tabs: browserManager.tabs)
             }
+            .overlayPreferenceValue(DownloadsButtonAnchorKey.self) { anchor in
+                ChromiumDownloadsButtonSpot(anchor: window.isSidebarAIChatVisible ? nil : anchor)
+            }
             .environmentObject(browserManager)
             .environmentObject(browserManager.gradientColorManager)
             .environmentObject(hover)
@@ -217,7 +220,11 @@ struct ChromiumSidebarShell: View {
         let backdrop = AnyView(ChromiumSpaceBackground(chrome: spaceChrome, isActive: registry.activeWindowId == window.id)
             .environment(\.nookSettings, storage.settings))
         ChromiumLibraryPush(window: window, link: { [window, hover] library, open in
-            ChromiumWindowRootLink(sidebar: sidebar, hover: hover, backdrop: backdrop, library: library, libraryOpen: open,
+            ChromiumWindowRootLink(sidebar: sidebar, hover: hover, backdrop: backdrop, flights: { [window] root in
+                    AnyView(DownloadFlightOverlay(target: .path { [weak root] download in
+                        root?.downloadFlight(from: download.launchPoint, startedIn: download.sourceWindow)
+                    }).environment(window))
+                }, library: library, libraryOpen: open,
                 closeLibrary: { LibraryMotion.close(window) },
                 swipeChanged: { window.libraryDrag = max($0, 0) },
                 swipeEnded: { LibraryMotion.release(window, distance: $0, velocity: $1, width: $2) })
@@ -404,6 +411,8 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
     let sidebar: ChromiumWindowRoot.Sidebar
     let hover: HoverSidebarManager
     let backdrop: AnyView
+    /// A starting download's flight over the whole window, made once for the root it goes in.
+    let flights: (ChromiumWindowRoot) -> AnyView
     let library: ChromiumWindowRoot.Library
     /// While the Library is open a sideways swipe anywhere in the window pushes it shut.
     let libraryOpen: Bool
@@ -416,12 +425,14 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
         var sidebar = ChromiumWindowRoot.Sidebar.shown
         weak var hover: HoverSidebarManager?
         var backdrop: AnyView?
+        var flights: ((ChromiumWindowRoot) -> AnyView)?
         var library = ChromiumWindowRoot.Library.shut
         var libraryOpen = false
         var closeLibrary: () -> Void = {}
         var swipeChanged: (CGFloat) -> Void = { _ in }
         var swipeEnded: (CGFloat, CGFloat, CGFloat) -> Void = { _, _, _ in }
         private var backdropHost: NSHostingView<AnyView>?
+        private var flightsHost: NSHostingView<AnyView>?
         private let swipeSurface = LibrarySwipeSurfaceView()
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
         override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); apply() }
@@ -438,6 +449,12 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
                 }
             }
             if let backdropHost { root.setBackdrop(backdropHost) }
+            if flightsHost == nil, let flights {
+                let host = NSHostingView(rootView: flights(root))
+                host.safeAreaRegions = []
+                flightsHost = host
+            }
+            if let flightsHost { root.setOverlay(flightsHost) }
             root.sidebarWidth = ChromiumWindowRoot.Arc.sidebarWidth
             root.library = library
             root.sidebar = sidebar
@@ -456,12 +473,43 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
         link.hover = hover
         link.sidebar = sidebar
         link.backdrop = backdrop
+        link.flights = flights
         link.library = library
         link.libraryOpen = libraryOpen
         link.closeLibrary = closeLibrary
         link.swipeChanged = swipeChanged
         link.swipeEnded = swipeEnded
         link.apply()
+    }
+}
+
+/// Where the sidebar's downloads button is, for the host-mode root: a starting download flies to
+/// it over the page, in a view tree apart from the sidebar's.
+private struct ChromiumDownloadsButtonSpot: View {
+    let anchor: Anchor<CGRect>?
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let anchor {
+                let button = proxy[anchor]
+                Spot().frame(width: button.width, height: button.height).position(x: button.midX, y: button.midY)
+            }
+        }
+        .allowsHitTesting(false)
+    }
+
+    private struct Spot: NSViewRepresentable {
+        final class Marker: NSView {
+            override func hitTest(_ point: NSPoint) -> NSView? { nil }
+            override func viewDidMoveToWindow() {
+                super.viewDidMoveToWindow()
+                var ancestor = superview
+                while let view = ancestor, !(view is ChromiumWindowRoot) { ancestor = view.superview }
+                (ancestor as? ChromiumWindowRoot)?.downloadsButton = self
+            }
+        }
+        func makeNSView(context: Context) -> Marker { Marker() }
+        func updateNSView(_ marker: Marker, context: Context) {}
     }
 }
 

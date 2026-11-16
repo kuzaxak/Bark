@@ -156,6 +156,7 @@ private final class PageView: NSView {
             precondition(inRoot(second, root) == shown && Engine.chrome.last == ChromiumWindowRoot.Arc.lights,
                          "showing the sidebar again restores the page frame and the lights")
 
+            downloadFlightCases(root: root, sidebar: sidebar, page: second, window: window)
             libraryCases(root: root, sidebar: sidebar, page: second, lights: lights)
             root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
             root.layoutSubtreeIfNeeded()
@@ -348,6 +349,53 @@ private final class PageView: NSView {
             let actual = ChromiumWindowRoot.layout(in: bounds, sidebar: sidebar, sidebarWidth: width, library: library, pageFullscreen: fullscreen)
             precondition(actual == expected, "library layout, \(name): \(actual)")
         }
+    }
+
+    /// A download that starts flies over the page into the sidebar's downloads button, as in the WebKit
+    /// window; nothing flies while the sidebar is out of the window.
+    @MainActor static func downloadFlightCases(root: ChromiumWindowRoot, sidebar: NSView, page: NSView, window: NSWindow) {
+        precondition(root.sidebar == .shown && inRoot(page, root) == CGRect(x: 247, y: 10, width: 943, height: 780), "starts beside a shown sidebar")
+        let overlay = NSView(), flight = NSView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
+        overlay.addSubview(flight)
+        root.setOverlay(overlay)
+        precondition(overlay.isDescendant(of: root) && inRoot(overlay, root) == root.bounds,
+                     "the flight overlay spans the window: \(inRoot(overlay, root))")
+        let layer = root.subviews.firstIndex { overlay.isDescendant(of: $0) } ?? -1
+        precondition(layer > root.subviews.firstIndex { sidebar.isDescendant(of: $0) }! && layer > root.subviews.firstIndex { page.isDescendant(of: $0) }!,
+                     "the flight shows over the sidebar and the page")
+        let hit = root.hitTest(root.convert(NSPoint(x: 600, y: 400), to: root.superview))
+        precondition(hit.map { $0.isDescendant(of: page) } == true, "a click over a flight reaches the page: \(String(describing: hit))")
+
+        precondition(root.downloadLaunchPoint(pointer: NSPoint(x: 600, y: 400)) == NSPoint(x: 600, y: 400),
+                     "a download clicked in the page flies from the pointer")
+        precondition(root.downloadLaunchPoint(pointer: NSPoint(x: 100, y: 400)) == NSPoint(x: 718.5, y: 400),
+                     "a download started away from the page flies from the page's middle")
+
+        let button = NSView(frame: NSRect(x: 20, y: 740, width: 28, height: 28))
+        sidebar.addSubview(button)
+        root.downloadsButton = button
+        let click = NSPoint(x: 600, y: 400)
+        let shown = root.downloadFlight(from: click, startedIn: window)
+        precondition(shown?.start == CGPoint(x: 600, y: 400) && shown?.end == CGPoint(x: 34, y: 46),
+                     "one flight from the click to the downloads button: \(String(describing: shown))")
+        precondition(root.downloadFlight(from: click, startedIn: NSWindow()) == nil, "another window's download flies there, not here")
+        precondition(root.downloadFlight(from: nil, startedIn: window) == nil, "a download with no launch point does not fly")
+        root.sidebar = .revealed
+        let revealed = root.downloadFlight(from: click, startedIn: window)
+        precondition(revealed?.end == CGPoint(x: 39, y: 41), "into the floating sidebar's button: \(String(describing: revealed))")
+        root.sidebar = .hidden
+        precondition(root.downloadFlight(from: click, startedIn: window) == nil, "nothing flies while the sidebar is out of the window")
+        root.sidebar = .shown
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_PAGE)
+        precondition(root.downloadFlight(from: click, startedIn: window) == nil, "nothing flies over a full-screen page, whose sidebar is out of the window")
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
+        precondition(root.downloadFlight(from: click, startedIn: window)?.end == CGPoint(x: 34, y: 46), "the button is back once the page leaves full screen")
+        button.removeFromSuperview()
+        precondition(root.downloadFlight(from: click, startedIn: window) == nil, "nothing flies without a button on screen")
+
+        let next = NSView()
+        root.setOverlay(next)
+        precondition(overlay.superview == nil && next.isDescendant(of: root), "a new overlay replaces the last")
     }
 
     /// The Library in a real root: one pass moves the column and the page, the page stays live beside it,

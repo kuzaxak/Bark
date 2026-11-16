@@ -1,3 +1,4 @@
+import AppKit
 import BarcChromium
 import Foundation
 import Observation
@@ -135,6 +136,39 @@ import NookWeb
         Native.emit(profile: personal, source: 22, guid: guid, state: 3, flags: 4, target: fileB.path)
         precondition(personalRow.completedFile == nil)
         Native.emit(profile: personal, source: 22, guid: "", event: 2)
+        precondition(manager.allDownloads.isEmpty)
+
+        var starts: [Download] = []
+        let startObserver = NotificationCenter.default.addObserver(forName: .downloadDidStart, object: nil, queue: nil) { note in
+            MainActor.assumeIsolated { starts.append(note.object as! Download) }
+        }
+        let clicked = NSWindow(), point = NSPoint(x: 120, y: 340)
+        var asked = 0
+        manager.nativeLaunch = { _ in asked += 1; return (clicked, point) }
+        let saved = root.appendingPathComponent("started.txt").path
+        Native.emit(profile: work, source: 55, guid: "asks-where")
+        precondition(starts.isEmpty, "a download still choosing where to save flew")
+        Native.emit(profile: work, source: 55, guid: "asks-where", target: saved)
+        precondition(starts.count == 1 && asked == 1 && starts[0].sourceWindow === clicked && starts[0].launchPoint == point,
+                     "a download flies once it has a destination, from where it was clicked: \(starts.count) \(asked)")
+        Native.emit(profile: work, source: 55, guid: "asks-where", target: saved)
+        Native.emit(profile: work, source: 55, guid: "asks-where", state: 1, flags: 4, target: saved)
+        precondition(starts.count == 1, "progress and completion do not fly again")
+        Native.emit(profile: work, source: 56, guid: "declined")
+        Native.emit(profile: work, source: 56, guid: "declined", state: 2)
+        Native.emit(profile: work, source: 57, guid: "history", state: 1, flags: 4, target: saved)
+        precondition(starts.count == 1, "a download cancelled in the save panel, or finished before, does not fly")
+        Native.emit(profile: work, source: 58, guid: "direct", target: saved)
+        precondition(starts.count == 2 && starts[1].nativeIdentity?.guid == "direct", "a download that starts with its destination flies")
+        Native.emit(profile: work, source: 58, guid: "direct", state: 3, target: saved)
+        Native.emit(profile: work, source: 58, guid: "direct", target: saved)
+        precondition(starts.count == 2, "resuming an interrupted download does not fly")
+        manager.nativeLaunch = { _ in nil }
+        Native.emit(profile: work, source: 59, guid: "elsewhere", target: saved)
+        precondition(starts.count == 3 && starts[2].sourceWindow == nil && starts[2].launchPoint == nil,
+                     "a download no window in front started has nowhere to fly from")
+        NotificationCenter.default.removeObserver(startObserver)
+        for source: UInt64 in 55...59 { Native.emit(profile: work, source: source, guid: "", event: 2) }
         precondition(manager.allDownloads.isEmpty)
 
         // Unsubscribe from a publication callback. No zombie row may appear

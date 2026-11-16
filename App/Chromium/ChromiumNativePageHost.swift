@@ -145,6 +145,12 @@ final class ChromiumNativePageHost: NativePageHost {
         return true
     }
 
+    /// The window and the point in it a download that starts now in `window` flies from.
+    func downloadLaunch(in window: BrowserWindowState) -> (window: NSWindow, point: NSPoint)? {
+        guard let mount = mounts[window.id], mount.model === window else { return nil }
+        return mount.presenter.downloadLaunch()
+    }
+
     /// The empty-space panel covers the page Chromium keeps selected, so its page
     /// commands must do nothing until the window shows a page again.
     func setPageHidden(_ hidden: Bool, in window: BrowserWindowState) {

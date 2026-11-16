@@ -126,6 +126,8 @@ final class ChromiumWindowRoot: NSView {
     private let pageFrame = Container()
     private let libraryDismissal = LibraryDismissal()
     private let sidebarColumn = Container()
+    private let overlayLayer = Overlay()
+    private weak var overlay: NSView?
     private weak var librarySwipeSurface: NSView?
     private var placedLights: Lights?
     private let crashedPage = CrashedPage()
@@ -177,6 +179,38 @@ final class ChromiumWindowRoot: NSView {
         librarySwipeSurface = view
     }
 
+    /// The sidebar's downloads button, which a starting download flies into.
+    weak var downloadsButton: NSView?
+
+    /// Shows `view` over the sidebar and the page, without taking their clicks: a starting
+    /// download's flight.
+    func setOverlay(_ view: NSView) {
+        guard view !== overlay else { return }
+        overlay?.removeFromSuperview()
+        view.frame = overlayLayer.bounds
+        view.autoresizingMask = [.width, .height]
+        overlayLayer.addSubview(view)
+        overlay = view
+    }
+
+    /// Where a download that starts now flies from, in window coordinates: the pointer while it is
+    /// over the page, which is where the click was, else the page's middle.
+    func downloadLaunchPoint(pointer: NSPoint) -> NSPoint? {
+        guard window != nil else { return nil }
+        let page = pageFrame.convert(pageFrame.bounds, to: nil)
+        return page.contains(pointer) ? pointer : NSPoint(x: page.midX, y: page.midY)
+    }
+
+    /// A starting download's flight in this view's coordinates, from `launch` in the window that
+    /// started it to the middle of the downloads button. Nil for another window's download, and
+    /// while the sidebar and its button are out of the window: hidden, or beside a full-screen page.
+    func downloadFlight(from launch: NSPoint?, startedIn source: NSWindow?) -> (start: CGPoint, end: CGPoint)? {
+        guard let window, source === window, let launch, sidebar != .hidden, !pageFullscreen,
+              let button = downloadsButton, button.window === window else { return nil }
+        let target = convert(button.bounds, from: button)
+        return (convert(launch, from: nil), CGPoint(x: target.midX, y: target.midY))
+    }
+
     /// The window shows no page of its own: an empty space, or a page another window holds.
     var pageHidden = false {
         didSet { heldPage?.isHidden = pageHidden }
@@ -209,6 +243,8 @@ final class ChromiumWindowRoot: NSView {
         sidebarColumn.wantsLayer = true
         sidebarColumn.autoresizingMask = [.height]
         addSubview(sidebarColumn)
+        overlayLayer.autoresizingMask = [.width, .height]
+        addSubview(overlayLayer)
         applyLayout()
     }
 
@@ -374,6 +410,7 @@ final class ChromiumWindowRoot: NSView {
         let besideLibrary = layout.sidebar?.maxX ?? bounds.minX
         libraryDismissal.isHidden = pageFullscreen || library.progress <= 0
         libraryDismissal.frame = CGRect(x: besideLibrary, y: bounds.minY, width: max(0, bounds.maxX - besideLibrary), height: bounds.height)
+        overlayLayer.frame = bounds
         layoutPageArea()
     }
 
@@ -433,6 +470,11 @@ final class ChromiumWindowRoot: NSView {
 
     private final class Container: NSView {
         override var isFlipped: Bool { true }
+    }
+
+    private final class Overlay: NSView {
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
     }
 
     /// Beside the Library while it is out: a click there puts the Library away.

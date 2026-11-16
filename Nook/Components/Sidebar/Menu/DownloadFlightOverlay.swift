@@ -21,8 +21,16 @@ struct DownloadsButtonAnchorKey: PreferenceKey {
 }
 
 struct DownloadFlightOverlay: View {
-    /// Nil while the button is off screen (sidebar hidden, history panel open): nothing flies then.
-    let target: Anchor<CGRect>?
+    enum Target {
+        /// The downloads button in this view tree. Nil while it is off screen (sidebar hidden,
+        /// history panel open): nothing flies then.
+        case button(Anchor<CGRect>?)
+        /// For a window that lays out its sidebar and page itself: a download's flight in this
+        /// overlay's space, or nil when it does not fly here.
+        case path(@MainActor (Download) -> (start: CGPoint, end: CGPoint)?)
+    }
+
+    let target: Target
 
     @Environment(BrowserWindowState.self) private var windowState
     @State private var flights: [Flight] = []
@@ -47,23 +55,31 @@ struct DownloadFlightOverlay: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .onReceive(NotificationCenter.default.publisher(for: .downloadDidStart)) { note in
-                guard let download = note.object as? Download,
-                      let window = windowState.window,
-                      download.sourceWindow === window,
-                      let launch = download.launchPoint,
-                      let contentView = window.contentView,
-                      let target else { return }
-                // AppKit window point to this overlay's space: flip to a top-left origin, then
-                // offset by where the overlay sits in the window.
-                let inContent = contentView.convert(launch, from: nil)
-                let top = contentView.isFlipped ? inContent.y : contentView.bounds.height - inContent.y
-                let origin = proxy.frame(in: .global).origin
-                let start = CGPoint(x: inContent.x - origin.x, y: top - origin.y)
-                let button = proxy[target]
-                flights.append(Flight(icon: download.icon, start: start, end: CGPoint(x: button.midX, y: button.midY)))
+                guard let download = note.object as? Download, let path = path(of: download, in: proxy) else { return }
+                flights.append(Flight(icon: download.icon, start: path.start, end: path.end))
             }
         }
         .allowsHitTesting(false)
+    }
+
+    private func path(of download: Download, in proxy: GeometryProxy) -> (start: CGPoint, end: CGPoint)? {
+        switch target {
+        case .path(let path):
+            return path(download)
+        case .button(let anchor):
+            guard let window = windowState.window,
+                  download.sourceWindow === window,
+                  let launch = download.launchPoint,
+                  let contentView = window.contentView,
+                  let anchor else { return nil }
+            // AppKit window point to this overlay's space: flip to a top-left origin, then
+            // offset by where the overlay sits in the window.
+            let inContent = contentView.convert(launch, from: nil)
+            let top = contentView.isFlipped ? inContent.y : contentView.bounds.height - inContent.y
+            let origin = proxy.frame(in: .global).origin
+            let button = proxy[anchor]
+            return (CGPoint(x: inContent.x - origin.x, y: top - origin.y), CGPoint(x: button.midX, y: button.midY))
+        }
     }
 }
 

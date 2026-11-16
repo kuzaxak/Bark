@@ -364,6 +364,9 @@ public class DownloadManager: NSObject {
 
     /// Whether Tidy Downloads is on; set by the app from settings.
     @ObservationIgnored var tidyDownloadsEnabled: () -> Bool = { false }
+    /// The window a Chromium download that starts now came from, and the point in it where it was
+    /// clicked; set by the app. Chromium does not say which page started a download.
+    @ObservationIgnored var nativeLaunch: ((Download) -> (window: NSWindow, point: NSPoint)?)?
     /// Each profile's download location; set by the app.
     @ObservationIgnored weak var settings: NookSettingsService?
     /// The download open in the in-window preview, if any.
@@ -508,6 +511,7 @@ public class DownloadManager: NSObject {
         item.nativeObservation = update.observation
         item.nativeAction = action; item.nativeSafeTarget = safeTarget
         item.nativeUnsafe = update.unsafe; item.nativeSafeFile = update.safeFile
+        let starts = item.destinationURL == nil && update.target != nil && update.state == .downloading
         if update.unsafe || !update.safeFile || item.destinationURL != update.target { item.downloadThumbnail = nil }
         item.destinationURL = update.target; item.suggestedFilename = update.filename
         item.startDate = update.started; item.downloadedBytes = update.received; item.fileSize = update.total
@@ -525,6 +529,10 @@ public class DownloadManager: NSObject {
             _ = item.nativeAction?(true)
         }
         if previewing === item, (!update.safeFile || update.unsafe || previewFileURL != update.target) { previewing = nil }
+        if starts {
+            if let launch = nativeLaunch?(item) { item.sourceWindow = launch.window; item.launchPoint = launch.point }
+            NotificationCenter.default.post(name: .downloadDidStart, object: item)
+        }
     }
 
     func removeNativeDownload(_ identity: NativeDownloadIdentity, manager: UInt64, observation: UInt64) {
