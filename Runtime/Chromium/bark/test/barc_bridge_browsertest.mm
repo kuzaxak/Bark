@@ -1583,6 +1583,10 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_FALSE(work->IsSelectedForNativeWindow());
 
   ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return work->GetTabStripModel()->GetActiveWebContents()->GetVisibility() ==
+           content::Visibility::VISIBLE;
+  }));
   ASSERT_EQ(1, barc_tab_capture_thumbnail(events.token, 4, NavigationEvents::ReceiveThumbnail));
   Navigate(work, embedded_test_server()->GetURL("/title2.html"));
   ASSERT_TRUE(base::test::RunUntil([&] { return events.thumbnail_calls == 2; }));
@@ -9846,17 +9850,6 @@ class BarcObservedBodyReusedFrameBrowserTest : public BarcNativeBlockerBrowserTe
     feature_list_.InitWithFeatures(
         {}, {features::kRenderDocument, features::kBackForwardCache});
   }
- protected:
-  // A finished load starts the search engine prewarm in a prerender of the
-  // same tab. content::NavigateToURLFromRenderer reports that prerender's
-  // failure as its own; TestNavigationObserver skips prerendered frames.
-  [[nodiscard]] bool NavigateFromPage(content::WebContents* page, const GURL& url) {
-    content::TestNavigationObserver navigated(page);
-    navigated.set_expected_initial_url(url);
-    content::ExecuteScriptAsync(page, content::JsReplace("location = $1", url));
-    navigated.Wait();
-    return navigated.last_navigation_succeeded() && page->GetLastCommittedURL() == url;
-  }
  private:
   base::test::ScopedFeatureList feature_list_;
 };
@@ -9875,7 +9868,7 @@ IN_PROC_BROWSER_TEST_F(BarcObservedBodyReusedFrameBrowserTest,
   const int64_t first_navigation = first_frame->GetNavigationId();
   mojo::Remote<network::mojom::URLLoaderFactory> old_factory;
   first_frame->CreateNetworkServiceDefaultFactory(old_factory.BindNewPipeAndPassReceiver());
-  ASSERT_TRUE(NavigateFromPage(page, embedded_test_server()->GetURL("/title2.html")));
+  ASSERT_TRUE(content::NavigateToURLFromRenderer(page, embedded_test_server()->GetURL("/title2.html")));
   ASSERT_EQ(first_frame, page->GetPrimaryMainFrame());
   ASSERT_NE(first_navigation, first_frame->GetNavigationId());
   auto observed = [&] {
@@ -9979,7 +9972,8 @@ IN_PROC_BROWSER_TEST_F(BarcObservedBodyReusedFrameBrowserTest,
   auto original = NativeContentBlocker::CaptureClient(page, frame, first_url);
   mojo::Remote<network::mojom::URLLoaderFactory> original_factory;
   frame->CreateNetworkServiceDefaultFactory(original_factory.BindNewPipeAndPassReceiver());
-  ASSERT_TRUE(NavigateFromPage(page, embedded_test_server()->GetURL("/title2.html")));
+  ASSERT_TRUE(content::NavigateToURLFromRenderer(page,
+      embedded_test_server()->GetURL("/title2.html")));
   ASSERT_EQ(frame, page->GetPrimaryMainFrame());
   EXPECT_FALSE(original.document.AsRenderFrameHostIfValid());
   const int32_t tab = barc_window_tab_at(work_id, 0);

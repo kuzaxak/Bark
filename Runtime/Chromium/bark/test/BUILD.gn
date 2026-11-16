@@ -12,6 +12,8 @@ test("bark_browser_tests") {
     "barc_extension_storage_browsertest.mm",
     "barc_native_policy_browsertest.mm",
     "barc_profiles_browsertest.mm",
+    "bark_engine_config_browsertest.mm",
+    "bark_profile_reload_browsertest.mm",
     "bark_window_host_browsertest.mm",
     "real_pointer_isolation.mm",
   ]
@@ -21,6 +23,9 @@ test("bark_browser_tests") {
     "//chrome/browser/ui/webui/downloads",
     "//components/download/database",
     "//chrome/browser/search_engines",
+    "//chrome/browser/affiliations",
+    "//components/affiliations/core/browser:affiliations",
+    "//chrome/test/base:profile_lifecycle_test_utils",
     "//components/search_engines",
     "//bark:engine",
     "//chrome/browser:file_select_helper",

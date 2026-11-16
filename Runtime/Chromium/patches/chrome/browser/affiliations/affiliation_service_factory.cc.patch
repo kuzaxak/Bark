@@ -1,0 +1,25 @@
+diff --git a/chrome/browser/affiliations/affiliation_service_factory.cc b/chrome/browser/affiliations/affiliation_service_factory.cc
+index 1d96b83..3b176c3 100644
+--- a/chrome/browser/affiliations/affiliation_service_factory.cc
++++ b/chrome/browser/affiliations/affiliation_service_factory.cc
+@@ -46,14 +46,15 @@ AffiliationServiceFactory::BuildServiceInstanceForBrowserContext(
+   scoped_refptr<network::SharedURLLoaderFactory> url_loader_factory =
+       context->GetDefaultStoragePartition()
+           ->GetURLLoaderFactoryForBrowserProcess();
+-  auto backend_task_runner = base::ThreadPool::CreateSequencedTaskRunner(
+-      {base::MayBlock(), base::TaskPriority::USER_VISIBLE});
++  const base::FilePath db_path =
++      profile->GetPath().Append(affiliations::kAffiliationDatabaseFileName);
++  auto backend_task_runner =
++      base::ThreadPool::CreateSequencedTaskRunnerForResource(
++          {base::MayBlock(), base::TaskPriority::USER_VISIBLE}, db_path);
+   auto affiliation_service =
+       std::make_unique<affiliations::AffiliationServiceImpl>(
+           url_loader_factory, backend_task_runner);
+-  affiliation_service->Init(
+-      content::GetNetworkConnectionTracker(),
+-      profile->GetPath().Append(affiliations::kAffiliationDatabaseFileName));
++  affiliation_service->Init(content::GetNetworkConnectionTracker(), db_path);
+ 
+   return affiliation_service;
+ }

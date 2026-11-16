@@ -112,6 +112,24 @@ struct HostEvents {
   }
 };
 
+struct Captures {
+  ~Captures() { barc_tab_unobserve(token); }
+  bool Observe(int32_t window, int32_t tab) {
+    barc_tab_unobserve(token);
+    token = barc_tab_observe(window, tab, &Captures::Event, this);
+    return token != 0;
+  }
+  static void Event(void*, uint64_t, int32_t, int32_t, int32_t, const char*,
+                    const char*, int32_t, uint32_t) {}
+  static void Receive(void* context, uint64_t, uint64_t request,
+                      const uint8_t* png, size_t size) {
+    auto* self = static_cast<Captures*>(context);
+    self->received.push_back({request, png ? size : 0});
+  }
+  uint64_t token = 0;
+  std::vector<std::pair<uint64_t, size_t>> received;
+};
+
 uint64_t DiscoveryRevision() {
   BarcDiscoverySnapshot snapshot = {.size = sizeof(BarcDiscoverySnapshot)};
   barc_discovery_snapshot(nullptr, 0, nullptr, 0, &snapshot);
@@ -492,6 +510,45 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   EXPECT_FALSE(contents->GetContainerBounds().size().IsEmpty());
   EXPECT_GT(InnerWidth(contents), 0);
   EXPECT_GT(content::EvalJs(contents, "innerHeight").ExtractInt(), 0);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SelectedPageIsVisibleAndCaptured) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t first = OpenPage(work, root, "/title1.html");
+  ASSERT_EQ(1, barc_window_show(work));
+  NSView* shown = Place(work, first, root);
+  const int32_t second = OpenPage(work, root, "/title2.html");
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  const int32_t other = OpenPage(home, root, "/title1.html");
+  Captures captures;
+  uint64_t request = 0;
+  // Each step is what the app does: select a client's tab, then swap the page
+  // view in its root.
+  auto show = [&](int32_t window, int32_t tab) {
+    ASSERT_EQ(1, barc_tab_select(window, tab));
+    [shown removeFromSuperview];
+    shown = Place(window, tab, root);
+    auto* contents = TabContents(tab);
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return contents->GetVisibility() == content::Visibility::VISIBLE;
+    }));
+    ASSERT_TRUE(captures.Observe(window, tab));
+    ASSERT_EQ(1, barc_tab_capture_thumbnail(captures.token, ++request,
+                                            &Captures::Receive));
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return !captures.received.empty() &&
+             captures.received.back().first == request;
+    }));
+    EXPECT_GT(captures.received.back().second, 0u);
+  };
+  show(work, second);
+  show(home, other);
+  show(work, second);
+  show(work, first);
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,

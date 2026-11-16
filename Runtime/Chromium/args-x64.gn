@@ -15,6 +15,9 @@ mac_min_system_version = "15.5"
 is_chrome_branded = false
 proprietary_codecs = true
 ffmpeg_branding = "Chrome"
+# Unbranded builds otherwise apply testing/variations/fieldtrial_testing_config.json,
+# which turns on the experiments Chromium tests with.
+disable_fieldtrial_testing_config = true
 # Bark's engine sources and tests, mounted at //bark.
 root_extra_deps = [ "//bark" ]
 # Compiles Bark's chromium_src overrides; the recipe builds the tool into each output directory.
