@@ -8,7 +8,6 @@ struct ChromiumStartupConfiguration {
     let profileID: UUID?
     let isVerification: Bool
     let launchArguments: [String]
-    let legacySupport: URL?
     /// Bark's own window host, unless `--bark-window=legacy` asks for Chromium's window.
     let hostsWindows: Bool
 
@@ -50,7 +49,6 @@ struct ChromiumStartupConfiguration {
         default: throw StartupError.invalidConfiguration
         }
         let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
-        let source = try value("--barc-conversion-source")
         if path != nil || hint != nil {
             guard let path, path.hasPrefix("/private/tmp/"), let id = hint.flatMap(UUID.init(uuidString:)) else {
                 throw StartupError.invalidConfiguration
@@ -60,10 +58,8 @@ struct ChromiumStartupConfiguration {
                 throw StartupError.invalidConfiguration
             }
             root = canonical; profileID = id; isVerification = true
-            let synthetic = try source.map(Self.syntheticSource)
-            legacySupport = synthetic?.appendingPathComponent("Application Support", isDirectory: true)
         } else {
-            guard source == nil, let support = applicationSupportDirectory ?? FileManager.default.urls(
+            guard let support = applicationSupportDirectory ?? FileManager.default.urls(
                 for: .applicationSupportDirectory, in: .userDomainMask).first else {
                 throw StartupError.invalidConfiguration
             }
@@ -73,17 +69,8 @@ struct ChromiumStartupConfiguration {
             // startup into an installed browser's store.
             guard canonical.path == expected.standardizedFileURL.path else { throw StartupError.invalidConfiguration }
             root = canonical; profileID = nil; isVerification = false
-            legacySupport = Self.canonicalURL(support)
         }
         try validateChildDirectories()
-    }
-
-    private static func syntheticSource(_ path: String) throws -> URL {
-        let canonical = canonicalURL(URL(fileURLWithPath: path, isDirectory: true))
-        guard path.hasPrefix("/private/tmp/"), canonical.path.hasPrefix("/private/tmp/"), canonical.path != "/private/tmp" else {
-            throw StartupError.invalidConfiguration
-        }
-        return canonical
     }
 
     private static func canonicalURL(_ url: URL) -> URL {

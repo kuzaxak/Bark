@@ -17,10 +17,10 @@ import Foundation
         precondition(!ChromiumOnboarding.isNeeded(didFinish: &finished, hadTabs: false), "a person who finished it does not see it again")
 
         try! Data("{}".utf8).write(to: tabs.appendingPathComponent("structure.json"))
-        precondition(ChromiumOnboarding.hasTabs(in: tabs), "an earlier launch or a conversion leaves tabs")
+        precondition(ChromiumOnboarding.hasTabs(in: tabs), "an earlier launch leaves tabs")
         finished = false
         precondition(!ChromiumOnboarding.isNeeded(didFinish: &finished, hadTabs: true) && finished,
                      "a data directory with tabs is a returning person's: no onboarding, and it counts as finished")
-        print("Onboarding: shown on a fresh data directory only; a returning or converted one counts as finished")
+        print("Onboarding: shown on a fresh data directory only; a returning one counts as finished")
     }
 }

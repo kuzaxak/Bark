@@ -4,8 +4,8 @@ import SwiftUI
 
 /// Develop's onboarding, on the first launch of a data directory.
 @MainActor enum ChromiumOnboarding {
-    /// Whether this launch shows onboarding. A data directory that already holds tabs, from an
-    /// earlier launch or a conversion, is a returning person's, so it counts as finished.
+    /// Whether this launch shows onboarding. A data directory that already holds tabs from an
+    /// earlier launch is a returning person's, so it counts as finished.
     static func isNeeded(didFinish: inout Bool, hadTabs: Bool) -> Bool {
         if hadTabs && !didFinish { didFinish = true }
         return !didFinish

@@ -68,13 +68,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let config = try ChromiumStartupConfiguration(arguments: arguments)
             try config.prepare()
             let app = ChromiumApplication(bridge: bridge, engineMain: engineMain, configuration: config)
-            let startup = ChromiumStartup(bridge: app, profile: config.profileID, prepareData: { proceed in
-                guard let conversion = ChromiumDataConversion(configuration: config), conversion.shouldOffer() else {
-                    proceed()
-                    return
-                }
-                ChromiumDataConversionWindow.present(conversion, finished: proceed)
-            }) { message in
+            let startup = ChromiumStartup(bridge: app, profile: config.profileID) { message in
                 fputs(message + "\n", stderr)
             }
             startup.register()

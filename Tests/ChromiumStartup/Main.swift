@@ -58,6 +58,25 @@ struct StartupTests {
                          && arguments.firstIndex(of: "--disable-features=MediaRouter")! < pages,
                          "Cast has no entry point: the engine starts with Media Router off, once, before any page: \(arguments)")
         }
+        func urls(_ value: Any) -> [URL] {
+            Mirror(reflecting: value).children.flatMap { child -> [URL] in
+                if let url = child.value as? URL { return [url] }
+                return urls(child.value)
+            }
+        }
+        precondition(urls(normal).allSatisfy { $0.standardizedFileURL.path.hasPrefix(normal.root.standardizedFileURL.path) },
+                     "a plain launch names nothing outside its own store: \(urls(normal).map(\.path))")
+        for verification in [false, true] {
+            let arguments = verification
+                ? ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"]
+                : ["Nook"]
+            let plain = try ChromiumStartupConfiguration(arguments: arguments, applicationSupportDirectory: normalRoot)
+            let switched = try ChromiumStartupConfiguration(arguments: arguments + ["--barc-conversion-source=/private/tmp/nook-startup-source"],
+                                                            applicationSupportDirectory: normalRoot)
+            precondition(urls(switched).map(\.path) == urls(plain).map(\.path)
+                         && switched.engineArguments(executable: "Nook") == plain.engineArguments(executable: "Nook"),
+                         "--barc-conversion-source is an unknown switch, dropped like any other")
+        }
         let withURLs = try ChromiumStartupConfiguration(arguments: ["Nook",
             "--no-sandbox", "https://fixture.invalid/cli", "file:///private/tmp/fixture.html"],
             applicationSupportDirectory: normalRoot)
