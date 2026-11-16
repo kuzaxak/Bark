@@ -41,6 +41,12 @@ public class WindowRegistry {
         return _windows[id]
     }
 
+    /// The window a dialog for the whole app (Quit) draws in: the active one, else any open one.
+    /// Right after launch no window has become active yet.
+    public var dialogWindow: BrowserWindowState? {
+        activeWindow ?? windows.values.first { $0.windowHandle != nil }
+    }
+
     /// Callback for window cleanup (set by whoever needs to clean up resources)
     @ObservationIgnored
     public var onWindowClose: ((UUID) -> Void)?
