@@ -1165,3 +1165,72 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ClosedClientIsNotSelected) {
             GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
                 host->widget()->GetNativeWindow()));
 }
+
+namespace {
+
+// What the app reads: on each discovery delivery, the window's row flags.
+struct ActiveFlags {
+  int32_t window = 0;
+  std::vector<uint32_t> flags;
+  static void Receive(void* context, uint64_t, uint64_t) {
+    auto* self = static_cast<ActiveFlags*>(context);
+    BarcDiscoverySnapshot snapshot{sizeof(BarcDiscoverySnapshot)};
+    barc_discovery_snapshot(nullptr, 0, nullptr, 0, &snapshot);
+    std::vector<BarcDiscoveryWindow> windows(snapshot.window_count,
+                                             {sizeof(BarcDiscoveryWindow)});
+    std::vector<BarcDiscoveryTab> tabs(snapshot.tab_count,
+                                       {sizeof(BarcDiscoveryTab)});
+    if (barc_discovery_snapshot(windows.data(), windows.size(), tabs.data(),
+                                tabs.size(),
+                                &snapshot) != BARC_DISCOVERY_READ_OK) {
+      return;
+    }
+    for (const auto& row : windows) {
+      if (row.window == self->window) {
+        self->flags.push_back(row.flags);
+      }
+    }
+  }
+  bool LastActive() const {
+    return !flags.empty() && (flags.back() & BARC_DISCOVERY_PHYSICAL_ACTIVE);
+  }
+};
+
+}  // namespace
+
+// At launch the window is shown, and so marked the active browser, before the
+// app has finished activating; the window becomes key only after that. The
+// suite's fake key windows become key inside Show(), so only this order shows
+// whether the key change itself reaches the app.
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       KeyAfterShowReportsTheWindowActive) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t window = OpenHostWindow();
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  OpenPage(window, root, "/title1.html");
+  ASSERT_EQ(1, barc_window_show(window));
+  views::Widget* widget = HostOf(window)->widget();
+  ASSERT_TRUE(base::test::RunUntil([&] { return widget->IsActive(); }));
+  // A window that is no browser takes the keys, as the app's own can.
+  NSWindow* other =
+      [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+                                  styleMask:NSWindowStyleMaskTitled
+                                    backing:NSBackingStoreBuffered
+                                      defer:NO];
+  other.releasedWhenClosed = NO;
+  [other makeKeyAndOrderFront:nil];
+  ASSERT_TRUE(base::test::RunUntil([&] { return !widget->IsActive(); }));
+  ActiveFlags seen{.window = window};
+  const uint64_t observation =
+      barc_discovery_observe(&ActiveFlags::Receive, &seen);
+  ASSERT_NE(0u, observation);
+  // The first thing BarkBrowserWindow::Show does, before the window is key.
+  BrowserActiveStateManager::From(FindBrowser(window))->DidBecomeActive();
+  ASSERT_TRUE(base::test::RunUntil([&] { return !seen.flags.empty(); }));
+  ASSERT_FALSE(seen.LastActive());
+  widget->Activate();
+  ASSERT_TRUE(widget->IsActive());
+  EXPECT_TRUE(base::test::RunUntil([&] { return seen.LastActive(); }));
+  barc_discovery_unobserve(observation);
+  [other close];
+}

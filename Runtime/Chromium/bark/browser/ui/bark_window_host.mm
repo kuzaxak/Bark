@@ -548,6 +548,9 @@ void BarkWindowHost::OnWidgetActivationChanged(views::Widget* widget,
   if (selected_) {
     selected_->OnHostActivationChanged(active);
   }
+  // Discovery rows carry the window's key state; a client already marked the
+  // active browser by Show() notifies nothing when the window becomes key.
+  barc::BrowserDiscoveryChanged();
 }
 
 void BarkWindowHost::OnWidgetDestroying(views::Widget* widget) {
