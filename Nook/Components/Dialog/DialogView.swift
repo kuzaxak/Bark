@@ -41,7 +41,7 @@ struct DialogView: View {
         NookDesign.Surface.scrim
             .ignoresSafeArea()
             .onTapGesture {
-                browserManager.dialogManager.closeDialog()
+                if browserManager.dialogManager.closesOnScrimTap { browserManager.dialogManager.closeDialog() }
             }
             .transition(.opacity)
     }

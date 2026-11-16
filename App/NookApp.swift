@@ -37,7 +37,8 @@ struct NookApp: App {
         let registry = WindowRegistry()
         _windowRegistry = State(initialValue: registry)
         _browserManager = StateObject(
-            wrappedValue: BrowserManager(settings: settings, windowRegistry: registry))
+            wrappedValue: BrowserManager(settings: settings, windowRegistry: registry, importManager: ImportManager(
+                sources: .installed, workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ImportCopies", isDirectory: true))))
         let config = AIConfigService()
         _aiConfigService = State(initialValue: config)
         _aiService = State(initialValue: AIService(configService: config))

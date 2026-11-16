@@ -10,56 +10,120 @@ import Foundation
 import Combine
 import SwiftUI
 
+/// The browsers Bark imports from itself.
+enum ImportBrowser: String, CaseIterable {
+    case arc, chrome
+
+    var name: String {
+        switch self {
+        case .arc: "Arc"
+        case .chrome: "Chrome"
+        }
+    }
+}
+
 class ImportManager: ObservableObject {
-    /// Where Arc and Dia keep the data an import reads.
+    /// Where Arc, Chrome and Dia keep the data an import reads.
     struct Sources {
         /// Arc's Application Support folder.
         let arc: URL
+        /// Chrome's user data folder: its `Local State` and one folder per profile.
+        let chrome: URL
         /// Dia's `StorableProfileContainers.json`.
         let dia: URL
 
         static let installed = Sources(
             arc: URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Arc").expandingTildeInPath),
+            chrome: URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Google/Chrome").expandingTildeInPath),
             dia: URL(fileURLWithPath: NSString(string: "~/Library/Application Support/Dia/StorableProfileContainers.json").expandingTildeInPath))
 
         /// Copies laid out under a verification run's data directory, in place of the person's own.
         static func fixtures(in root: URL) -> Sources {
             let imports = root.appendingPathComponent("Import", isDirectory: true)
             return Sources(arc: imports.appendingPathComponent("Arc", isDirectory: true),
+                           chrome: imports.appendingPathComponent("Chrome", isDirectory: true),
                            dia: imports.appendingPathComponent("Dia/StorableProfileContainers.json"))
         }
     }
 
     let sources: Sources
+    /// Where a browser's locked files are copied to be read. A copy left by a run that quit
+    /// mid-import goes when the next ImportManager starts.
+    let workDirectory: URL
 
-    init(sources: Sources = .installed) {
+    init(sources: Sources, workDirectory: URL) {
         self.sources = sources
+        self.workDirectory = workDirectory
+        try? FileManager.default.removeItem(at: workDirectory)
+    }
+
+    /// A verification run reads only the copies laid out under its own data directory.
+    convenience init(configuration: ChromiumStartupConfiguration) {
+        self.init(sources: configuration.isVerification ? .fixtures(in: configuration.root) : .installed,
+                  workDirectory: configuration.root.appendingPathComponent("App/ImportCopies", isDirectory: true))
     }
 
     func importArcSidebarData() async -> ArcImportResult {
         guard let data = try? Data(contentsOf: arcDirectory.appendingPathComponent("StorableSidebar.json")),
               var result = try? parseArcSidebarData(data) else { return ArcImportResult() }
-        // Chromium's Local State names each profile directory.
-        let state = (try? Data(contentsOf: arcDirectory.appendingPathComponent("User Data/Local State")))
-            .flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
-        let cache = (state?["profile"] as? [String: Any])?["info_cache"] as? [String: Any] ?? [:]
-        for (directory, info) in cache {
-            guard let name = (info as? [String: Any])?["name"] as? String else { continue }
-            result.profileNames[directory == "Default" ? "default" : directory] = name
+        for profile in chromiumProfiles(.arc).found {
+            result.profileNames[Self.arcProfileKey(profile.directory)] = profile.name
         }
         return result
     }
 
-    /// Web Store ids of the extensions enabled in any Arc profile.
-    func arcExtensionIDs() -> [String] {
-        let userData = arcDirectory.appendingPathComponent("User Data")
-        let profiles = (try? FileManager.default.contentsOfDirectory(atPath: userData.path)) ?? []
-        let files = profiles.filter { $0 == "Default" || $0.hasPrefix("Profile ") }.sorted().flatMap { profile in
-            ["Secure Preferences", "Preferences"].compactMap {
-                try? Data(contentsOf: userData.appendingPathComponent(profile).appendingPathComponent($0))
+    /// Arc's sidebar names its first profile "default" and the others by folder.
+    static func arcProfileKey(_ directory: String) -> String { directory == "Default" ? "default" : directory }
+    static func arcProfileDirectory(_ key: String) -> String { key == "default" ? "Default" : key }
+
+    /// The folder holding a Chromium browser's `Local State` and profile folders.
+    func userDataDirectory(_ browser: ImportBrowser) -> URL {
+        switch browser {
+        case .arc: arcDirectory.appendingPathComponent("User Data", isDirectory: true)
+        case .chrome: sources.chrome
+        }
+    }
+
+    /// A profile's folder; nil for a name that is not one folder inside the user data folder.
+    func profileDirectory(_ browser: ImportBrowser, _ directory: String) -> URL? {
+        isFolderName(directory) ? userDataDirectory(browser).appendingPathComponent(directory, isDirectory: true) : nil
+    }
+
+    /// Whether the browser is on this Mac: Chromium writes `Local State` on its first launch.
+    func isInstalled(_ browser: ImportBrowser) -> Bool {
+        FileManager.default.fileExists(atPath: userDataDirectory(browser).appendingPathComponent("Local State").path)
+    }
+
+    func chromiumProfiles(_ browser: ImportBrowser) -> ChromiumProfiles {
+        let state = (try? Data(contentsOf: userDataDirectory(browser).appendingPathComponent("Local State"))).map(parseChromiumProfiles) ?? []
+        var profiles = ChromiumProfiles(found: [], missing: [])
+        for profile in state {
+            var isDirectory: ObjCBool = false
+            if let folder = profileDirectory(browser, profile.directory),
+               FileManager.default.fileExists(atPath: folder.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                profiles.found.append(profile)
+            } else {
+                profiles.missing.append(profile)
             }
         }
-        return parseChromiumExtensionIDs(files)
+        return profiles
+    }
+
+    /// What goes in a Chrome profile's imported folder: its local bookmarks, then a signed-in
+    /// account's, which Chromium keeps in a file of their own.
+    func chromeBookmarks(_ profile: ChromiumProfile) -> [ArcNode] {
+        guard let folder = profileDirectory(.chrome, profile.directory) else { return [] }
+        return ["Bookmarks", "AccountBookmarks"].compactMap { name in
+            (try? Data(contentsOf: folder.appendingPathComponent(name))).flatMap { try? parseChromiumBookmarks($0) }
+        }.reduce(ChromiumBookmarks(), +).folderContents
+    }
+
+    /// Web Store ids of the extensions enabled in one profile.
+    func extensionIDs(_ browser: ImportBrowser, _ directory: String) -> [String] {
+        guard let folder = profileDirectory(browser, directory) else { return [] }
+        return parseChromiumExtensionIDs(["Secure Preferences", "Preferences"].compactMap {
+            try? Data(contentsOf: folder.appendingPathComponent($0))
+        })
     }
 
     /// Arc's member card, with the person's Arc name added, as a JSON object.

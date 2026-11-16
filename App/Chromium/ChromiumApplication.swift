@@ -324,10 +324,10 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let hadTabs = ChromiumOnboarding.hasTabs(in: storage.tabsDirectory)
             appearance = ChromiumAppearance(settings: storage.settings)
             let manager = BrowserManager(settings: storage.settings, windowRegistry: registry,
+                importManager: ImportManager(configuration: configuration),
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
                 cloudSyncEnabled: false, engine: .chromium)
-            if configuration.isVerification { manager.importManager = ImportManager(sources: .fixtures(in: configuration.root)) }
             appearance?.onEffectiveChange = { [weak manager, registry] in
                 guard let manager else { return }
                 manager.tabs.sessions.forEach { $0.resetNativeTopBarSample() }
@@ -355,6 +355,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 switch command {
                 case .about: NSApp.orderFrontStandardAboutPanel(nil)
                 case .settings: manager.openSettings(tab: .general)
+                case .importBrowser: manager.showImportDialog()
                 case .quit: manager.showQuitDialog()
                 case .newTab: shortcuts.perform(.newTab)
                 case .reopenClosedTab: shortcuts.reopenClosedTab()

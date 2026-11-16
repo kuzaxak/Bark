@@ -16,6 +16,8 @@ import NookDesign
 class DialogManager {
     var isVisible: Bool = false
     var activeDialog: AnyView?
+    /// False while the shown dialog has to stay up, so a click on the scrim leaves it.
+    var closesOnScrimTap = true
 
     private var tabKeyMonitor: Any?
 
@@ -23,6 +25,7 @@ class DialogManager {
 
     func showDialog<Content: View>(_ dialog: Content) {
         activeDialog = AnyView(dialog)
+        closesOnScrimTap = true
         isVisible = true
         installTabKeyMonitor()
     }

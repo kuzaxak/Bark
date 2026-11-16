@@ -9,17 +9,10 @@
 import NookDesign
 import SwiftUI
 
-enum Browsers {
-    case arc
-    case chrome
-    case safari
-    case dia
-    case firefox
-    case zen
-}
-
 struct ImportStage: View {
     @Binding var selectedBrowser: Browsers
+    /// Why the last choice imported nothing.
+    var message: String?
 
     var body: some View {
         VStack(spacing: 24) {
@@ -28,8 +21,14 @@ struct ImportStage: View {
                 .foregroundStyle(.white)
             HStack(spacing: 24) {
                 browserButton(icon: "globe", name: "Arc", browser: .arc)
+                browserButton(icon: "globe", name: "Chrome", browser: .chrome)
                 browserButton(icon: "safari", name: "Safari", browser: .safari)
                 browserButton(icon: "globe", name: "Dia", browser: .dia)
+            }
+            if let message {
+                Text(message)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.white.opacity(0.8))
             }
         }
     }

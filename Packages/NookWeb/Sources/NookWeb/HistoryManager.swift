@@ -107,6 +107,12 @@ public final class HistoryManager {
         }
     }
 
+    /// `importVisits`, returning once the store holds them.
+    public func importVisitsAndWait(_ visits: [HistoryVisit]) async {
+        importVisits(visits)
+        await pendingWrite?.value
+    }
+
     /// Paged by offset, so a caller that deleted rows it already shows asks for exactly the next ones.
     public func getHistory(days: Int = 7, offset: Int = 0, limit: Int = 50) async -> (entries: [HistoryEntry], hasMore: Bool) {
         let profile = currentProfileId

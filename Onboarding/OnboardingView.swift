@@ -18,6 +18,8 @@ struct OnboardingView: View {
     @State private var isLoading: Bool = false
     @State private var showSafariImportFlow: Bool = false
 
+    private var session: BrowserImportSession { browserManager.importSession }
+
     var body: some View {
         ZStack {
             // A fixed dark backdrop: the stages draw white text. The old blur showed glass while
@@ -41,10 +43,12 @@ struct OnboardingView: View {
                     StageFooter(
                         currentStage: currentStage,
                         totalStages: 3,
-                        isLoading: isLoading,
+                        isLoading: isLoading || session.isRunning,
                         onContinue: advance,
                         onBack: goBack,
-                        onSkip: skipImport
+                        onSkip: skipImport,
+                        onCancel: session.isRunning ? { session.stop() } : nil,
+                        continueText: currentStage == 1 && session.summary?.foundNothing == false ? "Continue" : nil
                     )
                 }
             }
@@ -55,7 +59,7 @@ struct OnboardingView: View {
         .focusable()
         .focusEffectDisabled()
         .onKeyPress(.return) {
-            if !isLoading && !showSafariImportFlow {
+            if !isLoading && !session.isRunning && !showSafariImportFlow {
                 advance()
                 return .handled
             }
@@ -83,7 +87,22 @@ struct OnboardingView: View {
         } else {
             switch currentStage {
             case 0: HelloStage()
-            case 1: ImportStage(selectedBrowser: $selectedBrowser)
+            case 1:
+                if let summary = session.summary, !summary.foundNothing {
+                    BrowserImportResultView(summary: summary) { item in
+                        browserManager.browserImporter(progress: session.progress).openWebStorePage(item)
+                    }
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: 480)
+                } else {
+                    VStack(spacing: 16) {
+                        ImportStage(selectedBrowser: $selectedBrowser, message: session.summary?.nothingFoundMessage)
+                        if session.isRunning, let browser = session.browser {
+                            BrowserImportProgressView(browser: browser, progress: session.progress)
+                                .foregroundStyle(.white)
+                        }
+                    }
+                }
             case 2: FinalStage()
             default: EmptyView()
             }
@@ -97,18 +116,31 @@ struct OnboardingView: View {
             return
         }
 
-        if currentStage == 1 && selectedBrowser == .safari {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                showSafariImportFlow = true
-            }
-        } else if currentStage == 1 {
-            withAnimation(.easeInOut(duration: 0.25)) {
-                isLoading = true
-            }
-            performImport {
+        if currentStage == 1 {
+            switch OnboardingImportStep.next(choice: selectedBrowser, shown: session.summary) {
+            case .moveOn:
                 withAnimation(.easeInOut(duration: 0.25)) {
+                    session.dismiss()
                     currentStage += 1
-                    isLoading = false
+                }
+            case .start(let browser):
+                session.dismiss()
+                browserManager.startImport(browser)
+            case .safariFlow:
+                session.dismiss()
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    showSafariImportFlow = true
+                }
+            case .otherImport:
+                session.dismiss()
+                withAnimation(.easeInOut(duration: 0.25)) {
+                    isLoading = true
+                }
+                performImport {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        currentStage += 1
+                        isLoading = false
+                    }
                 }
             }
         } else {
@@ -120,14 +152,7 @@ struct OnboardingView: View {
 
     private func performImport(completion: @escaping () -> Void) {
         Task {
-            switch selectedBrowser {
-            case .arc:
-                await browserManager.importArcData()
-            case .dia:
-                await browserManager.importDiaData()
-            default:
-                break
-            }
+            if selectedBrowser == .dia { await browserManager.importDiaData() }
             await MainActor.run {
                 completion()
             }
@@ -136,6 +161,7 @@ struct OnboardingView: View {
 
     private func skipImport() {
         withAnimation(.easeInOut(duration: 0.25)) {
+            session.dismiss()
             currentStage = 2
         }
     }

@@ -541,5 +541,7 @@ struct PrivacySettingsView: View {
 
 #Preview {
     PrivacySettingsView(cookieManager: CookieManager(), cacheManager: CacheManager())
-        .environmentObject(BrowserManager(settings: NookSettingsService(), windowRegistry: WindowRegistry()))
+        .environmentObject(BrowserManager(settings: NookSettingsService(), windowRegistry: WindowRegistry(), importManager: ImportManager(
+            sources: .fixtures(in: FileManager.default.temporaryDirectory),
+            workDirectory: FileManager.default.temporaryDirectory.appendingPathComponent("ImportCopies", isDirectory: true))))
 }

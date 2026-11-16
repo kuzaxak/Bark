@@ -425,7 +425,8 @@ class BrowserManager: ObservableObject {
     var contentBlockerManager: ContentBlockerManager
     var sponsorBlockManager: SponsorBlockManager
     var findManager: FindManager
-    var importManager: ImportManager
+    let importManager: ImportManager
+    let importSession: BrowserImportSession
     var zoomManager = ZoomManager()
     var keyboardShortcutManager: KeyboardShortcutManager?
     weak var mcpManager: MCPManager?
@@ -461,6 +462,7 @@ class BrowserManager: ObservableObject {
     init(
         settings: NookSettingsService,
         windowRegistry: WindowRegistry,
+        importManager: ImportManager,
         persistence: Persistence? = nil,
         userDefaults: UserDefaults? = nil,
         downloadManager: DownloadManager? = nil,
@@ -519,7 +521,8 @@ class BrowserManager: ObservableObject {
         self.splitManager = SplitViewManager()
         self.gradientColorManager = GradientColorManager()
         self.findManager = FindManager()
-        self.importManager = ImportManager()
+        self.importManager = importManager
+        self.importSession = BrowserImportSession()
 
         // Phase 2: wire dependencies and perform side effects (safe to use self)
         self.compositorManager?.browserManager = self

@@ -105,7 +105,8 @@ func parseChromiumExtensionIDs(_ preferenceFiles: [Data]) -> [String] {
     for data in preferenceFiles {
         let root = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
         let settings = (root?["extensions"] as? [String: Any])?["settings"] as? [String: Any] ?? [:]
-        for (id, value) in settings.sorted(by: { $0.key < $1.key }) {
+        // An extension id is 32 letters from a to p (components/crx_file/id_util.cc).
+        for (id, value) in settings.sorted(by: { $0.key < $1.key }) where id.count == 32 && id.allSatisfy({ ("a"..."p").contains($0) }) {
             guard let entry = value as? [String: Any], entry["from_webstore"] as? Bool == true,
                   (entry["disable_reasons"] as? [Any] ?? []).isEmpty, entry["state"] as? Int != 0,
                   !ids.contains(id) else { continue }

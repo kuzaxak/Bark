@@ -7,7 +7,7 @@ import AppKit
 @MainActor
 final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
-        case about, settings, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
+        case about, settings, importBrowser, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
         case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
         case nextSpace, previousSpace, manageExtensions
     }
@@ -26,9 +26,9 @@ final class ChromiumAppMenu: NSObject {
     }
 
     /// Items with no effect in Nook's windows: toolbar and omnibox options, Cast with no toolbar to
-    /// anchor to, Chromium's bookmarks import, home page and help.
+    /// anchor to, home page and help.
     private static let hiddenItems = [Tag.bookmarkBar, Tag.fullscreenToolbar, Tag.fullURLs, Tag.touchBar, Tag.verticalTabs,
-                                      Tag.verticalTabsCollapse, Tag.importSettings, Tag.searchTheWeb, Tag.lensShortcut,
+                                      Tag.verticalTabsCollapse, Tag.searchTheWeb, Tag.lensShortcut,
                                       Tag.aiModeButton, Tag.searchTools, Tag.cast, Tag.home, Tag.help]
     /// Chromium's key for these never reaches it in Nook's windows; the items still work when clicked.
     private static let keylessItems = [Tag.openFile, Tag.clearBrowsingData]
@@ -74,7 +74,8 @@ final class ChromiumAppMenu: NSObject {
             item.keyEquivalentModifierMask = []
         }
         let routed: [(menu: Int, tag: Int, command: Command)] = [
-            (Tag.appMenu, Tag.about, .about), (Tag.appMenu, Tag.settings, .settings), (Tag.appMenu, Tag.quit, .quit),
+            (Tag.appMenu, Tag.about, .about), (Tag.appMenu, Tag.settings, .settings),
+            (Tag.appMenu, Tag.importSettings, .importBrowser), (Tag.appMenu, Tag.quit, .quit),
             (Tag.fileMenu, Tag.newTab, .newTab), (Tag.fileMenu, Tag.reopenClosedTab, .reopenClosedTab),
             (Tag.fileMenu, Tag.focusAddress, .focusAddress), (Tag.fileMenu, Tag.closeTab, .closeTab),
             (Tag.historyMenu, Tag.history, .history), (Tag.windowMenu, Tag.downloads, .downloads),
@@ -86,6 +87,7 @@ final class ChromiumAppMenu: NSObject {
             item.representedObject = route.command
             routedItems[route.command] = item
         }
+        routedItems[.importBrowser]?.title = "Import from Another Browser…"
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
         let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
                          ("Toggle AI Assistant", .toggleAIAssistant),

@@ -71,7 +71,7 @@ enum Check {
         for tag in [40009, 40250, 40259, 40251, 40282, 40299, 40296, 34058, 34061, 35011] {
             precondition(item(main, 57327, tag).isHidden, "View item \(tag) must be hidden")
         }
-        for (top, tag) in [(57325, 40014), (57324, 33003), (57330, 40020)] {
+        for (top, tag) in [(57324, 33003), (57330, 40020)] {
             precondition(item(main, top, tag).isHidden, "item \(tag) must be hidden")
         }
         precondition(main.item(withTag: 57343)!.submenu!.items.last!.submenu!.item(withTag: 39002)!.isHidden, "Search the Web must be hidden")
@@ -98,7 +98,8 @@ enum Check {
         precondition(item(main, 57326, 40000).action == #selector(NSApplication.terminate(_:)), "Open File still goes to Chromium")
 
         let routed: [(Int, Int, ChromiumAppMenu.Command)] = [
-            (57325, 40018, .about), (57325, 40015, .settings), (57325, 34031, .quit), (57326, 34014, .newTab), (57326, 34028, .reopenClosedTab),
+            (57325, 40018, .about), (57325, 40015, .settings), (57325, 40014, .importBrowser), (57325, 34031, .quit),
+            (57326, 34014, .newTab), (57326, 34028, .reopenClosedTab),
             (57326, 39001, .focusAddress), (57326, 34015, .closeTab), (57324, 40010, .history),
             (57321, 40012, .downloads),
         ]
@@ -109,6 +110,9 @@ enum Check {
             _ = entry.target?.perform(entry.action, with: entry)
             precondition(ran == [command], "\(command) ran \(ran)")
         }
+
+        precondition(!item(main, 57325, 40014).isHidden && item(main, 57325, 40014).title == "Import from Another Browser…",
+                     "Chromium's import item opens Bark's import from Arc or Chrome")
 
         // A key the person moved in Settings > Shortcuts: the menu shows the new one and no longer runs the old one.
         installer.showKeys([.closeTab: .init(equivalent: "k", modifiers: [.command, .option]), .newTab: .init(equivalent: "", modifiers: [])])

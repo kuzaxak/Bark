@@ -16,11 +16,14 @@ struct StageFooter: View {
     var onContinue: () -> Void
     var onBack: () -> Void
     var onSkip: (() -> Void)? = nil
+    /// Stops what the primary button started, while it runs.
+    var onCancel: (() -> Void)? = nil
+    var continueText: String? = nil
 
     var secondaryText: String {
         switch currentStage {
         case 0: return ""
-        case 1: return "Skip"
+        case 1: return isLoading && onCancel != nil ? "Cancel" : "Skip"
         default: return "Back"
         }
     }
@@ -28,6 +31,8 @@ struct StageFooter: View {
     var primaryText: String {
         if isLoading {
             return "Importing data..."
+        } else if let continueText {
+            return continueText
         } else if currentStage == totalStages - 1 {
             return "Start browsing"
         } else {
@@ -69,7 +74,7 @@ struct StageFooter: View {
             .disabled(isLoading)
             if !(currentStage == 0) {
                 Button {
-                    if currentStage == 1, let onSkip { onSkip() } else { onBack() }
+                    if isLoading, let onCancel { onCancel() } else if currentStage == 1, let onSkip { onSkip() } else { onBack() }
                 } label: {
                     Text(secondaryText)
                         .font(.system(size: 14, weight: .semibold))
@@ -77,7 +82,7 @@ struct StageFooter: View {
                         .padding(12)
                 }
                 .buttonStyle(.plain)
-                .disabled(isLoading)
+                .disabled(isLoading && onCancel == nil)
             }
 
         }
