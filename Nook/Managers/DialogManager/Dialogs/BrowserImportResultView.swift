@@ -56,25 +56,12 @@ struct BrowserImportResultView: View {
             if !summary.extensions.isEmpty {
                 Text("Add each extension from the Chrome Web Store; Bark installs nothing on its own.")
                     .foregroundStyle(.secondary)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(summary.extensions) { item in
-                            HStack {
-                                Text(item.id)
-                                    .font(.system(size: 11, design: .monospaced))
-                                    .lineLimit(1)
-                                    .truncationMode(.middle)
-                                Spacer()
-                                Button(opened.contains(item.id) ? "Added to \(tabs.space(item.spaceID)?.name ?? "its space")" : "Open in Web Store") {
-                                    open(item)
-                                    opened.insert(item.id)
-                                }
-                                .disabled(opened.contains(item.id))
-                            }
-                        }
-                    }
+                if summary.extensions.count <= 6 {
+                    extensionRows
+                } else {
+                    ScrollView { extensionRows }
+                        .frame(height: 180)
                 }
-                .frame(maxHeight: 180)
             }
             if !summary.foundNothing {
                 Text(BrowserImportSummary.signInNote)
@@ -83,6 +70,25 @@ struct BrowserImportResultView: View {
         }
         .font(NookDesign.Font.body)
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var extensionRows: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(summary.extensions) { item in
+                HStack {
+                    Text(item.id)
+                        .font(.system(size: 11, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer()
+                    Button(opened.contains(item.id) ? "Added to \(tabs.space(item.spaceID)?.name ?? "its space")" : "Open in Web Store") {
+                        open(item)
+                        opened.insert(item.id)
+                    }
+                    .disabled(opened.contains(item.id))
+                }
+            }
+        }
     }
 
     private func count(_ value: Int, _ one: String, _ many: String) -> some View {

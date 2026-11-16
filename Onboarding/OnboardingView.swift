@@ -89,11 +89,16 @@ struct OnboardingView: View {
             case 0: HelloStage()
             case 1:
                 if let summary = session.summary, !summary.foundNothing {
-                    BrowserImportResultView(summary: summary) { item in
-                        browserManager.browserImporter(progress: session.progress).openWebStorePage(item)
+                    VStack(spacing: 24) {
+                        Text("From \(summary.browser.name)")
+                            .font(.system(size: 22, weight: .semibold))
+                            .foregroundStyle(.white)
+                        BrowserImportResultView(summary: summary) { item in
+                            browserManager.browserImporter(progress: session.progress).openWebStorePage(item)
+                        }
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: 480)
                     }
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: 480)
                 } else {
                     VStack(spacing: 16) {
                         ImportStage(selectedBrowser: $selectedBrowser, message: session.summary?.nothingFoundMessage)
