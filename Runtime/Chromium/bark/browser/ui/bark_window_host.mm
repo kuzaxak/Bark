@@ -172,7 +172,8 @@ void BarkWindowHost::RemoveClient(BarkBrowserWindow* client) {
 }
 
 bool BarkWindowHost::Select(BarkBrowserWindow* client) {
-  if (closing_ || !std::ranges::contains(clients_, client)) {
+  if (closing_ || !std::ranges::contains(clients_, client) ||
+      client->browser()->IsDeleteScheduled()) {
     return false;
   }
   if (client != selected_) {

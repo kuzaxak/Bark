@@ -178,6 +178,9 @@ gfx::Rect BarkBrowserWindow::GetPageBoundsInScreen() const {
 }
 
 void BarkBrowserWindow::OnHostActivationChanged(bool active) {
+  if (browser_->IsDeleteScheduled()) {
+    return;
+  }
   if (active) {
     BrowserActiveStateManager::From(browser_)->DidBecomeActive();
   } else {

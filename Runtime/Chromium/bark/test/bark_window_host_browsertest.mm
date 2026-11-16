@@ -12,8 +12,11 @@
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/command_line.h"
 #include "base/run_loop.h"
+#include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
+#include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
@@ -40,6 +43,7 @@
 #include "testing/gtest_mac.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/view.h"
+#include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/widget.h"
 
 @interface NSWindow (BarkWindowHostTest)
@@ -1088,4 +1092,71 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, CloseButtonAsksEveryClient) {
   home_closed.Wait();
   EXPECT_EQ(nullptr, FindBrowser(work));
   EXPECT_EQ(nullptr, FindBrowser(home));
+}
+
+// AppKit makes another window key while a closing one orders out, so a quit
+// with two windows open can deliver key status to a window whose browser has
+// finished closing but is not deleted yet.
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       ClosedBrowserIgnoresActivation) {
+  ASSERT_EQ(1, barc_window_show(OpenHostWindow()));
+  const int32_t closing = OpenHostWindow();
+  ASSERT_EQ(1, barc_window_show(closing));
+  auto* browser = FindBrowser(closing);
+  auto* host = HostOf(closing);
+  int activations = 0;
+  int delivered = 0;
+  auto activated = browser->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) { ++activations; }));
+  auto closed = browser->RegisterBrowserDidClose(
+      base::BindLambdaForTesting([&](BrowserWindowInterface* done) {
+        ASSERT_TRUE(done->IsDeleteScheduled());
+        BrowserActiveStateManager::From(done)->DidBecomeInactive();
+        activations = 0;
+        host->OnWidgetActivationChanged(host->widget(), true);
+        done->GetWindow()->Show();
+        done->GetWindow()->ShowInactive();
+        done->GetWindow()->Activate();
+        auto* native = static_cast<views::NativeWidgetMac*>(
+            host->widget()->native_widget());
+        EXPECT_FALSE(native->ExecuteCommand(
+            IDC_NEW_TAB, WindowOpenDisposition::CURRENT_TAB, false));
+        EXPECT_TRUE(done->GetTabStripModel()->empty());
+        ++delivered;
+      }));
+  ui_test_utils::BrowserDestroyedObserver destroyed(browser);
+  ASSERT_EQ(1, barc_window_close(closing));
+  destroyed.Wait();
+  EXPECT_EQ(1, delivered);
+  EXPECT_EQ(0, activations);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ClosedClientIsNotSelected) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  ASSERT_EQ(1, barc_window_show(work));
+  auto* work_browser = FindBrowser(work);
+  auto* home_browser = FindBrowser(home);
+  auto* host = HostOf(work);
+  int activations = 0;
+  int delivered = 0;
+  auto activated = home_browser->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) { ++activations; }));
+  auto closed = home_browser->RegisterBrowserDidClose(
+      base::BindLambdaForTesting([&](BrowserWindowInterface* done) {
+        EXPECT_FALSE(host->Select(bark::BarkBrowserWindow::FromBrowser(done)));
+        done->GetWindow()->Show();
+        EXPECT_TRUE(work_browser->IsSelectedForNativeWindow());
+        ++delivered;
+      }));
+  ui_test_utils::BrowserDestroyedObserver destroyed(home_browser);
+  ASSERT_EQ(1, barc_window_close(home));
+  destroyed.Wait();
+  EXPECT_EQ(1, delivered);
+  EXPECT_EQ(0, activations);
+  EXPECT_TRUE(work_browser->IsSelectedForNativeWindow());
+  EXPECT_EQ(work_browser,
+            GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(
+                host->widget()->GetNativeWindow()));
 }

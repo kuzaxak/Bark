@@ -116,7 +116,9 @@ BarkNativeWidgetMac::~BarkNativeWidgetMac() = default;
 
 BrowserWindowInterface* BarkNativeWidgetMac::SelectedBrowser() const {
   auto* selected = host_ ? host_->selected() : nullptr;
-  return selected ? selected->browser() : nullptr;
+  return selected && !selected->browser()->IsDeleteScheduled()
+             ? selected->browser()
+             : nullptr;
 }
 
 void BarkNativeWidgetMac::ValidateUserInterfaceItem(
