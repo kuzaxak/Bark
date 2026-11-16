@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/toasts/toast_controller.cc b/chrome/browser/ui/toasts/toast_controller.cc
+index 4b17a93554..eacb5b7aec 100644
+--- a/chrome/browser/ui/toasts/toast_controller.cc
++++ b/chrome/browser/ui/toasts/toast_controller.cc
+@@ -456,7 +456,7 @@ views::View* ToastController::GetAnchorView(bool global_scope) {
+       return multi_contents_view
+                  ? multi_contents_view->GetActiveContentsContainerView()
+                        ->GetToastAnchorView()
+-                 : nullptr;
++                 : browser_elements_views->GetView(kTopContainerElementId);
+     }
+   }
+   return nullptr;

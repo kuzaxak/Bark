@@ -18,6 +18,7 @@
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views_context.h"
 #include "chrome/browser/ui/views/find_bar_owner.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "components/web_modal/web_contents_modal_dialog_host.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
 #include "ui/gfx/geometry/rect.h"
@@ -180,6 +181,41 @@ class BarkExclusiveAccessContext : public ExclusiveAccessContext,
   std::optional<base::CancelableTaskTracker::TaskId> bubble_destruction_task_;
   base::CancelableTaskTracker bubble_tasks_;
   base::WeakPtrFactory<BarkExclusiveAccessContext> weak_factory_{this};
+};
+
+// Answers bubbles that would hang off a toolbar with the page's trailing
+// anchor; a host window has no toolbar object to return.
+class BarkToolbarButtonProvider : public ToolbarButtonProvider {
+ public:
+  explicit BarkToolbarButtonProvider(BarkBrowserWindow* window);
+  ~BarkToolbarButtonProvider() override;
+
+  ExtensionsContainerViews* GetExtensionsContainerViews() override;
+  PinnedToolbarActions* GetPinnedToolbarActions() override;
+  gfx::Size GetToolbarButtonSize() const override;
+  views::BubbleAnchor GetDefaultExtensionDialogAnchor() override;
+  page_actions::PageActionViewInterface* GetPageActionViewInterface(
+      actions::ActionId action_id) override;
+  AppMenuControl* GetAppMenuControl() override;
+  gfx::Rect GetFindBarBoundingBox(int contents_bottom) override;
+  void FocusToolbar() override;
+  views::AccessiblePaneView* GetAsAccessiblePaneView() override;
+  views::BubbleAnchor GetBubbleAnchor(
+      std::optional<actions::ActionId> action_id) override;
+  views::BubbleAnchor GetPageActionBubbleAnchor(
+      actions::ActionId action_id) override;
+  void ZoomChangedForActiveTab(bool can_show_bubble) override;
+  AvatarToolbarButtonInterface* GetAvatarToolbarButtonInterface() override;
+  ToolbarButton* GetBackButton() override;
+  ReloadControl* GetReloadButton() override;
+  ToolbarButton* GetDownloadButton() override;
+  WebUIToolbarWebView* GetWebUIToolbarViewForTesting() override;
+
+ private:
+  views::BubbleAnchor TrailingAnchor();
+
+  const raw_ptr<BarkBrowserWindow> window_;
+  ui::ScopedUnownedUserData<ToolbarButtonProvider> scoped_user_data_;
 };
 
 class BarkFindBarOwner : public FindBarOwner {

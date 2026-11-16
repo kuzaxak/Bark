@@ -20,6 +20,10 @@ namespace content {
 class WebContents;
 }  // namespace content
 
+namespace autofill {
+class AutofillBubbleHandlerImpl;
+}  // namespace autofill
+
 namespace views {
 class Widget;
 }  // namespace views
@@ -31,6 +35,7 @@ class BarkFindBarOwner;
 class BarkModalDialogHost;
 class BarkSidePanelUI;
 class BarkStubLocationBar;
+class BarkToolbarButtonProvider;
 class BarkWindowHost;
 
 // The BrowserWindow of one Browser shown in a Bark window host. It builds no
@@ -220,6 +225,8 @@ class BarkBrowserWindow : public BrowserWindow,
   std::unique_ptr<BarkExclusiveAccessContext> exclusive_access_context_;
   std::unique_ptr<BarkFindBarOwner> find_bar_owner_;
   std::unique_ptr<BarkSidePanelUI> side_panel_ui_;
+  std::unique_ptr<BarkToolbarButtonProvider> toolbar_button_provider_;
+  std::unique_ptr<autofill::AutofillBubbleHandlerImpl> autofill_bubble_handler_;
   std::map<content::WebContents*, std::unique_ptr<CrashWatcher>>
       crash_watchers_;
   base::WeakPtr<views::Widget> pending_download_warning_;

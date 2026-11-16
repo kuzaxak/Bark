@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/devtools/devtools_window.cc b/chrome/browser/devtools/devtools_window.cc
-index 7613579e79..0918c6949f 100644
+index 7613579e79..d816bb204e 100644
 --- a/chrome/browser/devtools/devtools_window.cc
 +++ b/chrome/browser/devtools/devtools_window.cc
 @@ -928,7 +928,7 @@ void DevToolsWindow::ToggleDevToolsWindow(
@@ -47,7 +47,15 @@ index 7613579e79..0918c6949f 100644
    DCHECK(is_docked_);
    life_stage_ = kClosing;
    main_web_contents_->DispatchBeforeUnload(false /* auto_cancel */);
-@@ -2102,6 +2108,11 @@ void DevToolsWindow::CreateDevToolsBrowser() {
+@@ -1779,7 +1785,6 @@ void DevToolsWindow::SetIsDocked(bool dock_requested) {
+     return;
+   }
+ 
+-  DCHECK(can_dock_ || !dock_requested);
+   if (!can_dock_) {
+     dock_requested = false;
+   }
+@@ -2102,6 +2107,11 @@ void DevToolsWindow::CreateDevToolsBrowser() {
  }
  
  void DevToolsWindow::DoAction(const DevToolsToggleAction& action) {

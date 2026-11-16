@@ -2,6 +2,7 @@
 
 #import <AppKit/AppKit.h>
 
+#include <algorithm>
 #include <utility>
 
 #include "bark/bridge/barc_bridge.h"
@@ -9,12 +10,18 @@
 #include "bark/browser/ui/bark_native_widget_mac.h"
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
+#include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/views/bubble_anchor_util_views.h"
+#include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "content/public/browser/web_contents.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+#include "ui/views/bubble/bubble_border.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view.h"
@@ -26,7 +33,31 @@ namespace bark {
 
 namespace {
 constexpr char kBarkWindowHostKey[] = "__BARK_WINDOW_HOST__";
+constexpr int kTrailingAnchorInset = 8;
 }  // namespace
+
+// Tells the host when the page view it last saw selected changes its frame:
+// the app lays the page out again on sidebar toggle and Library without the
+// window moving.
+class BarkWindowHost::PageWatch {
+ public:
+  PageWatch(NSView* page, BarkWindowHost* host) : page_(page) {
+    page.postsFrameChangedNotifications = YES;
+    observer_ = [NSNotificationCenter.defaultCenter
+        addObserverForName:NSViewFrameDidChangeNotification
+                    object:page
+                     queue:nil
+                usingBlock:^(NSNotification*) {
+                  host->OnSelectedPageChanged();
+                }];
+  }
+  ~PageWatch() { [NSNotificationCenter.defaultCenter removeObserver:observer_]; }
+  NSView* page() const { return page_; }
+
+ private:
+  __weak NSView* page_;
+  id observer_;
+};
 
 // AppKit's close button asks the client view before closing the NSWindow; the
 // host answers by running its clients' close, which may prompt.
@@ -124,8 +155,12 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   contents->SetLayoutManager(std::make_unique<views::FillLayout>());
   root_host_ =
       contents->AddChildView(std::make_unique<views::NativeViewHost>());
-  anchor_ = contents->AddChildView(std::make_unique<views::View>());
-  anchor_->SetProperty(views::kViewIgnoredByLayoutKey, true);
+  for (auto* anchor : {&leading_anchor_, &trailing_anchor_, &page_anchor_}) {
+    *anchor = contents->AddChildView(std::make_unique<views::View>());
+    (*anchor)->SetProperty(views::kViewIgnoredByLayoutKey, true);
+  }
+  page_anchor_->SetProperty(views::kElementIdentifierKey,
+                            kTopContainerElementId);
   delegate_->SetContentsView(std::move(contents));
   views::Widget::InitParams params(
       views::Widget::InitParams::CLIENT_OWNS_WIDGET);
@@ -143,8 +178,9 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
 
 BarkWindowHost::~BarkWindowHost() {
   closing_ = true;
+  page_watch_.reset();
   root_host_ = nullptr;
-  anchor_ = nullptr;
+  leading_anchor_ = trailing_anchor_ = page_anchor_ = nullptr;
   if (widget_) {
     widget_->RemoveObserver(this);
     widget_->SetNativeWindowProperty(kBarkWindowHostKey, nullptr);
@@ -202,6 +238,7 @@ void BarkWindowHost::SetSelected(BarkBrowserWindow* client,
   if (!incoming || selected_ != incoming.get() || closing_) {
     return;
   }
+  OnSelectedPageChanged();
   widget_->UpdateWindowTitle();
   fullscreen_kind_ = CurrentFullscreenKind();
   observers_.Notify(&Observer::OnFullscreenChanged,
@@ -306,18 +343,75 @@ HostFullscreen BarkWindowHost::CurrentFullscreenKind() const {
              : HostFullscreen::kWindow;
 }
 
-views::View* BarkWindowHost::AnchorAt(const gfx::Point& screen_point) {
-  if (!anchor_) {
-    return nullptr;
+views::View* BarkWindowHost::LeadingAnchor() {
+  UpdateAnchors();
+  return leading_anchor_;
+}
+
+views::View* BarkWindowHost::TrailingAnchor() {
+  UpdateAnchors();
+  return trailing_anchor_;
+}
+
+views::View* BarkWindowHost::PageAnchor() {
+  UpdateAnchors();
+  return page_anchor_;
+}
+
+void BarkWindowHost::UpdateAnchors() {
+  if (!page_anchor_ || !selected_) {
+    return;
   }
-  gfx::Point point = screen_point;
-  views::View::ConvertPointFromScreen(anchor_->parent(), &point);
-  anchor_->SetBoundsRect(gfx::Rect(point, gfx::Size()));
-  return anchor_;
+  gfx::Rect page = selected_->GetPageBoundsInScreen();
+  gfx::Point origin = page.origin();
+  views::View::ConvertPointFromScreen(page_anchor_->parent(), &origin);
+  page.set_origin(origin);
+  // Chromium's toast hangs from the bottom of this view, up to its full
+  // height below it in page full screen; the strip left off the page's foot
+  // keeps the pill inside the page in both cases.
+  const int toast_strip =
+      ChromeLayoutProvider::Get()->GetDistanceMetric(
+          DISTANCE_TOAST_BUBBLE_HEIGHT) -
+      views::BubbleBorder::kShadowBlur + kTrailingAnchorInset;
+  page_anchor_->SetBoundsRect(gfx::Rect(
+      page.x(), page.y(), page.width(), std::max(0, page.height() - toast_strip)));
+  leading_anchor_->SetBoundsRect(gfx::Rect(
+      page.x() + bubble_anchor_util::kNoToolbarLeftOffset, page.y(), 0, 0));
+  trailing_anchor_->SetBoundsRect(
+      gfx::Rect(page.right() - kTrailingAnchorInset, page.y(), 0, 0));
+}
+
+void BarkWindowHost::WatchSelectedPage() {
+  auto* contents =
+      selected_ ? selected_->browser()->GetTabStripModel()->GetActiveWebContents()
+                : nullptr;
+  NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
+  if (page_watch_ && page_watch_->page() == page) {
+    return;
+  }
+  page_watch_ = page ? std::make_unique<PageWatch>(page, this) : nullptr;
+}
+
+void BarkWindowHost::OnSelectedPageChanged() {
+  if (closing_) {
+    return;
+  }
+  WatchSelectedPage();
+  UpdateAnchors();
+  if (selected_) {
+    selected_->OnHostBoundsChanged();
+  }
+}
+
+void BarkWindowHost::OnClientActiveTabChanged(BarkBrowserWindow* client) {
+  if (client == selected_) {
+    OnSelectedPageChanged();
+  }
 }
 
 void BarkWindowHost::OnWidgetBoundsChanged(views::Widget* widget,
                                            const gfx::Rect& new_bounds) {
+  UpdateAnchors();
   for (auto& client : clients_) {
     client->OnHostBoundsChanged();
   }
@@ -336,8 +430,9 @@ void BarkWindowHost::OnWidgetActivationChanged(views::Widget* widget,
 
 void BarkWindowHost::OnWidgetDestroying(views::Widget* widget) {
   closing_ = true;
+  page_watch_.reset();
   root_host_ = nullptr;
-  anchor_ = nullptr;
+  leading_anchor_ = trailing_anchor_ = page_anchor_ = nullptr;
 }
 
 void BarkWindowHost::ArmClose() {

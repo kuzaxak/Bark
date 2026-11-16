@@ -2,8 +2,8 @@
 
 #import <AppKit/AppKit.h>
 
-#include "bark/bridge/barc_runtime_startup.h"
 #include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_command_policy.h"
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/apple/foundation_util.h"
 #include "chrome/browser/ui/browser_command_controller.h"
@@ -124,6 +124,12 @@ BrowserWindowInterface* BarkNativeWidgetMac::SelectedBrowser() const {
 void BarkNativeWidgetMac::ValidateUserInterfaceItem(
     int32_t command,
     remote_cocoa::mojom::ValidateUserInterfaceItemResult* result) {
+  if (!HostWindowOffersCommand(command)) {
+    result->enable = false;
+    result->set_hidden_state = true;
+    result->new_hidden_state = true;
+    return;
+  }
   auto* browser = SelectedBrowser();
   result->enable = browser && chrome::SupportsCommand(browser, command) &&
                    chrome::IsCommandEnabled(browser, command);
@@ -134,12 +140,11 @@ bool BarkNativeWidgetMac::WillExecuteCommand(
     WindowOpenDisposition window_open_disposition,
     bool is_before_first_responder) {
   auto* browser = SelectedBrowser();
-  if (!browser ||
-      barc::KeyCommandBelongsToApplication(GetNativeWindow(), command)) {
+  if (!browser) {
     return false;
   }
   if (!is_before_first_responder) {
-    return true;
+    return HostWindowOffersCommand(command);
   }
   if (ui::GlobalAcceleratorListener::GetInstance() &&
       ui::GlobalAcceleratorListener::GetInstance()

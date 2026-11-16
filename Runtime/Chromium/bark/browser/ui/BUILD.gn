@@ -4,6 +4,8 @@ source_set("ui") {
   sources = [
     "bark_browser_window.h",
     "bark_browser_window.mm",
+    "bark_command_policy.cc",
+    "bark_command_policy.h",
     "bark_native_widget_mac.h",
     "bark_native_widget_mac.mm",
     "bark_window_factory.h",
@@ -34,6 +36,9 @@ source_set("ui") {
     "//chrome/browser/ui/views:bubble_anchor_util_views",
     "//chrome/browser/ui/views:find_bar_owner",
     "//chrome/browser/ui/views:find_bar_views",
+    "//chrome/browser/ui/views:layout_provider",
+    "//chrome/browser/ui/views/autofill:autofill_bubble_handler_impl",
+    "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//chrome/browser/ui/views/download",
     "//chrome/browser/ui/views/exclusive_access",
     "//chrome/browser/ui/views/translate",
@@ -47,6 +52,7 @@ source_set("ui") {
     "//ui/base",
     "//ui/base/accelerators/global_accelerator_listener",
     "//ui/gfx",
+    "//ui/menus",
     "//ui/views",
   ]
   frameworks = [ "AppKit.framework" ]

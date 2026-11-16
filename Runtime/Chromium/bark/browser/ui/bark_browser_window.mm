@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/sad_tab.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/views/autofill/autofill_bubble_handler_impl.h"
 #include "chrome/browser/ui/views/download/download_in_progress_dialog_view.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views_impl.h"
@@ -143,6 +144,9 @@ BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser,
       std::make_unique<BarkExclusiveAccessContext>(this);
   find_bar_owner_ = std::make_unique<BarkFindBarOwner>(this);
   side_panel_ui_ = std::make_unique<BarkSidePanelUI>(browser_);
+  toolbar_button_provider_ = std::make_unique<BarkToolbarButtonProvider>(this);
+  autofill_bubble_handler_ = std::make_unique<autofill::AutofillBubbleHandlerImpl>(
+      browser_, toolbar_button_provider_.get());
   BrowserElements::From(browser_)->AsA<BrowserElementsViewsImpl>()->Init(
       host_->widget()->GetClientContentsView());
   browser_->GetTabStripModel()->AddObserver(this);
@@ -154,6 +158,8 @@ BarkBrowserWindow::~BarkBrowserWindow() {
   if (auto warning = std::exchange(pending_download_warning_, {})) {
     warning->CloseNow();
   }
+  autofill_bubble_handler_.reset();
+  toolbar_button_provider_.reset();
   side_panel_ui_.reset();
   find_bar_owner_.reset();
   exclusive_access_context_.reset();
@@ -285,6 +291,7 @@ void BarkBrowserWindow::OnActiveTabChanged(content::WebContents* old_contents,
   }
   EnsureActiveTabHasNonZeroSize();
   UpdateTitleBar();
+  host_->OnClientActiveTabChanged(this);
 }
 
 void BarkBrowserWindow::OnTabDetached(content::WebContents* contents,
@@ -305,7 +312,7 @@ void BarkBrowserWindow::SetContentsSize(const gfx::Size& size) {
 }
 
 autofill::AutofillBubbleHandler* BarkBrowserWindow::GetAutofillBubbleHandler() {
-  return nullptr;
+  return autofill_bubble_handler_.get();
 }
 
 LocationBar* BarkBrowserWindow::GetLocationBar() const {

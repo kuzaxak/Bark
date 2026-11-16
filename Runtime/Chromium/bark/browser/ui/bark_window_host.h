@@ -102,9 +102,16 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   // Reads the window's and the selected client's full-screen state again.
   void UpdateFullscreen();
 
-  // A view with no size at `screen_point`, for bubbles that would hang off a
-  // toolbar. Null once the widget is gone.
-  views::View* AnchorAt(const gfx::Point& screen_point);
+  // Views bubbles hang from, placed on the selected client's page. Null once
+  // the widget is gone. Leading: no size, at the page's top-left past the
+  // toolbar offset. Trailing: no size, at its top-right, 8 pt in. Page: its
+  // rectangle, which toasts read as the top container.
+  views::View* LeadingAnchor();
+  views::View* TrailingAnchor();
+  views::View* PageAnchor();
+  // The selected client's page moved, resized or was replaced.
+  void OnSelectedPageChanged();
+  void OnClientActiveTabChanged(BarkBrowserWindow* client);
 
   // views::WidgetObserver:
   void OnWidgetBoundsChanged(views::Widget* widget,
@@ -119,6 +126,10 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   class Delegate;
   ~BarkWindowHost() override;
 
+  class PageWatch;
+
+  void UpdateAnchors();
+  void WatchSelectedPage();
   void ArmClose();
   void OnCloseRequested(views::Widget::ClosedReason reason);
   void SetSelected(BarkBrowserWindow* client, bool previous_stays);
@@ -134,7 +145,10 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   std::unique_ptr<Delegate> delegate_;
   std::unique_ptr<views::Widget> widget_;
   raw_ptr<views::NativeViewHost> root_host_ = nullptr;
-  raw_ptr<views::View> anchor_ = nullptr;
+  raw_ptr<views::View> leading_anchor_ = nullptr;
+  raw_ptr<views::View> trailing_anchor_ = nullptr;
+  raw_ptr<views::View> page_anchor_ = nullptr;
+  std::unique_ptr<PageWatch> page_watch_;
   bool closing_ = false;
   bool resetting_close_ = false;
   bool widget_fullscreen_ = false;

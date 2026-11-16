@@ -1,13 +1,14 @@
 diff --git a/chrome/browser/renderer_context_menu/render_view_context_menu.cc b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
-index b55c138d48..e0dcff5794 100644
+index b55c138d48..0b8c0b8f0b 100644
 --- a/chrome/browser/renderer_context_menu/render_view_context_menu.cc
 +++ b/chrome/browser/renderer_context_menu/render_view_context_menu.cc
-@@ -37,6 +37,15 @@
+@@ -37,6 +37,16 @@
  #include "base/system/sys_info.h"
  #include "build/branding_buildflags.h"
  #include "build/build_config.h"
 +#if BUILDFLAG(IS_MAC)
 +#include "bark/browser/content_blocking/native_content_blocker.h"
++#include "bark/browser/ui/bark_command_policy.h"
 +#include "bark/bridge/barc_runtime_startup.h"
 +#include "content/public/browser/navigation_handle.h"
 +#include "content/public/browser/navigation_entry.h"
@@ -18,7 +19,7 @@ index b55c138d48..e0dcff5794 100644
  #include "chrome/app/chrome_command_ids.h"
  #include "chrome/app/vector_icons/vector_icons.h"
  #include "chrome/browser/app_mode/app_mode_utils.h"
-@@ -242,6 +251,7 @@
+@@ -242,6 +252,7 @@
  #include "content/public/browser/spare_render_process_host_manager.h"
  #include "content/public/browser/ssl_status.h"
  #include "content/public/browser/web_contents.h"
@@ -26,7 +27,7 @@ index b55c138d48..e0dcff5794 100644
  #include "content/public/common/buildflags.h"
  #include "content/public/common/referrer.h"
  #include "content/public/common/url_constants.h"
-@@ -415,6 +425,170 @@ using extensions::MenuManager;
+@@ -415,6 +426,170 @@ using extensions::MenuManager;
  
  namespace {
  
@@ -197,7 +198,7 @@ index b55c138d48..e0dcff5794 100644
  constexpr int kMaxContentCustomCommands = 1000;
  constexpr int IDC_CONTENT_CONTEXT_CUSTOM_LAST =
      IDC_CONTENT_CONTEXT_CUSTOM_FIRST + kMaxContentCustomCommands;
-@@ -667,13 +841,14 @@ int UmaEnumForCommand(int key, UmaEnumIdLookupType type) {
+@@ -667,13 +842,14 @@ int UmaEnumForCommand(int key, UmaEnumIdLookupType type) {
         {IDC_CONTENT_CONTEXT_OPENLINK_ISOLATED, 169},
         {IDC_CONTENT_CONTEXT_ASK_GOOGLE_ABOUT_THIS_PAGE, 170},
         {IDC_CONTENT_CONTEXT_CONTEXTUAL_TASKS_SUBMENU, 171},
@@ -213,7 +214,17 @@ index b55c138d48..e0dcff5794 100644
    // LINT.ThenChange(//tools/metrics/histograms/metadata/ui/enums.xml:RenderViewContextMenuItem)
  
    // LINT.IfChange(ContextMenuOptionDesktop)
-@@ -1989,6 +2164,12 @@ void RenderViewContextMenu::AppendLinkItems() {
+@@ -1590,6 +1766,9 @@ void RenderViewContextMenu::InitMenu() {
+       AppendReadAnythingItem();
+     }
+   }
++#if BUILDFLAG(IS_MAC)
++  bark::RemoveUnofferedItems(GetBrowser(), &menu_model_);
++#endif
+ }
+ 
+ Profile* RenderViewContextMenu::GetProfile() const {
+@@ -1989,6 +2168,12 @@ void RenderViewContextMenu::AppendLinkItems() {
      }
  
      if (show_open_in_new_tab) {
@@ -226,7 +237,7 @@ index b55c138d48..e0dcff5794 100644
        menu_model_.AddItemWithStringId(
            IDC_CONTENT_CONTEXT_OPENLINKNEWTAB,
            in_app ? IDS_CONTENT_CONTEXT_OPENLINKNEWTAB_INAPP
-@@ -2008,7 +2189,11 @@ void RenderViewContextMenu::AppendLinkItems() {
+@@ -2008,7 +2193,11 @@ void RenderViewContextMenu::AppendLinkItems() {
        // Opening a link in split view should also go through the same
        // constraints as opening a link in a new tab since a split view tab is a
        // new tab that is then joined with the current active tab.
@@ -239,7 +250,7 @@ index b55c138d48..e0dcff5794 100644
          tabs::TabInterface* tab =
              tabs::TabInterface::MaybeGetFromContents(GetWebContents());
          auto [string_id, icon] =
-@@ -3384,6 +3569,13 @@ void RenderViewContextMenu::AppendLiveCaptionItem() {
+@@ -3384,6 +3573,13 @@ void RenderViewContextMenu::AppendLiveCaptionItem() {
  // Menu delegate functions -----------------------------------------------------
  
  bool RenderViewContextMenu::IsCommandIdEnabled(int id) const {
@@ -253,7 +264,7 @@ index b55c138d48..e0dcff5794 100644
  #if BUILDFLAG(IS_CHROMEOS)
    // Disable context menu in locked fullscreen mode to prevent users from
    // exiting this mode (the menu is not really disabled as the user can still
-@@ -3812,6 +4004,83 @@ void RenderViewContextMenu::OpenURLWithExtraHeaders(
+@@ -3812,6 +4008,83 @@ void RenderViewContextMenu::OpenURLWithExtraHeaders(
      bool started_from_context_menu,
      base::OnceCallback<void(content::NavigationHandle&)>
          navigation_handle_callback) {
@@ -337,7 +348,7 @@ index b55c138d48..e0dcff5794 100644
    RenderViewContextMenuBase::OpenURLWithExtraHeaders(
        url, referring_url, initiator, disposition, transition, extra_headers,
        started_from_context_menu, std::move(navigation_handle_callback));
-@@ -3848,6 +4117,17 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
+@@ -3848,6 +4121,17 @@ void RenderViewContextMenu::ExecuteCommand(int id, int event_flags) {
    }
  
    switch (id) {

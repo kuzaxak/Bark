@@ -112,9 +112,7 @@ LocationBarModel* BarkStubLocationBar::GetLocationBarModel() {
 }
 std::optional<bubble_anchor_util::AnchorConfiguration>
 BarkStubLocationBar::GetChipAnchor() {
-  gfx::Point corner = window_->GetPageBoundsInScreen().origin();
-  corner.Offset(bubble_anchor_util::kNoToolbarLeftOffset, 0);
-  views::View* anchor = window_->host()->AnchorAt(corner);
+  views::View* anchor = window_->host()->LeadingAnchor();
   if (!anchor) {
     return std::nullopt;
   }
@@ -358,6 +356,77 @@ gfx::Rect BarkExclusiveAccessContext::GetTopContainerBoundsInScreen() {
 void BarkExclusiveAccessContext::DestroyAnyExclusiveAccessBubble() {
   bubble_.reset();
   bubble_destruction_task_.reset();
+}
+
+// BarkToolbarButtonProvider ---------------------------------------------------
+
+BarkToolbarButtonProvider::BarkToolbarButtonProvider(BarkBrowserWindow* window)
+    : window_(window),
+      scoped_user_data_(window->browser()->GetUnownedUserDataHost(), *this) {}
+
+BarkToolbarButtonProvider::~BarkToolbarButtonProvider() = default;
+
+views::BubbleAnchor BarkToolbarButtonProvider::TrailingAnchor() {
+  views::View* anchor = window_->host()->TrailingAnchor();
+  return anchor ? views::BubbleAnchor(anchor) : views::BubbleAnchor();
+}
+
+ExtensionsContainerViews*
+BarkToolbarButtonProvider::GetExtensionsContainerViews() {
+  return nullptr;
+}
+PinnedToolbarActions* BarkToolbarButtonProvider::GetPinnedToolbarActions() {
+  return nullptr;
+}
+gfx::Size BarkToolbarButtonProvider::GetToolbarButtonSize() const {
+  return gfx::Size();
+}
+views::BubbleAnchor
+BarkToolbarButtonProvider::GetDefaultExtensionDialogAnchor() {
+  return TrailingAnchor();
+}
+page_actions::PageActionViewInterface*
+BarkToolbarButtonProvider::GetPageActionViewInterface(
+    actions::ActionId action_id) {
+  return nullptr;
+}
+AppMenuControl* BarkToolbarButtonProvider::GetAppMenuControl() {
+  return nullptr;
+}
+gfx::Rect BarkToolbarButtonProvider::GetFindBarBoundingBox(
+    int contents_bottom) {
+  return window_->GetPageBoundsInScreen() -
+         window_->GetBounds().OffsetFromOrigin();
+}
+void BarkToolbarButtonProvider::FocusToolbar() {}
+views::AccessiblePaneView* BarkToolbarButtonProvider::GetAsAccessiblePaneView() {
+  return nullptr;
+}
+views::BubbleAnchor BarkToolbarButtonProvider::GetBubbleAnchor(
+    std::optional<actions::ActionId> action_id) {
+  return TrailingAnchor();
+}
+views::BubbleAnchor BarkToolbarButtonProvider::GetPageActionBubbleAnchor(
+    actions::ActionId action_id) {
+  return TrailingAnchor();
+}
+void BarkToolbarButtonProvider::ZoomChangedForActiveTab(bool can_show_bubble) {}
+AvatarToolbarButtonInterface*
+BarkToolbarButtonProvider::GetAvatarToolbarButtonInterface() {
+  return nullptr;
+}
+ToolbarButton* BarkToolbarButtonProvider::GetBackButton() {
+  return nullptr;
+}
+ReloadControl* BarkToolbarButtonProvider::GetReloadButton() {
+  return nullptr;
+}
+ToolbarButton* BarkToolbarButtonProvider::GetDownloadButton() {
+  return nullptr;
+}
+WebUIToolbarWebView*
+BarkToolbarButtonProvider::GetWebUIToolbarViewForTesting() {
+  return nullptr;
 }
 
 // BarkFindBarOwner ------------------------------------------------------------

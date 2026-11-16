@@ -1,10 +1,10 @@
 {
   "_comment": "Upper bounds for what patches/ and chromium_src/ change upstream. budget.py --check fails above any of them, so raising one is a reviewed change. The plan's targets are 50 upstream files, 100 hunks, 700 added lines and none under the listed areas.",
   "limits": {
-    "patch_files": 267,
-    "upstream_files": 267,
-    "hunks": 898,
-    "lines_added": 12220,
+    "patch_files": 269,
+    "upstream_files": 269,
+    "hunks": 909,
+    "lines_added": 12243,
     "override_files": 2,
     "ui_views_files": 12,
     "content_files": 13,

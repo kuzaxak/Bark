@@ -10,6 +10,7 @@
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_window_factory.h"
 #include "bark/browser/ui/bark_window_host.h"
+#include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
@@ -189,11 +190,15 @@ void WaitForFullscreen(NSWindow* window, bool fullscreen) {
 
 class BarkWindowHostBrowserTest : public InProcessBrowserTest {
  public:
+  BarkWindowHostBrowserTest() { SetAllowFeaturesSwitches(true); }
+
   void SetUpCommandLine(base::CommandLine* command_line) override {
     InProcessBrowserTest::SetUpCommandLine(command_line);
     command_line->AppendSwitch("barc-native-shell");
     command_line->AppendSwitch("barc-shared-native-window");
     command_line->AppendSwitchASCII("bark-window", "host");
+    // The app starts the engine without Cast.
+    command_line->AppendSwitchASCII(switches::kDisableFeatures, "MediaRouter");
   }
 
  protected:

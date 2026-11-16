@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/extensions/extension_install_ui_desktop.cc b/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
-index c9e2a59c3e..2cfdefea02 100644
+index c9e2a59c3e..fc0d76448e 100644
 --- a/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
 +++ b/chrome/browser/ui/extensions/extension_install_ui_desktop.cc
 @@ -140,12 +140,15 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
@@ -22,6 +22,15 @@ index c9e2a59c3e..2cfdefea02 100644
          base::BindOnce(
              [](const extensions::ExtensionId& extension_id,
                 base::WeakPtr<content::WebContents> web_contents) {
+@@ -160,7 +163,7 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
+               }
+               BrowserView* browser_view =
+                   BrowserView::GetBrowserViewForBrowser(browser_interface);
+-              if (!browser_view->toolbar()) {
++              if (!browser_view || !browser_view->toolbar()) {
+                 return;
+               }
+               ExtensionsToolbarDesktop* extensions_toolbar =
 @@ -169,7 +172,8 @@ void ExtensionInstallUIDesktop::OnInstallSuccess(
                  extensions_toolbar->ShowPinnedByDefaultIPH(extension_id);
                }
