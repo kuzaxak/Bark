@@ -67,7 +67,11 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   const std::vector<raw_ptr<BarkBrowserWindow>>& clients() const {
     return clients_;
   }
+  // False once the window is closing.
+  bool AddClient(BarkBrowserWindow* client);
   void RemoveClient(BarkBrowserWindow* client);
+  // Makes `client` the one the window shows and answers for: lookups by
+  // window, activation, the title and full-screen events follow it.
   bool Select(BarkBrowserWindow* client);
 
   // The app's root view is set once. Setting the same view again succeeds; a
@@ -117,6 +121,12 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
 
   void ArmClose();
   void OnCloseRequested(views::Widget::ClosedReason reason);
+  void SetSelected(BarkBrowserWindow* client, bool previous_stays);
+  HostFullscreen CurrentFullscreenKind() const;
+  // Closes every client once each one's beforeunload handlers agreed; one
+  // refusal keeps them all.
+  void CloseClients();
+  void OnClientsCloseConfirmed(bool proceed);
 
   const uint64_t physical_group_;
   std::vector<raw_ptr<BarkBrowserWindow>> clients_;
@@ -126,6 +136,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   raw_ptr<views::NativeViewHost> root_host_ = nullptr;
   raw_ptr<views::View> anchor_ = nullptr;
   bool closing_ = false;
+  bool resetting_close_ = false;
   bool widget_fullscreen_ = false;
   HostFullscreen fullscreen_kind_ = HostFullscreen::kNone;
   base::ObserverList<Observer> observers_;

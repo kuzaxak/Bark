@@ -4,13 +4,16 @@
 
 #include <utility>
 
+#include "bark/bridge/barc_bridge.h"
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_native_widget_mac.h"
+#include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/layout/fill_layout.h"
@@ -149,10 +152,22 @@ BarkWindowHost::~BarkWindowHost() {
   widget_.reset();
 }
 
+bool BarkWindowHost::AddClient(BarkBrowserWindow* client) {
+  if (closing_ || !widget_) {
+    return false;
+  }
+  clients_.push_back(client);
+  return true;
+}
+
 void BarkWindowHost::RemoveClient(BarkBrowserWindow* client) {
   std::erase(clients_, client);
-  if (selected_ == client) {
-    selected_ = clients_.empty() ? nullptr : clients_.front().get();
+  if (selected_ != client) {
+    return;
+  }
+  selected_ = nullptr;
+  if (!clients_.empty() && !closing_) {
+    SetSelected(clients_.front(), false);
   }
 }
 
@@ -160,8 +175,37 @@ bool BarkWindowHost::Select(BarkBrowserWindow* client) {
   if (closing_ || !std::ranges::contains(clients_, client)) {
     return false;
   }
+  if (client != selected_) {
+    SetSelected(client, true);
+  }
+  return selected_ == client;
+}
+
+void BarkWindowHost::SetSelected(BarkBrowserWindow* client,
+                                 bool previous_stays) {
+  scoped_refptr<BarkWindowHost> keep_alive(this);
+  auto previous = previous_stays && selected_ ? selected_->GetWeakPtr()
+                                              : base::WeakPtr<BarkBrowserWindow>();
+  auto incoming = client->GetWeakPtr();
   selected_ = client;
-  return true;
+  if (client->browser()->IsDeleteScheduled()) {
+    return;
+  }
+  const bool active = widget_ && widget_->IsActive();
+  if (previous && active) {
+    previous->OnHostActivationChanged(false);
+  }
+  if (incoming && active && selected_ == incoming.get()) {
+    incoming->OnHostActivationChanged(true);
+  }
+  if (!incoming || selected_ != incoming.get() || closing_) {
+    return;
+  }
+  widget_->UpdateWindowTitle();
+  fullscreen_kind_ = CurrentFullscreenKind();
+  observers_.Notify(&Observer::OnFullscreenChanged,
+                    incoming->browser()->GetSessionID().id(), fullscreen_kind_);
+  barc::BrowserDiscoveryChanged();
 }
 
 bool BarkWindowHost::SetRootView(gfx::NativeView root) {
@@ -226,15 +270,7 @@ void BarkWindowHost::UpdateFullscreen() {
     return;
   }
   const bool widget_fullscreen = widget_->IsFullscreen();
-  HostFullscreen kind = HostFullscreen::kNone;
-  if (widget_fullscreen) {
-    auto* manager =
-        selected_ ? ExclusiveAccessManager::From(selected_->browser())
-                  : nullptr;
-    kind = manager && manager->fullscreen_controller()->IsTabFullscreen()
-               ? HostFullscreen::kPage
-               : HostFullscreen::kWindow;
-  }
+  const HostFullscreen kind = CurrentFullscreenKind();
   const bool widget_changed = widget_fullscreen != widget_fullscreen_;
   const bool kind_changed = kind != fullscreen_kind_;
   widget_fullscreen_ = widget_fullscreen;
@@ -256,6 +292,17 @@ void BarkWindowHost::UpdateFullscreen() {
       client->OnHostFullscreenChanged();
     }
   }
+}
+
+HostFullscreen BarkWindowHost::CurrentFullscreenKind() const {
+  if (!widget_ || !widget_->IsFullscreen()) {
+    return HostFullscreen::kNone;
+  }
+  auto* manager =
+      selected_ ? ExclusiveAccessManager::From(selected_->browser()) : nullptr;
+  return manager && manager->fullscreen_controller()->IsTabFullscreen()
+             ? HostFullscreen::kPage
+             : HostFullscreen::kWindow;
 }
 
 views::View* BarkWindowHost::AnchorAt(const gfx::Point& screen_point) {
@@ -299,6 +346,16 @@ void BarkWindowHost::ArmClose() {
 
 void BarkWindowHost::OnCloseRequested(views::Widget::ClosedReason reason) {
   ArmClose();
+  if (clients_.size() > 1) {
+    for (auto& client : clients_) {
+      if (UnloadController::From(client->browser())
+              ->is_attempting_to_close_browser()) {
+        return;
+      }
+    }
+    CloseClients();
+    return;
+  }
   scoped_refptr<BarkWindowHost> keep_alive(this);
   std::vector<base::WeakPtr<BarkBrowserWindow>> clients;
   for (auto& client : clients_) {
@@ -307,6 +364,51 @@ void BarkWindowHost::OnCloseRequested(views::Widget::ClosedReason reason) {
   for (auto& client : clients) {
     if (client) {
       client->Close();
+    }
+  }
+}
+
+void BarkWindowHost::CloseClients() {
+  scoped_refptr<BarkWindowHost> keep_alive(this);
+  std::vector<base::WeakPtr<BarkBrowserWindow>> clients;
+  for (auto& client : clients_) {
+    clients.push_back(client->GetWeakPtr());
+  }
+  for (auto& client : clients) {
+    if (client && !closing_ &&
+        UnloadController::From(client->browser())->RunBeforeUnloadForShutdown(
+            false, base::BindRepeating(&BarkWindowHost::OnClientsCloseConfirmed,
+                                       weak_factory_.GetWeakPtr()))) {
+      return;
+    }
+  }
+  if (widget_ && !closing_) {
+    widget_->Hide();
+  }
+  for (auto& client : clients) {
+    if (client) {
+      client->Close();
+    }
+  }
+}
+
+void BarkWindowHost::OnClientsCloseConfirmed(bool proceed) {
+  if (proceed) {
+    CloseClients();
+    return;
+  }
+  if (resetting_close_) {
+    return;
+  }
+  scoped_refptr<BarkWindowHost> keep_alive(this);
+  base::AutoReset<bool> resetting(&resetting_close_, true);
+  std::vector<base::WeakPtr<BarkBrowserWindow>> clients;
+  for (auto& client : clients_) {
+    clients.push_back(client->GetWeakPtr());
+  }
+  for (auto& client : clients) {
+    if (client) {
+      UnloadController::From(client->browser())->ResetBeforeUnloadForShutdown();
     }
   }
 }

@@ -43,7 +43,8 @@ class BarkBrowserWindow : public BrowserWindow,
   DECLARE_USER_DATA(BarkBrowserWindow);
   static BarkBrowserWindow* FromBrowser(const BrowserWindowInterface* browser);
 
-  explicit BarkBrowserWindow(BrowserWindowInterface* browser);
+  // With `join`, the window is another client of that host.
+  BarkBrowserWindow(BrowserWindowInterface* browser, BarkWindowHost* join);
   BarkBrowserWindow(const BarkBrowserWindow&) = delete;
   BarkBrowserWindow& operator=(const BarkBrowserWindow&) = delete;
   ~BarkBrowserWindow() override;

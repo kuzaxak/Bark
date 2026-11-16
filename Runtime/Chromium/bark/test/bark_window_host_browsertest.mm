@@ -112,6 +112,12 @@ struct HostEvents {
   }
 };
 
+uint64_t DiscoveryRevision() {
+  BarcDiscoverySnapshot snapshot = {.size = sizeof(BarcDiscoverySnapshot)};
+  barc_discovery_snapshot(nullptr, 0, nullptr, 0, &snapshot);
+  return snapshot.revision;
+}
+
 int InnerWidth(content::WebContents* contents) {
   return content::EvalJs(contents, "innerWidth").ExtractInt();
 }
@@ -196,7 +202,28 @@ class BarkWindowHostBrowserTest : public InProcessBrowserTest {
     [root addSubview:page];
     return page;
   }
+  // A window of the app's profile `uuid`; with `owner`, the profile joins that
+  // window as another client.
+  int32_t OpenProfile(const char* uuid, int32_t owner = 0) {
+    using Opened = base::test::TestFuture<barc_profile_status, int32_t>;
+    Opened opened;
+    auto completed = [](barc_profile_status status, int32_t window,
+                        void* data) {
+      static_cast<Opened*>(data)->SetValue(status, window);
+    };
+    if (owner) {
+      barc_profile_open_in_native_window(owner, uuid, BARC_PROFILE_BLANK,
+                                         completed, &opened);
+    } else {
+      barc_profile_open_window(uuid, BARC_PROFILE_BLANK, completed, &opened);
+    }
+    EXPECT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+    return opened.Get<1>();
+  }
 };
+
+constexpr char kWorkProfile[] = "6f0bd61e-9a43-4b7f-8d8e-56b1a9a0c2d4";
+constexpr char kHomeProfile[] = "0d3b5c1e-8f2a-4e6b-9a7c-2b4d6e8f0a1c";
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, NormalBrowserGetsHostWindow) {
   EXPECT_NE(nullptr, BrowserView::GetBrowserViewForBrowser(browser()));
@@ -843,4 +870,165 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   ASSERT_TRUE(base::test::RunUntil(
       [&] { return !events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).empty(); }));
   EXPECT_EQ(tab, events.Of(BARC_WINDOW_HOST_PAGE_RESTORED).front()->event.tab);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, TwoProfilesShareOneWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  ASSERT_NE(work, home);
+  auto* work_browser = FindBrowser(work);
+  auto* home_browser = FindBrowser(home);
+  ASSERT_NE(nullptr, bark::BarkBrowserWindow::FromBrowser(home_browser));
+  EXPECT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(home_browser));
+  auto* host = HostOf(work);
+  ASSERT_NE(nullptr, host);
+  EXPECT_EQ(host, HostOf(home));
+  EXPECT_EQ(2u, host->clients().size());
+  EXPECT_EQ(work_browser->GetWindow()->GetNativeWindow(),
+            home_browser->GetWindow()->GetNativeWindow());
+  EXPECT_NE(work_browser->GetProfile(), home_browser->GetProfile());
+
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  auto* work_page = TabContents(OpenPage(work, root, "/title1.html"));
+  auto* home_page = TabContents(OpenPage(home, root, "/title1.html"));
+  ASSERT_TRUE(content::ExecJs(work_page, "document.cookie = 'client=work'"));
+  EXPECT_EQ("client=work", content::EvalJs(work_page, "document.cookie"));
+  EXPECT_EQ("", content::EvalJs(home_page, "document.cookie"));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, UnselectedClientsTabRetires) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  ASSERT_EQ(1, barc_window_select(work));
+  const int32_t tab = barc_tab_create(home, "about:blank", 0);
+  ASSERT_NE(0, tab);
+  ASSERT_FALSE(FindBrowser(home)->IsSelectedForNativeWindow());
+  HostEvents events;
+  ASSERT_TRUE(events.Observe(work));
+  events.watched = PageView(home, tab);
+  ASSERT_NE(nil, events.watched);
+  ASSERT_EQ(1, barc_tab_close(home, tab));
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.Retired(tab); }));
+  EXPECT_EQ(home, events.Retired(tab)->event.window);
+  EXPECT_TRUE(events.Retired(tab)->watched_alive);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SelectedClientAnswersWindowLookups) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  auto* work_browser = FindBrowser(work);
+  auto* home_browser = FindBrowser(home);
+  auto* collection = GlobalBrowserCollection::GetInstance();
+  const gfx::NativeWindow native = work_browser->GetWindow()->GetNativeWindow();
+  ASSERT_EQ(1, barc_window_show(work));
+  [NSApp activateIgnoringOtherApps:YES];
+  [native.GetNativeNSWindow() makeKeyAndOrderFront:nil];
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return collection->GetLastActiveBrowser() == work_browser; }));
+  EXPECT_TRUE(work_browser->IsSelectedForNativeWindow());
+  EXPECT_FALSE(home_browser->IsSelectedForNativeWindow());
+  EXPECT_EQ(work_browser, collection->FindBrowserWithWindow(native));
+
+  HostEvents events;
+  ASSERT_TRUE(events.Observe(work));
+  const uint64_t revision = DiscoveryRevision();
+  ASSERT_EQ(1, barc_window_select(home));
+  EXPECT_FALSE(work_browser->IsSelectedForNativeWindow());
+  EXPECT_TRUE(home_browser->IsSelectedForNativeWindow());
+  EXPECT_EQ(home_browser, collection->FindBrowserWithWindow(native));
+  EXPECT_EQ(home_browser, collection->GetLastActiveBrowser());
+  EXPECT_LT(revision, DiscoveryRevision());
+  BarcDiscoveryWindow row = {.size = sizeof(BarcDiscoveryWindow)};
+  ASSERT_EQ(1, barc_window_discovery_state(work, &row));
+  EXPECT_EQ(home, row.selected_client);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !events.Of(BARC_WINDOW_HOST_FULLSCREEN_CHANGED).empty();
+  }));
+  const auto& selected = events.Of(BARC_WINDOW_HOST_FULLSCREEN_CHANGED).back()->event;
+  EXPECT_EQ(home, selected.window);
+  EXPECT_EQ(BARC_FULLSCREEN_NONE, selected.fullscreen);
+
+  work_browser->GetWindow()->Show();
+  EXPECT_TRUE(work_browser->IsSelectedForNativeWindow());
+  EXPECT_EQ(work_browser, collection->FindBrowserWithWindow(native));
+  EXPECT_EQ(work_browser, collection->GetLastActiveBrowser());
+
+  home_browser->GetWindow()->ShowInactive();
+  EXPECT_TRUE(home_browser->IsSelectedForNativeWindow());
+  EXPECT_EQ(home_browser, collection->FindBrowserWithWindow(native));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ClosingOneClientKeepsWindow) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  ASSERT_EQ(1, barc_window_show(home));
+  auto* work_browser = FindBrowser(work);
+  auto* host = HostOf(work);
+  const gfx::NativeWindow native = work_browser->GetWindow()->GetNativeWindow();
+  HostEvents events;
+  ASSERT_TRUE(events.Observe(work));
+
+  ui_test_utils::BrowserDestroyedObserver closed(FindBrowser(home));
+  ASSERT_EQ(1, barc_window_close(home));
+  closed.Wait();
+  EXPECT_EQ(nullptr, FindBrowser(home));
+  EXPECT_EQ(host, HostOf(work));
+  EXPECT_EQ(1u, host->clients().size());
+  EXPECT_TRUE(host->widget()->IsVisible());
+  EXPECT_TRUE(work_browser->IsSelectedForNativeWindow());
+  EXPECT_EQ(work_browser,
+            GlobalBrowserCollection::GetInstance()->FindBrowserWithWindow(native));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !events.Of(BARC_WINDOW_HOST_FULLSCREEN_CHANGED).empty();
+  }));
+  EXPECT_EQ(work,
+            events.Of(BARC_WINDOW_HOST_FULLSCREEN_CHANGED).back()->event.window);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, CloseButtonAsksEveryClient) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  auto* home_page = TabContents(OpenPage(home, root, "/title1.html"));
+  ASSERT_TRUE(content::ExecJs(home_page, "onbeforeunload = () => 'keep';"));
+  content::PrepContentsForBeforeUnloadTest(home_page);
+  ASSERT_EQ(1, barc_window_show(work));
+  auto* work_browser = FindBrowser(work);
+  auto* home_browser = FindBrowser(home);
+  auto* host = HostOf(work);
+  NSWindow* window = host->widget()->GetNativeWindow().GetNativeNSWindow();
+
+  [[window standardWindowButton:NSWindowCloseButton] performClick:nil];
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(dialog->is_before_unload_dialog());
+  EXPECT_EQ(home_page, dialog->web_contents());
+  EXPECT_TRUE(home_browser->IsSelectedForNativeWindow());
+  dialog->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !UnloadController::From(home_browser)->is_attempting_to_close_browser();
+  }));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(work_browser, FindBrowser(work));
+  EXPECT_EQ(home_browser, FindBrowser(home));
+  EXPECT_EQ(2u, host->clients().size());
+  EXPECT_TRUE(host->widget()->IsVisible());
+
+  ui_test_utils::BrowserDestroyedObserver work_closed(work_browser);
+  ui_test_utils::BrowserDestroyedObserver home_closed(home_browser);
+  [[window standardWindowButton:NSWindowCloseButton] performClick:nil];
+  dialog = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(dialog->is_before_unload_dialog());
+  dialog->view()->AcceptAppModalDialog();
+  work_closed.Wait();
+  home_closed.Wait();
+  EXPECT_EQ(nullptr, FindBrowser(work));
+  EXPECT_EQ(nullptr, FindBrowser(home));
 }

@@ -44,6 +44,7 @@ namespace bark {
 namespace {
 
 int g_app_window_creation_depth = 0;
+BarkWindowHost* g_join_host = nullptr;
 
 bool ShouldHandleKeyboardEvent(const input::NativeWebKeyboardEvent& event) {
   if (event.skip_if_unhandled ||
@@ -72,15 +73,22 @@ std::unique_ptr<BrowserWindow, BrowserWindowDeleter> MaybeCreateHostWindow(
     return nullptr;
   }
   return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(
-      new BarkBrowserWindow(browser));
+      new BarkBrowserWindow(browser, std::exchange(g_join_host, nullptr)));
 }
 
-ScopedAppWindowCreation::ScopedAppWindowCreation() {
+BarkWindowHost* HostToJoin(BrowserWindowInterface* owner) {
+  auto* host = BarkWindowHost::ForBrowser(owner);
+  return host && !host->closing() ? host : nullptr;
+}
+
+ScopedAppWindowCreation::ScopedAppWindowCreation(BarkWindowHost* join)
+    : join_(join), previous_join_(std::exchange(g_join_host, join)) {
   ++g_app_window_creation_depth;
 }
 
 ScopedAppWindowCreation::~ScopedAppWindowCreation() {
   --g_app_window_creation_depth;
+  g_join_host = previous_join_;
 }
 
 DEFINE_USER_DATA(BarkBrowserWindow);
@@ -120,10 +128,15 @@ class BarkBrowserWindow::CrashWatcher : public content::WebContentsObserver {
   bool crashed_;
 };
 
-BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser)
+BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser,
+                                     BarkWindowHost* join)
     : browser_(browser),
       scoped_user_data_(browser->GetUnownedUserDataHost(), *this) {
-  host_ = base::MakeRefCounted<BarkWindowHost>(this);
+  if (join && join->AddClient(this)) {
+    host_ = join;
+  } else {
+    host_ = base::MakeRefCounted<BarkWindowHost>(this);
+  }
   location_bar_ = std::make_unique<BarkStubLocationBar>(this);
   modal_dialog_host_ = std::make_unique<BarkModalDialogHost>(this);
   exclusive_access_context_ =
@@ -530,7 +543,7 @@ BrowserView* BarkBrowserWindow::AsBrowserView() {
 
 void BarkBrowserWindow::Show() {
   auto* widget = host_->widget();
-  if (!widget || host_->closing() || !IsSelectedForNativeWindow()) {
+  if (!widget || host_->closing() || !host_->Select(this)) {
     return;
   }
   BrowserActiveStateManager::From(browser_)->DidBecomeActive();
@@ -543,7 +556,7 @@ void BarkBrowserWindow::Show() {
 }
 
 void BarkBrowserWindow::ShowInactive() {
-  if (host_->widget() && !host_->closing() && IsSelectedForNativeWindow()) {
+  if (host_->widget() && !host_->closing() && host_->Select(this)) {
     host_->widget()->ShowInactive();
   }
 }
@@ -582,7 +595,7 @@ void BarkBrowserWindow::Close() {
 }
 
 void BarkBrowserWindow::Activate() {
-  if (host_->widget() && IsSelectedForNativeWindow()) {
+  if (host_->widget() && host_->Select(this)) {
     host_->widget()->Activate();
   }
 }
