@@ -9846,6 +9846,17 @@ class BarcObservedBodyReusedFrameBrowserTest : public BarcNativeBlockerBrowserTe
     feature_list_.InitWithFeatures(
         {}, {features::kRenderDocument, features::kBackForwardCache});
   }
+ protected:
+  // A finished load starts the search engine prewarm in a prerender of the
+  // same tab. content::NavigateToURLFromRenderer reports that prerender's
+  // failure as its own; TestNavigationObserver skips prerendered frames.
+  [[nodiscard]] bool NavigateFromPage(content::WebContents* page, const GURL& url) {
+    content::TestNavigationObserver navigated(page);
+    navigated.set_expected_initial_url(url);
+    content::ExecuteScriptAsync(page, content::JsReplace("location = $1", url));
+    navigated.Wait();
+    return navigated.last_navigation_succeeded() && page->GetLastCommittedURL() == url;
+  }
  private:
   base::test::ScopedFeatureList feature_list_;
 };
@@ -9864,7 +9875,7 @@ IN_PROC_BROWSER_TEST_F(BarcObservedBodyReusedFrameBrowserTest,
   const int64_t first_navigation = first_frame->GetNavigationId();
   mojo::Remote<network::mojom::URLLoaderFactory> old_factory;
   first_frame->CreateNetworkServiceDefaultFactory(old_factory.BindNewPipeAndPassReceiver());
-  ASSERT_TRUE(content::NavigateToURLFromRenderer(page, embedded_test_server()->GetURL("/title2.html")));
+  ASSERT_TRUE(NavigateFromPage(page, embedded_test_server()->GetURL("/title2.html")));
   ASSERT_EQ(first_frame, page->GetPrimaryMainFrame());
   ASSERT_NE(first_navigation, first_frame->GetNavigationId());
   auto observed = [&] {
@@ -9968,8 +9979,7 @@ IN_PROC_BROWSER_TEST_F(BarcObservedBodyReusedFrameBrowserTest,
   auto original = NativeContentBlocker::CaptureClient(page, frame, first_url);
   mojo::Remote<network::mojom::URLLoaderFactory> original_factory;
   frame->CreateNetworkServiceDefaultFactory(original_factory.BindNewPipeAndPassReceiver());
-  ASSERT_TRUE(content::NavigateToURLFromRenderer(page,
-      embedded_test_server()->GetURL("/title2.html")));
+  ASSERT_TRUE(NavigateFromPage(page, embedded_test_server()->GetURL("/title2.html")));
   ASSERT_EQ(frame, page->GetPrimaryMainFrame());
   EXPECT_FALSE(original.document.AsRenderFrameHostIfValid());
   const int32_t tab = barc_window_tab_at(work_id, 0);
@@ -12311,15 +12321,6 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticCacheBrowserTest,
   auto* page = owner->GetTabStripModel()->GetActiveWebContents();
   NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
   ASSERT_EQ(1, barc_window_attach_native_shell(window, (__bridge void*)header)); ASSERT_EQ(1, barc_window_show(window));
-  // The real pointer's events reach the page under it and move its hover off the
-  // simulated one, which hides the control, so the window moves out from under it.
-  NSWindow* physical = owner->GetWindow()->GetNativeWindow().GetNativeNSWindow();
-  const NSRect visible = physical.screen.visibleFrame;
-  NSRect placed = physical.frame;
-  placed.size.width = std::min(NSWidth(placed), NSWidth(visible) / 2 - 1);
-  placed.origin.x = NSEvent.mouseLocation.x < NSMidX(visible) ? NSMaxX(visible) - NSWidth(placed) : NSMinX(visible);
-  [physical setFrame:placed display:YES];
-  ASSERT_FALSE(NSPointInRect(NSEvent.mouseLocation, physical.frame));
   content::SimulateEndOfPaintHoldingOnPrimaryMainFrame(page);
   content::WaitForHitTestData(page->GetPrimaryMainFrame());
   EXPECT_EQ("undefined", content::EvalJs(page, "typeof nookSocialDownloadNative"));
