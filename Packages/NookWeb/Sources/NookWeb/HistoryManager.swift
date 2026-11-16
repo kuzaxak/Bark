@@ -79,10 +79,12 @@ public final class HistoryManager {
 
     public func switchProfile(_ profileId: UUID?) { currentProfileId = profileId }
 
+    /// Each write starts after the one before it, off the main actor: the store's executor runs a
+    /// job on the thread that hands it over.
     private func enqueue(_ operation: @escaping @Sendable (HistoryStore) async -> Void) {
         let previous = pendingWrite
         let storeTask = storeTask
-        pendingWrite = Task {
+        pendingWrite = Task.detached {
             await previous?.value
             await operation(storeTask.value)
         }
