@@ -25,6 +25,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/autofill/autofill_bubble_handler_impl.h"
+#include "chrome/browser/ui/views/eye_dropper/eye_dropper.h"
 #include "chrome/browser/ui/views/download/download_in_progress_dialog_view.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views_impl.h"
@@ -510,8 +511,7 @@ void BarkBrowserWindow::ShowEmojiPanel() {
 std::unique_ptr<content::EyeDropper> BarkBrowserWindow::OpenEyeDropper(
     content::RenderFrameHost* frame,
     content::EyeDropperListener* listener) {
-  NOTIMPLEMENTED_LOG_ONCE();
-  return nullptr;
+  return ShowEyeDropper(frame, listener);
 }
 
 void BarkBrowserWindow::ShowCaretBrowsingDialog() {}

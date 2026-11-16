@@ -40,6 +40,7 @@ source_set("ui") {
     "//chrome/browser/ui/views/autofill:autofill_bubble_handler_impl",
     "//chrome/browser/ui/views/frame:toolbar_button_provider",
     "//chrome/browser/ui/views/download",
+    "//chrome/browser/ui/views/eye_dropper",
     "//chrome/browser/ui/views/exclusive_access",
     "//chrome/browser/ui/views/translate",
     "//chrome/browser/ui/window_metadata",

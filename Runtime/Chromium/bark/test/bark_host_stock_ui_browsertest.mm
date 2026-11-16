@@ -24,11 +24,13 @@
 #include "chrome/browser/devtools/devtools_window_testing.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "chrome/browser/media/router/media_router_feature.h"
+#include "chrome/browser/printing/print_preview_dialog_controller.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/renderer_context_menu/render_view_context_menu_test_util.h"
 #include "chrome/browser/ui/autofill/address_bubbles_controller.h"
 #include "chrome/browser/ui/autofill/payments/filled_card_information_bubble_controller_impl.h"
 #include "chrome/browser/ui/autofill/payments/virtual_card_enroll_bubble_controller_impl.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/extension_install_ui_desktop.h"
@@ -55,6 +57,8 @@
 #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/context_menu_params.h"
+#include "content/public/browser/eye_dropper.h"
+#include "content/public/browser/eye_dropper_listener.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
@@ -62,6 +66,7 @@
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_builder.h"
+#include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
@@ -69,6 +74,7 @@
 #include "third_party/skia/include/core/SkBitmap.h"
 #import "ui/base/cocoa/nsmenu_additions.h"
 #include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
+#include "ui/base/test/ui_controls.h"
 #include "ui/events/test/cocoa_test_event_utils.h"
 #include "ui/gfx/animation/animation_test_api.h"
 #include "ui/gfx/image/image.h"
@@ -938,4 +944,292 @@ IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest,
       "new Promise(done => InspectorFrontendHost.setIsDocked(true, done))"));
   EXPECT_FALSE(devtools->IsDocked());
   DevToolsWindowTesting::CloseDevToolsWindowSync(devtools);
+}
+
+namespace {
+
+class NoColor : public content::EyeDropperListener {
+ public:
+  void ColorSelected(SkColor color) override {}
+  void ColorSelectionCanceled() override {}
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest, EyeDropperOpens) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  NoColor listener;
+  // What `new EyeDropper().open()` asks the page's window for.
+  std::unique_ptr<content::EyeDropper> dropper =
+      Window()->OpenEyeDropper(Contents()->GetPrimaryMainFrame(), &listener);
+  EXPECT_TRUE(dropper);
+}
+
+class BarkHostNarrowWindowBrowserTest : public BarkHostStockUiBrowserTest {
+ protected:
+  // Makes the window `width` wide and puts the page, `page_width` wide, at its
+  // trailing edge, as the sidebar layout does.
+  void Narrow(int width, CGFloat page_width) {
+    views::Widget* host = Window()->host()->widget();
+    gfx::Rect bounds = host->GetWindowBoundsInScreen();
+    bounds.set_width(width);
+    host->SetBounds(bounds);
+    ASSERT_TRUE(base::test::RunUntil(
+        [&] { return NSWidth(root_.bounds) == width; }));
+    page_.frame = NSMakeRect(NSWidth(root_.bounds) - page_width - 10, 10,
+                             page_width, NSHeight(root_.bounds) - 20);
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return Window()->GetPageBoundsInScreen().width() == page_width;
+    }));
+  }
+  gfx::Rect ClientArea() {
+    return Window()->host()->widget()->GetClientAreaBoundsInScreen();
+  }
+  // The visible tab-modal dialog on the host window.
+  views::Widget* WaitForTabModal() {
+    views::Widget* dialog = nullptr;
+    EXPECT_TRUE(base::test::RunUntil([&] {
+      for (views::Widget* widget : views::Widget::GetAllOwnedWidgets(
+               Window()->host()->widget()->GetNativeView())) {
+        // A dismissed dialog stays visible while it closes.
+        if (widget->IsVisible() && !widget->IsClosed() &&
+            widget->widget_delegate() &&
+            widget->widget_delegate()->GetModalType() ==
+                ui::mojom::ModalType::kChild) {
+          dialog = widget;
+          return true;
+        }
+      }
+      return false;
+    }));
+    return dialog;
+  }
+  views::Widget* Alert() {
+    content::ExecuteScriptAsync(
+        Contents(), "alert('A message long enough to need the whole dialog')");
+    return WaitForTabModal();
+  }
+  void Dismiss(views::Widget* dialog) {
+    views::test::WidgetDestroyedWaiter closed(dialog);
+    dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+    closed.Wait();
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarkHostNarrowWindowBrowserTest,
+                       TabModalDialogStaysInsideANarrowWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  for (CGFloat page_width : {135.0, 60.0}) {
+    SCOPED_TRACE(page_width);
+    Narrow(560, page_width);
+    views::Widget* alert = Alert();
+    ASSERT_TRUE(alert);
+    gfx::Rect inside = ClientArea();
+    inside.Inset(8);
+    EXPECT_TRUE(inside.Contains(alert->GetWindowBoundsInScreen()))
+        << inside.ToString() << " " << alert->GetWindowBoundsInScreen().ToString();
+    Dismiss(alert);
+  }
+  Narrow(1200, 900);
+  views::Widget* alert = Alert();
+  ASSERT_TRUE(alert);
+  const gfx::Rect page = Window()->GetPageBoundsInScreen();
+  const gfx::Rect frame = alert->GetWindowBoundsInScreen();
+  EXPECT_LE(std::abs(frame.CenterPoint().x() - page.CenterPoint().x()), 1)
+      << page.ToString() << " " << frame.ToString();
+  EXPECT_EQ(page.y(), frame.y());
+  Dismiss(alert);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostNarrowWindowBrowserTest,
+                       PermissionPromptStaysInsideANarrowWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  Narrow(560, 135);
+  permissions::PermissionRequestObserver shown(Contents());
+  content::ExecuteScriptAsync(Contents(),
+                              "navigator.geolocation.getCurrentPosition("
+                              "  () => {}, () => {});");
+  shown.Wait();
+  auto* prompt = WaitForBubble();
+  ASSERT_NE(nullptr, prompt);
+  EXPECT_TRUE(ClientArea().Contains(prompt->GetWidget()->GetWindowBoundsInScreen()))
+      << ClientArea().ToString() << " "
+      << prompt->GetWidget()->GetWindowBoundsInScreen().ToString();
+}
+
+namespace {
+
+constexpr char kKeysScript[] =
+    "<script>window.markers = 0;"
+    "addEventListener('keydown', e => { if (e.key === 'k') markers++; });"
+    "</script>";
+
+std::unique_ptr<net::test_server::HttpResponse> ServeAuth(
+    const net::test_server::HttpRequest& request) {
+  if (request.relative_url != "/auth") {
+    return nullptr;
+  }
+  auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+  response->set_code(net::HTTP_UNAUTHORIZED);
+  response->AddCustomHeader("WWW-Authenticate", "Basic realm=\"bark\"");
+  response->set_content_type("text/html");
+  response->set_content(std::string("<title>denied</title>") + kKeysScript);
+  return response;
+}
+
+}  // namespace
+
+// Real key-window changes, as in interactive UI tests; each case runs in its
+// own test process.
+class BarkHostFocusBrowserTest : public BarkHostNarrowWindowBrowserTest {
+ public:
+  void SetUp() override {
+    ui_controls::EnableUIControls();
+    ASSERT_TRUE(ui_controls::IsUIControlsEnabled());
+    BarkHostNarrowWindowBrowserTest::SetUp();
+  }
+  void SetUpOnMainThread() override {
+    BarkHostNarrowWindowBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
+  }
+
+ protected:
+  NSWindow* NativeWindow() {
+    return Window()->GetNativeWindow().GetNativeNSWindow();
+  }
+  void MakeKey() {
+    [NSApp activateIgnoringOtherApps:YES];
+    Window()->Activate();
+    ASSERT_TRUE(base::test::RunUntil([&] { return NativeWindow().isKeyWindow; }));
+  }
+  void FocusPage() {
+    Contents()->Focus();
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
+    }));
+  }
+  // Types "k" into the key window and reports whether the page heard it.
+  bool PageHearsAKey() {
+    const int markers = content::EvalJs(Contents(), "markers").ExtractInt();
+    EXPECT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(),
+                                          ui::VKEY_K, false, false, false,
+                                          false));
+    return base::test::RunUntil([&] {
+      return content::EvalJs(Contents(), "markers").ExtractInt() > markers;
+    });
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       KeysReturnToThePageAfterHttpAuth) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeAuth));
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  MakeKey();
+  FocusPage();
+  ASSERT_TRUE(PageHearsAKey());
+  content::ExecuteScriptAsync(Contents(), "location.href = '/auth'");
+  views::Widget* sign_in = WaitForTabModal();
+  ASSERT_TRUE(sign_in);
+  ASSERT_TRUE(base::test::RunUntil([&] { return sign_in->IsActive(); }));
+  // Cancel, as the person presses Esc in the dialog.
+  views::test::WidgetDestroyedWaiter closed(sign_in);
+  ASSERT_TRUE(ui_controls::SendKeyPress(sign_in->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, false, false,
+                                        false));
+  closed.Wait();
+  ASSERT_TRUE(content::WaitForLoadStop(Contents()));
+  ASSERT_EQ(u"denied", Contents()->GetTitle());
+  // The page has the keys again once its document has the focus.
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return NativeWindow().isKeyWindow &&
+           content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
+  }));
+  EXPECT_TRUE(PageHearsAKey());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       KeysReturnToASidebarFieldThatHadThem) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeAuth));
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  // The app's address field, beside the page in the window's root view.
+  NSTextField* field =
+      [[NSTextField alloc] initWithFrame:NSMakeRect(10, 10, 200, 24)];
+  [root_ addSubview:field];
+  MakeKey();
+  ASSERT_TRUE([NativeWindow() makeFirstResponder:field]);
+  content::ExecuteScriptAsync(Contents(), "location.href = '/auth'");
+  views::Widget* sign_in = WaitForTabModal();
+  ASSERT_TRUE(sign_in);
+  ASSERT_TRUE(base::test::RunUntil([&] { return sign_in->IsActive(); }));
+  views::test::WidgetDestroyedWaiter closed(sign_in);
+  ASSERT_TRUE(ui_controls::SendKeyPress(sign_in->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, false, false,
+                                        false));
+  closed.Wait();
+  ASSERT_TRUE(content::WaitForLoadStop(Contents()));
+  ASSERT_TRUE(base::test::RunUntil([&] { return NativeWindow().isKeyWindow; }));
+  ASSERT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(), ui::VKEY_K,
+                                        false, false, false, false));
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return [field.stringValue isEqualToString:@"k"]; }));
+  EXPECT_EQ(0, content::EvalJs(Contents(), "markers").ExtractInt());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       KeysReturnToThePageAfterPrintPreview) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  MakeKey();
+  FocusPage();
+  ASSERT_TRUE(PageHearsAKey());
+  chrome::ExecuteCommand(FindBrowser(window_), IDC_PRINT);
+  views::Widget* preview = WaitForTabModal();
+  ASSERT_TRUE(preview);
+  content::WebContents* preview_page = nullptr;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    preview_page = printing::PrintPreviewDialogController::GetInstance()
+                       ->GetPrintPreviewForContents(Contents());
+    return preview_page && !preview_page->IsLoading();
+  }));
+  ASSERT_TRUE(base::test::RunUntil([&] { return preview->IsActive(); }));
+  views::test::WidgetDestroyedWaiter closed(preview);
+  // Esc, as print preview's own page handles it.
+  ASSERT_TRUE(ui_controls::SendKeyPress(preview->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, false, false,
+                                        false));
+  closed.Wait();
+  ASSERT_TRUE(base::test::RunUntil([&] { return NativeWindow().isKeyWindow; }));
+  EXPECT_TRUE(PageHearsAKey());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       KeysStayWithThePageWhenAnotherWindowHadThem) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  MakeKey();
+  FocusPage();
+  ASSERT_TRUE(PageHearsAKey());
+  NSWindow* other =
+      [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+                                  styleMask:NSWindowStyleMaskTitled
+                                    backing:NSBackingStoreBuffered
+                                      defer:NO];
+  other.releasedWhenClosed = NO;
+  [other makeKeyAndOrderFront:nil];
+  ASSERT_TRUE(base::test::RunUntil([&] { return !NativeWindow().isKeyWindow; }));
+  [other close];
+  MakeKey();
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
+  }));
+  EXPECT_TRUE(PageHearsAKey());
 }

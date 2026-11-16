@@ -1,5 +1,6 @@
 #include "bark/browser/ui/bark_window_parts.h"
 
+#include <algorithm>
 #include <utility>
 
 #include "bark/browser/ui/bark_browser_window.h"
@@ -179,6 +180,13 @@ LocationBarTesting* BarkStubLocationBar::GetLocationBarForTesting() {
 
 // BarkModalDialogHost ---------------------------------------------------------
 
+namespace {
+
+// A tab-modal dialog wider than the page keeps this far inside the window.
+constexpr int kDialogWindowMargin = 8;
+
+}  // namespace
+
 BarkModalDialogHost::BarkModalDialogHost(BarkBrowserWindow* window)
     : window_(window) {}
 
@@ -201,9 +209,22 @@ gfx::NativeView BarkModalDialogHost::GetHostView() const {
   return widget ? widget->GetNativeView() : gfx::NativeView();
 }
 
+gfx::Rect BarkModalDialogHost::DialogAreaInWindow() const {
+  gfx::Rect area = window_->host()->widget()->GetClientAreaBoundsInScreen() -
+                   window_->GetBounds().OffsetFromOrigin();
+  area.Inset(kDialogWindowMargin);
+  return area;
+}
+
 gfx::Point BarkModalDialogHost::GetDialogPosition(const gfx::Size& size) {
   const gfx::Rect page = PageBoundsInWindow();
-  return gfx::Point(page.x() + (page.width() - size.width()) / 2, page.y());
+  gfx::Point position(page.x() + (page.width() - size.width()) / 2, page.y());
+  if (size.width() > page.width()) {
+    const gfx::Rect area = DialogAreaInWindow();
+    position.set_x(std::max(
+        area.x(), std::min(position.x(), area.right() - size.width())));
+  }
+  return position;
 }
 
 bool BarkModalDialogHost::ShouldActivateDialog() const {
@@ -212,7 +233,9 @@ bool BarkModalDialogHost::ShouldActivateDialog() const {
 }
 
 gfx::Size BarkModalDialogHost::GetMaximumDialogSize() {
-  return PageBoundsInWindow().size();
+  const gfx::Rect page = PageBoundsInWindow();
+  return gfx::Size(std::max(page.width(), DialogAreaInWindow().width()),
+                   page.height());
 }
 
 void BarkModalDialogHost::AddObserver(

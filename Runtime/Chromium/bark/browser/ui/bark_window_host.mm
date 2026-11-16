@@ -8,8 +8,11 @@
 #include "bark/bridge/barc_bridge.h"
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_native_widget_mac.h"
+#include "base/apple/foundation_util.h"
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
+#include "base/memory/weak_ptr.h"
+#include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
@@ -57,6 +60,113 @@ class BarkWindowHost::PageWatch {
  private:
   __weak NSView* page_;
   id observer_;
+};
+
+// While one of the window's own dialogs or bubbles has the keys, remembers
+// what had them before. AppKit makes no window key when that child closes, and
+// Chromium's focus restore leaves the keys with the window itself, so the host
+// takes the keys back and returns them to what had them.
+class BarkWindowHost::KeyReturn {
+ public:
+  KeyReturn(NSWindow* window, BarkWindowHost* host)
+      : window_(window), host_(host) {
+    NSNotificationCenter* center = NSNotificationCenter.defaultCenter;
+    __weak NSWindow* weak_window = window;
+    resign_observer_ = [center
+        addObserverForName:NSWindowDidResignKeyNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification* notification) {
+                  NSWindow* resigned = notification.object;
+                  if (resigned == weak_window) {
+                    WindowResigned();
+                  } else if (resigned == child_) {
+                    ChildResigned();
+                  }
+                }];
+    become_observer_ = [center
+        addObserverForName:NSWindowDidBecomeKeyNotification
+                    object:window
+                     queue:nil
+                usingBlock:^(NSNotification*) {
+                  // Chromium sets the window's keys while it handles becoming
+                  // key; give them back after it.
+                  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+                      FROM_HERE, base::BindOnce(&KeyReturn::GiveBack,
+                                                weak_factory_.GetWeakPtr()));
+                }];
+  }
+  ~KeyReturn() {
+    [NSNotificationCenter.defaultCenter removeObserver:resign_observer_];
+    [NSNotificationCenter.defaultCenter removeObserver:become_observer_];
+  }
+
+ private:
+  static NSView* Holder(NSResponder* responder) {
+    if (auto* editor = base::apple::ObjCCast<NSTextView>(responder);
+        editor && editor.fieldEditor) {
+      return base::apple::ObjCCast<NSView>(editor.delegate);
+    }
+    return base::apple::ObjCCast<NSView>(responder);
+  }
+
+  // The new key window is known only once AppKit has finished the change.
+  void WindowResigned() {
+    resigned_holder_ = Holder(window_.firstResponder);
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<KeyReturn> self) {
+                         if (self &&
+                             NSApp.keyWindow.parentWindow == self->window_) {
+                           self->child_ = NSApp.keyWindow;
+                           self->holder_ = self->resigned_holder_;
+                         }
+                       },
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  void ChildResigned() {
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(
+                       [](base::WeakPtr<KeyReturn> self) {
+                         if (self && !NSApp.keyWindow &&
+                             NSApp.active && self->window_.visible &&
+                             !self->window_.miniaturized) {
+                           [self->window_ makeKeyWindow];
+                         }
+                       },
+                       weak_factory_.GetWeakPtr()));
+  }
+
+  void GiveBack() {
+    if (!child_ && !holder_) {
+      return;
+    }
+    child_ = nil;
+    NSView* holder = holder_;
+    holder_ = nil;
+    NSResponder* keys = window_.firstResponder;
+    if (keys != window_ && keys != window_.contentView) {
+      return;
+    }
+    // A page's view can be replaced at any time; the page itself gets the keys.
+    if (holder && holder.window == window_ && holder != window_.contentView &&
+        ![holder isKindOfClass:NSClassFromString(@"RenderWidgetHostViewCocoa")]) {
+      [window_ makeFirstResponder:holder];
+    } else {
+      host_->FocusSelectedPage();
+    }
+  }
+
+  __weak NSWindow* window_;
+  raw_ptr<BarkWindowHost> host_;
+  __weak NSView* resigned_holder_ = nil;
+  __weak NSView* holder_ = nil;
+  // The child window that took the keys from the window.
+  __weak NSWindow* child_ = nil;
+  id resign_observer_ = nil;
+  id become_observer_ = nil;
+  base::WeakPtrFactory<KeyReturn> weak_factory_{this};
 };
 
 // AppKit's close button asks the client view before closing the NSWindow; the
@@ -173,11 +283,14 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   widget_->Init(std::move(params));
   widget_->AddObserver(this);
   widget_->SetNativeWindowProperty(kBarkWindowHostKey, this);
+  key_return_ = std::make_unique<KeyReturn>(
+      widget_->GetNativeWindow().GetNativeNSWindow(), this);
   ArmClose();
 }
 
 BarkWindowHost::~BarkWindowHost() {
   closing_ = true;
+  key_return_.reset();
   page_watch_.reset();
   root_host_ = nullptr;
   leading_anchor_ = trailing_anchor_ = page_anchor_ = nullptr;
@@ -392,6 +505,15 @@ void BarkWindowHost::WatchSelectedPage() {
   page_watch_ = page ? std::make_unique<PageWatch>(page, this) : nullptr;
 }
 
+void BarkWindowHost::FocusSelectedPage() {
+  auto* contents =
+      selected_ ? selected_->browser()->GetTabStripModel()->GetActiveWebContents()
+                : nullptr;
+  if (contents) {
+    contents->Focus();
+  }
+}
+
 void BarkWindowHost::OnSelectedPageChanged() {
   if (closing_) {
     return;
@@ -430,6 +552,7 @@ void BarkWindowHost::OnWidgetActivationChanged(views::Widget* widget,
 
 void BarkWindowHost::OnWidgetDestroying(views::Widget* widget) {
   closing_ = true;
+  key_return_.reset();
   page_watch_.reset();
   root_host_ = nullptr;
   leading_anchor_ = trailing_anchor_ = page_anchor_ = nullptr;

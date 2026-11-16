@@ -113,6 +113,9 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   void OnSelectedPageChanged();
   void OnClientActiveTabChanged(BarkBrowserWindow* client);
 
+  // Gives the keys to the selected client's active page.
+  void FocusSelectedPage();
+
   // views::WidgetObserver:
   void OnWidgetBoundsChanged(views::Widget* widget,
                              const gfx::Rect& new_bounds) override;
@@ -127,6 +130,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   ~BarkWindowHost() override;
 
   class PageWatch;
+  class KeyReturn;
 
   void UpdateAnchors();
   void WatchSelectedPage();
@@ -149,6 +153,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   raw_ptr<views::View> trailing_anchor_ = nullptr;
   raw_ptr<views::View> page_anchor_ = nullptr;
   std::unique_ptr<PageWatch> page_watch_;
+  std::unique_ptr<KeyReturn> key_return_;
   bool closing_ = false;
   bool resetting_close_ = false;
   bool widget_fullscreen_ = false;

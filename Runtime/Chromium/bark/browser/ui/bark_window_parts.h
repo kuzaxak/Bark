@@ -136,6 +136,7 @@ class BarkModalDialogHost : public web_modal::WebContentsModalDialogHost {
 
  private:
   gfx::Rect PageBoundsInWindow() const;
+  gfx::Rect DialogAreaInWindow() const;
 
   const raw_ptr<BarkBrowserWindow> window_;
   base::ObserverList<web_modal::ModalDialogHostObserver> observers_;
