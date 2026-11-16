@@ -50,6 +50,14 @@ struct StartupTests {
         precondition(normal.aiKeychainService == "ee.qdo.nook.chromium.aiProvider")
         precondition(!normal.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
         precondition(normal.engineArguments(executable: "Nook").contains("--disable-sync"))
+        for launch in [["Nook"], ["Nook", "--bark-window=host"], ["Nook", "--", "https://fixture.invalid/cast"]] {
+            let arguments = try ChromiumStartupConfiguration(arguments: launch, applicationSupportDirectory: normalRoot)
+                .engineArguments(executable: "Nook")
+            let pages = arguments.firstIndex(of: "--") ?? arguments.endIndex
+            precondition(arguments.filter { $0.hasPrefix("--disable-features") } == ["--disable-features=MediaRouter"]
+                         && arguments.firstIndex(of: "--disable-features=MediaRouter")! < pages,
+                         "Cast has no entry point: the engine starts with Media Router off, once, before any page: \(arguments)")
+        }
         let withURLs = try ChromiumStartupConfiguration(arguments: ["Nook",
             "--no-sandbox", "https://fixture.invalid/cli", "file:///private/tmp/fixture.html"],
             applicationSupportDirectory: normalRoot)

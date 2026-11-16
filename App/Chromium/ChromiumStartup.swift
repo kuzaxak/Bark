@@ -112,7 +112,7 @@ struct ChromiumStartupConfiguration {
 
     func engineArguments(executable: String) -> [String] {
         var result = [executable, "--no-startup-window", "--no-first-run", "--no-default-browser-check",
-                      "--disable-sync", "--barc-shared-native-window", "--barc-native-shell",
+                      "--disable-sync", "--disable-features=MediaRouter", "--barc-shared-native-window", "--barc-native-shell",
                       "--user-data-dir=" + root.appendingPathComponent("Engine").path]
         if isVerification { result.append("--use-mock-keychain") }
         if hostsWindows { result.append("--bark-window=host") }
