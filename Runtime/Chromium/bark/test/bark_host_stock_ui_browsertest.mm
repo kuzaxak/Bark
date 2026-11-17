@@ -460,7 +460,8 @@ std::unique_ptr<net::test_server::HttpResponse> ServeKeys(
   response->set_content_type("text/html");
   response->set_content(
       "<title>keys</title><a id=link href=/title1.html>link</a><script>"
-      "window.newTabKeys = 0; window.markers = 0;"
+      "window.newTabKeys = 0; window.markers = 0; window.clicks = 0;"
+      "addEventListener('click', () => clicks++);"
       "addEventListener('keydown', e => {"
       "  if (e.metaKey && e.key === 't') { e.preventDefault(); newTabKeys++; }"
       "  if (e.key === 'k') markers++;"
@@ -1276,6 +1277,27 @@ IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
     return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
   }));
   EXPECT_TRUE(PageHearsAKey());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest, ClickReachesThePlacedPage) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  MakeKey();
+  // The middle of the page, clear of its link.
+  const gfx::Point point = Window()->GetPageBoundsInScreen().CenterPoint();
+  base::test::TestFuture<void> moved;
+  ASSERT_TRUE(ui_controls::SendMouseMoveNotifyWhenDone(
+      point.x(), point.y(), moved.GetCallback(), Window()->GetNativeWindow()));
+  ASSERT_TRUE(moved.Wait());
+  base::test::TestFuture<void> clicked;
+  ASSERT_TRUE(ui_controls::SendMouseEventsNotifyWhenDone(
+      ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP,
+      clicked.GetCallback(), ui_controls::kNoAccelerator,
+      Window()->GetNativeWindow()));
+  ASSERT_TRUE(clicked.Wait());
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return content::EvalJs(Contents(), "clicks").ExtractInt() == 1; }));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,

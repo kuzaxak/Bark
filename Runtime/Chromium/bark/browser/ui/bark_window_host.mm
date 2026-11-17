@@ -269,6 +269,8 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   for (auto* anchor : {&leading_anchor_, &trailing_anchor_, &page_anchor_}) {
     *anchor = contents->AddChildView(std::make_unique<views::View>());
     (*anchor)->SetProperty(views::kViewIgnoredByLayoutKey, true);
+    // Over the page: clicks go to the page beneath.
+    (*anchor)->SetCanProcessEventsWithinSubtree(false);
   }
   page_anchor_->SetProperty(views::kElementIdentifierKey,
                             kTopContainerElementId);
