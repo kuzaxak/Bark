@@ -551,6 +551,8 @@ std::unique_ptr<net::test_server::HttpResponse> ServeKeys(
 constexpr int kUnofferedCommands[] = {
     IDC_BOOKMARK_ALL_TABS,
     IDC_BOOKMARK_THIS_TAB,
+    // The app owns Close Tab and its key.
+    IDC_CLOSE_TAB,
     IDC_CONTENT_CONTEXT_ADD_LINK_TO_READING_LIST,
     IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH,
     IDC_CONTENT_CONTEXT_LISTEN_TO_THIS_PAGE,
@@ -727,6 +729,7 @@ IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest,
     EXPECT_TRUE(result->set_hidden_state);
     EXPECT_TRUE(result->new_hidden_state);
     EXPECT_FALSE(WillExecute(command, false));
+    EXPECT_FALSE(WillExecute(command, true));
   }
   NSMenuItem* bookmark = MenuItemWithTag([NSApp mainMenu], IDC_BOOKMARK_THIS_TAB);
   ASSERT_TRUE(bookmark);
@@ -873,32 +876,6 @@ IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest,
   EXPECT_TRUE(base::test::RunUntil([&] {
     return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
   }));
-}
-
-IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest, MenuCloseTabOnPinnedTab) {
-  ASSERT_TRUE(embedded_test_server()->Start());
-  OpenPlacedPage("/title1.html");
-  const int32_t second = barc_tab_create(
-      window_, embedded_test_server()->GetURL("/title2.html").spec().c_str(),
-      1);
-  ASSERT_NE(0, second);
-  // A page's commit clears its toasts; let the new tab's commit come first.
-  ASSERT_TRUE(content::WaitForLoadStop(TabContents(second)));
-  TabStripModel* tabs = FindBrowser(window_)->GetTabStripModel();
-  ASSERT_EQ(2, tabs->count());
-  tabs->SetTabPinned(tabs->active_index(), true);
-  NSMenuItem* close = MenuItemWithTag([NSApp mainMenu], IDC_CLOSE_TAB);
-  ASSERT_TRUE(close);
-  ASSERT_TRUE([NativeWindow() validateUserInterfaceItem:close]);
-  // A menu click: Chromium asks before closing a pinned tab.
-  [NSApp sendAction:close.action to:NativeWindow() from:close];
-  auto* toasts = ToastController::From(FindBrowser(window_));
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    return toasts->GetCurrentToastId() == ToastId::kClosePinnedTab;
-  }));
-  EXPECT_EQ(2, tabs->count());
-  [NSApp sendAction:close.action to:NativeWindow() from:close];
-  EXPECT_TRUE(base::test::RunUntil([&] { return tabs->count() == 1; }));
 }
 
 namespace {

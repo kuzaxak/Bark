@@ -140,11 +140,11 @@ bool BarkNativeWidgetMac::WillExecuteCommand(
     WindowOpenDisposition window_open_disposition,
     bool is_before_first_responder) {
   auto* browser = SelectedBrowser();
-  if (!browser) {
+  if (!browser || !HostWindowOffersCommand(command)) {
     return false;
   }
   if (!is_before_first_responder) {
-    return HostWindowOffersCommand(command);
+    return true;
   }
   if (ui::GlobalAcceleratorListener::GetInstance() &&
       ui::GlobalAcceleratorListener::GetInstance()

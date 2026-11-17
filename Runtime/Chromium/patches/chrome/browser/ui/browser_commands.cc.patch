@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
-index 14f5a7598d..ee98553da1 100644
+index 14f5a7598d..89f90e5dfc 100644
 --- a/chrome/browser/ui/browser_commands.cc
 +++ b/chrome/browser/ui/browser_commands.cc
 @@ -17,6 +17,7 @@
@@ -91,18 +91,3 @@ index 14f5a7598d..ee98553da1 100644
  
    if (only_active_split_tab_selected) {
      RecordTabCloseCount(1);
-@@ -1512,11 +1550,10 @@ void CloseTab(BrowserWindowInterface* browser) {
-   // already shown.
-   if (all_selected_tabs_pinned &&
-       toast_controller->GetCurrentToastId() != ToastId::kClosePinnedTab) {
--    BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
--    CHECK(browser_view);
-     ui::Accelerator accelerator;
--    CHECK(
--        browser_view->GetAcceleratorForCommandId(IDC_CLOSE_TAB, &accelerator));
-+    CHECK(BrowserWindow::FromBrowser(browser)
-+              ->GetAcceleratorProvider()
-+              ->GetAcceleratorForCommandId(IDC_CLOSE_TAB, &accelerator));
- 
-     ToastParams params(ToastId::kClosePinnedTab);
-     params.body_string_replacement_params.emplace_back(
