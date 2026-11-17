@@ -275,7 +275,6 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
                        &unselected_anchor_}) {
     *anchor = contents->AddChildView(std::make_unique<views::View>());
     (*anchor)->SetProperty(views::kViewIgnoredByLayoutKey, true);
-    // Over the page: clicks go to the page beneath.
     (*anchor)->SetCanProcessEventsWithinSubtree(false);
   }
   page_anchor_->SetProperty(views::kElementIdentifierKey,
@@ -554,7 +553,9 @@ void BarkWindowHost::FocusSelectedPage() {
   auto* contents =
       selected_ ? selected_->browser()->GetTabStripModel()->GetActiveWebContents()
                 : nullptr;
-  if (contents) {
+  NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
+  if (page && page.window == widget_->GetNativeWindow().GetNativeNSWindow() &&
+      !page.hiddenOrHasHiddenAncestor) {
     contents->Focus();
   }
 }

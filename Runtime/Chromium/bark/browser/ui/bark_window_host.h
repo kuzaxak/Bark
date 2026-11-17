@@ -111,15 +111,15 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   views::View* LeadingAnchor();
   views::View* TrailingAnchor();
   // The trailing anchor for `client`'s bubbles. A client that is not selected
-  // gets one whose bubbles close as soon as they show: its page is not the
-  // one on screen.
+  // gets one whose bubbles close as soon as they show.
   views::View* TrailingAnchorFor(BarkBrowserWindow* client);
   views::View* PageAnchor();
   // The selected client's page moved, resized or was replaced.
   void OnSelectedPageChanged();
   void OnClientActiveTabChanged(BarkBrowserWindow* client);
 
-  // Gives the keys to the selected client's active page.
+  // Gives the keys to the selected client's active page, if it is shown in
+  // this window.
   void FocusSelectedPage();
 
   // ui::AcceleratorTarget: Chromium's accelerator table (F7, F12, Esc), run on

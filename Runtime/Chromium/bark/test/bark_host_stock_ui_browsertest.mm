@@ -551,7 +551,6 @@ std::unique_ptr<net::test_server::HttpResponse> ServeKeys(
 constexpr int kUnofferedCommands[] = {
     IDC_BOOKMARK_ALL_TABS,
     IDC_BOOKMARK_THIS_TAB,
-    // The app owns Close Tab and its key.
     IDC_CLOSE_TAB,
     IDC_CONTENT_CONTEXT_ADD_LINK_TO_READING_LIST,
     IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH,
@@ -1384,6 +1383,32 @@ IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
                                         false));
   ASSERT_TRUE(base::test::RunUntil([&] { return holder.cancels > 0; }));
   EXPECT_EQ(1, holder.cancels);
+}
+
+// A page the app hides, as it does for a space with no tab shown, never gets
+// the keys when the window is key again.
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest, KeysNeverGoToAHiddenPage) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  MakeKey();
+  FocusPage();
+  page_.hidden = YES;
+  [NativeWindow() makeFirstResponder:nil];
+  NSWindow* other = [[NSWindow alloc]
+      initWithContentRect:NSMakeRect(0, 0, 200, 200)
+                styleMask:NSWindowStyleMaskTitled
+                  backing:NSBackingStoreBuffered
+                    defer:NO];
+  other.releasedWhenClosed = NO;
+  [other makeKeyAndOrderFront:nil];
+  ASSERT_TRUE(base::test::RunUntil([&] { return other.isKeyWindow; }));
+  MakeKey();
+  content::RunAllTasksUntilIdle();
+  NSView* view =
+      Contents()->GetRenderWidgetHostView()->GetNativeView().GetNativeNSView();
+  EXPECT_NE(view, NativeWindow().firstResponder);
+  EXPECT_FALSE(content::EvalJs(Contents(), "document.hasFocus()").ExtractBool());
+  [other close];
 }
 
 // As in Chrome, Esc stops a load first; the app's views do not see that one.
