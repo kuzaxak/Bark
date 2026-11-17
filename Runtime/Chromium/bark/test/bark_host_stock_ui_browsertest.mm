@@ -1333,6 +1333,80 @@ IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
   EXPECT_TRUE(PageHearsAKey());
 }
 
+// The app's view around the page, counting the cancelOperation: it is sent.
+@interface BarkCancelHolder : NSView
+@property(nonatomic) int cancels;
+@end
+
+@implementation BarkCancelHolder
+@synthesize cancels = _cancels;
+- (void)cancelOperation:(id)sender {
+  ++self.cancels;
+}
+@end
+
+// An Esc the page and Chromium's accelerators leave alone goes up AppKit's
+// responder chain from the page, where the app's views can take it.
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       UnhandledEscapeReachesTheAppsViews) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  BarkCancelHolder* holder =
+      [[BarkCancelHolder alloc] initWithFrame:root_.bounds];
+  [page_ removeFromSuperview];
+  [holder addSubview:page_];
+  [root_ addSubview:holder];
+  MakeKey();
+  FocusPage();
+  ASSERT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, false, false,
+                                        false));
+  EXPECT_TRUE(base::test::RunUntil([&] { return holder.cancels == 1; }));
+}
+
+// Shift+Esc and the other modified Escs are not the app's cancel.
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       ModifiedEscapeDoesNotReachTheAppsViews) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  BarkCancelHolder* holder =
+      [[BarkCancelHolder alloc] initWithFrame:root_.bounds];
+  [page_ removeFromSuperview];
+  [holder addSubview:page_];
+  [root_ addSubview:holder];
+  MakeKey();
+  FocusPage();
+  ASSERT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, true, false,
+                                        false));
+  ASSERT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, false, false,
+                                        false));
+  ASSERT_TRUE(base::test::RunUntil([&] { return holder.cancels > 0; }));
+  EXPECT_EQ(1, holder.cancels);
+}
+
+// As in Chrome, Esc stops a load first; the app's views do not see that one.
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest, EscapeStopsALoadFirst) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  BarkCancelHolder* holder =
+      [[BarkCancelHolder alloc] initWithFrame:root_.bounds];
+  [page_ removeFromSuperview];
+  [holder addSubview:page_];
+  [root_ addSubview:holder];
+  MakeKey();
+  FocusPage();
+  content::ExecuteScriptAsync(Contents(), "location.href = '/slow?60'");
+  ASSERT_TRUE(base::test::RunUntil([&] { return Contents()->IsLoading(); }));
+  ASSERT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(),
+                                        ui::VKEY_ESCAPE, false, false, false,
+                                        false));
+  EXPECT_TRUE(base::test::RunUntil([&] { return !Contents()->IsLoading(); }));
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(0, holder.cancels);
+}
+
 // F7, as in Chrome: caret browsing asks first, in a dialog on the window.
 IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
                        CaretBrowsingDialogShowsInHostWindow) {

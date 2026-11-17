@@ -513,9 +513,20 @@ bool BarkBrowserWindow::HandleKeyboardEvent(
     return true;
   }
   views::Widget* widget = host_->widget();
-  return widget && widget->GetFocusManager() &&
-         unhandled_keyboard_event_handler_.HandleKeyboardEvent(
-             event, widget->GetFocusManager());
+  if (widget && widget->GetFocusManager() &&
+      unhandled_keyboard_event_handler_.HandleKeyboardEvent(
+          event, widget->GetFocusManager())) {
+    return true;
+  }
+  // The app's views above the page take Esc as AppKit's cancelOperation:.
+  NSEvent* key = event.os_event.Get();
+  NSResponder* page = GetNativeWindow().GetNativeNSWindow().firstResponder;
+  const NSEventModifierFlags held =
+      NSEventModifierFlagShift | NSEventModifierFlagControl |
+      NSEventModifierFlagOption | NSEventModifierFlagCommand;
+  return key.keyCode == kVK_Escape && !(key.modifierFlags & held) && page &&
+         [page.nextResponder tryToPerform:@selector(cancelOperation:)
+                                     with:nil];
 }
 
 std::unique_ptr<FindBar> BarkBrowserWindow::CreateFindBar() {
