@@ -390,7 +390,7 @@ BarkToolbarButtonProvider::BarkToolbarButtonProvider(BarkBrowserWindow* window)
 BarkToolbarButtonProvider::~BarkToolbarButtonProvider() = default;
 
 views::BubbleAnchor BarkToolbarButtonProvider::TrailingAnchor() {
-  views::View* anchor = window_->host()->TrailingAnchor();
+  views::View* anchor = window_->host()->TrailingAnchorFor(window_);
   return anchor ? views::BubbleAnchor(anchor) : views::BubbleAnchor();
 }
 

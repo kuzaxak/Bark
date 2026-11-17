@@ -108,6 +108,10 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   // rectangle, which toasts read as the top container.
   views::View* LeadingAnchor();
   views::View* TrailingAnchor();
+  // The trailing anchor for `client`'s bubbles. A client that is not selected
+  // gets one whose bubbles close as soon as they show: its page is not the
+  // one on screen.
+  views::View* TrailingAnchorFor(BarkBrowserWindow* client);
   views::View* PageAnchor();
   // The selected client's page moved, resized or was replaced.
   void OnSelectedPageChanged();
@@ -133,6 +137,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   class KeyReturn;
 
   void UpdateAnchors();
+  void CloseUnselectedBubbles();
   void WatchSelectedPage();
   void ArmClose();
   void OnCloseRequested(views::Widget::ClosedReason reason);
@@ -152,6 +157,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   raw_ptr<views::View> leading_anchor_ = nullptr;
   raw_ptr<views::View> trailing_anchor_ = nullptr;
   raw_ptr<views::View> page_anchor_ = nullptr;
+  raw_ptr<views::View> unselected_anchor_ = nullptr;
   std::unique_ptr<PageWatch> page_watch_;
   std::unique_ptr<KeyReturn> key_return_;
   bool closing_ = false;

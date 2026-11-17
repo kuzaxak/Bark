@@ -25,6 +25,7 @@
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "ui/views/bubble/bubble_border.h"
+#include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/native/native_view_host.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view.h"
@@ -266,7 +267,8 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   contents->SetLayoutManager(std::make_unique<views::FillLayout>());
   root_host_ =
       contents->AddChildView(std::make_unique<views::NativeViewHost>());
-  for (auto* anchor : {&leading_anchor_, &trailing_anchor_, &page_anchor_}) {
+  for (auto* anchor : {&leading_anchor_, &trailing_anchor_, &page_anchor_,
+                       &unselected_anchor_}) {
     *anchor = contents->AddChildView(std::make_unique<views::View>());
     (*anchor)->SetProperty(views::kViewIgnoredByLayoutKey, true);
     // Over the page: clicks go to the page beneath.
@@ -296,7 +298,8 @@ BarkWindowHost::~BarkWindowHost() {
   key_return_.reset();
   page_watch_.reset();
   root_host_ = nullptr;
-  leading_anchor_ = trailing_anchor_ = page_anchor_ = nullptr;
+  leading_anchor_ = trailing_anchor_ = page_anchor_ = unselected_anchor_ =
+      nullptr;
   if (widget_) {
     widget_->RemoveObserver(this);
     widget_->SetNativeWindowProperty(kBarkWindowHostKey, nullptr);
@@ -469,6 +472,33 @@ views::View* BarkWindowHost::TrailingAnchor() {
   return trailing_anchor_;
 }
 
+views::View* BarkWindowHost::TrailingAnchorFor(BarkBrowserWindow* client) {
+  if (client == selected_ || !unselected_anchor_) {
+    return TrailingAnchor();
+  }
+  UpdateAnchors();
+  unselected_anchor_->SetBoundsRect(trailing_anchor_->bounds());
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&BarkWindowHost::CloseUnselectedBubbles,
+                                weak_factory_.GetWeakPtr()));
+  return unselected_anchor_;
+}
+
+void BarkWindowHost::CloseUnselectedBubbles() {
+  if (!widget_ || !unselected_anchor_) {
+    return;
+  }
+  for (views::Widget* child :
+       views::Widget::GetAllOwnedWidgets(widget_->GetNativeView())) {
+    auto* bubble = child->widget_delegate()
+                       ? child->widget_delegate()->AsBubbleDialogDelegate()
+                       : nullptr;
+    if (bubble && bubble->GetAnchorView() == unselected_anchor_) {
+      child->Close();
+    }
+  }
+}
+
 views::View* BarkWindowHost::PageAnchor() {
   UpdateAnchors();
   return page_anchor_;
@@ -559,7 +589,8 @@ void BarkWindowHost::OnWidgetDestroying(views::Widget* widget) {
   key_return_.reset();
   page_watch_.reset();
   root_host_ = nullptr;
-  leading_anchor_ = trailing_anchor_ = page_anchor_ = nullptr;
+  leading_anchor_ = trailing_anchor_ = page_anchor_ = unselected_anchor_ =
+      nullptr;
 }
 
 void BarkWindowHost::ArmClose() {

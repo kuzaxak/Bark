@@ -363,6 +363,39 @@ IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest, BubbleAnchorsFollowThePage) {
   ExpectAtThePageTopRight(bubble);
 }
 
+// A prompt of a client that is not the window's selected one, such as one that
+// arrives just after the person switched profiles, never shows over another
+// client's page.
+IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest,
+                       UnselectedClientBubbleDoesNotShow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  base::test::TestFuture<barc_profile_status, int32_t> opened;
+  barc_profile_open_in_native_window(
+      window_, "5b1e9c37-4a2d-48f6-b0e3-9d7c2a6f1e85", BARC_PROFILE_BLANK,
+      [](barc_profile_status status, int32_t window, void* data) {
+        static_cast<base::test::TestFuture<barc_profile_status, int32_t>*>(data)
+            ->SetValue(status, window);
+      },
+      &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t other = opened.Get<1>();
+  ASSERT_EQ(1, barc_window_select(window_));
+  content::WebContents* other_page =
+      FindBrowser(other)->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(other_page);
+  qrcode_generator::QRCodeGeneratorBubbleController::Get(other_page)
+      ->ShowBubble(GURL("https://example.com/"));
+  content::RunAllTasksUntilIdle();
+  EXPECT_TRUE(base::test::RunUntil([&] { return Bubbles().empty(); }));
+  // The selected client's own bubble still shows.
+  qrcode_generator::QRCodeGeneratorBubbleController::Get(Contents())
+      ->ShowBubble(Contents()->GetLastCommittedURL());
+  auto* bubble = WaitForBubble();
+  ASSERT_NE(nullptr, bubble);
+  ExpectAtThePageTopRight(bubble);
+}
+
 IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest, TwoBubblesKeepTheirCorners) {
   ASSERT_TRUE(embedded_test_server()->Start());
   OpenPlacedPage("/title1.html");
