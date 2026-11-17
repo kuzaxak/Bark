@@ -9,6 +9,7 @@ c = ['swiftc', '-swift-version', '5', '-target', 'x86_64-apple-macosx15.5', '-pa
      '-I', str(root / 'Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Headers'),
      str(root / 'App/Chromium/ChromiumWindowRoot.swift'), str(root / 'App/Window/WindowFrameInteraction.swift'),
      str(root / 'App/Chromium/ChromiumPagePanel.swift'), str(root / 'Nook/Components/Sidebar/Menu/LibrarySwipeDecision.swift'),
+     str(root / 'Nook/Components/Browser/Window/SplitDrop.swift'), str(root / 'Nook/Components/WebsiteView/SplitDividerView.swift'),
      str(root / 'Tests/Shared/BridgeTable.swift'),
      str(root / 'Tests/ChromiumWindowHost/Main.swift'), '-framework', 'AppKit', '-o', str(binary)]
 p = subprocess.run(c, capture_output=True, text=True)

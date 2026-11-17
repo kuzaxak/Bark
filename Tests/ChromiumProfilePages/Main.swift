@@ -167,7 +167,7 @@ private enum ProfileChecks {
         Native.opened(50)
         guard case .success = outcomes.removeLast() else { preconditionFailure("A host window opens the profile page") }
         precondition(Native.calls == ["open:" + profile.id.uuidString, "select", "navigate:chrome://extensions/", "show"], "\(Native.calls)")
-        let hostRoot = hostPage.superview?.superview as? ChromiumWindowRoot
+        let hostRoot = sequence(first: hostPage as NSView, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
         precondition(hostRoot != nil && presenter.ownsNativeWindow(50), "The root shows the profile page")
         precondition(hostRoot!.subviews.contains { $0.subviews.first is NSHostingView<ChromiumProfilePageView> },
                      "The root holds the page's controls")

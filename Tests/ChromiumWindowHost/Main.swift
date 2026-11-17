@@ -148,7 +148,7 @@ private final class PageView: NSView {
             precondition(inRoot(second, root) == hidden, "the page does not resize when the sidebar floats in")
             precondition(inRoot(sidebar, root) == CGRect(x: 5, y: 5, width: 247, height: 790),
                          "the revealed sidebar floats 5 from the edges: \(inRoot(sidebar, root))")
-            precondition(root.subviews.firstIndex(of: sidebar.superview!)! > root.subviews.firstIndex(of: second.superview!)!,
+            precondition(root.subviews.firstIndex(of: sidebar.superview!)! > root.subviews.firstIndex(of: second.superview!.superview!)!,
                          "the revealed sidebar is above the page")
             precondition(!lights.contains(where: \.isHidden) && Engine.chrome.last == ChromiumWindowRoot.Arc.revealedLights,
                          "the lights come back inside the revealed sidebar")
@@ -157,6 +157,8 @@ private final class PageView: NSView {
                          "showing the sidebar again restores the page frame and the lights")
 
             downloadFlightCases(root: root, sidebar: sidebar, page: second, window: window)
+            splitCases(root: root, sidebar: sidebar, window: window)
+            precondition(root.show(tab: 11) && root.split == nil && inRoot(second, root) == shown, "back to one page after the split cases")
             libraryCases(root: root, sidebar: sidebar, page: second, lights: lights)
             root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
             root.layoutSubtreeIfNeeded()
@@ -181,8 +183,8 @@ private final class PageView: NSView {
             Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
             precondition(!bar.isHidden && inRoot(bar, root) == CGRect(x: 247, y: 10, width: 943, height: 40)
                          && inRoot(second, root) == CGRect(x: 247, y: 50, width: 943, height: 740), "leaving full screen brings the bar back")
-            precondition(root.panelContainer(for: .window) === root && root.panelContainer(for: .page) === second.superview
-                         && root.panelContainer(for: .fitted) === second.superview, "panels go into the page frame, window panels over everything")
+            precondition(root.panelContainer(for: .window) === root && root.panelContainer(for: .page) === second.superview!.superview
+                         && root.panelContainer(for: .fitted) === second.superview!.superview, "panels go into the page frame, window panels over everything")
             precondition(!root.setHeader(nil, replacing: NSView(), height: 0), "another caller's bar is not removed")
             precondition(root.setHeader(nil, replacing: bar, height: 0) && bar.superview == nil && inRoot(second, root) == shown,
                          "removing the bar gives the page its height back")
@@ -351,6 +353,130 @@ private final class PageView: NSView {
         }
     }
 
+    /// Split view in a Bark window: 2 to 4 panes of the root's own client, each its own rounded rectangle with a 10 pt gap,
+    /// together filling the page frame one page fills. A pane that keeps its tab never leaves the window.
+    @MainActor static func splitCases(root: ChromiumWindowRoot, sidebar: NSView, window: NSWindow) {
+        typealias Pane = ChromiumWindowRoot.Pane
+        typealias Split = ChromiumWindowRoot.Split
+        let pages = (20...23).map { _ in CountingPage() }
+        for (offset, page) in pages.enumerated() { Engine.pages[Int32(20 + offset)] = page }
+        func pane(_ tab: Int32) -> Pane { Pane(client: 5, tab: tab) }
+        let area = CGRect(x: 247, y: 10, width: 943, height: 780)
+        window.makeFirstResponder(nil)
+        precondition(root.show(tab: 20) && inRoot(pages[0], root) == area && window.firstResponder === pages[0].input, "starts on one page, with the keys")
+
+        precondition(root.showSplit(Split(panes: [pane(20), pane(21)], vertical: false, dividers: [0.5], focused: 20)),
+                     "two panes of the root's client are shown")
+        precondition(inRoot(pages[0], root) == CGRect(x: 247, y: 10, width: 466, height: 780)
+                     && inRoot(pages[1], root) == CGRect(x: 723, y: 10, width: 467, height: 780),
+                     "side by side with a 10 pt gap, filling the page frame: \(inRoot(pages[0], root)) \(inRoot(pages[1], root))")
+        let containers = [pages[0].superview!, pages[1].superview!]
+        precondition(containers[0] !== containers[1] && containers.allSatisfy { $0.layer?.cornerRadius == 7 && $0.layer?.masksToBounds == true },
+                     "each pane is its own rounded rectangle")
+        precondition(root.split?.focused == 20 && root.shownTab == 20 && window.firstResponder === pages[0].input,
+                     "the focused pane has the keys")
+
+        func panesFill(_ count: Int, vertical: Bool, in rect: CGRect) -> Bool {
+            let frames = pages.prefix(count).map { inRoot($0, root) }
+            let along = { (r: CGRect) -> (CGFloat, CGFloat) in vertical ? (r.minY, r.maxY) : (r.minX, r.maxX) }
+            let across = { (r: CGRect) -> (CGFloat, CGFloat) in vertical ? (r.minX, r.maxX) : (r.minY, r.maxY) }
+            guard along(frames.first!).0 == along(rect).0, along(frames.last!).1 == along(rect).1,
+                  frames.allSatisfy({ across($0) == across(rect) && $0.width > 0 && $0.height > 0 }) else { return false }
+            return zip(frames, frames.dropFirst()).allSatisfy { along($1).0 - along($0).1 == 10 }
+        }
+        for count in 2...4 {
+            for vertical in [false, true] {
+                let dividers = (1..<count).map { CGFloat($0) / CGFloat(count) }
+                precondition(root.showSplit(Split(panes: (0..<count).map { pane(Int32(20 + $0)) }, vertical: vertical, dividers: dividers, focused: 20))
+                             && panesFill(count, vertical: vertical, in: area),
+                             "\(count) panes, \(vertical ? "stacked" : "side by side"), fill the page frame with 10 pt gaps")
+            }
+        }
+
+        let moves = pages.map(\.windowMoves)
+        precondition(root.showSplit(Split(panes: [pane(20), pane(21), pane(22)], vertical: false, dividers: [0.2, 0.7], focused: 20))
+                     && root.showSplit(Split(panes: [pane(22), pane(20), pane(21)], vertical: false, dividers: [0.2, 0.7], focused: 20))
+                     && root.showSplit(Split(panes: [pane(22), pane(20), pane(21)], vertical: true, dividers: [0.2, 0.7], focused: 20)),
+                     "a divider move, a reorder and Convert")
+        precondition(pages.prefix(3).map(\.windowMoves) == Array(moves.prefix(3)) && pages.prefix(3).allSatisfy { $0.isDescendant(of: root) }
+                     && pages[3].superview == nil,
+                     "a pane that keeps its tab never leaves the window; the dropped fourth one does: \(pages.map(\.windowMoves)) \(moves)")
+        precondition(inRoot(pages[2], root).minY == area.minY && inRoot(pages[1], root).maxY == area.maxY, "the reorder took effect, stacked")
+
+        precondition(root.show(tab: 21) && root.split?.focused == 21 && root.shownTab == 21 && window.firstResponder === pages[1].input
+                     && pages.prefix(3).map(\.windowMoves) == Array(moves.prefix(3)) && pages.prefix(3).allSatisfy { $0.isDescendant(of: root) },
+                     "showing a pane's tab focuses that pane and moves no pane")
+        let field = NSTextField()
+        sidebar.addSubview(field)
+        window.makeFirstResponder(field)
+        precondition(root.show(tab: 22) && root.split?.focused == 22 && window.firstResponder is NSText,
+                     "a field outside the page keeps the keys when the focused pane changes")
+        field.removeFromSuperview()
+
+        precondition(!root.showSplit(Split(panes: [pane(20), pane(24)], vertical: false, dividers: [0.5], focused: 20))
+                     && root.split?.panes.count == 3, "a pane with no page view refuses the split and changes nothing")
+        precondition(!root.showSplit(Split(panes: [pane(20), Pane(client: 6, tab: 21)], vertical: false, dividers: [0.5], focused: 20))
+                     && root.split?.panes.count == 3, "a pane of another client is refused until C2")
+
+        precondition(root.showSplit(Split(panes: [pane(20), pane(21)], vertical: false, dividers: [0.5], focused: 20)), "two panes again")
+        root.sidebar = .hidden
+        precondition(panesFill(2, vertical: false, in: CGRect(x: 10, y: 10, width: 1180, height: 780)), "hidden sidebar: the panes fill the wider frame")
+        root.sidebar = .revealed
+        precondition(panesFill(2, vertical: false, in: CGRect(x: 10, y: 10, width: 1180, height: 780)), "revealed sidebar: it floats over the leading pane")
+        root.sidebar = .shown
+        root.library = .init(preferredWidth: 417, progress: 0.5)
+        let pushed = ChromiumWindowRoot.layout(in: root.bounds, sidebar: .shown, library: root.library, pageFullscreen: false).page
+        precondition(panesFill(2, vertical: false, in: pushed), "the Library pushes all panes as it pushes one page: \(pushed)")
+        root.library = .shut
+        let bar = NSView()
+        precondition(root.setHeader(bar, replacing: nil, height: 40)
+                     && panesFill(2, vertical: false, in: CGRect(x: 247, y: 50, width: 943, height: 740))
+                     && inRoot(bar, root) == CGRect(x: 247, y: 10, width: 943, height: 40), "one bar above all panes")
+        precondition(root.setHeader(nil, replacing: bar, height: 0))
+
+        let dividers = root.splitDividers
+        precondition(dividers.count == 1 && inRoot(dividers[0], root) == CGRect(x: 713, y: 10, width: 10, height: 780),
+                     "the gap between two panes is the divider: \(dividers.map { inRoot($0, root) })")
+        var moved: [(Int, CGFloat, CGFloat)] = [], released = 0
+        root.dividerMoved = { moved.append(($0, $1, $2)) }
+        root.dividerReleased = { released += 1 }
+        dividers[0].onResize?(0.6, 943); dividers[0].onResizeEnded?()
+        precondition(moved.count == 1 && moved[0] == (0, 0.6, 943) && released == 1, "a drag reports the divider, its place and the page's length")
+
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 21, view: pages[1])
+        precondition(root.showsCrashedPage(tab: 21) && !root.showsCrashedPage(tab: 20), "a crashed pane shows the card in that pane only")
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 21, view: pages[1])
+        precondition(!root.showsCrashedPage(tab: 21))
+
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_PAGE)
+        precondition(inRoot(pages[0], root) == root.bounds && pages[1].superview!.isHidden && root.splitDividers.isEmpty,
+                     "page full screen from a pane: that page fills the window, the other pane leaves it")
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
+        precondition(panesFill(2, vertical: false, in: area) && !pages[1].superview!.isHidden && root.splitDividers.count == 1,
+                     "the split is as it was after full screen")
+
+        let empty = NSView()
+        root.makeEmptyPane = { empty }
+        precondition(root.showSplit(Split(panes: [pane(20), pane(21), nil], vertical: false, dividers: [1.0 / 3, 2.0 / 3], focused: 20))
+                     && empty.isDescendant(of: root) && root.splitDividers.isEmpty && pages[1].isDescendant(of: root),
+                     "Add Split View's empty pane, with no divider")
+        precondition(root.showSplit(Split(panes: [pane(20), pane(21)], vertical: false, dividers: [0.5], focused: 20)) && !empty.isDescendant(of: root),
+                     "the empty pane goes when the bar closes")
+
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 21, view: pages[1])
+        precondition(pages[1].superview == nil && pages[0].isDescendant(of: root) && root.split != nil,
+                     "a closed pane's page leaves; the others stay until the split changes")
+        let kept = pages[0].windowMoves
+        precondition(root.show(tab: 20) && root.split != nil && root.shownTab == 20, "the focused pane stays focused")
+        precondition(root.show(tab: 22) && root.split == nil && pages[0].superview == nil && inRoot(pages[2], root) == area,
+                     "a tab outside the split hides the split; its page fills the frame")
+        precondition(root.showSplit(Split(panes: [pane(22), pane(20)], vertical: false, dividers: [0.5], focused: 22)) && pages[2].isDescendant(of: root),
+                     "the split shows again around the page that was shown")
+        precondition(root.show(tab: 20) && root.split?.focused == 20 && pages[0].windowMoves == kept + 2,
+                     "only leaving and returning moved a page in and out of the window")
+        for tab: Int32 in 20...23 { Engine.pages[tab] = nil }
+    }
+
     /// A download that starts flies over the page into the sidebar's downloads button, as in the WebKit
     /// window; nothing flies while the sidebar is out of the window.
     @MainActor static func downloadFlightCases(root: ChromiumWindowRoot, sidebar: NSView, page: NSView, window: NSWindow) {
@@ -411,7 +537,7 @@ private final class PageView: NSView {
         let order = root.subviews
         precondition(surface.superview === root && surface.frame == root.bounds
                      && order.firstIndex(of: surface)! > order.firstIndex(of: sidebar.superview!)!
-                     && order.firstIndex(of: surface)! > order.firstIndex(of: page.superview!)!,
+                     && order.firstIndex(of: surface)! > order.firstIndex(of: page.superview!.superview!)!,
                      "the Library's swipe surface covers the window above the sidebar and the page")
         func hit(_ point: NSPoint) -> NSView? { root.hitTest(root.superview!.convert(point, from: root)) }
         let beside = NSPoint(x: 700, y: 400)
@@ -485,6 +611,16 @@ private final class PageView: NSView {
         root.sidebarWidth = arc.sidebarWidth
         precondition(dismissed == 1, "only the click put the Library away")
     }
+}
+
+/// A page view that counts how often it entered or left a window.
+private final class CountingPage: NSView {
+    let input = Focusable()
+    private(set) var windowMoves = 0
+    override init(frame: NSRect) { super.init(frame: frame); addSubview(input) }
+    required init?(coder: NSCoder) { nil }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); windowMoves += 1 }
+    final class Focusable: NSView { override var acceptsFirstResponder: Bool { true } }
 }
 
 /// Stands in for the Library's swipe surface, which takes scroll events only.

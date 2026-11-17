@@ -17,6 +17,8 @@ final class ChromiumWindowRoot: NSView {
         static let pageMargin: CGFloat = 10
         static let pageCornerRadius: CGFloat = 7
         static let revealMargin: CGFloat = 5
+        /// Between two panes of a split, where the window's backdrop shows.
+        static let splitGap: CGFloat = 10
         static let revealCornerRadius: CGFloat = 10
     }
 
@@ -120,17 +122,19 @@ final class ChromiumWindowRoot: NSView {
 
     private let bridge: BarcBridge
     let nativeWindow: Int32
+    /// The page with the keys: the one page shown, or the focused pane of a split.
     private(set) var shownTab: Int32 = 0
-    private weak var page: NSView?
+    /// One slot for one page, one per pane in a split, in the panes' order.
+    private var slots: [Slot] = []
     private var observation: UInt64 = 0
     private let pageFrame = Container()
+    private let dividerLayer = DividerLayer()
     private let libraryDismissal = LibraryDismissal()
     private let sidebarColumn = Container()
     private let overlayLayer = Overlay()
     private weak var overlay: NSView?
     private weak var librarySwipeSurface: NSView?
     private var placedLights: Lights?
-    private let crashedPage = CrashedPage()
     private weak var sidebarView: NSView?
     private weak var backdrop: NSView?
     private weak var header: NSView?
@@ -211,13 +215,86 @@ final class ChromiumWindowRoot: NSView {
         return (convert(launch, from: nil), CGPoint(x: target.midX, y: target.midY))
     }
 
-    /// The window shows no page of its own: an empty space, or a page another window holds.
-    var pageHidden = false {
-        didSet { heldPage?.isHidden = pageHidden }
+    /// A tab's page in a split. The client is always this root's own until a window shows more than one profile.
+    struct Pane: Equatable {
+        var client: Int32
+        var tab: Int32
     }
 
-    /// The page this root shows; nil once another root took it.
-    private var heldPage: NSView? { page?.superview === pageFrame ? page : nil }
+    /// A split as the window shows it.
+    struct Split: Equatable {
+        /// Leading to trailing, or top to bottom; nil is Add Split View's empty pane.
+        var panes: [Pane?]
+        var vertical: Bool
+        /// Where each divider sits, as a fraction of the page area from its leading or top edge.
+        var dividers: [CGFloat]
+        /// The pane with the keys.
+        var focused: Int32
+    }
+
+    /// The split shown; nil while one page fills the page frame.
+    private(set) var split: Split?
+
+    /// Called with a divider's index, its new place and the page area's length along the split
+    /// while it is dragged; the caller answers with `showSplit`.
+    var dividerMoved: ((Int, CGFloat, CGFloat) -> Void)?
+    var dividerReleased: (() -> Void)?
+    /// What Add Split View's empty pane shows.
+    var makeEmptyPane: () -> NSView = { NSView() }
+
+    var splitDividers: [SplitDividerView] { dividerLayer.subviews.compactMap { $0 as? SplitDividerView } }
+
+    /// Shows `split`'s panes. A page that stays a pane stays in the window, whatever moves; a page
+    /// that leaves the split leaves the window. False, and nothing changes, when a pane is not this
+    /// root's client's, has no page view, or the split is not one.
+    @discardableResult
+    func showSplit(_ split: Split) -> Bool {
+        let panes = split.panes.compactMap { $0 }
+        guard (2...4).contains(split.panes.count), split.dividers.count + 1 == split.panes.count,
+              zip([0] + split.dividers, split.dividers + [1]).allSatisfy({ $0 < $1 }),
+              Set(panes.map(\.tab)).count == panes.count, panes.contains(where: { $0.tab == split.focused }),
+              panes.allSatisfy({ $0.client == nativeWindow }) else { return false }
+        var views: [Int32: NSView] = [:]
+        for pane in panes {
+            guard let view = pageView(pane.tab) else { return false }
+            views[pane.tab] = view
+        }
+        var free = slots
+        let next = split.panes.map { pane -> Slot in
+            if let index = free.firstIndex(where: { $0.pane == pane }) { return free.remove(at: index) }
+            return Slot(pane: pane, root: self)
+        }
+        let focusChanged = shownTab != split.focused || slots.first(where: { $0.pane?.tab == split.focused }) == nil
+        self.split = split
+        use(next)
+        for slot in next {
+            if let pane = slot.pane, let view = views[pane.tab] { place(view, in: slot) } else { slot.showEmpty(makeEmptyPane) }
+        }
+        shownTab = split.focused
+        layoutPageArea()
+        if focusChanged { focusPage() }
+        return true
+    }
+
+    /// Ends the split shown: the focused page fills the page frame, the others leave the window.
+    @discardableResult
+    func endSplit() -> Bool {
+        guard split != nil else { return shownTab != 0 }
+        split = nil
+        return show(tab: shownTab)
+    }
+
+    func showsCrashedPage(tab: Int32) -> Bool {
+        slots.contains { $0.pane?.tab == tab && !$0.crashed.isHidden }
+    }
+
+    /// The window shows no page of its own: an empty space, or a page another window holds.
+    var pageHidden = false {
+        didSet { slots.forEach { $0.heldView?.isHidden = pageHidden } }
+    }
+
+    /// The focused page; nil once another root took it.
+    private var heldPage: NSView? { slots.first { $0.pane?.tab == shownTab }?.heldView }
 
     init(bridge: BarcBridge, nativeWindow: Int32) {
         self.bridge = bridge
@@ -231,13 +308,7 @@ final class ChromiumWindowRoot: NSView {
         pageFrame.layer?.masksToBounds = true
         pageFrame.autoresizingMask = [.width, .height]
         addSubview(pageFrame)
-        crashedPage.isHidden = true
-        crashedPage.autoresizingMask = [.width, .height]
-        crashedPage.reload = { [weak self] in
-            guard let self, self.shownTab != 0 else { return }
-            _ = self.bridge.tab_reload(self.nativeWindow, self.shownTab)
-        }
-        pageFrame.addSubview(crashedPage)
+        pageFrame.addSubview(dividerLayer)
         libraryDismissal.isHidden = true
         addSubview(libraryDismissal)
         sidebarColumn.wantsLayer = true
@@ -305,27 +376,58 @@ final class ChromiumWindowRoot: NSView {
         return sidebarView === view && view.superview === sidebarColumn
     }
 
-    /// Shows `tab`'s page in place of the one shown before. False when the window has no page
-    /// view for that tab.
+    /// Shows `tab`'s page: as the focused pane when the split shown has it, else in place of what
+    /// was shown before, the split's other pages leaving the window. False when the window has no
+    /// page view for that tab.
     @discardableResult
     func show(tab: Int32) -> Bool {
-        guard let pointer = bridge.tab_native_view(nativeWindow, tab) else { return false }
-        let view = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue()
-        let changed = view !== page || view.superview !== pageFrame
-        if view !== page, page?.superview === pageFrame {
-            page?.removeFromSuperview()
+        if let split, split.panes.contains(Pane(client: nativeWindow, tab: tab)) {
+            guard let slot = slots.first(where: { $0.pane?.tab == tab }), slot.view != nil else { return false }
+            let changed = shownTab != tab
+            self.split?.focused = tab
+            shownTab = tab
+            if pageFullscreen { layoutPageArea() }
+            if changed { focusPage() }
+            return true
         }
-        if view.superview !== pageFrame {
-            view.frame = pageArea
-            view.autoresizingMask = [.width, .height]
-            pageFrame.addSubview(view, positioned: .below, relativeTo: crashedPage)
-        }
-        view.isHidden = pageHidden
-        page = view
+        guard let view = pageView(tab) else { return false }
+        let slot = slots.first { $0.pane?.tab == tab } ?? Slot(pane: Pane(client: nativeWindow, tab: tab), root: self)
+        let changed = view !== slot.view || view.superview !== slot.container || slots.count != 1 || shownTab != tab
+        split = nil
+        use([slot])
+        place(view, in: slot)
         shownTab = tab
-        crashedPage.isHidden = !crashedTabs.contains(tab)
+        layoutPageArea()
         if changed { focusPage() }
         return true
+    }
+
+    private func pageView(_ tab: Int32) -> NSView? {
+        bridge.tab_native_view(nativeWindow, tab).map { Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue() }
+    }
+
+    /// Makes `next` the slots shown: a slot that goes takes its page out of the window.
+    private func use(_ next: [Slot]) {
+        for slot in slots where !next.contains(where: { $0 === slot }) {
+            if slot.heldView != nil { slot.view?.removeFromSuperview() }
+            slot.container.removeFromSuperview()
+        }
+        for slot in next where slot.container.superview !== pageFrame {
+            pageFrame.addSubview(slot.container, positioned: .below, relativeTo: dividerLayer)
+        }
+        slots = next
+    }
+
+    private func place(_ view: NSView, in slot: Slot) {
+        if view !== slot.view, slot.heldView != nil { slot.view?.removeFromSuperview() }
+        if view.superview !== slot.container {
+            view.frame = slot.container.bounds
+            view.autoresizingMask = [.width, .height]
+            slot.container.addSubview(view, positioned: .below, relativeTo: slot.crashed)
+        }
+        view.isHidden = pageHidden
+        slot.view = view
+        slot.crashed.isHidden = !crashedTabs.contains(slot.pane?.tab ?? 0)
     }
 
     /// The optional bar above the page, inside the page frame. `expected` is the bar the caller
@@ -337,13 +439,13 @@ final class ChromiumWindowRoot: NSView {
         headerHeight = view == nil ? 0 : max(0, height)
         if let view, view.superview !== pageFrame {
             view.autoresizingMask = [.width]
-            pageFrame.addSubview(view, positioned: .above, relativeTo: crashedPage)
+            pageFrame.addSubview(view, positioned: .below, relativeTo: dividerLayer)
         }
         layoutPageArea()
         return true
     }
 
-    var showsCrashedPage: Bool { !crashedPage.isHidden }
+    var showsCrashedPage: Bool { showsCrashedPage(tab: shownTab) }
 
     /// The bar's height in the page frame; a full-screen page has none above it.
     private var barHeight: CGFloat { pageFullscreen ? 0 : headerHeight }
@@ -365,29 +467,28 @@ final class ChromiumWindowRoot: NSView {
             applyLights()
         case BARC_WINDOW_HOST_PAGE_CRASHED.rawValue:
             crashedTabs.insert(event.tab)
-            if event.tab == shownTab, isShown(event.view) { crashedPage.isHidden = false }
+            for slot in slots where slot.pane?.tab == event.tab && slot.holds(event.view) { slot.crashed.isHidden = false }
         case BARC_WINDOW_HOST_PAGE_RESTORED.rawValue:
             crashedTabs.remove(event.tab)
-            if event.tab == shownTab { crashedPage.isHidden = true }
+            for slot in slots where slot.pane?.tab == event.tab { slot.crashed.isHidden = true }
         default:
             break
         }
     }
 
-    private func isShown(_ view: UnsafeMutableRawPointer?) -> Bool {
-        guard let page = heldPage, let view else { return false }
-        return Unmanaged.passUnretained(page).toOpaque() == view
-    }
-
-    /// A retired page leaves the window; a tab that replaced its contents shows its new page.
+    /// A retired page leaves the window; a tab that replaced its contents shows its new page. A
+    /// pane whose page closed stays empty until the split changes.
     private func pageRetired(_ view: UnsafeMutableRawPointer?) {
-        guard let page, let view, Unmanaged.passUnretained(page).toOpaque() == view else { return }
-        if page.superview === pageFrame { page.removeFromSuperview() }
-        self.page = nil
-        let tab = shownTab
-        shownTab = 0
-        crashedPage.isHidden = true
-        if let next = bridge.tab_native_view(nativeWindow, tab), next != view { show(tab: tab) }
+        guard let view, let slot = slots.first(where: { $0.view.map { Unmanaged.passUnretained($0).toOpaque() } == view }),
+              let tab = slot.pane?.tab else { return }
+        if slot.heldView != nil { slot.view?.removeFromSuperview() }
+        slot.view = nil
+        slot.crashed.isHidden = true
+        guard let next = bridge.tab_native_view(nativeWindow, tab), next != view else {
+            if split == nil { shownTab = 0 }
+            return
+        }
+        if split == nil { show(tab: tab) } else { place(Unmanaged<NSView>.fromOpaque(next).takeUnretainedValue(), in: slot) }
     }
 
     /// Keys go to the page shown, unless the person is typing in a field outside it.
@@ -423,8 +524,43 @@ final class ChromiumWindowRoot: NSView {
         let area = pageArea
         header?.isHidden = pageFullscreen
         header?.frame = CGRect(x: 0, y: 0, width: pageFrame.bounds.width, height: barHeight)
-        heldPage?.frame = area
-        crashedPage.frame = area
+        let panes = split.map { split in
+            SplitDrop.paneFrames(in: area, count: split.panes.count, vertical: split.vertical, dividers: split.dividers, gap: Arc.splitGap)
+        }
+        for (index, slot) in slots.enumerated() {
+            let paneFrame = pageFullscreen ? nil : panes.flatMap { $0.indices.contains(index) ? $0[index] : nil }
+            slot.container.isHidden = pageFullscreen && panes != nil && slot.pane?.tab != shownTab
+            slot.container.frame = paneFrame ?? area
+            slot.container.autoresizingMask = panes == nil ? [.width, .height] : []
+            slot.container.layer?.cornerRadius = paneFrame == nil ? 0 : Arc.pageCornerRadius
+            slot.fillContainer()
+        }
+        layoutDividers(panes.flatMap { pageFullscreen || split?.panes.contains(nil) == true ? nil : $0 } ?? [], in: area)
+    }
+
+    /// One divider in each gap between two panes, the gap itself being where it is dragged.
+    private func layoutDividers(_ panes: [CGRect], in area: CGRect) {
+        dividerLayer.frame = area
+        let vertical = split?.vertical ?? false
+        let gaps = zip(panes, panes.dropFirst()).map { before, after in
+            vertical ? CGRect(x: area.minX, y: before.maxY, width: area.width, height: after.minY - before.maxY)
+                     : CGRect(x: before.maxX, y: area.minY, width: after.minX - before.maxX, height: area.height)
+        }
+        var dividers = splitDividers
+        while dividers.count > gaps.count { dividers.removeLast().removeFromSuperview() }
+        while dividers.count < gaps.count {
+            let divider = SplitDividerView()
+            dividerLayer.addSubview(divider)
+            dividers.append(divider)
+        }
+        for (index, divider) in dividers.enumerated() {
+            divider.frame = dividerLayer.convert(gaps[index], from: pageFrame)
+            divider.vertical = vertical
+            divider.position = split?.dividers[index] ?? 0.5
+            divider.onResize = { [weak self] position, length in self?.dividerMoved?(index, position, length) }
+            divider.onResizeEnded = { [weak self] in self?.dividerReleased?() }
+            divider.window?.invalidateCursorRects(for: divider)
+        }
     }
 
     /// `replacing` places the lights even where they already are, which AppKit needs after it
@@ -470,6 +606,62 @@ final class ChromiumWindowRoot: NSView {
 
     private final class Container: NSView {
         override var isFlipped: Bool { true }
+    }
+
+    /// One page in its own clipped container, with the crashed-page card over it; with no pane, Add
+    /// Split View's empty pane.
+    private final class Slot {
+        let pane: Pane?
+        let container = Container()
+        weak var view: NSView?
+        let crashed = CrashedPage()
+        private var empty: NSView?
+
+        init(pane: Pane?, root: ChromiumWindowRoot) {
+            self.pane = pane
+            container.wantsLayer = true
+            container.layer?.masksToBounds = true
+            crashed.isHidden = true
+            crashed.frame = container.bounds
+            crashed.autoresizingMask = [.width, .height]
+            crashed.reload = { [weak root] in
+                guard let root, let tab = pane?.tab else { return }
+                _ = root.bridge.tab_reload(root.nativeWindow, tab)
+            }
+            container.addSubview(crashed)
+        }
+
+        /// The page while it is still in this slot; nil once another root took it.
+        var heldView: NSView? { view?.superview === container ? view : nil }
+
+        func holds(_ pointer: UnsafeMutableRawPointer?) -> Bool {
+            guard let held = heldView, let pointer else { return false }
+            return Unmanaged.passUnretained(held).toOpaque() == pointer
+        }
+
+        /// Autoresizing rounds a fractional container size; the page takes it exactly.
+        func fillContainer() {
+            heldView?.frame = container.bounds
+            crashed.frame = container.bounds
+            empty?.frame = container.bounds
+        }
+
+        func showEmpty(_ make: () -> NSView) {
+            guard empty == nil else { return }
+            let view = make()
+            view.frame = container.bounds
+            view.autoresizingMask = [.width, .height]
+            container.addSubview(view)
+            empty = view
+        }
+    }
+
+    /// Over the page area, unflipped as the dividers expect; it takes only the clicks on a divider.
+    private final class DividerLayer: NSView {
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let hit = super.hitTest(point)
+            return hit === self ? nil : hit
+        }
     }
 
     private final class Overlay: NSView {

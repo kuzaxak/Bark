@@ -23,6 +23,13 @@ protocol ChromiumWindowPresenter: AnyObject {
     /// The window and the point in it a download that starts now flies from; nil where the app
     /// does not lay out the page.
     func downloadLaunch() -> (window: NSWindow, point: NSPoint)?
+    /// Whether the app lays out this window's split panes itself.
+    var laysOutSplits: Bool { get }
+    /// Shows `split`'s panes of `client`, or with nil the focused page alone; false where the app
+    /// does not lay out the page.
+    func showSplit(_ split: ChromiumWindowRoot.Split?, of client: Int32) -> Bool
+    /// The split the window shows; nil for one page, and where the app does not lay out the page.
+    var shownSplit: ChromiumWindowRoot.Split? { get }
 }
 
 enum ChromiumWindowPresenters {
@@ -77,6 +84,12 @@ final class ChromiumLegacyPresenter: ChromiumWindowPresenter {
     }
 
     func downloadLaunch() -> (window: NSWindow, point: NSPoint)? { nil }
+
+    var laysOutSplits: Bool { false }
+
+    func showSplit(_ split: ChromiumWindowRoot.Split?, of client: Int32) -> Bool { false }
+
+    var shownSplit: ChromiumWindowRoot.Split? { nil }
 }
 
 /// Bark's own window, with one client, whose root view holds the sidebar and the page the app places.
@@ -116,4 +129,14 @@ final class ChromiumHostPresenter: ChromiumWindowPresenter {
               let point = root.downloadLaunchPoint(pointer: window.mouseLocationOutsideOfEventStream) else { return nil }
         return (window, point)
     }
+
+    var laysOutSplits: Bool { true }
+
+    func showSplit(_ split: ChromiumWindowRoot.Split?, of client: Int32) -> Bool {
+        guard client == root.nativeWindow else { return false }
+        guard let split else { return root.endSplit() }
+        return root.showSplit(split)
+    }
+
+    var shownSplit: ChromiumWindowRoot.Split? { root.split }
 }

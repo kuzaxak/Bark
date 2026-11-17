@@ -40,6 +40,8 @@ final class ChromiumNativePageHost: NativePageHost {
         // reflection. These two owners suffice to reconcile the existing mount.
         var peekSidebarOwners: (source: Int32, peek: Int32)?
         var attemptedLiveRemainder: UInt64?
+        // A Bark window's root showed a split, or its end, at least once.
+        var hostSplitApplied = false
         init(shell: NSView, presenter: any ChromiumWindowPresenter, group: UInt64, attachedClient: Int32?, model: BrowserWindowState) {
             self.shell = shell; self.presenter = presenter; self.group = group; self.attachedClient = attachedClient; self.model = model
         }
@@ -969,6 +971,9 @@ final class ChromiumNativePageHost: NativePageHost {
 
     func isSplit(_ record: SplitRecord?, pages: [UUID: PageSession], activeItemID: UUID?,
                  in window: BrowserWindowState) -> Bool {
+        if laysOutSplits(in: window) {
+            return hostShowsSplit(record, navigations: navigations(pages), activeItemID: activeItemID, in: window)
+        }
         guard let record else {
             guard let activeItemID, let page = pages[activeItemID]?.navigation as? ChromiumPageNavigation else { return true }
             guard isNativeSelection(page, in: window) else { return false }
@@ -986,6 +991,9 @@ final class ChromiumNativePageHost: NativePageHost {
     func applySplit(_ record: SplitRecord?, replacing previous: SplitRecord?,
                     pages: [UUID: PageSession], activeItemID: UUID?,
                     in window: BrowserWindowState, isCurrent: () -> Bool) -> Bool {
+        if laysOutSplits(in: window) {
+            return applyHostSplit(record, navigations: navigations(pages), activeItemID: activeItemID, in: window, isCurrent: isCurrent)
+        }
         guard isCurrent(), let mount = mounts[window.id], mount.model === window else { return false }
         var generation = mount.generation
         let selectedBefore = pages.values.compactMap { $0.navigation as? ChromiumPageNavigation }
@@ -1164,6 +1172,7 @@ final class ChromiumNativePageHost: NativePageHost {
     /// pages must not be recreated merely because a catalog callback arrived.
     func needsInitialSplitRestore(in window: BrowserWindowState) -> Bool {
         guard let mount = mounts[window.id], mount.model === window else { return false }
+        if mount.presenter.laysOutSplits { return !mount.hostSplitApplied }
         return mount.presentedSplit == nil
     }
 
@@ -1172,7 +1181,7 @@ final class ChromiumNativePageHost: NativePageHost {
     func nativeSplitUpdate(in window: BrowserWindowState, selected: BarcDiscoveryWindow,
                            sessions: [Int32: PageSession], savedPages: [PageSession])
         -> (record: SplitRecord?, validate: () -> Bool, remountLive: Bool)? {
-        guard let mount = mounts[window.id], mount.model === window,
+        guard let mount = mounts[window.id], mount.model === window, !mount.presenter.laysOutSplits,
               let activeSession = sessions[selected.active_tab],
               let active = activeSession.navigation as? ChromiumPageNavigation,
               active.nativeWindowID == selected.window, isNativeSelection(active, in: window) else { return nil }
@@ -1261,6 +1270,102 @@ final class ChromiumNativePageHost: NativePageHost {
         }, false)
     }
 
+    // MARK: - Splits in a Bark window
+
+    /// Whether `window`'s root lays out its split panes: a Bark window. The engine holds no split
+    /// there; the panes are page views the root places.
+    func laysOutSplits(in window: BrowserWindowState) -> Bool {
+        guard let mount = mounts[window.id], mount.model === window else { return false }
+        return mount.presenter.laysOutSplits
+    }
+
+    private func navigations(_ pages: [UUID: PageSession]) -> [UUID: ChromiumPageNavigation] {
+        pages.compactMapValues { $0.navigation as? ChromiumPageNavigation }
+    }
+
+    /// `record` as the root shows it, `active` focused: each pane an admitted page of the window's
+    /// one client. nil when a pane is missing, closed or another client's.
+    private func hostSplit(_ record: SplitRecord, navigations: [UUID: ChromiumPageNavigation], activeItemID: UUID?,
+                           mount: Mount, in window: BrowserWindowState) -> ChromiumWindowRoot.Split? {
+        guard let client = mount.presenter.onlyClient, let activeItemID, record.contains(activeItemID),
+              let focused = navigations[activeItemID] else { return nil }
+        var panes: [ChromiumWindowRoot.Pane?] = []
+        for id in record.itemIDs {
+            guard let page = navigations[id], page.nativeWindowID == client, admission(page, in: window)?.0 === mount else { return nil }
+            panes.append(.init(client: client, tab: page.nativeTabID))
+        }
+        return .init(panes: panes, vertical: record.orientation == .vertical, dividers: record.dividers.map { CGFloat($0) },
+                     focused: focused.nativeTabID)
+    }
+
+    /// Whether `window`'s root shows `record` with `activeItemID`'s page focused and selected in
+    /// Chromium; with no record, that page alone.
+    func hostShowsSplit(_ record: SplitRecord?, navigations: [UUID: ChromiumPageNavigation], activeItemID: UUID?,
+                        in window: BrowserWindowState) -> Bool {
+        guard let mount = mounts[window.id], mount.model === window, mount.presenter.laysOutSplits else { return false }
+        let active = activeItemID.flatMap { navigations[$0] }
+        guard let record else {
+            return mount.presenter.shownSplit == nil && (active.map { isNativeSelection($0, in: window) } ?? true)
+        }
+        guard let active, let split = hostSplit(record, navigations: navigations, activeItemID: activeItemID, mount: mount, in: window)
+        else { return false }
+        return mount.presenter.shownSplit == split && isNativeSelection(active, in: window)
+    }
+
+    /// Shows `record` in `window`'s root with `activeItemID`'s page focused and selected in
+    /// Chromium; with no record, that page alone. Places views only: nothing reaches the engine's
+    /// own split.
+    func applyHostSplit(_ record: SplitRecord?, navigations: [UUID: ChromiumPageNavigation], activeItemID: UUID?,
+                        in window: BrowserWindowState, isCurrent: () -> Bool) -> Bool {
+        guard isCurrent(), let mount = mounts[window.id], mount.model === window, mount.presenter.laysOutSplits,
+              let client = mount.presenter.onlyClient else { return false }
+        let active = activeItemID.flatMap { navigations[$0] }
+        if let record {
+            guard active != nil,
+                  let split = hostSplit(record, navigations: navigations, activeItemID: activeItemID, mount: mount, in: window),
+                  mount.presenter.showSplit(split, of: client) else { return false }
+        } else if mount.presenter.shownSplit != nil {
+            guard mount.presenter.showSplit(nil, of: client) else { return false }
+        }
+        if let active, !isNativeSelection(active, in: window) {
+            guard selectPage(active, in: window), isCurrent() else { return false }
+        }
+        mount.hostSplitApplied = true
+        return isCurrent() && hostShowsSplit(record, navigations: navigations, activeItemID: activeItemID, in: window)
+    }
+
+    /// A divider moved: the root re-frames the panes it shows, in the same turn.
+    func showSplitDividers(_ record: SplitRecord, in window: BrowserWindowState) -> Bool {
+        guard let mount = mounts[window.id], mount.model === window, let client = mount.presenter.onlyClient,
+              var split = mount.presenter.shownSplit, split.panes.count == record.itemIDs.count else { return false }
+        split.dividers = record.dividers.map { CGFloat($0) }
+        return mount.presenter.showSplit(split, of: client)
+    }
+
+    /// What the window's model shows changed: `panes` are the split's tabs in order (nil for Add
+    /// Split View's empty pane), or nil for no split. The root follows once Chromium selects the
+    /// focused page and every pane's page exists; while a split is being prepared, the preparation
+    /// decides.
+    func showModelSplit(_ panes: [UUID?]?, vertical: Bool, dividers: [CGFloat], focused: UUID?,
+                        page: (UUID) -> ChromiumPageNavigation?, in window: BrowserWindowState) {
+        guard let mount = mounts[window.id], mount.model === window, mount.presenter.laysOutSplits,
+              let client = mount.presenter.onlyClient, !window.nativePresentationIsPreparing else { return }
+        guard let panes else {
+            if mount.presenter.shownSplit != nil { _ = mount.presenter.showSplit(nil, of: client) }
+            return
+        }
+        guard let focused = focused.flatMap(page), isNativeSelection(focused, in: window) else { return }
+        var placed: [ChromiumWindowRoot.Pane?] = []
+        for id in panes {
+            guard let id else { placed.append(nil); continue }
+            guard let navigation = page(id), navigation.nativeWindowID == client,
+                  admission(navigation, in: window)?.0 === mount else { return }
+            placed.append(.init(client: client, tab: navigation.nativeTabID))
+        }
+        let split = ChromiumWindowRoot.Split(panes: placed, vertical: vertical, dividers: dividers, focused: focused.nativeTabID)
+        if mount.presenter.shownSplit != split { _ = mount.presenter.showSplit(split, of: client) }
+    }
+
     /// Refusal cleanup may dispose only an empty fresh host or our own header,
     /// never a replacement installed by a reentrant product admission.
     func canCloseUnadmittedWindow(_ native: Int32) -> Bool {
@@ -1345,13 +1450,6 @@ final class ChromiumNativePageHost: NativePageHost {
     func refusesProfile(_ profile: UUID, in window: BrowserWindowState) -> Bool {
         guard let mount = mounts[window.id], mount.model === window, let only = mount.presenter.onlyClient,
               let row = liveState(only), bridge.identity(row) != profile else { return false }
-        refused(window)
-        return true
-    }
-
-    /// Panes are separate clients, so a window with a single client shows no split.
-    func refusesSplit(in window: BrowserWindowState) -> Bool {
-        guard let mount = mounts[window.id], mount.model === window, mount.presenter.onlyClient != nil else { return false }
         refused(window)
         return true
     }

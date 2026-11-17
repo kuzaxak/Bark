@@ -327,21 +327,90 @@ private enum Native {
     precondition(host.refusesProfile(Native.second, in: window) && refused == [window.id],
                  "A host window refuses a space in another profile, and says so")
     precondition(!host.refusesProfile(Native.first, in: window) && refused.count == 1, "Its own profile is not refused")
-    precondition(host.refusesSplit(in: window) && refused.count == 2, "A host window refuses a split, and says so")
     let opens = Native.opens
     var other: Result<any PageNavigation, Error>?
     _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
                         profile: Profile(id: Native.second, engine: .chromium), in: window) { other = $0 }
     precondition(Native.opens == opens, "A page in another profile never joins that profile to a host window, which shows one client")
-    precondition(other.map { if case .failure = $0 { true } else { false } } == true && refused == [window.id, window.id, window.id],
+    precondition(other.map { if case .failure = $0 { true } else { false } } == true && refused == [window.id, window.id],
                  "The page is refused, and the window says so")
     precondition(host.emptySpaceClient(in: window, profile: Native.second, open: true) == nil && Native.opens == opens
-                 && refused.count == 4, "A link for another profile's empty space never joins that profile to a host window, and the window says so")
-    precondition(host.emptySpaceClient(in: window, profile: Native.second, open: false) == nil && refused.count == 4,
+                 && refused.count == 3, "A link for another profile's empty space never joins that profile to a host window, and the window says so")
+    precondition(host.emptySpaceClient(in: window, profile: Native.second, open: false) == nil && refused.count == 3,
                  "Asking without opening refuses nothing")
+    try hostWindowSplits(host: host, window: window, root: root!, pages: [page, second], profile: profile)
     Native.hostWindows = []; Native.pageViews = [:]
     Native.profiles[80] = nil; Native.tabs[80] = nil; Native.appLifetime = []; Native.selected = 10
     print("Chromium host window checks PASS")
+}
+
+/// A Bark window lays out a split's panes itself from the model's record: no call reaches Chromium's
+/// own split, the panes are the window's page views, and the record's focus is Chromium's selection.
+@MainActor private func hostWindowSplits(host: ChromiumNativePageHost, window: BrowserWindowState, root: ChromiumWindowRoot,
+                                         pages: [ChromiumPageNavigation], profile: Profile) throws {
+    precondition(host.laysOutSplits(in: window), "a Bark window lays out its own split")
+    let before = Native.tabs[80] ?? []
+    Native.tabs[80] = before + [802]
+    let page802 = NSView()
+    Native.pageViews[802] = page802
+    var third: ChromiumPageNavigation!
+    _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
+                        profile: profile, in: window) { third = try! $0.get() as? ChromiumPageNavigation }
+    if third.nativeTabID != 802 { Native.tabs[80] = before + [third.nativeTabID]; Native.pageViews[third.nativeTabID] = page802 }
+    let thirdTab = third.nativeTabID
+    let ids = [UUID(), UUID(), UUID()]
+    let all: [ChromiumPageNavigation] = pages + [third!]
+    let navigations = Dictionary(uniqueKeysWithValues: zip(ids, all))
+    let views = [pages[0].nativeTabID, pages[1].nativeTabID, thirdTab].map { Native.pageViews[$0]! }
+    precondition(host.needsInitialSplitRestore(in: window), "a fresh Bark window restores its saved split on first show")
+    let record = SplitRecord(Array(ids.prefix(2)), orientation: .horizontal, dividers: [0.4])!
+    precondition(host.applyHostSplit(record, navigations: navigations, activeItemID: ids[0], in: window, isCurrent: { true }),
+                 "two panes are shown")
+    precondition(root.split == .init(panes: [.init(client: 80, tab: pages[0].nativeTabID), .init(client: 80, tab: pages[1].nativeTabID)],
+                                     vertical: false, dividers: [0.4], focused: pages[0].nativeTabID)
+                 && views[0].isDescendant(of: root) && views[1].isDescendant(of: root), "the root shows both pages with the record's divider")
+    precondition(Native.activeTabs[80] == pages[0].nativeTabID && Native.selected == 80, "the focused pane is Chromium's selection")
+    precondition(!host.needsInitialSplitRestore(in: window), "shown once, it is not restored again")
+    precondition(host.hostShowsSplit(record, navigations: navigations, activeItemID: ids[0], in: window), "the record and its focus are what shows")
+    precondition(!host.hostShowsSplit(record, navigations: navigations, activeItemID: ids[1], in: window), "another focus is not")
+    precondition(!host.hostShowsSplit(SplitRecord(Array(ids.prefix(2)), dividers: [0.6])!, navigations: navigations, activeItemID: ids[0], in: window),
+                 "other dividers are not")
+    precondition(!host.hostShowsSplit(nil, navigations: navigations, activeItemID: ids[0], in: window), "and no split is not")
+
+    let containers = views.prefix(2).map { $0.superview }
+    precondition(host.applyHostSplit(record, navigations: navigations, activeItemID: ids[1], in: window, isCurrent: { true })
+                 && root.split?.focused == pages[1].nativeTabID && Native.activeTabs[80] == pages[1].nativeTabID
+                 && views.prefix(2).map { $0.superview } == containers,
+                 "focusing the other pane selects its tab in Chromium and moves no pane")
+    precondition(host.showSplitDividers(SplitRecord(Array(ids.prefix(2)), dividers: [0.7])!, in: window) && root.split?.dividers == [0.7]
+                 && root.split?.focused == pages[1].nativeTabID, "a divider move re-frames the panes and keeps the focus")
+
+    let three = SplitRecord(ids, orientation: .vertical)!
+    precondition(host.applyHostSplit(three, navigations: navigations, activeItemID: ids[2], in: window, isCurrent: { true })
+                 && root.split?.panes.count == 3 && root.split?.vertical == true && root.split?.focused == thirdTab
+                 && views.allSatisfy { $0.isDescendant(of: root) }, "a third pane, stacked")
+
+    host.showModelSplit([ids[0], ids[1], ids[2], nil], vertical: true, dividers: [0.25, 0.5, 0.75], focused: ids[2],
+                        page: { navigations[$0] }, in: window)
+    precondition(root.split?.panes.last == .some(nil) && root.split?.panes.count == 4, "Add Split View's empty pane follows the model")
+    host.showModelSplit(three.itemIDs, vertical: true, dividers: three.dividers.map { CGFloat($0) }, focused: ids[2],
+                        page: { navigations[$0] }, in: window)
+    precondition(root.split?.panes.count == 3 && !root.split!.panes.contains(nil), "and goes with it")
+    host.showModelSplit([ids[0], UUID()], vertical: false, dividers: [0.5], focused: ids[0], page: { navigations[$0] }, in: window)
+    precondition(root.split?.panes.count == 3, "a pane whose page does not exist yet waits for the preparation")
+
+    let shown = root.split
+    precondition(!host.applyHostSplit(record, navigations: navigations, activeItemID: ids[0], in: window, isCurrent: { false })
+                 && root.split == shown, "a superseded request changes nothing")
+
+    precondition(host.applyHostSplit(nil, navigations: navigations, activeItemID: ids[2], in: window, isCurrent: { true })
+                 && root.split == nil && root.shownTab == thirdTab && views[2].isDescendant(of: root) && !views[0].isDescendant(of: root),
+                 "ending the split leaves the focused page alone")
+    precondition(host.hostShowsSplit(nil, navigations: navigations, activeItemID: ids[2], in: window))
+    host.showModelSplit(nil, vertical: false, dividers: [], focused: ids[2], page: { navigations[$0] }, in: window)
+    precondition(root.split == nil && root.shownTab == thirdTab, "no split in the model, none in the window")
+    Native.tabs[80] = before; Native.pageViews[thirdTab] = nil
+    print("Chromium Bark window split checks PASS")
 }
 
 @main
@@ -369,7 +438,7 @@ private enum HostChecks {
         host.setPageHidden(false, in: window)
         precondition(Native.pageHidden[10] == 0)
         host.refused = { _ in preconditionFailure("Chromium's own window refuses nothing here") }
-        precondition(!host.refusesProfile(Native.second, in: window) && !host.refusesSplit(in: window))
+        precondition(!host.refusesProfile(Native.second, in: window) && !host.laysOutSplits(in: window))
         host.refused = { _ in }
         host.setPageHidden(true, in: BrowserWindowState(id: window.id))
         precondition(Native.pageHidden[10] == 0, "Only the registered model window decides")

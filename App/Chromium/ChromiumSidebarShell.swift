@@ -219,8 +219,9 @@ struct ChromiumSidebarShell: View {
         let sidebar = hostedSidebar
         let backdrop = AnyView(ChromiumSpaceBackground(chrome: spaceChrome, isActive: registry.activeWindowId == window.id)
             .environment(\.nookSettings, storage.settings))
+        let layout = browserManager.splitManager.pageLayout(in: window)
         ChromiumLibraryPush(window: window, link: { [window, hover] library, open in
-            ChromiumWindowRootLink(sidebar: sidebar, hover: hover, backdrop: backdrop, flights: { [window] root in
+            ChromiumWindowRootLink(sidebar: sidebar, hover: hover, backdrop: backdrop, split: splitLink(layout), flights: { [window] root in
                     AnyView(DownloadFlightOverlay(target: .path { [weak root] download in
                         root?.downloadFlight(from: download.launchPoint, startedIn: download.sourceWindow)
                     }).environment(window))
@@ -258,6 +259,25 @@ struct ChromiumSidebarShell: View {
             browserManager.peekManager.refreshNativePresentation(in: window)
         }
     }
+    /// The model's split for the Bark window's root: the panes it shows, its divider drags, and Add
+    /// Split View's empty pane.
+    private func splitLink(_ layout: SplitViewManager.PageLayout?) -> ChromiumWindowRootLink.SplitLink {
+        ChromiumWindowRootLink.SplitLink(show: { [browserManager, window] in
+            (browserManager.tabs.nativePageHost as? ChromiumNativePageHost)?.showModelSplit(
+                layout?.slots, vertical: layout?.vertical ?? false, dividers: layout?.dividers ?? [], focused: window.selectedItemID,
+                page: { browserManager.tabs.session(for: $0)?.navigation as? ChromiumPageNavigation }, in: window)
+        }, moveDivider: { [browserManager, window] index, position, length in
+            browserManager.splitManager.moveDivider(index, to: position, length: length, in: window)
+        }, dividerReleased: { [browserManager, window] in
+            browserManager.splitManager.dividerMoveEnded(in: window)
+        }, emptyPane: { [browserManager] in
+            let index = layout?.slots.firstIndex(of: nil) ?? 0
+            return EmptySplitPaneView(frame: .zero, position: SplitPanePosition(index: index, count: layout?.slots.count ?? 2,
+                                                                                vertical: layout?.vertical ?? false),
+                                      settings: browserManager.nookSettings)
+        })
+    }
+
     private var headerHeight: Int32 {
         if browserManager.showsDeveloperBar(in: window) { return Int32(DeveloperBar.height) }
         return browserManager.showsTopBar(in: window) ? Int32(TopBarMetrics.height) : 0
@@ -411,6 +431,7 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
     let sidebar: ChromiumWindowRoot.Sidebar
     let hover: HoverSidebarManager
     let backdrop: AnyView
+    let split: SplitLink
     /// A starting download's flight over the whole window, made once for the root it goes in.
     let flights: (ChromiumWindowRoot) -> AnyView
     let library: ChromiumWindowRoot.Library
@@ -421,8 +442,16 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
     /// The swipe's distance and velocity, and the Library's width it was measured against.
     let swipeEnded: (CGFloat, CGFloat, CGFloat) -> Void
 
+    struct SplitLink {
+        var show: () -> Void
+        var moveDivider: (Int, CGFloat, CGFloat) -> Void
+        var dividerReleased: () -> Void
+        var emptyPane: () -> NSView
+    }
+
     final class Link: NSView {
         var sidebar = ChromiumWindowRoot.Sidebar.shown
+        var split: SplitLink?
         weak var hover: HoverSidebarManager?
         var backdrop: AnyView?
         var flights: ((ChromiumWindowRoot) -> AnyView)?
@@ -455,6 +484,12 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
                 flightsHost = host
             }
             if let flightsHost { root.setOverlay(flightsHost) }
+            if let split {
+                root.dividerMoved = split.moveDivider
+                root.dividerReleased = split.dividerReleased
+                root.makeEmptyPane = split.emptyPane
+                split.show()
+            }
             root.sidebarWidth = ChromiumWindowRoot.Arc.sidebarWidth
             root.library = library
             root.sidebar = sidebar
@@ -473,6 +508,7 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
         link.hover = hover
         link.sidebar = sidebar
         link.backdrop = backdrop
+        link.split = split
         link.flights = flights
         link.library = library
         link.libraryOpen = libraryOpen

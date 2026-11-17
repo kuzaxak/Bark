@@ -32,10 +32,6 @@ final class SplitViewManager: ObservableObject {
 
     private var tabs: TabsController? { browserManager?.tabs }
 
-    private func refused(in window: BrowserWindowState) -> Bool {
-        (tabs?.nativePageHost as? ChromiumNativePageHost)?.refusesSplit(in: window) == true
-    }
-
     // MARK: - State
 
     /// The split `window` shows: its saved one while one of its panes is selected.
@@ -76,7 +72,7 @@ final class SplitViewManager: ObservableObject {
     /// What `SplitDrop` decided for a tab dropped on the page. A new split keeps the selected tab
     /// selected; a tab that opens in a pane or takes one becomes the selection.
     func drop(_ itemID: UUID, _ outcome: SplitDrop.Outcome, in window: BrowserWindowState) {
-        guard let tabs, !refused(in: window) else { return }
+        guard let tabs else { return }
         switch outcome {
         case .split(let edge):
             guard let current = window.selectedItemID,
@@ -123,7 +119,7 @@ final class SplitViewManager: ObservableObject {
     /// Arc's Add Split View, for ⌃⇧=, the command bar and the sidebar's New Split: the command bar
     /// opens over an empty pane after the window's tab, or after its split's last pane.
     func addSplitView(in window: BrowserWindowState) {
-        guard !refused(in: window), let addSplit = AddSplit.start(selectedItemID: window.selectedItemID, split: window.splitLayout) else { return }
+        guard let addSplit = AddSplit.start(selectedItemID: window.selectedItemID, split: window.splitLayout) else { return }
         window.commandPalette?.open(addSplit: addSplit)
     }
 
@@ -133,7 +129,7 @@ final class SplitViewManager: ObservableObject {
 
     /// A pane's Add Right Split or Add Left Split: the empty pane beside that pane.
     func addSplit(beside itemID: UUID, after: Bool, in window: BrowserWindowState) {
-        guard !refused(in: window), let addSplit = AddSplit.start(beside: itemID, after: after, selectedItemID: window.selectedItemID,
+        guard let addSplit = AddSplit.start(beside: itemID, after: after, selectedItemID: window.selectedItemID,
                                             split: window.splitLayout) else { return }
         window.commandPalette?.open(addSplit: addSplit)
     }
@@ -183,11 +179,12 @@ final class SplitViewManager: ObservableObject {
 
     /// Divider `index` dragged to `position`, a fraction of the page's width or height.
     func moveDivider(_ index: Int, to position: CGFloat, length: CGFloat, in window: BrowserWindowState) {
-        // Chromium's own resize areas publish their final geometry via catalog.
-        guard tabs?.profileEngine != .chromium else { return }
-        guard var record = window.split, length > 0 else { return }
+        let host = tabs?.nativePageHost as? ChromiumNativePageHost
+        let appLaysOutPanes = tabs?.profileEngine != .chromium || host?.laysOutSplits(in: window) == true
+        guard appLaysOutPanes, var record = window.split, length > 0 else { return }
         record.moveDivider(index, to: Double(position), minimum: min(0.9 / Double(record.itemIDs.count), 160 / Double(length)))
         window.split = record
+        _ = host?.showSplitDividers(record, in: window)
     }
 
     /// A divider let go: the window record keeps where it was left.
