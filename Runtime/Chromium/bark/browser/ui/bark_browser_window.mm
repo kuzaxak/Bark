@@ -124,6 +124,11 @@ class BarkBrowserWindow::CrashWatcher : public content::WebContentsObserver {
       window_->NotifyPageCrashed(web_contents(), false);
     }
   }
+  void OnVisibilityChanged(content::Visibility visibility) override {
+    if (visibility == content::Visibility::VISIBLE) {
+      window_->OnPageShown(web_contents());
+    }
+  }
 
  private:
   const raw_ptr<BarkBrowserWindow> window_;
@@ -714,6 +719,12 @@ void BarkBrowserWindow::OnTabStripModelChanged(
                                     replace->tab->GetHandle().raw_value(),
                                     replace->old_contents->GetNativeView());
     }
+  }
+}
+
+void BarkBrowserWindow::OnPageShown(content::WebContents* contents) {
+  if (contents == browser_->GetTabStripModel()->GetActiveWebContents()) {
+    host_->OnClientActiveTabChanged(this);
   }
 }
 

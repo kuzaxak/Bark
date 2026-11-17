@@ -216,6 +216,8 @@ class BarkBrowserWindow : public BrowserWindow,
 
   void EnsureActiveTabHasNonZeroSize();
   void WatchForCrash(content::WebContents* contents);
+  // A page of this client became visible: placed in the window, or shown.
+  void OnPageShown(content::WebContents* contents);
   void NotifyPageCrashed(content::WebContents* contents, bool crashed);
 
   const raw_ptr<BrowserWindowInterface> browser_;

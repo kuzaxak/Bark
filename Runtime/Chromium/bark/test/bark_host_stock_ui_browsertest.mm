@@ -420,6 +420,49 @@ IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest, PageToastShowsOverThePage) {
   ExpectToastAtThePageFoot(toast, Window()->GetPageBoundsInScreen());
 }
 
+// Back on a tab, the app places its view again at the frame it had, so no
+// frame change follows.
+IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest,
+                       ToastFollowsAPagePlacedAfterATabSwitch) {
+  auto no_slide = gfx::AnimationTestApi::SetRichAnimationRenderMode(
+      gfx::Animation::RichAnimationRenderMode::FORCE_DISABLED);
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  const int32_t first = tab_;
+  NSView* first_page = page_;
+  const int32_t second = barc_tab_create(
+      window_, embedded_test_server()->GetURL("/title2.html").spec().c_str(),
+      1);
+  ASSERT_NE(0, second);
+  ASSERT_TRUE(content::WaitForLoadStop(TabContents(second)));
+  NSView* second_page = (__bridge NSView*)barc_tab_native_view(window_, second);
+  ASSERT_NE(nil, second_page);
+  // AppKit reports each placement as the page turning hidden or visible, late
+  // or never while the test window is covered by other apps' windows; send
+  // what it reports in view directly.
+  auto place = [&](int32_t show, NSView* show_view, int32_t hide,
+                   NSView* hide_view, NSRect frame) {
+    [hide_view removeFromSuperview];
+    TabContents(hide)->WasHidden();
+    show_view.frame = frame;
+    [root_ addSubview:show_view];
+    TabContents(show)->WasShown();
+  };
+  place(second, second_page, first, first_page, NSMakeRect(300, 0, 500, 600));
+  ASSERT_EQ(1, barc_tab_select(window_, first));
+  place(first, first_page, second, second_page, root_.bounds);
+  ASSERT_EQ(1, barc_tab_select(window_, second));
+  place(second, second_page, first, first_page, NSMakeRect(300, 0, 500, 600));
+  auto* toasts = ToastController::From(FindBrowser(window_));
+  ASSERT_TRUE(toasts->MaybeShowToast(ToastParams(ToastId::kLinkCopied)));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return toasts->GetToastWidgetForTesting() &&
+           toasts->GetToastWidgetForTesting()->IsVisible();
+  }));
+  ExpectToastAtThePageFoot(toasts->GetToastWidgetForTesting(),
+                           Window()->GetPageBoundsInScreen());
+}
+
 IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest,
                        WindowToastAndFullscreenToastShow) {
   ui::test::ScopedFakeNSWindowFullscreen fake_fullscreen;
