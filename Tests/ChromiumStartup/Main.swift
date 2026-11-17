@@ -68,24 +68,32 @@ struct StartupTests {
             applicationSupportDirectory: normalRoot)
         precondition(!literal.isVerification && literal.launchArguments == ["--barc-app-profile=literal"])
         precondition(config.launchArguments.isEmpty)
-        precondition(!config.engineArguments(executable: "Nook").contains { $0.hasPrefix("--bark-window") },
-                     "a default launch keeps the old window path")
+        for launch in [["Nook"], ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"]] {
+            let byDefault = try ChromiumStartupConfiguration(arguments: launch, applicationSupportDirectory: normalRoot)
+            precondition(byDefault.hostsWindows && byDefault.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
+                         "a launch with no window switch gets the Bark window: \(launch)")
+        }
         let host = try ChromiumStartupConfiguration(arguments: ["Nook", "--bark-window=host"],
             applicationSupportDirectory: normalRoot)
         precondition(host.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
                      "host mode reaches the engine")
         precondition(!host.engineArguments(executable: "Nook").contains("--"), "host mode is an engine switch, not a page to open")
+        let legacy = try ChromiumStartupConfiguration(arguments: ["Nook", "--bark-window=legacy"],
+            applicationSupportDirectory: normalRoot)
+        precondition(!legacy.hostsWindows && !legacy.engineArguments(executable: "Nook").contains { $0.hasPrefix("--bark-window") },
+                     "--bark-window=legacy keeps Chromium's own window")
         for bad in ["--bark-window=other", "--bark-window", "--bark-window="] {
             do {
                 _ = try ChromiumStartupConfiguration(arguments: ["Nook", bad], applicationSupportDirectory: normalRoot)
                 preconditionFailure("\(bad) is refused")
             } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         }
-        let literalHost = try ChromiumStartupConfiguration(arguments: ["Nook", "--", "--bark-window=host"],
+        let literalLegacy = try ChromiumStartupConfiguration(arguments: ["Nook", "--", "--bark-window=legacy"],
             applicationSupportDirectory: normalRoot)
-        precondition(literalHost.engineArguments(executable: "Nook").filter { $0 == "--bark-window=host" }.count == 1
-                     && literalHost.engineArguments(executable: "Nook").last == "--bark-window=host",
-                     "a literal argument stays a page to open")
+        let literalArguments = literalLegacy.engineArguments(executable: "Nook")
+        precondition(literalLegacy.hostsWindows && literalArguments.suffix(2) == ["--", "--bark-window=legacy"]
+                     && literalArguments.filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host", "--bark-window=legacy"],
+                     "a literal argument stays a page to open and does not pick the window: \(literalArguments)")
         try normal.prepare()
         precondition(FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("Engine").path))
         let redirected = normalRoot.appendingPathComponent("RedirectedSupport")

@@ -1,7 +1,7 @@
 import AppKit
 import BarcChromium
 
-/// One host-mode window's root view (`--bark-window=host`). Chromium shows it as the window's
+/// One Bark window's root view (the app's default window). Chromium shows it as the window's
 /// whole content, and the app lays out the sidebar, the page frame and the selected tab's page
 /// view in it. A page is visible only while its view is in the window.
 @MainActor

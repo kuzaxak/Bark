@@ -364,8 +364,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }
             manager.tabs.blocker.setEnabled(storage.settings.adBlockerEnabled)
             let blocker = ChromiumContentBlocker(bridge: bridge, manager: manager.tabs.blocker)
-            storage.downloads.nativeLaunch = { [registry, pageHost, downloads = storage.downloads] download in
-                guard let window = registry.activeWindow, downloads.isVisible(download, in: window) else { return nil }
+            storage.downloads.nativeLaunch = { [registry, pageHost, weak downloads = storage.downloads] download in
+                guard let downloads, let window = registry.activeWindow, downloads.isVisible(download, in: window) else { return nil }
                 return pageHost.downloadLaunch(in: window)
             }
             guard blocker.synchronize(), pageHost.configureBlocker(blocker), downloads.start(manager: storage.downloads) else { completion(nil); return }

@@ -536,16 +536,14 @@ final class ChromiumCreatedPageAdmission {
     /// Bind the factory's exact reserved blank to an existing saved model, then
     /// present. True accepts the existing restore (ready or pending); completion
     /// reports actual native presentation. No parallel tab/profile registry exists.
+    /// A saved split the window cannot show is dropped from it, and the window
+    /// opens on its selected tab alone.
     func admitRestoredWindow(_ state: BrowserWindowState, native: Int32, profile: UUID,
                              show: Bool, canPresent: @escaping () -> Bool,
                              initialURL: URL? = nil,
                              initialItemCreated: (@MainActor (UUID) -> Void)? = nil,
                              completion: (@MainActor (NativeSplitOutcome) -> Void)? = nil) -> Bool {
-        func current() -> Bool {
-            canPresent() && registry.windows[state.id] === state && !state.isIncognito &&
-            state.privateTree == nil &&
-            state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
-        }
+        func current() -> Bool { restoredWindowIsCurrent(state, profile: profile, canPresent: canPresent) }
         guard current(), initialURL == nil || state.selectedItemID == nil,
               let row = bridge.windowState(native), eligibleRegularFactory(row, profile: profile),
               products[row.physical_group] == nil,
@@ -572,7 +570,8 @@ final class ChromiumCreatedPageAdmission {
         } else if let space = state.spaceID { tabs.setSpace(space, in: state) }
         state.windowHandle = shell.window // Existing pending-frame authority.
         if finishRestoredPresentation(product, native: native, profile: profile,
-                                      show: show, canPresent: canPresent) {
+                                      show: show, canPresent: canPresent)
+            || presentWithoutSplit(product, native: native, profile: profile, show: show, canPresent: canPresent) {
             completion?(.admitted)
             return true
         }
@@ -607,13 +606,41 @@ final class ChromiumCreatedPageAdmission {
         // model request owns this completion; no polling or second restore queue.
         return tabs.whenNativeSplitPrepared(record, activeItemID: active, in: state) {
             [weak self, weak product] prepared in
-            guard prepared == .admitted else { completion?(prepared); return }
-            guard let self, let product else { completion?(.refused); return }
-            let ready = self.products[row.physical_group] === product &&
-                self.finishRestoredPresentation(product, native: native, profile: profile,
-                                               show: show, canPresent: canPresent)
-            completion?(ready ? .admitted : .refused)
+            guard prepared != .superseded else { completion?(prepared); return }
+            guard prepared == .refused else {
+                guard let self, let product else { completion?(.refused); return }
+                let ready = self.products[row.physical_group] === product &&
+                    self.finishRestoredPresentation(product, native: native, profile: profile,
+                                                   show: show, canPresent: canPresent)
+                completion?(ready ? .admitted : .refused)
+                return
+            }
+            // A window that is closing refuses its split from inside its unregistration, while it is still registered.
+            DispatchQueue.main.async { [weak self, weak product] in
+                guard let self, let product, self.products[row.physical_group] === product,
+                      state.split == record, state.selectedItemID == active else { completion?(.refused); return }
+                let ready = self.presentWithoutSplit(product, native: native, profile: profile, show: show, canPresent: canPresent)
+                completion?(ready ? .admitted : .refused)
+            }
         }
+    }
+
+    /// A saved split the window could not show leaves it, once its selected tab is shown; the
+    /// window then opens on that tab alone.
+    private func presentWithoutSplit(_ product: ChromiumProductWindow, native: Int32, profile: UUID,
+                                     show: Bool, canPresent: () -> Bool) -> Bool {
+        let state = product.state
+        func current() -> Bool { restoredWindowIsCurrent(state, profile: profile, canPresent: canPresent) }
+        guard current(), !state.nativePresentationIsPreparing, let record = state.split,
+              let active = state.selectedItemID, record.contains(active),
+              let page = tabs.selectedSession(in: state)?.navigation, host.isNativeSelection(page, in: state),
+              tabs.reflectNativeSplit(nil, in: state, validateNative: current) else { return false }
+        return finishRestoredPresentation(product, native: native, profile: profile, show: show, canPresent: canPresent)
+    }
+
+    private func restoredWindowIsCurrent(_ state: BrowserWindowState, profile: UUID, canPresent: () -> Bool) -> Bool {
+        canPresent() && registry.windows[state.id] === state && !state.isIncognito && state.privateTree == nil &&
+            state.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) } == profile
     }
 
     private func finishRestoredPresentation(_ product: ChromiumProductWindow, native: Int32,

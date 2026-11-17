@@ -2,7 +2,7 @@ import AppKit
 import BarcChromium
 
 /// Puts one window's sidebar and selected page on screen. On the old path Chromium's window lays
-/// them out around the sidebar it was given; in host mode (`--bark-window=host`) the app's
+/// them out around the sidebar it was given (`--bark-window=legacy`); in the Bark window, the default, the app's
 /// `ChromiumWindowRoot` does. Chosen per window by whether the engine takes a root view.
 @MainActor
 protocol ChromiumWindowPresenter: AnyObject {

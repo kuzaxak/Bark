@@ -130,6 +130,11 @@ import NookWeb
         revision += 1
         callback?(context, 1, revision)
     }
+    /// Clients whose window is Bark's own, and their tabs' page views.
+    static var hostWindows: Set<Int32> = []
+    static var pageViews: [Int32: NSView] = [:]
+    /// Tabs whose page has no view to place.
+    static var viewless: Set<Int32> = []
     static var splitLayouts: [Int32: BarcSplitLayout] = [:]
     static var splitGeneration: UInt64 = 0
     static var allowSplit = true
@@ -172,13 +177,14 @@ import NookWeb
             Native.copyPrivateID(window, output, capacity)
         } }
         bridge.window_show = { window in MainActor.assumeIsolated {
-            precondition(Native.shells[window] != nil && Native.windows[window]?.selected_client == window)
+            precondition((Native.shells[window] != nil || Native.hostWindows.contains(window)) && Native.windows[window]?.selected_client == window)
             Native.shown.append(window); return Native.onShow?(window) ?? 1
         } }
         bridge.tab_copy_launch_space = { _, _, _, _ in 0 }
         bridge.tab_application_pending = { _, _ in 0 }
         bridge.window_set_split = { owner, input in MainActor.assumeIsolated {
-            guard Native.allowSplit, let input, input.pointee.size >= MemoryLayout<BarcSplitLayout>.size, Native.windows[owner]?.selected_client == owner else { return 0 }
+            guard Native.allowSplit, !Native.hostWindows.contains(owner), let input, input.pointee.size >= MemoryLayout<BarcSplitLayout>.size,
+                  Native.windows[owner]?.selected_client == owner else { return 0 }
             var layout = input.pointee
             let members = withUnsafeBytes(of: layout.tabs) { Array($0.bindMemory(to: Int32.self).prefix(Int(layout.count))) }
             guard let group = Native.windows[owner]?.physical_group,
@@ -198,6 +204,7 @@ import NookWeb
             return 1
         } }
         bridge.window_get_split = { owner, member, output in MainActor.assumeIsolated {
+            guard !Native.hostWindows.contains(owner) else { return 0 }
             let stored = Native.splitLayouts[owner] ?? Native.splitLayouts.first { key, value in
                 value.kind == 1 && Native.windows[key]?.physical_group == Native.windows[owner]?.physical_group
             }?.value
@@ -306,7 +313,19 @@ import NookWeb
         bridge.window_set_page_hidden = { _, _ in 1 }
         bridge.window_new_peer_in_native_window = { _, _ in 0 }
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
-        bridge.window_host_observe = { _, _, _ in 0 }
+        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
+        bridge.window_host_unobserve = { _ in }
+        bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
+        bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated {
+            Native.hostWindows.contains(window) && Native.windows[window] != nil ? 1 : 0
+        } }
+        bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
+            guard Native.hostWindows.contains(window), Native.tabs.contains(where: { $0.window == window && $0.tab == tab }),
+                  !Native.viewless.contains(tab) else { return nil }
+            let view = Native.pageViews[tab] ?? NSView()
+            Native.pageViews[tab] = view
+            return Unmanaged.passUnretained(view).toOpaque()
+        } }
         bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
             if Native.rejectNextObservation {
                 Native.rejectNextObservation = false
@@ -555,6 +574,7 @@ private struct NoTokens: KagiTokenStore {
         try checkPendingProfileRecoveryWindow()
         try checkDetachedMiniPromotion()
         try checkMixedProfileSplitAdmission()
+        try checkSavedSplitInBarkWindow()
         try checkNativePeekAdmission()
         print("Chromium catalog admission checks passed")
     }
@@ -1029,11 +1049,19 @@ private struct NoTokens: KagiTokenStore {
             if mode == "closed" { splitRegistry.unregister(state.id) }
             if mode == "new-selection" { splitTabs.select(splitOther, in: state) }
             delivery.resolve()
+            RunLoop.main.run(until: Date().addingTimeInterval(0.05))
         }
         let succeeds = mode == "sync" || mode == "delayed"
-        let expected: NativeSplitOutcome = succeeds ? .admitted : (mode == "new-selection" ? .superseded : .refused)
-        precondition(outcomes == [expected] && Native.shown.count == showsBefore + (succeeds ? 1 : 0))
-        precondition(state.split == split)
+        let opens = succeeds || mode == "refused"
+        let expected: NativeSplitOutcome = opens ? .admitted : (mode == "new-selection" ? .superseded : .refused)
+        precondition(outcomes == [expected] && Native.shown.count == showsBefore + (opens ? 1 : 0), "\(mode): \(outcomes)")
+        if mode == "refused" {
+            precondition(state.split == nil && state.selectedItemID == first
+                         && splitTabs.device.windows.first { $0.id == state.id }?.split == nil,
+                         "a saved split the engine refuses is dropped, and the window opens on its selected tab alone")
+        } else {
+            precondition(state.split == split)
+        }
         if succeeds { precondition(split.itemIDs.allSatisfy { splitTabs.session(for: $0)?.navigation != nil }) }
         if mode == "new-selection" { precondition(state.selectedItemID == splitOther) }
         if mode == "closed" { precondition(Native.failedPrivateCloses.count == closedPagesBefore + 1) }
@@ -1896,6 +1924,83 @@ private struct NoTokens: KagiTokenStore {
     precondition(keyHandler == nil && monitorRemovals == removalsBeforeEnd + 1)
 }
 
+
+/// A window saved in a split, in Chromium's own window or a Bark window, opens as a Bark window
+/// with no switch: the split shows when the root can lay out its panes, and a split it cannot show,
+/// with a pane of a profile the window does not hold or with no page view, is dropped, the window
+/// opening on its selected tab alone.
+@MainActor private func checkSavedSplitInBarkWindow() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/BarcSavedBarkSplit-\(UUID())", isDirectory: true)
+    let suite = "BarcSavedBarkSplit-\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    tree.createSpace(id: Native.personal, name: "Personal", icon: "person", accentHex: "#654321", after: Native.work)
+    let first = UUID(), other = UUID(), personalTab = UUID()
+    _ = try tree.createTab(id: first, url: URL(string: "https://fixture.invalid/saved-first")!, title: "First", in: .tabs(spaceID: Native.work), after: nil)
+    _ = try tree.createTab(id: other, url: URL(string: "https://fixture.invalid/saved-other")!, title: "Other", in: .tabs(spaceID: Native.work), after: first)
+    _ = try tree.createTab(id: personalTab, url: URL(string: "https://fixture.invalid/saved-personal")!, title: "Personal",
+                           in: .tabs(spaceID: Native.personal), after: nil)
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    Native.restoring = true
+    defer { Native.restoring = false; Native.hostWindows = []; Native.pageViews = [:]; Native.viewless = []; Native.onOpen = nil; Native.onSelectWindow = nil }
+    for (index, mode) in ["one-profile", "two-profiles", "no-view"].enumerated() {
+        let record = SplitRecord(mode == "two-profiles" ? [first, personalTab] : [first, other], dividers: [0.4])!
+        var device = DeviceState(); device.firstLaunchCompleted = true
+        device.windows = [WindowRecord(id: UUID(), spaceID: Native.work, selectedItemBySpace: [Native.work: first], split: record)]
+        let directory = root.appendingPathComponent(mode)
+        let store = TabStore(directory: directory); store.save(tree, device); store.flush()
+        let registry = WindowRegistry()
+        let tabs = TabsController(settings: settings, windowRegistry: registry,
+            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
+        let host = ChromiumNativePageHost(bridge: Native.bridge)
+        tabs.nativePageHost = host
+        let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
+            registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+        let native = Int32(1301 + 10 * index), joined = native + 1
+        Native.windows[native] = Native.window(native, group: UInt64(native), profile: Native.work, flags: 4 | 8, active: native * 10)
+        Native.tabs.append(Native.tab(native * 10, window: native, flags: 2))
+        Native.hostWindows = [native, joined]
+        Native.viewless = mode == "no-view" ? [9000 + Int32(Native.privateCreatedClients.count)] : []
+        Native.onSelectWindow = { owner in
+            for key in [native, joined] where Native.windows[key] != nil { Native.windows[key]?.selected_client = owner }
+            return 1
+        }
+        Native.onOpen = { owner, callback, pointer in
+            Native.windows[joined] = Native.window(joined, group: UInt64(native), profile: Native.personal, flags: 0, active: joined * 10)
+            let selected = Native.windows[owner]?.selected_client ?? owner
+            Native.windows[joined]?.selected_client = selected
+            Native.tabs.append(Native.tab(joined * 10, window: joined))
+            callback?(BARC_PROFILE_OK, joined, pointer)
+        }
+        let state = admission.prepareInitialWindow()!
+        precondition(state.split == record, "\(mode): the window carries its saved split")
+        let showsBefore = Native.shown.count
+        var outcomes: [NativeSplitOutcome] = []
+        precondition(admission.admitRestoredWindow(state, native: native, profile: Native.work, show: true, canPresent: { true },
+                                                   completion: { outcomes.append($0) }), "\(mode): the restore is accepted")
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        precondition(outcomes == [.admitted] && Native.shown.count == showsBefore + 1, "\(mode): the window opens: \(outcomes)")
+        let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation
+        let barkRoot = page.flatMap { Native.pageViews[$0.nativeTabID] }.flatMap {
+            sequence(first: $0, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
+        }
+        precondition(state.selectedItemID == first && barkRoot != nil, "\(mode): a Bark window shows the selected tab")
+        if mode != "one-profile" {
+            precondition(state.split == nil && barkRoot!.split == nil && tabs.device.windows.first { $0.id == state.id }?.split == nil,
+                         "\(mode): a split the window cannot show is dropped, and the window opens on its selected tab alone")
+        } else {
+            precondition(state.split == record && barkRoot!.split?.panes.count == 2
+                         && Set(barkRoot!.split!.panes.compactMap { $0?.client }) == [native],
+                         "\(mode): the saved split shows in the Bark window: \(String(describing: barkRoot!.split))")
+        }
+        for window in [native, joined] where Native.windows[window] != nil { Native.end(window) }
+        admission.apply(Native.bridge.readSnapshot()!)
+        tabs.saveNow()
+    }
+}
 
 @MainActor private func checkMixedProfileSplitAdmission() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcMixedSplit-\(UUID())")

@@ -9,7 +9,7 @@ struct ChromiumStartupConfiguration {
     let isVerification: Bool
     let launchArguments: [String]
     let legacySupport: URL?
-    /// `--bark-window=host`: Bark's own window host instead of Chromium's window.
+    /// Bark's own window host, unless `--bark-window=legacy` asks for Chromium's window.
     let hostsWindows: Bool
 
     var rootDigest: String {
@@ -45,8 +45,8 @@ struct ChromiumStartupConfiguration {
         }
         launchArguments = positional
         switch try value("--bark-window") {
-        case nil: hostsWindows = false
-        case "host": hostsWindows = true
+        case nil, "host": hostsWindows = true
+        case "legacy": hostsWindows = false
         default: throw StartupError.invalidConfiguration
         }
         let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
