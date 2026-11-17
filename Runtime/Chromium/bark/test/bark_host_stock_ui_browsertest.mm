@@ -42,6 +42,7 @@
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/autofill/core/browser/data_model/addresses/autofill_profile.h"
 #include "components/autofill/core/browser/data_model/payments/credit_card.h"
@@ -53,6 +54,7 @@
 #include "components/password_manager/core/common/password_manager_ui.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/permissions/test/permission_request_observer.h"
+#include "components/prefs/pref_service.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
 #include "components/tabs/public/tab_interface.h"
@@ -549,7 +551,6 @@ std::unique_ptr<net::test_server::HttpResponse> ServeKeys(
 constexpr int kUnofferedCommands[] = {
     IDC_BOOKMARK_ALL_TABS,
     IDC_BOOKMARK_THIS_TAB,
-    IDC_CARET_BROWSING_TOGGLE,
     IDC_CONTENT_CONTEXT_ADD_LINK_TO_READING_LIST,
     IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH,
     IDC_CONTENT_CONTEXT_LISTEN_TO_THIS_PAGE,
@@ -1353,6 +1354,36 @@ IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
     return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
   }));
   EXPECT_TRUE(PageHearsAKey());
+}
+
+// F7, as in Chrome: caret browsing asks first, in a dialog on the window.
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       CaretBrowsingDialogShowsInHostWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+  MakeKey();
+  FocusPage();
+  PrefService* prefs = FindBrowser(window_)->GetProfile()->GetPrefs();
+  ASSERT_FALSE(prefs->GetBoolean(prefs::kCaretBrowsingEnabled));
+  ASSERT_TRUE(ui_controls::SendKeyPress(Window()->GetNativeWindow(),
+                                        ui::VKEY_F7, false, false, false,
+                                        false));
+  views::Widget* dialog = nullptr;
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    for (views::Widget* widget : views::Widget::GetAllOwnedWidgets(
+             Window()->host()->widget()->GetNativeView())) {
+      if (widget->IsVisible() && widget->widget_delegate() &&
+          widget->widget_delegate()->GetModalType() ==
+              ui::mojom::ModalType::kWindow) {
+        dialog = widget;
+        return true;
+      }
+    }
+    return false;
+  }));
+  dialog->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return prefs->GetBoolean(prefs::kCaretBrowsingEnabled); }));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest, ClickReachesThePlacedPage) {

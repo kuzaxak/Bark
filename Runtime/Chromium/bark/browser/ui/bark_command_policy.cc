@@ -10,7 +10,6 @@ bool HostWindowOffersCommand(int command_id) {
   switch (command_id) {
     case IDC_BOOKMARK_ALL_TABS:
     case IDC_BOOKMARK_THIS_TAB:
-    case IDC_CARET_BROWSING_TOGGLE:
     case IDC_CONTENT_CONTEXT_ADD_LINK_TO_READING_LIST:
     case IDC_CONTENT_CONTEXT_LENS_REGION_SEARCH:
     case IDC_CONTENT_CONTEXT_LISTEN_TO_THIS_PAGE:

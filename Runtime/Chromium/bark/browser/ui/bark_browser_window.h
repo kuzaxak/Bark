@@ -15,6 +15,7 @@
 #include "chrome/browser/ui/unload_controller.h"
 #include "ui/base/accelerators/accelerator.h"
 #include "ui/base/unowned_user_data/scoped_unowned_user_data.h"
+#include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
 
 namespace content {
 class WebContents;
@@ -229,6 +230,7 @@ class BarkBrowserWindow : public BrowserWindow,
   std::unique_ptr<BarkSidePanelUI> side_panel_ui_;
   std::unique_ptr<BarkToolbarButtonProvider> toolbar_button_provider_;
   std::unique_ptr<autofill::AutofillBubbleHandlerImpl> autofill_bubble_handler_;
+  views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
   std::map<content::WebContents*, std::unique_ptr<CrashWatcher>>
       crash_watchers_;
   base::WeakPtr<views::Widget> pending_download_warning_;

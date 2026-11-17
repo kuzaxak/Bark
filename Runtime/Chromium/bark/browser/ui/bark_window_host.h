@@ -11,6 +11,7 @@
 #include "base/memory/weak_ptr.h"
 #include "base/observer_list.h"
 #include "base/observer_list_types.h"
+#include "ui/base/accelerators/accelerator.h"
 #include "ui/gfx/geometry/point.h"
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/widget/widget.h"
@@ -33,7 +34,8 @@ enum class HostFullscreen { kNone, kWindow, kPage };
 // the one view host that shows the app's root NSView. Every BarkBrowserWindow
 // shown in the window holds a reference; the last one to go closes it.
 class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
-                       public views::WidgetObserver {
+                       public views::WidgetObserver,
+                       public ui::AcceleratorTarget {
  public:
   class Observer : public base::CheckedObserver {
    public:
@@ -119,6 +121,11 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
 
   // Gives the keys to the selected client's active page.
   void FocusSelectedPage();
+
+  // ui::AcceleratorTarget: Chromium's accelerator table (F7, F12, Esc), run on
+  // the selected client.
+  bool AcceleratorPressed(const ui::Accelerator& accelerator) override;
+  bool CanHandleAccelerators() const override;
 
   // views::WidgetObserver:
   void OnWidgetBoundsChanged(views::Widget* widget,

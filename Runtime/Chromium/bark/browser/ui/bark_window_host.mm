@@ -7,12 +7,15 @@
 
 #include "bark/bridge/barc_bridge.h"
 #include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_command_policy.h"
 #include "bark/browser/ui/bark_native_widget_mac.h"
 #include "base/apple/foundation_util.h"
 #include "base/auto_reset.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/ui/accelerator_table.h"
+#include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
@@ -27,6 +30,7 @@
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/native/native_view_host.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -288,6 +292,11 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   widget_->Init(std::move(params));
   widget_->AddObserver(this);
   widget_->SetNativeWindowProperty(kBarkWindowHostKey, this);
+  for (const AcceleratorMapping& mapping : GetAcceleratorList()) {
+    widget_->GetFocusManager()->RegisterAccelerator(
+        ui::Accelerator(mapping.keycode, mapping.modifiers),
+        ui::AcceleratorManager::kNormalPriority, this);
+  }
   key_return_ = std::make_unique<KeyReturn>(
       widget_->GetNativeWindow().GetNativeNSWindow(), this);
   ArmClose();
@@ -301,6 +310,9 @@ BarkWindowHost::~BarkWindowHost() {
   leading_anchor_ = trailing_anchor_ = page_anchor_ = unselected_anchor_ =
       nullptr;
   if (widget_) {
+    if (widget_->GetFocusManager()) {
+      widget_->GetFocusManager()->UnregisterAccelerators(this);
+    }
     widget_->RemoveObserver(this);
     widget_->SetNativeWindowProperty(kBarkWindowHostKey, nullptr);
   }
@@ -584,7 +596,29 @@ void BarkWindowHost::OnWidgetActivationChanged(views::Widget* widget,
   barc::BrowserDiscoveryChanged();
 }
 
+bool BarkWindowHost::AcceleratorPressed(const ui::Accelerator& accelerator) {
+  if (!CanHandleAccelerators()) {
+    return false;
+  }
+  BrowserWindowInterface* browser = selected_->browser();
+  for (const AcceleratorMapping& mapping : GetAcceleratorList()) {
+    if (accelerator == ui::Accelerator(mapping.keycode, mapping.modifiers) &&
+        HostWindowOffersCommand(mapping.command_id) &&
+        chrome::IsCommandEnabled(browser, mapping.command_id)) {
+      return chrome::ExecuteCommand(browser, mapping.command_id);
+    }
+  }
+  return false;
+}
+
+bool BarkWindowHost::CanHandleAccelerators() const {
+  return !closing_ && selected_ && !selected_->browser()->IsDeleteScheduled();
+}
+
 void BarkWindowHost::OnWidgetDestroying(views::Widget* widget) {
+  if (widget->GetFocusManager()) {
+    widget->GetFocusManager()->UnregisterAccelerators(this);
+  }
   closing_ = true;
   key_return_.reset();
   page_watch_.reset();

@@ -24,6 +24,7 @@
 #include "chrome/browser/ui/sad_tab.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/unload_controller.h"
+#include "chrome/browser/ui/views/accessibility/caret_browsing_dialog_delegate.h"
 #include "chrome/browser/ui/views/autofill/autofill_bubble_handler_impl.h"
 #include "chrome/browser/ui/views/eye_dropper/eye_dropper.h"
 #include "chrome/browser/ui/views/download/download_in_progress_dialog_view.h"
@@ -461,7 +462,13 @@ bool BarkBrowserWindow::HandleKeyboardEvent(
   }
   auto* window_host =
       views::NativeWidgetMacNSWindowHost::GetFromNativeWindow(GetNativeWindow());
-  return window_host && window_host->RedispatchKeyEvent(event.os_event.Get());
+  if (window_host && window_host->RedispatchKeyEvent(event.os_event.Get())) {
+    return true;
+  }
+  views::Widget* widget = host_->widget();
+  return widget && widget->GetFocusManager() &&
+         unhandled_keyboard_event_handler_.HandleKeyboardEvent(
+             event, widget->GetFocusManager());
 }
 
 std::unique_ptr<FindBar> BarkBrowserWindow::CreateFindBar() {
@@ -519,7 +526,10 @@ std::unique_ptr<content::EyeDropper> BarkBrowserWindow::OpenEyeDropper(
   return ShowEyeDropper(frame, listener);
 }
 
-void BarkBrowserWindow::ShowCaretBrowsingDialog() {}
+void BarkBrowserWindow::ShowCaretBrowsingDialog() {
+  CaretBrowsingDialogDelegate::Show(GetNativeWindow(),
+                                    browser_->GetProfile()->GetPrefs());
+}
 
 void BarkBrowserWindow::CreateTabSearchBubble() {}
 
