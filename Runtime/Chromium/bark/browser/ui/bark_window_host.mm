@@ -62,10 +62,11 @@ class BarkWindowHost::PageWatch {
   id observer_;
 };
 
-// While one of the window's own dialogs or bubbles has the keys, remembers
-// what had them before. AppKit makes no window key when that child closes, and
-// Chromium's focus restore leaves the keys with the window itself, so the host
-// takes the keys back and returns them to what had them.
+// Gives the window's keys back when it is key again and nobody in it has them:
+// to the app's view that had them, or else to the selected client's page.
+// Views takes the keys from the window's views when it stops being key and
+// gives them back only to its own views, and AppKit makes no window key when a
+// key child, such as one of the window's dialogs, closes.
 class BarkWindowHost::KeyReturn {
  public:
   KeyReturn(NSWindow* window, BarkWindowHost* host)
@@ -102,24 +103,30 @@ class BarkWindowHost::KeyReturn {
   }
 
  private:
-  static NSView* Holder(NSResponder* responder) {
-    if (auto* editor = base::apple::ObjCCast<NSTextView>(responder);
-        editor && editor.fieldEditor) {
-      return base::apple::ObjCCast<NSView>(editor.delegate);
-    }
-    return base::apple::ObjCCast<NSView>(responder);
+  bool Empty(NSResponder* responder) const {
+    return responder == window_ || responder == window_.contentView;
   }
 
   // The new key window is known only once AppKit has finished the change.
   void WindowResigned() {
-    resigned_holder_ = Holder(window_.firstResponder);
+    NSResponder* responder = window_.firstResponder;
+    if (auto* editor = base::apple::ObjCCast<NSTextView>(responder);
+        editor && editor.fieldEditor) {
+      responder = base::apple::ObjCCast<NSResponder>(editor.delegate);
+    }
+    NSView* holder = base::apple::ObjCCast<NSView>(responder);
+    holder_ =
+        holder && !Empty(holder) &&
+                ![holder isKindOfClass:NSClassFromString(
+                                           @"RenderWidgetHostViewCocoa")]
+            ? holder
+            : nil;
     base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
         FROM_HERE, base::BindOnce(
                        [](base::WeakPtr<KeyReturn> self) {
                          if (self &&
                              NSApp.keyWindow.parentWindow == self->window_) {
                            self->child_ = NSApp.keyWindow;
-                           self->holder_ = self->resigned_holder_;
                          }
                        },
                        weak_factory_.GetWeakPtr()));
@@ -139,28 +146,22 @@ class BarkWindowHost::KeyReturn {
   }
 
   void GiveBack() {
-    if (!child_ && !holder_) {
-      return;
-    }
-    child_ = nil;
     NSView* holder = holder_;
     holder_ = nil;
-    NSResponder* keys = window_.firstResponder;
-    if (keys != window_ && keys != window_.contentView) {
+    child_ = nil;
+    if (!window_.keyWindow || !Empty(window_.firstResponder)) {
       return;
     }
-    // A page's view can be replaced at any time; the page itself gets the keys.
-    if (holder && holder.window == window_ && holder != window_.contentView &&
-        ![holder isKindOfClass:NSClassFromString(@"RenderWidgetHostViewCocoa")]) {
-      [window_ makeFirstResponder:holder];
-    } else {
-      host_->FocusSelectedPage();
+    if (holder && holder.window == window_ &&
+        [window_ makeFirstResponder:holder]) {
+      return;
     }
+    host_->FocusSelectedPage();
   }
 
   __weak NSWindow* window_;
   raw_ptr<BarkWindowHost> host_;
-  __weak NSView* resigned_holder_ = nil;
+  // The app's view that had the keys when the window stopped being key.
   __weak NSView* holder_ = nil;
   // The child window that took the keys from the window.
   __weak NSWindow* child_ = nil;
@@ -548,8 +549,6 @@ void BarkWindowHost::OnWidgetActivationChanged(views::Widget* widget,
   if (selected_) {
     selected_->OnHostActivationChanged(active);
   }
-  // Discovery rows carry the window's key state; a client already marked the
-  // active browser by Show() notifies nothing when the window becomes key.
   barc::BrowserDiscoveryChanged();
 }
 

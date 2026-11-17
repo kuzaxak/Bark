@@ -377,9 +377,14 @@ IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest, TwoBubblesKeepTheirCorners) {
   const gfx::Rect prompt_frame = prompt->GetWidget()->GetWindowBoundsInScreen();
   qrcode_generator::QRCodeGeneratorBubbleController::Get(Contents())
       ->ShowBubble(Contents()->GetLastCommittedURL());
-  auto* qr = WaitForBubble(2);
+  ASSERT_NE(nullptr, WaitForBubble(2));
+  views::BubbleDialogDelegate* qr = nullptr;
+  for (auto* bubble : Bubbles()) {
+    if (bubble != prompt) {
+      qr = bubble;
+    }
+  }
   ASSERT_NE(nullptr, qr);
-  ASSERT_NE(prompt, qr);
   ExpectAtThePageTopRight(qr);
   EXPECT_EQ(prompt_frame, prompt->GetWidget()->GetWindowBoundsInScreen());
   const gfx::Rect page = Window()->GetPageBoundsInScreen();
@@ -542,6 +547,10 @@ class BarkHostCommandBrowserTest : public BarkHostStockUiBrowserTest {
         },
         nullptr);
     BarkHostStockUiBrowserTest::SetUp();
+  }
+  void SetUpOnMainThread() override {
+    BarkHostStockUiBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("*", "127.0.0.1");
   }
 
  protected:
@@ -751,6 +760,41 @@ IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest,
   WaitForPageKeys();
   EXPECT_EQ(tabs, Tabs());
   EXPECT_FALSE(Contents()->IsBeingDestroyed());
+}
+
+// Another window has the keys while the page goes to another site, which
+// gives it a new view; the page has the keys again when its window does. Typed
+// keys are checked with real key windows in the focus tests.
+IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest,
+                       PageKeepsTheKeysWhenItsViewIsReplacedMeanwhile) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  FocusPage();
+  NSWindow* other =
+      [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+                                  styleMask:NSWindowStyleMaskTitled
+                                    backing:NSBackingStoreBuffered
+                                      defer:NO];
+  other.releasedWhenClosed = NO;
+  [other makeKeyAndOrderFront:nil];
+  ASSERT_TRUE(base::test::RunUntil([&] { return !NativeWindow().isKeyWindow; }));
+  NSView* before =
+      Contents()->GetRenderWidgetHostView()->GetNativeView().GetNativeNSView();
+  ASSERT_TRUE(content::NavigateToURL(
+      Contents(), embedded_test_server()->GetURL("b.test", "/keys")));
+  NSView* after =
+      Contents()->GetRenderWidgetHostView()->GetNativeView().GetNativeNSView();
+  ASSERT_NE(before, after);
+  Window()->Activate();
+  ASSERT_TRUE(base::test::RunUntil([&] { return NativeWindow().isKeyWindow; }));
+  // Closed once it is no longer key, so AppKit picks no other key window.
+  [other close];
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return NativeWindow().firstResponder == after; }));
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
+  }));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest, MenuCloseTabOnPinnedTab) {
@@ -1229,6 +1273,38 @@ IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
   [other close];
   MakeKey();
   EXPECT_TRUE(base::test::RunUntil([&] {
+    return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
+  }));
+  EXPECT_TRUE(PageHearsAKey());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostFocusBrowserTest,
+                       KeysFollowThePageWhenItsViewIsReplaced) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&ServeKeys));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/keys");
+  MakeKey();
+  FocusPage();
+  ASSERT_TRUE(PageHearsAKey());
+  NSWindow* other =
+      [[NSWindow alloc] initWithContentRect:NSMakeRect(0, 0, 200, 100)
+                                  styleMask:NSWindowStyleMaskTitled
+                                    backing:NSBackingStoreBuffered
+                                      defer:NO];
+  other.releasedWhenClosed = NO;
+  [other makeKeyAndOrderFront:nil];
+  ASSERT_TRUE(base::test::RunUntil([&] { return !NativeWindow().isKeyWindow; }));
+  NSView* before =
+      Contents()->GetRenderWidgetHostView()->GetNativeView().GetNativeNSView();
+  ASSERT_TRUE(content::NavigateToURL(
+      Contents(), embedded_test_server()->GetURL("b.test", "/keys")));
+  ASSERT_NE(before, Contents()
+                        ->GetRenderWidgetHostView()
+                        ->GetNativeView()
+                        .GetNativeNSView());
+  MakeKey();
+  [other close];
+  ASSERT_TRUE(base::test::RunUntil([&] {
     return content::EvalJs(Contents(), "document.hasFocus()").ExtractBool();
   }));
   EXPECT_TRUE(PageHearsAKey());
