@@ -63,6 +63,9 @@ class BarkBrowserWindow : public BrowserWindow,
 
   // The rectangle the selected page view occupies, in screen coordinates.
   gfx::Rect GetPageBoundsInScreen() const;
+  // Where `contents`, a tab of this client, is placed; the root view when it
+  // is not in the window.
+  gfx::Rect GetPageBoundsInScreen(content::WebContents* contents) const;
   void OnHostActivationChanged(bool active);
   void OnHostBoundsChanged();
   void OnHostFullscreenChanged();
@@ -213,10 +216,12 @@ class BarkBrowserWindow : public BrowserWindow,
   void DeleteBrowserWindow() final;
 
  private:
-  class CrashWatcher;
+  class TabWatcher;
 
   void EnsureActiveTabHasNonZeroSize();
-  void WatchForCrash(content::WebContents* contents);
+  void WatchTab(content::WebContents* contents);
+  // A placed page of this client took the keys.
+  void OnPageFocused(content::WebContents* contents);
   // A page of this client became visible: placed in the window, or shown.
   void OnPageShown(content::WebContents* contents);
   void NotifyPageCrashed(content::WebContents* contents, bool crashed);
@@ -225,14 +230,17 @@ class BarkBrowserWindow : public BrowserWindow,
   scoped_refptr<BarkWindowHost> host_;
   std::unique_ptr<BarkStubLocationBar> location_bar_;
   std::unique_ptr<BarkModalDialogHost> modal_dialog_host_;
+  // Tab-modal dialogs of each tab centre over that tab's own page.
+  std::map<content::WebContents*, std::unique_ptr<BarkModalDialogHost>>
+      page_dialog_hosts_;
   std::unique_ptr<BarkExclusiveAccessContext> exclusive_access_context_;
   std::unique_ptr<BarkFindBarOwner> find_bar_owner_;
   std::unique_ptr<BarkSidePanelUI> side_panel_ui_;
   std::unique_ptr<BarkToolbarButtonProvider> toolbar_button_provider_;
   std::unique_ptr<autofill::AutofillBubbleHandlerImpl> autofill_bubble_handler_;
   views::UnhandledKeyboardEventHandler unhandled_keyboard_event_handler_;
-  std::map<content::WebContents*, std::unique_ptr<CrashWatcher>>
-      crash_watchers_;
+  std::map<content::WebContents*, std::unique_ptr<TabWatcher>>
+      tab_watchers_;
   base::WeakPtr<views::Widget> pending_download_warning_;
   ui::ScopedUnownedUserData<BarkBrowserWindow> scoped_user_data_;
   base::WeakPtrFactory<BarkBrowserWindow> weak_factory_{this};

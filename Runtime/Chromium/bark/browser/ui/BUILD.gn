@@ -47,6 +47,7 @@ source_set("ui") {
     "//chrome/browser/ui/views/translate",
     "//chrome/browser/ui/window_metadata",
     "//components/input",
+    "//components/javascript_dialogs",
     "//components/remote_cocoa/app_shim",
     "//components/strings",
     "//components/tabs:public",

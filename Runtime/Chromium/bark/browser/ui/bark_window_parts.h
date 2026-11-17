@@ -25,6 +25,10 @@
 
 class ExclusiveAccessBubbleViews;
 
+namespace content {
+class WebContents;
+}
+
 namespace bark {
 
 class BarkBrowserWindow;
@@ -123,7 +127,10 @@ class BarkStubLocationBar : public LocationBar {
 // Places tab-modal dialogs over the selected page view.
 class BarkModalDialogHost : public web_modal::WebContentsModalDialogHost {
  public:
-  explicit BarkModalDialogHost(BarkBrowserWindow* window);
+  // With `contents`, dialogs centre over that tab's page; without, over the
+  // selected client's active page.
+  explicit BarkModalDialogHost(BarkBrowserWindow* window,
+                               content::WebContents* contents = nullptr);
   ~BarkModalDialogHost() override;
 
   void NotifyPositionRequiresUpdate() override;
@@ -139,6 +146,8 @@ class BarkModalDialogHost : public web_modal::WebContentsModalDialogHost {
   gfx::Rect DialogAreaInWindow() const;
 
   const raw_ptr<BarkBrowserWindow> window_;
+  const raw_ptr<content::WebContents> contents_;
+  id page_frame_observer_ = nil;
   base::ObserverList<web_modal::ModalDialogHostObserver> observers_;
 };
 

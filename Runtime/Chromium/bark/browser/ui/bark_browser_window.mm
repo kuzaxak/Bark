@@ -1,6 +1,7 @@
 #include "bark/browser/ui/bark_browser_window.h"
 
 #import <AppKit/AppKit.h>
+#include <Carbon/Carbon.h>
 
 #include <utility>
 
@@ -31,6 +32,7 @@
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views_impl.h"
 #include "components/input/native_web_keyboard_event.h"
+#include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/keyboard_event_processing_result.h"
 #include "content/public/browser/web_contents.h"
@@ -48,6 +50,30 @@ namespace {
 
 int g_app_window_creation_depth = 0;
 BarkWindowHost* g_join_host = nullptr;
+
+// Whether the event AppKit is handling is the person moving the keys into
+// `page`: a click on it, or Tab through the window's key views.
+bool PersonMovesKeysInto(NSView* page) {
+  NSEvent* event = NSApp.currentEvent;
+  if (!event || event.window != page.window) {
+    return false;
+  }
+  switch (event.type) {
+    case NSEventTypeLeftMouseDown:
+    case NSEventTypeRightMouseDown:
+    case NSEventTypeOtherMouseDown: {
+      NSView* content = page.window.contentView;
+      NSView* hit = [content
+          hitTest:[content.superview convertPoint:event.locationInWindow
+                                         fromView:nil]];
+      return [hit isDescendantOf:page];
+    }
+    case NSEventTypeKeyDown:
+      return event.keyCode == kVK_Tab;
+    default:
+      return false;
+  }
+}
 
 bool ShouldHandleKeyboardEvent(const input::NativeWebKeyboardEvent& event) {
   if (event.skip_if_unhandled ||
@@ -105,10 +131,11 @@ BarkBrowserWindow* BarkBrowserWindow::FromBrowser(
 }
 
 // Tells the app when a page's renderer dies and when the page has one again,
-// by SadTabHelper's rule; a host window has no sad tab of its own.
-class BarkBrowserWindow::CrashWatcher : public content::WebContentsObserver {
+// by SadTabHelper's rule; a host window has no sad tab of its own. A placed page
+// that takes the keys becomes its client's active tab, as a pane of a split.
+class BarkBrowserWindow::TabWatcher : public content::WebContentsObserver {
  public:
-  CrashWatcher(BarkBrowserWindow* window, content::WebContents* contents)
+  TabWatcher(BarkBrowserWindow* window, content::WebContents* contents)
       : content::WebContentsObserver(contents),
         window_(window),
         crashed_(contents->IsCrashed()) {}
@@ -124,6 +151,9 @@ class BarkBrowserWindow::CrashWatcher : public content::WebContentsObserver {
     if (std::exchange(crashed_, false)) {
       window_->NotifyPageCrashed(web_contents(), false);
     }
+  }
+  void OnWebContentsFocused(content::RenderWidgetHost*) override {
+    window_->OnPageFocused(web_contents());
   }
   void OnVisibilityChanged(content::Visibility visibility) override {
     if (visibility == content::Visibility::VISIBLE) {
@@ -160,7 +190,7 @@ BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser,
 }
 
 BarkBrowserWindow::~BarkBrowserWindow() {
-  crash_watchers_.clear();
+  tab_watchers_.clear();
   browser_->GetFeatures().TearDownPreBrowserWindowDestruction();
   if (auto warning = std::exchange(pending_download_warning_, {})) {
     warning->CloseNow();
@@ -170,6 +200,7 @@ BarkBrowserWindow::~BarkBrowserWindow() {
   side_panel_ui_.reset();
   find_bar_owner_.reset();
   exclusive_access_context_.reset();
+  page_dialog_hosts_.clear();
   modal_dialog_host_.reset();
   location_bar_.reset();
   host_->RemoveClient(this);
@@ -177,7 +208,12 @@ BarkBrowserWindow::~BarkBrowserWindow() {
 }
 
 gfx::Rect BarkBrowserWindow::GetPageBoundsInScreen() const {
-  auto* contents = browser_->GetTabStripModel()->GetActiveWebContents();
+  return GetPageBoundsInScreen(
+      browser_->GetTabStripModel()->GetActiveWebContents());
+}
+
+gfx::Rect BarkBrowserWindow::GetPageBoundsInScreen(
+    content::WebContents* contents) const {
   NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
   NSWindow* window = GetNativeWindow().GetNativeNSWindow();
   NSView* area = page.window == window && !page.isHiddenOrHasHiddenAncestor
@@ -204,6 +240,9 @@ void BarkBrowserWindow::OnHostActivationChanged(bool active) {
 void BarkBrowserWindow::OnHostBoundsChanged() {
   if (modal_dialog_host_) {
     modal_dialog_host_->NotifyPositionRequiresUpdate();
+  }
+  for (const auto& [contents, host] : page_dialog_hosts_) {
+    host->NotifyPositionRequiresUpdate();
   }
 }
 
@@ -299,6 +338,14 @@ void BarkBrowserWindow::OnActiveTabChanged(content::WebContents* old_contents,
   EnsureActiveTabHasNonZeroSize();
   UpdateTitleBar();
   host_->OnClientActiveTabChanged(this);
+  // Chromium shows a held alert when its tab comes to the front, which it
+  // learns from the tab turning visible. A pane of a split is already visible.
+  if (new_contents->GetVisibility() == content::Visibility::VISIBLE) {
+    if (auto* dialogs = javascript_dialogs::TabModalDialogManager::FromWebContents(
+            new_contents)) {
+      dialogs->BrowserActiveStateChanged();
+    }
+  }
 }
 
 void BarkBrowserWindow::OnTabDetached(content::WebContents* contents,
@@ -483,7 +530,16 @@ BarkBrowserWindow::GetWebContentsModalDialogHost() {
 web_modal::WebContentsModalDialogHost*
 BarkBrowserWindow::GetWebContentsModalDialogHostFor(
     content::WebContents* web_contents) {
-  return modal_dialog_host_.get();
+  if (!modal_dialog_host_ ||
+      browser_->GetTabStripModel()->GetIndexOfWebContents(web_contents) ==
+          TabStripModel::kNoTab) {
+    return modal_dialog_host_.get();
+  }
+  auto& host = page_dialog_hosts_[web_contents];
+  if (!host) {
+    host = std::make_unique<BarkModalDialogHost>(this, web_contents);
+  }
+  return host.get();
 }
 
 void BarkBrowserWindow::ShowAvatarBubbleFromAvatarButton(
@@ -709,11 +765,12 @@ void BarkBrowserWindow::OnTabStripModelChanged(
     const TabStripSelectionChange& selection) {
   if (change.type() == TabStripModelChange::kInserted) {
     for (const auto& inserted : change.GetInsert()->contents) {
-      WatchForCrash(inserted.contents);
+      WatchTab(inserted.contents);
     }
   } else if (change.type() == TabStripModelChange::kRemoved) {
     for (const auto& removed : change.GetRemove()->contents) {
-      crash_watchers_.erase(removed.contents);
+      tab_watchers_.erase(removed.contents);
+      page_dialog_hosts_.erase(removed.contents);
       if (removed.tab && removed.contents) {
         host_->NotifyPageViewRetiring(browser_->GetSessionID().id(),
                                       removed.tab->GetHandle().raw_value(),
@@ -722,8 +779,9 @@ void BarkBrowserWindow::OnTabStripModelChanged(
     }
   } else if (change.type() == TabStripModelChange::kReplaced) {
     const auto* replace = change.GetReplace();
-    crash_watchers_.erase(replace->old_contents);
-    WatchForCrash(replace->new_contents);
+    tab_watchers_.erase(replace->old_contents);
+    page_dialog_hosts_.erase(replace->old_contents);
+    WatchTab(replace->new_contents);
     if (replace->tab && replace->old_contents) {
       host_->NotifyPageViewRetiring(browser_->GetSessionID().id(),
                                     replace->tab->GetHandle().raw_value(),
@@ -738,11 +796,33 @@ void BarkBrowserWindow::OnPageShown(content::WebContents* contents) {
   }
 }
 
-void BarkBrowserWindow::WatchForCrash(content::WebContents* contents) {
+void BarkBrowserWindow::OnPageFocused(content::WebContents* contents) {
+  if (browser_->IsDeleteScheduled() ||
+      UnloadController::From(browser_)->owner_close_admitted() ||
+      !host_->widget() || host_->closing()) {
+    return;
+  }
+  TabStripModel* tabs = browser_->GetTabStripModel();
+  NSView* page = contents->GetNativeView().GetNativeNSView();
+  if (tabs->GetIndexOfWebContents(contents) == TabStripModel::kNoTab ||
+      page.window != GetNativeWindow().GetNativeNSWindow() ||
+      page.hiddenOrHasHiddenAncestor || !PersonMovesKeysInto(page)) {
+    return;
+  }
+  if (host_->selected() != this && !host_->Select(this)) {
+    return;
+  }
+  const int index = tabs->GetIndexOfWebContents(contents);
+  if (index != TabStripModel::kNoTab && index != tabs->active_index()) {
+    tabs->ActivateTabAt(index);
+  }
+}
+
+void BarkBrowserWindow::WatchTab(content::WebContents* contents) {
   if (!contents) {
     return;
   }
-  crash_watchers_[contents] = std::make_unique<CrashWatcher>(this, contents);
+  tab_watchers_[contents] = std::make_unique<TabWatcher>(this, contents);
   if (contents->IsCrashed()) {
     NotifyPageCrashed(contents, true);
   }

@@ -1,5 +1,7 @@
 #include "bark/browser/ui/bark_window_parts.h"
 
+#import <AppKit/AppKit.h>
+
 #include <algorithm>
 #include <utility>
 
@@ -187,10 +189,27 @@ constexpr int kDialogWindowMargin = 8;
 
 }  // namespace
 
-BarkModalDialogHost::BarkModalDialogHost(BarkBrowserWindow* window)
-    : window_(window) {}
+BarkModalDialogHost::BarkModalDialogHost(BarkBrowserWindow* window,
+                                         content::WebContents* contents)
+    : window_(window), contents_(contents) {
+  NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
+  if (!page) {
+    return;
+  }
+  page.postsFrameChangedNotifications = YES;
+  page_frame_observer_ = [NSNotificationCenter.defaultCenter
+      addObserverForName:NSViewFrameDidChangeNotification
+                  object:page
+                   queue:nil
+              usingBlock:^(NSNotification*) {
+                NotifyPositionRequiresUpdate();
+              }];
+}
 
 BarkModalDialogHost::~BarkModalDialogHost() {
+  if (page_frame_observer_) {
+    [NSNotificationCenter.defaultCenter removeObserver:page_frame_observer_];
+  }
   observers_.Notify(&web_modal::ModalDialogHostObserver::OnHostDestroying);
 }
 
@@ -200,8 +219,9 @@ void BarkModalDialogHost::NotifyPositionRequiresUpdate() {
 }
 
 gfx::Rect BarkModalDialogHost::PageBoundsInWindow() const {
-  return window_->GetPageBoundsInScreen() -
-         window_->GetBounds().OffsetFromOrigin();
+  const gfx::Rect page = contents_ ? window_->GetPageBoundsInScreen(contents_)
+                                   : window_->GetPageBoundsInScreen();
+  return page - window_->GetBounds().OffsetFromOrigin();
 }
 
 gfx::NativeView BarkModalDialogHost::GetHostView() const {
