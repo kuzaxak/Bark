@@ -9,6 +9,7 @@ struct NSImage {
 }
 @MainActor final class NativeWindow {}
 @MainActor enum NSApp { static var keyWindow: NativeWindow? }
+@MainActor enum CommandWindow { static var key: NativeWindow? { NSApp.keyWindow } }
 @MainActor final class NSPasteboard {
     static var general = NSPasteboard()
     var changeCount = 7

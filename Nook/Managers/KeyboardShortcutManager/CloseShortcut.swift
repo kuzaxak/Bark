@@ -27,7 +27,8 @@ enum CloseShortcut {
     }
 
     /// `browserWindow` is nil when the key window is not a browser window: Settings, a mini
-    /// window, a Web Inspector or an extension popup. `isRepeat` is a held ⌘W.
+    /// window or an undocked Web Inspector. A bubble, dialog or extension popup of a browser window
+    /// stands for that window (`CommandWindow`). `isRepeat` is a held ⌘W.
     static func target(in browserWindow: BrowserWindow?, isRepeat: Bool) -> Target {
         guard let browserWindow else { return .window }
         if browserWindow.showsCommandBar { return .commandBar }

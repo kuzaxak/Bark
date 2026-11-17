@@ -432,7 +432,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             manager.tabs.onSpaceDeletionNotice = { message in
                 let alert = NSAlert()
                 alert.messageText = message
-                if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+                if let window = CommandWindow.key ?? NSApp.mainWindow {
                     alert.beginSheetModal(for: window)
                 } else {
                     alert.runModal()

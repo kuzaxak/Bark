@@ -114,7 +114,7 @@ extension BrowserManager {
     func performNativePageCommand(_ command: PageCommand, in window: BrowserWindowState,
                                   page: PageSession) -> Bool {
         guard tabs.profileEngine == .chromium, windowRegistry?.windows[window.id] === window,
-              windowRegistry?.activeWindow === window, let keyWindow = NSApp.keyWindow,
+              windowRegistry?.activeWindow === window, let keyWindow = CommandWindow.key,
               window.window === keyWindow,
               frontPage(in: window) === page,
               let native = page.navigation as? ChromiumPageNavigation else { return false }
@@ -181,7 +181,7 @@ extension BrowserManager {
             return !Task.isCancelled && self.tabs.profileEngine == .chromium &&
                 self.windowRegistry?.windows[window.id] === window &&
                 self.windowRegistry?.activeWindow === window &&
-                window.window != nil && window.window === NSApp.keyWindow &&
+                window.window != nil && window.window === CommandWindow.key &&
                 self.frontPage(in: window) === page && page.navigation === native &&
                 page.nativeNavigationSerial == serial && !native.isClosed &&
                 native.nativeWindowID == owner && native.nativeTabID == tab && native.profileID == profile &&

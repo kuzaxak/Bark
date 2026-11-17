@@ -103,7 +103,7 @@ extension BrowserManager: TabActions {
 
     func share(_ url: URL) {
         let picker = NSSharingServicePicker(items: [url as NSURL])
-        guard let window = NSApp.keyWindow else { return }
+        guard let window = CommandWindow.key else { return }
         picker.show(relativeTo: .zero, of: window.contentView ?? NSView(), preferredEdge: .minY)
     }
 }

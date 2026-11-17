@@ -122,7 +122,7 @@ extension BrowserManager {
 
     /// A sheet on the front window, or a window of its own when none is open.
     private func runAlert(_ alert: NSAlert, then handle: @escaping (NSApplication.ModalResponse) -> Void) {
-        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        if let window = CommandWindow.key ?? NSApp.mainWindow {
             alert.beginSheetModal(for: window, completionHandler: handle)
         } else {
             handle(alert.runModal())
@@ -135,7 +135,7 @@ extension BrowserManager {
             guard response == .OK, let url = panel.url else { return }
             DispatchQueue.main.async { handle(url) }
         }
-        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+        if let window = CommandWindow.key ?? NSApp.mainWindow {
             panel.beginSheetModal(for: window, completionHandler: finish)
         } else {
             panel.begin(completionHandler: finish)

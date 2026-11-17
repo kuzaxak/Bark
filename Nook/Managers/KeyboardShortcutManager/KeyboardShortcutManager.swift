@@ -210,8 +210,9 @@ class KeyboardShortcutManager {
             return false
         }
 
+        guard !CommandWindow.keyKeepsKeys else { return false }
         // A window that is not a browser window (Settings, a mini window) keeps its own keys.
-        if let keyWindow = NSApp.keyWindow,
+        if let keyWindow = CommandWindow.key,
            !(windowRegistry?.windows.values.contains(where: { $0.window === keyWindow }) ?? false) {
             guard CloseShortcut.closesOtherWindow(lookupKey: KeyCombination(from: event)?.lookupKey) else { return false }
             closeTab(isRepeat: event.isARepeat)
@@ -219,7 +220,7 @@ class KeyboardShortcutManager {
         }
 
         if browserManager?.tabs.profileEngine == .chromium {
-            guard let key = NSApp.keyWindow,
+            guard let key = CommandWindow.key,
                   windowRegistry?.activeWindow?.window === key else { return false }
         }
 
@@ -507,7 +508,8 @@ class KeyboardShortcutManager {
     /// Close Tab from its shortcut, the File menu or the command bar, in the key window (see
     /// `CloseShortcut`).
     func closeTab(isRepeat: Bool) {
-        let keyWindow = NSApp.keyWindow ?? NSApp.mainWindow
+        guard !CommandWindow.keyKeepsKeys else { return }
+        let keyWindow = CommandWindow.key ?? NSApp.mainWindow
         let state = keyWindow.flatMap { key in windowRegistry?.windows.values.first { $0.window === key } }
         let peeks = browserManager?.peekManager
         let shown = state.map {
@@ -537,7 +539,7 @@ class KeyboardShortcutManager {
         guard let browserManager = browserManager else { return }
         let isRepeat = lastShortcutWasRepeat
         if browserManager.tabs.profileEngine == .chromium, let command = action.pageCommand {
-            guard let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow, window.window === keyWindow,
+            guard let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key, window.window === keyWindow,
                   let page = browserManager.frontPage(in: window),
                   let native = page.navigation as? ChromiumPageNavigation else { return }
             let owner = native.nativeWindowID, tab = native.nativeTabID
@@ -550,14 +552,14 @@ class KeyboardShortcutManager {
         }
         if browserManager.tabs.profileEngine == .chromium,
            action == .newTab || action == .focusAddressBar || action == .openCommandPalette {
-            guard let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow,
+            guard let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key,
                   window.window === keyWindow else { return }
             let selected = window.selectedItemID
             let address = action == .focusAddressBar ? browserManager.frontPage(in: window)?.url.absoluteString : nil
             DispatchQueue.main.async { [weak self, weak window] in
                 guard let self, let window, self.windowRegistry?.activeWindow === window,
                       self.windowRegistry?.windows[window.id] === window, window.selectedItemID == selected,
-                      let keyWindow = NSApp.keyWindow, window.window === keyWindow else { return }
+                      let keyWindow = CommandWindow.key, window.window === keyWindow else { return }
                 if let address { window.commandPalette?.open(prefill: address, navigateCurrentTab: true) }
                 else if action == .focusAddressBar { window.commandPalette?.open(navigateCurrentTab: true) }
                 else { window.commandPalette?.open() }
@@ -565,7 +567,7 @@ class KeyboardShortcutManager {
             return
         }
         if browserManager.tabs.profileEngine == .chromium, !action.runsInChromium {
-            if let window = windowRegistry?.activeWindow, let keyWindow = NSApp.keyWindow, window.window === keyWindow {
+            if let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key, window.window === keyWindow {
                 browserManager.showWindowToast("This action is not available yet", in: window)
             }
             return

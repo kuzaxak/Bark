@@ -3,6 +3,7 @@ import AppKit
 @main
 enum Check {
     static func main() {
+        commandWindowCases()
         var offeredButIdle: [ShortcutAction] = []
         for action in ShortcutAction.allCases {
             let runs = action.pageCommand?.supportsNativePage ?? (action.runsInChromium
@@ -96,4 +97,34 @@ enum Check {
                      "Open Library is listed unbound, so Settings offers it: \(merged.values.filter { $0.action == .openLibrary })")
         precondition(merged.filter { $0.key != "none:open_library" } == taken, "Every saved shortcut stays as the person set it")
     }
+}
+
+/// A child window that takes the keys, as a page's bubble, prompt or dialog does, acts for the
+/// window it belongs to: Close Tab closes the tab there, never the window.
+@MainActor private func commandWindowCases() {
+    func window() -> NSWindow {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 300, height: 200), styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        return window
+    }
+    let browser = window(), bubble = window(), dialog = window(), other = window()
+    browser.addChildWindow(bubble, ordered: .above)
+    bubble.addChildWindow(dialog, ordered: .above)
+    precondition(CommandWindow.resolve(browser) === browser, "the browser window acts for itself")
+    precondition(CommandWindow.resolve(bubble) === browser, "a bubble with the keys acts for its browser window")
+    precondition(CommandWindow.resolve(dialog) === browser, "so does a dialog over the bubble")
+    precondition(CommandWindow.resolve(other) === other, "a window of its own, as Settings, acts for itself")
+    precondition(CommandWindow.resolve(nil) == nil)
+    browser.removeChildWindow(bubble)
+    bubble.removeChildWindow(dialog)
+
+    let sheetOwner = window(), sheet = window()
+    sheetOwner.orderBack(nil)
+    sheetOwner.beginSheet(sheet)
+    RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+    precondition(sheet.isSheet, "the panel is attached as a sheet")
+    precondition(CommandWindow.keepsKeys(sheet) && CommandWindow.resolve(sheet) == nil,
+                 "a sheet keeps its keys: no command acts on the window behind it (its parent: \(String(describing: sheet.parent)))")
+    sheetOwner.endSheet(sheet)
+    sheetOwner.orderOut(nil)
 }

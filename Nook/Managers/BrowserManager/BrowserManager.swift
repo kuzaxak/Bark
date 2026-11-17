@@ -810,7 +810,7 @@ class BrowserManager: ObservableObject {
         if tabs.profileEngine == .chromium {
             guard let window = windowRegistry?.activeWindow,
                   windowRegistry?.windows[window.id] === window,
-                  let keyWindow = NSApp.keyWindow, window.window === keyWindow,
+                  let keyWindow = CommandWindow.key, window.window === keyWindow,
                   let page = frontPage(in: window),
                   let native = page.navigation as? ChromiumPageNavigation,
                   tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return }
@@ -1094,7 +1094,7 @@ class BrowserManager: ObservableObject {
 
     /// Utility/settings windows must not borrow a stale active product identity.
     private func openNativeExtensionControls() {
-        guard let window = windowRegistry?.activeWindow, let key = NSApp.keyWindow,
+        guard let window = windowRegistry?.activeWindow, let key = CommandWindow.key,
               window.window === key else { return }
         tabs.openExtensionControls(in: window) { [weak window] result in
             if case .failure(let error) = result {
