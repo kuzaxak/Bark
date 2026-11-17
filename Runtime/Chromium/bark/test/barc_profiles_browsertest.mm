@@ -1759,6 +1759,14 @@ class BarcLiveFetchBrowserTest : public BarcProfilesBrowserTest {
       cookies_.push_back(found == request.headers.end() ? "" : found->second);
     }
     if (mode_ == 3) return std::make_unique<net::test_server::HungResponse>();
+    if (mode_ == 4) {
+      // Declares more than the limit and ends early, as a connection that
+      // closes mid-body does.
+      return std::make_unique<net::test_server::RawHttpResponse>(
+          "HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\n"
+          "Content-Length: 4194305\r\n",
+          "partial");
+    }
     auto response = std::make_unique<net::test_server::BasicHttpResponse>();
     response->set_code(mode_ == 1 ? net::HTTP_FOUND : net::HTTP_OK);
     response->set_content_type("application/octet-stream");
@@ -1802,6 +1810,10 @@ IN_PROC_BROWSER_TEST_F(BarcLiveFetchBrowserTest, RedirectStatusNeverForwardsAndB
   LiveReply large; large.Start(kWork); ASSERT_TRUE(large.Wait());
   EXPECT_EQ(BARC_LIVE_TOO_LARGE, large.result); EXPECT_TRUE(large.body.empty());
   EXPECT_EQ(1, redirect.calls);
+  // The size the response declares decides, also when its body ends early.
+  mode_ = 4;
+  LiveReply cut; cut.Start(kWork); ASSERT_TRUE(cut.Wait());
+  EXPECT_EQ(BARC_LIVE_TOO_LARGE, cut.result); EXPECT_TRUE(cut.body.empty());
 }
 
 IN_PROC_BROWSER_TEST_F(BarcLiveFetchBrowserTest, CancelLimitsAndPrivateIdentityRefusal) {

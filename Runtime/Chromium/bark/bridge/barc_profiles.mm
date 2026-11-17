@@ -641,6 +641,8 @@ extern "C" int barc_profile_delete_cancel_ack(
 }
 
 namespace {
+constexpr size_t kLiveBodyLimit = 4 * 1024 * 1024;
+
 class LiveRequest;
 using LiveRequests = std::map<uint64_t, std::shared_ptr<LiveRequest>>;
 LiveRequests& PendingLiveRequests() {
@@ -786,10 +788,15 @@ class LiveRequest : public ProfileObserver, public ProfileManagerObserver,
           const auto* response = request->loader_->ResponseInfo();
           const int status = response && response->headers ? response->headers->response_code() : 0;
           const int error = request->loader_->NetError();
-          request->Finish(error == net::ERR_INSUFFICIENT_RESOURCES ? BARC_LIVE_TOO_LARGE :
+          // The loader reports the connection's error when it ends before the
+          // body passes the limit, whatever size the response declared.
+          const bool too_large = error == net::ERR_INSUFFICIENT_RESOURCES ||
+              (response &&
+               response->content_length > static_cast<int64_t>(kLiveBodyLimit));
+          request->Finish(too_large ? BARC_LIVE_TOO_LARGE :
               (error == net::OK && body && status ? BARC_LIVE_OK : BARC_LIVE_FAILED),
-              status, body ? std::move(*body) : std::string());
-        }, weak_from_this()), 4 * 1024 * 1024);
+              status, too_large || !body ? std::string() : std::move(*body));
+        }, weak_from_this()), kLiveBodyLimit);
   }
   const uint64_t token_;
   const std::string uuid_;
