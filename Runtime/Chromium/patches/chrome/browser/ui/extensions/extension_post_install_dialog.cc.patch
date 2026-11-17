@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/extensions/extension_post_install_dialog.cc b/chrome/browser/ui/extensions/extension_post_install_dialog.cc
-index bc61086dd2..8cf5a53a5e 100644
+index bc61086dd2..a31d45744c 100644
 --- a/chrome/browser/ui/extensions/extension_post_install_dialog.cc
 +++ b/chrome/browser/ui/extensions/extension_post_install_dialog.cc
 @@ -15,6 +15,12 @@
@@ -88,7 +88,7 @@ index bc61086dd2..8cf5a53a5e 100644
  #if !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
    // Add a sync or sign in promo in the footer if it should be shown.
    extensions::ExtensionRegistry* registry =
-@@ -183,7 +212,53 @@ void ShowExtensionPostInstallDialog(
+@@ -183,7 +212,58 @@ void ShowExtensionPostInstallDialog(
    }
  #endif  // !BUILDFLAG(IS_CHROMEOS) && !BUILDFLAG(IS_ANDROID)
  
@@ -116,6 +116,11 @@ index bc61086dd2..8cf5a53a5e 100644
 +              if (!CanPresentForBrowserOwner(owner, profile.get(),
 +                                             contents.get()))
 +                return;
++              auto* toolbar = owner && owner->get()
++                                  ? ToolbarButtonProvider::From(owner->get())
++                                  : nullptr;
++              if (owner && (!toolbar || !toolbar->GetExtensionsContainerViews()))
++                return;
 +#endif
 +              std::move(callback).Run(contents);
 +            },
@@ -142,7 +147,7 @@ index bc61086dd2..8cf5a53a5e 100644
    ShowDialog(native_window, weak_delegate->model()->extension_id(),
               std::move(dialog_model));
  }
-@@ -196,34 +271,52 @@ void TriggerPostInstallDialog(
+@@ -196,34 +276,52 @@ void TriggerPostInstallDialog(
      const SkBitmap& icon,
      base::OnceCallback<content::WebContents*()> get_web_contents_callback,
      base::OnceCallback<void(base::WeakPtr<content::WebContents>)>
