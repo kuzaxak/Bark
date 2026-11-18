@@ -38,6 +38,73 @@ def prepare(root, _origin, _app, work_id):
         (tabs / f"{name}.json").write_text(json.dumps(value) + "\n")
 
 
+def focus_snapshot(access, selected):
+    focus = access.attribute(access.application, "AXFocusedUIElement")
+    window = access.attribute(access.application, "AXFocusedWindow")
+    return {"role": access.attribute(focus, "AXRole"), "labels": access.names(focus),
+            "identifier": access.attribute(focus, "AXIdentifier"),
+            "window": access.names(window), "window_role": access.attribute(window, "AXRole"),
+            "window_subrole": access.attribute(window, "AXSubrole"),
+            "window_identifier": access.attribute(window, "AXIdentifier"),
+            "selected_spaces": [space for space in ("Office", "Home") if selected(space)]}
+
+
+def select_named_page(screen, process, events, output, access, selected, space, profile, *,
+                      keyboard=False, query="shared", title="Shared Inbox"):
+    action = f"Switch to {space} ({profile} profile)" if profile else "Switch to Tab"
+    screen.key("t", screen.command)
+    focused = lambda: access.attribute(access.application, "AXFocusedUIElement")
+    wait_for("Missing command palette text field",
+             lambda: access.attribute(focused(), "AXRole") == "AXTextField", process)
+    for key in query:
+        screen.key(key)
+
+    def row():
+        screen.guard()
+        field = focused()
+        if access.attribute(field, "AXRole") != "AXTextField":
+            return None
+        x, y = access.center(field)
+        limit = screen.windows()[0]["kCGWindowBounds"]
+        # Hit-test the app's palette overlay. Its rows aren't in the
+        # tab window's ordinary accessibility children.
+        for offset in range(35, 360, 12):
+            if y + offset >= limit["Y"] + limit["Height"]:
+                break
+            status, hit = access.ax.AXUIElementCopyElementAtPosition(access.application, x, y + offset, None)
+            if not status and any(action in text and title.casefold() in text.casefold()
+                                  for text in access.names(hit)):
+                return hit
+        return None
+
+    hit = wait_for(f"Missing named palette destination for {space}", row, process)
+    (output / f"palette-{space}.json").write_text(json.dumps(access.names(hit), indent=2) + "\n")
+    screen.screenshot(output / f"palette-{space}.png")
+    since = len(events)
+    focus = {"before": focus_snapshot(access, selected)}
+    if keyboard:
+        screen.keys["Down"] = 125
+        siblings = access.attribute(access.attribute(hit, "AXParent"), "AXChildren") or ()
+        for sibling in siblings:
+            if access.names(sibling) == access.names(hit):
+                screen.key("Down")
+                break
+            if any("Switch to " in label for label in access.names(sibling)):
+                screen.key("Down")
+        else:
+            raise RuntimeError("The named result was not in the keyboard palette rows")
+        screen.key("Return")
+    else:
+        x, y = access.center(hit)
+        bounds = screen.windows()[0]["kCGWindowBounds"]
+        screen.click((x - bounds["X"], y - bounds["Y"]))
+    focus["immediate"] = focus_snapshot(access, selected)
+    wait_for(f"The palette did not select {space}", lambda: selected(space), process)
+    focus["selected"] = focus_snapshot(access, selected)
+    (output / f"palette-focus-{space}.json").write_text(json.dumps(focus, indent=2) + "\n")
+    return since
+
+
 def exercise(screen, process, events, output):
     access = controls["Accessibility"](screen, process)
     screen.keys.update({"t": 17, "s": 1, "h": 4, "a": 0, "r": 15, "e": 14, "d": 2, "w": 13, "p": 35})
@@ -89,38 +156,7 @@ def exercise(screen, process, events, output):
         return typed
 
     def palette(space, profile):
-        screen.key("t", screen.command)
-        focused = lambda: access.attribute(access.application, "AXFocusedUIElement")
-        wait_for("Missing command palette text field",
-                 lambda: access.attribute(focused(), "AXRole") == "AXTextField", process)
-        for key in "shared":
-            screen.key(key)
-
-        def row():
-            screen.guard()
-            field = focused()
-            if access.attribute(field, "AXRole") != "AXTextField":
-                return None
-            x, y = access.center(field)
-            limit = screen.windows()[0]["kCGWindowBounds"]
-            # Hit-test the app's palette overlay. Its rows aren't in the
-            # tab window's ordinary accessibility children.
-            for offset in range(35, 360, 12):
-                if y + offset >= limit["Y"] + limit["Height"]:
-                    break
-                status, hit = access.ax.AXUIElementCopyElementAtPosition(access.application, x, y + offset, None)
-                if not status and any(f"Switch to {space} ({profile} profile)" in text and "Shared Inbox" in text
-                                      for text in access.names(hit)):
-                    return hit
-            return None
-
-        hit = wait_for(f"Missing named palette destination for {space}", row, process)
-        record(f"palette-{space}", access.names(hit))
-        screen.screenshot(output / f"palette-{space}.png")
-        since = len(events)
-        click(hit)
-        wait_for(f"The palette did not select {space}", lambda: selected(space), process)
-        return since
+        return select_named_page(screen, process, events, output, access, selected, space, profile)
 
     def deny_button():
         return next((node for label in ("Never allow", "Block")

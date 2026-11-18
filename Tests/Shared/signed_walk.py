@@ -180,7 +180,7 @@ def verify_official_sdk(contributor, architecture, app=None):
 
 
 def run_walk(description, name, serve, exercise, preferences=(), *,
-             source_host="127.0.0.1", prepare_fixture=None, official_qualification=False):
+             source_host="127.0.0.1", prepare_fixture=None, official_qualification=False, relaunch=None):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--app", type=Path, required=True, help="Signed Bark.app for this Mac’s native architecture")
     parser.add_argument("--output", type=Path, required=True, help="New directory for test evidence")
@@ -233,26 +233,35 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
             try:
                 for key, kind, value in preferences:
                     subprocess.run(["defaults", "write", domain, key, kind, value], check=True)
-                with screen_lock(SCREEN_LOCK, wait=30) as owns_screen, (output / "app.log").open("wb") as log:
-                    start_pointer = console.pointer()
+                phases = [(exercise, "app.log")]
+                if relaunch is not None:
+                    phases.append((relaunch, "relaunch.log"))
+                with screen_lock(SCREEN_LOCK, wait=30) as owns_screen:
+                    pointer = console.pointer()
                     time.sleep(0.4)
-                    require_idle_console(console, owns_screen, start_pointer, min_idle=10)
-                    launch_started_ns = time.monotonic_ns()
-                    proc = subprocess.Popen([str(binary), f"--barc-app-data-dir={root}",
-                                             f"--barc-app-profile={profile}"],
-                                            stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
-                    try:
-                        screen = Screen(console, owns_screen, proc.pid, start_pointer, launch_started_ns)
-                        exercise(screen, proc, server.events, output)
-                        if proc.wait(timeout=30) != 0:
-                            raise RuntimeError("The signed candidate did not quit cleanly")
-                        wait_for("Candidate processes were left behind", lambda: not processes(app))
-                    finally:
-                        if proc.poll() is None or processes(app):
-                            contributor["stop"](proc)
-                if crash_reports() - crashes or "FATAL:" in (output / "app.log").read_text(errors="replace"):
-                    raise RuntimeError("The candidate wrote a fatal log or a crash report")
-                print("Quit confirmation exited cleanly and left no candidate processes", flush=True)
+                    for phase, log_name in phases:
+                        path = output / log_name
+                        require_idle_console(console, owns_screen, pointer, min_idle=10)
+                        with path.open("wb") as log:
+                            launch_started_ns = time.monotonic_ns()
+                            proc = subprocess.Popen([str(binary), f"--barc-app-data-dir={root}",
+                                                     f"--barc-app-profile={profile}"],
+                                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                            try:
+                                screen = Screen(console, owns_screen, proc.pid, pointer, launch_started_ns)
+                                phase(screen, proc, server.events, output)
+                                pointer = screen.point
+                                if proc.wait(timeout=30) != 0:
+                                    raise RuntimeError("The signed candidate did not quit cleanly")
+                                wait_for("Candidate processes were left behind", lambda: not processes(app))
+                            finally:
+                                if proc.poll() is None or processes(app):
+                                    contributor["stop"](proc)
+                        if crash_reports() - crashes or "FATAL:" in path.read_text(errors="replace"):
+                            raise RuntimeError("The candidate wrote a fatal log or a crash report")
+                        print("Quit confirmation exited cleanly and left no candidate processes", flush=True)
+                        if phase is exercise and relaunch is not None:
+                            time.sleep(max(0, 10 - console.idle()))
             finally:
                 (output / "events.json").write_text(json.dumps(server.events, indent=2) + "\n")
                 subprocess.run(["defaults", "delete", domain], capture_output=True)

@@ -2,25 +2,32 @@
 <meta charset="utf-8">
 <title>Shared Inbox</title>
 <h1>Shared Inbox</h1>
-<input id="draft" aria-label="Draft">
+<input id="draft" aria-label="Draft" autofocus>
+<a id="follow" href="/target">Open thread</a>
 <button id="request">Request location</button>
 <script>
 const id = crypto.randomUUID();
 const box = document.querySelector('#draft');
 const request = document.querySelector('#request');
+const storageKey = location.pathname + '/draft';
+if (location.pathname === '/target') {
+  document.title = document.querySelector('h1').textContent = 'Inbox thread';
+  document.querySelector('#follow').hidden = true;
+}
 const center = el => { const r = el.getBoundingClientRect(); return [r.x + r.width / 2, r.y + r.height / 2] };
 function report(event, other = {}) {
   fetch('/events', {method: 'POST', keepalive: true, body: JSON.stringify({
     id, event, url: location.href, visible: document.visibilityState, viewport: innerWidth,
-    value: box.value, stored: localStorage.getItem('draft'), focused: document.activeElement.id,
+    hasFocus: document.hasFocus(), value: box.value, stored: localStorage.getItem(storageKey), focused: document.activeElement.id,
     draftPoint: center(box), requestPoint: center(request), ...other
   })});
 }
-box.value = localStorage.getItem('draft') || '';
+box.value = localStorage.getItem(storageKey) || '';
 box.addEventListener('pointerdown', e => report('pointer', {trusted: e.isTrusted}));
-box.addEventListener('keydown', e => report('key', {trusted: e.isTrusted, key: e.key}));
+document.addEventListener('keydown', e => report('key', {trusted: e.isTrusted, key: e.key}));
+document.querySelector('#follow').addEventListener('click', e => report('link', {trusted: e.isTrusted, shift: e.shiftKey}));
 box.addEventListener('input', e => {
-  localStorage.setItem('draft', box.value);
+  localStorage.setItem(storageKey, box.value);
   report('input', {trusted: e.isTrusted});
 });
 request.onclick = e => {
