@@ -67,7 +67,6 @@ import NookWeb
     static let work = UUID(), personal = UUID()
     static var windows: [Int32: BarcDiscoveryWindow] = [:]
     static var tabs: [BarcDiscoveryTab] = []
-    static var shells: [Int32: UnsafeMutableRawPointer] = [:]
     static var observers: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var nextToken: UInt64 = 10
     static var callback: BarcDiscoveryCallback?
@@ -102,7 +101,7 @@ import NookWeb
     static var onSelectWindow: ((Int32) -> Int32)?
     static var onSpaceSwitch: ((BarcSpaceSwitchRequest, BarcSpaceSwitchCallback?, UnsafeMutableRawPointer?) -> Int32)?
     static var onOpen: ((Int32, barc_profile_window_callback?, UnsafeMutableRawPointer?) -> Void)?
-    static var onAdmit: ((Int32) -> Void)?
+    static var onPageView: ((Int32) -> Void)?
     static var savedRequests: [(UUID, barc_profile_window_callback?, UnsafeMutableRawPointer?)] = []
     static var privateCallback: barc_profile_window_callback?
     static var privateContext: UnsafeMutableRawPointer?
@@ -156,8 +155,7 @@ import NookWeb
         revision += 1
         callback?(context, 1, revision)
     }
-    /// Clients whose window is Bark's own, and their tabs' page views.
-    static var hostWindows: Set<Int32> = []
+    /// Page views retained by the simulated native engine.
     static var pageViews: [Int32: NSView] = [:]
     /// Tabs whose page has no view to place.
     static var viewless: Set<Int32> = []
@@ -168,9 +166,7 @@ import NookWeb
     static var roots: [Int32: UnsafeMutableRawPointer] = [:]
     /// Makes a Peek for (source client, source tab, request): its client and tab.
     static var onCreatePeek: ((Int32, Int32, Int32) -> (Int32, Int32))?
-    static var splitLayouts: [Int32: BarcSplitLayout] = [:]
-    static var splitGeneration: UInt64 = 0
-    static var allowSplit = true
+    static var servesPageViews = true
     static var closesShowing: [(tab: Int32, successor: Int32)] = []
     static var bridge: BarcBridge {
         var bridge = trappingBridge
@@ -199,13 +195,6 @@ import NookWeb
         bridge.discovery_unobserve = { _ in MainActor.assumeIsolated {
             Native.callback = nil; Native.context = nil
         } }
-        bridge.window_admit_discovered = { window, view in MainActor.assumeIsolated {
-            guard Native.shells[window] == view else { return 0 }
-            Native.admitted.append(window)
-            Native.windows[window]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
-            Native.onAdmit?(window)
-            return 1 // Preserve the caller's inactive/active intent.
-        } }
         bridge.window_private_session_uuid = { window, output, capacity in MainActor.assumeIsolated {
             Native.copyPrivateID(window, output, capacity)
         } }
@@ -213,59 +202,11 @@ import NookWeb
             Native.onCompleteStartup?(window)
         } }
         bridge.window_show = { window in MainActor.assumeIsolated {
-            precondition((Native.shells[window] != nil || Native.hostWindows.contains(window)) && Native.windows[window]?.selected_client == window)
+            precondition((Native.windows[window].flatMap { Native.roots[Int32($0.physical_group)] } != nil) && Native.windows[window]?.selected_client == window)
             Native.shown.append(window); return Native.onShow?(window) ?? 1
         } }
         bridge.tab_copy_launch_space = { _, _, _, _ in 0 }
         bridge.tab_application_pending = { _, _ in 0 }
-        bridge.window_set_split = { owner, input in MainActor.assumeIsolated {
-            guard Native.allowSplit, !Native.hostWindows.contains(owner), let input, input.pointee.size >= MemoryLayout<BarcSplitLayout>.size,
-                  Native.windows[owner]?.selected_client == owner else { return 0 }
-            var layout = input.pointee
-            let members = withUnsafeBytes(of: layout.tabs) { Array($0.bindMemory(to: Int32.self).prefix(Int(layout.count))) }
-            guard let group = Native.windows[owner]?.physical_group,
-                  members.allSatisfy({ id in Native.tabs.contains { tab in
-                      tab.tab == id && Native.windows[tab.window]?.physical_group == group
-                  } }) else { return 0 }
-            let owners = Set(members.compactMap { id in Native.tabs.first { $0.tab == id }?.window })
-            // Bridge v7: every split is the app-positioned presentation of independent tabs.
-            guard owners.count == 1 || owners.allSatisfy({ Native.windows[$0]?.profile_kind == BARC_DISCOVERY_REGULAR.rawValue }) else { return 0 }
-            Native.splitGeneration += 1
-            layout.kind = 1; layout.generation = Native.splitGeneration; layout.collection = 0
-            for key in Array(Native.splitLayouts.keys) where Native.windows[key]?.physical_group == group {
-                Native.splitLayouts[key] = nil
-            }
-            Native.splitLayouts[owner] = layout
-            Native.windows[owner]?.active_tab = layout.active_tab
-            return 1
-        } }
-        bridge.window_get_split = { owner, member, output in MainActor.assumeIsolated {
-            guard !Native.hostWindows.contains(owner) else { return 0 }
-            let stored = Native.splitLayouts[owner] ?? Native.splitLayouts.first { key, value in
-                value.kind == 1 && Native.windows[key]?.physical_group == Native.windows[owner]?.physical_group
-            }?.value
-            guard let output, output.pointee.size >= MemoryLayout<BarcSplitLayout>.size, var layout = stored else { return 0 }
-            let members = withUnsafeBytes(of: layout.tabs) { Array($0.bindMemory(to: Int32.self).prefix(Int(layout.count))) }
-            let requested = member == 0 ? Native.windows[owner]?.active_tab ?? 0 : member
-            guard members.contains(requested) else { return 0 }
-            let activeOwner = layout.kind == 1 ? Native.windows[owner]?.selected_client ?? owner : owner
-            layout.active_tab = members.contains(Native.windows[activeOwner]?.active_tab ?? 0) ? Native.windows[activeOwner]!.active_tab : 0
-            layout.size = output.pointee.size
-            output.pointee = layout
-            return 1
-        } }
-        bridge.window_clear_split = { owner, _, expected in MainActor.assumeIsolated {
-            guard let key = Native.splitLayouts.keys.first(where: { key in
-                key == owner || Native.splitLayouts[key]?.kind == 1 &&
-                    Native.windows[key]?.physical_group == Native.windows[owner]?.physical_group
-            }), let actual = Native.splitLayouts[key], let expected,
-                  expected.pointee.size >= MemoryLayout<BarcSplitLayout>.size,
-                  actual.kind == expected.pointee.kind,
-                  actual.generation == expected.pointee.generation,
-                  actual.collection == expected.pointee.collection else { return 0 }
-            Native.splitLayouts[key] = nil
-            return 1
-        } }
         bridge.profile_open_in_native_window = { owner, _, _, callback, context in MainActor.assumeIsolated {
             guard let open = Native.onOpen else { preconditionFailure("Discovery created a browser") }
             open(owner, callback, context)
@@ -308,16 +249,9 @@ import NookWeb
             guard Native.restoring, let close = Native.onCloseWindow else { preconditionFailure("Discovery closed native contents") }
             return close(window)
         } }
-        bridge.window_attach_native_shell = { window, view in MainActor.assumeIsolated {
-            Native.attachments += 1; Native.shells[window] = view
-            return Native.onAttach?(window) ?? 1
-        } }
         bridge.window_native_shell_is_owned = { window, view in MainActor.assumeIsolated {
-            Native.windows[window] != nil && Native.shells[window] == view ? 1 : 0
-        } }
-        bridge.window_detach_native_shell_if_owned = { window, view in MainActor.assumeIsolated {
-            guard view != nil, Native.windows[window] != nil, Native.shells[window] == view else { return 0 }
-            Native.shells[window] = nil; return 1
+            guard let row = Native.windows[window] else { return 0 }
+            return Native.roots[Int32(row.physical_group)] == view ? 1 : 0
         } }
         bridge.tab_transfer_with_admission = { source, tab, destination, admission, context in MainActor.assumeIsolated {
             precondition(Native.transfersEnabled)
@@ -349,7 +283,7 @@ import NookWeb
                     Native.tabs[index].peek_source_tab = 0
                 }
                 if !Native.tabs.contains(where: { $0.window == source }) {
-                    Native.windows[source] = nil; Native.shells[source] = nil
+                    Native.windows[source] = nil
                 }
                 return Native.tabs.contains { $0.window == destination && $0.tab == tab } ? 1 : 0
             }
@@ -365,23 +299,35 @@ import NookWeb
         bridge.window_set_page_hidden = { _, _ in 1 }
         bridge.window_new_peer_in_native_window = { _, _ in 0 }
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
-        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
+        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.windows[window] != nil ? UInt64(window) : 0 } }
         bridge.window_host_unobserve = { _ in }
         bridge.window_set_root_view = { window, view in MainActor.assumeIsolated {
-            guard Native.hostWindows.contains(window), let view else { return 0 }
-            if let root = Native.roots[window] { return root == view ? 1 : 0 }
-            Native.roots[window] = view; return 1
+            guard let row = Native.windows[window], let view, Native.onAttach?(window) != 0 else { return 0 }
+            let group = Int32(row.physical_group)
+            if let root = Native.roots[group] { return root == view ? 1 : 0 }
+            Native.attachments += 1
+            Native.roots[group] = view
+            if row.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
+                Native.admitted.append(window)
+                Native.windows[window]?.flags &= ~BARC_DISCOVERY_AWAITING_ADMISSION.rawValue
+            }
+            return 1
         } }
         bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated {
-            Native.hostWindows.contains(window) && Native.windows[window] != nil ? 1 : 0
+            Native.windows[window] != nil ? 1 : 0
         } }
-        bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
-            guard Native.hostWindows.contains(window), Native.tabs.contains(where: { $0.window == window && $0.tab == tab }),
-                  !Native.viewless.contains(tab) else { return nil }
-            let view = Native.pageViews[tab] ?? NSView()
-            Native.pageViews[tab] = view
-            return Unmanaged.passUnretained(view).toOpaque()
-        } }
+        bridge.tab_native_view = { window, tab in
+            let address: UInt = MainActor.assumeIsolated {
+                guard Native.windows[window] != nil, Native.tabs.contains(where: { $0.window == window && $0.tab == tab }),
+                      !Native.viewless.contains(tab), Native.servesPageViews else { return 0 }
+                Native.onPageView?(window)
+                guard Native.windows[window] != nil else { return 0 }
+                let view = Native.pageViews[tab] ?? NSView()
+                Native.pageViews[tab] = view
+                return UInt(bitPattern: Unmanaged.passUnretained(view).toOpaque())
+            }
+            return UnsafeMutableRawPointer(bitPattern: address)
+        }
         bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
             if Native.rejectNextObservation {
                 Native.rejectNextObservation = false
@@ -404,8 +350,7 @@ import NookWeb
         bridge.tab_reload = { _, _ in preconditionFailure("Existing page was reloaded") }
         bridge.tab_stop = { _, _ in preconditionFailure("Existing page was stopped") }
         bridge.tab_select = { window, tab in MainActor.assumeIsolated {
-            precondition((Native.restoring || Native.hostWindows.contains(window)) &&
-                         Native.tabs.contains { $0.window == window && $0.tab == tab })
+            precondition(Native.tabs.contains { $0.window == window && $0.tab == tab })
             if let select = Native.onSelectWindow, select(window) != 1 { return 0 }
             Native.windows[window]?.active_tab = tab; return 1
         } }
@@ -463,9 +408,11 @@ import NookWeb
             value.0?(value.1, token, 7, window, value.3, nil, nil, 0, 128)
             observers[token] = nil
         }
-        windows[window] = nil
+        let group = windows.removeValue(forKey: window)?.physical_group
+        if let group, !windows.values.contains(where: { $0.physical_group == group }) {
+            roots[Int32(group)] = nil
+        }
         tabs.removeAll { $0.window == window }
-        shells[window] = nil
     }
 }
 
@@ -520,8 +467,8 @@ private struct NoTokens: KagiTokenStore {
         let initialTree = tabs.tree, initialDevice = tabs.device, initialAttachments = Native.attachments
         let membershipsBeforeUnchanged = Native.membershipChecks
         Native.publish()
-        // The catalog and the split reader each check the selected page once.
-        precondition(Native.membershipChecks == membershipsBeforeUnchanged + 2,
+        // Only the selected page needs a membership check.
+        precondition(Native.membershipChecks == membershipsBeforeUnchanged + 1,
                      "Stable background tabs must not each validate native membership")
         precondition(tabs.tree == initialTree && tabs.device == initialDevice && Native.attachments == initialAttachments)
 
@@ -844,7 +791,7 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[632]?.flags |= UInt32(BARC_DISCOVERY_EMPTY_STRIP.rawValue)
     let route = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
     precondition(route?.window == 632 && route?.profile == Native.personal && route?.space == Native.personal)
-    precondition(Native.windows[631]?.selected_client == 632 && Native.shells[632] != nil,
+    precondition(Native.windows[631]?.selected_client == 632 && Native.roots[631] != nil,
                  "The empty space's client is selected with the sidebar")
     Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
     Native.end(632); Native.end(631); tabs.saveNow()
@@ -857,7 +804,6 @@ private struct NoTokens: KagiTokenStore {
     defer {
         Native.onSpaceSwitch = nil; Native.onOpen = nil; Native.onSelectWindow = nil; Native.restoring = false
         Native.failedPrivateCloses.removeAll { $0.0 == 643 }
-        Native.splitLayouts[640] = nil
         for owner in Array(Native.windows.keys) { Native.end(owner) }
         defaults.removePersistentDomain(forName: suite)
         try? FileManager.default.removeItem(at: root)
@@ -1365,7 +1311,7 @@ private struct NoTokens: KagiTokenStore {
         if delayed {
             precondition(delivery.isPending && outcomes.isEmpty && Native.shown.count == showsBefore)
             precondition(splitRegistry.windows[state.id] === state && state.split == split)
-            if mode == "refused" { Native.allowSplit = false }
+            if mode == "refused" { Native.servesPageViews = false }
             if mode == "closed" { splitRegistry.unregister(state.id) }
             if mode == "new-selection" { splitTabs.select(splitOther, in: state) }
             delivery.resolve()
@@ -1385,7 +1331,7 @@ private struct NoTokens: KagiTokenStore {
         if succeeds { precondition(split.itemIDs.allSatisfy { splitTabs.session(for: $0)?.navigation != nil }) }
         if mode == "new-selection" { precondition(state.selectedItemID == splitOther) }
         if mode == "closed" { precondition(Native.failedPrivateCloses.count == closedPagesBefore + 1) }
-        Native.allowSplit = true
+        Native.servesPageViews = true
         Native.end(native)
         splitAdmission.apply(Native.bridge.readSnapshot()!)
     }
@@ -1460,7 +1406,7 @@ private struct NoTokens: KagiTokenStore {
         var pendingOpen: (barc_profile_window_callback?, UnsafeMutableRawPointer?)?
         if mode == "personal" || mode == "reentrant" || mode == "refused" {
             Native.windows[1121] = Native.window(1121, group: 1120, profile: Native.personal,
-                flags: mode == "reentrant" ? 4 | UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue) : 4, active: 11210)
+                flags: 4, active: 11210)
             Native.windows[1121]?.selected_client = 1120
             Native.tabs.append(Native.tab(11210, window: 1121))
             let personalProfile = initialTabs.profile(forSpace: Native.personal)!
@@ -1476,9 +1422,9 @@ private struct NoTokens: KagiTokenStore {
                 return 1
             }
             if mode == "reentrant" {
-                Native.onAdmit = { owner in
-                    precondition(owner == 1121)
-                    Native.onAdmit = nil
+                Native.onPageView = { owner in
+                    guard owner == 1121 else { return }
+                    Native.onPageView = nil
                     delivery.resolve() // Release the cancelled original pane.
                     delivery.delayedItem = splitOther
                     initialTabs.select(splitOther, in: state)
@@ -1494,11 +1440,11 @@ private struct NoTokens: KagiTokenStore {
                 precondition(state.spaceID == Native.personal && state.selectedItemID == personalItem)
             }
         } else if mode == "split-refused" {
-            Native.allowSplit = false
+            Native.servesPageViews = false
             precondition(initialTabs.presentNativeSplit(SplitRecord([splitOther, first])!,
                 activeItemID: first, in: state))
             precondition(admitted.count == 1 && admitted[0] == nil)
-            Native.allowSplit = true
+            Native.servesPageViews = true
         } else {
             Native.onOpen = { _, callback, pointer in
                 if mode == "creation-refused" { callback?(BARC_PROFILE_FAILED, 0, pointer) }
@@ -1521,7 +1467,7 @@ private struct NoTokens: KagiTokenStore {
         coordinator.apply(Native.bridge.readSnapshot()!)
         precondition(admitted.count == 1)
         Native.onSelectWindow = nil
-        Native.onAdmit = nil
+        Native.onPageView = nil
         Native.end(1120); Native.end(1121)
         coordinator.apply(Native.bridge.readSnapshot()!)
     }
@@ -1920,14 +1866,20 @@ private struct NoTokens: KagiTokenStore {
 /// A mini window that is a Bark window: the controller gives it a compact root with the header over
 /// the page, and makes none of the old window's shell calls. A second tab's controller cannot take
 /// the window; ending takes the header out.
+@MainActor private func miniWindowSelects(_ window: Int32, _ tab: Int32) -> Bool {
+    guard let row = Native.windows[window] else { return false }
+    return row.selected_client == window && row.active_tab == tab &&
+        row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 &&
+        row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0
+}
+
 @MainActor private func checkMiniInBarkWindow() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcBarkMini-\(UUID())")
     let suite = "BarcBarkMini-\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll(); Native.roots = [:]
-    Native.hostWindows = [2101]
-    defer { Native.hostWindows = []; Native.pageViews = [:]; Native.roots = [:] }
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.observers.removeAll(); Native.roots = [:]
+    defer { Native.pageViews = [:]; Native.roots = [:] }
     var tree = TabTree()
     tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
     var device = DeviceState(); device.firstLaunchCompleted = true
@@ -1944,7 +1896,7 @@ private struct NoTokens: KagiTokenStore {
     Native.miniShellCalls = []; Native.miniCloses = []
     var miniBridge = Native.bridge
     miniBridge.window_set_root_view = { window, pointer in MainActor.assumeIsolated {
-        guard Native.hostWindows.contains(window), let pointer else { return 0 }
+        guard window == 2101, let pointer else { return 0 }
         if let previous = Native.roots[window] { return previous == pointer ? 1 : 0 }
         Native.roots[window] = pointer
         let root = Unmanaged<ChromiumCompactRoot>.fromOpaque(pointer).takeUnretainedValue()
@@ -1958,12 +1910,11 @@ private struct NoTokens: KagiTokenStore {
         popup.contentView = nil
         return 1
     } }
-    miniBridge.window_native_shell_is_owned = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("owned"); return 0 } }
     miniBridge.window_attach_native_shell = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("attach"); return 0 } }
     miniBridge.window_detach_native_shell_if_owned = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("detach"); return 0 } }
     miniBridge.window_admit_discovered = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("admit"); return 0 } }
     miniBridge.tab_close = { _, tab in MainActor.assumeIsolated { Native.miniCloses.append(tab); return 1 } }
-    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
+    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: miniWindowSelects)
     api.installCommandOMonitor = { _, _ in NSObject() }
     api.removeCommandOMonitor = { _ in }
     func controller(_ tab: Int32, ended: @escaping () -> Void = {}) -> ChromiumMiniWindowController {
@@ -1988,6 +1939,11 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[2101]?.active_tab = 21001
     precondition(mini.isPresented && Native.pageViews[21001]?.isDescendant(of: compact!) == true && Native.pageViews[21002]?.superview == nil,
                  "refusing a second root preserves the admitted page")
+    let mountedRoot = Native.roots.removeValue(forKey: 2101)
+    precondition(!mini.isPresented, "a retained local header does not prove native root ownership")
+    mini.close()
+    precondition(Native.miniCloses.isEmpty)
+    Native.roots[2101] = mountedRoot
     mini.close()
     precondition(Native.miniCloses == [21001], "Close closes the page")
     for (token, observer) in Native.observers where observer.3 == 21001 {
@@ -1995,6 +1951,16 @@ private struct NoTokens: KagiTokenStore {
     }
     RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     precondition(ended == 1 && !mini.isPresented && compact!.subviews.count == headerAndPage - 1, "ending takes the header out")
+    Native.end(2101)
+    Native.viewless.insert(21003)
+    defer { Native.viewless.remove(21003) }
+    Native.roots[2101] = nil
+    Native.windows[2101] = Native.window(2101, group: 2101, profile: Native.work, kind: 1,
+                                         flags: 4 | UInt32(BARC_DISCOVERY_COMPACT_MINI.rawValue), active: 21003)
+    Native.tabs.append(Native.tab(21003, window: 2101))
+    let unsupported = controller(21003)
+    precondition(!unsupported.present(canPresent: { true }) && unsupported.presentationRefused)
+    precondition(Native.roots[2101] == nil && Native.miniShellCalls.isEmpty && Native.miniCloses == [21001])
     Native.end(2101)
     tabs.saveNow()
 }
@@ -2019,9 +1985,8 @@ private struct NoTokens: KagiTokenStore {
     let suite = "BarcMiniDrain-\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll(); Native.roots = [:]
-    Native.hostWindows = [2202, 2204, 2205]
-    defer { Native.hostWindows = []; Native.pageViews = [:]; Native.roots = [:] }
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.observers.removeAll(); Native.roots = [:]
+    defer { Native.pageViews = [:]; Native.roots = [:] }
     var tree = TabTree()
     tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
     var device = DeviceState(); device.firstLaunchCompleted = true
@@ -2056,7 +2021,7 @@ private struct NoTokens: KagiTokenStore {
     var onCanUse: ((Int32, Int32) -> Void)?
     var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in
         onCanUse?(window, tab)
-        return Native.windows[window]?.active_tab == tab
+        return miniWindowSelects(window, tab)
     })
     api.installCommandOMonitor = { _, _ in NSObject() }
     api.removeCommandOMonitor = { _ in }
@@ -2148,9 +2113,13 @@ private struct NoTokens: KagiTokenStore {
     let suite = "BarcMini-\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll()
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.observers.removeAll()
+    Native.roots = [:]
     Native.transfersEnabled = true; Native.transferCount = 0; Native.miniCloseRequests = 0
-    defer { Native.transfersEnabled = false; Native.restoring = false }
+    defer {
+        Native.transfersEnabled = false; Native.restoring = false
+        Native.pageViews = [:]; Native.roots = [:]
+    }
     var tree = TabTree()
     tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
     tree.createSpace(id: Native.personal, name: "Personal", icon: "house", accentHex: "#123456", after: Native.work)
@@ -2169,7 +2138,7 @@ private struct NoTokens: KagiTokenStore {
     registry.register(window); tabs.attach(window: window, restoringSavedState: false)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
-    Native.windows[2001] = Native.window(2001, group: 2001, profile: Native.work, kind: 1, active: 20001)
+    Native.windows[2001] = Native.window(2001, group: 2001, profile: Native.work, kind: 1, flags: BARC_DISCOVERY_COMPACT_MINI.rawValue, active: 20001)
     Native.windows[2002] = Native.window(2002, group: 2002, profile: Native.work, active: 20002)
     Native.tabs = [Native.tab(20001, window: 2001), Native.tab(20002, window: 2002)]
     let shell = NSView()
@@ -2187,7 +2156,7 @@ private struct NoTokens: KagiTokenStore {
     miniBridge.tab_close = { _, _ in
         MainActor.assumeIsolated { Native.miniCloseRequests += 1; return 1 }
     }
-    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
+    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: miniWindowSelects)
     let defaultScope = api.eventBelongsToHeader
     api.installCommandOMonitor = { _, handler in monitorInstalls += 1; keyHandler = handler; return NSObject() }
     api.removeCommandOMonitor = { _ in monitorRemovals += 1; keyHandler = nil }
@@ -2225,7 +2194,9 @@ private struct NoTokens: KagiTokenStore {
     eventScopeMatches = true
     precondition(keyHandler?(repeated) == nil && Native.transferCount == 0)
     precondition(controller.share() && shares.count == 1 && shares[0].0 == session.url)
-    precondition(shares[0].1 === Unmanaged<NSView>.fromOpaque(Native.shells[2001]!).takeUnretainedValue())
+    let compact = Unmanaged<ChromiumCompactRoot>.fromOpaque(Native.roots[2001]!).takeUnretainedValue()
+    precondition(compact.holdsHeader(shares[0].1) && compact.shownTab == 20001)
+    precondition(Native.pageViews[20001]?.isDescendant(of: compact) == true)
     let menu = choices.miniDestinations(for: session)
     let liveShared = menu.first(where: { $0.id == sharedSpace })!
     let freshPersonal = menu.first(where: { $0.id == Native.personal })!
@@ -2259,7 +2230,7 @@ private struct NoTokens: KagiTokenStore {
     // Chrome/extension-origin transfer follows the same detached session;
     // discovery must not allocate a replacement adapter or release its owner
     // until destination publication actually succeeds.
-    Native.windows[3001] = Native.window(3001, group: 3001, profile: Native.work, kind: 1, active: 30001)
+    Native.windows[3001] = Native.window(3001, group: 3001, profile: Native.work, kind: 1, flags: BARC_DISCOVERY_COMPACT_MINI.rawValue, active: 30001)
     Native.windows[3002] = Native.window(3002, group: 3002, profile: Native.work, active: 30002)
     Native.tabs.append(Native.tab(30001, window: 3001, opener: 30002))
     Native.tabs.append(Native.tab(30002, window: 3002))
@@ -2300,7 +2271,7 @@ private struct NoTokens: KagiTokenStore {
     // Present it through exact store identity, without inventing a new space.
     let keptSpace = tabs.createSpace(name: "Kept", icon: "person", accentHex: "#123456", after: Native.work)!
     let keptID = tabs.tree.dataStoreID(for: keptSpace)!
-    Native.windows[4001] = Native.window(4001, group: 4001, profile: keptID, kind: 1, active: 40001)
+    Native.windows[4001] = Native.window(4001, group: 4001, profile: keptID, kind: 1, flags: BARC_DISCOVERY_COMPACT_MINI.rawValue, active: 40001)
     Native.tabs.append(Native.tab(40001, window: 4001))
     tabs.deleteSpace(keptSpace, keepingLeftProfile: true)
     let kept = tabs.profile(forStore: keptID)!
@@ -2432,20 +2403,21 @@ private struct NoTokens: KagiTokenStore {
     // monitor is removed even though the native document itself stays alive.
     let retainedHandler = keyHandler!
     let foreignHeader = NSView()
-    Native.shells[4001] = Unmanaged.passUnretained(foreignHeader).toOpaque()
+    let keptRoot = Unmanaged<ChromiumCompactRoot>.fromOpaque(Native.roots[4001]!).takeUnretainedValue()
+    keptRoot.setHeader(foreignHeader)
     let removalsBeforeReplacement = monitorRemovals
     precondition(retainedHandler(commandO) === commandO)
     precondition(keyHandler == nil && monitorRemovals == removalsBeforeReplacement + 1 && !keptController.share())
     keptController.openInSpace()
     precondition(!keptPage.isClosed && Native.miniCloseRequests == 1 && Native.transferCount == 2)
     Native.end(4001)
-    precondition(monitorRemovals == removalsBeforeReplacement + 1)
+    precondition(monitorRemovals == removalsBeforeReplacement + 1 && keptRoot.holdsHeader(foreignHeader))
 
     // Even a retained/injected regular destination cannot cross a private
     // session boundary. Cmd+O still targets that exact private page/session.
     let privateID = UUID()
     Native.privateIDs[5001] = privateID
-    Native.windows[5001] = Native.window(5001, group: 5001, profile: nil, kind: BARC_DISCOVERY_POPUP.rawValue, profileKind: BARC_DISCOVERY_GUEST.rawValue, active: 50001)
+    Native.windows[5001] = Native.window(5001, group: 5001, profile: nil, kind: BARC_DISCOVERY_POPUP.rawValue, profileKind: BARC_DISCOVERY_GUEST.rawValue, flags: BARC_DISCOVERY_COMPACT_MINI.rawValue, active: 50001)
     Native.tabs.append(Native.tab(50001, window: 5001))
     let privateProfile = Profile.createEphemeral(id: privateID, engine: .chromium)
     let privatePage = try ChromiumPageNavigation(profileID: privateID, window: 5001, tab: 50001, bridge: Native.bridge, privateSession: true)
@@ -2496,11 +2468,10 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[7102]?.selected_client = 7101
     Native.tabs = [Native.tab(71010, window: 7101), Native.tab(71020, window: 7102)]
     let workView = NSView(), personalView = NSView()
-    Native.hostWindows = [7101, 7102]
     Native.pageViews = [71010: workView, 71020: personalView]
     var selections: [Int32] = []
     Native.onSelectWindow = { selections.append($0); return 1 }
-    defer { Native.hostWindows = []; Native.pageViews = [:]; Native.onSelectWindow = nil }
+    defer { Native.pageViews = [:]; Native.onSelectWindow = nil }
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     admission.apply(Native.bridge.readSnapshot()!)
@@ -2549,7 +2520,7 @@ private struct NoTokens: KagiTokenStore {
                            in: .tabs(spaceID: Native.personal), after: nil)
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     Native.restoring = true
-    defer { Native.restoring = false; Native.hostWindows = []; Native.pageViews = [:]; Native.viewless = []; Native.onOpen = nil; Native.onSelectWindow = nil }
+    defer { Native.restoring = false; Native.pageViews = [:]; Native.viewless = []; Native.onOpen = nil; Native.onSelectWindow = nil }
     for (index, mode) in ["one-profile", "two-profiles", "no-view"].enumerated() {
         let record = SplitRecord(mode == "two-profiles" ? [first, personalTab] : [first, other], dividers: [0.4])!
         var device = DeviceState(); device.firstLaunchCompleted = true
@@ -2567,7 +2538,6 @@ private struct NoTokens: KagiTokenStore {
         let native = Int32(1301 + 10 * index), joined = native + 1
         Native.windows[native] = Native.window(native, group: UInt64(native), profile: Native.work, flags: 4 | 8, active: native * 10)
         Native.tabs.append(Native.tab(native * 10, window: native, flags: 2))
-        Native.hostWindows = [native, joined]
         Native.viewless = mode == "no-view" ? [9000 + Int32(Native.privateCreatedClients.count)] : []
         Native.onSelectWindow = { owner in
             for key in [native, joined] where Native.windows[key] != nil { Native.windows[key]?.selected_client = owner }
@@ -2627,7 +2597,7 @@ private struct NoTokens: KagiTokenStore {
                       7002: Native.window(7002, group: 7001, profile: Native.personal, active: 70020)]
     Native.windows[7002]?.selected_client = 7001
     Native.tabs = [Native.tab(70010, window: 7001), Native.tab(70020, window: 7002)]
-    Native.splitLayouts = [:]; Native.allowSplit = true; Native.onAttach = nil
+    Native.servesPageViews = true; Native.onAttach = nil
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     admission.apply(Native.bridge.readSnapshot()!)
@@ -2636,7 +2606,7 @@ private struct NoTokens: KagiTokenStore {
     let personal = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70020 }!
     let workPage = work.navigation!, personalPage = personal.navigation!
     precondition(work.profile?.id == Native.work && personal.profile?.id == Native.personal)
-    var record = SplitRecord([work.itemID, personal.itemID], orientation: .vertical, dividers: [0.4])!
+    let record = SplitRecord([work.itemID, personal.itemID], orientation: .vertical, dividers: [0.4])!
     let creationsBefore = Native.privateCreatedClients.count, loadsBefore = Native.restoredURLs.count
     var results: [Bool] = []
     Native.restoring = true
@@ -2645,140 +2615,26 @@ private struct NoTokens: KagiTokenStore {
         for key in [Int32(7001), 7002] { Native.windows[key]?.selected_client = owner }
         return 1
     }
-    precondition(tabs.presentNativeSplit(record, activeItemID: work.itemID, in: state) { results.append($0) })
+    precondition(tabs.presentNativeSplit(record, activeItemID: work.itemID, in: state, completion: { results.append($0) }))
     precondition(results == [true] && state.split == record)
-    precondition(Native.splitLayouts[7001]?.kind == 1 && Native.splitLayouts[7001]!.generation > 0)
-    precondition(work.navigation === workPage && personal.navigation === personalPage)
-    precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
-    precondition(host.isSplit(record, pages: [work.itemID: work, personal.itemID: personal], activeItemID: work.itemID, in: state))
-    Native.splitLayouts[7001]?.generation = 0
-    precondition(!host.isSplit(record, pages: [work.itemID: work, personal.itemID: personal], activeItemID: work.itemID, in: state))
-    Native.splitLayouts[7001]?.generation = Native.splitGeneration
-    // Successful active-profile/header selection is not yet split admission.
-    // A different pane can disappear at that callout; restore the old admitted
-    // page/header/layout without creating or closing any native resource.
-    Native.tabs.append(Native.tab(70029, window: 7002))
-    admission.apply(Native.bridge.readSnapshot()!)
-    let unavailable = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70029 }!
-    let earlyRequest = SplitRecord([work.itemID, personal.itemID, unavailable.itemID])!
-    let recordsBeforeEarlyRefusal = tabs.device.windows
-    Native.onAttach = { owner in
-        if owner == 7002 {
-            Native.tabs.removeAll { $0.tab == 70029 }
-            Native.onAttach = nil
-        }
-        return 1
-    }
-    var earlyResults: [Bool] = []
-    precondition(tabs.presentNativeSplit(earlyRequest, activeItemID: personal.itemID, in: state) { earlyResults.append($0) })
-    precondition(earlyResults == [false] && state.selectedItemID == work.itemID && state.split == record)
-    precondition(host.isNativeSelection(workPage, in: state) && tabs.device.windows == recordsBeforeEarlyRefusal)
-    precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
-    let terminalUnavailable = Native.observers.filter { $0.value.3 == 70029 }
-    for (token, observation) in terminalUnavailable {
-        Native.observers[token] = nil
-        observation.0?(observation.1, token, 7, 7002, 70029, nil, nil, 0, 0)
-    }
-    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    Native.onAttach = nil
-    // A borrowed pane closing returns ALL physical containers. Keep and remount
-    // the model's live remainder instead of interpreting a restored owner-local
-    // Chrome collection as the new product layout.
-    Native.tabs.append(Native.tab(70012, window: 7001))
-    admission.apply(Native.bridge.readSnapshot()!)
-    for added in [[Int32(70030)], [Int32(70031), 70040]] {
-        for handle in added { Native.tabs.append(Native.tab(handle, window: 7002)) }
-        admission.apply(Native.bridge.readSnapshot()!)
-        let extra = added.map { handle in tabs.sessions.first {
-            ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == handle
-        }! }
-        let expanded = SplitRecord([work.itemID, personal.itemID] + extra.map(\.itemID), orientation: .vertical)!
-        precondition(tabs.presentNativeSplit(expanded, activeItemID: work.itemID, in: state))
-        precondition(state.split == expanded && Native.splitLayouts[7001]?.count == UInt32(expanded.itemIDs.count))
-        let removed = extra.last!, handle = added.last!
-        Native.tabs.removeAll { $0.tab == handle }
-        var parked = BarcSplitLayout()
-        parked.count = 2; parked.tabs = (70010, 70012, 0, 0)
-        parked.dividers = (0.5, 0, 0); parked.active_tab = 70010; parked.collection = 99
-        Native.splitLayouts = [7001: parked] // Clear restores the CURRENT local collection.
-        let terminal = Native.observers.filter { $0.value.3 == handle }
-        for (token, observation) in terminal {
-            Native.observers[token] = nil
-            observation.0?(observation.1, token, 7, 7002, handle, nil, nil, 0, 0)
-        }
-        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-        record = expanded.removing(removed.itemID)!
-        precondition(tabs.item(removed.itemID) == nil && state.split == record)
-        admission.apply(Native.bridge.readSnapshot()!)
-        precondition(state.split == record && Native.splitLayouts[7001]?.count == UInt32(record.itemIDs.count))
-        precondition(work.navigation === workPage && personal.navigation === personalPage)
-        precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
-    }
-    precondition(tabs.presentNativeSplit(record, activeItemID: personal.itemID, in: state) { results.append($0) })
-    precondition(results == [true, true] && state.selectedItemID == personal.itemID && state.spaceID == Native.personal)
-    let currentPages = Dictionary(uniqueKeysWithValues: record.itemIDs.map { ($0, tabs.session(for: $0)!) })
-    precondition(host.isSplit(record, pages: currentPages, activeItemID: personal.itemID, in: state))
-    let personalSaved = tabs.device.windows
-    Native.allowSplit = false
+    let pages = [work.itemID: work, personal.itemID: personal]
+    let view = Native.pageViews[70010]!
+    let barkRoot = sequence(first: view, next: \.superview).compactMap { $0 as? ChromiumWindowRoot }.first!
+    precondition(barkRoot.split?.panes.compactMap { $0?.client } == [7001, 7002])
+    precondition(host.isSplit(record, pages: pages, activeItemID: work.itemID, in: state))
     let replacement = record.converted()
-    precondition(tabs.presentNativeSplit(replacement, activeItemID: work.itemID, in: state) { results.append($0) })
-    precondition(results == [true, true, false] && state.split == record && state.selectedItemID == personal.itemID)
-    precondition(host.isNativeSelection(personalPage, in: state) && tabs.device.windows == personalSaved)
-    Native.allowSplit = true
-    Native.onAttach = { owner in owner == 7001 ? 0 : 1 }
-    precondition(tabs.presentNativeSplit(replacement, activeItemID: work.itemID, in: state) { results.append($0) })
-    precondition(results == [true, true, false, false] && state.split == record && state.selectedItemID == personal.itemID)
-    precondition(host.isNativeSelection(personalPage, in: state) && tabs.device.windows == personalSaved)
-    Native.onAttach = nil
-    precondition(tabs.presentNativeSplit(nil, activeItemID: work.itemID, in: state) { results.append($0) })
-    precondition(results == [true, true, false, false, true] && state.split == nil && Native.splitLayouts.isEmpty)
-    Native.allowSplit = false
-    precondition(tabs.presentNativeSplit(record, activeItemID: work.itemID, in: state) { results.append($0) })
-    precondition(results == [true, true, false, false, true, false] && state.split == nil)
+    Native.viewless.insert(70020)
+    precondition(tabs.presentNativeSplit(replacement, activeItemID: work.itemID, in: state, completion: { results.append($0) }))
+    precondition(results.last == false && state.split == record && barkRoot.split?.vertical == true)
+    Native.viewless.remove(70020)
+    precondition(tabs.presentNativeSplit(replacement, activeItemID: personal.itemID, in: state, completion: { results.append($0) }))
+    precondition(results.last == true && state.split == replacement && state.spaceID == Native.personal)
+    precondition(host.isSplit(replacement, pages: pages, activeItemID: personal.itemID, in: state))
+    precondition(tabs.presentNativeSplit(nil, activeItemID: personal.itemID, in: state, completion: { results.append($0) }))
+    precondition(results.last == true && barkRoot.split == nil && barkRoot.shownTab == 70020)
     precondition(work.navigation === workPage && personal.navigation === personalPage)
     precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
-    Native.allowSplit = true
-    // Same-profile tab supersession does not change the logical client ID.
-    // A failed older header admission must not restore the old pane over it.
-    Native.tabs.append(Native.tab(70021, window: 7002))
-    Native.onAttach = { owner in
-        if owner == 7002 { Native.windows[owner]?.active_tab = 70021; return 0 }
-        return 1
-    }
-    precondition(tabs.presentNativeSplit(record, activeItemID: personal.itemID, in: state) { results.append($0) })
-    precondition(results.last == false && Native.windows[7002]?.selected_client == 7002 &&
-        Native.windows[7002]?.active_tab == 70021)
-    Native.onAttach = nil
-    admission.apply(Native.bridge.readSnapshot()!)
-    let newer = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 70021 }!
-    precondition(state.selectedItemID == newer.itemID && state.spaceID == Native.personal)
-    precondition(host.isNativeSelection(newer.navigation!, in: state))
-    precondition(work.navigation === workPage && personal.navigation === personalPage)
-    precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
-    precondition(tabs.presentNativeSplit(record, activeItemID: work.itemID, in: state))
-    let last = tabs.session(for: record.itemIDs.last!)!
-    let lastPage = last.navigation as! ChromiumPageNavigation
-    Native.tabs.removeAll { $0.tab == lastPage.nativeTabID }
-    Native.splitLayouts = [:]
-    let ending = Native.observers.filter { $0.value.3 == lastPage.nativeTabID }
-    for (token, observation) in ending {
-        Native.observers[token] = nil
-        observation.0?(observation.1, token, 7, 7002, lastPage.nativeTabID, nil, nil, 0, 0)
-    }
-    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
-    let liveRecord = state.split!
-    let remainder = host.nativeSplitUpdate(in: state, selected: Native.windows[7001]!,
-        sessions: [70010: work, 70020: personal], savedPages: [work, personal])!
-    precondition(remainder.remountLive && remainder.validate())
-    Native.end(7002)
-    var endedResults: [Bool] = []
-    precondition(!tabs.presentNativeSplit(remainder.record, activeItemID: work.itemID, in: state,
-        liveAdmission: remainder.validate) { endedResults.append($0) })
-    precondition(endedResults == [false] && state.split == liveRecord && tabs.item(personal.itemID) != nil)
-    admission.apply(Native.bridge.readSnapshot()!)
-    precondition(state.split == liveRecord && personal.navigation == nil && work.navigation === workPage)
-    precondition(!host.needsInitialSplitRestore(in: state))
-    precondition(Native.privateCreatedClients.count == creationsBefore && Native.restoredURLs.count == loadsBefore)
+    Native.end(7001); Native.end(7002)
 }
 
 
@@ -2789,7 +2645,7 @@ private struct NoTokens: KagiTokenStore {
     let suite = "BarcPeek-\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll()
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.observers.removeAll()
     Native.transfersEnabled = true; Native.transferCount = 0
     Native.sameOwnerAdmissions = 0; Native.peekRoleClears = 0
     Native.restoring = false; Native.onSelectWindow = nil; Native.onAttach = nil
@@ -2848,7 +2704,6 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[8100]?.flags &= ~UInt32(BARC_DISCOVERY_SELECTED_CLIENT.rawValue)
     Native.windows[8101]?.selected_client = 8101
     Native.windows[8101]?.flags |= UInt32(BARC_DISCOVERY_SELECTED_CLIENT.rawValue)
-    Native.shells[8100] = nil; Native.shells[8101] = Unmanaged.passUnretained(shell).toOpaque()
     covered = true
     precondition(admission.browserTarget(kind: 0, regularProfile: nil)?.window == 8100)
     let exactSourceRow = Native.windows[8100]!
@@ -2862,7 +2717,6 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[8100]?.flags |= UInt32(BARC_DISCOVERY_SELECTED_CLIENT.rawValue)
     Native.windows[8101]?.selected_client = 8100
     Native.windows[8101]?.flags &= ~UInt32(BARC_DISCOVERY_SELECTED_CLIENT.rawValue)
-    Native.shells[8101] = nil; Native.shells[8100] = Unmanaged.passUnretained(shell).toOpaque()
 
     // Refusal during the actual transfer-admission callback preserves the
     // original detached session/document and its original Peek role.
@@ -2934,13 +2788,13 @@ private struct NoTokens: KagiTokenStore {
     let suite = "BarcBarkPeek-\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
-    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll()
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.observers.removeAll()
     Native.transfersEnabled = true; Native.sameOwnerAdmissions = 0; Native.peekRoleClears = 0
     Native.restoring = false; Native.onSelectWindow = nil; Native.onAttach = nil
-    Native.peekCapable = true; Native.hostWindows = [8300]
+    Native.peekCapable = true
     defer {
         Native.transfersEnabled = false; Native.peekCapable = false
-        Native.hostWindows = []; Native.pageViews = [:]; Native.roots[8300] = nil
+        Native.pageViews = [:]; Native.roots[8300] = nil
         Native.onCreatePeek = nil; Native.onSelectWindow = nil
     }
     var tree = TabTree()
@@ -3028,6 +2882,17 @@ private struct NoTokens: KagiTokenStore {
         : nil
     let siblingView = Native.pageViews[83003], siblingContainer = siblingView?.superview
     let tokens = Native.nextToken, clears = Native.peekRoleClears
+    precondition(!host.isNativeSelection(peekNavigation, in: window) &&
+        host.isNativePeekSelection(peekNavigation, source: sourceNavigation, in: window),
+        "the mounted card owns Peek selection while the ordinary layout still holds the source")
+    if promoteToSplit {
+        let cardSlot = peekView.superview!, displaced = NSView()
+        displaced.addSubview(peekView)
+        precondition(!admission.promotePeek(peek, source: source, in: window, intoSplit: split))
+        precondition(peek.isDetached && Native.peekRoleClears == clears && window.selectedItemID == sourceID,
+                     "the selected native tab cannot promote from a card that lost its page")
+        cardSlot.addSubview(peekView)
+    }
     precondition(admission.promotePeek(peek, source: source, in: window, intoSplit: split),
                  "the Peek is promoted in place")
     precondition(tabs.session(for: peekID) === peek && peek.navigation === peekNavigation && !peek.isDetached
@@ -3119,20 +2984,21 @@ private struct NoTokens: KagiTokenStore {
         precondition(outcomes.isEmpty && Native.shown.count == shows && Native.restoredURLs.count == loads)
         precondition(registry.windows[state.id] === state && state.selectedItemID == selected && state.split == layout)
         if mode == "closed" { admission.cancelPendingProductPresentation(); registry.unregister(state.id) }
-        if mode == "refused" { Native.onSelectWindow = { _ in 0 } }
+        if mode == "refused" { Native.viewless.insert(native * 10) }
         if mode == "new-owner" {
             tabs.select(alternate, in: state)
             precondition(outcomes == [.superseded] && laterOwner == peer)
             precondition(state.selectedItemID == alternate && Native.shown.count == shows)
         }
         delivery.resolve()
+        Native.viewless.remove(native * 10)
         let succeeded = mode == "single" || mixed
         if succeeded {
             precondition(outcomes == [.admitted] && Native.shown.count == shows + 1)
             precondition(Native.restoredURLs.count == loads + ids.count && ids.allSatisfy { tabs.session(for: $0)?.navigation != nil })
             precondition(state.split == layout && state.selectedItemID == selected)
         } else if mode != "new-owner" {
-            precondition(outcomes == [.refused] && Native.shown.count == shows)
+            precondition(outcomes == [.refused] && Native.shown.count == shows, "\(mode) restore returned \(outcomes) after \(Native.shown.count - shows) shows")
         }
         precondition(Set(tabs.tree.items.keys) == Set(tree.items.keys))
         if let layout, succeeded {

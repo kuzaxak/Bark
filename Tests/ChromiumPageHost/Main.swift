@@ -47,9 +47,11 @@ private enum Native {
     static var rejectsObservation = false
     static var catalogAvailable = true
     static var onNavigate: ((Int32, Int32, String) -> Int32)?
-    /// Clients whose window is Bark's own (`--bark-window=host`), and their tabs' page views.
-    static var hostWindows: Set<Int32> = []
+    /// Web contents views supplied by each logical client.
+    static var roots: [UInt64: UnsafeMutableRawPointer] = [:]
     static var pageViews: [Int32: NSView] = [:]
+    static var viewless: Set<Int32> = []
+    static var onPageView: ((Int32) -> Bool)?
     /// Calls to the old window's Peek card.
     static var peekCalls = 0
     /// Each Peek tab's source tab, in its own client.
@@ -111,7 +113,10 @@ private enum Native {
             }
             return 1
         } }
-        bridge.window_native_shell_is_owned = { window, _ in MainActor.assumeIsolated { Native.headerOwners.contains(window) ? 1 : 0 } }
+        bridge.window_native_shell_is_owned = { window, view in MainActor.assumeIsolated {
+            guard let row = Native.row(window) else { return 0 }
+            return Native.roots[row.physical_group] == view ? 1 : 0
+        } }
         bridge.window_detach_native_shell_if_owned = { window, _ in MainActor.assumeIsolated {
             guard Native.headerOwners.contains(window) else { return 0 }
             Native.attachmentCalls += 1
@@ -121,17 +126,28 @@ private enum Native {
         bridge.tab_transfer_with_admission = { _, _, _, _, _ in 0 }
         bridge.window_new_peer_in_native_window = { _, _ in 0 }
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
-        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
+        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.profiles[window] != nil ? UInt64(window) : 0 } }
         bridge.window_host_unobserve = { _ in }
         bridge.tab_present_peek = { _, _, _, _, _, _, _ in MainActor.assumeIsolated { Native.peekCalls += 1; return 0 } }
         bridge.tab_is_peek_presented = { _, _, _, _, _, _, _ in MainActor.assumeIsolated { Native.peekCalls += 1; return 0 } }
         bridge.tab_hide_peek = { _, _, _, _, _, _, _ in MainActor.assumeIsolated { Native.peekCalls += 1; return 0 } }
-        bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
-        bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
-        bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
-            guard Native.hostWindows.contains(window), Native.tabs[window]?.contains(tab) == true else { return nil }
-            return Native.pageViews[tab].map { Unmanaged.passUnretained($0).toOpaque() }
+        bridge.window_set_root_view = { window, view in MainActor.assumeIsolated {
+            guard let view, let row = Native.row(window) else { return 0 }
+            if let current = Native.roots[row.physical_group] { return current == view ? 1 : 0 }
+            Native.roots[row.physical_group] = view
+            return 1
         } }
+        bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated { Native.profiles[window] != nil ? 1 : 0 } }
+        bridge.tab_native_view = { window, tab in
+            let address: UInt = MainActor.assumeIsolated {
+                guard Native.tabs[window]?.contains(tab) == true, !Native.viewless.contains(tab),
+                      Native.onPageView?(window) != false else { return 0 }
+                let view = Native.pageViews[tab] ?? NSView()
+                Native.pageViews[tab] = view
+                return UInt(bitPattern: Unmanaged.passUnretained(view).toOpaque())
+            }
+            return UnsafeMutableRawPointer(bitPattern: address)
+        }
         bridge.discovery_snapshot = { windows, capacity, tabRows, tabCapacity, output in MainActor.assumeIsolated {
             guard let output, output.pointee.size >= MemoryLayout<BarcDiscoverySnapshot>.size,
                   capacity == 0 || windows![0].size >= MemoryLayout<BarcDiscoveryWindow>.size,
@@ -337,7 +353,6 @@ private enum Native {
 /// path's sidebar, header or hidden-page calls reach Chromium.
 @MainActor private func hostWindowPresents() throws {
     let profile = Profile(id: Native.first, engine: .chromium)
-    Native.hostWindows = [80]
     Native.profiles[80] = Native.first; Native.tabs[80] = [800]; Native.groups[80] = 80; Native.selected = 80
     let page800 = FocusableHostPage(), page801 = FocusableHostPage()
     Native.pageViews = [800: page800, 801: page801]
@@ -379,7 +394,7 @@ private enum Native {
     precondition(moves == (1, 1), "the sidebar went into the root once, and the root into its window once: \(moves)")
 
     let opens = Native.opens
-    Native.hostWindows.insert(81); Native.groups[81] = 80
+    Native.groups[81] = 80
     let page810 = NSView()
     Native.pageViews[810] = page810
     var other: ChromiumPageNavigation!
@@ -397,16 +412,16 @@ private enum Native {
     }
     precondition(Native.attachmentCalls == attachments, "a switch never attaches or detaches a shell")
     precondition(probe.moves == moves, "the sidebar never leaves its window across ten switches: \(probe.moves)")
-    Native.pageViews[810] = nil
+    Native.viewless.insert(810)
     precondition(!host.selectPage(other, in: window) && Native.selected == 80 && page801.isDescendant(of: root!),
                  "a page with no view is not shown, and the selection goes back")
     precondition(probe.moves == moves && root!.holdsSidebar(shell), "the sidebar stays through the rollback: \(probe.moves)")
-    Native.pageViews[810] = page810
+    Native.viewless.remove(810)
 
     try hostWindowPeek(host: host, window: window, root: root!, source: second, page: page, sources: (page801, page800))
 
     let third = UUID()
-    Native.hostWindows.insert(82); Native.groups[82] = 80
+    Native.groups[82] = 80
     precondition(host.emptySpaceClient(in: window, profile: third, open: true) == nil && Native.opens == opens + 2
                  && Native.openedFrom.last == 80, "an empty space of a profile the window lacks opens that profile's client")
     Native.opened(profile: third, window: 82, blank: 820)
@@ -421,10 +436,10 @@ private enum Native {
     precondition(Native.attachmentCalls == attachments && probe.moves == moves, "the sidebar stays")
     host.setPageHidden(false, in: window)
     precondition(host.selectPage(second, in: window) && Native.selected == 80 && !page801.isHidden, "back to the first profile's page")
-    Native.hostWindows.remove(82); Native.profiles[82] = nil; Native.tabs[82] = nil
+    Native.profiles[82] = nil; Native.tabs[82] = nil
     try hostWindowSplits(host: host, window: window, root: root!, pages: [page, second], other: other, sidebar: probe, profile: profile)
-    Native.hostWindows.remove(81); Native.profiles[81] = nil; Native.tabs[81] = nil
-    Native.hostWindows = []; Native.pageViews = [:]
+    Native.profiles[81] = nil; Native.tabs[81] = nil
+    Native.pageViews = [:]; Native.viewless = []
     Native.profiles[80] = nil; Native.tabs[80] = nil; Native.appLifetime = []; Native.selected = 10
     print("Chromium host window checks PASS")
 }
@@ -650,19 +665,21 @@ private enum HostChecks {
         precondition(original.nativeTabID == 100 && Native.creates == 0)
         precondition(host.canAdoptPage(original, in: window))
         // The empty-space panel covers the page Chromium keeps selected.
-        precondition(Native.pageHidden[10] == 0, "A window registers showing its page")
+        let root = shell.superview?.superview as! ChromiumWindowRoot
+        precondition(!root.pageHidden && root.holdsSidebar(shell))
         host.setPageHidden(true, in: window)
-        precondition(Native.pageHidden[10] == 1, "An empty space hides the page from its commands")
+        precondition(root.pageHidden)
         host.setPageHidden(false, in: window)
-        precondition(Native.pageHidden[10] == 0)
-        precondition(!host.laysOutSplits(in: window))
+        precondition(!root.pageHidden && host.laysOutSplits(in: window))
         host.setPageHidden(true, in: BrowserWindowState(id: window.id))
-        precondition(Native.pageHidden[10] == 0, "Only the registered model window decides")
+        precondition(!root.pageHidden, "Only the registered model window decides")
         let reservedHost = ChromiumNativePageHost(bridge: Native.bridge)
         let reservedWindow = BrowserWindowState(), reservedShell = NSView()
-        precondition(reservedHost.registerWindow(reservedWindow, nativeOwner: 10, shell: reservedShell, initialBlankTab: 100))
+        precondition(!reservedHost.registerWindow(reservedWindow, nativeOwner: 10, shell: reservedShell))
+        Native.profiles[12] = Native.first; Native.tabs[12] = [120]; Native.groups[12] = 12
+        precondition(reservedHost.registerWindow(reservedWindow, nativeOwner: 12, shell: reservedShell, initialBlankTab: 120))
         let beforeReserved = Native.nextObservation
-        if case .success = reservedHost.bindExistingPage(nativeWindow: 10, tab: 100, profile: firstProfile, in: reservedWindow) {
+        if case .success = reservedHost.bindExistingPage(nativeWindow: 12, tab: 120, profile: firstProfile, in: reservedWindow) {
             preconditionFailure("Reserved app factory blank was stolen")
         }
         precondition(Native.nextObservation == beforeReserved && Native.nativeCloses.isEmpty)
@@ -767,7 +784,7 @@ private enum HostChecks {
         let beforeSelection = Native.selectionCalls, beforeAttachment = Native.attachmentCalls
         precondition(!host.selectPage(nested.navigation, in: window))
         precondition(Native.selectionCalls == beforeSelection && Native.attachmentCalls == beforeAttachment)
-        precondition(Native.selected == 10 && Native.attached == 10)
+        precondition(Native.selected == 10 && root.holdsSidebar(shell))
         moveObservedPage(nested.navigation, to: 10)
 
         // Transfer during native selection is revalidated before any sidebar detach.
@@ -777,14 +794,14 @@ private enum HostChecks {
             return 1
         }
         precondition(!host.selectPage(nested.navigation, in: window))
-        precondition(Native.attachmentCalls == beforeAttachment && Native.attached == 10)
+        precondition(Native.attachmentCalls == beforeAttachment && root.holdsSidebar(shell))
         moveObservedPage(nested.navigation, to: 10)
 
         // The normal supported same-model-window profile switch still mounts.
         precondition(host.selectPage(first, in: window))
-        precondition(Native.selected == 20 && Native.attached == 20)
+        precondition(Native.selected == 20 && root.holdsSidebar(shell))
         precondition(host.selectPage(original, in: window))
-        precondition(Native.selected == 10 && Native.attached == 10)
+        precondition(Native.selected == 10 && root.holdsSidebar(shell))
 
         // Runtime supersession must never restore the earlier native selection.
         Native.onSelect = {
@@ -793,21 +810,22 @@ private enum HostChecks {
             return 0
         }
         precondition(!host.selectPage(original, in: window))
-        precondition(Native.selected == 20 && Native.attached == 20)
+        precondition(Native.selected == 20 && root.holdsSidebar(shell))
 
-        // A nested successful mount wins over an outer attachment failure.
-        Native.onAttach = { _ in
-            Native.onAttach = nil
+        // A nested selection while resolving the web view supersedes the outer page.
+        Native.onPageView = { _ in
+            Native.onPageView = nil
             precondition(host.selectPage(second, in: window))
-            return 0
+            return false
         }
         precondition(!host.selectPage(original, in: window))
-        precondition(Native.selected == 20 && Native.attached == 20)
+        precondition(Native.selected == 20 && root.shownTab == second.nativeTabID && root.holdsSidebar(shell))
 
-        // Ordinary attach refusal restores the previous admitted owner.
-        Native.onAttach = { _ in Native.onAttach = nil; return 0 }
+        // A missing view restores the previous selected client and its visible page.
+        Native.viewless.insert(original.nativeTabID)
         precondition(!host.selectPage(original, in: window))
-        precondition(Native.selected == 20 && Native.attached == 20)
+        precondition(Native.selected == 20 && root.shownTab == second.nativeTabID)
+        Native.viewless.remove(original.nativeTabID)
 
         var outcomes: [PageCloseOutcome] = []
         host.closePage(first) { outcomes.append($0) }
@@ -904,6 +922,7 @@ private func checkActualModelAdoption() throws {
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let shell = NSView()
+    Native.groups[90] = 90
     Native.profiles[90] = profile.id
     Native.tabs[90] = [900, 901, 902]
     precondition(host.registerWindow(window, nativeOwner: 90, shell: shell, initialBlankTab: 900))
@@ -956,56 +975,43 @@ private func checkAuthoritativeGroups() throws {
     precondition(host.acceptNativeSelection(page, in: window))
     precondition(host.isNativeSelection(page, in: window) && Native.selectionCalls == selectCount)
 
-    // A native-origin selection has no Swift generation increment. Both
-    // detach and attach callouts must still refuse rollback over client 122.
-    for detachPhase in [true, false] {
-        Native.selected = 120; Native.attached = 120
-        let old = try host.bindExistingPage(nativeWindow: 120, tab: 1200, profile: profile, in: window).get()
-        old.finish(adopted: true)
-        precondition(host.acceptNativeSelection(old.navigation, in: window))
-        let before = Native.selectionCalls
-        Native.onAttach = { owner in
-            if detachPhase || owner == 121 {
-                Native.onAttach = nil; Native.selected = 122
-                return 0
-            }
-            Native.attached = 0; return 1
-        }
-        precondition(!host.selectPage(page, in: window))
-        precondition(Native.selected == 122 && Native.selectionCalls == before + 1,
-                     "Old Swift admission rolled back native-origin selection")
-        Native.onAttach = nil
-    }
-
-    // The C API may attach the view and only then discover supersession.
-    // A later native reflection must release that partial target attachment.
-    Native.selected = 120; Native.attached = 120
-    let oldHeader = try host.bindExistingPage(nativeWindow: 120, tab: 1200, profile: profile, in: window).get()
-    oldHeader.finish(adopted: true)
-    precondition(host.acceptNativeSelection(oldHeader.navigation, in: window))
-    Native.onAttach = { owner in
-        if owner == 120 { Native.headerOwners.remove(120); return 1 }
-        Native.headerOwners.insert(owner)
-        Native.onAttach = nil; Native.selected = 122
-        return 0
-    }
-    precondition(!host.selectPage(page, in: window))
-    precondition(Native.headerOwners == [121] && Native.selected == 122)
+    // A third client selected by native code while fetching a page wins.
+    let root = shell.superview?.superview as! ChromiumWindowRoot
     let third = try host.bindExistingPage(nativeWindow: 122, tab: 1220, profile: profile, in: window).get()
     third.finish(adopted: true)
-    let noSelect = Native.selectionCalls
-    precondition(host.acceptNativeSelection(third.navigation, in: window))
-    precondition(Native.headerOwners == [122] && Native.selectionCalls == noSelect,
-                 "Reflection left a stale partial NativeViewHost owner")
-
-    // An ordinary refusal after physical attachment must compare-detach the
-    // attempted target before restoring the previous admitted header.
-    Native.onAttach = { owner in
-        if owner == 122 { Native.headerOwners.remove(122); return 1 }
-        Native.headerOwners.insert(owner); Native.onAttach = nil; return 0
+    Native.onPageView = { _ in
+        Native.onPageView = nil
+        Native.selected = 122
+        return false
     }
-    precondition(!host.selectPage(oldHeader.navigation, in: window))
-    precondition(Native.selected == 122 && Native.headerOwners == [122])
+    precondition(!host.selectPage(page, in: window) && Native.selected == 122)
+    let beforeReflection = Native.selectionCalls
+    precondition(host.acceptNativeSelection(third.navigation, in: window))
+    precondition(Native.selectionCalls == beforeReflection && root.shownTab == 1220 && root.holdsSidebar(shell))
+
+    Native.viewless.insert(page.nativeTabID)
+    precondition(!host.selectPage(page, in: window))
+    precondition(Native.selected == 122 && root.shownTab == 1220 && root.holdsSidebar(shell))
+
+    // The engine can select an exact tab before its view becomes available.
+    // The root still displays the former tab, so nil layout cannot be admitted.
+    Native.selected = 121
+    precondition(Native.row(121)?.active_tab == page.nativeTabID)
+    precondition(!host.isNativeSelection(page, in: window), "Selection must include its mounted page view")
+    let activeID = UUID()
+    precondition(!host.hostShowsSplit(nil, navigations: [activeID: page], activeItemID: activeID, in: window))
+    precondition(!host.hostShowsSplit(nil, navigations: [:], activeItemID: activeID, in: window))
+    precondition(!host.applyHostSplit(nil, navigations: [activeID: page], activeItemID: activeID, in: window, isCurrent: { true }))
+    precondition(host.needsInitialSplitRestore(in: window) && root.shownTab == 1220)
+
+    Native.viewless.remove(page.nativeTabID)
+    precondition(host.applyHostSplit(nil, navigations: [activeID: page], activeItemID: activeID, in: window, isCurrent: { true }))
+    precondition(host.isNativeSelection(page, in: window) && !host.needsInitialSplitRestore(in: window))
+    let displaced = NSView()
+    displaced.addSubview(Native.pageViews[page.nativeTabID]!)
+    precondition(root.shownTab == page.nativeTabID && !host.isNativeSelection(page, in: window),
+                 "The tab ID alone does not prove that the root still holds the view")
+    precondition(host.acceptNativeSelection(page, in: window))
 
     // Transfer inside one group reuses the same observation/adapter.
     func move(to owner: Int32) {

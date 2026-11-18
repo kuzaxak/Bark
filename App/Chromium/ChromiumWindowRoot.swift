@@ -391,7 +391,7 @@ final class ChromiumWindowRoot: NSView {
     /// was shown before, the split's other pages leaving the window. False when `owner` has no page
     /// view for that tab.
     @discardableResult
-    func show(tab: Int32, of owner: Int32) -> Bool {
+    func show(tab: Int32, of owner: Int32, while isCurrent: () -> Bool = { true }) -> Bool {
         let pane = Pane(client: owner, tab: tab)
         if let split, split.panes.contains(pane) {
             guard let slot = slots.first(where: { $0.pane == pane }), slot.view != nil else { return false }
@@ -404,7 +404,7 @@ final class ChromiumWindowRoot: NSView {
             if changed { focusPage() }
             return true
         }
-        guard let view = pageView(pane) else { return false }
+        guard let view = pageView(pane), isCurrent() else { return false }
         let slot = slots.first { $0.pane == pane } ?? Slot(pane: pane, bridge: bridge)
         let changed = view !== slot.view || view.superview !== slot.container || slots.count != 1 || shownTab != tab
         split = nil
@@ -415,6 +415,10 @@ final class ChromiumWindowRoot: NSView {
         layoutPageArea()
         if changed { focusPage() }
         return true
+    }
+
+    func showsPage(tab: Int32, of owner: Int32) -> Bool {
+        client == owner && shownTab == tab && heldPage != nil
     }
 
     private func pageView(_ pane: Pane) -> NSView? {
@@ -769,11 +773,15 @@ extension ChromiumWindowRoot: ChromiumPanelHost {
         card.dismiss()
     }
 
+    func showsPeekPage(_ peek: Peek) -> Bool {
+        guard let card = peekCard, card.peek == peek else { return false }
+        return card.slot.heldView != nil && card.slot.container.superview === peekLayer && peekLayer.superview === pageFrame
+    }
+
     func showsPeek(_ peek: Peek, generation: UInt64, header: NSView, actions: NSView) -> Bool {
-        guard let card = peekCard, card.peek == peek, card.generation == generation,
+        guard let card = peekCard, card.generation == generation,
               card.header === header, card.actions === actions else { return false }
-        return header.superview === peekLayer && actions.superview === peekLayer && card.slot.heldView != nil
-            && peekLayer.superview === pageFrame
+        return showsPeekPage(peek) && header.superview === peekLayer && actions.superview === peekLayer
     }
 
     private func removePeek() {

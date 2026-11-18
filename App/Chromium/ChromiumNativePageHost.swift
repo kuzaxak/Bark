@@ -29,22 +29,16 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     @MainActor private final class Mount {
         weak var shell: NSView?
         weak var model: BrowserWindowState?
-        let presenter: any ChromiumWindowPresenter
+        let presenter: ChromiumHostPresenter
         let group: UInt64
         // Only our last successful header attachment, never native selection.
         var attachedClient: Int32?
         var generation: UInt64 = 0
         var spaceSwitchSequence: UInt64 = 0
         var hasSettledEmptySelection = false
-        // Ownership identity only; SplitRecord remains the model's sole layout.
-        var presentedSplit: (client: Int32, member: Int32, collection: Int32, kind: UInt32, generation: UInt64, count: UInt32)?
-        // Native Peek may return the same sidebar to its source before catalog
-        // reflection. These two owners suffice to reconcile the existing mount.
-        var peekSidebarOwners: (source: Int32, peek: Int32)?
-        var attemptedLiveRemainder: UInt64?
         // A Bark window's root showed a split, or its end, at least once.
         var hostSplitApplied = false
-        init(shell: NSView, presenter: any ChromiumWindowPresenter, group: UInt64, attachedClient: Int32?, model: BrowserWindowState) {
+        init(shell: NSView, presenter: ChromiumHostPresenter, group: UInt64, attachedClient: Int32?, model: BrowserWindowState) {
             self.shell = shell; self.presenter = presenter; self.group = group; self.attachedClient = attachedClient; self.model = model
         }
     }
@@ -170,8 +164,8 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
                         shell: NSView, initialBlankTab: Int32? = nil) -> Bool {
         guard mounts[window.id] == nil, let row = liveState(nativeOwner),
               !mounts.values.contains(where: { $0.shell === shell || $0.group == row.physical_group }),
-              bridge.window_set_app_lifetime(nativeOwner) == 1 else { return false }
-        let presenter = ChromiumWindowPresenters.make(bridge: bridge, client: nativeOwner, sidebar: shell)
+              bridge.window_set_app_lifetime(nativeOwner) == 1,
+              let presenter = ChromiumHostPresenter(bridge: bridge, client: nativeOwner, sidebar: shell) else { return false }
         let owned = presenter.ownsSidebar(nativeOwner)
         mounts[window.id] = Mount(shell: shell, presenter: presenter, group: row.physical_group,
                                   attachedClient: owned ? nativeOwner : nil, model: window)
@@ -799,7 +793,8 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         guard let page = navigation as? ChromiumPageNavigation,
               let (mount, row) = admission(page, in: window), mount.shell != nil,
               row.selected_client == page.nativeWindowID, row.presentedTab == page.nativeTabID else { return false }
-        return mount.presenter.ownsSidebar(page.nativeWindowID)
+        return mount.presenter.ownsSidebar(page.nativeWindowID) &&
+            mount.presenter.root.showsPage(tab: page.nativeTabID, of: page.nativeWindowID)
     }
 
     func acceptNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
@@ -817,37 +812,18 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         func current() -> Bool {
             mounts[window.id] === mount && mount.generation == attempt && selected(page, in: window)
         }
-        guard current() else { return false }
-        reconcilePeekSidebar(mount)
         let target = page.nativeWindowID
-        if presenter.ownsSidebar(target) {
-            mount.attachedClient = target
-            return current() && presenter.showPage(page.nativeTabID, of: target)
-        }
-        if let old = mount.attachedClient, old != target, presenter.ownsSidebar(old) {
-            let detached = presenter.detachSidebar(from: old)
-            guard current(), detached else { return false }
-        }
-        let attached = presenter.attachSidebar(to: target)
-        let owns = presenter.ownsSidebar(target)
-        // Native attachment may succeed physically but report supersession.
-        // Remember that actual owner so the next reflection can detach it.
-        if owns {
-            if mount.generation == attempt {
-                mount.attachedClient = target
-            } else if mount.attachedClient != target {
-                // A nested Swift mount already won. Release only this older
-                // call's exact view, never its newer destination's header.
-                _ = presenter.detachSidebar(from: target)
-            }
-        }
-        return current() && attached && owns && presenter.showPage(page.nativeTabID, of: target)
+        guard current(), presenter.ownsSidebar(target),
+              presenter.root.show(tab: page.nativeTabID, of: target, while: current),
+              current(), presenter.ownsSidebar(target),
+              presenter.root.showsPage(tab: page.nativeTabID, of: target) else { return false }
+        mount.attachedClient = target
+        return true
     }
 
     func isPageFullscreen(in window: BrowserWindowState) -> Bool {
-        guard let mount = mounts[window.id], mount.model === window,
-              let presenter = mount.presenter as? ChromiumHostPresenter else { return false }
-        return presenter.root.pageFullscreen
+        guard let mount = mounts[window.id], mount.model === window else { return false }
+        return mount.presenter.root.pageFullscreen
     }
 
     /// Header view ownership only; the existing sidebar is the physical-group
@@ -855,28 +831,19 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     func setPageHeader(_ header: NSView?, replacing expected: NSView?, height: Int32,
                        in window: BrowserWindowState) -> Bool {
         guard let mount = mounts[window.id], mount.model === window, mount.shell != nil else { return false }
-        reconcilePeekSidebar(mount)
         guard let owner = mount.attachedClient else { return false }
         return mount.presenter.setHeader(header, replacing: expected, height: height, owner: owner)
     }
 
-    private func reconcilePeekSidebar(_ mount: Mount) {
-        guard let owners = mount.peekSidebarOwners, mount.shell != nil else { return }
-        if mount.presenter.ownsSidebar(owners.source) { mount.attachedClient = owners.source }
-        else if mount.presenter.ownsSidebar(owners.peek) { mount.attachedClient = owners.peek }
-        else { mount.peekSidebarOwners = nil }
-    }
-
     /// Shows `page` in a Peek card over `source`, one of the window's pages, and returns the card's
-    /// generation, or 0. `dismiss` runs on a click outside the card in a Bark window; Chromium's
-    /// own window handles that click itself.
+    /// generation, or 0. A click outside the card calls `dismiss`.
     func presentPeek(source: ChromiumPageNavigation, page: ChromiumPageNavigation,
                      header: NSView, actions: NSView, dismiss: @escaping () -> Void, in window: BrowserWindowState) -> UInt64 {
         guard source !== page, source.profileID == page.profileID,
               let (mount, _) = admission(source, in: window),
               let (peekMount, _) = admission(page, in: window), mount === peekMount, mount.shell != nil else { return 0 }
         let presenter = mount.presenter
-        if presenter.laysOutSplits, !selected(source, in: window) { return 0 }
+        if !selected(source, in: window) { return 0 }
         let sourcePane = ChromiumWindowRoot.Pane(client: source.nativeWindowID, tab: source.nativeTabID)
         let peekPane = ChromiumWindowRoot.Pane(client: page.nativeWindowID, tab: page.nativeTabID)
         mount.generation &+= 1
@@ -886,19 +853,26 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         guard generation != 0 else { return 0 }
         // A Peek request leaves the renderer's input callback before the card
         // is mounted. AppKit responder focus alone cannot activate this tab.
-        let activated = !presenter.laysOutSplits || (mount.generation == attempt &&
-            (selected(page, in: window) || page.selectNativePage()) && selected(page, in: window))
+        let activated = mount.generation == attempt &&
+            (selected(page, in: window) || page.selectNativePage()) && selected(page, in: window)
         guard mounts[window.id] === mount, mount.generation == attempt, activated,
               presenter.isPeekPresented(source: sourcePane, page: peekPane, generation: generation,
                                         header: header, actions: actions) else {
             presenter.hidePeek(source: sourcePane, page: peekPane, generation: generation, header: header, actions: actions)
             return 0
         }
-        if presenter.sidebarFollowsClient {
-            mount.peekSidebarOwners = (source: source.nativeWindowID, peek: page.nativeWindowID)
-            reconcilePeekSidebar(mount)
-        }
         return generation
+    }
+
+    /// Split promotion checks the selected card without moving it out of the source layout.
+    func isNativePeekSelection(_ page: ChromiumPageNavigation, source: ChromiumPageNavigation,
+                               in window: BrowserWindowState) -> Bool {
+        guard let (mount, row) = admission(page, in: window), admission(source, in: window)?.0 === mount,
+              row.selected_client == page.nativeWindowID, row.presentedTab == page.nativeTabID,
+              mount.presenter.ownsSidebar(page.nativeWindowID) else { return false }
+        return mount.presenter.root.showsPeekPage(.init(
+            source: .init(client: source.nativeWindowID, tab: source.nativeTabID),
+            page: .init(client: page.nativeWindowID, tab: page.nativeTabID)))
     }
 
     func isPeekPresented(sourceWindow: Int32, sourceTab: Int32, peekWindow: Int32, peekTab: Int32,
@@ -913,7 +887,6 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         guard generation != 0, let mount = mounts[window.id], mount.model === window else { return }
         mount.presenter.hidePeek(source: .init(client: sourceWindow, tab: sourceTab), page: .init(client: peekWindow, tab: peekTab),
                                  generation: generation, header: header, actions: actions)
-        reconcilePeekSidebar(mount)
     }
 
     func selectPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
@@ -932,20 +905,11 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
               let previous, let old = liveState(previous.window),
               old.physical_group == mount.group, old.active_tab == previous.active_tab,
               mount.shell != nil else { return false }
-        let presenter = mount.presenter
-        let target = page.nativeWindowID
-        if target != old.window, presenter.ownsSidebar(target) {
-            let detached = presenter.detachSidebar(from: target)
-            guard detached, mount.generation == attempt, selected(page, in: window) else { return false }
-        }
         guard bridge.window_select(old.window) == 1, mount.generation == attempt,
               let restored = liveState(old.window), restored.physical_group == mount.group,
-              restored.selected_client == old.window, restored.active_tab == previous.active_tab else { return false }
-        _ = presenter.attachSidebar(to: old.window)
-        if presenter.ownsSidebar(old.window) {
-            if mount.generation == attempt { mount.attachedClient = old.window }
-            else if mount.attachedClient != old.window { _ = presenter.detachSidebar(from: old.window) }
-        }
+              restored.selected_client == old.window, restored.active_tab == previous.active_tab,
+              mount.presenter.ownsSidebar(old.window) else { return false }
+        mount.attachedClient = old.window
         return false
     }
 
@@ -1094,356 +1058,25 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         return true
     }
 
-    private func splitPages(_ record: SplitRecord, pages: [UUID: PageSession],
-                            in window: BrowserWindowState) -> [ChromiumPageNavigation]? {
-        let result = record.itemIDs.compactMap { pages[$0]?.navigation as? ChromiumPageNavigation }
-        guard result.count == record.itemIDs.count, let first = result.first,
-              (2...4).contains(result.count), Set(result.map(\.nativeTabID)).count == result.count,
-              result.allSatisfy({ page in
-                  admission(page, in: window) != nil &&
-                  (!window.isIncognito || (page.profileID == first.profileID &&
-                      page.nativeWindowID == first.nativeWindowID))
-              }) else { return nil }
-        return result
-    }
-
-    private func layout(_ record: SplitRecord, pages: [ChromiumPageNavigation], active: UUID?) -> BarcSplitLayout? {
-        guard let active, let index = record.itemIDs.firstIndex(of: active),
-              record.dividers.count + 1 == pages.count,
-              record.dividers.allSatisfy(\.isFinite),
-              zip([0] + record.dividers, record.dividers + [1]).allSatisfy({ $0 < $1 }) else { return nil }
-        let handles = pages.map(\.nativeTabID), cuts = record.dividers
-        let orientation = record.orientation == .horizontal ? BARC_SPLIT_SIDE_BY_SIDE : BARC_SPLIT_STACKED
-        return BarcSplitLayout(size: MemoryLayout<BarcSplitLayout>.size, count: UInt32(pages.count), orientation: orientation.rawValue,
-            tabs: (handles[0], handles[1], handles.count > 2 ? handles[2] : 0, handles.count > 3 ? handles[3] : 0),
-            dividers: (cuts[0], cuts.count > 1 ? cuts[1] : 0, cuts.count > 2 ? cuts[2] : 0),
-            active_tab: handles[index], collection: 0, kind: BARC_SPLIT_PHYSICAL.rawValue, generation: 0)
-    }
-
-    private func validSplitIdentity(_ value: BarcSplitLayout) -> Bool {
-        value.kind == BARC_SPLIT_PHYSICAL.rawValue && value.collection == 0 && value.generation > 0
-    }
-
-    private func sameLayout(_ actual: BarcSplitLayout, _ requested: BarcSplitLayout,
-                            active: Bool = true) -> Bool {
-        guard actual.kind == requested.kind, actual.count == requested.count, (2...4).contains(actual.count),
-              actual.orientation == requested.orientation,
-              !active || actual.active_tab == requested.active_tab else { return false }
-        let count = Int(actual.count)
-        return Array([actual.tabs.0, actual.tabs.1, actual.tabs.2, actual.tabs.3].prefix(count)) ==
-               Array([requested.tabs.0, requested.tabs.1, requested.tabs.2, requested.tabs.3].prefix(count)) &&
-               Array([actual.dividers.0, actual.dividers.1, actual.dividers.2].prefix(count - 1)) ==
-               Array([requested.dividers.0, requested.dividers.1, requested.dividers.2].prefix(count - 1))
-    }
-
     func isSplit(_ record: SplitRecord?, pages: [UUID: PageSession], activeItemID: UUID?,
                  in window: BrowserWindowState) -> Bool {
-        if laysOutSplits(in: window) {
-            return hostShowsSplit(record, navigations: navigations(pages), activeItemID: activeItemID, in: window)
-        }
-        guard let record else {
-            guard let activeItemID, let page = pages[activeItemID]?.navigation as? ChromiumPageNavigation else { return true }
-            guard isNativeSelection(page, in: window) else { return false }
-            var actual = BarcSplitLayout.sized
-            return bridge.window_get_split(page.nativeWindowID, page.nativeTabID, &actual) == 0
-        }
-        guard let native = splitPages(record, pages: pages, in: window),
-              let request = layout(record, pages: native, active: activeItemID),
-              let index = activeItemID.flatMap({ record.itemIDs.firstIndex(of: $0) }),
-              isNativeSelection(native[index], in: window) else { return false }
-        var actual = BarcSplitLayout.sized
-        return bridge.window_get_split(native[index].nativeWindowID, 0, &actual) == 1 && validSplitIdentity(actual) && sameLayout(actual, request)
+        hostShowsSplit(record, navigations: navigations(pages), activeItemID: activeItemID, in: window)
     }
 
     func applySplit(_ record: SplitRecord?, replacing previous: SplitRecord?,
                     pages: [UUID: PageSession], activeItemID: UUID?,
                     in window: BrowserWindowState, isCurrent: () -> Bool) -> Bool {
-        if laysOutSplits(in: window) {
-            return applyHostSplit(record, navigations: navigations(pages), activeItemID: activeItemID, in: window, isCurrent: isCurrent)
-        }
-        guard isCurrent(), let mount = mounts[window.id], mount.model === window else { return false }
-        var generation = mount.generation
-        let selectedBefore = pages.values.compactMap { $0.navigation as? ChromiumPageNavigation }
-            .first { self.isNativeSelection($0, in: window) }
-        var old: (window: Int32, member: Int32, layout: BarcSplitLayout)?
-        var unknownLiveOldGroup = false
-        if let previous, let native = splitPages(previous, pages: pages, in: window),
-           let sample = layout(previous, pages: native, active: previous.itemIDs.first) {
-            var existing = BarcSplitLayout.sized
-            if bridge.window_get_split(native[0].nativeWindowID, native[0].nativeTabID, &existing) == 1 {
-                if sameLayout(existing, sample, active: false) {
-                    old = (native[0].nativeWindowID, native[0].nativeTabID, existing)
-                } else {
-                    unknownLiveOldGroup = true
-                }
-            }
-        } else if let previous {
-            // A partly released model must not authorize cleanup of an unknown
-            // native collection. Completely cold saved panes have nothing to clear.
-            for id in previous.itemIDs {
-                guard let page = pages[id]?.navigation as? ChromiumPageNavigation,
-                      admission(page, in: window) != nil else { continue }
-                var actual = BarcSplitLayout.sized
-                if bridge.window_get_split(page.nativeWindowID, page.nativeTabID, &actual) == 1 {
-                    unknownLiveOldGroup = true
-                }
-            }
-        }
-        // Reuse normal exact-owner/header admission for an explicitly chosen
-        // active pane. Preparing hidden panes never selects their profiles.
-        let requestedActive = activeItemID.flatMap { pages[$0]?.navigation as? ChromiumPageNavigation }
-        let presentationBeforeSelection = old
-        func restorePreviousSelection() {
-            guard isCurrent(), mounts[window.id] === mount, mount.generation == generation,
-                  let selectedBefore, let requestedActive,
-                  isNativeSelection(requestedActive, in: window) || isNativeSelection(selectedBefore, in: window) else { return }
-            if !isNativeSelection(selectedBefore, in: window) {
-                guard selectPage(selectedBefore, in: window), isCurrent() else { return }
-                generation = mount.generation
-            }
-            if var previous = presentationBeforeSelection, previous.layout.active_tab == selectedBefore.nativeTabID,
-               isCurrent(), mount.generation == generation,
-               bridge.window_set_split(selectedBefore.nativeWindowID, &previous.layout) == 1,
-               mounts[window.id] === mount, mount.generation == generation,
-               isCurrent(), isNativeSelection(selectedBefore, in: window) {
-                var restored = BarcSplitLayout.sized
-                if bridge.window_get_split(selectedBefore.nativeWindowID, 0, &restored) == 1,
-                   sameLayout(restored, previous.layout), validSplitIdentity(restored) {
-                    mount.presentedSplit = (selectedBefore.nativeWindowID, restored.tabs.0,
-                        restored.collection, restored.kind, restored.generation, restored.count)
-                }
-            }
-        }
-        if let requestedActive, !isNativeSelection(requestedActive, in: window) {
-            let selectionAttempt = mount.generation &+ 1
-            guard selectPage(requestedActive, in: window) else {
-                // selectPage already guards its selection/header rollback. If it
-                // restored the old page, restore only that page's old layout.
-                if isCurrent(), mount.generation == selectionAttempt,
-                   let selectedBefore, isNativeSelection(selectedBefore, in: window) {
-                    generation = selectionAttempt
-                    restorePreviousSelection()
-                }
-                return false
-            }
-            generation = mount.generation
-            guard isCurrent(), mounts[window.id] === mount else {
-                restorePreviousSelection()
-                return false
-            }
-            if var captured = old {
-                var current = BarcSplitLayout.sized
-                if bridge.window_get_split(captured.window, captured.member, &current) == 1,
-                   current.kind == captured.layout.kind,
-                   current.generation == captured.layout.generation,
-                   current.collection == captured.layout.collection,
-                   sameLayout(current, captured.layout, active: false) {
-                    captured.layout = current
-                    old = captured
-                }
-            }
-        }
-        if let record {
-            guard let native = splitPages(record, pages: pages, in: window),
-                  var request = layout(record, pages: native, active: activeItemID),
-                  let index = activeItemID.flatMap({ record.itemIDs.firstIndex(of: $0) }),
-                  let (currentMount, row) = admission(native[index], in: window),
-                  currentMount === mount, mounts[window.id] === mount,
-                  row.selected_client == native[index].nativeWindowID,
-                  mount.shell != nil,
-                  mount.presenter.ownsSidebar(native[index].nativeWindowID),
-                  isCurrent() else {
-                restorePreviousSelection()
-                return false
-            }
-            guard mount.generation == generation, bridge.window_set_split(native[index].nativeWindowID, &request) == 1,
-                  mounts[window.id] === mount, mount.generation == generation,
-                  isCurrent(), isSplit(record, pages: pages, activeItemID: activeItemID, in: window) else {
-                restorePreviousSelection()
-                return false
-            }
-            if let previous, Set(previous.itemIDs).isDisjoint(with: record.itemIDs), var old {
-                // Exact identity rejects a replaced/reconfigured old collection.
-                // Its refusal never rolls back the successfully admitted new split.
-                if old.window == native[index].nativeWindowID {
-                    // Set chose a disjoint pane in this same client. Only this
-                    // expected own selection change is ours to reconcile.
-                    old.layout.active_tab = 0
-                }
-                _ = bridge.window_clear_split(old.window, old.member, &old.layout)
-            }
-            guard mounts[window.id] === mount, mount.generation == generation,
-                  isCurrent(), isSplit(record, pages: pages, activeItemID: activeItemID, in: window) else {
-                restorePreviousSelection()
-                return false
-            }
-            var admitted = BarcSplitLayout.sized
-            guard bridge.window_get_split(native[index].nativeWindowID, 0, &admitted) == 1,
-                  sameLayout(admitted, request), validSplitIdentity(admitted) else {
-                restorePreviousSelection()
-                return false
-            }
-            mount.presentedSplit = (native[index].nativeWindowID, native[0].nativeTabID, admitted.collection, admitted.kind, admitted.generation, admitted.count)
-            return true
-        }
-        guard !unknownLiveOldGroup else { restorePreviousSelection(); return false }
-        let active = activeItemID.flatMap { pages[$0]?.navigation as? ChromiumPageNavigation }
-        if let active {
-            guard let (currentMount, row) = admission(active, in: window), currentMount === mount,
-                  row.selected_client == active.nativeWindowID, mount.shell != nil,
-                  mount.presenter.ownsSidebar(active.nativeWindowID) else {
-                restorePreviousSelection()
-                return false
-            }
-        }
-        if var old {
-            guard bridge.window_clear_split(old.window, old.member, &old.layout) == 1 else {
-                // Restore only a still-unchanged refused presentation. If Clear
-                // returned views and a callback chose a newer native collection,
-                // preserve that actual state instead of remounting the old split.
-                var retained = BarcSplitLayout.sized
-                if bridge.window_get_split(old.window, old.member, &retained) == 1,
-                   retained.kind == old.layout.kind, retained.collection == old.layout.collection,
-                   retained.generation == old.layout.generation, sameLayout(retained, old.layout) {
-                    restorePreviousSelection()
-                }
-                return false
-            }
-        }
-        guard mounts[window.id] === mount, mount.generation == generation, isCurrent() else {
-            restorePreviousSelection()
-            return false
-        }
-        if let active, !isNativeSelection(active, in: window) {
-            // Separating the selected pane can choose its neighbour, but only
-            // after exact native clear succeeded. A refused clear never focuses it.
-            guard let (_, row) = admission(active, in: window), row.selected_client == active.nativeWindowID,
-                  mount.shell != nil, mount.generation == generation,
-                  mount.presenter.ownsSidebar(active.nativeWindowID),
-                  active.selectNativePage(), mounts[window.id] === mount,
-                  mount.generation == generation, isCurrent() else {
-                restorePreviousSelection()
-                return false
-            }
-        }
-        guard isCurrent(), isSplit(nil, pages: pages, activeItemID: activeItemID, in: window) else {
-            restorePreviousSelection()
-            return false
-        }
-        // Retain only the last observed identity, never a layout or live claim.
-        // A cleared/ending group must not look like a fresh cold-start mount.
-        return true
+        applyHostSplit(record, navigations: navigations(pages), activeItemID: activeItemID, in: window, isCurrent: isCurrent)
     }
 
-    /// Only a fresh product mount needs automatic cold restoration. Owner-ended
-    /// pages must not be recreated merely because a catalog callback arrived.
+    /// Only a fresh product mount needs automatic cold restoration.
     func needsInitialSplitRestore(in window: BrowserWindowState) -> Bool {
         guard let mount = mounts[window.id], mount.model === window else { return false }
-        if mount.presenter.laysOutSplits { return !mount.hostSplitApplied }
-        return mount.presentedSplit == nil
+        return !mount.hostSplitApplied
     }
 
-    /// Called only from the coalesced catalog drain. nil means preserve the saved
-    /// split (including ordinary unrelated-tab selection), not 'clear layout'.
-    func nativeSplitUpdate(in window: BrowserWindowState, selected: BarcDiscoveryWindow,
-                           sessions: [Int32: PageSession], savedPages: [PageSession])
-        -> (record: SplitRecord?, validate: () -> Bool, remountLive: Bool)? {
-        guard let mount = mounts[window.id], mount.model === window, !mount.presenter.laysOutSplits,
-              let activeSession = sessions[selected.active_tab],
-              let active = activeSession.navigation as? ChromiumPageNavigation,
-              active.nativeWindowID == selected.window, isNativeSelection(active, in: window) else { return nil }
-        func currentSelection() -> Bool {
-            mounts[window.id] === mount &&
-                liveState(selected.window)?.physical_group == mount.group &&
-                isNativeSelection(active, in: window)
-        }
-        func read(_ client: Int32, _ member: Int32) -> BarcSplitLayout? {
-            var value = BarcSplitLayout.sized
-            return bridge.window_get_split(client, member, &value) == 1 ? value : nil
-        }
-        func decode(_ value: BarcSplitLayout) -> SplitRecord? {
-            guard (2...4).contains(value.count), validSplitIdentity(value), value.orientation <= BARC_SPLIT_STACKED.rawValue else { return nil }
-            let ids = Array([value.tabs.0, value.tabs.1, value.tabs.2, value.tabs.3].prefix(Int(value.count)))
-            let pages = ids.compactMap { sessions[$0] }
-            guard pages.count == ids.count, pages.allSatisfy({ session in
-                guard let page = session.navigation as? ChromiumPageNavigation else { return false }
-                return admission(page, in: window) != nil
-            }) else { return nil }
-            let cuts = Array([value.dividers.0, value.dividers.1, value.dividers.2].prefix(Int(value.count) - 1))
-            return SplitRecord(pages.map(\.itemID), orientation: value.orientation == BARC_SPLIT_SIDE_BY_SIDE.rawValue ? .horizontal : .vertical,
-                               dividers: cuts)
-        }
-        func snapshot(_ value: BarcSplitLayout, client: Int32, member: Int32)
-            -> (record: SplitRecord?, validate: () -> Bool, remountLive: Bool)? {
-            guard let record = decode(value), currentSelection() else { return nil }
-            mount.presentedSplit = (client, member, value.collection, value.kind, value.generation, value.count)
-            return (record, {
-                guard currentSelection(), let actual = read(client, member) else { return false }
-                return actual.collection == value.collection && actual.kind == value.kind &&
-                    actual.generation == value.generation && self.sameLayout(actual, value)
-            }, false)
-        }
-        let hasLiveRemainder = mount.presentedSplit.map { presented in
-            presented.kind == BARC_SPLIT_PHYSICAL.rawValue && window.split.map {
-                $0.contains(activeSession.itemID) && $0.itemIDs.count < Int(presented.count)
-            } == true
-        } ?? false
-        if let value = read(selected.window, 0), !hasLiveRemainder || value.kind == BARC_SPLIT_PHYSICAL.rawValue {
-            return snapshot(value, client: selected.window, member: value.tabs.0)
-        }
-        guard mount.presentedSplit != nil, let saved = window.split,
-              saved.contains(activeSession.itemID) else { return nil }
-        // A separate/close-native-group action can leave another retained group.
-        // Bound reads to the four saved members; never scan/create/load pages.
-        let oldPages = savedPages
-        guard oldPages.map(\.itemID) == saved.itemIDs,
-              oldPages.allSatisfy({ session in
-                  guard let page = session.navigation as? ChromiumPageNavigation else { return false }
-                  return admission(page, in: window) != nil
-              }) else { return nil } // Owner ending/cold state preserves saved metadata.
-        for session in oldPages {
-            guard let page = session.navigation as? ChromiumPageNavigation else { continue }
-            if let value = read(page.nativeWindowID, page.nativeTabID), !hasLiveRemainder || value.kind == BARC_SPLIT_PHYSICAL.rawValue {
-                return snapshot(value, client: page.nativeWindowID, member: page.nativeTabID)
-            }
-        }
-        if let presented = mount.presentedSplit, presented.kind == BARC_SPLIT_PHYSICAL.rawValue,
-           saved.itemIDs.count < Int(presented.count) {
-            // One live-only attempt for this ended presentation. Never turn an
-            // admitted owner into a cold-start mount or recreate missing pages.
-            guard mount.attemptedLiveRemainder != presented.generation else { return nil }
-            mount.attemptedLiveRemainder = presented.generation
-            let native = oldPages.compactMap { $0.navigation as? ChromiumPageNavigation }
-            let owners = native.map(\.nativeWindowID)
-            guard native.count == oldPages.count else { return nil }
-            return (saved, {
-                guard currentSelection(), window.split == saved else { return false }
-                for index in native.indices {
-                    guard oldPages[index].navigation === native[index], !native[index].isClosed,
-                          native[index].nativeWindowID == owners[index],
-                          self.admission(native[index], in: window) != nil else { return false }
-                }
-                return true
-            }, true)
-        }
-        return (nil, {
-            guard currentSelection(), read(selected.window, 0) == nil else { return false }
-            for session in oldPages {
-                guard let page = session.navigation as? ChromiumPageNavigation,
-                      self.admission(page, in: window) != nil,
-                      read(page.nativeWindowID, page.nativeTabID) == nil else { return false }
-            }
-            return true
-        }, false)
-    }
-
-    // MARK: - Splits in a Bark window
-
-    /// Whether `window`'s root lays out its split panes: a Bark window. The engine holds no split
-    /// there; the panes are page views the root places.
     func laysOutSplits(in window: BrowserWindowState) -> Bool {
-        guard let mount = mounts[window.id], mount.model === window else { return false }
-        return mount.presenter.laysOutSplits
+        mounts[window.id]?.model === window
     }
 
     private func navigations(_ pages: [UUID: PageSession]) -> [UUID: ChromiumPageNavigation] {
@@ -1468,10 +1101,12 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     /// Chromium; with no record, that page alone.
     func hostShowsSplit(_ record: SplitRecord?, navigations: [UUID: ChromiumPageNavigation], activeItemID: UUID?,
                         in window: BrowserWindowState) -> Bool {
-        guard let mount = mounts[window.id], mount.model === window, mount.presenter.laysOutSplits else { return false }
+        guard let mount = mounts[window.id], mount.model === window else { return false }
         let active = activeItemID.flatMap { navigations[$0] }
         guard let record else {
-            return mount.presenter.shownSplit == nil && (active.map { isNativeSelection($0, in: window) } ?? true)
+            guard mount.presenter.shownSplit == nil else { return false }
+            if activeItemID == nil { return true }
+            return active.map { isNativeSelection($0, in: window) } == true
         }
         guard let active, let split = hostSplit(record, navigations: navigations, activeItemID: activeItemID, mount: mount, in: window)
         else { return false }
@@ -1483,8 +1118,9 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     /// own split.
     func applyHostSplit(_ record: SplitRecord?, navigations: [UUID: ChromiumPageNavigation], activeItemID: UUID?,
                         in window: BrowserWindowState, isCurrent: () -> Bool) -> Bool {
-        guard isCurrent(), let mount = mounts[window.id], mount.model === window, mount.presenter.laysOutSplits else { return false }
+        guard isCurrent(), let mount = mounts[window.id], mount.model === window else { return false }
         let active = activeItemID.flatMap { navigations[$0] }
+        guard activeItemID == nil || active != nil else { return false }
         if let record {
             guard active != nil,
                   let split = hostSplit(record, navigations: navigations, activeItemID: activeItemID, mount: mount, in: window),
@@ -1495,13 +1131,14 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         if let active, !isNativeSelection(active, in: window) {
             guard selectPage(active, in: window), isCurrent() else { return false }
         }
+        guard isCurrent(), hostShowsSplit(record, navigations: navigations, activeItemID: activeItemID, in: window) else { return false }
         mount.hostSplitApplied = true
-        return isCurrent() && hostShowsSplit(record, navigations: navigations, activeItemID: activeItemID, in: window)
+        return true
     }
 
     func splitResizeRoot(in keyWindow: NSWindow?) -> ChromiumWindowRoot? {
         guard let keyWindow else { return nil }
-        return mounts.values.lazy.compactMap { ($0.presenter as? ChromiumHostPresenter)?.root }
+        return mounts.values.lazy.map { $0.presenter.root }
             .first { $0.window === keyWindow && $0.canResizeSplit }
     }
 
@@ -1527,7 +1164,7 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     /// decides.
     func showModelSplit(_ panes: [UUID?]?, vertical: Bool, dividers: [CGFloat], focused: UUID?,
                         page: (UUID) -> ChromiumPageNavigation?, in window: BrowserWindowState) {
-        guard let mount = mounts[window.id], mount.model === window, mount.presenter.laysOutSplits,
+        guard let mount = mounts[window.id], mount.model === window,
               !window.nativePresentationIsPreparing else { return }
         guard let panes else {
             if mount.presenter.shownSplit != nil { _ = mount.presenter.showSplit(nil) }
@@ -1706,21 +1343,7 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
             mounts[window.id] === mount && mount.generation == attempt &&
                 liveState(client).map { $0.physical_group == mount.group && $0.selected_client == client } == true
         }
-        guard current() else { return false }
-        reconcilePeekSidebar(mount)
-        let presenter = mount.presenter
-        if !presenter.ownsSidebar(client) {
-            if let old = mount.attachedClient, old != client, presenter.ownsSidebar(old) {
-                guard presenter.detachSidebar(from: old), current() else { return false }
-            }
-            let attached = presenter.attachSidebar(to: client)
-            let owns = presenter.ownsSidebar(client)
-            if owns {
-                if mount.generation == attempt { mount.attachedClient = client }
-                else if mount.attachedClient != client { _ = presenter.detachSidebar(from: client) }
-            }
-            guard attached, current(), owns else { return false }
-        }
+        guard current(), mount.presenter.ownsSidebar(client) else { return false }
         mount.attachedClient = client
         return true
     }

@@ -140,7 +140,7 @@ final class ChromiumCreatedPageAdmission {
                   self.registry.windows[window.id] === window,
                   self.tabs.isNativePageOwner(source, in: window),
                   split == nil ? self.host.acceptNativeSelection(page, in: window)
-                               : self.host.isNativeSelection(page, in: window),
+                               : self.host.isNativePeekSelection(page, source: origin, in: window),
                   let id = self.tabs.adoptDetachedNativePage(session, through: self.host, in: window,
                       spaceID: space, from: source.itemID, select: false),
                   self.tabs.session(for: id) === session, session.navigation === page else { return false }
@@ -158,7 +158,9 @@ final class ChromiumCreatedPageAdmission {
                 tabs.presentNativeSplit(split, activeItemID: session.itemID, in: window, liveAdmission: stillOwned) {
                     [weak self, weak window] admitted in
                     guard !admitted, let self, let window, window.selectedItemID == source.itemID,
-                          stillOwned(), self.host.isNativeSelection(page, in: window) else { return }
+                          stillOwned(), self.host.isNativeSelection(page, in: window) ||
+                            self.host.isNativePeekSelection(page, source: origin, in: window) else { return }
+                    // Reflection moves the still-selected Peek into the ordinary page slot.
                     _ = self.tabs.reflectNativeSelection(session.itemID, in: window)
                 }
             }
@@ -795,11 +797,9 @@ final class ChromiumCreatedPageAdmission {
                   row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return false }
             return true
         }
-        guard current(), let row = bridge.windowState(native) else { return }
-        if row.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
-            guard bridge.window_admit_discovered(native, Unmanaged.passUnretained(product.shell).toOpaque()) == 1,
-                  current() else { return }
-        }
+        // Attaching the Bark root replays the engine's pending Show or ShowInactive.
+        guard current(), let row = bridge.windowState(native),
+              row.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue == 0 else { return }
         if !product.didNotifyStartupWarming, !state.isIncognito {
             product.didNotifyStartupWarming = true
             didPresent(state)
@@ -1195,16 +1195,6 @@ final class ChromiumCreatedPageAdmission {
                   verified.selected_client == selected.window, verified.presentedTab == selected.presentedTab else { continue }
             if independentSelection { host.setPageHidden(false, in: product.state) }
             product.state.windowHandle = product.shell.window
-            if let update = host.nativeSplitUpdate(in: product.state, selected: verified, sessions: sessions,
-                savedPages: (product.state.split?.itemIDs ?? []).compactMap { tabs.session(for: $0) }) {
-                if update.remountLive {
-                    _ = tabs.presentNativeSplit(update.record, activeItemID: session.itemID,
-                        in: product.state, liveAdmission: update.validate)
-                } else {
-                    guard tabs.reflectNativeSplit(update.record, in: product.state,
-                                                   validateNative: update.validate) else { continue }
-                }
-            }
             if host.needsInitialSplitRestore(in: product.state) {
                 tabs.restoreSavedNativeSplitIfNeeded(in: product.state) { [weak self, weak product] success in
                     guard success, let self, let product else { return }
