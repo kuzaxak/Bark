@@ -521,7 +521,7 @@ def main():
         sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture (default: native hardware)")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
-        if command in ("engine", "build", "package"):
+        if command in ("engine", "build", "verify", "package"):
             sub.add_argument("--require-official", action="store_true", help="require verified official engine provenance")
         if command == "engine":
             sub.add_argument("--install", action="store_true", help="cache the verified SDK for clean checkouts")

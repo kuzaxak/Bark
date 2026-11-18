@@ -57,8 +57,8 @@ class ArchitectureTests(unittest.TestCase):
                         calls["launch_candidate"].assert_called_once()
 
     def test_explicit_cross_architecture_verification_remains_available(self):
-        calls = self.invoke(["verify", str(self.app), "--arch", "x86_64"], "arm64")
-        self.assertEqual(calls["pinned_engine"].call_args.args[2], "x86_64")
+        calls = self.invoke(["verify", "--arch", "x86_64", "--require-official", str(self.app)], "arm64")
+        self.assertEqual(calls["pinned_engine"].call_args.args[2:], ("x86_64", True))
         self.assertEqual(calls["verify_candidate"].call_args.args[3], "x86_64")
         calls["launch_candidate"].assert_not_called()
 
