@@ -45,6 +45,17 @@ python3 scripts/bark-check.py interaction
 
 The regression compiles the shipped command-routing code and checks it against real AppKit windows and a sheet. CI runs it after the Swift package tests.
 
+To check the app entry point and SDK tools on a Mac with Xcode, run the same
+commands as the hosted package job. The bootstrap suite compiles small engine
+fixtures and older app entries from Git history. A regular clone contains those
+revisions. These tests run before a full Chromium build is available.
+
+```fish
+python3 -B -m unittest discover -s scripts/tests
+python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
+python3 -B Tests/ChromiumAppShim/check.py
+```
+
 Run the catalog, startup focus, page ownership and extension action regressions against the Debug shell on the host architecture. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
 
 ```fish

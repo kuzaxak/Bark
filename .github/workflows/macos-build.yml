@@ -23,6 +23,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          # The SDK tests compile real app entries from earlier bridge versions.
+          fetch-depth: 0
 
       # The package checks run on the hosted macOS runner.
       - name: Test each package
@@ -40,6 +42,12 @@ jobs:
 
       - name: Check native command routing
         run: python3 scripts/bark-check.py interaction
+
+      - name: Check the app bootstrap and SDK tools
+        run: |
+          python3 -B -m unittest discover -s scripts/tests
+          python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
+          python3 -B Tests/ChromiumAppShim/check.py
 
   signed-smoke:
     name: Smoke-test the pinned signed Bark candidate
