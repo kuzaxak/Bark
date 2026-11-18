@@ -33,7 +33,7 @@ Planning only. The user accepted fresh local/cloud state under a new Bark App ID
 - [ ] 4.1 Prepare three original logo directions with small-size previews; obtain a selected direction and record the asset ownership/license.
 - [ ] 4.2 Produce the editable master, production/development app icons, monochrome mark and required raster exports; visually verify small sizes and supported system appearances.
 - [ ] 4.3 Replace `.icon` bundle and asset-catalog references plus About/onboarding/repository artwork; inspect icons in built Finder/Dock/app/DMG surfaces.
-- [ ] 4.4 Rename visible product strings, menus, plist descriptions and installer/update labels to Bark; review a fresh installation and permission prompts on both architectures.
+- [ ] 4.4 Rename visible product strings, menus, plist descriptions and installer/update labels to Bark; review a fresh installation and permission prompts on both architectures. On Intel, signed Bark displayed its local Help, About credits and embedded Settings page. All 228 installed locale packs matched the generated browser strings.
 
 ## 5. Mechanical rename and documentation (B3)
 
