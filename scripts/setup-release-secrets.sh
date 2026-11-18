@@ -14,11 +14,18 @@ cd "$(dirname "$0")/.."
 
 REPO=kuzaxak/Nook
 TEAM=538SB59LX4
-GENERATE_KEYS=build/SourcePackages/artifacts/sparkle/Sparkle/bin/generate_keys
 P12="${1:?usage: scripts/setup-release-secrets.sh path/to/devid.p12}"
 
 [[ -s "$P12" ]] || { echo "No such file, or it is empty: $P12"; exit 1; }
-[[ -x "$GENERATE_KEYS" ]] || { echo "Sparkle's tools are missing: build Nook once so Xcode fetches Sparkle."; exit 1; }
+
+WORK="$(mktemp -d)"
+trap 'rm -rf "$WORK"' EXIT
+PACKAGES="$WORK/SourcePackages"
+xcodebuild -resolvePackageDependencies -project Nook.xcodeproj -scheme NookNativeShell \
+  -onlyUsePackageVersionsFromResolvedFile -derivedDataPath "$WORK/DerivedData" \
+  -clonedSourcePackagesDirPath "$PACKAGES"
+GENERATE_KEYS="$PACKAGES/artifacts/sparkle/Sparkle/bin/generate_keys"
+[[ -x "$GENERATE_KEYS" ]] || { echo "The locked Sparkle package did not provide generate_keys: $GENERATE_KEYS" >&2; exit 1; }
 
 read -rsp "Password of $P12: " P12_PASSWORD; echo
 export P12_PASSWORD
@@ -32,8 +39,8 @@ fi
 read -rp "Apple ID: " APPLE_ID
 read -rsp "App-specific password for $APPLE_ID: " APP_PASSWORD; echo
 
-KEY_DIR="$(mktemp -d)"
-trap 'rm -rf "$KEY_DIR"' EXIT
+KEY_DIR="$WORK/key"
+mkdir "$KEY_DIR"
 "$GENERATE_KEYS" --account ee.qdo.nook -x "$KEY_DIR/sparkle_key"
 [[ -s "$KEY_DIR/sparkle_key" ]] || { echo "No Sparkle key was exported."; exit 1; }
 
