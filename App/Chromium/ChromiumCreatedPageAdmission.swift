@@ -702,7 +702,9 @@ final class ChromiumCreatedPageAdmission {
         guard current(), let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
               page.nativeWindowID == native, page.profileID == profile, !page.isPrivateSession,
               host.isNativeSelection(page, in: state), modelLayoutPresented(in: state) else { return false }
-        let startupRoot = show && product.preservesSavedRecord && state.split != nil
+        // Startup admission leaves Show to Chromium. The saved pane must be
+        // ready to take focus when that native window later becomes key.
+        let startupRoot = product.preservesSavedRecord && state.split != nil
             ? host.presentedRoot(for: page, in: state) : nil
         if let root = startupRoot {
             let pane = ChromiumWindowRoot.Pane(client: native, tab: page.nativeTabID)
