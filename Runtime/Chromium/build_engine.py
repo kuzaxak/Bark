@@ -322,6 +322,9 @@ def build(checkout, depot_tools, env, args):
     repository(src, "chromium", create=False, dry_run=args.dry_run)
     repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
     if args.official and not args.dry_run:
+        from official_provenance import engine_source_digest
+
+        official_source = engine_source_digest()
         env = {**env, "SDKROOT": str(official_sdk())}
     replay(src)
     configured_args = engine_args(args.arch, args.official)
@@ -409,6 +412,8 @@ def build(checkout, depot_tools, env, args):
         from official_provenance import RECEIPT, record
 
         receipt = record(out, src, macho_arch, env)
+        if receipt["engine_source_sha256"] != official_source:
+            raise ValueError("The Bark engine source recipe changed during the official build. Retry with stable inputs.")
         with tempfile.TemporaryDirectory(dir=out) as scratch:
             staged = Path(scratch) / RECEIPT
             staged.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")

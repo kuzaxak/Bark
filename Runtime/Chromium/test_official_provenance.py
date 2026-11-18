@@ -1,11 +1,14 @@
 """Test the official SDK receipt binding without an official toolchain."""
+import argparse
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
 import plistlib
+import shutil
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import DEFAULT, patch
 
 import build_engine
 import official_provenance as provenance
@@ -128,6 +131,69 @@ class OfficialProvenanceTests(unittest.TestCase):
             provenance.verify_pgo_profile(self.src, "mac")
         with self.assertRaisesRegex(ValueError, "PGO profile SHA-256 differs"):
             provenance.record(self.out, self.src, self.arch, {})
+
+    def test_source_receipt_matches_a_relocated_recipe_and_rejects_runtime_drift(self):
+        paths = (
+            "Runtime/Chromium/bark/tools/override_cc.c",
+            "Runtime/Chromium/bark/browser/runtime.cc",
+            "Runtime/Chromium/chromium_src/override.cc",
+            "Runtime/Chromium/patches/chrome/foo.cc.patch",
+            "Runtime/Chromium/official_pgo.star",
+            "Runtime/Chromium/checkout.gclient",
+            "Packages/NookBlocker/Sources/scriptlets.json",
+            "Nook/ThirdParty/AdblockRustFFI/Cargo.toml",
+            "Nook/ThirdParty/AdblockRustFFI/Cargo.lock",
+            "Nook/ThirdParty/AdblockRustFFI/nook_adblock.exports",
+            "Nook/ThirdParty/AdblockRustFFI/src/lib.rs",
+        )
+        producer = self.root / "producer"
+        receiver = self.root / "receiver"
+        for name in paths:
+            path = producer / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(name)
+        resource = producer / "Runtime/Chromium/bark/scriptlets.json"
+        resource.symlink_to("../../../Packages/NookBlocker/Sources/scriptlets.json")
+        shutil.copytree(producer, receiver, symlinks=True)
+
+        @contextmanager
+        def use_source(root):
+            runtime = root / "Runtime/Chromium"
+            mounts = {name: runtime / name for name in ("bark", "chromium_src")}
+            with patch.multiple(build_engine, REPO=root, MOUNTS=mounts, PATCHES=runtime / "patches"), (
+                    patch.object(provenance, "HERE", runtime)):
+                yield
+
+        with use_source(producer):
+            self.sealed_receipt()
+
+        with use_source(receiver):
+            for relative in ("README.md", "App/Chromium/Shell.swift",
+                             "build/Barc-x64/temporary.o", "Runtime/Chromium/bark/test/fixture.mm"):
+                path = receiver / relative
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("unrelated fixture")
+            provenance.verify_cached(self.artifact, self.arch)
+            for name in paths:
+                with self.subTest(name=name):
+                    path = receiver / name
+                    path.write_text("changed runtime fixture")
+                    with self.assertRaisesRegex(ValueError, "does not match"):
+                        provenance.verify_cached(self.artifact, self.arch)
+                    path.write_text(name)
+
+    def test_official_build_refuses_receipt_after_source_changes(self):
+        (self.src / "build/config/siso").mkdir(parents=True)
+        options = argparse.Namespace(arch="x64", official=True, dry_run=False, jobs=1)
+        with patch.multiple(build_engine, verify_gclient=DEFAULT,
+                            repository=DEFAULT, replay=DEFAULT,
+                            official_sdk=DEFAULT, run=DEFAULT,
+                            install_generated=DEFAULT), patch.object(
+                                provenance, "engine_source_digest", return_value="before"), patch.object(
+                                provenance, "record", return_value={"engine_source_sha256": "after"}):
+            with self.assertRaisesRegex(ValueError, "source recipe changed"):
+                build_engine.build(self.root, self.root / "depot_tools", {}, options)
+        self.assertFalse((self.out / provenance.RECEIPT).exists())
 
     def test_wrong_receipt_profile_digest_fails_even_when_sealed(self):
         receipt = self.sealed_receipt()

@@ -52,14 +52,32 @@ def framework_inputs(framework, arch):
     return {"framework_sha256": digest(image), "framework_info_sha256": digest(info_path)}
 
 
+def engine_source_digest():
+    from build_engine import REPO, preparation_inputs, recipe_digest
+
+    mounts, patches = preparation_inputs()
+    # The SDK ships the engine and matcher. Bark's browser-test overlay is
+    # another target in the same invocation, with no runtime dependencies.
+    inputs = {name: path for name, path in mounts.items()
+              if not name.is_relative_to(Path("bark/test"))}
+    rust = REPO / "Nook/ThirdParty/AdblockRustFFI"
+    sources = [HERE / "checkout.gclient", HERE / "official_pgo.star",
+               rust / "Cargo.toml", rust / "Cargo.lock", rust / "nook_adblock.exports"]
+    sources.extend(path for path in sorted((rust / "src").rglob("*")) if path.is_file())
+    inputs.update((path.relative_to(REPO), path) for path in sources)
+    return recipe_digest(inputs, patches)
+
+
 def recipe_inputs(arch):
     from build_engine import engine_args
 
     gn_arch, target = ARCHES[arch]
     return {
-        "format": 1,
+        "format": 2,
         "arch": arch,
         "chromium": PINS["chromium"],
+        "depot_tools": PINS["depot_tools"],
+        "engine_source_sha256": engine_source_digest(),
         "SDK": PINS["official_macos_sdk"],
         "gn_args_sha256": sha256(engine_args(gn_arch, True)).hexdigest(),
         "pgo_profile": PINS["official_pgo_profiles"][target],

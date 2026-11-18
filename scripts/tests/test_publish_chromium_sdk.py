@@ -28,6 +28,9 @@ class FirstOfficialPublicationTests(unittest.TestCase):
         self.chromium = self.repo / "Runtime/Chromium"
         shutil.copytree(ROOT / "Runtime/Chromium", self.chromium)
         shutil.copytree(ROOT / "scripts", self.repo / "scripts")
+        rust = Path("Nook/ThirdParty/AdblockRustFFI")
+        shutil.copytree(ROOT / rust, self.repo / rust,
+                        ignore=shutil.ignore_patterns("NookAdblock.xcframework", "tests"))
         (self.repo / "ChromiumApp").symlink_to(ROOT / "ChromiumApp", target_is_directory=True)
         pins_path = self.chromium / "PINS.json"
         pins = json.loads(pins_path.read_text())
@@ -194,6 +197,18 @@ publication.finish = stop_before_promotion
         self.assertIn("Recovered SDK publication", recovered.stdout)
         self.assertTrue(self.pin("x86_64").is_file())
         self.assertFalse(journal.exists())
+
+    def test_receipt_from_another_bark_runtime_cannot_replace_the_pin(self):
+        self.make_official()
+        original = self.publish("--require-official")
+        self.assertEqual(original.returncode, 0, original.stderr)
+        pin = self.pin("arm64").read_bytes()
+        wrapper = self.chromium / "bark/tools/override_cc.c"
+        wrapper.write_bytes(wrapper.read_bytes() + b"\n/* changed source fixture */\n")
+        refused = self.publish("--require-official", "--replace")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("official SDK receipt differs", refused.stderr)
+        self.assertEqual(self.pin("arm64").read_bytes(), pin)
 
     def test_sealed_copy_must_keep_the_verified_receipt_and_can_recover(self):
         self.make_official()

@@ -78,9 +78,15 @@ optimization. A file already cached at that name must pass the same check. The d
 `Barc-<arch>-official` and `BarkCargo-official` directories keep developer
 and official products independent.
 
-After the link, the recipe records the framework hashes, Chromium revision,
-SDK build, GN arguments and the pinned PGO name and SHA-256 in
-`official-build.json`. For official builds, Bark's Siso handler retains the
+After the link, the recipe records the framework hashes, Chromium and
+depot_tools revisions, SDK build, GN arguments and pinned PGO name and SHA-256
+in `official-build.json`. The receipt also records a path-independent digest
+of Bark's production overlays, Chromium patches, gclient and Siso configuration,
+and the Rust matcher's sources, dependency lock and exports. The build compares
+that digest before and after compilation. Publication and intake recompute it
+from their source snapshot. A Git archive of the matching source works for
+intake. The app shell and documentation can change independently of the SDK.
+For official builds, Bark's Siso handler retains the
 digest of the profile explicitly passed to the browser-core compile. The
 receipt checks that compile before the raw framework link and matches the
 raw and packaged framework bytes. The versioned official compiler wrapper
