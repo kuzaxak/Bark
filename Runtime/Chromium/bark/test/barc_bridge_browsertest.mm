@@ -1982,10 +1982,27 @@ IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
   const int32_t window_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* window = SharedWindow(window_id);
   ASSERT_TRUE(window);
-  ASSERT_EQ(1, barc_window_show(window_id));
+  auto* host = bark::BarkWindowHost::ForBrowser(window);
+  ASSERT_NE(nullptr, host);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  ASSERT_EQ(1, barc_window_set_root_view(window_id, (__bridge void*)root));
+  const auto mount = [&](int32_t selected_tab) {
+    NSView* page = (__bridge NSView*)barc_tab_native_view(window_id, selected_tab);
+    ASSERT_NE(nil, page);
+    for (NSView* child in root.subviews) {
+      [child removeFromSuperview];
+    }
+    page.frame = root.bounds;
+    [root addSubview:page];
+  };
+
   const int32_t tab = barc_window_tab_at(window_id, 0);
+  ASSERT_NO_FATAL_FAILURE(mount(tab));
+  ASSERT_EQ(1, barc_window_show(window_id));
   Navigate(window, https_server.GetURL("a.test", "/title1.html"));
   auto* contents = window->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(host->IsPageMounted(contents));
+  ASSERT_TRUE([root.window isVisible]);
 
   using CertBuffers = std::vector<bssl::UniquePtr<CRYPTO_BUFFER>>;
   base::test::TestFuture<CertBuffers, content::WebContents*> viewer;
@@ -2021,11 +2038,15 @@ IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
 
   const int32_t other_tab = barc_tab_create(window_id, "about:blank", 1);
   ASSERT_GT(other_tab, 0);
+  ASSERT_NO_FATAL_FAILURE(mount(other_tab));
+  ASSERT_FALSE(host->IsPageMounted(contents));
   EXPECT_EQ(0, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
   EXPECT_EQ(0, barc_tab_execute_command(window_id, other_tab, BARC_PAGE_SHOW_CERTIFICATE));
   EXPECT_EQ(0, barc_tab_execute_command(window_id, other_tab,
                                        BARC_PAGE_CLOSE_CERTIFICATE_VIEWER));
   ASSERT_EQ(1, barc_tab_select(window_id, tab));
+  ASSERT_NO_FATAL_FAILURE(mount(tab));
+  ASSERT_TRUE(host->IsPageMounted(contents));
   Navigate(window, embedded_test_server()->GetURL("a.test", "/title2.html"));
   EXPECT_EQ(BARC_CERTIFICATE_UNAVAILABLE,
             barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
