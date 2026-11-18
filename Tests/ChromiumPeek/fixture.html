@@ -21,7 +21,9 @@
             method: "POST", keepalive: true,
             body: JSON.stringify({
                 page: location.pathname, event, documentID, value: draft.value,
-                viewport: innerWidth, ...properties
+                viewport: innerWidth, visibility: document.visibilityState,
+                wasDiscarded: document.wasDiscarded === true,
+                focused: document.activeElement?.id || "", ...properties
             })
         });
     }
@@ -32,7 +34,11 @@
 
     report("ready", { draftPoint: center(draft), linkPoint: center(link) });
     addEventListener("resize", () => report("resize"));
-    document.addEventListener("keydown", event => report("key", { key: event.key, trusted: event.isTrusted }));
+    document.addEventListener("visibilitychange", () => report("visibility"));
+    document.addEventListener("keydown", event => report("key", {
+        key: event.key, trusted: event.isTrusted, target: event.target.id || ""
+    }));
+    draft.addEventListener("pointerdown", event => report("pointer", { trusted: event.isTrusted }));
     draft.addEventListener("input", event => report("input", { trusted: event.isTrusted }));
     link.addEventListener("click", event => report("link", { shift: event.shiftKey, trusted: event.isTrusted }));
 </script>

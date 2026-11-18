@@ -44,13 +44,14 @@ class Screen:
     command = 1 << 20
     shift = 1 << 17
 
-    def __init__(self, console, owns_screen, pid, point):
+    def __init__(self, console, owns_screen, pid, point, launch_started_ns):
         import ApplicationServices as ax
         import Quartz as quartz
         from Foundation import NSURL
 
         self.ax, self.quartz, self.url = ax, quartz, NSURL
         self.console, self.owns_screen, self.pid, self.point = console, owns_screen, pid, point
+        self.launch_started_ns = launch_started_ns
         self.source = quartz.CGEventSourceCreate(quartz.kCGEventSourceStateHIDSystemState)
 
     def guard(self, target=None):
@@ -191,11 +192,12 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
                     start_pointer = console.pointer()
                     time.sleep(0.4)
                     require_idle_console(console, owns_screen, start_pointer, min_idle=10)
+                    launch_started_ns = time.monotonic_ns()
                     proc = subprocess.Popen([str(binary), f"--barc-app-data-dir={root}",
                                              f"--barc-app-profile={profile}"],
                                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                     try:
-                        screen = Screen(console, owns_screen, proc.pid, start_pointer)
+                        screen = Screen(console, owns_screen, proc.pid, start_pointer, launch_started_ns)
                         exercise(screen, proc, server.events, output)
                         if proc.wait(timeout=30) != 0:
                             raise RuntimeError("The signed candidate did not quit cleanly")

@@ -37,6 +37,7 @@ class Fixture(BaseHTTPRequestHandler):
             return
         row = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         row["time"] = time.time()
+        row["received_ns"] = time.monotonic_ns()
         self.server.events.append(row)
         self.send_response(204)
         self.end_headers()
