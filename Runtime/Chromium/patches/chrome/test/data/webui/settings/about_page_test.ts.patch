@@ -60,7 +60,7 @@ diff --git a/chrome/test/data/webui/settings/about_page_test.ts b/chrome/test/da
 +    assertEquals(null, page.shadowRoot.querySelector('#relaunch'));
 +    assertEquals(null, page.shadowRoot.querySelector('#help'));
 +
-+    assertTrue(!!page.shadowRoot.textContent?.includes(
++    assertEquals(true, page.shadowRoot.textContent?.includes(
 +        page.i18n('aboutBrowserVersion')));
 +    assertTrue(!!page.shadowRoot.querySelector('a[href="chrome://credits/"]'));
 +  });
