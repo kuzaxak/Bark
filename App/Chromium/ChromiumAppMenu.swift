@@ -36,10 +36,10 @@ final class ChromiumAppMenu: NSObject {
     }
 
     /// Items with no effect in Nook's windows: toolbar and omnibox options, Cast with no toolbar to
-    /// anchor to, home page and help.
+    /// anchor to, and home page.
     private static let hiddenItems = [Tag.bookmarkBar, Tag.fullscreenToolbar, Tag.fullURLs, Tag.touchBar, Tag.verticalTabs,
                                       Tag.verticalTabsCollapse, Tag.searchTheWeb, Tag.lensShortcut,
-                                      Tag.aiModeButton, Tag.searchTools, Tag.cast, Tag.home, Tag.help]
+                                      Tag.aiModeButton, Tag.searchTools, Tag.cast, Tag.home]
     /// Chromium's key for these never reaches it in Nook's windows; the items still work when clicked.
     private static let keylessItems = [Tag.openFile, Tag.clearBrowsingData]
     private var keptHidden: [NSKeyValueObservation] = []
@@ -105,9 +105,11 @@ final class ChromiumAppMenu: NSObject {
         }
         // Chromium assigns NSApp.helpMenu to an untagged submenu. Its original
         // Help command identifies that submenu in the menu tree being installed.
-        if let help = Self.item(withTag: Tag.help, in: main)?.menu,
-           !help.items.contains(where: { $0.representedObject as? Command == .barkHelp }) {
-            help.insertItem(make("Bark Help", .barkHelp), at: 0)
+        if let help = Self.item(withTag: Tag.help, in: main) {
+            help.title = "Bark Help"
+            help.target = self
+            help.action = #selector(run(_:))
+            help.representedObject = Command.barkHelp
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
         let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),

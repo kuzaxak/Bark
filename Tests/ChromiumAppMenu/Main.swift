@@ -42,6 +42,10 @@ enum Check {
         top(57321, "Window", [(40012, "Downloads")])
         // Chromium tags the Help command, but leaves the owning top-level item untagged.
         top(0, "Help", [(40020, "Chromium Help")])
+        let help = main.items.last!.submenu!.item(withTag: 40020)!
+        // Chromium's Cocoa accelerator converts the shifted slash to "?".
+        help.keyEquivalent = "?"
+        help.keyEquivalentModifierMask = .command
         return main
     }
 
@@ -53,6 +57,8 @@ enum Check {
         _ = NSApplication.shared
         var ran: [ChromiumAppMenu.Command] = []
         let main = stockMenu()
+        let help = main.items.last!.submenu!
+        let originalHelp = help.item(withTag: 40020)!
         var privateWindow = false
         var canResize = false
         var canUpdate = false
@@ -74,9 +80,8 @@ enum Check {
         for tag in [40009, 40250, 40259, 40251, 40282, 40299, 40296, 34058, 34061, 35011] {
             precondition(item(main, 57327, tag).isHidden, "View item \(tag) must be hidden")
         }
-        let help = main.items.first { $0.title == "Help" }!.submenu!
         precondition(item(main, 57324, 33003).isHidden)
-        precondition(help.item(withTag: 40020)!.isHidden)
+        precondition(!originalHelp.isHidden)
         precondition(main.item(withTag: 57343)!.submenu!.items.last!.submenu!.item(withTag: 39002)!.isHidden, "Search the Web must be hidden")
         let warn = main.item(withTag: 57325)!.submenu!.items.first { $0.title == "Warn Before Quitting" }!
         precondition(warn.isHidden, "Chromium's Warn Before Quitting must be hidden; Nook asks before quitting itself")
@@ -156,7 +161,10 @@ enum Check {
         precondition(application.items.filter { $0.title == "Check for Updates…" }.count == 1)
 
         let view = main.item(withTag: 57327)!.submenu
-        precondition(help.items.filter { !$0.isHidden }.map(\.title) == ["Bark Help"])
+        precondition(help.items.count == 1 && help.items.first === originalHelp)
+        precondition(originalHelp.title == "Bark Help")
+        precondition(originalHelp.keyEquivalent == "?" && originalHelp.keyEquivalentModifierMask == .command)
+        precondition(press("?", [.command, .shift]) == [.barkHelp], "Command-Shift-/ opens Bark Help")
         precondition(added("Bark Help", in: help) == .barkHelp)
         precondition(added("Toggle Sidebar", in: view) == .toggleSidebar)
         let toolbar = view!.items[1]
@@ -204,7 +212,8 @@ enum Check {
         let count = main.items.count
         installer.install(in: main)
         precondition(main.items.count == count && view!.items.filter { $0.title == "Toggle Sidebar" }.count == 1, "install must not duplicate items")
-        precondition(help.items.filter { !$0.isHidden }.map(\.title) == ["Bark Help"])
+        precondition(help.items.count == 1 && help.items.first === originalHelp)
+        precondition(press("?", [.command, .shift]) == [.barkHelp], "reinstall preserves Help shortcut")
         precondition(view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleToolbar }.count == 1)
 
         let empty = NSMenu()

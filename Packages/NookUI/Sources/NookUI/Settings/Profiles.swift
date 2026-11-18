@@ -249,7 +249,7 @@ struct ProfileDetailForm: View {
                 } else { searchEnginePicker }
             } footer: {
                 Text(tabs.profileEngine == .chromium
-                     ? "Uses this profile’s Chromium search preference. Custom engines can also be edited in Chromium Settings."
+                     ? "Uses this profile’s search preference. Choose Open Profile Settings to edit custom search engines."
                      : "Default follows the search engine in General.")
                     .settingsFooter()
             }
@@ -272,7 +272,7 @@ struct ProfileDetailForm: View {
                         }
                     }
                 } header: {
-                    Text("Chromium Controls")
+                    Text("Profile Controls")
                 } footer: {
                     Text("Opens controls for “\(profile.name)”.")
                 }
@@ -280,7 +280,7 @@ struct ProfileDetailForm: View {
 
             Section("Website Data") {
                 if tabs.profileEngine == .chromium {
-                    Text("Managed in this profile’s Chromium settings. Use Clear Browsing Data above to remove cookies, cached files and other selected data.")
+                    Text("Use Clear Browsing Data above to remove this profile’s cookies, cached files and other selected data.")
                         .foregroundStyle(.secondary)
                 } else if supportsWebsiteData {
                     LabeledContent(dataSize ?? "Checking…") {
@@ -407,7 +407,7 @@ struct ProfileDetailForm: View {
 private extension ProfilePageDestination {
     var profileSettingsLabel: String {
         switch self {
-        case .settings: "Chromium Settings"
+        case .settings: "Open Profile Settings"
         case .extensions: "Extensions"
         case .privacy: "Privacy and Security"
         case .siteSettings: "Site Settings"
