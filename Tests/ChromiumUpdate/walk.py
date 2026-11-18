@@ -35,6 +35,8 @@ from signed_walk import Screen, crash_reports, processes, verify_official_sdk, w
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
               "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister")
 DRAFT = "Bark test draft"
+PREPARATION_TIMEOUT = 300
+QUIT_TIMEOUT = 160
 PAGE = b"""<!doctype html><meta charset=utf-8><title>Bark update fixture</title>
 <style>textarea { position: fixed; inset: 0; width: 100%; height: 100%; box-sizing: border-box; }</style>
 <textarea aria-label="Synthetic draft"></textarea>
@@ -63,6 +65,7 @@ class UpdateServer(ThreadingHTTPServer):
         self.feed = "/" + feed
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.requests = []
+        self.completed_downloads = []
         self.mode = "bad"
 
     def saw(self, path, start=0):
@@ -80,10 +83,12 @@ class UpdateRequest(BaseHTTPRequestHandler):
         elif path == self.server.feed:
             self.reply(self.server.feeds[self.server.mode], "application/xml")
         elif path == "/" + self.server.image.name:
+            mode = self.server.mode
             with self.server.image.open("rb") as source:
                 self.headers_for("application/x-apple-diskimage", self.server.image.stat().st_size)
                 with contextlib.suppress(BrokenPipeError, ConnectionResetError):
                     shutil.copyfileobj(source, self.wfile)
+                    self.server.completed_downloads.append(mode)
         else:
             self.send_error(404)
 
@@ -246,6 +251,15 @@ def prepare_feed(server, feed, key):
     server.feeds = {"bad": payload.replace(good_signature.encode(), wrong_signature), "valid": payload}
 
 
+def preparation_handoff_seen(status, extraction_seen):
+    """Read the pinned Sparkle driver's transition out of update preparation."""
+    # Sparkle can offer a ready control or close its status controller when it
+    # dispatches the Cocoa quit event. The disappearance matters only after we
+    # observed that update's extraction, and is never itself proof of exit.
+    return (any(status["controls"].values()) or "Installing update…" in status["dialog_text"]
+            or (extraction_seen and not status["installer_visible"]))
+
+
 def exercise(check, installed, newer, root, versions, arch, server, output, *, engine):
     import ApplicationServices as ax
     import Quartz
@@ -398,7 +412,7 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                 check_updates()
                 approve_download()
                 wait_for("Sparkle did not download the valid archive",
-                         lambda: server.saw(archive_path, start), proc, timeout=60)
+                         lambda: "valid" in server.completed_downloads, proc, timeout=60)
 
                 handoff_started = time.monotonic()
                 next_sample = handoff_started
@@ -408,10 +422,11 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                     handoff.append({"elapsed_s": round(time.monotonic() - handoff_started, 2),
                                     "event": event, **details})
 
-                def quit_for_install():
-                    nonlocal next_sample
+                extraction_seen = False
+
+                def observe_handoff(*, preparing):
+                    nonlocal next_sample, extraction_seen
                     if proc.poll() is not None:
-                        note_handoff("original-exit", status=proc.returncode)
                         return True
                     now = time.monotonic()
                     if now < next_sample:
@@ -435,6 +450,7 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                     status = {
                         "windows": [str(value(window, "AXTitle") or "") for window in roots],
                         "dialog_text": texts,
+                        "installer_visible": any(value(window, "AXIdentifier") == "SUStatus" for window in roots),
                         "controls": {name: name in enabled for name, button in available if button is not None},
                         "screen_owned": owns(),
                         "console_available": console.available(),
@@ -443,6 +459,11 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                     }
                     if not handoff or handoff[-1].get("status") != status:
                         note_handoff("observation", status=status)
+                    if "Update Error!" in texts:
+                        raise RuntimeError("Sparkle reported an error for the valid update")
+                    if preparing:
+                        extraction_seen |= "Extracting update…" in texts
+                        return preparation_handoff_seen(status, extraction_seen)
                     # Sparkle owns extraction and relaunch. Only confirm an
                     # offered action on the idle, frontmost candidate.
                     for name, button in available:
@@ -453,14 +474,22 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                             break
                     return False
 
-                note_handoff("valid-archive-requested", original_pid=proc.pid)
+                phase = "preparation"
+                note_handoff("valid-archive-served", original_pid=proc.pid)
                 try:
-                    wait_for("The installed app did not exit for Sparkle", quit_for_install, timeout=160)
+                    wait_for("Sparkle stalled during signature verification, extraction, or Gatekeeper preparation",
+                             lambda: observe_handoff(preparing=True), timeout=PREPARATION_TIMEOUT)
+                    note_handoff("preparation-completed", original_status=proc.poll())
+                    phase = "quit"
+                    next_sample = time.monotonic()
+                    wait_for("The installed app did not exit for Sparkle",
+                             lambda: observe_handoff(preparing=False), timeout=QUIT_TIMEOUT)
+                    note_handoff("original-exit", status=proc.returncode)
                 except RuntimeError:
                     installed_version = None
                     with contextlib.suppress(OSError, plistlib.InvalidFileException):
                         installed_version = app_info(installed).get("CFBundleVersion")
-                    note_handoff("failed-before-cleanup", original_status=proc.poll(),
+                    note_handoff("failed-before-cleanup", phase=phase, original_status=proc.poll(),
                                  installed_version=installed_version)
                     raise
                 if proc.returncode != 0:
