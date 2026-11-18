@@ -219,7 +219,9 @@ enum Check {
         precondition(ChromiumUpdateConfiguration(info: ["SUFeedURL": production["SUFeedURL"]!, "SUPublicEDKey": "invalid"],
                                                  isVerification: false, isRehearsal: false) == nil)
 
-        let profile = UUID(), identity = "ee.qdo.bark.update-rehearsal." + UUID().uuidString
+        let profile = UUID(), identity = "ee.qdo.bark.test." + UUID().uuidString
+        // Chromium registers <bundle ID>.apps.<SHA256 hex> with launchd.
+        precondition(identity.utf8.count + ".apps.".utf8.count + 64 < 128)
         let root = "/private/tmp/bark-updates-test-" + UUID().uuidString
         let signedMetadata = ["BarkUpdateRehearsal": ["Profile": profile.uuidString, "DataRoot": root]]
         let rehearsal = try! ChromiumUpdateRehearsal.read(identifier: identity, info: signedMetadata)!

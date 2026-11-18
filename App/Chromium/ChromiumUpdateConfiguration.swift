@@ -3,7 +3,7 @@ import Foundation
 
 /// The signed bundle opt-in that survives Sparkle's argument-free relaunch.
 struct ChromiumUpdateRehearsal {
-    private static let prefix = "ee.qdo.bark.update-rehearsal."
+    private static let prefix = "ee.qdo.bark.test."
     let root: String
     let profile: UUID
 

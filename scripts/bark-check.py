@@ -32,6 +32,7 @@ sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chromium_sdk_layout import ARCHITECTURES, local_engine, read_pin
+from bark_release import configure_release, expected_additions, make_distribution, production_settings
 
 REPO = Path(__file__).resolve().parents[1]
 STAGE = REPO / "scripts/stage-chromium-app.sh"
@@ -245,9 +246,10 @@ def verify_signed_shell(app, architecture=None):
     return require_host_only_image(engine, architecture)
 
 
-def verify_candidate(app, engine, working, architecture):
+def verify_candidate(app, engine, working, architecture, release_info=None):
     verify_signed_shell(app, architecture)
-    run("/bin/bash", STAGE, "--arch", architecture, "--check-signed", app, REPO / "ChromiumApp/Additions.plist", engine)
+    run("/bin/bash", STAGE, "--arch", architecture, "--check-signed", app,
+        expected_additions(release_info, working), engine)
     expected = framework_files(engine / FRAMEWORK)
     embedded = framework_files(app / "Contents/Frameworks" / FRAMEWORK)
     if expected.keys() != embedded.keys():
@@ -368,7 +370,7 @@ def launch_candidate(app, working, *, interactive):
         print("Signed Bark rendered the loopback fixture with an isolated profile.")
 
 
-def install_local_build(app, output):
+def install_local_build(app, output, bundle_id="ee.qdo.bark"):
     # Work and destination share a volume. Swap complete bundles in one
     # operation so readers see a verified app even if a rebuild is interrupted.
     parent = os.open(output.parent, os.O_RDONLY)
@@ -380,7 +382,7 @@ def install_local_build(app, output):
             app.rename(output)
             return
         info = output / "Contents/Info.plist"
-        if not info.is_file() or plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") != "ee.qdo.bark":
+        if not info.is_file() or plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") != bundle_id:
             raise ValueError(f"Output already exists and is not a Bark bundle: {output}")
         processes = subprocess.check_output(["/bin/ps", "-axo", "comm="], text=True)
         if any(path.strip().startswith(str(output) + "/") for path in processes.splitlines()):
@@ -394,7 +396,7 @@ def install_local_build(app, output):
         os.close(parent)
 
 
-def build_candidate(engine, output, identity, architecture):
+def build_candidate(engine, output, identity, architecture, release_info=None):
     if not identity:
         raise ValueError("Supply --identity or BARK_SIGN_IDENTITY for local Developer ID signing.")
     if output.name != "Bark.app":
@@ -416,11 +418,16 @@ def build_candidate(engine, output, identity, architecture):
                 "-jobs", "2", "build")
             run("/bin/bash", STAGE, "--arch", architecture, unsigned, engine, products, stage / "Bark.app",
                 REPO / "ChromiumApp/Additions.plist")
+            if release_info:
+                configure_release(stage / "Bark.app", release_info)
             signed = work / "signed"
             run(sys.executable, REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed)
             app = signed / "stable/Bark.app"
-            verify_candidate(app, engine, work, architecture)
-            install_local_build(app, output)
+            verify_candidate(app, engine, work, architecture, release_info)
+            signed_info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+            if any(signed_info.get(key) != value for key, value in (release_info or {}).items()):
+                raise ValueError("The signed bundle differs from the requested release settings.")
+            install_local_build(app, output, signed_info["CFBundleIdentifier"])
         finally:
             # Xcode registers its intermediate app with Launch Services.
             if unsigned.exists():
@@ -438,7 +445,7 @@ def main():
     commands.add_parser("page-host", help="check page ownership, transfer and close")
     commands.add_parser("profile-pages", help="check profile utility window ownership")
     commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
-    for command in ("engine", "build", "verify", "smoke", "launch"):
+    for command in ("engine", "build", "verify", "smoke", "launch", "package"):
         sub = commands.add_parser(command)
         sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
@@ -449,8 +456,17 @@ def main():
             sub.add_argument("--output", type=Path, default=REPO / "build/Bark.app")
             sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"),
                              help="local Developer ID Application signing identity")
-        elif command != "engine":
+            sub.add_argument("--release-version", help="Bark marketing version for an updatable release")
+            sub.add_argument("--build-number", help="increasing Sparkle build number")
+            sub.add_argument("--feed-base-url", help="HTTPS directory serving the architecture-specific Bark feed")
+        else:
             sub.add_argument("app", type=Path, help="path to a signed Bark.app")
+            if command == "package":
+                sub.add_argument("--output", type=Path, required=True, help="new directory for DMG and appcast")
+                sub.add_argument("--download-base-url", required=True, help="directory URL for the finished DMG")
+                sub.add_argument("--ed-key-file", required=True, help="Sparkle private key file or - for stdin")
+                sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"))
+                sub.add_argument("--notary-profile", help="notarytool Keychain profile for submission and stapling")
     args = parser.parse_args()
     if platform.system() != "Darwin":
         parser.error("Bark contributor checks require macOS.")
@@ -463,6 +479,8 @@ def main():
     launching = args.command in ("smoke", "launch")
     native = native_architecture() if launching else None
     architecture = args.arch or native or "x86_64"
+    release_info = (production_settings(args.release_version, args.build_number, args.feed_base_url, architecture)
+                    if args.command == "build" else None)
     if launching and architecture != native:
         parser.error(f"Launching signed Bark requires the native {native} runtime.")
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
@@ -471,7 +489,11 @@ def main():
             if args.command == "engine" and args.install:
                 install_engine(engine, architecture)
             elif args.command == "build":
-                build_candidate(engine, args.output, args.identity, architecture)
+                build_candidate(engine, args.output, args.identity, architecture, release_info)
+            elif args.command == "package":
+                make_distribution(args.app.resolve(strict=True), args.output, architecture, args.identity,
+                                  args.download_base_url, None, args.ed_key_file, working, args.notary_profile,
+                                  verify_staged=lambda staged: verify_candidate(staged, engine, working, architecture))
             elif args.command != "engine":
                 app = args.app.resolve(strict=True)
                 verify_candidate(app, engine, working, architecture)
