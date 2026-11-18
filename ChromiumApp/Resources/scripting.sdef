@@ -188,7 +188,7 @@
   <!--
     CHROMIUM SUITE
   -->
-  <suite name="Chromium Suite" code="CrSu" description="Common classes and commands for Chrome.">
+  <suite name="Chromium Suite" code="CrSu" description="Common classes and commands for Bark.">
 
     <class-extension description="The application&apos;s top-level scripting object." extends="application">
       <cocoa class="BrowserCrApplication"/>

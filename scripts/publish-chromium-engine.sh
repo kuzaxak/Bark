@@ -87,8 +87,8 @@ for name, directory in directories.items():
     if built_from != hashlib.sha256(open(f'{runtime}/{name}', 'rb').read()).hexdigest():
         sys.exit(f'Engine was built from another {name} than Runtime/Chromium/bark: rebuild it or update the recipe')
 PY
-# The app target owns outer artwork and the visible names in its localized
-# bundle metadata. The rest of the resource trees must still match.
+# The app target owns outer artwork and specific display text. Keep all other
+# localized values, scripting API declarations and resource bytes in parity.
 if ! python3 -B - "$ENGINE_APP/Contents/Resources" "$ROOT/ChromiumApp/Resources" \
     "$INTEGRATED_APP_INFO" "$ROOT/ChromiumApp/Info.plist" "$ROOT/ChromiumApp/Additions.plist" <<'PYTHON'
 from pathlib import Path
@@ -130,11 +130,15 @@ def read_strings(path):
     return values
 
 
-def compare_strings(source, destination):
+def compare_strings(source, destination, locale):
     if source.read_bytes() == destination.read_bytes():
         return
     original, branded = read_strings(source), read_strings(destination)
     for key in sorted((original.keys() | branded.keys()) - visible_names):
+        if (locale == "hr.lproj" and key == "Chromium Shortcut"
+                and original.get(key) == "Prečac za Chrome"
+                and branded.get(key) == "Prečac za Chromium"):
+            continue
         if key not in original or key not in branded or original[key] != branded[key]:
             raise ValueError(f"Localized Info.plist value differs for {key}: {destination}")
     for key in visible_names & branded.keys():
@@ -142,7 +146,16 @@ def compare_strings(source, destination):
             raise ValueError(f"Invalid localized app name for {key}: {destination}")
 
 
-def compare_directory(source, destination, *, outer_artwork=None):
+def compare_scripting(source, destination):
+    original, branded = source.read_bytes(), destination.read_bytes()
+    chrome = b'<suite name="Chromium Suite" code="CrSu" description="Common classes and commands for Chrome.">'
+    bark = chrome.replace(b"for Chrome.", b"for Bark.")
+    if original == branded or (original.count(chrome) == 1 and original.replace(chrome, bark) == branded):
+        return
+    raise ValueError(f"Outer scripting dictionary differs beyond the Chromium Suite description: {destination}")
+
+
+def compare_directory(source, destination, *, outer_artwork=None, locale=None):
     names = {item.name for item in source.iterdir()}
     other_names = {item.name for item in destination.iterdir()}
     if outer_artwork is not None:
@@ -155,9 +168,11 @@ def compare_directory(source, destination, *, outer_artwork=None):
     for name in sorted(names):
         left, right = source / name, destination / name
         if outer_artwork is not None and name.endswith(".lproj") and left.is_dir() and right.is_dir():
-            compare_directory(left, right)
-        elif outer_artwork is None and name == "InfoPlist.strings" and left.is_file() and right.is_file():
-            compare_strings(left, right)
+            compare_directory(left, right, locale=name)
+        elif locale and name == "InfoPlist.strings" and left.is_file() and right.is_file():
+            compare_strings(left, right, locale)
+        elif outer_artwork is not None and name == "scripting.sdef" and left.is_file() and right.is_file():
+            compare_scripting(left, right)
         else:
             subprocess.run(["/usr/bin/diff", "-r", left, right], stdout=sys.stderr, check=True)
 

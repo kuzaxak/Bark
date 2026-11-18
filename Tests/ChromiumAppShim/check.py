@@ -862,8 +862,8 @@ publication.publish(Path(sys.argv[1]), "x86_64", True, sys.argv[2], sys.argv[3])
             lambda b: shutil.rmtree(b / 'Bark.app/Contents/Frameworks' / FRAMEWORK))
     refused('publish-no-packaging', 'an engine without its signing tools', 'Missing Bark Packaging',
             lambda b: shutil.rmtree(b / 'Bark Packaging'))
-    def edit_localization(build, **changes):
-        localized = build / 'Bark.app/Contents/Resources/en.lproj/InfoPlist.strings'
+    def edit_localization(build, locale='en', **changes):
+        localized = build / f'Bark.app/Contents/Resources/{locale}.lproj/InfoPlist.strings'
         xml = subprocess.check_output(['/usr/bin/plutil', '-convert', 'xml1', '-o', '-', localized])
         values = plistlib.loads(xml)
         write_plist(localized, **{**values, **changes})
@@ -878,6 +878,34 @@ publication.publish(Path(sys.argv[1]), "x86_64", True, sys.argv[2], sys.argv[3])
     check('publishing accepts differing outer artwork and localized names with the same SDK',
           result.returncode == 0 and (artifact_of(branded_package) / 'SHA256SUMS').read_text() == listed,
           result.stderr)
+
+    def original_product_labels(build):
+        outer = build / 'Bark.app/Contents/Resources'
+        dictionary = outer / 'scripting.sdef'
+        original = dictionary.read_bytes()
+        description = b'Common classes and commands for Bark.'
+        assert original.count(description) == 1
+        dictionary.write_bytes(original.replace(description, b'Common classes and commands for Chrome.'))
+        edit_localization(build, 'hr', **{'Chromium Shortcut': 'Prečac za Chrome'})
+
+    result, labels_package = attempt('publish-outer-product-labels', original_product_labels)
+    check('publishing accepts the Bark scripting description and Chromium shortcut localization',
+          result.returncode == 0 and (artifact_of(labels_package) / 'SHA256SUMS').read_text() == listed,
+          result.stderr)
+
+    def changed_scripting_code(build):
+        original_product_labels(build)
+        dictionary = build / 'Bark.app/Contents/Resources/scripting.sdef'
+        dictionary.write_bytes(dictionary.read_bytes().replace(b'code="CrSu"', b'code="BAD!"'))
+
+    refused('publish-scripting-code', 'a changed Apple event suite code',
+            'Outer scripting dictionary differs beyond the Chromium Suite description', changed_scripting_code)
+    refused('publish-hr-document-drift', 'an unrelated change to the Croatian Chromium Shortcut name',
+            'Localized Info.plist value differs for Chromium Shortcut',
+            lambda b: edit_localization(b, 'hr', **{'Chromium Shortcut': 'Some other document format'}))
+    refused('publish-shortcut-wrong-locale', 'a Chromium Shortcut exception in another locale',
+            'Localized Info.plist value differs for Chromium Shortcut',
+            lambda b: edit_localization(b, 'en', **{'Chromium Shortcut': 'Prečac za Chrome'}))
 
     refused('publish-resource-drift', 'outer scripting resources that differ from the app\'s', 'differ from ChromiumApp/Resources',
             lambda b: (b / 'Bark.app/Contents/Resources/scripting.sdef').write_text('other'))
