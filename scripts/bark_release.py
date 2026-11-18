@@ -168,6 +168,46 @@ def publish_new(source, destination):
         raise OSError(error, os.strerror(error), destination)
 
 
+def bundle_cdhash(app):
+    details = subprocess.check_output(["/usr/bin/codesign", "--display", "--verbose=4", app],
+                                      stderr=subprocess.STDOUT, text=True)
+    match = re.search(r"^CDHash=([0-9a-f]+)$", details, re.MULTILINE)
+    if match is None:
+        raise ValueError(f"Cannot read the signed code hash of {app}")
+    return match.group(1)
+
+
+def verify_installed_image(image, staged_app, working, requirement, verify_staged):
+    """Assess the notarized disk image and a clean copy of its app."""
+    subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
+                    "--context", "context:primary-signature", "--verbose=4", image], check=True)
+    expected_info = (staged_app / "Contents/Info.plist").read_bytes()
+    expected_cdhash = bundle_cdhash(staged_app)
+    with TemporaryDirectory(prefix="install-check-", dir=working) as directory:
+        root = Path(directory)
+        mount = root / "image"
+        mount.mkdir()
+        subprocess.run(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
+                        "-mountpoint", mount, image], stdin=subprocess.DEVNULL, check=True)
+        try:
+            source = mount / staged_app.name
+            if source.is_symlink() or not source.is_dir():
+                raise ValueError("The notarized image does not contain the expected app bundle.")
+            installed = root / staged_app.name
+            subprocess.run(["/usr/bin/ditto", source, installed], check=True)
+        finally:
+            subprocess.run(["/usr/bin/hdiutil", "detach", mount], check=True)
+        subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement,
+                        installed], check=True)
+        if ((installed / "Contents/Info.plist").read_bytes() != expected_info
+                or bundle_cdhash(installed) != expected_cdhash):
+            raise ValueError("The app copied from the notarized image differs from the signed staging app.")
+        if verify_staged:
+            verify_staged(installed)
+        subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=4",
+                        installed], check=True)
+
+
 def make_distribution(app, output_directory, architecture, identity, download_base_url, sparkle_bin,
                       ed_key_file, working, notary_profile=None, verify_staged=None):
     """Publish a complete local DMG and appcast directory only after both signatures verify."""
@@ -177,6 +217,7 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         raise ValueError("Supply a Developer ID identity for signing the disk image.")
     requirement = (f'=anchor apple generic and certificate leaf[subject.OU] = "{TEAM}" '
                    'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
+    app_requirement = requirement + f' and identifier "{bundle_id}"'
     output_directory = Path(output_directory).absolute()
     if os.path.lexists(output_directory):
         raise ValueError(f"Choose a new distribution output directory: {output_directory}")
@@ -200,7 +241,7 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         if info.get("BarkChromiumVersion") != framework_version(installed):
             raise ValueError("The declared Chromium version differs from the embedded engine.")
         subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R",
-                        requirement + f' and identifier "{bundle_id}"', installed], check=True)
+                        app_requirement, installed], check=True)
         if verify_staged:
             verify_staged(installed)
         if notary_profile:
@@ -214,9 +255,11 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         subprocess.run(["hdiutil", "create", "-volname", f"Bark {version}", "-srcfolder", volume, "-format", "UDZO",
                         "-size", f"{size_kib * 12 // 10 + 20480}k", image], check=True)
         subprocess.run(["codesign", "--force", "--timestamp", "--sign", identity, image], check=True)
-        subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, image], check=True)
         if notary_profile:
             notarize(image, image, notary_profile)
+        subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, image], check=True)
+        if notary_profile:
+            verify_installed_image(image, installed, stage, app_requirement, verify_staged)
         signature = subprocess.check_output([Path(sparkle_bin) / "sign_update", "--ed-key-file", ed_key_file,
                                               "-p", image], text=True).strip()
         subprocess.run(["xcrun", "swift", REPO / "scripts/VerifyBarkUpdate.swift", image, info["SUPublicEDKey"],

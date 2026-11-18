@@ -164,6 +164,11 @@ The manual **Prepare Bark Candidate** workflow uses the architecture's pinned of
 
 Configure the `bark-candidate-x86_64` or `bark-candidate-arm64` environment with required approval and a default-branch deployment restriction. Set `BARK_ENGINE_SOURCE` to the architecture’s pinned engine directory or archive. Set `BARK_SIGN_IDENTITY` and `BARK_NOTARY_PROFILE` to a Developer ID Application identity and notarytool profile on the dedicated runner. Use the existing Sparkle private key as the environment secret `SPARKLE_SIGNING_KEY`. An unavailable architecture pin stops the build.
 
+With `--notary-profile`, packaging also checks Gatekeeper's assessment of the
+finished disk image and a fresh copy of Bark from a private, read-only mount.
+It verifies the copied app's signature, release metadata and pinned SDK before
+assessing execution trust. A failed check leaves the release export unpublished.
+
 Use a separate runner with the matching `bark-candidate-x86_64` or `bark-candidate-arm64` label, Xcode 26 and its Metal Toolchain installed. Before connecting it, install [the runner guard](scripts/runner/job-started-hook.sh) outside the runner’s work directory. Point `ACTIONS_RUNNER_HOOK_JOB_STARTED` at an executable wrapper outside the checkout. Use the installed guard path and the exact protected default ref.
 
 ```bash

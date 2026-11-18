@@ -1,15 +1,18 @@
 """Check update trust, per-architecture routing, and release version independence."""
 
 import plistlib
+import shutil
+import subprocess
 from pathlib import Path
 import sys
 import tempfile
 import unittest
+from unittest import mock
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bark_release import (SPARKLE, check_distribution_settings, configure_release,
-                          expected_additions, production_settings, write_appcast)
+                          expected_additions, production_settings, verify_installed_image, write_appcast)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -29,6 +32,69 @@ class ReleaseTests(unittest.TestCase):
                      "CFBundleDocumentTypes": [{"CFBundleTypeName": "Web page"}]}
         self.info_path.write_bytes(plistlib.dumps(self.base))
         self.release = production_settings("1.4.0.2", "102", "https://update.example/bark/", "x86_64")
+
+    def test_assesses_sealed_app_copied_from_read_only_image(self):
+        image = self.root / "Bark.dmg"
+        requirement = '=identifier "ee.qdo.bark"'
+        for failure in (None, "image", "copy", "seal", "identity", "sdk", "execution"):
+            with self.subTest(failure=failure):
+                events = []
+                installation = []
+
+                def run(command, **kwargs):
+                    tool, mode = Path(command[0]).name, command[1]
+                    if tool == "spctl":
+                        event = "image" if "open" in command else "execution"
+                    elif tool == "hdiutil":
+                        event = mode
+                    elif tool == "ditto":
+                        event = "copy"
+                    else:
+                        event = "seal"
+                    events.append(event)
+                    if failure == event:
+                        raise subprocess.CalledProcessError(1, command)
+                    if event == "attach":
+                        self.assertTrue({"-readonly", "-nobrowse", "-noautoopen"} <= set(command))
+                        shutil.copytree(self.app, command[-2] / self.app.name)
+                    if event == "copy":
+                        installation.append(command[-1])
+                        shutil.copytree(command[-2], command[-1])
+                    if event == "seal":
+                        self.assertIn(requirement, command)
+                        self.assertEqual(command[-1], installation[0])
+                    if event == "execution":
+                        self.assertEqual(command[-1], installation[0])
+
+                def verify_sdk(installed):
+                    events.append("sdk")
+                    self.assertEqual(installed, installation[0])
+                    if failure == "sdk":
+                        raise ValueError("SDK mismatch")
+
+                with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
+                    "bark_release.subprocess.check_output",
+                    side_effect=["CDHash=abc123", "CDHash=bad456" if failure == "identity" else "CDHash=abc123"],
+                ):
+                    if failure in ("sdk", "identity"):
+                        with self.assertRaises(ValueError):
+                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk)
+                    elif failure:
+                        with self.assertRaises(subprocess.CalledProcessError):
+                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk)
+                    else:
+                        verify_installed_image(image, self.app, self.root, requirement, verify_sdk)
+                expected = {
+                    None: ["image", "attach", "copy", "detach", "seal", "sdk", "execution"],
+                    "image": ["image"],
+                    "copy": ["image", "attach", "copy", "detach"],
+                    "seal": ["image", "attach", "copy", "detach", "seal"],
+                    "identity": ["image", "attach", "copy", "detach", "seal"],
+                    "sdk": ["image", "attach", "copy", "detach", "seal", "sdk"],
+                    "execution": ["image", "attach", "copy", "detach", "seal", "sdk", "execution"],
+                }
+                self.assertEqual(events, expected[failure])
+                self.assertEqual(list(self.root.glob("install-check-*")), [])
 
     def test_releasing_the_shell_preserves_the_embedded_engine_version(self):
         configure_release(self.app, self.release)
