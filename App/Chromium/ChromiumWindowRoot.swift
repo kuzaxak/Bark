@@ -122,7 +122,9 @@ final class ChromiumWindowRoot: NSView {
 
     private let bridge: BarcBridge
     private let dividerRange: (Int, [CGFloat], CGFloat) -> ClosedRange<CGFloat>?
-    let nativeWindow: Int32
+    /// The client the window answers for: the engine's selected client, whose page has the keys.
+    /// The window's own calls go through it, since the first client may close before the others.
+    private(set) var client: Int32
     /// The page with the keys: the one page shown, or the focused pane of a split.
     private(set) var shownTab: Int32 = 0
     /// One slot for one page, one per pane in a split, in the panes' order.
@@ -216,7 +218,7 @@ final class ChromiumWindowRoot: NSView {
         return (convert(launch, from: nil), CGPoint(x: target.midX, y: target.midY))
     }
 
-    /// A tab's page in a split. The client is always this root's own until a window shows more than one profile.
+    /// A tab's page in a split, with the client that holds the tab: a window shows one client per profile.
     struct Pane: Equatable {
         var client: Int32
         var tab: Int32
@@ -245,19 +247,19 @@ final class ChromiumWindowRoot: NSView {
 
     var splitDividers: [SplitDividerView] { dividerLayer.subviews.compactMap { $0 as? SplitDividerView } }
 
-    /// Shows `split`'s panes. A page that stays a pane stays in the window, whatever moves; a page
-    /// that leaves the split leaves the window. False, and nothing changes, when a pane is not this
-    /// root's client's, has no page view, or the split is not one.
+    /// Shows `split`'s panes, which may be of different clients. A page that stays a pane stays in the
+    /// window, whatever moves; a page that leaves the split leaves the window. False, and nothing
+    /// changes, when a pane's client has no page view for its tab or the split is not one.
     @discardableResult
     func showSplit(_ split: Split) -> Bool {
         let panes = split.panes.compactMap { $0 }
         guard (2...4).contains(split.panes.count), split.dividers.count + 1 == split.panes.count,
               zip([0] + split.dividers, split.dividers + [1]).allSatisfy({ $0 < $1 }),
-              Set(panes.map(\.tab)).count == panes.count, panes.contains(where: { $0.tab == split.focused }),
-              panes.allSatisfy({ $0.client == nativeWindow }) else { return false }
+              Set(panes.map(\.tab)).count == panes.count,
+              let focused = panes.first(where: { $0.tab == split.focused }) else { return false }
         var views: [Int32: NSView] = [:]
         for pane in panes {
-            guard let view = pageView(pane.tab) else { return false }
+            guard let view = pageView(pane) else { return false }
             views[pane.tab] = view
         }
         var free = slots
@@ -272,6 +274,7 @@ final class ChromiumWindowRoot: NSView {
             if let pane = slot.pane, let view = views[pane.tab] { place(view, in: slot) } else { slot.showEmpty(makeEmptyPane) }
         }
         shownTab = split.focused
+        client = focused.client
         layoutPageArea()
         if focusChanged { focusPage() }
         return true
@@ -282,7 +285,7 @@ final class ChromiumWindowRoot: NSView {
     func endSplit() -> Bool {
         guard split != nil else { return shownTab != 0 }
         split = nil
-        return show(tab: shownTab)
+        return show(tab: shownTab, of: client)
     }
 
     func showsCrashedPage(tab: Int32) -> Bool {
@@ -297,10 +300,10 @@ final class ChromiumWindowRoot: NSView {
     /// The focused page; nil once another root took it.
     private var heldPage: NSView? { slots.first { $0.pane?.tab == shownTab }?.heldView }
 
-    init(bridge: BarcBridge, nativeWindow: Int32,
+    init(bridge: BarcBridge, client: Int32,
          dividerRange: @escaping (Int, [CGFloat], CGFloat) -> ClosedRange<CGFloat>? = { _, _, _ in nil }) {
         self.bridge = bridge
-        self.nativeWindow = nativeWindow
+        self.client = client
         self.dividerRange = dividerRange
         super.init(frame: .zero)
         wantsLayer = true
@@ -336,7 +339,7 @@ final class ChromiumWindowRoot: NSView {
     /// caller keeps the root alive while the window can still send events.
     func attach() -> Bool {
         guard observation == 0 else { return false }
-        let observation = bridge.window_host_observe(nativeWindow, { event, context in
+        let observation = bridge.window_host_observe(client, { event, context in
             guard let event, let context, event.pointee.size >= MemoryLayout<BarcWindowHostEvent>.size else { return }
             let copy = event.pointee
             MainActor.assumeIsolated {
@@ -344,7 +347,7 @@ final class ChromiumWindowRoot: NSView {
             }
         }, Unmanaged.passUnretained(self).toOpaque())
         guard observation != 0 else { return false }
-        guard bridge.window_set_root_view(nativeWindow, Unmanaged.passUnretained(self).toOpaque()) == 1 else {
+        guard bridge.window_set_root_view(client, Unmanaged.passUnretained(self).toOpaque()) == 1 else {
             bridge.window_host_unobserve(observation)
             return false
         }
@@ -379,34 +382,37 @@ final class ChromiumWindowRoot: NSView {
         return sidebarView === view && view.superview === sidebarColumn
     }
 
-    /// Shows `tab`'s page: as the focused pane when the split shown has it, else in place of what
-    /// was shown before, the split's other pages leaving the window. False when the window has no
-    /// page view for that tab.
+    /// Shows `owner`'s `tab`: as the focused pane when the split shown has it, else in place of what
+    /// was shown before, the split's other pages leaving the window. False when `owner` has no page
+    /// view for that tab.
     @discardableResult
-    func show(tab: Int32) -> Bool {
-        if let split, split.panes.contains(Pane(client: nativeWindow, tab: tab)) {
-            guard let slot = slots.first(where: { $0.pane?.tab == tab }), slot.view != nil else { return false }
+    func show(tab: Int32, of owner: Int32) -> Bool {
+        let pane = Pane(client: owner, tab: tab)
+        if let split, split.panes.contains(pane) {
+            guard let slot = slots.first(where: { $0.pane == pane }), slot.view != nil else { return false }
             let changed = shownTab != tab
             self.split?.focused = tab
             shownTab = tab
+            client = owner
             if pageFullscreen { layoutPageArea() }
             if changed { focusPage() }
             return true
         }
-        guard let view = pageView(tab) else { return false }
-        let slot = slots.first { $0.pane?.tab == tab } ?? Slot(pane: Pane(client: nativeWindow, tab: tab), root: self)
+        guard let view = pageView(pane) else { return false }
+        let slot = slots.first { $0.pane == pane } ?? Slot(pane: pane, root: self)
         let changed = view !== slot.view || view.superview !== slot.container || slots.count != 1 || shownTab != tab
         split = nil
         use([slot])
         place(view, in: slot)
         shownTab = tab
+        client = owner
         layoutPageArea()
         if changed { focusPage() }
         return true
     }
 
-    private func pageView(_ tab: Int32) -> NSView? {
-        bridge.tab_native_view(nativeWindow, tab).map { Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue() }
+    private func pageView(_ pane: Pane) -> NSView? {
+        bridge.tab_native_view(pane.client, pane.tab).map { Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue() }
     }
 
     /// Makes `next` the slots shown: a slot that goes takes its page out of the window.
@@ -463,6 +469,8 @@ final class ChromiumWindowRoot: NSView {
             crashedTabs.remove(event.tab)
             pageRetired(event.view)
         case BARC_WINDOW_HOST_FULLSCREEN_CHANGED.rawValue:
+            // The engine sends this on every client selection, naming the selected client.
+            if event.window > 0 { client = event.window }
             let pageFullscreen = event.fullscreen == Int32(BARC_FULLSCREEN_PAGE.rawValue)
             guard pageFullscreen != self.pageFullscreen else { return }
             self.pageFullscreen = pageFullscreen
@@ -483,15 +491,15 @@ final class ChromiumWindowRoot: NSView {
     /// pane whose page closed stays empty until the split changes.
     private func pageRetired(_ view: UnsafeMutableRawPointer?) {
         guard let view, let slot = slots.first(where: { $0.view.map { Unmanaged.passUnretained($0).toOpaque() } == view }),
-              let tab = slot.pane?.tab else { return }
+              let pane = slot.pane else { return }
         if slot.heldView != nil { slot.view?.removeFromSuperview() }
         slot.view = nil
         slot.crashed.isHidden = true
-        guard let next = bridge.tab_native_view(nativeWindow, tab), next != view else {
+        guard let next = bridge.tab_native_view(pane.client, pane.tab), next != view else {
             if split == nil { shownTab = 0 }
             return
         }
-        if split == nil { show(tab: tab) } else { place(Unmanaged<NSView>.fromOpaque(next).takeUnretainedValue(), in: slot) }
+        if split == nil { show(tab: pane.tab, of: pane.client) } else { place(Unmanaged<NSView>.fromOpaque(next).takeUnretainedValue(), in: slot) }
     }
 
     /// Keys go to the page shown, unless the person is typing in a field outside it.
@@ -606,7 +614,7 @@ final class ChromiumWindowRoot: NSView {
         if let lights = placement.lights, replacing || lights != placedLights {
             var chrome = BarcWindowChrome(size: MemoryLayout<BarcWindowChrome>.size,
                                           titlebar_height: lights.titlebarHeight, leading_inset: lights.leadingInset)
-            _ = bridge.window_set_chrome(nativeWindow, &chrome)
+            _ = bridge.window_set_chrome(client, &chrome)
             placedLights = lights
         }
         for kind in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
@@ -660,8 +668,8 @@ final class ChromiumWindowRoot: NSView {
             crashed.frame = container.bounds
             crashed.autoresizingMask = [.width, .height]
             crashed.reload = { [weak root] in
-                guard let root, let tab = pane?.tab else { return }
-                _ = root.bridge.tab_reload(root.nativeWindow, tab)
+                guard let root, let pane else { return }
+                _ = root.bridge.tab_reload(pane.client, pane.tab)
             }
             container.addSubview(crashed)
         }

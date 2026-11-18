@@ -12,12 +12,19 @@ private enum Engine {
     static var observations = 0
     static var unobserved: [UInt64] = []
     static var chrome: [ChromiumWindowRoot.Lights] = []
+    /// The client each chrome call addressed.
+    static var chromeClients: [Int32] = []
     static var reloads: [Int32] = []
+    static var reloadClients: [Int32] = []
+    /// The window's live clients, and the client of each tab not the first client's.
+    static var clients: Set<Int32> = [5]
+    static var tabClients: [Int32: Int32] = [:]
+    static func owns(_ client: Int32, _ tab: Int32) -> Bool { clients.contains(client) && (tabClients[tab] ?? 5) == client }
     static let token: UInt64 = 77
 
     static func send(kind: BarcWindowHostEventKind, tab: Int32, view: NSView? = nil, fullscreen: BarcFullscreenKind = BARC_FULLSCREEN_NONE,
-                     size: Int = MemoryLayout<BarcWindowHostEvent>.size) {
-        var event = BarcWindowHostEvent(size: size, kind: Int32(kind.rawValue), window: 5, tab: tab,
+                     size: Int = MemoryLayout<BarcWindowHostEvent>.size, window: Int32 = 5) {
+        var event = BarcWindowHostEvent(size: size, kind: Int32(kind.rawValue), window: window, tab: tab,
                                         fullscreen: Int32(fullscreen.rawValue),
                                         view: view.map { Unmanaged.passUnretained($0).toOpaque() })
         observer!.0(&event, observer!.1)
@@ -40,18 +47,23 @@ private enum Engine {
     bridge.window_host_unobserve = { token in MainActor.assumeIsolated { Engine.unobserved.append(token) } }
     bridge.tab_native_view = { window, tab in
         MainActor.assumeIsolated {
-            precondition(window == 5, "asks the window it belongs to")
+            guard Engine.owns(window, tab) else { return nil }
             return Engine.pages[tab].map { Unmanaged.passUnretained($0).toOpaque() }
         }
     }
     bridge.window_set_chrome = { window, chrome in
         MainActor.assumeIsolated {
-            precondition(window == 5 && chrome!.pointee.size == MemoryLayout<BarcWindowChrome>.size, "a whole chrome for its window")
+            precondition(chrome!.pointee.size == MemoryLayout<BarcWindowChrome>.size, "a whole chrome")
+            guard Engine.clients.contains(window) else { return 0 }
+            Engine.chromeClients.append(window)
             Engine.chrome.append(.init(titlebarHeight: chrome!.pointee.titlebar_height, leadingInset: chrome!.pointee.leading_inset))
             return 1
         }
     }
-    bridge.tab_reload = { _, tab in MainActor.assumeIsolated { Engine.reloads.append(tab); return 1 } }
+    bridge.tab_reload = { window, tab in MainActor.assumeIsolated {
+        guard Engine.owns(window, tab) else { return 0 }
+        Engine.reloads.append(tab); Engine.reloadClients.append(window); return 1
+    } }
     return bridge
 }
 
@@ -65,6 +77,12 @@ private final class PageView: NSView {
 
 @MainActor private func inRoot(_ view: NSView, _ root: NSView) -> CGRect { root.convert(view.bounds, from: view) }
 
+/// The crashed-page card's Reload button shown in `view`.
+@MainActor private func reloadButton(in view: NSView) -> NSButton? {
+    if let button = view as? NSButton, button.title == "Reload", !button.isHiddenOrHasHiddenAncestor { return button }
+    return view.subviews.lazy.compactMap { reloadButton(in: $0) }.first
+}
+
 @main struct Main {
     @MainActor static func main() {
         _ = NSApplication.shared
@@ -73,7 +91,7 @@ private final class PageView: NSView {
         lightsCases()
 
         Engine.rootAccepted = 0
-        let refused = ChromiumWindowRoot(bridge: table(), nativeWindow: 5)
+        let refused = ChromiumWindowRoot(bridge: table(), client: 5)
         precondition(!refused.attach() && Engine.unobserved == [Engine.token], "a refused root view keeps no observation")
         precondition(Engine.chrome.isEmpty, "a refused root view places no lights")
         Engine.rootAccepted = 1
@@ -86,7 +104,7 @@ private final class PageView: NSView {
                                   styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
                                   backing: .buffered, defer: true)
             window.isReleasedWhenClosed = false
-            let root = ChromiumWindowRoot(bridge: table(), nativeWindow: 5)
+            let root = ChromiumWindowRoot(bridge: table(), client: 5)
             released = root
             root.frame = NSRect(x: 0, y: 0, width: 900, height: 700)
             precondition(root.attach(), "an accepted root view observes the window")
@@ -106,15 +124,15 @@ private final class PageView: NSView {
 
             let first = PageView(), second = PageView()
             Engine.pages = [10: first, 11: second]
-            precondition(!root.show(tab: 12) && root.shownTab == 0, "no page view, nothing shown")
-            precondition(root.show(tab: 10), "a tab with a page view is shown")
+            precondition(!root.show(tab: 12, of: 5) && root.shownTab == 0, "no page view, nothing shown")
+            precondition(root.show(tab: 10, of: 5), "a tab with a page view is shown")
             precondition(first.isDescendant(of: root) && inRoot(first, root) == CGRect(x: 247, y: 10, width: 643, height: 680)
                          && root.shownTab == 10, "the page fills the page frame: \(inRoot(first, root))")
             precondition(first.autoresizingMask == [.width, .height] && first.superview!.autoresizingMask == [.width, .height],
                          "the page and its frame follow a live resize without a layout pass")
-            precondition(root.show(tab: 10) && first.superview != nil, "showing the same tab again keeps it")
-            precondition(root.show(tab: 11) && second.isDescendant(of: root) && first.superview == nil, "the next page replaces the last")
-            precondition(!root.show(tab: 12) && second.isDescendant(of: root) && root.shownTab == 11, "a missing page keeps the shown one")
+            precondition(root.show(tab: 10, of: 5) && first.superview != nil, "showing the same tab again keeps it")
+            precondition(root.show(tab: 11, of: 5) && second.isDescendant(of: root) && first.superview == nil, "the next page replaces the last")
+            precondition(!root.show(tab: 12, of: 5) && second.isDescendant(of: root) && root.shownTab == 11, "a missing page keeps the shown one")
 
             root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
             root.layoutSubtreeIfNeeded()
@@ -127,13 +145,13 @@ private final class PageView: NSView {
             let field = NSTextField()
             sidebar.addSubview(field)
             window.makeFirstResponder(first.input)
-            precondition(root.show(tab: 10) && window.firstResponder === first.input, "a newly shown page takes the keys")
-            precondition(root.show(tab: 11) && window.firstResponder === second.input, "a tab switch moves the keys to the new page")
+            precondition(root.show(tab: 10, of: 5) && window.firstResponder === first.input, "a newly shown page takes the keys")
+            precondition(root.show(tab: 11, of: 5) && window.firstResponder === second.input, "a tab switch moves the keys to the new page")
             window.makeFirstResponder(field)
             let editing = window.firstResponder
             precondition(editing is NSText, "the sidebar field edits")
-            precondition(root.show(tab: 10) && window.firstResponder === editing, "a sidebar field keeps the keys when the page changes")
-            precondition(root.show(tab: 11), "back to the second page")
+            precondition(root.show(tab: 10, of: 5) && window.firstResponder === editing, "a sidebar field keeps the keys when the page changes")
+            precondition(root.show(tab: 11, of: 5), "back to the second page")
             root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
             root.layoutSubtreeIfNeeded()
 
@@ -158,7 +176,9 @@ private final class PageView: NSView {
 
             downloadFlightCases(root: root, sidebar: sidebar, page: second, window: window)
             splitCases(root: root, sidebar: sidebar, window: window)
-            precondition(root.show(tab: 11) && root.split == nil && inRoot(second, root) == shown, "back to one page after the split cases")
+            precondition(root.show(tab: 11, of: 5) && root.split == nil && inRoot(second, root) == shown, "back to one page after the split cases")
+            firstClientGoneCases(root: root, window: window)
+            precondition(root.show(tab: 11, of: 5) && root.client == 5 && inRoot(second, root) == shown, "back to the first client's page")
             libraryCases(root: root, sidebar: sidebar, page: second, lights: lights)
             root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
             root.layoutSubtreeIfNeeded()
@@ -193,23 +213,23 @@ private final class PageView: NSView {
             precondition(!root.showsCrashedPage, "another tab's crash leaves the shown page")
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 11, view: second)
             precondition(root.showsCrashedPage, "the shown page's crash shows the crashed state")
-            precondition(root.show(tab: 10) && root.showsCrashedPage, "a crashed tab shows its state when selected")
+            precondition(root.show(tab: 10, of: 5) && root.showsCrashedPage, "a crashed tab shows its state when selected")
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 10, view: first)
             precondition(!root.showsCrashedPage, "a reloaded page hides the crashed state")
-            precondition(root.show(tab: 11) && root.showsCrashedPage, "the other crashed tab still shows its state")
+            precondition(root.show(tab: 11, of: 5) && root.showsCrashedPage, "the other crashed tab still shows its state")
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 11, view: second)
             precondition(!root.showsCrashedPage, "both pages restored")
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 10, view: first)
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 10, view: first)
-            precondition(root.show(tab: 10) && !root.showsCrashedPage, "a tab that left the window forgets its crash here")
-            precondition(root.show(tab: 11), "back to the second page")
+            precondition(root.show(tab: 10, of: 5) && !root.showsCrashedPage, "a tab that left the window forgets its crash here")
+            precondition(root.show(tab: 11, of: 5), "back to the second page")
 
             root.pageHidden = true
             precondition(second.isHidden, "a window that shows no page of its own hides the page")
-            precondition(root.show(tab: 10) && first.isHidden, "a page shown while the window shows none stays hidden")
+            precondition(root.show(tab: 10, of: 5) && first.isHidden, "a page shown while the window shows none stays hidden")
             root.pageHidden = false
             precondition(!first.isHidden, "the page shows again")
-            precondition(root.show(tab: 11), "back to the second page")
+            precondition(root.show(tab: 11, of: 5), "back to the second page")
 
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 10, view: first)
             precondition(second.isDescendant(of: root), "another tab's retirement leaves the shown page")
@@ -220,7 +240,7 @@ private final class PageView: NSView {
             Engine.pages[11] = nil
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 11, view: second)
             precondition(second.superview == nil && root.shownTab == 0, "a closed tab's page leaves the root")
-            precondition(root.show(tab: 10) && first.isDescendant(of: root), "a page can be shown after the last one retired")
+            precondition(root.show(tab: 10, of: 5) && first.isDescendant(of: root), "a page can be shown after the last one retired")
 
             let replacement = PageView()
             Engine.pages[10] = replacement
@@ -228,20 +248,20 @@ private final class PageView: NSView {
             precondition(first.superview == nil && replacement.isDescendant(of: root) && root.shownTab == 10,
                          "a tab that replaced its contents shows its new page")
             Engine.pages[10] = first
-            precondition(root.show(tab: 10) && first.isDescendant(of: root), "back to the first page")
+            precondition(root.show(tab: 10, of: 5) && first.isDescendant(of: root), "back to the first page")
 
             let other = NSView()
             other.addSubview(first)
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 10, view: first)
             precondition(first.superview === other && root.shownTab == 0, "a retired page another root holds stays there")
             Engine.pages[11] = second
-            precondition(root.show(tab: 11) && second.isDescendant(of: root), "a page is shown after the moved one retired")
+            precondition(root.show(tab: 11, of: 5) && second.isDescendant(of: root), "a page is shown after the moved one retired")
             other.addSubview(second)
-            precondition(root.show(tab: 11) && second.isDescendant(of: root), "a page another root took is shown again")
+            precondition(root.show(tab: 11, of: 5) && second.isDescendant(of: root), "a page another root took is shown again")
             let third = PageView()
             Engine.pages[11] = third
             other.addSubview(second)
-            precondition(root.show(tab: 11) && third.isDescendant(of: root) && second.superview === other,
+            precondition(root.show(tab: 11, of: 5) && third.isDescendant(of: root) && second.superview === other,
                          "a tab's new page replaces only the page this root holds")
             Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 11, view: second)
             precondition(third.isDescendant(of: root) && root.shownTab == 11, "a late retirement of a tab's old page leaves its new one")
@@ -363,7 +383,7 @@ private final class PageView: NSView {
         func pane(_ tab: Int32) -> Pane { Pane(client: 5, tab: tab) }
         let area = CGRect(x: 247, y: 10, width: 943, height: 780)
         window.makeFirstResponder(nil)
-        precondition(root.show(tab: 20) && inRoot(pages[0], root) == area && window.firstResponder === pages[0].input, "starts on one page, with the keys")
+        precondition(root.show(tab: 20, of: 5) && inRoot(pages[0], root) == area && window.firstResponder === pages[0].input, "starts on one page, with the keys")
 
         precondition(root.showSplit(Split(panes: [pane(20), pane(21)], vertical: false, dividers: [0.5], focused: 20)),
                      "two panes of the root's client are shown")
@@ -403,20 +423,21 @@ private final class PageView: NSView {
                      "a pane that keeps its tab never leaves the window; the dropped fourth one does: \(pages.map(\.windowMoves)) \(moves)")
         precondition(inRoot(pages[2], root).minY == area.minY && inRoot(pages[1], root).maxY == area.maxY, "the reorder took effect, stacked")
 
-        precondition(root.show(tab: 21) && root.split?.focused == 21 && root.shownTab == 21 && window.firstResponder === pages[1].input
+        precondition(root.show(tab: 21, of: 5) && root.split?.focused == 21 && root.shownTab == 21 && window.firstResponder === pages[1].input
                      && pages.prefix(3).map(\.windowMoves) == Array(moves.prefix(3)) && pages.prefix(3).allSatisfy { $0.isDescendant(of: root) },
                      "showing a pane's tab focuses that pane and moves no pane")
         let field = NSTextField()
         sidebar.addSubview(field)
         window.makeFirstResponder(field)
-        precondition(root.show(tab: 22) && root.split?.focused == 22 && window.firstResponder is NSText,
+        precondition(root.show(tab: 22, of: 5) && root.split?.focused == 22 && window.firstResponder is NSText,
                      "a field outside the page keeps the keys when the focused pane changes")
         field.removeFromSuperview()
 
         precondition(!root.showSplit(Split(panes: [pane(20), pane(24)], vertical: false, dividers: [0.5], focused: 20))
                      && root.split?.panes.count == 3, "a pane with no page view refuses the split and changes nothing")
         precondition(!root.showSplit(Split(panes: [pane(20), Pane(client: 6, tab: 21)], vertical: false, dividers: [0.5], focused: 20))
-                     && root.split?.panes.count == 3, "a pane of another client is refused until C2")
+                     && root.split?.panes.count == 3, "a pane names its tab's own client")
+        mixedClientCases(root: root, pages: pages, window: window)
 
         precondition(root.showSplit(Split(panes: [pane(20), pane(21)], vertical: false, dividers: [0.5], focused: 20)), "two panes again")
         root.sidebar = .hidden
@@ -467,14 +488,81 @@ private final class PageView: NSView {
         precondition(pages[1].superview == nil && pages[0].isDescendant(of: root) && root.split != nil,
                      "a closed pane's page leaves; the others stay until the split changes")
         let kept = pages[0].windowMoves
-        precondition(root.show(tab: 20) && root.split != nil && root.shownTab == 20, "the focused pane stays focused")
-        precondition(root.show(tab: 22) && root.split == nil && pages[0].superview == nil && inRoot(pages[2], root) == area,
+        precondition(root.show(tab: 20, of: 5) && root.split != nil && root.shownTab == 20, "the focused pane stays focused")
+        precondition(root.show(tab: 22, of: 5) && root.split == nil && pages[0].superview == nil && inRoot(pages[2], root) == area,
                      "a tab outside the split hides the split; its page fills the frame")
         precondition(root.showSplit(Split(panes: [pane(22), pane(20)], vertical: false, dividers: [0.5], focused: 22)) && pages[2].isDescendant(of: root),
                      "the split shows again around the page that was shown")
-        precondition(root.show(tab: 20) && root.split?.focused == 20 && pages[0].windowMoves == kept + 2,
+        precondition(root.show(tab: 20, of: 5) && root.split?.focused == 20 && pages[0].windowMoves == kept + 2,
                      "only leaving and returning moved a page in and out of the window")
         for tab: Int32 in 20...23 { Engine.pages[tab] = nil }
+    }
+
+    /// Panes of two clients, two profiles in one window: each pane's page is its own client's, and
+    /// focusing a pane makes its client the one the window answers for without moving any pane.
+    @MainActor fileprivate static func mixedClientCases(root: ChromiumWindowRoot, pages: [CountingPage], window: NSWindow) {
+        typealias Pane = ChromiumWindowRoot.Pane
+        typealias Split = ChromiumWindowRoot.Split
+        let others = (30...31).map { _ in CountingPage() }
+        Engine.clients = [5, 6]
+        for (offset, page) in others.enumerated() { Engine.pages[Int32(30 + offset)] = page; Engine.tabClients[Int32(30 + offset)] = 6 }
+        defer { Engine.clients = [5]; Engine.tabClients = [:]; Engine.pages[30] = nil; Engine.pages[31] = nil }
+        let shown = root.split
+        precondition(root.showSplit(Split(panes: [Pane(client: 5, tab: 20), Pane(client: 6, tab: 30)], vertical: false, dividers: [0.5], focused: 20))
+                     && pages[0].isDescendant(of: root) && others[0].isDescendant(of: root) && root.client == 5,
+                     "a split of two clients shows each pane's own page")
+        let moves = [pages[0].windowMoves, others[0].windowMoves]
+        let containers = [pages[0].superview, others[0].superview]
+        for _ in 0..<5 {
+            precondition(root.show(tab: 30, of: 6) && root.split?.focused == 30 && root.client == 6 && window.firstResponder === others[0].input,
+                         "focusing the other profile's pane makes its client the window's, with the keys")
+            precondition(root.show(tab: 20, of: 5) && root.split?.focused == 20 && root.client == 5 && window.firstResponder === pages[0].input,
+                         "and back")
+        }
+        precondition([pages[0].windowMoves, others[0].windowMoves] == moves && [pages[0].superview, others[0].superview] == containers,
+                     "focus going between the profiles moves no pane")
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 30, view: others[0])
+        precondition(root.client == 5 && root.showsCrashedPage(tab: 30) && !root.showsCrashedPage(tab: 20), "the other profile's pane crashed")
+        let reloads = Engine.reloadClients.count
+        reloadButton(in: others[0].superview!)?.performClick(nil)
+        precondition(Engine.reloadClients.count == reloads + 1 && Engine.reloadClients.last == 6 && Engine.reloads.last == 30,
+                     "its card's Reload reloads the tab through the pane's own client: \(Engine.reloadClients)")
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 30, view: others[0])
+        let four = [Pane(client: 5, tab: 20), Pane(client: 6, tab: 30), Pane(client: 5, tab: 21), Pane(client: 6, tab: 31)]
+        precondition(root.showSplit(Split(panes: four, vertical: true, dividers: [0.25, 0.5, 0.75], focused: 31))
+                     && ([pages[0], pages[1]] + others).allSatisfy { $0.isDescendant(of: root) } && root.client == 6
+                     && window.firstResponder === others[1].input, "four panes of two clients; the focused pane's client answers")
+        precondition(!root.showSplit(Split(panes: [Pane(client: 5, tab: 30), Pane(client: 6, tab: 31)], vertical: false, dividers: [0.5], focused: 31))
+                     && root.split?.panes == four, "a pane whose client does not hold its tab refuses the split")
+        precondition(root.showSplit(shown!), "the split as it was")
+    }
+
+    /// The engine selects the second client, as for an empty space of its profile, and the first
+    /// client closes: the window is addressed through the selected client for its lights, a page
+    /// show and a crashed page's Reload.
+    @MainActor static func firstClientGoneCases(root: ChromiumWindowRoot, window: NSWindow) {
+        let pages = (40...41).map { _ in CountingPage() }
+        Engine.clients = [5, 6]
+        for (offset, page) in pages.enumerated() { Engine.pages[Int32(40 + offset)] = page; Engine.tabClients[Int32(40 + offset)] = 6 }
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE, window: 6)
+        precondition(root.client == 6 && root.shownTab == 11, "the engine's selection names the client the window answers for; the page stays")
+        Engine.clients = [6]
+        let chromeCalls = Engine.chromeClients.count
+        root.sidebar = .hidden
+        root.sidebar = .shown
+        precondition(Engine.chromeClients.count == chromeCalls + 1 && Engine.chromeClients.last == 6
+                     && Engine.chrome.last == ChromiumWindowRoot.Arc.lights, "the lights are placed through the live client: \(Engine.chromeClients)")
+        precondition(root.show(tab: 40, of: 6) && pages[0].isDescendant(of: root), "a page of the live client shows")
+        precondition(root.show(tab: 41, of: 6) && pages[1].isDescendant(of: root) && pages[0].superview == nil, "and another")
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 41, view: pages[1])
+        precondition(root.showsCrashedPage, "its crash shows the card")
+        let reloads = Engine.reloadClients.count
+        reloadButton(in: root)?.performClick(nil)
+        precondition(Engine.reloadClients.count == reloads + 1 && Engine.reloadClients.last == 6 && Engine.reloads.last == 41,
+                     "the card's Reload reloads the tab through its own client")
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 41, view: pages[1])
+        Engine.clients = [5]; Engine.tabClients = [:]
+        Engine.pages[40] = nil; Engine.pages[41] = nil
     }
 
     /// A download that starts flies over the page into the sidebar's downloads button, as in the WebKit

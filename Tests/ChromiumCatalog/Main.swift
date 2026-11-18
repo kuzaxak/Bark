@@ -417,6 +417,7 @@ private struct NoTokens: KagiTokenStore {
 
 @main private enum Checks {
     @MainActor static func main() throws {
+        try checkEngineSelectionInBarkWindow()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcCatalog-\(UUID())")
         let suite = "BarcCatalog-\(UUID())"
         let defaults = UserDefaults(suiteName: suite)!
@@ -1976,10 +1977,69 @@ private struct NoTokens: KagiTokenStore {
 }
 
 
+/// A Bark window holds clients of two profiles. A selection the engine makes itself, as for a
+/// "Leave site?" dialog on a tab of the profile not shown, reaches the model through the catalog:
+/// that tab and its space show, once, and the app does not select back. The window lives while
+/// any client of its group does.
+@MainActor private func checkEngineSelectionInBarkWindow() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcEngineSelection-\(UUID())")
+    let suite = "BarcEngineSelection-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    tree.createSpace(id: Native.personal, name: "Personal", icon: "person", accentHex: "#654321", after: Native.work)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
+    tabs.nativePageHost = host
+    Native.windows = [7101: Native.window(7101, group: 7101, profile: Native.work, flags: 1 | 4, active: 71010),
+                      7102: Native.window(7102, group: 7101, profile: Native.personal, flags: 1, active: 71020)]
+    Native.windows[7102]?.selected_client = 7101
+    Native.tabs = [Native.tab(71010, window: 7101), Native.tab(71020, window: 7102)]
+    let workView = NSView(), personalView = NSView()
+    Native.hostWindows = [7101, 7102]
+    Native.pageViews = [71010: workView, 71020: personalView]
+    var selections: [Int32] = []
+    Native.onSelectWindow = { selections.append($0); return 1 }
+    defer { Native.hostWindows = []; Native.pageViews = [:]; Native.onSelectWindow = nil }
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    admission.apply(Native.bridge.readSnapshot()!)
+    let state = registry.allWindows.first!
+    let barkRoot = sequence(first: workView as NSView, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
+    precondition(barkRoot != nil && state.spaceID == Native.work, "the Bark window shows the work page")
+    let personal = tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 71020 }!
+
+    for key in [Int32(7101), 7102] { Native.windows[key]?.selected_client = 7102 }
+    Native.windows[7101]?.flags = 1; Native.windows[7102]?.flags = 1 | 4
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(state.spaceID == Native.personal && state.selectedItemID == personal.itemID,
+                 "the engine's selection of the other profile's tab reaches the model: the tab and its space")
+    precondition(personalView.isDescendant(of: barkRoot!) && workView.superview == nil,
+                 "the window shows that tab's page")
+    precondition(selections.isEmpty, "the app does not select back: \(selections)")
+    let followed = (tabs.tree, tabs.device)
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(tabs.tree == followed.0 && tabs.device == followed.1 && selections.isEmpty, "once")
+
+    Native.end(7101)
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(registry.windows[state.id] === state && personalView.isDescendant(of: barkRoot!),
+                 "the window lives on with the other client when the first closes")
+    Native.end(7102)
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(registry.windows[state.id] == nil, "and ends with the last client of its group")
+    tabs.saveNow()
+}
+
 /// A window saved in a split, in Chromium's own window or a Bark window, opens as a Bark window
-/// with no switch: the split shows when the root can lay out its panes, and a split it cannot show,
-/// with a pane of a profile the window does not hold or with no page view, is dropped, the window
-/// opening on its selected tab alone.
+/// with no switch: the split shows when the root can lay out its panes, here of one profile or two,
+/// and a split it cannot show is dropped, the window opening on its selected tab alone.
 @MainActor private func checkSavedSplitInBarkWindow() throws {
     let root = URL(fileURLWithPath: "/private/tmp/BarcSavedBarkSplit-\(UUID())", isDirectory: true)
     let suite = "BarcSavedBarkSplit-\(UUID())"
@@ -2039,12 +2099,12 @@ private struct NoTokens: KagiTokenStore {
             sequence(first: $0, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
         }
         precondition(state.selectedItemID == first && barkRoot != nil, "\(mode): a Bark window shows the selected tab")
-        if mode != "one-profile" {
+        if mode == "no-view" {
             precondition(state.split == nil && barkRoot!.split == nil && tabs.device.windows.first { $0.id == state.id }?.split == nil,
-                         "\(mode): a split the window cannot show is dropped, and the window opens on its selected tab alone")
+                         "a split the window cannot show is dropped, and the window opens on its selected tab alone")
         } else {
             precondition(state.split == record && barkRoot!.split?.panes.count == 2
-                         && Set(barkRoot!.split!.panes.compactMap { $0?.client }) == [native],
+                         && Set(barkRoot!.split!.panes.compactMap { $0?.client }) == (mode == "two-profiles" ? [native, joined] : [native]),
                          "\(mode): the saved split shows in the Bark window: \(String(describing: barkRoot!.split))")
         }
         for window in [native, joined] where Native.windows[window] != nil { Native.end(window) }

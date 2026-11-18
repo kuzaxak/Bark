@@ -295,12 +295,13 @@ private enum Native {
     Native.pageViews = [800: page800, 801: page801]
     let attachments = Native.attachmentCalls
     let host = ChromiumNativePageHost(bridge: Native.bridge)
-    let window = BrowserWindowState(), shell = NSView()
+    let window = BrowserWindowState(), shell: NSView = MoveCounter()
     precondition(host.registerWindow(window, nativeOwner: 80, shell: shell, initialBlankTab: 800))
     let root = shell.superview?.superview as? ChromiumWindowRoot
     _ = NSApplication.shared
     let frame = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 800),
                          styleMask: [.titled], backing: .buffered, defer: false)
+    frame.isReleasedWhenClosed = false
     frame.contentView = root
     defer { frame.contentView = nil }
     precondition(root?.holdsSidebar(shell) == true, "A host window's root view holds the sidebar")
@@ -327,23 +328,54 @@ private enum Native {
                  "The top bar goes into the root above the page")
     precondition(host.setPageHeader(nil, replacing: bar, height: 0, in: window) && bar.superview == nil)
     precondition(Native.attachmentCalls == attachments, "Host mode never attaches the sidebar through Chromium")
-    var refused: [UUID] = []
-    host.refused = { refused.append($0.id) }
-    precondition(host.refusesProfile(Native.second, in: window) && refused == [window.id],
-                 "A host window refuses a space in another profile, and says so")
-    precondition(!host.refusesProfile(Native.first, in: window) && refused.count == 1, "Its own profile is not refused")
+    let probe = shell as! MoveCounter
+    let moves = probe.moves
+    precondition(moves == (1, 1), "the sidebar went into the root once, and the root into its window once: \(moves)")
+
     let opens = Native.opens
-    var other: Result<any PageNavigation, Error>?
+    Native.hostWindows.insert(81); Native.groups[81] = 80
+    let page810 = NSView()
+    Native.pageViews[810] = page810
+    var other: ChromiumPageNavigation!
     _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
-                        profile: Profile(id: Native.second, engine: .chromium), in: window) { other = $0 }
-    precondition(Native.opens == opens, "A page in another profile never joins that profile to a host window, which shows one client")
-    precondition(other.map { if case .failure = $0 { true } else { false } } == true && refused == [window.id, window.id],
-                 "The page is refused, and the window says so")
-    precondition(host.emptySpaceClient(in: window, profile: Native.second, open: true) == nil && Native.opens == opens
-                 && refused.count == 3, "A link for another profile's empty space never joins that profile to a host window, and the window says so")
-    precondition(host.emptySpaceClient(in: window, profile: Native.second, open: false) == nil && refused.count == 3,
-                 "Asking without opening refuses nothing")
-    try hostWindowSplits(host: host, window: window, root: root!, pages: [page, second], profile: profile)
+                        profile: Profile(id: Native.second, engine: .chromium), in: window) { other = try? $0.get() as? ChromiumPageNavigation }
+    precondition(Native.opens == opens + 1 && Native.openedFrom.last == 80, "a page of another profile joins that profile to the window")
+    Native.opened(profile: Native.second, window: 81, blank: 810)
+    precondition(other?.nativeWindowID == 81 && other?.nativeTabID == 810, "its page is the new client's")
+    for _ in 0..<5 {
+        precondition(host.selectPage(other, in: window) && Native.selected == 81 && root!.client == 81
+                     && page810.isDescendant(of: root!) && page801.superview == nil && host.isNativeSelection(other, in: window),
+                     "switching to the other profile's page shows it in the same window")
+        precondition(host.selectPage(second, in: window) && Native.selected == 80 && root!.client == 80
+                     && page801.isDescendant(of: root!) && page810.superview == nil && host.isNativeSelection(second, in: window), "and back")
+    }
+    precondition(Native.attachmentCalls == attachments, "a switch never attaches or detaches a shell")
+    precondition(probe.moves == moves, "the sidebar never leaves its window across ten switches: \(probe.moves)")
+    Native.pageViews[810] = nil
+    precondition(!host.selectPage(other, in: window) && Native.selected == 80 && page801.isDescendant(of: root!),
+                 "a page with no view is not shown, and the selection goes back")
+    precondition(probe.moves == moves && root!.holdsSidebar(shell), "the sidebar stays through the rollback: \(probe.moves)")
+    Native.pageViews[810] = page810
+
+    let third = UUID()
+    Native.hostWindows.insert(82); Native.groups[82] = 80
+    precondition(host.emptySpaceClient(in: window, profile: third, open: true) == nil && Native.opens == opens + 2
+                 && Native.openedFrom.last == 80, "an empty space of a profile the window lacks opens that profile's client")
+    Native.opened(profile: third, window: 82, blank: 820)
+    precondition(Native.nativeCloses.last.map { $0 == (82, 820) } == true, "the new client's blank closes")
+    Native.tabs[82] = []
+    let selections = Native.selectionCalls
+    precondition(host.emptySpaceClient(in: window, profile: third, open: true) == 82 && Native.selected == 82
+                 && Native.selectionCalls == selections + 1, "the empty space's client is selected")
+    host.setPageHidden(true, in: window)
+    precondition(root!.shownTab == second.nativeTabID && page801.isHidden && Native.pageHidden[82] == nil,
+                 "no page is placed for it, and the page shown is hidden")
+    precondition(Native.attachmentCalls == attachments && probe.moves == moves, "the sidebar stays")
+    host.setPageHidden(false, in: window)
+    precondition(host.selectPage(second, in: window) && Native.selected == 80 && !page801.isHidden, "back to the first profile's page")
+    Native.hostWindows.remove(82); Native.profiles[82] = nil; Native.tabs[82] = nil
+    try hostWindowSplits(host: host, window: window, root: root!, pages: [page, second], other: other, sidebar: probe, profile: profile)
+    Native.hostWindows.remove(81); Native.profiles[81] = nil; Native.tabs[81] = nil
     Native.hostWindows = []; Native.pageViews = [:]
     Native.profiles[80] = nil; Native.tabs[80] = nil; Native.appLifetime = []; Native.selected = 10
     print("Chromium host window checks PASS")
@@ -359,10 +391,18 @@ private final class FocusableHostPage: NSView {
                      isARepeat: false, keyCode: 0)!
 }
 
+/// Counts how often the sidebar entered a superview and a window.
+private final class MoveCounter: NSView {
+    private(set) var moves = (superview: 0, window: 0)
+    override func viewDidMoveToSuperview() { super.viewDidMoveToSuperview(); moves.superview += 1 }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); moves.window += 1 }
+}
+
 /// A Bark window lays out a split's panes itself from the model's record: no call reaches Chromium's
 /// own split, the panes are the window's page views, and the record's focus is Chromium's selection.
 @MainActor private func hostWindowSplits(host: ChromiumNativePageHost, window: BrowserWindowState, root: ChromiumWindowRoot,
-                                         pages: [ChromiumPageNavigation], profile: Profile) throws {
+                                         pages: [ChromiumPageNavigation], other: ChromiumPageNavigation, sidebar: MoveCounter,
+                                         profile: Profile) throws {
     precondition(host.laysOutSplits(in: window), "a Bark window lays out its own split")
     let before = Native.tabs[80] ?? []
     Native.tabs[80] = before + [802]
@@ -461,6 +501,36 @@ private final class FocusableHostPage: NSView {
     host.showModelSplit([ids[0], UUID()], vertical: false, dividers: [0.5], focused: ids[0], page: { navigations[$0] }, in: window)
     precondition(root.split?.panes.count == 3, "a pane whose page does not exist yet waits for the preparation")
 
+    let otherID = UUID()
+    var mixed = navigations
+    mixed[otherID] = other
+    let otherView = Native.pageViews[other.nativeTabID]!
+    let sidebarMoves = sidebar.moves
+    let pair = SplitRecord([ids[0], otherID], orientation: .horizontal, dividers: [0.5])!
+    precondition(host.applyHostSplit(pair, navigations: mixed, activeItemID: ids[0], in: window, isCurrent: { true })
+                 && root.split?.panes == [.init(client: 80, tab: pages[0].nativeTabID), .init(client: 81, tab: other.nativeTabID)]
+                 && views[0].isDescendant(of: root) && otherView.isDescendant(of: root), "a split of two profiles' pages shows both")
+    let mixedContainers = [views[0].superview, otherView.superview]
+    for _ in 0..<3 {
+        precondition(host.applyHostSplit(pair, navigations: mixed, activeItemID: otherID, in: window, isCurrent: { true })
+                     && Native.selected == 81 && root.client == 81 && root.split?.focused == other.nativeTabID,
+                     "focusing the other profile's pane selects its client")
+        precondition(host.applyHostSplit(pair, navigations: mixed, activeItemID: ids[0], in: window, isCurrent: { true })
+                     && Native.selected == 80 && root.client == 80 && root.split?.focused == pages[0].nativeTabID, "and back")
+    }
+    precondition([views[0].superview, otherView.superview] == mixedContainers && sidebar.moves == sidebarMoves,
+                 "focus going between the profiles moves no pane and no sidebar")
+    let four = SplitRecord([ids[0], otherID, ids[1], ids[2]], orientation: .vertical)!
+    precondition(host.applyHostSplit(four, navigations: mixed, activeItemID: otherID, in: window, isCurrent: { true })
+                 && root.split?.panes.compactMap { $0?.client } == [80, 81, 80, 80] && root.client == 81
+                 && host.hostShowsSplit(four, navigations: mixed, activeItemID: otherID, in: window), "four panes of two profiles")
+    host.showModelSplit(four.itemIDs, vertical: true, dividers: [0.2, 0.5, 0.8], focused: otherID, page: { mixed[$0] }, in: window)
+    precondition(root.split?.dividers == [0.2, 0.5, 0.8] && root.split?.panes.count == 4, "the shell's link follows a mixed split")
+    precondition(host.showSplitDividers(SplitRecord([ids[0], otherID, ids[1], ids[2]], orientation: .vertical, dividers: [0.1, 0.5, 0.9])!, in: window)
+                 && root.split?.dividers == [0.1, 0.5, 0.9], "a divider move re-frames a mixed split")
+    precondition(host.applyHostSplit(three, navigations: navigations, activeItemID: ids[2], in: window, isCurrent: { true })
+                 && root.split?.panes.count == 3 && otherView.superview == nil && root.client == 80, "back to the three pages of one profile")
+
     let shown = root.split
     precondition(!host.applyHostSplit(record, navigations: navigations, activeItemID: ids[0], in: window, isCurrent: { false })
                  && root.split == shown, "a superseded request changes nothing")
@@ -499,9 +569,7 @@ private enum HostChecks {
         precondition(Native.pageHidden[10] == 1, "An empty space hides the page from its commands")
         host.setPageHidden(false, in: window)
         precondition(Native.pageHidden[10] == 0)
-        host.refused = { _ in preconditionFailure("Chromium's own window refuses nothing here") }
-        precondition(!host.refusesProfile(Native.second, in: window) && !host.laysOutSplits(in: window))
-        host.refused = { _ in }
+        precondition(!host.laysOutSplits(in: window))
         host.setPageHidden(true, in: BrowserWindowState(id: window.id))
         precondition(Native.pageHidden[10] == 0, "Only the registered model window decides")
         let reservedHost = ChromiumNativePageHost(bridge: Native.bridge)

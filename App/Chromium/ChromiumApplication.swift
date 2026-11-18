@@ -415,7 +415,6 @@ final class ChromiumApplication: ChromiumStartupBridge {
             pageHost.pageIsHidden = { [weak tabs = manager.tabs] state in
                 state.showsNativeEmptySpace || tabs?.showsPageElsewhere(in: state) == true
             }
-            pageHost.refused = { [weak manager] state in manager?.showWindowToast("This action is not available yet", in: state) }
             manager.tabs.nativeLiveFetch = { [liveFetch] profile, source in
                 try await liveFetch.fetch(profileID: profile, source: source)
             }

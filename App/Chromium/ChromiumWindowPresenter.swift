@@ -7,8 +7,6 @@ import NookTabsCore
 /// `ChromiumWindowRoot` does. Chosen per window by whether the engine takes a root view.
 @MainActor
 protocol ChromiumWindowPresenter: AnyObject {
-    /// The one client this window can show, or nil when it shows any of its physical group.
-    var onlyClient: Int32? { get }
     /// Whether `client` shows this window's sidebar.
     func ownsSidebar(_ client: Int32) -> Bool
     /// Gives the sidebar to `client`; false when it refuses.
@@ -26,9 +24,9 @@ protocol ChromiumWindowPresenter: AnyObject {
     func downloadLaunch() -> (window: NSWindow, point: NSPoint)?
     /// Whether the app lays out this window's split panes itself.
     var laysOutSplits: Bool { get }
-    /// Shows `split`'s panes of `client`, or with nil the focused page alone; false where the app
-    /// does not lay out the page.
-    func showSplit(_ split: ChromiumWindowRoot.Split?, of client: Int32) -> Bool
+    /// Shows `split`'s panes, or with nil the focused page alone; false where the app does not lay
+    /// out the page.
+    func showSplit(_ split: ChromiumWindowRoot.Split?) -> Bool
     /// The split the window shows; nil for one page, and where the app does not lay out the page.
     var shownSplit: ChromiumWindowRoot.Split? { get }
 }
@@ -54,8 +52,6 @@ final class ChromiumLegacyPresenter: ChromiumWindowPresenter {
     }
 
     private var pointer: UnsafeMutableRawPointer? { sidebar.map { Unmanaged.passUnretained($0).toOpaque() } }
-
-    var onlyClient: Int32? { nil }
 
     func ownsSidebar(_ client: Int32) -> Bool {
         guard let pointer else { return false }
@@ -88,19 +84,25 @@ final class ChromiumLegacyPresenter: ChromiumWindowPresenter {
 
     var laysOutSplits: Bool { false }
 
-    func showSplit(_ split: ChromiumWindowRoot.Split?, of client: Int32) -> Bool { false }
+    func showSplit(_ split: ChromiumWindowRoot.Split?) -> Bool { false }
 
     var shownSplit: ChromiumWindowRoot.Split? { nil }
 }
 
-/// Bark's own window, with one client, whose root view holds the sidebar and the page the app places.
+/// Bark's own window, whose root view holds the sidebar and places the pages of every client in it,
+/// one client per profile. Selecting a client gives it the window; the sidebar never moves.
 @MainActor
 final class ChromiumHostPresenter: ChromiumWindowPresenter {
     let root: ChromiumWindowRoot
+    private let bridge: BarcBridge
+    private let group: UInt64
     private weak var sidebar: NSView?
 
     init?(bridge: BarcBridge, client: Int32, sidebar: NSView) {
-        root = ChromiumWindowRoot(bridge: bridge, nativeWindow: client) { index, positions, length in
+        guard let group = bridge.windowState(client)?.physical_group, group != 0 else { return nil }
+        self.bridge = bridge
+        self.group = group
+        root = ChromiumWindowRoot(bridge: bridge, client: client) { index, positions, length in
             let minimum = SplitRecord.minimumPaneFraction(count: positions.count + 1, length: Double(length))
             let range = SplitRecord.dividerRange(at: index, in: positions.map { Double($0) }, minimum: minimum)
             return range.map { CGFloat($0.lowerBound)...CGFloat($0.upperBound) }
@@ -110,18 +112,24 @@ final class ChromiumHostPresenter: ChromiumWindowPresenter {
         self.sidebar = sidebar
     }
 
-    var onlyClient: Int32? { root.nativeWindow }
+    /// The engine's selected client of this window shows the sidebar.
+    func ownsSidebar(_ client: Int32) -> Bool {
+        guard root.holdsSidebar(sidebar), let row = bridge.windowState(client) else { return false }
+        return row.physical_group == group && row.selected_client == client
+    }
 
-    func ownsSidebar(_ client: Int32) -> Bool { client == root.nativeWindow && root.holdsSidebar(sidebar) }
+    /// Selects `client` in the engine, which gives it the window.
+    func attachSidebar(to client: Int32) -> Bool {
+        guard let row = bridge.windowState(client), row.physical_group == group else { return false }
+        if row.selected_client != client, bridge.window_select(client) != 1 { return false }
+        return ownsSidebar(client)
+    }
 
-    func attachSidebar(to client: Int32) -> Bool { ownsSidebar(client) }
+    func detachSidebar(from client: Int32) -> Bool { true }
 
-    func detachSidebar(from client: Int32) -> Bool { !ownsSidebar(client) }
-
-    func showPage(_ tab: Int32, of client: Int32) -> Bool { client == root.nativeWindow && root.show(tab: tab) }
+    func showPage(_ tab: Int32, of client: Int32) -> Bool { root.show(tab: tab, of: client) }
 
     func setPageHidden(_ hidden: Bool, client: Int32) {
-        guard client == root.nativeWindow else { return }
         root.pageHidden = hidden
     }
 
@@ -137,8 +145,7 @@ final class ChromiumHostPresenter: ChromiumWindowPresenter {
 
     var laysOutSplits: Bool { true }
 
-    func showSplit(_ split: ChromiumWindowRoot.Split?, of client: Int32) -> Bool {
-        guard client == root.nativeWindow else { return false }
+    func showSplit(_ split: ChromiumWindowRoot.Split?) -> Bool {
         guard let split else { return root.endSplit() }
         return root.showSplit(split)
     }

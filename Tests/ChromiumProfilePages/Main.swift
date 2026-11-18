@@ -63,6 +63,11 @@ private enum Native {
             return Native.attachAccepted ? 1 : 0
         } }
         bridge.window_select = { _ in MainActor.assumeIsolated { Native.calls.append("select"); return 1 } }
+        bridge.window_discovery_state = { window, output in MainActor.assumeIsolated {
+            guard let output, Native.members[window] != nil else { return 0 }
+            output.pointee.window = window; output.pointee.physical_group = UInt64(window); output.pointee.selected_client = window
+            return 1
+        } }
         bridge.window_show = { _ in MainActor.assumeIsolated {
             Native.calls.append("show"); Native.onShow?()
             return Native.showAccepted ? 1 : 0
