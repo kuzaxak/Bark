@@ -15,6 +15,10 @@ import tempfile
 import runpy
 
 ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT / 'scripts'))
+from chromium_sdk_layout import native_architecture
+
+INTEL = ('-arch', 'x86_64')
 SHIM = ROOT / 'ChromiumApp'
 APP_RESOURCES = SHIM / 'Resources'
 STAGE = ROOT / 'scripts/stage-chromium-app.sh'
@@ -175,12 +179,13 @@ def table_size():
         with tempfile.TemporaryDirectory() as directory:
             probe = Path(directory) / 'size'
             compile_c('#include <stdio.h>\n#include "BarcChromium/barc_bridge_api.h"\n'
-                      'int main(void) { printf("%zu", sizeof(struct BarcBridge)); return 0; }\n', probe, f'-I{PUBLIC_HEADERS}')
+                      'int main(void) { printf("%zu", sizeof(struct BarcBridge)); return 0; }\n',
+                      probe, '-arch', native_architecture(), f'-I{PUBLIC_HEADERS}')
             TABLE_SIZE = int(subprocess.check_output([str(probe)], text=True))
     return TABLE_SIZE
 
 
-def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x86_64'), digest=headers_digest(),
+def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=INTEL, digest=headers_digest(),
                    table=TABLE, size=None, host_only=True):
     extra = ['-dynamiclib', f'-DZONE_NAME="{zone}"', *arch]
     if entry:
@@ -194,11 +199,11 @@ def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x8
     compile_c(marker + FAKE_FRAMEWORK, output, *extra)
 
 
-def fake_shell(output, arch=('-arch', 'x86_64')):
+def fake_shell(output, arch=INTEL):
     compile_c(FAKE_SHELL, output, '-dynamiclib', *arch)
 
 
-def compile_shim(output, version=VERSION, headers=PUBLIC_HEADERS, extra=('-arch', 'x86_64'), libs=('-nostdlib++',)):
+def compile_shim(output, version=VERSION, headers=PUBLIC_HEADERS, extra=INTEL, libs=('-nostdlib++',)):
     sources = sorted(str(p) for p in SHIM.glob('*.cc'))
     if not sources:
         return False
@@ -427,7 +432,7 @@ def package_cases(work):
           absent.returncode != 0 and 'No pinned Bark engine for arm64' in absent.stderr, absent.stderr)
 
 
-def historical_shim(output, version, revision):
+def historical_shim(output, version, revision, arch):
     """Build an older app entry with its own public headers."""
     tree = output.parent / f'v{version}-tree'
     module = tree / 'headers/BarcChromium'
@@ -439,13 +444,28 @@ def historical_shim(output, version, revision):
     headers = 'Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Headers/BarcChromium'
     for name in ['barc_bridge_api.h', 'barc_public_headers_sha256.h']:
         (module / name).write_bytes(show(f'{headers}/{name}'))
-    subprocess.run(['xcrun', 'clang++', '-arch', 'x86_64', '-std=c++20', '-fno-exceptions', '-fno-rtti', '-nostdlib++', '-O2',
+    subprocess.run(['xcrun', 'clang++', *arch, '-std=c++20', '-fno-exceptions', '-fno-rtti', '-nostdlib++', '-O2',
                     f'-DENGINE_VERSION_STRING="{VERSION}"', f'-I{tree / "headers"}', f'-I{tree}',
                     str(tree / 'main.cc'), str(tree / 'early_zone_registration_apple.cc'), '-o', str(output)], check=True)
     return output
 
 
-def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
+def launch_fixtures(work, arch):
+    shim = work / 'shim'
+    framework = work / 'framework.dylib'
+    shell = work / 'shell.dylib'
+    no_entry = work / 'shell-no-entry.dylib'
+    quiet = work / 'quiet-abort.dylib'
+    assert compile_shim(shim, extra=arch)
+    fake_framework(framework, arch=arch)
+    fake_shell(shell, arch=arch)
+    compile_c(FAKE_SHELL_NO_ENTRY, no_entry, '-dynamiclib', *arch)
+    compile_c(QUIET_ABORT, quiet, '-dynamiclib', f'-DABORT_STATUS={ABORT_STATUS}', *arch)
+    return shim, framework, shell, no_entry, quiet
+
+
+def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, arch):
+    # All files used by this process must be thin native images, even under Rosetta.
     def launch(name, framework=framework_lib, shell=shell_lib, main=shim):
         contents = work / name / 'Bark.app/Contents'
         (contents / 'MacOS').mkdir(parents=True)
@@ -455,6 +475,9 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
             versioned_framework(contents / 'Frameworks', framework)
         if shell:
             shell_framework(contents / 'Frameworks', shell)
+        for image in filter(None, (main, framework, shell, quiet_lib)):
+            actual = subprocess.check_output(['/usr/bin/lipo', '-archs', image], text=True).strip()
+            assert actual == arch[1], f'{image}: expected thin {arch[1]}, got {actual}'
         log = work / name / 'log.txt'
         log.touch()
         run = subprocess.run([str(contents / 'MacOS/Bark'), '--barc-app-data-dir=/synthetic', 'last-argument'],
@@ -481,7 +504,7 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     check('shell without its entry aborts before ChromeMain', run.returncode == ABORT_STATUS and 'chrome-main' not in lines, (run.returncode, lines))
 
     old_engine = work / 'framework-without-entry.dylib'
-    fake_framework(old_engine, entry=None)
+    fake_framework(old_engine, arch=arch, entry=None)
     run, lines = launch('engine-without-entry', framework=old_engine)
     check('an engine without the versioned entry aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
@@ -490,20 +513,20 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     for previous, revision in OLD_APPS.items():
         old_entry = f'barc_engine_main_v{previous}'
         old_engine = work / f'framework-v{previous}.dylib'
-        fake_framework(old_engine, entry=old_entry, table=f'barc_bridge_v{previous}', digest='a' * 64)
+        fake_framework(old_engine, arch=arch, entry=old_entry, table=f'barc_bridge_v{previous}', digest='a' * 64)
         run, lines = launch(f'current-app-v{previous}-engine', framework=old_engine)
         check(f'the current app rejects the v{previous} engine before loading its shell',
               run.returncode == ABORT_STATUS and 'shell' not in lines and 'bridge-table' not in lines
               and ENTRY in run.stderr and f'needs version {BRIDGE_VERSION}' in run.stderr, (run.stderr, lines))
 
-        old_app = historical_shim(work / f'v{previous}-app', previous, revision)
+        old_app = historical_shim(work / f'v{previous}-app', previous, revision, arch)
         run, lines = launch(f'v{previous}-app-current-engine', main=old_app)
         check(f'the v{previous} app rejects the current engine before entering Chromium',
               run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines
               and old_entry in run.stderr and f'needs version {previous}' in run.stderr, (run.stderr, lines))
 
     no_table = work / 'framework-without-table.dylib'
-    fake_framework(no_table, table=None)
+    fake_framework(no_table, arch=arch, table=None)
     run, lines = launch('engine-without-table', framework=no_table)
     check('an engine without the table aborts before the shell loads', run.returncode == ABORT_STATUS and 'shell' not in lines,
           (run.returncode, lines))
@@ -511,21 +534,21 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
 
     short = table_size() - 8
     small_table = work / 'framework-small-table.dylib'
-    fake_framework(small_table, size=short)
+    fake_framework(small_table, arch=arch, size=short)
     run, lines = launch('engine-small-table', framework=small_table)
     check('a table smaller than the app expects aborts before the shell loads',
           run.returncode == ABORT_STATUS and lines[1:] == ['bridge-table'], (run.returncode, lines))
     check('that error names both sizes', f'is {short} bytes' in run.stderr and f'needs at least {table_size()}' in run.stderr, run.stderr)
 
     large_table = work / 'framework-large-table.dylib'
-    fake_framework(large_table, size=table_size() + 64)
+    fake_framework(large_table, arch=arch, size=table_size() + 64)
     run, lines = launch('engine-large-table', framework=large_table)
     check('a larger table from a newer engine is accepted', run.returncode == 23 and 'chrome-main' in lines, (run.returncode, lines))
 
     for name, digest, why in [('engine-without-digest', None, 'an engine that exports no header digest'),
                               ('engine-other-digest', '0' * 64, 'an engine built from other public headers')]:
         engine = work / f'{name}.dylib'
-        fake_framework(engine, digest=digest)
+        fake_framework(engine, arch=arch, digest=digest)
         run, lines = launch(name, framework=engine)
         check(f'{why} aborts before the shell loads', run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
         check(f'that error names both digests', 'other public headers' in run.stderr and headers_digest() in run.stderr and
@@ -536,7 +559,7 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     header = other_headers / 'barc_bridge_api.h'
     header.write_text(header.read_text().replace(ENTRY, 'barc_engine_main_v5').replace(f'BARC_BRIDGE_VERSION {BRIDGE_VERSION}', 'BARC_BRIDGE_VERSION 5'))
     wrong = work / 'wrong-version-shim'
-    assert compile_shim(wrong, headers=work / 'other-headers')
+    assert compile_shim(wrong, headers=work / 'other-headers', extra=arch)
     run, lines = launch('wrong-version', main=wrong)
     check('an app built against another bridge version aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines, (run.returncode, lines))
@@ -609,8 +632,8 @@ def publisher_environment(build, siso=None):
     return {**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE_SISO_STATE': str(build / 'fake-siso-state.json')}
 
 
-def publish(build, package, siso=None, architecture=None, replace=False):
-    flags = ['--arch', architecture] if architecture else []
+def publish(build, package, siso=None, architecture='x86_64', replace=False):
+    flags = ['--arch', architecture]
     if replace:
         flags.append('--replace')
     return subprocess.run(['bash', str(PUBLISH), *flags, str(build), str(package)],
@@ -625,13 +648,13 @@ def make_writable(path):
     subprocess.run(['chmod', '-R', 'u+w', str(path)], check=True)
 
 
-def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architecture=None):
+def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architecture='x86_64'):
     root.mkdir()
     build = fake_engine_build(root, framework_lib)
     package = root / 'package'
     run = publish(build, package, architecture=architecture)
     assert run.returncode == 0, run.stderr
-    artifact = artifact_of(package, architecture or 'x86_64')
+    artifact = artifact_of(package, architecture)
     if writable:
         make_writable(artifact)
 
@@ -656,8 +679,8 @@ def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architectur
     return root / 'app/Bark.app', artifact, products
 
 
-def stage(app, artifact, products, output, additions=None, architecture=None):
-    return subprocess.run(['bash', str(STAGE), *(['--arch', architecture] if architecture else []), str(app), str(artifact), str(products), str(output),
+def stage(app, artifact, products, output, additions=None, architecture='x86_64'):
+    return subprocess.run(['bash', str(STAGE), '--arch', architecture, str(app), str(artifact), str(products), str(output),
                            *([str(additions)] if additions else [])], capture_output=True, text=True)
 
 
@@ -1360,7 +1383,7 @@ def signed_cases(work, mach_o):
             subprocess.run(['codesign', '--force', '--sign', '-', str(path)], capture_output=True, check=True)
         if mutate:
             mutate(app)
-        return subprocess.run(['bash', str(STAGE), '--check-signed', str(app), str(additions), str(artifact)], capture_output=True, text=True)
+        return subprocess.run(['bash', str(STAGE), '--arch', 'x86_64', '--check-signed', str(app), str(additions), str(artifact)], capture_output=True, text=True)
 
     universal = work / 'signed-Sparkle'
     compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'x86_64', '-arch', 'arm64')
@@ -1425,29 +1448,33 @@ def signed_cases(work, mach_o):
 def main():
     with tempfile.TemporaryDirectory(prefix='nook-app-shim-') as directory:
         work = Path(directory).resolve()
-        shim = work / 'shim'
-        framework_lib = work / 'framework.dylib'
-        shell_lib = work / 'shell.dylib'
-        no_entry_lib = work / 'shell-no-entry.dylib'
-        quiet_lib = work / 'quiet-abort.dylib'
         global FAKE_SISO
         FAKE_SISO = work / 'fake-siso-bin'
         FAKE_SISO.mkdir()
         (FAKE_SISO / 'siso').write_text('#!/bin/bash\nexec /bin/cat "$FAKE_SISO_STATE"\n')
         (FAKE_SISO / 'siso').chmod(0o755)
-        fake_framework(framework_lib)
-        fake_shell(shell_lib)
-        compile_c(FAKE_SHELL_NO_ENTRY, no_entry_lib, '-dynamiclib')
-        compile_c(QUIET_ABORT, quiet_lib, '-dynamiclib', f'-DABORT_STATUS={ABORT_STATUS}')
         header_cases(work)
         source_cases()
         package_cases(work)
-        if not compile_shim(shim):
-            check('main compiles from ChromiumApp', False, 'no usable sources')
-        else:
-            launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib)
-            publish_cases(work, framework_lib)
-            stage_cases(work, shim, framework_lib, shell_lib)
+        native = ('-arch', native_architecture())
+        runtime = work / 'native-launch'
+        runtime.mkdir()
+        fixtures = launch_fixtures(runtime, native)
+        launch_cases(runtime, *fixtures, native)
+
+        # Keep static SDK fixture and rejection cases on their stated architecture.
+        shim, framework_lib, shell_lib, *_ = fixtures
+        if native != INTEL:
+            static = work / 'intel-layout'
+            static.mkdir()
+            shim = static / 'shim'
+            framework_lib = static / 'framework.dylib'
+            shell_lib = static / 'shell.dylib'
+            assert compile_shim(shim)
+            fake_framework(framework_lib)
+            fake_shell(shell_lib)
+        publish_cases(work, framework_lib)
+        stage_cases(work, shim, framework_lib, shell_lib)
         arm_artifact_cases(work)
         signed_cases(work, shell_lib)
         make_writable(work)
@@ -1455,4 +1482,5 @@ def main():
     sys.exit(1 if failures else 0)
 
 
-main()
+if __name__ == "__main__":
+    main()
