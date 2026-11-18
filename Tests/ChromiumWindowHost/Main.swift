@@ -286,6 +286,7 @@ private final class PageView: NSView {
         }
         precondition(released == nil, "the root is not retained by its observation")
         precondition(Engine.unobserved == [Engine.token], "a released root stops observing")
+        compactCases()
         print("Window host root: Arc's sidebar, page frame and lights; the Library in the sidebar's column; hides, reveals and full screen; one page at a time, crashed and retired pages, observes until released")
     }
 
@@ -572,6 +573,83 @@ private final class PageView: NSView {
         Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 41, view: pages[1])
         Engine.clients = [5]; Engine.tabClients = [:]
         Engine.pages[40] = nil; Engine.pages[41] = nil
+    }
+
+    /// A compact Bark window (the mini window, a page's popup): the header 44 high across the top with the
+    /// lights centred in it, the page below to the window's edges; the window grows by the header once.
+    @MainActor static func compactCases() {
+        Engine.unobserved = []
+        Engine.chrome = []; Engine.chromeClients = []
+        weak var released: ChromiumCompactRoot?
+        autoreleasepool {
+            let window = NSWindow(contentRect: NSRect(x: 200, y: 300, width: 500, height: 600),
+                                  styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                                  backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            let root = ChromiumCompactRoot(bridge: table(), client: 5)
+            released = root
+            precondition(root.attach() && Engine.roots.last!.1 == Unmanaged.passUnretained(root).toOpaque(), "a compact root is the window's root")
+            precondition(Engine.chrome.last == ChromiumCompactRoot.lights && ChromiumCompactRoot.lights.titlebarHeight == 44,
+                         "the lights are centred in the 44 high header: \(Engine.chrome)")
+            let top = window.frame.maxY, left = window.frame.minX
+            let content = window.contentRect(forFrameRect: window.frame).size
+            window.contentView = root
+            precondition(window.frame.maxY == top && window.frame.minX == left
+                         && window.contentRect(forFrameRect: window.frame).size == CGSize(width: content.width, height: content.height + 44),
+                         "the window grows by the header, its top-left fixed: \(window.frame)")
+            let grown = window.frame
+            window.contentView = NSView()
+            window.contentView = root
+            precondition(window.frame == grown, "it grows once")
+
+            let header = NSView(), page = PageView()
+            Engine.pages[10] = page
+            defer { Engine.pages[10] = nil }
+            root.setHeader(header)
+            precondition(root.holdsHeader(header) && !root.holdsHeader(NSView()))
+            precondition(root.show(tab: 10) && root.shownTab == 10, "the page shows")
+            let size = root.bounds.size
+            precondition(inRoot(header, root) == CGRect(x: 0, y: 0, width: size.width, height: 44)
+                         && inRoot(page, root) == CGRect(x: 0, y: 44, width: size.width, height: size.height - 44),
+                         "the header across the top, the page below it to the edges: \(inRoot(header, root)) \(inRoot(page, root))")
+            precondition(window.firstResponder === page.input, "the page has the keys")
+            Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 10, view: page)
+            precondition(root.showsCrashedPage, "a crashed page shows the card")
+            let card = root.hitTest(root.convert(CGPoint(x: size.width / 2, y: 44 + (size.height - 44) / 2), to: root.superview))
+            let bar = root.hitTest(root.convert(CGPoint(x: size.width / 2, y: 22), to: root.superview))
+            precondition(card?.isDescendant(of: page) == false && bar?.isDescendant(of: header) != false, "the card covers the page, not the header")
+            Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 10, view: page)
+            precondition(!root.showsCrashedPage)
+            let lights = [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton].map { window.standardWindowButton($0)! }
+            Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_PAGE)
+            precondition(root.pageFullscreen && inRoot(page, root) == root.bounds && header.isHiddenOrHasHiddenAncestor
+                         && lights.allSatisfy(\.isHidden), "page full screen: the page fills the window, header and lights hide")
+            Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
+            precondition(!header.isHiddenOrHasHiddenAncestor && !lights.contains(where: \.isHidden)
+                         && inRoot(page, root) == CGRect(x: 0, y: 44, width: size.width, height: size.height - 44), "and back")
+            let replacement = PageView()
+            Engine.pages[10] = replacement
+            Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 10, view: page)
+            precondition(page.superview == nil && replacement.isDescendant(of: root), "a tab that replaced its contents shows its new page")
+            Engine.pages[10] = nil
+            Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 10, view: replacement)
+            precondition(replacement.superview == nil && root.shownTab == 0, "a closed page leaves the window")
+            root.setHeader(nil)
+            precondition(header.superview == nil && !root.holdsHeader(header), "the header can be taken out")
+
+            let foot = NSWindow(contentRect: NSRect(x: 200, y: 0, width: 400, height: 300), styleMask: [.titled, .fullSizeContentView],
+                                backing: .buffered, defer: true)
+            foot.isReleasedWhenClosed = false
+            let visible = (foot.screen ?? NSScreen.main!).visibleFrame
+            foot.setFrameOrigin(NSPoint(x: visible.minX + 50, y: visible.minY + 10))
+            let low = ChromiumCompactRoot(bridge: table(), client: 5)
+            foot.contentView = low
+            precondition(foot.frame.minY >= visible.minY && foot.frame.maxY <= visible.maxY
+                         && foot.contentRect(forFrameRect: foot.frame).height == 344, "near the screen's foot it grows and stays on screen: \(foot.frame)")
+            window.contentView = nil
+        }
+        precondition(released == nil && Engine.unobserved.count == 1, "a released compact root stops observing")
+        print("Compact root: header and lights over the page, full screen, crashed and retired pages, grows once by the header")
     }
 
     /// A download that starts flies over the page into the sidebar's downloads button, as in the WebKit

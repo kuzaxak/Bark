@@ -133,53 +133,30 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     private func applyMiniPages(_ snapshot: ChromiumDiscoverySnapshot) {
-        guard acceptsWindows, let manager = browserManager, let admission else { return }
-        for row in snapshot.windows where row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 &&
-            row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 {
-            guard let id = bridge.identity(row) else { continue }
-            let profile: Profile
-            if row.profile_kind == BARC_DISCOVERY_GUEST.rawValue {
-                profile = manager.tabs.privateWindows.compactMap(\.ephemeralProfile).first(where: { $0.id == id }) ??
-                    Profile.createEphemeral(id: id, engine: .chromium)
-            } else {
-                guard row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
-                      manager.tabs.isProfileAvailable(id),
-                      let regular = manager.tabs.profile(forStore: id) else { continue }
-                profile = regular
-            }
-            // All real pages retain an observer, including a queued incoming
-            // document superseded by a newer selected tab before admission.
-            for tab in snapshot.tabs where tab.window == row.window {
-                guard manager.externalMiniWindowManager.nativeController(tab: tab.tab) == nil else { continue }
-                guard let navigation = try? ChromiumPageNavigation(profileID: id, window: row.window,
-                          tab: tab.tab, bridge: bridge, privateSession: profile.isEphemeral),
-                      let controller = ChromiumMiniWindowController(tabs: manager.tabs, profile: profile,
-                        navigation: navigation, origin: registry.activeWindow, api: miniAPI,
-                        promote: { [weak self, weak admission] page, space in
-                            guard let self, let admission, self.acceptsWindows else { return false }
-                            return admission.promoteDetached(page, spaceID: space, peerInGroup: self.bridge.window_new_peer_in_native_window,
-                                newPeer: self.bridge.window_new_peer, close: self.bridge.window_close)
-                        }, destinations: { [weak admission] page in admission?.miniDestinations(for: page) ?? [] },
-                        openCopy: { [weak self, weak admission] page, space in
-                            guard let self, let admission, self.acceptsWindows else { return false }
-                            return admission.openDetachedCopy(page, in: space, open: self.bridge.profile_open_window, close: self.bridge.window_close,
-                                canPresent: { [weak self] in self?.acceptsWindows == true })
-                        }, canPromote: { [weak manager] page in
-                            guard let manager, let profile = page.profile else { return false }
-                            return page.isPrivate || (manager.tabs.isProfileAvailable(profile.id) &&
-                                manager.tabs.profiles.first(where: { $0.id == profile.id })?.spaceIDs.isEmpty == false)
-                        }, onEnd: { [weak manager] controller in
-                            manager?.externalMiniWindowManager.releaseNative(controller)
-                        }) else { continue }
-                if !manager.externalMiniWindowManager.retainNative(controller) {
-                    navigation.invalidate() // Observation only; no unclaimed native close.
-                }
-            }
-            guard row.selected_client == row.window,
-                  let selected = manager.externalMiniWindowManager.nativeController(tab: row.active_tab) as? ChromiumMiniWindowController else { continue }
-            manager.externalMiniWindowManager.relinquishNativeHeader(window: row.window, except: row.active_tab)
-            _ = selected.present(canPresent: { [weak self] in self?.acceptsWindows == true })
+        guard let manager = browserManager, let admission else { return }
+        let pages = ChromiumMiniPages(bridge: bridge, tabs: manager.tabs, registry: manager.externalMiniWindowManager) {
+            [weak self, weak manager, weak admission] profile, navigation, origin in
+            guard let self, let manager, let admission else { return nil }
+            return ChromiumMiniWindowController(tabs: manager.tabs, profile: profile,
+                navigation: navigation, origin: origin, api: self.miniAPI,
+                promote: { [weak self, weak admission] page, space in
+                    guard let self, let admission, self.acceptsWindows else { return false }
+                    return admission.promoteDetached(page, spaceID: space, peerInGroup: self.bridge.window_new_peer_in_native_window,
+                        newPeer: self.bridge.window_new_peer, close: self.bridge.window_close)
+                }, destinations: { [weak admission] page in admission?.miniDestinations(for: page) ?? [] },
+                openCopy: { [weak self, weak admission] page, space in
+                    guard let self, let admission, self.acceptsWindows else { return false }
+                    return admission.openDetachedCopy(page, in: space, open: self.bridge.profile_open_window, close: self.bridge.window_close,
+                        canPresent: { [weak self] in self?.acceptsWindows == true })
+                }, canPromote: { [weak manager] page in
+                    guard let manager, let profile = page.profile else { return false }
+                    return page.isPrivate || (manager.tabs.isProfileAvailable(profile.id) &&
+                        manager.tabs.profiles.first(where: { $0.id == profile.id })?.spaceIDs.isEmpty == false)
+                }, onEnd: { [weak manager] controller in
+                    manager?.externalMiniWindowManager.releaseNative(controller)
+                })
         }
+        pages.apply(snapshot, accepting: { [weak self] in self?.acceptsWindows == true }, activeWindow: registry.activeWindow)
     }
 
     private static func copyUUID<T>(_ id: UUID, into field: inout T) {
@@ -744,3 +721,5 @@ public func barcNativeMain(
     }
     return ChromiumApplication.run(bridge: bridge.pointee, engineMain: engineMain, arguments: arguments)
 }
+
+extension ExternalMiniWindowManager: ChromiumMiniRegistry {}

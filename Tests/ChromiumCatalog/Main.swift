@@ -161,6 +161,10 @@ import NookWeb
     static var pageViews: [Int32: NSView] = [:]
     /// Tabs whose page has no view to place.
     static var viewless: Set<Int32> = []
+    static var miniShellCalls: [String] = []
+    static var miniCloses: [Int32] = []
+    /// The root view each Bark window was given; a window takes one.
+    static var roots: [Int32: UnsafeMutableRawPointer] = [:]
     static var splitLayouts: [Int32: BarcSplitLayout] = [:]
     static var splitGeneration: UInt64 = 0
     static var allowSplit = true
@@ -360,7 +364,11 @@ import NookWeb
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
         bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
         bridge.window_host_unobserve = { _ in }
-        bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
+        bridge.window_set_root_view = { window, view in MainActor.assumeIsolated {
+            guard Native.hostWindows.contains(window), let view else { return 0 }
+            if let root = Native.roots[window] { return root == view ? 1 : 0 }
+            Native.roots[window] = view; return 1
+        } }
         bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated {
             Native.hostWindows.contains(window) && Native.windows[window] != nil ? 1 : 0
         } }
@@ -620,6 +628,8 @@ private struct NoTokens: KagiTokenStore {
         try checkPendingInitialPageRestoration()
         try checkPendingProfileRecoveryWindow()
         try checkDetachedMiniPromotion()
+        try checkMiniInBarkWindow()
+        try checkMiniPagesAdmitOrClose()
         try checkMixedProfileSplitAdmission()
         try checkSavedSplitInBarkWindow()
         try checkNativePeekAdmission()
@@ -1888,6 +1898,153 @@ private struct NoTokens: KagiTokenStore {
     retry.1?(BARC_PROFILE_CANCELLED, 0, retry.2) // Bounded refused factory: keep the saved record for a later retry.
     precondition(tabs.device.windows.contains { $0.id == recordID })
 
+}
+
+/// A mini window that is a Bark window: the controller gives it a compact root with the header over
+/// the page, and makes none of the old window's shell calls. A second tab's controller cannot take
+/// the window; ending takes the header out.
+@MainActor private func checkMiniInBarkWindow() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcBarkMini-\(UUID())")
+    let suite = "BarcBarkMini-\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll(); Native.roots = [:]
+    Native.hostWindows = [2101]
+    defer { Native.hostWindows = []; Native.pageViews = [:]; Native.roots = [:] }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let registry = WindowRegistry()
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let profile = tabs.profile(forSpace: Native.work)!
+    Native.windows[2101] = Native.window(2101, group: 2101, profile: Native.work, kind: 1,
+                                         flags: 4 | UInt32(BARC_DISCOVERY_COMPACT_MINI.rawValue), active: 21001)
+    Native.tabs = [Native.tab(21001, window: 2101), Native.tab(21002, window: 2101)]
+    Native.miniShellCalls = []; Native.miniCloses = []
+    var miniBridge = Native.bridge
+    miniBridge.window_native_shell_is_owned = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("owned"); return 0 } }
+    miniBridge.window_attach_native_shell = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("attach"); return 0 } }
+    miniBridge.window_detach_native_shell_if_owned = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("detach"); return 0 } }
+    miniBridge.window_admit_discovered = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("admit"); return 0 } }
+    miniBridge.tab_close = { _, tab in MainActor.assumeIsolated { Native.miniCloses.append(tab); return 1 } }
+    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
+    api.installCommandOMonitor = { _, _ in NSObject() }
+    api.removeCommandOMonitor = { _ in }
+    func controller(_ tab: Int32, ended: @escaping () -> Void = {}) -> ChromiumMiniWindowController {
+        let navigation = try! ChromiumPageNavigation(profileID: profile.id, window: 2101, tab: tab, bridge: miniBridge)
+        return ChromiumMiniWindowController(tabs: tabs, profile: profile, navigation: navigation, origin: nil, api: api,
+                                            promote: { _, _ in false }, onEnd: { _ in ended() })!
+    }
+    var ended = 0
+    let mini = controller(21001) { ended += 1 }
+    precondition(mini.present(canPresent: { true }) && mini.isPresented, "the mini window is presented")
+    let compact = Native.roots[2101].map { Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue() } as? ChromiumCompactRoot
+    precondition(compact != nil && Native.pageViews[21001]?.isDescendant(of: compact!) == true && compact!.shownTab == 21001,
+                 "its window's root is a compact root showing the page")
+    precondition(Native.miniShellCalls.isEmpty, "no call reaches the old window's shell: \(Native.miniShellCalls)")
+    let headerAndPage = compact!.subviews.count
+    precondition(headerAndPage == 2, "the header over the page")
+    precondition(mini.present(canPresent: { true }) && Native.roots.count == 1, "presenting again changes nothing")
+    let second = controller(21002)
+    precondition(!second.present(canPresent: { true }) && second.presentationRefused && mini.isPresented,
+                 "a second tab's controller cannot take the window")
+    mini.close()
+    precondition(Native.miniCloses == [21001], "Close closes the page")
+    for (token, observer) in Native.observers where observer.3 == 21001 {
+        observer.0?(observer.1, token, 7, 2101, 21001, nil, nil, 0, 0)
+    }
+    RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+    precondition(ended == 1 && !mini.isPresented && compact!.subviews.count == headerAndPage - 1, "ending takes the header out")
+    Native.end(2101)
+    tabs.saveNow()
+}
+
+@MainActor private final class MiniRegistry: ChromiumMiniRegistry {
+    var controllers: [any DetachedPageWindowController] = []
+    func nativeController(tab: Int32) -> (any DetachedPageWindowController)? { controllers.first { $0.nativeTabID == tab } }
+    func retainNative(_ controller: any DetachedPageWindowController) -> Bool {
+        guard nativeController(tab: controller.nativeTabID ?? 0) == nil else { return false }
+        controllers.append(controller); return true
+    }
+    func relinquishNativeHeader(window: Int32, except tab: Int32) {
+        for controller in controllers where controller.nativeWindowID == window && controller.nativeTabID != tab { controller.relinquishNativeHeader() }
+    }
+}
+
+/// Every compact window that waits for the app ends the drain shown or with its tab closed: one of
+/// a profile the app does not know is closed, one it knows is shown in the same drain, with its
+/// opener's window as its origin; while the app accepts no windows, a waiting one is closed.
+@MainActor private func checkMiniPagesAdmitOrClose() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcMiniDrain-\(UUID())")
+    let suite = "BarcMiniDrain-\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll(); Native.roots = [:]
+    Native.hostWindows = [2202, 2204]
+    defer { Native.hostWindows = []; Native.pageViews = [:]; Native.roots = [:] }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let registry = WindowRegistry()
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
+    tabs.nativePageHost = host
+    let opener = BrowserWindowState(); opener.spaceID = Native.work
+    registry.register(opener); tabs.attach(window: opener, restoringSavedState: false)
+    let profile = tabs.profile(forSpace: Native.work)!
+    Native.windows[2203] = Native.window(2203, group: 2203, profile: Native.work, flags: 4, active: 22030)
+    Native.tabs = [Native.tab(22030, window: 2203)]
+    let openerShell = NSView()
+    precondition(host.registerWindow(opener, nativeOwner: 2203, shell: openerShell))
+    guard case .success(let binding) = host.bindExistingPage(nativeWindow: 2203, tab: 22030, profile: profile, in: opener) else { preconditionFailure() }
+    _ = tabs.adoptNativePage(binding.navigation, through: host, in: opener, spaceID: Native.work, select: false)
+    binding.finish(adopted: true)
+    let other = BrowserWindowState(); other.spaceID = Native.work
+    registry.register(other)
+
+    let waiting = UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue) | UInt32(BARC_DISCOVERY_COMPACT_MINI.rawValue) | 4
+    Native.windows[2201] = Native.window(2201, group: 2201, profile: UUID(), kind: 1, flags: waiting, active: 22010)
+    Native.windows[2202] = Native.window(2202, group: 2202, profile: Native.work, kind: 1, flags: waiting, active: 22020)
+    Native.tabs += [Native.tab(22010, window: 2201), Native.tab(22020, window: 2202, opener: 22030)]
+    Native.miniCloses = []
+    var miniBridge = Native.bridge
+    miniBridge.tab_close = { _, tab in MainActor.assumeIsolated { Native.miniCloses.append(tab); return 1 } }
+    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
+    api.installCommandOMonitor = { _, _ in NSObject() }
+    api.removeCommandOMonitor = { _ in }
+    let minis = MiniRegistry()
+    var origins: [Int32: BrowserWindowState?] = [:]
+    let pages = ChromiumMiniPages(bridge: miniBridge, tabs: tabs, registry: minis) { profile, navigation, origin in
+        origins[navigation.nativeTabID] = origin
+        return ChromiumMiniWindowController(tabs: tabs, profile: profile, navigation: navigation, origin: origin, api: api,
+                                            promote: { _, _ in false }, onEnd: { _ in })
+    }
+    pages.apply(Native.bridge.readSnapshot()!, accepting: { true }, activeWindow: other)
+    precondition(Native.miniCloses == [22010], "a waiting window of a profile the app does not know has its tab closed: \(Native.miniCloses)")
+    let shown = minis.nativeController(tab: 22020) as? ChromiumMiniWindowController
+    precondition(shown?.isPresented == true && Native.roots[2202] != nil, "a waiting window the app knows is shown in the same drain")
+    precondition(origins[22020].map { $0 === opener } == true, "a page popup's origin is its opener's window, not the active one")
+
+    Native.end(2201)
+    Native.windows[2202]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
+    pages.apply(Native.bridge.readSnapshot()!, accepting: { true }, activeWindow: other)
+    precondition(shown?.isPresented == true && Native.miniCloses == [22010], "a shown window stays")
+    Native.miniCloses = []
+    Native.windows[2204] = Native.window(2204, group: 2204, profile: Native.work, kind: 1, flags: waiting, active: 22040)
+    Native.tabs.append(Native.tab(22040, window: 2204))
+    pages.apply(Native.bridge.readSnapshot()!, accepting: { false }, activeWindow: other)
+    precondition(Native.miniCloses == [22040] && Native.roots[2204] == nil, "while the app accepts no windows a waiting one is closed")
+    for owner in Array(Native.windows.keys) { Native.end(owner) }
+    withExtendedLifetime(openerShell) {}
+    tabs.saveNow()
 }
 
 @MainActor private func checkDetachedMiniPromotion() throws {

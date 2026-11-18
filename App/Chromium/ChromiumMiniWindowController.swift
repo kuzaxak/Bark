@@ -35,7 +35,9 @@ struct ChromiumMiniWindowAPI {
 }
 
 /// Controls an existing Chromium popup. Chrome retains its window, WebContents,
-/// native delegate, permission anchors and application loop.
+/// native delegate, permission anchors and application loop. A popup that is a Bark window gets a
+/// compact root with the header over the page; Chromium's own popup window takes the header as
+/// its shell.
 @MainActor
 final class ChromiumMiniWindowController: DetachedPageWindowController, NativePageResourceOwner {
     private var boundPage: PageSession?
@@ -46,6 +48,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
     var nativeTabID: Int32? { navigation.nativeTabID }
     private let api: ChromiumMiniWindowAPI
     private var header: NSView?
+    private var root: ChromiumCompactRoot?
     private var ended = false
     private var promoting = false
     private var admitted = false
@@ -91,10 +94,15 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         guard !ended, canPresent(), page.navigation === navigation,
               navigation.nativeWindowID == window, !navigation.isClosed else { return false }
         if admitted && ownsControls() { installCommandOMonitor(); return true }
+        if root == nil, header == nil {
+            let compact = ChromiumCompactRoot(bridge: api.bridge, client: window)
+            if compact.attach() { root = compact }
+        }
         let view: NSView
         if let header { view = header }
         else {
             view = NSHostingView(rootView: ChromiumMiniHeader(page: page,
+                leadingInset: root == nil ? 12 : ChromiumMiniHeader.besideLights,
                 promote: { [weak self] in self?.openInSpace() },
                 canPromote: { [weak self] in self.map { $0.canPromote($0.page) } == true },
                 destinations: { [weak self] in self.map { $0.page.isPrivate ? [] : $0.destinations($0.page) } ?? [] },
@@ -102,6 +110,17 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
                 share: { [weak self] in _ = self?.share() },
                 close: { [weak self] in self?.close() }))
             header = view
+        }
+        if let root {
+            root.setHeader(view)
+            guard root.show(tab: navigation.nativeTabID), canPresent(), ownsControls() else {
+                presentationRefused = true
+                detachHeader(); return false
+            }
+            admitted = true
+            presentationRefused = false
+            installCommandOMonitor()
+            return true
         }
         let pointer = Unmanaged.passUnretained(view).toOpaque()
         guard api.bridge.window_native_shell_is_owned(window, nil) == 1 || api.bridge.window_native_shell_is_owned(window, pointer) == 1 else {
@@ -122,6 +141,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         guard !ended, let header, page.navigation === navigation,
               navigation.nativeWindowID == window, !navigation.isClosed,
               api.canUse(window, navigation.nativeTabID) else { return false }
+        if let root { return root.holdsHeader(header) }
         return api.bridge.window_native_shell_is_owned(window, Unmanaged.passUnretained(header).toOpaque()) == 1
     }
 
@@ -147,6 +167,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
             clearHeaderServices()
             if outcome != .ownerEnded { detachHeader() }
             header = nil
+            root = nil
         }
         callbacks.forEach { $0(outcome) }
         if outcome != .cancelled { onEnd(self) }
@@ -211,6 +232,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         ended = true
         detachHeader()
         header = nil
+        root = nil
         navigation.onNativeOwnerChanged = nil
         onEnd(self)
     }
@@ -221,12 +243,19 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         admitted = false
         clearHeaderServices()
         guard let header else { return }
+        if let root {
+            if root.holdsHeader(header) { root.setHeader(nil) }
+            return
+        }
         _ = api.bridge.window_detach_native_shell_if_owned(window, Unmanaged.passUnretained(header).toOpaque())
     }
 }
 
 private struct ChromiumMiniHeader: View {
+    /// Past the window's lights, which sit in the header of a Bark window.
+    static let besideLights: CGFloat = 78
     @Bindable var page: PageSession
+    let leadingInset: CGFloat
     let promote: () -> Void
     let canPromote: () -> Bool
     let destinations: () -> [ChromiumMiniDestination]
@@ -256,15 +285,16 @@ private struct ChromiumMiniHeader: View {
             Button(action: share) { Image(systemName: "square.and.arrow.up") }.help("Share current URL")
             Button(action: close) { Image(systemName: "xmark") }.help("Close")
         }
-        .padding(.horizontal, 12)
+        .padding(.leading, leadingInset)
+        .padding(.trailing, 12)
         .frame(height: 44)
         .background(.bar)
         .background { TranslationTaskHost(session: page) }
         .overlay(alignment: .leading) {
             if let language = page.translationOffer, !page.isTranslated {
-                TranslateOfferView(session: page, language: language).padding(.leading, 12)
+                TranslateOfferView(session: page, language: language).padding(.leading, leadingInset)
             } else if let notice = page.translationNotice, page.isTranslated {
-                TranslationNoticeView(session: page, notice: notice).padding(.leading, 12)
+                TranslationNoticeView(session: page, notice: notice).padding(.leading, leadingInset)
             }
         }
     }

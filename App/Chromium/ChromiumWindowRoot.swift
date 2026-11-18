@@ -121,7 +121,6 @@ final class ChromiumWindowRoot: NSView {
     }
 
     private let bridge: BarcBridge
-    private let dividerRange: (Int, [CGFloat], CGFloat) -> ClosedRange<CGFloat>?
     /// The client the window answers for: the engine's selected client, whose page has the keys.
     /// The window's own calls go through it, since the first client may close before the others.
     private(set) var client: Int32
@@ -129,7 +128,7 @@ final class ChromiumWindowRoot: NSView {
     private(set) var shownTab: Int32 = 0
     /// One slot for one page, one per pane in a split, in the panes' order.
     private var slots: [Slot] = []
-    private var observation: UInt64 = 0
+    private lazy var link = ChromiumWindowHostLink(bridge: bridge) { [weak self] in self?.handle($0) }
     private let pageFrame = Container()
     private let dividerLayer = ControlLayer()
     private let pagePanels = ControlLayer()
@@ -243,6 +242,7 @@ final class ChromiumWindowRoot: NSView {
     /// while it is dragged; the caller answers with `showSplit`.
     var dividerMoved: ((Int, CGFloat, CGFloat) -> Void)?
     var dividerReleased: (() -> Void)?
+    private let dividerRange: (Int, [CGFloat], CGFloat) -> ClosedRange<CGFloat>?
     /// What Add Split View's empty pane shows.
     var makeEmptyPane: () -> NSView = { NSView() }
 
@@ -266,7 +266,7 @@ final class ChromiumWindowRoot: NSView {
         var free = slots
         let next = split.panes.map { pane -> Slot in
             if let index = free.firstIndex(where: { $0.pane == pane }) { return free.remove(at: index) }
-            return Slot(pane: pane, root: self)
+            return Slot(pane: pane, bridge: bridge)
         }
         let focusChanged = shownTab != split.focused || slots.first(where: { $0.pane?.tab == split.focused }) == nil
         self.split = split
@@ -335,7 +335,6 @@ final class ChromiumWindowRoot: NSView {
     required init?(coder: NSCoder) { nil }
 
     isolated deinit {
-        if observation != 0 { bridge.window_host_unobserve(observation) }
         fullscreenObservers.forEach(NotificationCenter.default.removeObserver)
     }
 
@@ -344,20 +343,7 @@ final class ChromiumWindowRoot: NSView {
     /// Gives this view to the window, places the window's lights and listens for its pages. The
     /// caller keeps the root alive while the window can still send events.
     func attach() -> Bool {
-        guard observation == 0 else { return false }
-        let observation = bridge.window_host_observe(client, { event, context in
-            guard let event, let context, event.pointee.size >= MemoryLayout<BarcWindowHostEvent>.size else { return }
-            let copy = event.pointee
-            MainActor.assumeIsolated {
-                Unmanaged<ChromiumWindowRoot>.fromOpaque(context).takeUnretainedValue().handle(copy)
-            }
-        }, Unmanaged.passUnretained(self).toOpaque())
-        guard observation != 0 else { return false }
-        guard bridge.window_set_root_view(client, Unmanaged.passUnretained(self).toOpaque()) == 1 else {
-            bridge.window_host_unobserve(observation)
-            return false
-        }
-        self.observation = observation
+        guard link.attach(self, client: client) else { return false }
         applyLights()
         return true
     }
@@ -405,7 +391,7 @@ final class ChromiumWindowRoot: NSView {
             return true
         }
         guard let view = pageView(pane) else { return false }
-        let slot = slots.first { $0.pane == pane } ?? Slot(pane: pane, root: self)
+        let slot = slots.first { $0.pane == pane } ?? Slot(pane: pane, bridge: bridge)
         let changed = view !== slot.view || view.superview !== slot.container || slots.count != 1 || shownTab != tab
         split = nil
         use([slot])
@@ -434,15 +420,7 @@ final class ChromiumWindowRoot: NSView {
     }
 
     private func place(_ view: NSView, in slot: Slot) {
-        if view !== slot.view, slot.heldView != nil { slot.view?.removeFromSuperview() }
-        if view.superview !== slot.container {
-            view.frame = slot.container.bounds
-            view.autoresizingMask = [.width, .height]
-            slot.container.addSubview(view, positioned: .below, relativeTo: slot.crashed)
-        }
-        view.isHidden = pageHidden
-        slot.view = view
-        slot.crashed.isHidden = !crashedTabs.contains(slot.pane?.tab ?? 0)
+        slot.place(view, hidden: pageHidden, crashed: crashedTabs.contains(slot.pane?.tab ?? 0))
     }
 
     /// The optional bar above the page, inside the page frame. `expected` is the bar the caller
@@ -469,27 +447,23 @@ final class ChromiumWindowRoot: NSView {
         CGRect(x: 0, y: barHeight, width: pageFrame.bounds.width, height: max(0, pageFrame.bounds.height - barHeight))
     }
 
-    private func handle(_ event: BarcWindowHostEvent) {
-        switch UInt32(bitPattern: event.kind) {
-        case BARC_WINDOW_HOST_PAGE_VIEW_RETIRED.rawValue:
-            crashedTabs.remove(event.tab)
-            pageRetired(event.view)
-        case BARC_WINDOW_HOST_FULLSCREEN_CHANGED.rawValue:
-            // The engine sends this on every client selection, naming the selected client.
-            if event.window > 0 { client = event.window }
-            let pageFullscreen = event.fullscreen == Int32(BARC_FULLSCREEN_PAGE.rawValue)
-            guard pageFullscreen != self.pageFullscreen else { return }
-            self.pageFullscreen = pageFullscreen
+    private func handle(_ change: ChromiumWindowHostChange) {
+        switch change {
+        case .pageRetired(let tab, let view):
+            crashedTabs.remove(tab)
+            pageRetired(view)
+        case .fullscreen(let page, let selected):
+            if selected > 0 { client = selected }
+            guard page != pageFullscreen else { return }
+            pageFullscreen = page
             applyLayout()
             applyLights()
-        case BARC_WINDOW_HOST_PAGE_CRASHED.rawValue:
-            crashedTabs.insert(event.tab)
-            for slot in slots where slot.pane?.tab == event.tab && slot.holds(event.view) { slot.crashed.isHidden = false }
-        case BARC_WINDOW_HOST_PAGE_RESTORED.rawValue:
-            crashedTabs.remove(event.tab)
-            for slot in slots where slot.pane?.tab == event.tab { slot.crashed.isHidden = true }
-        default:
-            break
+        case .pageCrashed(let tab, let view):
+            crashedTabs.insert(tab)
+            for slot in slots where slot.pane?.tab == tab && slot.holds(view) { slot.crashed.isHidden = false }
+        case .pageRestored(let tab):
+            crashedTabs.remove(tab)
+            for slot in slots where slot.pane?.tab == tab { slot.crashed.isHidden = true }
         }
     }
 
@@ -616,7 +590,7 @@ final class ChromiumWindowRoot: NSView {
     /// `replacing` places the lights even where they already are, which AppKit needs after it
     /// rebuilds the titlebar.
     private func applyLights(replacing: Bool = true) {
-        guard observation != 0 else { return }
+        guard link.isAttached else { return }
         let placement = pageFullscreen ? LightsPlacement(lights: nil, alpha: 1) : Self.lights(for: sidebar, library: library.progress)
         if let lights = placement.lights, replacing || lights != placedLights {
             var chrome = BarcWindowChrome(size: MemoryLayout<BarcWindowChrome>.size,
@@ -658,53 +632,7 @@ final class ChromiumWindowRoot: NSView {
         override var isFlipped: Bool { true }
     }
 
-    /// One page in its own clipped container, with the crashed-page card over it; with no pane, Add
-    /// Split View's empty pane.
-    private final class Slot {
-        let pane: Pane?
-        let container = Container()
-        weak var view: NSView?
-        let crashed = CrashedPage()
-        private var empty: NSView?
-
-        init(pane: Pane?, root: ChromiumWindowRoot) {
-            self.pane = pane
-            container.wantsLayer = true
-            container.layer?.masksToBounds = true
-            crashed.isHidden = true
-            crashed.frame = container.bounds
-            crashed.autoresizingMask = [.width, .height]
-            crashed.reload = { [weak root] in
-                guard let root, let pane else { return }
-                _ = root.bridge.tab_reload(pane.client, pane.tab)
-            }
-            container.addSubview(crashed)
-        }
-
-        /// The page while it is still in this slot; nil once another root took it.
-        var heldView: NSView? { view?.superview === container ? view : nil }
-
-        func holds(_ pointer: UnsafeMutableRawPointer?) -> Bool {
-            guard let held = heldView, let pointer else { return false }
-            return Unmanaged.passUnretained(held).toOpaque() == pointer
-        }
-
-        /// Autoresizing rounds a fractional container size; the page takes it exactly.
-        func fillContainer() {
-            heldView?.frame = container.bounds
-            crashed.frame = container.bounds
-            empty?.frame = container.bounds
-        }
-
-        func showEmpty(_ make: () -> NSView) {
-            guard empty == nil else { return }
-            let view = make()
-            view.frame = container.bounds
-            view.autoresizingMask = [.width, .height]
-            container.addSubview(view)
-            empty = view
-        }
-    }
+    private typealias Slot = ChromiumPageSlot
 
     /// Dividers and page panels use unflipped containers that only receive input on their children.
     private final class ControlLayer: NSView {
@@ -724,32 +652,6 @@ final class ChromiumWindowRoot: NSView {
         var dismiss: (() -> Void)?
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) { dismiss?() }
-    }
-
-    /// What the page frame shows while the shown tab's renderer is gone.
-    private final class CrashedPage: NSView {
-        var reload: (() -> Void)?
-
-        override init(frame: NSRect) {
-            super.init(frame: frame)
-            wantsLayer = true
-            layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
-            let title = NSTextField(labelWithString: "This page crashed")
-            title.font = .systemFont(ofSize: 17, weight: .semibold)
-            let button = NSButton(title: "Reload", target: self, action: #selector(reloadPage))
-            let stack = NSStackView(views: [title, button])
-            stack.orientation = .vertical
-            stack.spacing = 12
-            stack.translatesAutoresizingMaskIntoConstraints = false
-            addSubview(stack)
-            NSLayoutConstraint.activate([stack.centerXAnchor.constraint(equalTo: centerXAnchor),
-                                         stack.centerYAnchor.constraint(equalTo: centerYAnchor)])
-        }
-
-        @available(*, unavailable)
-        required init?(coder: NSCoder) { nil }
-
-        @objc private func reloadPage() { reload?() }
     }
 }
 
