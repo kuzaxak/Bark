@@ -1,6 +1,9 @@
+#import <AppKit/AppKit.h>
+
 // Synthetic routing/storage/consent mechanics. Test-assisted CRX updates do
 // not qualify ordinary install/update or Chrome Web Store flows.
 #include "bark/bridge/barc_bridge.h"
+#include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/barc_profiles.h"
 #include "bark/browser/ui/bark_window_host.h"
 
@@ -158,6 +161,9 @@ class BarcExtensionStorageBrowserTest : public InProcessBrowserTest {
     ASSERT_NE(first->GetProfile(), second->GetProfile());
     ASSERT_NE(nullptr, WidgetFor(first));
     ASSERT_EQ(WidgetFor(first), WidgetFor(second));
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    ASSERT_EQ(1, barc_window_set_root_view(work_id, (__bridge void*)root));
+    ASSERT_EQ(1, barc_window_show(work_id));
     std::array<char, 37> uuid{};
     EXPECT_EQ(uuid.size(),
               barc_window_profile_uuid(work_id, uuid.data(), uuid.size()));

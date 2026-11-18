@@ -34,6 +34,7 @@
 #import "chrome/browser/app_controller_mac.h"
 
 #include "bark/bridge/barc_bridge.h"
+#include "bark/browser/ui/bark_window_host.h"
 #include "bark/bridge/barc_profiles.h"
 #include "bark/bridge/barc_runtime_startup.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
@@ -634,143 +635,78 @@ class BarcBridgeBrowserTest : public InProcessBrowserTest {
   }
 };
 
-IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NativeShellRetainedUntilDetach) {
-  const int32_t window = browser()->GetSessionID().id();
-  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
-  ASSERT_NE(nullptr, view->barc_native_shell());
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, BarkRootRetainedUntilHostCloses) {
+  const int32_t initial = browser()->GetSessionID().id();
+  const int32_t peer = barc_window_new_peer(initial);
+  ASSERT_GT(peer, 0);
+  auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+      SessionID::FromSerializedValue(peer));
+  ASSERT_NE(nullptr, owner);
+  auto* host = bark::BarkWindowHost::ForBrowser(owner);
+  ASSERT_NE(nullptr, host);
+
   __weak NSView* attached = nil;
   @autoreleasepool {
-    NSView* replacement =
-        [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-    attached = replacement;
-    ASSERT_EQ(1, barc_window_attach_native_shell(window,
-                                                 (__bridge void*)replacement));
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    attached = root;
+    ASSERT_EQ(1, barc_window_set_root_view(peer, (__bridge void*)root));
   }
-  @autoreleasepool {
-    EXPECT_NE(nil, attached);
-    EXPECT_EQ(barc::kNativeShellWidth, barc::NativeShellWidth(view));
-    ASSERT_EQ(1, barc_window_attach_native_shell(window, nullptr));
-  }
-  EXPECT_EQ(nil, attached);
-  EXPECT_EQ(0, barc::NativeShellWidth(view));
-  EXPECT_EQ(0, barc_window_attach_native_shell(-1, nullptr));
-
-  const int32_t empty_peer = barc_window_new_peer(window);
-  ASSERT_GT(empty_peer, 0);
-  auto* peer = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
-      SessionID::FromSerializedValue(empty_peer));
-  ui_test_utils::BrowserDestroyedObserver peer_closed(peer);
-  EXPECT_EQ(0, barc_tab_create(empty_peer, "not a valid URL", 1));
-  EXPECT_EQ(1, barc_window_close(empty_peer));
+  ASSERT_NE(nil, attached);
+  EXPECT_EQ(attached, host->root_view().GetNativeNSView());
+  EXPECT_EQ(0, barc_window_set_root_view(-1, (__bridge void*)attached));
+  EXPECT_EQ(0, barc_tab_create(peer, "not a valid URL", 1));
+  ui_test_utils::BrowserDestroyedObserver peer_closed(owner);
+  EXPECT_EQ(1, barc_window_close(peer));
   peer_closed.Wait();
-  EXPECT_EQ(0, barc_window_close(empty_peer));
+  EXPECT_EQ(0, barc_window_close(peer));
+  EXPECT_TRUE(base::test::RunUntil([&] { return attached == nil; }));
 }
 
-IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NativeAttachReentrantCallbacks) {
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, BarkRootRejectsReentrantReplacement) {
   const int32_t primary = browser()->GetSessionID().id();
-  auto* primary_view = BrowserView::GetBrowserViewForBrowser(browser());
-  auto* popup = CreateBrowserWindow(BrowserWindowCreateParams(
-      BrowserWindowInterface::TYPE_POPUP, browser()->GetProfile(), true));
-  ASSERT_TRUE(popup);
-  const int32_t popup_id = popup->GetSessionID().id();
-  ASSERT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(popup)->barc_native_shell());
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(popup_id, nullptr));
-  EXPECT_EQ(0, barc_window_set_native_header(popup_id, (__bridge void*)[[NSView alloc] init],
-      nullptr, (__bridge void*)[[NSView alloc] init], 40));
-  ui_test_utils::BrowserDestroyedObserver popup_closed(popup);
-  ASSERT_EQ(1, barc_window_close(popup_id));
-  popup_closed.Wait();
-  BarcReentrantNativeView* shell = [[BarcReentrantNativeView alloc] init];
-  NSView* nested = [[NSView alloc] init];
-  shell.onMove = ^(NSView*) {
-    EXPECT_EQ(0, barc_window_attach_native_shell(primary, (__bridge void*)nested));
+  auto* host = bark::BarkWindowHost::ForBrowser(browser());
+  ASSERT_NE(nullptr, host);
+  BarcReentrantNativeView* root = [[BarcReentrantNativeView alloc] init];
+  NSView* replacement = [[NSView alloc] init];
+  __block bool reentered = false;
+  root.onMove = ^(NSView*) {
+    reentered = true;
+    EXPECT_EQ(0, barc_window_set_root_view(
+                     primary, (__bridge void*)replacement));
     EXPECT_EQ(1, barc_window_select(primary));
   };
-  ASSERT_EQ(1, barc_window_attach_native_shell(primary, (__bridge void*)shell));
-  EXPECT_EQ(shell, primary_view->barc_native_shell()->native_view().GetNativeNSView());
-  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, (__bridge void*)shell));
-  BarcReentrantNativeView* page_bar = [[BarcReentrantNativeView alloc] init];
-  __weak NSView* weak_sidebar = shell;
-  __weak NSView* weak_nested = nested;
-  __block bool reentered_header = false;
-  page_bar.onMove = ^(NSView*) {
-    reentered_header = true;
-    EXPECT_EQ(0, barc_window_set_native_header(primary, (__bridge void*)weak_sidebar,
-        nullptr, (__bridge void*)weak_nested, 38));
-    EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)weak_sidebar));
-  };
-  ASSERT_EQ(1, barc_window_set_native_header(primary, (__bridge void*)shell,
-      nullptr, (__bridge void*)page_bar, 40));
-  EXPECT_TRUE(reentered_header);
-  page_bar.onMove = nil;
-  NSView* bar_parent = page_bar.superview;
-  ASSERT_TRUE(bar_parent);
-  ASSERT_EQ(1, barc_window_set_native_header(primary, (__bridge void*)shell,
-      (__bridge void*)page_bar, (__bridge void*)page_bar, 40));
-  EXPECT_EQ(bar_parent, page_bar.superview);
-  ASSERT_EQ(1, barc_window_set_native_header(primary, (__bridge void*)shell,
-      (__bridge void*)page_bar, (__bridge void*)page_bar, 38));
-  EXPECT_EQ(bar_parent, page_bar.superview);
-  EXPECT_EQ(38, barc::NativeShellHeight(primary_view));
-  NSView* replacement_bar = [[NSView alloc] init];
-  ASSERT_EQ(1, barc_window_set_native_header(primary, (__bridge void*)shell,
-      (__bridge void*)page_bar, (__bridge void*)replacement_bar, 40));
-  EXPECT_EQ(0, barc_window_set_native_header(primary, (__bridge void*)shell,
-      (__bridge void*)page_bar, nullptr, 0));
-  EXPECT_EQ(replacement_bar, primary_view->barc_page_header()->native_view().GetNativeNSView());
-  EXPECT_EQ(0, barc_window_set_native_header(primary, (__bridge void*)nested,
-      (__bridge void*)replacement_bar, nullptr, 0));
-  ASSERT_EQ(1, barc_window_set_native_header(primary, (__bridge void*)shell,
-      (__bridge void*)replacement_bar, nullptr, 0));
-  EXPECT_FALSE(replacement_bar.superview);
-  EXPECT_EQ(0, barc::NativeShellHeight(primary_view));
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, (__bridge void*)nested));
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, nullptr));
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(-1, (__bridge void*)shell));
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(-1, nullptr));
-  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)nested));
-  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, nullptr));
-  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(-1, (__bridge void*)shell));
-  EXPECT_EQ(shell, primary_view->barc_native_shell()->native_view().GetNativeNSView());
-  EXPECT_EQ(1, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)shell));
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, (__bridge void*)shell));
-  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, nullptr));
-  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, nullptr));
-  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, nullptr));
-  EXPECT_EQ(1, barc_window_attach_native_shell(primary, (__bridge void*)nested));
-  EXPECT_EQ(0, barc_window_native_shell_is_owned(primary, (__bridge void*)shell));
-  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, (__bridge void*)nested));
-  EXPECT_EQ(0, barc_window_detach_native_shell_if_owned(primary, (__bridge void*)shell));
-  EXPECT_EQ(1, barc_window_native_shell_is_owned(primary, (__bridge void*)nested));
-  EXPECT_EQ(1, barc_window_attach_native_shell(primary, (__bridge void*)shell));
-  shell.onMove = ^(NSView*) {
-    EXPECT_EQ(0, barc_window_attach_native_shell(primary, (__bridge void*)nested));
-  };
-  ASSERT_EQ(1, barc_window_attach_native_shell(primary, nullptr));
-  EXPECT_FALSE(primary_view->barc_native_shell()->native_view());
+  ASSERT_EQ(1, barc_window_set_root_view(primary, (__bridge void*)root));
+  EXPECT_TRUE(reentered);
+  root.onMove = nil;
+  EXPECT_EQ(1, barc_window_set_root_view(primary, (__bridge void*)root));
+  EXPECT_EQ(0, barc_window_set_root_view(primary, (__bridge void*)replacement));
+  EXPECT_EQ(root, host->root_view().GetNativeNSView());
+  EXPECT_EQ(nil, replacement.superview);
+}
 
-  // Raw Cocoa close bypasses C-ABI close deferral during both reparenting
-  // and the NativeViewHost visibility callout.
-  for (bool close_on_visibility : {false, true}) {
-    const int32_t peer = barc_window_new_peer(primary);
-    ASSERT_GT(peer, 0);
-    ASSERT_NE(0, barc_tab_create(peer, "about:blank", 0));
-    auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
-        SessionID::FromSerializedValue(peer));
-    auto alive = owner->GetWeakPtr();
-    auto* peer_view = BrowserView::GetBrowserViewForBrowser(owner);
-    auto view_alive = peer_view->GetAsWeakPtr();
-    NSWindow* native_window = peer_view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
-    BarcReentrantNativeView* closing = [[BarcReentrantNativeView alloc] init];
-    if (close_on_visibility)
-      closing.onVisibility = ^(NSView*) { [native_window close]; };
-    else
-      closing.onMove = ^(NSView*) { [native_window close]; };
-    EXPECT_EQ(0, barc_window_attach_native_shell(peer, (__bridge void*)closing));
-    EXPECT_FALSE(view_alive);
-    ASSERT_TRUE(base::test::RunUntil([&] { return !alive; }));
-    EXPECT_NE(nullptr, primary_view->barc_native_shell());
-  }
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, BarkRootCanCloseDuringAttach) {
+  auto* primary = browser();
+  const int32_t peer = barc_window_new_peer(primary->GetSessionID().id());
+  ASSERT_GT(peer, 0);
+  auto* owner = GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
+      SessionID::FromSerializedValue(peer));
+  ASSERT_NE(nullptr, owner);
+  ASSERT_NE(nullptr, bark::BarkWindowHost::ForBrowser(owner));
+  auto alive = owner->GetWeakPtr();
+  NSWindow* window = owner->GetWindow()->GetNativeWindow().GetNativeNSWindow();
+  ASSERT_NE(nil, window);
+  BarcReentrantNativeView* root = [[BarcReentrantNativeView alloc] init];
+  __block bool closed = false;
+  root.onMove = ^(NSView*) {
+    if (!closed) {
+      closed = true;
+      [window close];
+    }
+  };
+  barc_window_set_root_view(peer, (__bridge void*)root);
+  EXPECT_TRUE(closed);
+  ASSERT_TRUE(base::test::RunUntil([&] { return !alive; }));
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(primary));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, ClosedDistinguishesOwnerShutdown) {

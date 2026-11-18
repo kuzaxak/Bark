@@ -4,6 +4,7 @@
 #include <limits>
 #include <set>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "bark/bridge/barc_bridge_functions.h"
@@ -739,6 +740,74 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, PopupUsesCompactHost) {
     closed.Wait();
     EXPECT_EQ(nullptr, FindBrowser(window));
   }
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       AppAndDevToolsWindowsUseCompactHosts) {
+  auto* profile = browser()->GetProfile();
+  auto verify = [&](BrowserWindowCreateParams params, uint32_t kind) {
+    auto* client = CreateBrowserWindow(std::move(params));
+    ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(client));
+    EXPECT_EQ(profile, client->GetProfile());
+    const int32_t id = client->GetSessionID().id();
+    const int32_t tab = barc_tab_create(id, "about:blank", 1);
+    ASSERT_NE(0, tab);
+    client->GetWindow()->Show();
+    BarcDiscoveryWindow row = {.size = sizeof(BarcDiscoveryWindow)};
+    ASSERT_EQ(1, barc_window_discovery_state(id, &row));
+    EXPECT_EQ(kind, row.kind);
+    EXPECT_TRUE(row.flags & BARC_DISCOVERY_COMPACT_MINI);
+    EXPECT_TRUE(row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+    EXPECT_FALSE(client->GetWindow()->IsVisible());
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 580, 420)];
+    ASSERT_EQ(1, barc_window_set_root_view(id, (__bridge void*)root));
+    NSView* page = (__bridge NSView*)barc_tab_native_view(id, tab);
+    ASSERT_NE(nil, page);
+    [root addSubview:page];
+    EXPECT_TRUE(client->GetWindow()->IsVisible());
+    EXPECT_EQ(root.window, page.window);
+    EXPECT_EQ(TabContents(tab), client->GetTabStripModel()->GetActiveWebContents());
+    ui_test_utils::BrowserDestroyedObserver closed(client);
+    ASSERT_EQ(1, barc_window_close(id));
+    closed.Wait();
+  };
+  ASSERT_NO_FATAL_FAILURE(verify(BrowserWindowCreateParams::CreateForApp(
+      "bark-test-app", true, gfx::Rect(580, 420), profile, true),
+      BARC_DISCOVERY_APP));
+  ASSERT_NO_FATAL_FAILURE(verify(
+      BrowserWindowCreateParams::CreateForDevTools(profile), BARC_DISCOVERY_DEVTOOLS));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       DocumentPictureInPictureBrowserIsRefused) {
+  const size_t count = GlobalBrowserCollection::GetInstance()->GetSize();
+  EXPECT_EQ(nullptr, CreateBrowserWindow(BrowserWindowCreateParams::CreateForPictureInPicture(
+                        "bark-document-pip", true, browser()->GetProfile(), true)));
+  EXPECT_EQ(count, GlobalBrowserCollection::GetInstance()->GetSize());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       VideoPictureInPictureUsesAnOverlay) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t peer = OpenHostWindow();
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t tab = OpenPage(peer, root, "/title1.html");
+  ASSERT_NE(nil, Place(peer, tab, root));
+  auto* contents = TabContents(tab);
+  ASSERT_TRUE(content::ExecJs(contents, R"((async () => {
+    window.videoProbe = document.createElement('video');
+    videoProbe.src = '/media/bigbuck.webm';
+    videoProbe.muted = true;
+    document.body.appendChild(videoProbe);
+    await videoProbe.play();
+  })())"));
+  const size_t count = GlobalBrowserCollection::GetInstance()->GetSize();
+  EXPECT_EQ(true, content::EvalJs(contents, R"((async () => {
+    await videoProbe.requestPictureInPicture();
+    return document.pictureInPictureElement === videoProbe;
+  })())"));
+  EXPECT_EQ(count, GlobalBrowserCollection::GetInstance()->GetSize());
+  ASSERT_TRUE(content::ExecJs(contents, "document.exitPictureInPicture()"));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, HiddenRequestIsNotReplayed) {

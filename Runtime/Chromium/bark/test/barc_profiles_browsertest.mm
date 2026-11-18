@@ -1,5 +1,6 @@
 #import <AppKit/AppKit.h>
 
+#include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/barc_profiles.h"
 #include "bark/browser/ui/bark_window_host.h"
 
@@ -53,6 +54,7 @@
 #include "chrome/browser/sessions/session_data_service_factory.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/navigator/browser_navigator.h"
 #include "chrome/browser/ui/navigator/browser_navigator_params.h"
@@ -677,13 +679,12 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
                        StockOffRecordIdentitiesAreNotBarcSessions) {
-  auto* incognito = CreateBrowser(
-      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true));
-  ASSERT_TRUE(incognito);
+  auto* primary_otr =
+      browser()->GetProfile()->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_TRUE(primary_otr);
+  EXPECT_EQ(nullptr,
+            CreateBrowserWindow(BrowserWindowCreateParams(*primary_otr, true)));
   char identity[37] = "unchanged";
-  EXPECT_EQ(0u, barc_window_private_session_uuid(incognito->GetSessionID().id(),
-                                                 identity, sizeof(identity)));
-  EXPECT_STREQ("", identity);
   base::test::TestFuture<Profile*> guest_ready;
   g_browser_process->profile_manager()->CreateProfileAsync(
       ProfileManager::GetGuestProfilePath(), guest_ready.GetCallback());
@@ -692,6 +693,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
   ASSERT_TRUE(guest->IsGuestSession());
   auto* guest_window = CreateBrowser(guest);
   ASSERT_TRUE(guest_window);
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(guest_window));
   EXPECT_EQ(0u,
             barc_window_private_session_uuid(guest_window->GetSessionID().id(),
                                              identity, sizeof(identity)));
@@ -715,11 +717,9 @@ class BarcPrivateCommandBrowserTest : public BarcProfilesBrowserTest {
                 return false;
               });
           CHECK_GT(initial, 0);
-          NSView* header =
-              [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-          CHECK(
-              barc_window_attach_native_shell(initial, (__bridge void*)header));
-          CHECK(barc_window_admit_discovered(initial, (__bridge void*)header));
+          NSView* root =
+              [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+          CHECK(barc_window_set_root_view(initial, (__bridge void*)root));
           barc_runtime_complete_startup(initial);
         },
         nullptr);

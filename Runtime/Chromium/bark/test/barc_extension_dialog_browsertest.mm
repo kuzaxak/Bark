@@ -1,4 +1,7 @@
-#include "bark/bridge/barc_bridge.h"
+#import <AppKit/AppKit.h>
+
+#include "bark/bridge/barc_bridge_functions.h"
+#include "bark/browser/ui/bark_window_host.h"
 #include "bark/bridge/barc_profiles.h"
 
 #include <utility>
@@ -9,7 +12,6 @@
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "base/values.h"
-#include "chrome/browser/extensions/extension_disabled_ui.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_manager_service.h"
@@ -18,14 +20,7 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/extensions/extension_installed_watcher.h"
 #include "chrome/browser/ui/extensions/extension_post_install_dialog.h"
-#include "chrome/browser/ui/global_error/global_error.h"
-#include "chrome/browser/ui/global_error/global_error_bubble_view_base.h"
-#include "chrome/browser/ui/global_error/global_error_service.h"
-#include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/extensions/extensions_container_views.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/sessions/core/session_id.h"
@@ -39,7 +34,7 @@
 #include "extensions/common/extension_builder.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "third_party/skia/include/core/SkBitmap.h"
-#include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/widget/widget.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/widget/widget_delegate.h"
 
@@ -92,8 +87,12 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(work);
     ASSERT_TRUE(personal);
     ASSERT_NE(work->GetProfile(), personal->GetProfile());
-    ASSERT_EQ(BrowserView::GetBrowserViewForBrowser(work)->GetWidget(),
-              BrowserView::GetBrowserViewForBrowser(personal)->GetWidget());
+    auto* host = bark::BarkWindowHost::ForBrowser(work);
+    ASSERT_NE(nullptr, host);
+    ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    ASSERT_EQ(1, barc_window_set_root_view(work_id, (__bridge void*)root));
+    ASSERT_EQ(1, barc_window_show(work_id));
   }
   void CheckCancellation(bool destroy_owner) {
     int32_t work_id = 0;
@@ -106,8 +105,9 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(work);
     ASSERT_TRUE(personal);
     ASSERT_NE(work->GetProfile(), personal->GetProfile());
-    ASSERT_EQ(BrowserView::GetBrowserViewForBrowser(work)->GetWidget(),
-              BrowserView::GetBrowserViewForBrowser(personal)->GetWidget());
+    auto* host = bark::BarkWindowHost::ForBrowser(work);
+    ASSERT_NE(nullptr, host);
+    ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
     ASSERT_EQ(1, barc_window_select(work_id));
     auto extension = extensions::ExtensionBuilder("Delayed uninstall").Build();
     extensions::ExtensionRegistrar::Get(work->GetProfile())
@@ -122,9 +122,7 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
         // The existing hook runs at icon delivery, before presentation. Keep
         // the shared physical Widget alive while destroying its logical owner.
         auto owner_alive = work->GetWeakPtr();
-        auto host_alive = BrowserView::GetBrowserViewForBrowser(work)
-                              ->GetWidget()
-                              ->GetWeakPtr();
+        auto host_alive = host->GetWeakPtr();
         ASSERT_FALSE(work->GetTabStripModel()->GetActiveWebContents()
                          ->NeedToFireBeforeUnloadOrUnloadEvents());
         ASSERT_EQ(1, barc_window_close(work_id));
@@ -138,8 +136,7 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
         ASSERT_TRUE(host_alive);
         ASSERT_TRUE(Window(personal_id));
         EXPECT_EQ(host_alive.get(),
-                  BrowserView::GetBrowserViewForBrowser(Window(personal_id))
-                      ->GetWidget());
+                  bark::BarkWindowHost::ForBrowser(Window(personal_id)));
       }
     });
     extensions::ExtensionUninstallDialog::SetOnShownCallbackForTesting(&hook);
@@ -184,11 +181,9 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
     extensions::ExtensionRegistrar::Get(work->GetProfile())
         ->AddExtension(extension.get());
     content::RunAllTasksUntilIdle();
-    auto* work_view = BrowserView::GetBrowserViewForBrowser(work);
-    auto* personal_view = BrowserView::GetBrowserViewForBrowser(personal);
-    auto* container =
-        work_view->toolbar_button_provider()->GetExtensionsContainerViews();
-    ASSERT_TRUE(container);
+    auto* host = bark::BarkWindowHost::ForBrowser(work);
+    ASSERT_NE(nullptr, host);
+    ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
     const auto old_widgets = views::test::WidgetTest::GetAllWidgets();
     Cancellation canceled;
     auto dialog = extensions::ExtensionUninstallDialog::CreateForBrowser(
@@ -198,9 +193,12 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
                              extensions::UNINSTALL_SOURCE_FOR_TESTING);
     views::Widget* prompt = nullptr;
     ASSERT_TRUE(base::test::RunUntil([&] {
-      for (const auto& widget : views::test::WidgetTest::GetAllWidgets()) {
+      for (const auto& widget : views::Widget::GetAllOwnedWidgets(
+               host->widget()->GetNativeView())) {
         if (!old_widgets.contains(widget) && widget->IsVisible() &&
-            widget->widget_delegate()->AsBubbleDialogDelegate()) {
+            widget->widget_delegate() &&
+            widget->widget_delegate()->GetModalType() ==
+                ui::mojom::ModalType::kWindow) {
           prompt = widget.get();
           return true;
         }
@@ -208,20 +206,16 @@ class BarcExtensionDialogBrowserTest : public InProcessBrowserTest {
       return false;
     }));
     ASSERT_FALSE(canceled.result.IsReady());
-    auto* bubble = prompt->widget_delegate()->AsBubbleDialogDelegate();
-    auto* anchor = bubble->GetAnchorView();
-    ASSERT_TRUE(anchor);
-    EXPECT_TRUE(work_view->Contains(anchor));
-    EXPECT_FALSE(personal_view->Contains(anchor));
-    EXPECT_EQ(
-        container->GetReferenceButtonForPopup(extension->id()).GetIfView(),
-        anchor);
-    // A presented owned prompt blocks profile switching. Logical-owner close
-    // must cancel the prompt rather than permit a later stale acceptance.
-    EXPECT_EQ(0, barc_window_select(personal_id));
+    EXPECT_TRUE(work->IsSelectedForNativeWindow());
+    EXPECT_FALSE(personal->IsSelectedForNativeWindow());
+    auto prompt_alive = prompt->GetWeakPtr();
+    // Closing the logical owner cancels the sheet while the physical host
+    // stays alive for the other client.
     EXPECT_EQ(1, barc_window_close(work_id));
     EXPECT_FALSE(canceled.result.Get());
     EXPECT_EQ(1, canceled.calls);
+    EXPECT_TRUE(base::test::RunUntil([&] { return !prompt_alive; }));
+    EXPECT_EQ(host, bark::BarkWindowHost::ForBrowser(Window(personal_id)));
   }
 
   void CheckDelayedPostInstallCancellation() {
@@ -313,7 +307,7 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
-                       SelectedPromptAnchorsToOwnerAndBlocksSwitch) {
+                       SelectedPromptIsAHostSheetAndCancelsOnOwnerClose) {
   CheckSelectedPresentation();
 }
 IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
@@ -322,72 +316,20 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionDialogBrowserTest,
-                       OriginalProfileDisabledErrorAdmitsOTROwner) {
+                       OriginalProfileErrorCannotAdmitUnmappedOTROwner) {
   int32_t work_id = 0;
   int32_t personal_id = 0;
   ASSERT_NO_FATAL_FAILURE(OpenPair(work_id, personal_id));
   auto* work = Window(work_id);
-  auto* personal = Window(personal_id);
+  ASSERT_NE(nullptr, work);
   auto* profile = work->GetProfile();
-  auto* otr_profile = profile->GetPrimaryOTRProfile(true);
-  BrowserWindowCreateParams params(otr_profile, true);
+  ASSERT_NE(nullptr, profile);
+  auto* otr = profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_NE(nullptr, otr);
+  BrowserWindowCreateParams params(otr, true);
   params.native_window_owner = work->GetSessionID();
-  auto* otr = CreateBrowserWindow(std::move(params));
-  ASSERT_TRUE(otr);
-  const int32_t otr_id = otr->GetSessionID().id();
-  ASSERT_NE(0, barc_tab_create(otr_id, "about:blank", 1));
-  ASSERT_EQ(1, barc_window_select(otr_id));
-  auto* otr_view = BrowserView::GetBrowserViewForBrowser(otr);
-  auto* personal_view = BrowserView::GetBrowserViewForBrowser(personal);
-  ASSERT_EQ(otr_view->GetWidget(), personal_view->GetWidget());
-  auto extension = extensions::ExtensionBuilder("Original profile disabled")
-                       .SetManifestKey("action", base::DictValue())
-                       .Build();
-  auto* registrar = extensions::ExtensionRegistrar::Get(profile);
-  registrar->AddExtension(extension.get());
-  registrar->DisableExtension(extension->id(),
-                             {extensions::disable_reason::DISABLE_USER_ACTION});
-  content::RunAllTasksUntilIdle();
-  auto* errors = GlobalErrorServiceFactory::GetForProfile(profile);
-  ASSERT_EQ(errors, GlobalErrorServiceFactory::GetForProfile(otr_profile));
-  const size_t old_error_count = errors->errors().size();
-  extensions::AddExtensionDisabledError(profile, extension.get(), false);
-  ASSERT_EQ(old_error_count + 1, errors->errors().size());
-  // This exact newly added error is ExtensionDisabledGlobalError, derived from
-  // GlobalErrorWithStandardBubble; exercise its real deferred cancel callback.
-  auto* error = static_cast<GlobalErrorWithStandardBubble*>(
-      errors->errors().back().get());
-  error->ExecuteMenuItem(otr);
-  ASSERT_TRUE(error->GetBubbleView());
-  error->GetBubbleView()->CloseBubbleView();
-  content::RunAllTasksUntilIdle();
-  const auto old_widgets = views::test::WidgetTest::GetAllWidgets();
-  error->BubbleViewCancelButtonPressed(otr);
-  views::Widget* prompt = nullptr;
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    for (const auto& widget : views::test::WidgetTest::GetAllWidgets()) {
-      if (!old_widgets.contains(widget) && widget->IsVisible() &&
-          widget->widget_delegate()->AsBubbleDialogDelegate()) {
-        prompt = widget.get();
-        return true;
-      }
-    }
-    return false;
-  }));
-  auto* anchor = prompt->widget_delegate()->AsBubbleDialogDelegate()
-                     ->GetAnchorView();
-  ASSERT_TRUE(anchor);
-  EXPECT_TRUE(otr_view->Contains(anchor));
-  EXPECT_FALSE(personal_view->Contains(anchor));
-  auto prompt_alive = prompt->GetWeakPtr();
-  ui_test_utils::BrowserDestroyedObserver closed(otr);
-  EXPECT_EQ(1, barc_window_close(otr_id));
-  closed.Wait();
-  EXPECT_TRUE(base::test::RunUntil([&] { return !prompt_alive; }));
-  ASSERT_TRUE(Window(work_id));
-  ASSERT_TRUE(Window(personal_id));
-  EXPECT_TRUE(extensions::ExtensionRegistry::Get(profile)
-                  ->disabled_extensions().Contains(extension->id()));
-  EXPECT_FALSE(extensions::ExtensionRegistry::Get(personal->GetProfile())
-                   ->GetInstalledExtension(extension->id()));
+  const size_t windows = GlobalBrowserCollection::GetInstance()->GetSize();
+  EXPECT_EQ(nullptr, CreateBrowserWindow(std::move(params)));
+  EXPECT_EQ(windows, GlobalBrowserCollection::GetInstance()->GetSize());
+  EXPECT_TRUE(work->IsSelectedForNativeWindow());
 }
