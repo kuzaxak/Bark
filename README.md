@@ -10,6 +10,8 @@ AppKit. Chromium renders the pages.
 Choose **Help → Bark Help** for a quick guide to the browser’s window controls.
 
 - Switch spaces from the sidebar to return to the tabs for that space and profile.
+- To inspect an HTTPS certificate, open **Site Controls** beside the address and
+  choose **Secure**. Click **Close** or press Command+W to return to the same tab.
 - Open two pages in a split to work with both in one window. Select a pane to
   direct typing and page commands to it.
 - Shift-click a link, or focus it and press Shift+Return, to open it in Peek.
