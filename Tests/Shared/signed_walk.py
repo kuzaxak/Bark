@@ -154,31 +154,54 @@ def verify_native_candidate(contributor, app):
     return architecture
 
 
+def verify_official_sdk(contributor, architecture, app=None):
+    """Return the cached SDK and evidence only after the required checks pass."""
+    cached = contributor["cached_engine"](architecture)
+    if not cached.is_dir():
+        raise ValueError(f"Install this checkout's pinned {architecture} Bark SDK first.")
+    with tempfile.TemporaryDirectory(prefix="bark-official-preflight-", dir="/private/tmp") as folder:
+        working = Path(folder)
+        with contributor["pinned_engine"](str(cached), working, architecture, require_official=True) as engine:
+            if app is not None:
+                contributor["verify_candidate"](app, engine, working, architecture)
+            pin = contributor["read_pin"](contributor["PACKAGE"], architecture)
+            return engine, {"architecture": architecture, "sdk_pin": pin, "official": True}
+
+
 def run_walk(description, name, serve, exercise, preferences=(), *,
-             source_host="127.0.0.1", prepare_fixture=None):
+             source_host="127.0.0.1", prepare_fixture=None, official_qualification=False):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--app", type=Path, required=True, help="Signed Bark.app for this Mac’s native architecture")
     parser.add_argument("--output", type=Path, required=True, help="New directory for test evidence")
+    if official_qualification:
+        parser.add_argument("--require-official", action="store_true", help="verify the native official SDK and signed payload")
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("This walk requires macOS")
     sys.path.insert(0, str(REPO / "Runtime/Chromium"))
     from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole, ScreenUnavailable,
                                    require_idle_console, screen_lock)
-    import ApplicationServices as ax
-    import Quartz as quartz
-
-    if not (ax.AXIsProcessTrusted() and quartz.CGPreflightPostEventAccess() and quartz.CGPreflightScreenCaptureAccess()):
-        parser.error("The runner needs existing Accessibility, event-posting and Screen Recording access")
     app = args.app.resolve(strict=True)
     binary = app / "Contents/MacOS/Bark"
     if not binary.is_file() or processes(app):
         parser.error("Pass a candidate that is not already running")
     contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
-    architecture = verify_native_candidate(contributor, app)
+    if getattr(args, "require_official", False):
+        architecture = contributor["native_architecture"]()
+        try:
+            _, qualification = verify_official_sdk(contributor, architecture, app)
+        except (OSError, ValueError, subprocess.CalledProcessError) as error:
+            parser.error(str(error))
+    else:
+        qualification = {"architecture": verify_native_candidate(contributor, app)}
+    import ApplicationServices as ax
+    import Quartz as quartz
+
+    if not (ax.AXIsProcessTrusted() and quartz.CGPreflightPostEventAccess() and quartz.CGPreflightScreenCaptureAccess()):
+        parser.error("The runner needs existing Accessibility, event-posting and Screen Recording access")
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    (output / "candidate.json").write_text(json.dumps({"architecture": architecture}) + "\n")
+    (output / "candidate.json").write_text(json.dumps(qualification) + "\n")
     console = QuartzConsole()
     crashes = crash_reports()
 

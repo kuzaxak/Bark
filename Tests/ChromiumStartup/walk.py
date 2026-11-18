@@ -119,6 +119,7 @@ def exercise(screen, process, events, output):
 
     # These are observed bounds and include event dispatch and local receipt.
     results = {
+        "candidate": json.loads((output / "candidate.json").read_text()),
         "profile": "fresh disposable verification profile; machine caches uncontrolled",
         "hardware": hardware(),
         "macos": subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip(),
@@ -137,4 +138,5 @@ def exercise(screen, process, events, output):
 
 
 if __name__ == "__main__":
-    sys.exit(run_walk(__doc__, "startup-parked", serve, exercise, prepare_fixture=prepare_fixture))
+    sys.exit(run_walk(__doc__, "startup-parked", serve, exercise, prepare_fixture=prepare_fixture,
+                      official_qualification=True))

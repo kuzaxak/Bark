@@ -30,7 +30,7 @@ import bark_release
 from run_browser_tests import (
     QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, ScreenUnavailable, require_idle_console, screen_lock,
 )
-from signed_walk import Screen, crash_reports, processes, wait_for
+from signed_walk import Screen, crash_reports, processes, verify_official_sdk, wait_for
 
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
               "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister")
@@ -457,6 +457,7 @@ def main():
     parser.add_argument("--derived-data", type=Path, required=True, help="Unsigned Release NookNativeShell build")
     parser.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"), help="Local Developer ID Application")
     parser.add_argument("--output", type=Path, required=True, help="New evidence-only directory")
+    parser.add_argument("--require-official", action="store_true", help="verify the native official SDK before preparation")
     args = parser.parse_args()
     if not args.identity:
         parser.error("Pass --identity or set BARK_SIGN_IDENTITY.")
@@ -465,7 +466,14 @@ def main():
         parser.error("Choose a new evidence directory outside the repository.")
     check = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     arch = check["native_architecture"]()
-    engine = check["cached_engine"](arch)
+    qualification = {"architecture": arch}
+    try:
+        if args.require_official:
+            engine, qualification = verify_official_sdk(check, arch)
+        else:
+            engine = check["cached_engine"](arch)
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        parser.error(str(error))
     if not engine.is_dir():
         parser.error(f"Install this checkout's pinned {arch} Bark SDK first.")
     output.mkdir(parents=True)
@@ -474,6 +482,7 @@ def main():
         with UpdateServer(bark_release.feed_name(arch)) as server:
             installed, newer, root, settings = versions(check, args.derived_data.resolve(), engine,
                                                          args.identity, arch, work, server, output)
+            (output / "candidate.json").write_text(json.dumps(qualification) + "\n")
             exercise(check, installed, newer, root, settings, arch, server, output)
     print("Installed update rehearsal passed.", flush=True)
 
