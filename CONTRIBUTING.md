@@ -131,6 +131,10 @@ python3.13 -m venv "$walk_env"
 source "$walk_env/bin/activate.fish"
 ```
 
+The two-profile walk opens the same inbox in Work and Personal. It checks
+which tab receives typed input and which page receives the decision on a
+pending location request. [Run the two-profile walk](Tests/ChromiumProfilePages/README.md)
+
 The [installed update walk](Tests/ChromiumUpdate/README.md) exercises a signed
 disk image and restores a saved draft through an actual app update.
 
@@ -144,9 +148,10 @@ python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)
 To measure first input and return to a parked tab on an official candidate,
 install its pinned native SDK and run the startup walk on the same Mac.
 The walk checks the signed app against the SDK before timing and records
-the verified SDK digest with the measurements. Exit status 3 means the
-desktop became unavailable, for example when the pointer moved between
-test inputs. Use a completed run for timing.
+the verified SDK digest with the measurements. For local measurements
+with a pinned developer SDK, use `--verify-sdk` in place of `--require-official`.
+Exit status 3 means the desktop became unavailable, for example when the
+pointer moved between test inputs. Use a completed run for timing.
 
 ```fish
 set -l evidence (mktemp -d /private/tmp/bark-timing.XXXXXX)
