@@ -20,6 +20,7 @@ source_set("ui") {
   deps = [
     "//base",
     "//chrome/browser:global_keyboard_shortcuts_mac",
+    "//chrome/browser/enterprise",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/themes",
     "//chrome/browser/ui:accelerator_table",
@@ -48,6 +49,7 @@ source_set("ui") {
     "//chrome/browser/ui/views/exclusive_access",
     "//chrome/browser/ui/views/translate",
     "//chrome/browser/ui/window_metadata",
+    "//components/enterprise/buildflags",
     "//components/input",
     "//components/javascript_dialogs",
     "//components/remote_cocoa/app_shim",

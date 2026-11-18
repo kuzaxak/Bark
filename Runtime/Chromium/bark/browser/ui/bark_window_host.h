@@ -131,6 +131,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   // The selected client's page moved, resized or was replaced.
   void OnSelectedPageChanged();
   void OnClientActiveTabChanged(BarkBrowserWindow* client);
+  void UpdateCaptureProtection();
 
   // Gives the keys to the selected client's active page, if it is shown in
   // this window.
@@ -181,6 +182,7 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   raw_ptr<views::View> unselected_anchor_ = nullptr;
   std::unique_ptr<PageWatch> page_watch_;
   std::unique_ptr<KeyReturn> key_return_;
+  std::vector<gfx::NativeView> protected_mounted_pages_;
   Presentation pending_ = Presentation::kNone;
   bool attaching_root_ = false;
   bool closing_ = false;

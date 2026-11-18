@@ -130,6 +130,20 @@ IN_PROC_BROWSER_TEST_F(BarcNativePolicyBrowserTest,
   [root_ addSubview:personal_page];
   EXPECT_TRUE(widget->AreScreenshotsAllowed());
 
+  // An independently placed pane must enforce its own policy even when the
+  // selected client remains Personal.
+  personal_page.frame = NSMakeRect(400, 0, 400, 600);
+  work_page.frame = NSMakeRect(0, 0, 400, 600);
+  [root_ addSubview:work_page];
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !widget->AreScreenshotsAllowed();
+  }));
+  EXPECT_TRUE(personal_->IsSelectedForNativeWindow());
+  [work_page removeFromSuperview];
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return widget->AreScreenshotsAllowed();
+  }));
+
   [personal_page removeFromSuperview];
   ASSERT_EQ(1, barc_window_select(work_id_));
   EXPECT_FALSE(widget->AreScreenshotsAllowed());

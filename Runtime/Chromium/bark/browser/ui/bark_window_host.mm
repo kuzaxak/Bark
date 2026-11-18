@@ -13,9 +13,11 @@
 #include "base/apple/foundation_util.h"
 #include "base/auto_reset.h"
 #include "base/command_line.h"
+#include "base/containers/flat_set.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
@@ -23,6 +25,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "content/public/browser/web_contents.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window_state.h"
@@ -377,12 +380,15 @@ bool BarkWindowHost::AddClient(BarkBrowserWindow* client) {
 void BarkWindowHost::RemoveClient(BarkBrowserWindow* client) {
   std::erase(clients_, client);
   if (selected_ != client) {
+    UpdateCaptureProtection();
     return;
   }
   CancelPendingPresentation();
   selected_ = nullptr;
   if (!clients_.empty() && !closing_) {
     SetSelected(clients_.front(), false);
+  } else {
+    UpdateCaptureProtection();
   }
 }
 
@@ -408,6 +414,7 @@ void BarkWindowHost::SetSelected(BarkBrowserWindow* client,
   if (client->browser()->IsDeleteScheduled()) {
     return;
   }
+  UpdateCaptureProtection();
   auto still_selected = [&] {
     return !closing_ && incoming && selected_ == incoming.get() &&
            !incoming->browser()->IsDeleteScheduled();
@@ -485,6 +492,7 @@ bool BarkWindowHost::SetRootView(gfx::NativeView root) {
   if (closing_ || !root_host_ || root_view().GetNativeNSView() != view) {
     return false;
   }
+  UpdateCaptureProtection();
   const auto request = std::exchange(pending_, Presentation::kNone);
   if (request != Presentation::kNone) {
     barc::BrowserDiscoveryChanged();
@@ -522,6 +530,14 @@ void BarkWindowHost::NotifyPageViewRetiring(int32_t window,
                                             int32_t tab,
                                             gfx::NativeView view) {
   observers_.Notify(&Observer::OnPageViewRetiring, window, tab, view);
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (!protected_mounted_pages_.empty()) {
+    // The app detaches retiring views when its posted observer runs.
+    base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+        FROM_HERE, base::BindOnce(&BarkWindowHost::UpdateCaptureProtection,
+                                  weak_factory_.GetWeakPtr()));
+  }
+#endif
 }
 
 void BarkWindowHost::NotifyPageCrashed(int32_t window,
@@ -674,6 +690,7 @@ void BarkWindowHost::OnSelectedPageChanged() {
   if (closing_) {
     return;
   }
+  UpdateCaptureProtection();
   WatchSelectedPage();
   UpdateAnchors();
   if (selected_) {
@@ -685,6 +702,63 @@ void BarkWindowHost::OnClientActiveTabChanged(BarkBrowserWindow* client) {
   if (client == selected_) {
     OnSelectedPageChanged();
   }
+}
+
+void BarkWindowHost::UpdateCaptureProtection() {
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  if (closing_ || !widget_) {
+    return;
+  }
+  NSWindow* window = widget_->GetNativeWindow().GetNativeNSWindow();
+  if (!window) {
+    return;
+  }
+  auto is_mounted = [window](NSView* page) {
+    return page.window == window && !page.hiddenOrHasHiddenAncestor;
+  };
+
+  bool allow = true;
+  base::flat_set<NSView*> known_mounted_pages;
+  std::vector<gfx::NativeView> protected_mounted_pages;
+  for (const auto& client : clients_) {
+    auto* browser = client->browser();
+    auto* tabs = browser->GetTabStripModel();
+    auto* next_page = client == selected_ && !IsNativeSpacePageSuppressed(browser)
+                          ? tabs->GetActiveWebContents()
+                          : nullptr;
+    for (int i = 0; i < tabs->count(); ++i) {
+      auto* contents = tabs->GetWebContentsAt(i);
+      const bool restricted = enterprise_data_protection::IsScreenShareBlocked(contents);
+      if (!restricted && protected_mounted_pages_.empty()) {
+        continue;
+      }
+      gfx::NativeView view = contents->GetNativeView();
+      NSView* page = view.GetNativeNSView();
+      const bool mounted = is_mounted(page);
+      if (mounted) {
+        known_mounted_pages.insert(page);
+      }
+      if (restricted && (mounted || contents == next_page)) {
+        allow = false;
+        if (mounted) {
+          protected_mounted_pages.push_back(view);
+        }
+      }
+    }
+  }
+  // A retired tab's old view can still be on screen until the app removes it.
+  for (const auto& view : protected_mounted_pages_) {
+    NSView* page = view.GetNativeNSView();
+    if (is_mounted(page) && !known_mounted_pages.contains(page)) {
+      allow = false;
+      protected_mounted_pages.push_back(view);
+    }
+  }
+  protected_mounted_pages_ = std::move(protected_mounted_pages);
+  if (widget_->AreScreenshotsAllowed() != allow) {
+    widget_->SetAllowScreenshots(allow);
+  }
+#endif
 }
 
 void BarkWindowHost::OnWidgetBoundsChanged(views::Widget* widget,

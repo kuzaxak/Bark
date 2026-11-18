@@ -10,7 +10,9 @@
 #include "bark/browser/ui/bark_window_host.h"
 #include "bark/browser/ui/bark_window_parts.h"
 #include "base/command_line.h"
+#include "base/functional/bind.h"
 #include "base/notimplemented.h"
+#include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
 #include "chrome/browser/global_keyboard_shortcuts_mac.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/themes/theme_service.h"
@@ -31,6 +33,7 @@
 #include "chrome/browser/ui/views/download/download_in_progress_dialog_view.h"
 #include "chrome/browser/ui/views/find_bar_host.h"
 #include "chrome/browser/ui/views/interaction/browser_elements_views_impl.h"
+#include "components/enterprise/buildflags/buildflags.h"
 #include "components/input/native_web_keyboard_event.h"
 #include "components/javascript_dialogs/tab_modal_dialog_manager.h"
 #include "components/tabs/public/tab_interface.h"
@@ -144,7 +147,17 @@ class BarkBrowserWindow::TabWatcher : public content::WebContentsObserver {
   TabWatcher(BarkBrowserWindow* window, content::WebContents* contents)
       : content::WebContentsObserver(contents),
         window_(window),
-        crashed_(contents->IsCrashed()) {}
+        crashed_(contents->IsCrashed()) {
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+    if (auto* controller =
+            enterprise_data_protection::DataProtectionNavigationController::
+                FromWebContents(contents)) {
+      capture_subscription_ = controller->RegisterScreenshotAllowedUpdatedCallback(
+          base::BindRepeating(&TabWatcher::OnCapturePolicyChanged,
+                              base::Unretained(this)));
+    }
+#endif
+  }
 
   void PrimaryMainFrameRenderProcessGone(
       base::TerminationStatus status) override {
@@ -162,12 +175,20 @@ class BarkBrowserWindow::TabWatcher : public content::WebContentsObserver {
     window_->OnPageFocused(web_contents());
   }
   void OnVisibilityChanged(content::Visibility visibility) override {
+    window_->host_->UpdateCaptureProtection();
     if (visibility == content::Visibility::VISIBLE) {
       window_->OnPageShown(web_contents());
     }
   }
 
  private:
+#if BUILDFLAG(ENTERPRISE_SCREENSHOT_PROTECTION)
+  void OnCapturePolicyChanged(bool) {
+    window_->host_->UpdateCaptureProtection();
+  }
+
+  base::CallbackListSubscription capture_subscription_;
+#endif
   const raw_ptr<BarkBrowserWindow> window_;
   bool crashed_;
 };
@@ -844,6 +865,7 @@ void BarkBrowserWindow::OnTabStripModelChanged(
                                     replace->old_contents->GetNativeView());
     }
   }
+  host_->UpdateCaptureProtection();
 }
 
 void BarkBrowserWindow::OnPageShown(content::WebContents* contents) {
