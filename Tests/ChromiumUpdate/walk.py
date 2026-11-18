@@ -5,6 +5,7 @@
 import argparse
 import base64
 import contextlib
+import filecmp
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -27,7 +28,7 @@ sys.dont_write_bytecode = True
 sys.path[:0] = [str(REPO / folder) for folder in ("scripts", "Runtime/Chromium", "Tests/Shared")]
 import bark_release
 from run_browser_tests import (
-    QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, ScreenUnavailable, require_idle_console, screen_lock,
+    QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, ScreenUnavailable, require_idle_console, screen_lock,
 )
 from signed_walk import Screen, crash_reports, processes, wait_for
 
@@ -114,6 +115,22 @@ def outer_icon(app):
     if not (app / relative).is_file() and not relative.suffix:
         relative = relative.with_suffix(".icns")
     return relative
+
+
+def verify_installed_replacement(installed, newer):
+    frameworks = Path("Contents/Frameworks")
+    exact_files = [
+        Path("Contents/MacOS/Bark"),
+        Path("Contents/Info.plist"),
+        frameworks / "NookNativeShell.framework/Versions/A/NookNativeShell",
+        frameworks / TEST_FRAMEWORK,
+    ]
+    if icon := outer_icon(newer):
+        exact_files.append(icon)
+    for relative in exact_files:
+        current, expected = installed / relative, newer / relative
+        if not current.is_file() or not expected.is_file() or not filecmp.cmp(current, expected, shallow=False):
+            raise RuntimeError(f"The installed update differs from v101 at {relative}")
 
 
 def run(*args, **kwargs):
@@ -396,16 +413,14 @@ def exercise(check, installed, newer, root, versions, arch, server, output):
                 new_pid = int(relaunch.processIdentifier())
                 if new_pid == proc.pid:
                     raise RuntimeError("Sparkle did not replace the original app process")
+                executable = relaunch.executableURL()
+                if not executable or Path(executable.path()).resolve() != binary.resolve():
+                    raise RuntimeError("Sparkle did not launch the installed Bark executable")
                 wait_for("Updated app lost the saved draft", lambda: state("restored", DRAFT, start), timeout=45)
                 final = app_info(installed)
                 if any(final.get(key) != val for key, val in new.items()):
                     raise RuntimeError("The installed and relaunched app is not the sealed new version")
-                exact_files = ["Contents/MacOS/Bark", "Contents/Info.plist"]
-                if icon := outer_icon(newer):
-                    exact_files.append(icon)
-                for relative in exact_files:
-                    if (installed / relative).read_bytes() != (newer / relative).read_bytes():
-                        raise RuntimeError(f"The installed update differs from v101 at {relative}")
+                verify_installed_replacement(installed, newer)
                 check["verify_signed_shell"](installed, arch)
                 record("Sparkle installed the exact signed v101, relaunched it at the same path and restored the draft")
 

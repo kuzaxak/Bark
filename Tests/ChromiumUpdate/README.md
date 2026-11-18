@@ -5,9 +5,14 @@ Use the architecture's pinned Bark SDK, Xcode, a local Developer ID Application 
 The [UI walk setup](../../CONTRIBUTING.md#run-the-signed-ui-walks) installs the pinned Python bindings.
 
 ```fish
+set -l bark_arch x86_64
+if test (sysctl -n hw.optional.arm64 2>/dev/null; or echo 0) = 1
+    set bark_arch arm64
+end
+python3 scripts/bark-check.py engine --arch "$bark_arch" --install --engine /path/to/matching/Engine
 set -l derived (mktemp -d /private/tmp/bark-update-build.XXXXXX)
 xcodebuild -project Nook.xcodeproj -scheme NookNativeShell -configuration Release -destination generic/platform=macOS \
-  -derivedDataPath "$derived" -onlyUsePackageVersionsFromResolvedFile ARCHS=(uname -m) CODE_SIGNING_ALLOWED=NO \
+  -derivedDataPath "$derived" -onlyUsePackageVersionsFromResolvedFile ARCHS="$bark_arch" CODE_SIGNING_ALLOWED=NO \
   'OTHER_SWIFT_FLAGS=$(inherited) -j3' -jobs 1 build
 set -l lsregister /System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister
 "$lsregister" -u "$derived/Build/Products/Release/Bark.app"
@@ -15,6 +20,6 @@ python3 Tests/ChromiumUpdate/walk.py --derived-data "$derived" --output /private
   --identity 'Developer ID Application: …'
 ```
 
-The walk generates an ephemeral Sparkle key and uses an OS-assigned loopback port. It installs signed build 100 from its disk image into a private application directory. It verifies that conflicting startup arguments are refused, saves a synthetic draft through keyboard input, and uses Bark's **Check for Updates…** menu. Sparkle must reject the enclosure with a changed Ed25519 signature. The valid enclosure must replace the installed bundle, relaunch build 101 at that path and restore the draft from the same sealed profile. The test verifies the post-update bundle signature and quits the app.
+The walk generates an ephemeral Sparkle key and uses an OS-assigned loopback port. It installs signed build 100 from its disk image into a private application directory. It verifies that conflicting startup arguments are refused, saves a synthetic draft through keyboard input, and uses Bark's **Check for Updates…** menu. Sparkle must reject the enclosure with a changed Ed25519 signature. The valid enclosure must replace the installed bundle, relaunch build 101 at that path and restore the draft from the same sealed profile. The test checks the relaunched executable path, verifies the post-update bundle signature and compares the installed launcher, Swift shell and engine images with signed build 101. It then quits the app.
 
 The two signed bundles omit browser and document handler declarations. Test apps, disk images, update keys, and synthetic profile data are temporary. The requested output contains verification logs and loopback requests. The local disk images use Developer ID signing and Sparkle signatures. Production notarization and feed publishing are outside this walk.
