@@ -19,6 +19,10 @@
 
 class BrowserWindowInterface;
 
+namespace content {
+class WebContents;
+}
+
 namespace display {
 class Screen;
 }
@@ -132,6 +136,10 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   void OnSelectedPageChanged();
   void OnClientActiveTabChanged(BarkBrowserWindow* client);
   void UpdateCaptureProtection();
+
+  // Includes visible split panes and Peek. Callers that need the active tab
+  // must also verify its logical client and selection.
+  bool IsPageMounted(content::WebContents* contents) const;
 
   // Gives the keys to the selected client's active page, if it is shown in
   // this window.

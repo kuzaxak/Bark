@@ -271,14 +271,7 @@ class TabObservation : public content::WebContentsObserver,
         UnloadController::From(owner)->owner_close_admitted()) {
       return nullptr;
     }
-    NSView* root = host->root_view().GetNativeNSView();
-    NSView* page = web_contents()->GetNativeView().GetNativeNSView();
-    NSWindow* window = host->widget()->GetNativeWindow().GetNativeNSWindow();
-    if (!window || root.window != window || page.window != window ||
-        ![page isDescendantOf:root] || page.hiddenOrHasHiddenAncestor) {
-      return nullptr;
-    }
-    return host->widget();
+    return host->IsPageMounted(web_contents()) ? host->widget() : nullptr;
   }
   bool VaultSaveCurrent(uint64_t serial) const {
     auto* tab = tab_.Get();

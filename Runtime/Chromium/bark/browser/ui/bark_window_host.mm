@@ -674,6 +674,17 @@ void BarkWindowHost::WatchSelectedPage() {
   page_watch_ = page ? std::make_unique<PageWatch>(page, this) : nullptr;
 }
 
+bool BarkWindowHost::IsPageMounted(content::WebContents* contents) const {
+  if (!contents || closing_ || !widget_) {
+    return false;
+  }
+  NSView* root = root_view().GetNativeNSView();
+  NSView* page = contents->GetNativeView().GetNativeNSView();
+  NSWindow* window = widget_->GetNativeWindow().GetNativeNSWindow();
+  return window && root.window == window && page.window == window &&
+         [page isDescendantOf:root] && !page.hiddenOrHasHiddenAncestor;
+}
+
 void BarkWindowHost::FocusSelectedPage() {
   if (selected_ && IsNativeSpacePageSuppressed(selected_->browser())) {
     return;
@@ -681,9 +692,7 @@ void BarkWindowHost::FocusSelectedPage() {
   auto* contents =
       selected_ ? selected_->browser()->GetTabStripModel()->GetActiveWebContents()
                 : nullptr;
-  NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
-  if (page && page.window == widget_->GetNativeWindow().GetNativeNSWindow() &&
-      !page.hiddenOrHasHiddenAncestor) {
+  if (IsPageMounted(contents)) {
     contents->Focus();
   }
 }
