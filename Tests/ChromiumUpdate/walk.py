@@ -142,11 +142,27 @@ def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
+def build_checkout_shell(derived, arch, output):
+    """Build the rehearsal shell from the tracked receiver source."""
+    with (output / "build.log").open("wb") as log:
+        try:
+            run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "Bark",
+                "-configuration", "Release", "-destination", "generic/platform=macOS",
+                "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
+                f"ARCHS={arch}", "CODE_SIGNING_ALLOWED=NO",
+                "OTHER_SWIFT_FLAGS=$(inherited) -j3", "-jobs", "1", "build",
+                stdout=log, stderr=subprocess.STDOUT)
+        finally:
+            unsigned = derived / "Build/Products/Release/Bark.app"
+            if unsigned.is_dir():
+                subprocess.run([LSREGISTER, "-u", str(unsigned)], capture_output=True)
+
+
 def versions(check, derived, engine, identity, arch, work, server, output):
     products = derived / "Build/Products/Release"
     sparkle = derived / "SourcePackages/artifacts/sparkle/Sparkle/bin"
     if not (products / "Bark.app/Contents/MacOS/Bark").is_file() or not (sparkle / "sign_update").is_file():
-        raise ValueError(f"Build Release/unsigned NookNativeShell with the locked packages in {derived} first.")
+        raise ValueError(f"Build Release/unsigned Bark with the locked packages in {derived} first.")
 
     root = work / "Profile"
     root.mkdir(mode=0o700)
@@ -541,18 +557,27 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
         raise RuntimeError("The candidate logged a fatal error or a crash report")
 
 
-def main():
+def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--derived-data", type=Path, required=True, help="Unsigned Release NookNativeShell build")
+    parser.add_argument("--derived-data", type=Path, help="Unsigned Release Bark build for a developer rehearsal")
     parser.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"), help="Local Developer ID Application")
     parser.add_argument("--output", type=Path, required=True, help="New evidence-only directory")
     parser.add_argument("--require-official", action="store_true", help="verify the native official SDK before preparation")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+    if args.require_official and args.derived_data is not None:
+        parser.error("--require-official builds the checkout's shell. Omit --derived-data.")
+    if not args.require_official and args.derived_data is None:
+        parser.error("Pass --derived-data for a developer rehearsal.")
     if not args.identity:
         parser.error("Pass --identity or set BARK_SIGN_IDENTITY.")
-    output = args.output.resolve()
-    if output.is_relative_to(REPO):
+    if args.output.resolve().is_relative_to(REPO):
         parser.error("Choose a new evidence directory outside the repository.")
+    return parser, args
+
+
+def main():
+    parser, args = parse_args()
+    output = args.output.resolve()
     check = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     arch = check["native_architecture"]()
     qualification = {"architecture": arch}
@@ -568,9 +593,14 @@ def main():
     output.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix="bark-update-", dir="/private/tmp") as directory:
         work = Path(directory)
+        if args.require_official:
+            derived = work / "DerivedData"
+            build_checkout_shell(derived, arch, output)
+        else:
+            derived = args.derived_data.resolve()
         with UpdateServer(bark_release.feed_name(arch)) as server:
-            installed, newer, root, settings = versions(check, args.derived_data.resolve(), engine,
-                                                         args.identity, arch, work, server, output)
+            installed, newer, root, settings = versions(check, derived, engine, args.identity,
+                                                         arch, work, server, output)
             (output / "candidate.json").write_text(json.dumps(qualification) + "\n")
             exercise(check, installed, newer, root, settings, arch, server, output, engine=engine)
     print("Installed update rehearsal passed.", flush=True)
