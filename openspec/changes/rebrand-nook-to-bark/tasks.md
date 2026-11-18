@@ -41,7 +41,7 @@ Planning only. The user accepted fresh local/cloud state under a new Bark App ID
 - [ ] 5.2 Rename core/settings/design package products and imports in a coherent slice; run their existing package checks and app builds.
 - [ ] 5.3 Rename web/UI/blocker/tweaks package products and imports in a coherent slice; run their existing checks and both architecture builds without changing runtime behavior.
 - [ ] 5.4 Update build, signing, DMG, CI and release path references and runner allowlists; verify a staged release pipeline reaches packaging with Bark names.
-- [ ] 5.5 Rewrite README, contribution/support destinations and trademark/attribution presentation for Bark; verify Intel/Apple Silicon documentation and all public links while retaining upstream license/authorship.
+- [x] 5.5 Rewrite README, contribution/support destinations and trademark/attribution presentation for Bark; verify Intel/Apple Silicon documentation and all public links while retaining upstream license/authorship.
 - [ ] 5.6 Audit remaining Nook names and old identifiers against an explicit compatibility/attribution allowlist; verify no unexplained old product branding or active old cloud configuration remains.
 
 ## 6. Signed transition and release rehearsal (B4)

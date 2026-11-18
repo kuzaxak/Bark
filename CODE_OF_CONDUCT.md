@@ -2,9 +2,9 @@
 
 ## Our Commitment
 
-We are committed to providing a welcoming and inclusive environment for all contributors to Nook, regardless of experience level, background, or identity.
+We are committed to providing a welcoming and inclusive environment for all contributors to Bark, regardless of experience level, background, or identity.
 
-Nook is built by volunteers who contribute their time and expertise out of passion for creating great software. We appreciate everyone who takes time to contribute to making Nook better.
+Bark is built by volunteers who contribute their time and expertise out of passion for creating great software. We appreciate everyone who takes time to contribute to making Bark better.
 
 ## Expected Behavior
 
@@ -25,10 +25,7 @@ Nook is built by volunteers who contribute their time and expertise out of passi
 
 ## Scope
 
-This Code of Conduct applies to all project spaces, including:
-- GitHub repository (issues, PRs, discussions)
-- Discord community
-- Any other official Nook communication channels
+This Code of Conduct applies to the Bark repository, its pull requests, and other official project communication channels.
 
 ## Enforcement
 
@@ -39,11 +36,7 @@ Project maintainers are responsible for clarifying standards and will take appro
 
 ## Reporting
 
-If you experience or witness unacceptable behavior, please report it by:
-- Opening a GitHub issue (for public matters)
-- Contacting maintainers directly on Discord
-
-All reports will be handled confidentially and reviewed promptly.
+If you experience or witness unacceptable behavior, contact a project maintainer directly. Use a private channel for reports that contain personal information. Maintainers will handle reports confidentially and review them promptly.
 
 ## Attribution
 
@@ -51,4 +44,4 @@ This Code of Conduct is adapted from the [Contributor Covenant](https://www.cont
 
 ---
 
-By participating in the Nook community, you agree to abide by this Code of Conduct.
+By participating in the Bark community, you agree to abide by this Code of Conduct.

@@ -1,6 +1,6 @@
-# Contributing to Nook
+# Contributing to Bark
 
-Thanks for your interest in contributing to Nook. This covers how to set up the project, what we expect in a pull request, and how to report issues.
+This guide covers building Bark, verifying a browser change and submitting a pull request.
 
 ## AI Assistance Notice
 
@@ -14,11 +14,11 @@ Please be respectful to maintainers and disclose AI assistance.
 
 ## Development Setup
 
-You need a Mac and Xcode 26 or later. The package tests and native command-routing check run on Apple Silicon or Intel. The pinned Bark engine and signed-app smoke currently require Intel.
+You need a Mac and Xcode 26 or later. The package tests and native command-routing check run on Apple Silicon or Intel. Intel has a verified runtime pin and signed-app smoke. The native Apple Silicon runtime pin is pending.
 
 1. **Check out the Bark revision you want to build.** Run the commands below from the repository directory containing `Nook.xcodeproj` and `scripts/bark-check.py`.
 
-2. **Install the Metal Toolchain** (Xcode 26 and later ship without it; Nook has one shader)
+2. **Install the Metal Toolchain** for the app’s shader
    ```bash
    xcodebuild -downloadComponent MetalToolchain
    ```
@@ -140,7 +140,7 @@ Use a separate runner with the matching `bark-candidate-x86_64` or `bark-candida
 
 ```bash
 #!/bin/bash
-exec "$HOME/actions-runner-bark/hooks/job-started-guard.sh" --bark-candidate refs/heads/develop
+exec "$HOME/actions-runner-bark/hooks/job-started-guard.sh" --bark-candidate refs/heads/pawl-dev
 ```
 
 The runner-side guard permits only this repository’s Bark candidate workflow on that ref. Keep the signing runner separate from PR jobs and the legacy Nook release runner. The [local packaging commands](Runtime/Chromium/README.md#prepare-bark-distribution-files) use the same checks.
@@ -156,25 +156,22 @@ The runner-side guard permits only this repository’s Bark candidate workflow o
 
 ### Compatibility & OS Versions
 
-- **Minimum deployment target is macOS 15.5 (Sequoia), Apple Silicon.** Do not add `#available` guards for versions below it.
+- **The app’s minimum deployment target is macOS 15.5 (Sequoia).** Do not add `#available` guards for versions below it.
 - **APIs newer than macOS 15.5** (macOS 26 and 27) need an `#available` check with a Sequoia fallback.
 
 ## Pull Request Process
 
 ### Before You Start
 
-- **Check for duplicates**: Search existing issues and PRs to ensure no one is already working on the same feature or bug
-- **Avoid duplicate work**: Comment on relevant issues to indicate you're working on them
-- **For major changes**, open an issue first to discuss the approach
-- **Keep pull requests focused**: one feature or fix per PR. Large PRs that mix several features are hard to review and may be split or closed.
+- Check existing pull requests for related work. Discuss substantial changes with the maintainers before implementation. [Bark pull requests](https://github.com/kuzaxak/Nook/pulls)
+- Keep each pull request focused on one feature or fix.
 
 ### Creating Pull Requests
 
-1. **Create your branch from `develop`**:
-   ```bash
-   git checkout develop
-   git pull origin develop
-   git checkout -b feature/your-feature-name
+1. **Create a topic branch from the Bark revision you are changing.** The SDK-based build commands require a checkout containing `scripts/bark-check.py`.
+
+   ```fish
+   git switch -c feature/your-feature-name
    ```
 
 2. **Make your changes** and commit them with clear, descriptive messages
@@ -184,7 +181,7 @@ The runner-side guard permits only this repository’s Bark candidate workflow o
    git push origin feature/your-feature-name
    ```
 
-4. **Open a Pull Request to `develop`**
+4. **Open a pull request against the published branch your change builds on.**
    - Provide a clear description of the changes
    - Reference any related issues
    - Include screenshots or videos for UI changes
@@ -193,14 +190,16 @@ The runner-side guard permits only this repository’s Bark candidate workflow o
 
 5. **Respond to review feedback** promptly and constructively
 
-## Issue Reporting
+## Reporting bugs and requesting features
+
+The fork currently accepts pull requests. When proposing a fix or feature, include the details below in the relevant pull request. [Bark pull requests](https://github.com/kuzaxak/Nook/pulls)
 
 ### Bug Reports
 
 Be descriptive and thorough. Include:
 
 - **macOS version**
-- **Nook version**
+- **Bark version and build number**
 - **Clear steps to reproduce the issue**
 - **Expected vs actual behavior**
 - **Screenshots if applicable**
@@ -211,7 +210,7 @@ Be descriptive and thorough. Include:
 Provide detailed context. Include:
 
 - **Clear description of the feature and its use case**
-- **Explain how it fits with Nook's goals** (fast, built-in ad blocking, light on battery)
+- **Explain how it improves the Bark browsing experience**
 - **Consider implementation complexity and user impact**
 - **Check that similar functionality doesn't already exist**
 
@@ -223,4 +222,4 @@ Provide detailed context. Include:
 
 ## License
 
-By contributing to Nook, you agree that your contributions will be licensed under the GPL-3.0 License.
+By contributing to Bark, you agree that your contributions will be licensed under the GPL-3.0 License.
