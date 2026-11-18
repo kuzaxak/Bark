@@ -1193,7 +1193,24 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   ASSERT_TRUE(personal);
   const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
   ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  auto* host = bark::BarkWindowHost::ForBrowser(work);
+  ASSERT_NE(nullptr, host);
+  ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  ASSERT_EQ(1, barc_window_set_root_view(work_id, (__bridge void*)root));
+  const auto mount = [&](int32_t owner, int32_t tab) {
+    NSView* page = (__bridge NSView*)barc_tab_native_view(owner, tab);
+    ASSERT_NE(nil, page);
+    for (NSView* child in root.subviews) {
+      [child removeFromSuperview];
+    }
+    page.frame = root.bounds;
+    [root addSubview:page];
+  };
+  ASSERT_NO_FATAL_FAILURE(mount(work_id, work_tab));
+  ASSERT_EQ(1, barc_window_show(work_id));
   auto* contents = work->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(host->IsPageMounted(contents));
   auto* tab = tabs::TabInterface::MaybeGetFromContents(contents);
   ASSERT_TRUE(tab);
   auto* factory = ui::FakeSelectFileDialog::RegisterFactory();
@@ -1223,6 +1240,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                                     params);
     EXPECT_EQ(0, opened);
     ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+    ASSERT_NO_FATAL_FAILURE(mount(personal_id, personal_tab));
     EXPECT_TRUE(tab->IsActivated());
     EXPECT_EQ(1, pending->cancelled);
   }
@@ -1240,6 +1258,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   EXPECT_EQ(0, opened);
 
   ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  ASSERT_NO_FATAL_FAILURE(mount(work_id, work_tab));
   active->DidBecomeInactive();
   auto shown = base::MakeRefCounted<UploadSelectionListener>();
   FileSelectHelper::RunFileChooser(contents->GetPrimaryMainFrame(), shown,
@@ -1263,6 +1282,9 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
         EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_CANCELLED, prompt.disposition);
         EXPECT_GT(prompt.document, 0u);
       }, &completions));
+  ASSERT_NO_FATAL_FAILURE(mount(personal_id, personal_tab));
+  EXPECT_TRUE(host->IsPageMounted(
+      personal->GetTabStripModel()->GetActiveWebContents()));
   EXPECT_EQ(1, completions);
   EXPECT_EQ(1, shown->cancelled);
   EXPECT_EQ(nullptr, dialog->listener());
@@ -1273,6 +1295,7 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
 
   // Destruction retains upstream RFH/WebContents cancellation authority.
   ASSERT_EQ(1, barc_tab_select(work_id, work_tab));
+  ASSERT_NO_FATAL_FAILURE(mount(work_id, work_tab));
   auto closing = base::MakeRefCounted<UploadSelectionListener>();
   FileSelectHelper::RunFileChooser(contents->GetPrimaryMainFrame(), closing,
                                   params);
