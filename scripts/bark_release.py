@@ -159,6 +159,15 @@ def write_appcast(path, info, url, size, signature):
     ET.ElementTree(rss).write(path, encoding="utf-8", xml_declaration=True)
 
 
+def publish_new(source, destination):
+    """Make a complete local artifact visible without replacing another export."""
+    rename = ctypes.CDLL(None, use_errno=True).renamex_np
+    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    if rename(os.fsencode(source), os.fsencode(destination), 0x00000004):  # RENAME_EXCL
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), destination)
+
+
 def make_distribution(app, output_directory, architecture, identity, download_base_url, sparkle_bin,
                       ed_key_file, working, notary_profile=None, verify_staged=None):
     """Publish a complete local DMG and appcast directory only after both signatures verify."""
@@ -215,9 +224,5 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         write_appcast(published / feed_name(architecture), info, download_base_url.rstrip("/") + "/" + image.name,
                       image.stat().st_size, signature)
         # Atomically publish both files, even if two jobs target the same path.
-        rename = ctypes.CDLL(None, use_errno=True).renamex_np
-        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-        if rename(os.fsencode(published), os.fsencode(output_directory), 0x00000004):  # RENAME_EXCL
-            error = ctypes.get_errno()
-            raise OSError(error, os.strerror(error), output_directory)
+        publish_new(published, output_directory)
     print(f"Packaged {output_directory / image.name} and {feed_name(architecture)}", flush=True)

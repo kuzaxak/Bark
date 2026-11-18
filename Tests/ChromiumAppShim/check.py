@@ -2,6 +2,7 @@
 """Runs the outer app's main, the public headers, publishing and staging against fake engine products."""
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from unittest.mock import patch
 import hashlib
 import json
 import os
@@ -1221,6 +1222,37 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('blocker-two', 'an engine with a second blocker library', 'holds 2 copies of libnook_adblock.dylib', second_library)
 
 
+def archive_transport_cases(fixture, artifact, contributor):
+    receiver = fixture / 'receiver'
+    scripts = receiver / 'scripts'
+    scripts.mkdir(parents=True)
+    for name in (STAGE.name, 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
+        shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+    # Give the receiving checkout only its matching headers and pin.
+    package = receiver / 'Packages/BarkEngine'
+    shutil.copytree(fixture / 'candidate/package' / XCFRAMEWORK.name, package / XCFRAMEWORK.name)
+    cache = receiver / 'cache/pin/Engine'
+    first, second = fixture / 'sdk.tar.gz', fixture / 'repacked.tar.gz'
+    export = contributor['archive_engine']
+    with patch.dict(export.__globals__, STAGE=scripts / STAGE.name, cached_engine=lambda arch: cache):
+        export(artifact, first, 'arm64')
+        with contributor['pinned_engine'](str(first), receiver, 'arm64') as restored:
+            contributor['install_engine'](restored, 'arm64')
+        check('archive installation seals the SDK, including files made writable during extraction',
+              all(not p.stat().st_mode & 0o222 for p in [cache, *cache.rglob('*')] if not p.is_symlink()))
+        check('archive installation retains framework aliases and executable bits',
+              (cache / FRAMEWORK / 'Resources').readlink() == (artifact / FRAMEWORK / 'Resources').readlink()
+              and os.access(cache / FRAMEWORK / 'Bark Framework', os.X_OK))
+        export(cache, second, 'arm64')
+        check('a transferred SDK reproduces the same archive', first.read_bytes() == second.read_bytes())
+        try:
+            export(cache, first, 'arm64')
+        except FileExistsError:
+            check('export preserves an existing archive', first.read_bytes() == second.read_bytes())
+        else:
+            check('export preserves an existing archive', False)
+
+
 def arm_artifact_cases(work):
     fixture = work / 'arm64-fixtures'
     fixture.mkdir()
@@ -1265,6 +1297,7 @@ def arm_artifact_cases(work):
           result.returncode != 0 and 'must be exactly x86_64 and thin:' in result.stderr, result.stderr)
 
     contributor = runpy.run_path(str(ROOT / 'scripts/bark-check.py'))
+    archive_transport_cases(fixture, artifact, contributor)
     signed = fixture / 'arm-resigned.dylib'
     shutil.copyfile(shell, signed)
     subprocess.run(['codesign', '--force', '--sign', '-', signed], capture_output=True, check=True)

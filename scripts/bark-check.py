@@ -8,6 +8,7 @@ import ctypes
 import errno
 import fcntl
 import filecmp
+import gzip
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import json
@@ -32,7 +33,7 @@ sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chromium_sdk_layout import ARCHITECTURES, local_engine, read_pin
-from bark_release import configure_release, expected_additions, make_distribution, production_settings
+from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
 
 REPO = Path(__file__).resolve().parents[1]
 STAGE = REPO / "scripts/stage-chromium-app.sh"
@@ -105,6 +106,8 @@ def install_engine(engine, architecture, require_official=False):
         with TemporaryDirectory(dir=cache) as stage:
             copy = Path(stage) / "Engine"
             run("/usr/bin/ditto", engine, copy)
+            # The tar data filter deliberately restores owner write permission.
+            run("/bin/chmod", "-R", "-P", "a-w", copy)
             run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", copy)
             if require_official:
                 check_official_engine(copy, architecture)
@@ -117,6 +120,10 @@ def install_engine(engine, architecture, require_official=False):
     run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", destination)
     if require_official:
         check_official_engine(destination, architecture)
+    # Repair installations copied by earlier versions from unpacked tar files.
+    if destination.stat().st_mode & 0o222 or any(
+            not path.is_symlink() and path.stat().st_mode & 0o222 for path in destination.rglob("*")):
+        run("/bin/chmod", "-R", "-P", "a-w", destination)
     print(f"Installed pinned SDK at {destination}")
 
 
@@ -148,6 +155,33 @@ def pinned_engine(source, working, architecture, require_official=False):
     if require_official:
         check_official_engine(path, architecture)
     yield path
+
+
+def archive_engine(engine, output, architecture, require_official=False):
+    output = output.expanduser().absolute()
+    if output.is_symlink() or output.exists():
+        raise FileExistsError(f"SDK archive already exists: {output}")
+    if output.resolve().is_relative_to(engine.resolve()):
+        raise ValueError("Choose an archive destination outside the SDK.")
+
+    def portable_metadata(entry):
+        entry.uid = entry.gid = entry.mtime = 0
+        entry.uname = entry.gname = ""
+        entry.mode = 0o555 if entry.isdir() or entry.issym() or entry.mode & 0o111 else 0o444
+        return entry
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".bark-sdk-", dir=output.parent) as stage:
+        archive = Path(stage) / "sdk.tar.gz"
+        with archive.open("xb") as raw, gzip.GzipFile(
+                filename="", fileobj=raw, mode="wb", compresslevel=3, mtime=0) as compressed:
+            with tarfile.open(fileobj=compressed, mode="w|") as package:
+                package.add(engine, arcname="Engine", filter=portable_metadata)
+        # Read the exact bytes another checkout will receive before publishing.
+        with TemporaryDirectory(prefix="bark-sdk-check-", dir="/private/tmp") as work:
+            with pinned_engine(str(archive), Path(work), architecture, require_official):
+                publish_new(archive, output)
+    print(f"Wrote verified {architecture} SDK archive to {output}", flush=True)
 
 
 def framework_files(directory):
@@ -468,6 +502,7 @@ def main():
             sub.add_argument("--require-official", action="store_true", help="require verified official engine provenance")
         if command == "engine":
             sub.add_argument("--install", action="store_true", help="cache the verified SDK for clean checkouts")
+            sub.add_argument("--archive", type=Path, metavar="FILE", help="write a verified gzip tar archive to a new file")
         elif command == "build":
             sub.add_argument("--output", type=Path, default=REPO / "build/Bark.app")
             sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"),
@@ -503,15 +538,18 @@ def main():
         working = Path(work)
         require_official = getattr(args, "require_official", False)
         with pinned_engine(args.engine, working, architecture, require_official) as engine:
-            if args.command == "engine" and args.install:
-                install_engine(engine, architecture, require_official)
+            if args.command == "engine":
+                if args.archive:
+                    archive_engine(engine, args.archive, architecture, require_official)
+                if args.install:
+                    install_engine(engine, architecture, require_official)
             elif args.command == "build":
                 build_candidate(engine, args.output, args.identity, architecture, release_info)
             elif args.command == "package":
                 make_distribution(args.app.resolve(strict=True), args.output, architecture, args.identity,
                                   args.download_base_url, None, args.ed_key_file, working, args.notary_profile,
                                   verify_staged=lambda staged: verify_candidate(staged, engine, working, architecture))
-            elif args.command != "engine":
+            else:
                 app = args.app.resolve(strict=True)
                 verify_candidate(app, engine, working, architecture)
                 if launching:
