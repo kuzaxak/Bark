@@ -267,18 +267,28 @@ The maintained `bark_browser_tests` target in `bark/test/BUILD.gn` includes
 `barc_extension_focus_browsertest.mm`, plus `BarcExtensionDialogBrowserTest` in
 `barc_extension_dialog_browsertest.mm`, and `BarcExtensionStorageBrowserTest` in
 `barc_extension_storage_browsertest.mm`. Derived fixtures also cover startup,
-discovery, private commands and site data. `bark_host_peek_browsertest.mm` covers link
-entry points, same-client admission and promotion, focus and hidden audio in
-the Bark-owned window. The target uses Chromium's existing
+discovery, private commands and site data. The target uses Chromium's existing
 `browser_tests_runner`, `test_support` and `test_support_ui`, with no custom
 runner or registration in monolithic `browser_tests`. Inspect the generated
 graph/incremental estimate and compile added objects before committing to its
-separate build. Run the suite on an unlocked console:
+separate build. From the Bark repository, run the suite against your Chromium
+checkout on an unlocked console.
 
 ```fish
-out/Barc-x64/bark_browser_tests --gtest_list_tests
-out/Barc-x64/bark_browser_tests --test-launcher-jobs=1 --test-launcher-retry-limit=0 --use-mock-keychain
+set chromium_src /path/to/chromium/src
+python3 Runtime/Chromium/run_browser_tests.py \
+    --checkout "$chromium_src" \
+    --binary "$chromium_src/out/Barc-x64/bark_browser_tests"
 ```
+
+Add `--filter 'BarcBridgeBrowserTest.*'` for a focused run or `--summary` with
+a new output path for Chromium's JSON results. The launcher uses a disposable
+profile for each test, the mock keychain, one test at a time and zero retries.
+The runner takes the shared `/private/tmp/nook-screen-lock` mutex and stops
+when hardware input resumes, the console locks, or the mutex is replaced.
+Exit status 3 indicates that the screen is unavailable. After a forced
+termination, inspect the recorded PID and its test processes before clearing
+an abandoned mutex.
 
 These regressions encode transfer/draft/scroll/history, profile binding,
 shared-window selection/lifetime and native policy cases; their presence is not
