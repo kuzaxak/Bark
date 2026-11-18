@@ -116,6 +116,11 @@ uint64_t barc_window_host_observe(int32_t window, BarcWindowHostCallback callbac
 void barc_window_host_unobserve(uint64_t observation);
 int barc_window_switch_space(const BarcSpaceSwitchRequest* request,
                              BarcSpaceSwitchCallback callback, void* context);
+int barc_tab_list_extension_actions(int32_t window, int32_t tab,
+                                    BarcExtensionActionCallback callback, void* context);
+int barc_tab_set_extension_pinned(int32_t window, int32_t tab,
+                                  const char* extension_id, int pinned);
+int barc_tab_invoke_extension(int32_t window, int32_t tab, const char* extension_id);
 #ifdef __cplusplus
 }
 #endif

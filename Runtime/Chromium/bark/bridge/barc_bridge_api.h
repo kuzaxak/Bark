@@ -520,7 +520,10 @@ enum BarcWindowHostEventKind {
   // draws its own crashed state over it.
   BARC_WINDOW_HOST_PAGE_CRASHED = 3,
   // `tab`'s page has a renderer again, after a reload.
-  BARC_WINDOW_HOST_PAGE_RESTORED = 4
+  BARC_WINDOW_HOST_PAGE_RESTORED = 4,
+  // Profile extension actions have changed. Re-read the currently displayed
+  // page; an earlier selection may have queued the notification.
+  BARC_WINDOW_HOST_EXTENSION_ACTIONS_CHANGED = 5
 };
 enum BarcFullscreenKind {
   BARC_FULLSCREEN_NONE = 0,
@@ -603,6 +606,16 @@ typedef struct BarcSpaceSwitchResult {
 
 typedef void (*BarcSpaceSwitchCallback)(const BarcSpaceSwitchResult* result,
                                        void* context);
+
+enum BarcExtensionActionFlags {
+  BARC_EXTENSION_PINNED = 1,
+  BARC_EXTENSION_ENABLED = 2,
+  BARC_EXTENSION_PIN_LOCKED = 4
+};
+// One row from a synchronous snapshot. The UTF-8 strings are borrowed until
+// this callback returns. Copy any values that the sidebar will retain.
+typedef void (*BarcExtensionActionCallback)(void* context, const char* extension_id,
+    const char* title, const char* badge, int flags);
 
 struct BarcBridge {
   size_t size;
@@ -1177,7 +1190,7 @@ struct BarcBridge {
   // Placing it in the window shows the page; removing it hides it. Its frame is
   // the page's size.
   void* (* _Nonnull tab_native_view)(int32_t window, int32_t tab);
-  // Not available until the window frame lands: returns 0 for every window.
+  // Sets the titlebar height and leading inset for this physical Bark window.
   int (* _Nonnull window_set_chrome)(int32_t window,
                                      const BarcWindowChrome* chrome);
   // Observes the physical window `window` belongs to, for every client in it.
@@ -1197,6 +1210,21 @@ struct BarcBridge {
   int (* _Nonnull window_switch_space)(const BarcSpaceSwitchRequest* request,
                                          BarcSpaceSwitchCallback callback,
                                          void* context);
+
+  // Reads actions for this mounted, selected regular page. Pinned actions come
+  // first in profile order. Returns 1 for a ready snapshot (including empty)
+  // and 0 for an unavailable model or owner. Model changes invalidate the
+  // snapshot through the physical window observer.
+  int (* _Nonnull tab_list_extension_actions)(int32_t window, int32_t tab,
+                                               BarcExtensionActionCallback callback,
+                                               void* context);
+  // Revalidates the same page and the extension before editing profile pins
+  // or invoking the user's action. Pinned state is 0 or 1. Only invocation
+  // can grant the extension permission for the current tab.
+  int (* _Nonnull tab_set_extension_pinned)(int32_t window, int32_t tab,
+                                            const char* extension_id, int pinned);
+  int (* _Nonnull tab_invoke_extension)(int32_t window, int32_t tab,
+                                        const char* extension_id);
 };
 
 #ifdef __cplusplus

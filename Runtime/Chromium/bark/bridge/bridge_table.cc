@@ -116,6 +116,9 @@ constexpr BarcBridge kBridge = {
     .window_host_observe = &barc_window_host_observe,
     .window_host_unobserve = &barc_window_host_unobserve,
     .window_switch_space = &barc_window_switch_space,
+    .tab_list_extension_actions = &barc_tab_list_extension_actions,
+    .tab_set_extension_pinned = &barc_tab_set_extension_pinned,
+    .tab_invoke_extension = &barc_tab_invoke_extension,
 };
 }  // namespace
 
