@@ -61,6 +61,7 @@ On Intel, run the catalog, startup-focus and page-ownership regressions against 
 ```fish
 python3 scripts/bark-check.py catalog
 python3 scripts/bark-check.py page-host
+python3 scripts/bark-check.py profile-pages
 ```
 
 On an Intel Mac with Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
