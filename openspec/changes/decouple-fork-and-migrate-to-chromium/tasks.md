@@ -61,7 +61,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 
 - [x] Build the Intel app from a checkout with an absent output directory, using locked dependencies, tracked signing inputs and an SDK matching the checked-in pin. Verify the signature, embedded engine and final output.
 - [x] Exercise a real modified link in a signed Bark window. Verify Escape restores source input and promotion to split preserves the preview document and its draft.
-- [ ] Qualify compact external-link windows and site popups on the same candidate. Exercise requested viewport size, opener messaging, page close and Open in Space with a live draft.
+- [x] Qualify compact external-link windows and site popups on the same signed Intel candidate. Three 480 × 306 popups, including a cross-origin redirect, messaged the opener and returned input to its draft on close. The external mini's Open in Space button fit inside the header and a physical click preserved the live document and draft.
 - [ ] Complete host ownership of engine-created normal and private windows, extension UI and vault/passkey prompts. Exercise commands and close against the exact physical window and page.
 - [ ] Complete the app-owned menu and delegate routing. Retire the legacy browser-window path and its upstream patches once the signed app passes the window and interaction suite.
 - [ ] Qualify the official optimized engine and both SDK slices. Verify successful first input, return to parked tabs, signed installation and installed updates on native Intel and Apple Silicon Macs.

@@ -104,7 +104,7 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         let view: NSView
         if let header { view = header }
         else {
-            view = NSHostingView(rootView: ChromiumMiniHeader(page: page,
+            let hosting = NSHostingView(rootView: ChromiumMiniHeader(page: page,
                 leadingInset: compactHost ? ChromiumMiniHeader.besideLights : 12,
                 promote: { [weak self] in self?.openInSpace() },
                 canPromote: { [weak self] in self.map { $0.canPromote($0.page) } == true },
@@ -112,7 +112,10 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
                 chooseDestination: { [weak self] in self?.openInSpace($0) },
                 share: { [weak self] in _ = self?.share() },
                 close: { [weak self] in self?.close() }))
-            header = view
+            // The compact root already reserves the title band and the traffic-light inset.
+            if compactHost { hosting.safeAreaRegions = [] }
+            view = hosting
+            header = hosting
         }
         if compactHost, root == nil {
             let compact = ChromiumCompactRoot(bridge: api.bridge, client: window)
@@ -292,7 +295,7 @@ private struct ChromiumMiniHeader: View {
                         }
                     }
                 } label: { Image(systemName: "chevron.down") }
-                .menuStyle(.borderlessButton).fixedSize().help("Choose a space")
+                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().help("Choose a space")
             }
             Button(action: share) { Image(systemName: "square.and.arrow.up") }.help("Share current URL")
             Button(action: close) { Image(systemName: "xmark") }.help("Close")
