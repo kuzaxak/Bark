@@ -57,9 +57,9 @@ ENGINE_DOCUMENT = {'CFBundleTypeRole': 'Viewer', 'LSItemContentTypes': ['public.
 ENGINE_ENTITLEMENTS = {'com.apple.security.device.camera': True, 'com.apple.security.device.audio-input': True}
 SHIPPED_ADDITIONS = ROOT / 'ChromiumApp/Additions.plist'
 CALENDAR = 'com.apple.security.personal-information.calendars'
-SPACE_DOCUMENT = {'CFBundleTypeName': 'Nook Space', 'CFBundleTypeRole': 'Viewer', 'LSHandlerRank': 'Alternate',
+SPACE_DOCUMENT = {'CFBundleTypeName': 'Bark Space', 'CFBundleTypeRole': 'Viewer', 'LSHandlerRank': 'Alternate',
                   'LSItemContentTypes': ['ee.qdo.nook.space']}
-SPACE_TYPE = {'UTTypeConformsTo': ['public.json'], 'UTTypeDescription': 'Nook Space', 'UTTypeIdentifier': 'ee.qdo.nook.space',
+SPACE_TYPE = {'UTTypeConformsTo': ['public.json'], 'UTTypeDescription': 'Bark Space', 'UTTypeIdentifier': 'ee.qdo.nook.space',
               'UTTypeTagSpecification': {'public.filename-extension': ['nookspace']}}
 FIXTURE_ADDITIONS = {'Info': {'NSCalendarsUsageDescription': 'Fixture calendars', 'CFBundleDocumentTypes': [SPACE_DOCUMENT],
                               'UTImportedTypeDeclarations': [SPACE_TYPE]},
@@ -984,6 +984,9 @@ def stage_cases(work, shim, framework_lib, shell_lib):
           all((contents / 'Resources' / n).exists() for n in ['app.icns', 'en.lproj/InfoPlist.strings', 'NookWeb_NookWeb.bundle']))
     shipped = read_plist(SHIPPED_ADDITIONS) if SHIPPED_ADDITIONS.is_file() else {}
     staged_info = read_plist(info)
+    check('the staged app identifies legacy .nookspace files as Bark Space',
+          SPACE_DOCUMENT in staged_info.get('CFBundleDocumentTypes', []) and
+          SPACE_TYPE in staged_info.get('UTImportedTypeDeclarations', []))
     check('the shipped additions land in the staged Info.plist',
           bool(shipped.get('Info')) and all(staged_info.get(k) == (ENGINE_PLIST.get(k, []) + v if isinstance(v, list) else v)
                                             for k, v in shipped.get('Info', {}).items()), staged_info)
