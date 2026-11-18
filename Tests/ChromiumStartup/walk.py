@@ -53,6 +53,17 @@ def mounted_web_areas(screen):
     return titles
 
 
+def hardware():
+    model, memory = subprocess.check_output(
+        ["/usr/sbin/sysctl", "-n", "hw.model", "hw.memsize"], text=True,
+    ).splitlines()
+    cpu = subprocess.run(
+        ["/usr/sbin/sysctl", "-n", "machdep.cpu.brand_string"], capture_output=True, text=True,
+    )
+    return {"model": model, "memory_bytes": int(memory),
+            "cpu": cpu.stdout.strip() if cpu.returncode == 0 else None}
+
+
 def exercise(screen, process, events, output):
     def event(page, name, since=0, **where):
         def matching():
@@ -109,8 +120,7 @@ def exercise(screen, process, events, output):
     # These are observed bounds and include event dispatch and local receipt.
     results = {
         "profile": "fresh disposable verification profile; machine caches uncontrolled",
-        "hardware": subprocess.check_output(["sysctl", "-n", "hw.model", "machdep.cpu.brand_string", "hw.memsize"],
-                                           text=True).splitlines(),
+        "hardware": hardware(),
         "macos": subprocess.check_output(["sw_vers", "-productVersion"], text=True).strip(),
         "launch_to_pointer_ms": round((first["received_ns"] - screen.launch_started_ns) / 1e6, 2),
         "switch_back_to_key_ms": round((resumed["received_ns"] - return_started) / 1e6, 2),

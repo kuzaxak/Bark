@@ -148,10 +148,16 @@ class Screen:
             raise RuntimeError("Writing the candidate window capture failed")
 
 
+def verify_native_candidate(contributor, app):
+    architecture = contributor["native_architecture"]()
+    contributor["verify_signed_shell"](app, architecture)
+    return architecture
+
+
 def run_walk(description, name, serve, exercise, preferences=(), *,
              source_host="127.0.0.1", prepare_fixture=None):
     parser = argparse.ArgumentParser(description=description)
-    parser.add_argument("--app", type=Path, required=True, help="Signed Intel Bark.app")
+    parser.add_argument("--app", type=Path, required=True, help="Signed Bark.app for this Mac’s native architecture")
     parser.add_argument("--output", type=Path, required=True, help="New directory for test evidence")
     args = parser.parse_args()
     if sys.platform != "darwin":
@@ -169,9 +175,10 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
     if not binary.is_file() or processes(app):
         parser.error("Pass a candidate that is not already running")
     contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
-    contributor["verify_signed_shell"](app)
+    architecture = verify_native_candidate(contributor, app)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
+    (output / "candidate.json").write_text(json.dumps({"architecture": architecture}) + "\n")
     console = QuartzConsole()
     crashes = crash_reports()
 

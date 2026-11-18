@@ -1,7 +1,7 @@
 # Signed Bark Peek walk
 
-Run on an Intel Mac with a signed Bark candidate built against a Peek-enabled
-engine. Use a Python installation with the PyObjC Cocoa, Quartz and
+Use a signed Bark candidate for the Mac’s native architecture, built against a
+Peek-enabled engine. Use a Python installation with the PyObjC Cocoa, Quartz and
 ApplicationServices modules and existing Accessibility, input posting and
 Screen Recording access.
 

@@ -1,6 +1,7 @@
 # Signed Bark compact-window walk
 
-Use a signed Intel Bark build with compact-window engine support. The runner uses
+Use a signed Bark build for the Mac’s native architecture with compact-window
+engine support. The runner uses
 PyObjC Cocoa, Quartz and ApplicationServices and the existing macOS Accessibility,
 input-posting and Screen Recording permissions. Give it a fresh output directory.
 

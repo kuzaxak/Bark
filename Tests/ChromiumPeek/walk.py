@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Walk a signed Intel Bark candidate with a new disposable profile."""
+"""Walk a signed Bark candidate with a new disposable profile."""
 
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
