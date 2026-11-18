@@ -327,7 +327,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 importManager: ImportManager(configuration: configuration),
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
-                cloudSyncEnabled: false, engine: .chromium)
+                cloudSyncEnabled: false, engine: .chromium, vault: storage.vault)
             appearance?.onEffectiveChange = { [weak manager, registry] in
                 guard let manager else { return }
                 manager.tabs.sessions.forEach { $0.resetNativeTopBarSample() }

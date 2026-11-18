@@ -1,5 +1,6 @@
 import Foundation
 import NookSettings
+import NookWeb
 
 /// App-owned native stores with explicit isolated verification destinations. Construct only
 /// after Chromium readiness; this does not construct BrowserManager or pages.
@@ -12,6 +13,7 @@ final class ChromiumAppStorage {
     let devMCP: DevMCPConfiguration
     let tabsDirectory: URL
     let aiConfig: AIConfigService
+    let vault: VaultService?
 
     init(configuration: ChromiumStartupConfiguration) throws {
         let app = configuration.root.appendingPathComponent("App", isDirectory: true)
@@ -29,6 +31,12 @@ final class ChromiumAppStorage {
         settings = NookSettingsService(kagiTokenStore: tokens, userDefaults: isolated,
                                        boostStore: BoostStore(fileURL: app.appendingPathComponent("Boosts.json")),
                                        keepsSidebarLeft: true)
+        if configuration.isVerification {
+            guard let profile = configuration.profileID else { throw StorageError.missingVerificationProfile }
+            vault = try VaultService(verificationSettings: settings, root: configuration.root, profile: profile)
+        } else {
+            vault = nil
+        }
         downloads = DownloadManager(historyFileURL: app.appendingPathComponent("Downloads.json"), usesNativeDownloads: true)
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)
         aiConfig = AIConfigService(configURL: configuration.aiConfigURL,
@@ -36,7 +44,7 @@ final class ChromiumAppStorage {
                                    migratesLegacySettings: false)
     }
 
-    enum StorageError: Error { case preferencesUnavailable }
+    enum StorageError: Error { case preferencesUnavailable, missingVerificationProfile }
 }
 
 /// Synthetic credentials remain in memory and never access a Keychain item.

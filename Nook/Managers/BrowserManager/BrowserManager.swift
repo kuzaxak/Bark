@@ -468,7 +468,8 @@ class BrowserManager: ObservableObject {
         downloadManager: DownloadManager? = nil,
         tabsDirectory: URL? = nil,
         cloudSyncEnabled: Bool = true,
-        engine: Profile.Engine = .webKit
+        engine: Profile.Engine = .webKit,
+        vault: VaultService? = nil
     ) {
         self.engine = engine
         // Chromium must supply every app store before any legacy singleton can
@@ -545,7 +546,7 @@ class BrowserManager: ObservableObject {
                 self?.historyManager.setWordStops(PaletteText.stops(from: settings.paletteWordStops))
             }
         }
-        let vault = VaultService(settings: settings)
+        let vault = vault ?? VaultService(settings: settings)
         vault.presenter = autofillManager
         // Native Chromium retains its stock WebAuthn/security-key implementation.
         if engine == .webKit { vault.securityKeyPresenter = securityKeySheets }
