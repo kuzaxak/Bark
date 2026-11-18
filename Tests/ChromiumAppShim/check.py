@@ -708,8 +708,51 @@ def publish_cases(work, framework_lib):
             lambda b: shutil.rmtree(b / 'Bark.app/Contents/Frameworks' / FRAMEWORK))
     refused('publish-no-packaging', 'an engine without its signing tools', 'Missing Bark Packaging',
             lambda b: shutil.rmtree(b / 'Bark Packaging'))
-    refused('publish-resource-drift', 'outer resources that differ from the app\'s', 'differ from ChromiumApp/Resources',
-            lambda b: (b / 'Bark.app/Contents/Resources/app.icns').write_text('other'))
+    def edit_localization(build, **changes):
+        localized = build / 'Bark.app/Contents/Resources/en.lproj/InfoPlist.strings'
+        xml = subprocess.check_output(['/usr/bin/plutil', '-convert', 'xml1', '-o', '-', localized])
+        values = plistlib.loads(xml)
+        write_plist(localized, **{**values, **changes})
+
+    def different_artwork(build):
+        outer = build / 'Bark.app/Contents/Resources'
+        (outer / 'app.icns').write_bytes(b'engine icon')
+        (outer / 'Assets.car').write_bytes(b'engine asset catalog')
+        edit_localization(build, CFBundleDisplayName='Fixture Brand', CFBundleGetInfoString='Fixture Brand 1.2.3.4')
+
+    result, branded_package = attempt('publish-outer-artwork', different_artwork)
+    check('publishing accepts differing outer artwork and localized names with the same SDK',
+          result.returncode == 0 and (artifact_of(branded_package) / 'SHA256SUMS').read_bytes() ==
+          (artifact / 'SHA256SUMS').read_bytes(), result.stderr)
+
+    refused('publish-resource-drift', 'outer scripting resources that differ from the app\'s', 'differ from ChromiumApp/Resources',
+            lambda b: (b / 'Bark.app/Contents/Resources/scripting.sdef').write_text('other'))
+    refused('publish-missing-localization', 'a missing outer localization', 'differ from ChromiumApp/Resources',
+            lambda b: (b / 'Bark.app/Contents/Resources/en.lproj/InfoPlist.strings').unlink())
+    refused('publish-extra-nested-asset', 'an unrelated nested resource named like artwork', 'differ from ChromiumApp/Resources',
+            lambda b: (b / 'Bark.app/Contents/Resources/en.lproj/Assets.car').write_text('unexpected'))
+    refused('publish-localized-permission', 'drift in a localized permission purpose', 'NSAudioCaptureUsageDescription',
+            lambda b: edit_localization(b, NSAudioCaptureUsageDescription='An unrelated explanation.'))
+    refused('publish-localized-copyright', 'drift in a localized copyright field', 'NSHumanReadableCopyright',
+            lambda b: edit_localization(b, NSHumanReadableCopyright='Other'))
+
+    def renamed_artwork(build):
+        metadata = build / 'gen/chrome/chrome_integrated_app_info_plist.plist'
+        values = read_plist(metadata)
+        values['CFBundleIconFile'] = 'Engine Icon'
+        values.pop('CFBundleIconName')
+        values['CFBundleDocumentTypes'][0]['CFBundleTypeIconFile'] = 'Engine Document.icns'
+        write_plist(metadata, **values)
+        outer = build / 'Bark.app/Contents/Resources'
+        (outer / 'app.icns').rename(outer / 'Engine Icon.icns')
+        (outer / 'Assets.car').unlink()
+        (outer / 'Engine Document.icns').write_bytes(b'engine document artwork')
+
+    result, _ = attempt('publish-renamed-outer-artwork', renamed_artwork)
+    check('publishing accepts distinct declared application and document artwork names',
+          result.returncode == 0, result.stderr)
+    refused('publish-unreferenced-outer-icon', 'an unreferenced root icon resource', 'differ from ChromiumApp/Resources',
+            lambda b: (b / 'Bark.app/Contents/Resources/Unreferenced.icns').write_bytes(b'unknown'))
     no_entry = work / 'publish-no-entry.dylib'
     fake_framework(no_entry, entry=None)
     refused('publish-no-entry', 'an engine that does not export the header\'s entry', f'does not export {ENTRY}', framework=no_entry)

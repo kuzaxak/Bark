@@ -77,8 +77,93 @@ for name, directory in directories.items():
     if built_from != hashlib.sha256(open(f'{runtime}/{name}', 'rb').read()).hexdigest():
         sys.exit(f'Engine was built from another {name} than Runtime/Chromium/bark: rebuild it or update the recipe')
 PY
-/usr/bin/diff -r "$ENGINE_APP/Contents/Resources" "$ROOT/ChromiumApp/Resources" >&2 ||
+# The app target owns outer artwork and the visible names in its localized
+# bundle metadata. The rest of the resource trees must still match.
+if ! python3 -B - "$ENGINE_APP/Contents/Resources" "$ROOT/ChromiumApp/Resources" \
+    "$INTEGRATED_APP_INFO" "$ROOT/ChromiumApp/Info.plist" "$ROOT/ChromiumApp/Additions.plist" <<'PYTHON'
+from pathlib import Path
+import plistlib
+import subprocess
+import sys
+
+engine, app = map(Path, sys.argv[1:3])
+engine_info, app_info, additions = map(Path, sys.argv[3:])
+visible_names = {"CFBundleName", "CFBundleDisplayName", "CFBundleGetInfoString"}
+
+
+def read_info(path):
+    return plistlib.loads(path.read_bytes())
+
+
+def artwork(info, resources, additional_documents=()):
+    icons = [info.get("CFBundleIconFile")]
+    icons += [entry.get("CFBundleTypeIconFile")
+              for entry in [*info.get("CFBundleDocumentTypes", ()), *additional_documents]]
+    names = {"Assets.car"} if "CFBundleIconName" in info else set()
+    for icon in icons:
+        if icon is None:
+            continue
+        if not isinstance(icon, str) or not icon or "/" in icon or icon in {".", ".."}:
+            raise ValueError(f"Invalid bundle icon basename: {icon!r}")
+        if not Path(icon).suffix and not (resources / icon).is_file():
+            names.add(icon + ".icns")
+        else:
+            names.add(icon)
+    return names
+
+
+def read_strings(path):
+    xml = subprocess.check_output(["/usr/bin/plutil", "-convert", "xml1", "-o", "-", path])
+    values = plistlib.loads(xml)
+    if not isinstance(values, dict):
+        raise ValueError(f"Expected a localized Info.plist dictionary: {path}")
+    return values
+
+
+def compare_strings(source, destination):
+    if source.read_bytes() == destination.read_bytes():
+        return
+    original, branded = read_strings(source), read_strings(destination)
+    for key in sorted((original.keys() | branded.keys()) - visible_names):
+        if key not in original or key not in branded or original[key] != branded[key]:
+            raise ValueError(f"Localized Info.plist value differs for {key}: {destination}")
+    for key in visible_names & branded.keys():
+        if not isinstance(branded[key], str) or not branded[key].strip():
+            raise ValueError(f"Invalid localized app name for {key}: {destination}")
+
+
+def compare_directory(source, destination, *, outer_artwork=None):
+    names = {item.name for item in source.iterdir()}
+    other_names = {item.name for item in destination.iterdir()}
+    if outer_artwork is not None:
+        source_icons, destination_icons = outer_artwork
+        names -= source_icons
+        other_names -= destination_icons
+    mismatched = sorted(names ^ other_names)
+    if mismatched:
+        raise ValueError(f"Outer resources present only in one bundle at {destination}: {', '.join(mismatched)}")
+    for name in sorted(names):
+        left, right = source / name, destination / name
+        if outer_artwork is not None and name.endswith(".lproj") and left.is_dir() and right.is_dir():
+            compare_directory(left, right)
+        elif outer_artwork is None and name == "InfoPlist.strings" and left.is_file() and right.is_file():
+            compare_strings(left, right)
+        else:
+            subprocess.run(["/usr/bin/diff", "-r", left, right], stdout=sys.stderr, check=True)
+
+
+try:
+    added_info = read_info(additions).get("Info", {}) if additions.is_file() else {}
+    compare_directory(engine, app, outer_artwork=(
+        artwork(read_info(engine_info), engine),
+        artwork(read_info(app_info), app, added_info.get("CFBundleDocumentTypes", ())),
+    ))
+except (OSError, ValueError, plistlib.InvalidFileException, subprocess.CalledProcessError) as error:
+    sys.exit(str(error))
+PYTHON
+then
   refuse 'Engine outer resources differ from ChromiumApp/Resources: review the difference and update the app'
+fi
 # A second architecture may publish a different runtime, but it must use the same
 # public interface as the existing pin, including a legacy Intel pin.
 OTHER_PIN=$(python3 -B "$LAYOUT" pin-file "$PACKAGE" "$OTHER_ARCH")
