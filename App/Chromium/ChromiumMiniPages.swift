@@ -35,10 +35,8 @@ final class ChromiumMiniPages {
     func apply(_ snapshot: ChromiumDiscoverySnapshot, accepting: @escaping () -> Bool, activeWindow: BrowserWindowState?) {
         for row in snapshot.windows where row.flags & BARC_DISCOVERY_COMPACT_MINI.rawValue != 0 &&
             row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 {
-            let shown = accepting() && present(row, snapshot: snapshot, activeWindow: activeWindow, accepting: accepting)
-            if !shown, row.flags & BARC_DISCOVERY_AWAITING_ADMISSION.rawValue != 0 {
-                for tab in snapshot.tabs where tab.window == row.window { _ = bridge.tab_close(row.window, tab.tab) }
-            }
+            if accepting(), present(row, snapshot: snapshot, activeWindow: activeWindow, accepting: accepting) { continue }
+            closePendingTabs(in: row, snapshot: snapshot)
         }
     }
 
@@ -56,10 +54,35 @@ final class ChromiumMiniPages {
                 navigation.invalidate() // Observation only; no unclaimed native close.
             }
         }
-        guard row.selected_client == row.window,
-              let selected = registry.nativeController(tab: row.active_tab) as? ChromiumMiniWindowController else { return false }
+        func canPresent() -> Bool { accepting() && currentSelection(of: row) != nil }
+        guard let selected = registry.nativeController(tab: row.active_tab) as? ChromiumMiniWindowController,
+              selected.nativeWindowID == row.window, canPresent() else { return false }
         registry.relinquishNativeHeader(window: row.window, except: row.active_tab)
-        return selected.present(canPresent: accepting)
+        return selected.present(canPresent: canPresent)
+    }
+
+    private func currentSelection(of row: BarcDiscoveryWindow) -> BarcDiscoveryWindow? {
+        let compact = UInt32(BARC_DISCOVERY_COMPACT_MINI.rawValue)
+        let ending = UInt32(BARC_DISCOVERY_OWNER_ENDING.rawValue)
+        guard row.selected_client == row.window,
+              let current = bridge.windowState(row.window), current.window == row.window,
+              current.physical_group == row.physical_group, current.physical_group != 0,
+              current.selected_client == row.window, current.active_tab == row.active_tab,
+              current.flags & compact != 0, current.flags & ending == 0 else { return nil }
+        return current
+    }
+
+    private func closePendingTabs(in row: BarcDiscoveryWindow, snapshot: ChromiumDiscoverySnapshot) {
+        let waiting = UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
+        guard row.flags & waiting != 0 else { return }
+        let tabs = snapshot.tabs.filter { $0.window == row.window }
+        // Close the active tab last so the normal close order keeps the
+        // captured selection valid until the window's other tabs are gone.
+        let ordered = tabs.filter { $0.tab != row.active_tab } + tabs.filter { $0.tab == row.active_tab }
+        for tab in ordered {
+            guard let current = currentSelection(of: row), current.flags & waiting != 0 else { return }
+            _ = bridge.tab_close(row.window, tab.tab)
+        }
     }
 
     private func profile(of row: BarcDiscoveryWindow) -> Profile? {

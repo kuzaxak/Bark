@@ -2020,7 +2020,7 @@ private struct NoTokens: KagiTokenStore {
     let defaults = UserDefaults(suiteName: suite)!
     defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
     Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll(); Native.roots = [:]
-    Native.hostWindows = [2202, 2204]
+    Native.hostWindows = [2202, 2204, 2205]
     defer { Native.hostWindows = []; Native.pageViews = [:]; Native.roots = [:] }
     var tree = TabTree()
     tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
@@ -2053,13 +2053,19 @@ private struct NoTokens: KagiTokenStore {
     Native.miniCloses = []
     var miniBridge = Native.bridge
     miniBridge.tab_close = { _, tab in MainActor.assumeIsolated { Native.miniCloses.append(tab); return 1 } }
-    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in Native.windows[window]?.active_tab == tab })
+    var onCanUse: ((Int32, Int32) -> Void)?
+    var api = ChromiumMiniWindowAPI(bridge: miniBridge, canUse: { window, tab in
+        onCanUse?(window, tab)
+        return Native.windows[window]?.active_tab == tab
+    })
     api.installCommandOMonitor = { _, _ in NSObject() }
     api.removeCommandOMonitor = { _ in }
     let minis = MiniRegistry()
     var origins: [Int32: BrowserWindowState?] = [:]
+    var onMake: ((Int32) -> Void)?
     let pages = ChromiumMiniPages(bridge: miniBridge, tabs: tabs, registry: minis) { profile, navigation, origin in
         origins[navigation.nativeTabID] = origin
+        onMake?(navigation.nativeTabID)
         return ChromiumMiniWindowController(tabs: tabs, profile: profile, navigation: navigation, origin: origin, api: api,
                                             promote: { _, _ in false }, onEnd: { _ in })
     }
@@ -2073,11 +2079,65 @@ private struct NoTokens: KagiTokenStore {
     Native.windows[2202]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
     pages.apply(Native.bridge.readSnapshot()!, accepting: { true }, activeWindow: other)
     precondition(shown?.isPresented == true && Native.miniCloses == [22010], "a shown window stays")
+
+    // Keep the original controller's live header while a captured row reports
+    // a different selected tab and an earlier pending admission.
+    for (alternate, supersededWhileBinding) in [(Int32(22021), false), (Int32(22022), true)] {
+        Native.tabs.append(Native.tab(alternate, window: 2202))
+        Native.windows[2202]?.active_tab = alternate
+        Native.windows[2202]?.flags = waiting
+        let snapshot = Native.bridge.readSnapshot()!
+        func selectAlreadyShown() {
+            Native.windows[2202]?.active_tab = 22020
+            Native.windows[2202]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
+        }
+        var superseded = false
+        if supersededWhileBinding {
+            onMake = { tab in
+                guard tab == alternate else { return }
+                superseded = true
+                selectAlreadyShown()
+            }
+        } else {
+            selectAlreadyShown()
+        }
+        pages.apply(snapshot, accepting: { true }, activeWindow: other)
+        onMake = nil
+        precondition(superseded == supersededWhileBinding, "controller creation synchronously selected the existing page")
+        precondition(shown?.isPresented == true && Native.miniCloses == [22010],
+                     "a stale compact row cannot strip the currently selected page's header or close its tabs")
+    }
+
+    // Even after the selection initially passed validation, a callback from
+    // presentation can admit a successor before the old attempt returns.
+    Native.windows[2205] = Native.window(2205, group: 2205, profile: Native.work, kind: 1, flags: waiting, active: 22050)
+    Native.tabs += [Native.tab(22050, window: 2205), Native.tab(22051, window: 2205)]
+    var attempted = false
+    onCanUse = { window, tab in
+        guard window == 2205, tab == 22050 else { return }
+        attempted = true
+        Native.windows[2205]?.active_tab = 22051
+        Native.windows[2205]?.flags &= ~UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue)
+    }
+    pages.apply(Native.bridge.readSnapshot()!, accepting: { true }, activeWindow: other)
+    onCanUse = nil
+    precondition(attempted && Native.miniCloses == [22010],
+                 "a refused presentation may not close the successor admitted during its callback")
+
+    // Legacy discovery can report an awaiting client in a physical window
+    // with another selected client. It cannot make the group's close decision.
+    Native.windows[2206] = Native.window(2206, group: 2205, profile: UUID(), kind: 1, flags: waiting, active: 22060)
+    Native.windows[2206]?.selected_client = 2205
+    Native.tabs.append(Native.tab(22060, window: 2206))
+    pages.apply(Native.bridge.readSnapshot()!, accepting: { true }, activeWindow: other)
+    precondition(Native.miniCloses == [22010], "an unselected waiting client cannot close the window's pages")
+
     Native.miniCloses = []
     Native.windows[2204] = Native.window(2204, group: 2204, profile: Native.work, kind: 1, flags: waiting, active: 22040)
-    Native.tabs.append(Native.tab(22040, window: 2204))
+    Native.tabs += [Native.tab(22040, window: 2204), Native.tab(22041, window: 2204)]
     pages.apply(Native.bridge.readSnapshot()!, accepting: { false }, activeWindow: other)
-    precondition(Native.miniCloses == [22040] && Native.roots[2204] == nil, "while the app accepts no windows a waiting one is closed")
+    precondition(Native.miniCloses == [22041, 22040] && Native.roots[2204] == nil,
+                 "while the app accepts no windows a selected waiting window closes its background tab and then its active tab")
     for owner in Array(Native.windows.keys) { Native.end(owner) }
     withExtendedLifetime(openerShell) {}
     tabs.saveNow()
