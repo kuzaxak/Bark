@@ -111,6 +111,7 @@ final class ChromiumCompactRoot: NSView {
         case .pageCrashed(let tab, let view):
             crashedTabs.insert(tab)
             if let slot, slot.pane?.tab == tab, slot.holds(view) { slot.crashed.isHidden = false }
+        case .extensionActionsChanged: break
         case .pageRestored(let tab):
             crashedTabs.remove(tab)
             if let slot, slot.pane?.tab == tab { slot.crashed.isHidden = true }

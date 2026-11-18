@@ -975,8 +975,34 @@ private func checkAuthoritativeGroups() throws {
     precondition(host.acceptNativeSelection(page, in: window))
     precondition(host.isNativeSelection(page, in: window) && Native.selectionCalls == selectCount)
 
-    // A third client selected by native code while fetching a page wins.
     let root = shell.superview?.superview as! ChromiumWindowRoot
+    do {
+        _ = NSApplication.shared
+        let presenting = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        let unrelated = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        presenting.isReleasedWhenClosed = false; unrelated.isReleasedWhenClosed = false
+        presenting.contentView = root
+        window.window = presenting
+        let originalSpace = window.spaceID
+        defer {
+            window.spaceID = originalSpace; window.window = nil
+            presenting.contentView = nil; presenting.close(); unrelated.close()
+        }
+        var front = true
+        let target = host.extensionActionTarget(for: page, in: window) { front }!
+        precondition(target.client == 121 && target.tab == 1210 && target.isCurrent())
+        front = false
+        precondition(!target.isCurrent())
+        front = true
+        window.spaceID = UUID()
+        precondition(!target.isCurrent())
+        window.spaceID = originalSpace; window.window = unrelated
+        precondition(!target.isCurrent())
+        window.window = presenting
+        precondition(target.isCurrent() && !target.canPerform(), "An offscreen owner cannot dispatch an action")
+    }
+
+    // A third client selected by native code while fetching a page wins.
     let third = try host.bindExistingPage(nativeWindow: 122, tab: 1220, profile: profile, in: window).get()
     third.finish(adopted: true)
     Native.onPageView = { _ in

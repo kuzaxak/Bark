@@ -56,7 +56,7 @@ def check_native_harness(command):
     maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
     # SwiftPM bundle lookup uses the executable directory for command-line tools.
     suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
-             "profile-pages": "ChromiumProfilePages"}[command]
+             "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions"}[command]
     binary = products / f"bark-{command}-check"
     run("xcrun", "swiftc", "-swift-version", "5", "-target", "x86_64-apple-macosx15.5",
         "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
@@ -390,6 +390,7 @@ def main():
     commands.add_parser("catalog", help="run catalog and initial-window activation regressions on Intel")
     commands.add_parser("page-host", help="check page ownership, transfer and close on Intel")
     commands.add_parser("profile-pages", help="check profile utility window ownership on Intel")
+    commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership on Intel")
     for command in ("engine", "build", "verify", "smoke", "launch"):
         sub = commands.add_parser(command)
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
@@ -408,7 +409,7 @@ def main():
     if args.command == "interaction":
         run(sys.executable, REPO / "Tests/ChromiumShortcuts/check.py")
         return
-    if args.command in ("catalog", "page-host", "profile-pages"):
+    if args.command in ("catalog", "page-host", "profile-pages", "extension-actions"):
         check_native_harness(args.command)
         return
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:

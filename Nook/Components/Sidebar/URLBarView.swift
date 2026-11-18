@@ -20,6 +20,7 @@ struct URLBarView: View {
     @Environment(\.nookSettings) var nookSettings
     @Environment(\.colorScheme) private var colorScheme
     @Environment(\.chromiumSiteControlsAnchor) private var siteControlsAnchor
+    @Environment(\.chromiumExtensionActions) private var nativeExtensions
     @State private var isHovering: Bool = false
     @State private var showCheckmark: Bool = false
     @State private var isEditing = false
@@ -276,6 +277,10 @@ struct URLBarView: View {
 
                 // Pinned extension buttons + library button
                 if !isEditing, browserManager.engine == .chromium {
+                    if nativeAddressIsAvailable, let nativeExtensions,
+                       let session, session === browserManager.frontPage(in: windowState) {
+                        ChromiumPinnedExtensionActions(actions: nativeExtensions)
+                    }
                     let shown = nativeTopBar || isHovering || windowState.isExtensionLibraryVisible
                     ExtensionLibraryButton()
                         .disabled(session == nil)
@@ -283,7 +288,7 @@ struct URLBarView: View {
                         .allowsHitTesting(shown)
                         .background { if let siteControlsAnchor { ChromiumSiteControlsButtonProbe(anchor: siteControlsAnchor) } }
                 }
-                if !isEditing, let extensionManager = browserManager.extensionManager {
+                if !isEditing, browserManager.engine != .chromium, let extensionManager = browserManager.extensionManager {
                     let pinnedIDs = browserManager.nookSettings?.pinnedExtensionIDs ?? []
                     let pinnedExtensions = extensionManager.installedExtensions.filter { pinnedIDs.contains($0.id) }
 

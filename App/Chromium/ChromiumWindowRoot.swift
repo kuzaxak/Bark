@@ -466,6 +466,8 @@ final class ChromiumWindowRoot: NSView {
         CGRect(x: 0, y: barHeight, width: pageFrame.bounds.width, height: max(0, pageFrame.bounds.height - barHeight))
     }
 
+    var extensionActionsChanged: (() -> Void)?
+
     private func handle(_ change: ChromiumWindowHostChange) {
         switch change {
         case .pageRetired(let tab, let view):
@@ -480,6 +482,8 @@ final class ChromiumWindowRoot: NSView {
         case .pageCrashed(let tab, let view):
             crashedTabs.insert(tab)
             for slot in allSlots where slot.pane?.tab == tab && slot.holds(view) { slot.crashed.isHidden = false }
+        case .extensionActionsChanged:
+            extensionActionsChanged?()
         case .pageRestored(let tab):
             crashedTabs.remove(tab)
             for slot in allSlots where slot.pane?.tab == tab { slot.crashed.isHidden = true }

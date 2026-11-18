@@ -11,6 +11,7 @@ enum ChromiumWindowHostChange {
     /// `tab`'s renderer is gone and its page view `view` shows nothing.
     case pageCrashed(tab: Int32, view: UnsafeMutableRawPointer?)
     case pageRestored(tab: Int32)
+    case extensionActionsChanged
 }
 
 /// A root view's tie to its Bark window: the root given to the window, and the window's changes
@@ -61,6 +62,7 @@ final class ChromiumWindowHostLink {
             receive(.fullscreen(page: event.fullscreen == Int32(BARC_FULLSCREEN_PAGE.rawValue), client: event.window))
         case BARC_WINDOW_HOST_PAGE_CRASHED.rawValue: receive(.pageCrashed(tab: event.tab, view: event.view))
         case BARC_WINDOW_HOST_PAGE_RESTORED.rawValue: receive(.pageRestored(tab: event.tab))
+        case BARC_WINDOW_HOST_EXTENSION_ACTIONS_CHANGED.rawValue: receive(.extensionActionsChanged)
         default: break
         }
     }

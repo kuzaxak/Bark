@@ -20,6 +20,7 @@ struct ChromiumSidebarShell: View {
     let setPageHidden: (Bool) -> Void
     @State private var dialogFocus = ChromiumDialogFocus()
     @State private var siteControlsAnchor = ChromiumSiteControlsAnchor()
+    @State private var extensionActions = ChromiumExtensionActions()
     @State private var titleBand = SidebarTitleBand.design
     @Environment(\.colorScheme) private var baseColorScheme
 
@@ -28,6 +29,20 @@ struct ChromiumSidebarShell: View {
               let native = page.navigation as? ChromiumPageNavigation,
               browserManager.tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return }
         _ = native.selectNativePage()
+    }
+
+    private func refreshExtensionActions() {
+        guard let host = browserManager.tabs.nativePageHost as? ChromiumNativePageHost,
+              let page = browserManager.frontPage(in: window),
+              let navigation = page.navigation as? ChromiumPageNavigation else {
+            extensionActions.refresh(nil)
+            return
+        }
+        let target = host.extensionActionTarget(for: navigation, in: window) { [weak browserManager, weak window, weak page] in
+            guard let browserManager, let window, let page else { return false }
+            return browserManager.frontPage(in: window) === page
+        }
+        extensionActions.refresh(target)
     }
 
     private var spaceChrome: ChromiumSpaceChrome {
@@ -142,6 +157,7 @@ struct ChromiumSidebarShell: View {
             .environment(organizer)
             .environment(\.nookUsesDefaultSpaceTheme, spaceChrome.theme == nil)
             .environment(\.chromiumSiteControlsAnchor, siteControlsAnchor)
+            .environment(\.chromiumExtensionActions, extensionActions)
             .defaultAppStorage(storage.defaults)
             .modifier(OrganizeTabsRequests(window: window, registry: registry, organizer: organizer, tabs: browserManager.tabs,
                 notify: { [browserManager, window] in browserManager.showWindowToast($0, in: window) }))
@@ -176,7 +192,8 @@ struct ChromiumSidebarShell: View {
                 if window.isExtensionLibraryVisible {
                     let siteControls = ChromiumSiteControls(browserManager: browserManager, window: window,
                         settings: storage.settings, anchor: siteControlsAnchor)
-                    ChromiumPagePanel(content: siteControls.defaultAppStorage(storage.defaults), fill: .window,
+                    ChromiumPagePanel(content: siteControls.defaultAppStorage(storage.defaults)
+                        .environment(\.chromiumExtensionActions, extensionActions), fill: .window,
                                       windowInput: siteControls.windowInput)
                 }
             }
@@ -230,6 +247,7 @@ struct ChromiumSidebarShell: View {
                     }).environment(window))
                 }, library: library, libraryOpen: open,
                 closeLibrary: { LibraryMotion.close(window) },
+                extensionActionsChanged: { Task { @MainActor in refreshExtensionActions() } },
                 swipeChanged: { window.libraryDrag = max($0, 0) },
                 swipeEnded: { LibraryMotion.release(window, distance: $0, velocity: $1, width: $2) })
         }) {
@@ -252,7 +270,18 @@ struct ChromiumSidebarShell: View {
                            height: min(650, max(1, window.window?.contentView?.bounds.height ?? 540)))
             }
         }
-        .onDisappear { browserManager.downloadManager.dismissPreview(in: window) }
+        .onAppear { refreshExtensionActions() }
+        .onDisappear {
+            browserManager.downloadManager.dismissPreview(in: window)
+            extensionActions.refresh(nil)
+        }
+        .onChange(of: registry.activeWindowId) { _, _ in refreshExtensionActions() }
+        .onChange(of: window.nativePresentationIsPreparing) { _, _ in refreshExtensionActions() }
+        .onChange(of: browserManager.frontPage(in: window)?.itemID) { _, _ in refreshExtensionActions() }
+        .onChange(of: browserManager.frontPage(in: window)?.url) { _, _ in refreshExtensionActions() }
+        .onChange(of: window.isExtensionLibraryVisible) { _, visible in
+            if visible { refreshExtensionActions() }
+        }
         .onChange(of: browserManager.showsTopBar(in: window)) { _, _ in
             window.isExtensionLibraryVisible = false
             siteControlsAnchor.source = .address
@@ -260,10 +289,12 @@ struct ChromiumSidebarShell: View {
         .onChange(of: window.spaceID) { _, _ in
             dismissPagePanels()
             browserManager.windowSpaceChanged(window)
+            refreshExtensionActions()
         }
         .onChange(of: window.selectedItemID) { _, _ in
             dismissPagePanels()
             browserManager.peekManager.refreshNativePresentation(in: window)
+            refreshExtensionActions()
         }
     }
     /// The model's split for the Bark window's root: the panes it shows, its divider drags, and Add
@@ -307,6 +338,7 @@ struct ChromiumSidebarShell: View {
         .environment(\.tabActions, browserManager)
         .environment(window).environment(registry).environment(commandPalette).environment(organizer)
         .environment(\.chromiumSiteControlsAnchor, siteControlsAnchor)
+        .environment(\.chromiumExtensionActions, extensionActions)
         .defaultAppStorage(storage.defaults)
     }
 
@@ -448,6 +480,7 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
     /// While the Library is open a sideways swipe anywhere in the window pushes it shut.
     let libraryOpen: Bool
     let closeLibrary: () -> Void
+    let extensionActionsChanged: () -> Void
     let swipeChanged: (CGFloat) -> Void
     /// The swipe's distance and velocity, and the Library's width it was measured against.
     let swipeEnded: (CGFloat, CGFloat, CGFloat) -> Void
@@ -468,17 +501,23 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
         var library = ChromiumWindowRoot.Library.shut
         var libraryOpen = false
         var closeLibrary: () -> Void = {}
+        var extensionActionsChanged: () -> Void = {}
         var swipeChanged: (CGFloat) -> Void = { _ in }
         var swipeEnded: (CGFloat, CGFloat, CGFloat) -> Void = { _, _, _ in }
         private var backdropHost: NSHostingView<AnyView>?
         private var flightsHost: NSHostingView<AnyView>?
         private let swipeSurface = LibrarySwipeSurfaceView()
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
-        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); apply() }
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            apply()
+            extensionActionsChanged()
+        }
         func apply() {
             var ancestor = superview
             while let view = ancestor, !(view is ChromiumWindowRoot) { ancestor = view.superview }
             guard let root = ancestor as? ChromiumWindowRoot else { return }
+            root.extensionActionsChanged = { [weak self] in self?.extensionActionsChanged() }
             hover?.start()
             if let backdrop {
                 if let backdropHost { backdropHost.rootView = backdrop } else {
@@ -523,6 +562,7 @@ private struct ChromiumWindowRootLink: NSViewRepresentable {
         link.library = library
         link.libraryOpen = libraryOpen
         link.closeLibrary = closeLibrary
+        link.extensionActionsChanged = extensionActionsChanged
         link.swipeChanged = swipeChanged
         link.swipeEnded = swipeEnded
         link.apply()

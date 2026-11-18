@@ -797,6 +797,25 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
             mount.presenter.root.showsPage(tab: page.nativeTabID, of: page.nativeWindowID)
     }
 
+    func extensionActionTarget(for page: ChromiumPageNavigation, in window: BrowserWindowState,
+                               isFrontPage: @escaping () -> Bool) -> ChromiumExtensionActionTarget? {
+        guard !window.isIncognito, !window.nativePresentationIsPreparing,
+              let (mount, _) = admission(page, in: window) else { return nil }
+        let root = mount.presenter.root
+        guard let owner = root.window, owner === window.window else { return nil }
+        let client = page.nativeWindowID, tab = page.nativeTabID, space = window.spaceID
+        let isCurrent = { [weak self, weak mount, weak page, weak window, weak root, weak owner] in
+            guard let self, let mount, let page, let window, let root, let owner,
+                  self.mounts[window.id] === mount, mount.presenter.root === root,
+                  root.window === owner, window.window === owner, window.spaceID == space,
+                  !window.nativePresentationIsPreparing, isFrontPage(),
+                  page.nativeWindowID == client, page.nativeTabID == tab else { return false }
+            return self.isNativeSelection(page, in: window)
+        }
+        return ChromiumExtensionActionTarget(bridge: bridge, client: client, tab: tab, isCurrent: isCurrent,
+            canPerform: { [weak owner] in owner?.isKeyWindow == true })
+    }
+
     func acceptNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
         guard let page = navigation as? ChromiumPageNavigation,
               let (mount, row) = admission(page, in: window),

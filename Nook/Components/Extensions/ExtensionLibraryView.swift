@@ -31,6 +31,8 @@ struct ExtensionLibraryView: View {
 
     private let logger = Logger(subsystem: "com.nook.browser", category: "ExtensionLibrary")
 
+    @Environment(\.chromiumExtensionActions) private var nativeExtensions
+
     private var isChromium: Bool { browserManager.engine == .chromium }
 
     private var currentTab: PageSession? {
@@ -54,8 +56,11 @@ struct ExtensionLibraryView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.md + NookDesign.Spacing.xxs) {
             actionTiles
-            // The bridge cannot list Chromium's extensions or run their actions.
-            if !isChromium { extensionsSection }
+            if isChromium {
+                if let nativeExtensions { ChromiumExtensionActionList(actions: nativeExtensions, dismiss: onDismiss) }
+            } else {
+                extensionsSection
+            }
             settingsSection
             Rectangle().fill(NookDesign.Surface.hairline).frame(height: 1)
             footer
