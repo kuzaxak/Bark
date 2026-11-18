@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Peek fixture PAGE</title>
+<style>
+    body { font: 20px system-ui; margin: 25px }
+    a, input { display: block; margin: 18px 0; font: inherit; padding: 9px }
+    a { width: 240px; background: #bfe1ff }
+    input { width: 190px }
+</style>
+<h1>Peek fixture PAGE</h1>
+<input id="draft" placeholder="Draft for PAGE" autofocus>
+<a id="target" href="/target">Open Peek fixture link</a>
+<div style="height: 1900px"></div>
+<script>
+    const draft = document.querySelector("#draft");
+    const link = document.querySelector("#target");
+    const documentID = crypto.randomUUID();
+
+    function report(event, properties = {}) {
+        fetch("/events", {
+            method: "POST", keepalive: true,
+            body: JSON.stringify({
+                page: location.pathname, event, documentID, value: draft.value,
+                viewport: innerWidth, ...properties
+            })
+        });
+    }
+    function center(element) {
+        const rect = element.getBoundingClientRect();
+        return [Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2)];
+    }
+
+    report("ready", { draftPoint: center(draft), linkPoint: center(link) });
+    addEventListener("resize", () => report("resize"));
+    document.addEventListener("keydown", event => report("key", { key: event.key, trusted: event.isTrusted }));
+    draft.addEventListener("input", event => report("input", { trusted: event.isTrusted }));
+    link.addEventListener("click", event => report("link", { shift: event.shiftKey, trusted: event.isTrusted }));
+</script>
