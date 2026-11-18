@@ -1,0 +1,41 @@
+diff --git a/chrome/browser/shutdown_watchdog_mac.cc b/chrome/browser/shutdown_watchdog_mac.cc
+--- a/chrome/browser/shutdown_watchdog_mac.cc
++++ b/chrome/browser/shutdown_watchdog_mac.cc
+@@ -9,6 +9,8 @@
+ 
+ #include <atomic>
+ 
++#include "bark/browser/network_shutdown_wait.h"
++#include "bark/browser/shutdown_watchdog_budget.h"
+ #include "base/command_line.h"
+ #include "base/debug/debugger.h"
+ #include "base/debug/dump_without_crashing.h"
+@@ -66,8 +68,27 @@
+  public:
+   void ThreadMain() override {
+     base::PlatformThread::SetName("MacShutdownWatchdog");
+-    if (GetShutdownCompleteEvent().TimedWait(GetEmergencyTimeout())) {
++    const base::TimeDelta emergency_timeout = GetEmergencyTimeout();
++    const base::TimeTicks emergency_deadline =
++        base::TimeTicks::Now() + emergency_timeout;
++    if (GetShutdownCompleteEvent().TimedWait(emergency_timeout)) {
+       return;  // Shutdown reached its terminal phase; stand down.
++    }
++
++    // The Network Service flush has its own bounded wait. If teardown is
++    // currently there, allow it to finish that wait and terminate any remaining
++    // child, instead of racing our earlier timer against the child timeout.
++    // All other shutdown phases keep the original emergency deadline.
++    constexpr base::TimeDelta kAfterNetworkWaitGrace = base::Seconds(2);
++    const base::TimeDelta extra = base::Microseconds(
++        bark::NetworkShutdownGrace(
++            base::TimeTicks::Now().ToInternalValue(),
++            emergency_deadline.ToInternalValue(),
++            content::GetNetworkServiceShutdownWaitDeadline().ToInternalValue(),
++            content::GetNetworkServiceShutdownWaitTimeout().InMicroseconds(),
++            kAfterNetworkWaitGrace.InMicroseconds()));
++    if (extra.is_positive() && GetShutdownCompleteEvent().TimedWait(extra)) {
++      return;
+     }
+     if (base::debug::BeingDebugged()) {
+       // A debugger attached after arming. This is a shutdown-hang
