@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc b/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
-index 3b394efe9f..b59bc63659 100644
+index 3b394efe9f13108a1e259f693b0385dbacaa8492..1b7a86cbca6c4ee6102409c2dc6eeb0b4cf94ae7 100644
 --- a/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
 +++ b/chrome/browser/ui/browser_window/internal/create_browser_window_non_android.cc
 @@ -12,6 +12,7 @@
@@ -8,7 +8,7 @@ index 3b394efe9f..b59bc63659 100644
  #include "chrome/browser/ui/browser.h"
 +#include "chrome/browser/ui/browser_window.h"
  #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
- 
+
  #if BUILDFLAG(IS_CHROMEOS)
 @@ -33,6 +34,7 @@ BrowserWindowCreateParams BrowserWindowCreateParams::Clone() const {
        initial_visible_on_all_workspaces_state;
@@ -18,10 +18,27 @@ index 3b394efe9f..b59bc63659 100644
    clone.window = window;
    clone.user_title = user_title;
    clone.can_resize = can_resize;
-@@ -142,6 +144,13 @@ BrowserWindowInterface* CreateBrowserWindow(
+@@ -137,11 +139,30 @@ bool IsOnKioskSplashScreen() {
+
+ }  // namespace
+
++#if BUILDFLAG(IS_MAC)
++namespace bark {
++bool CanCreateHostWindow(const BrowserWindowCreateParams& params);
++bool CanCreateHostWindowForProfile(const Profile& profile);
++}  // namespace bark
++#endif
++
+ BrowserWindowInterface* CreateBrowserWindow(
+     BrowserWindowCreateParams create_params) {
++#if BUILDFLAG(IS_MAC)
++  if (!bark::CanCreateHostWindow(create_params)) {
++    return nullptr;
++  }
++#endif
    CHECK_EQ(BrowserWindowInterface::CreationStatus::kOk,
             GetBrowserWindowCreationStatusForProfile(*create_params.profile));
- 
+
 +  if (create_params.native_window_owner &&
 +      (create_params.type != BrowserWindowInterface::Type::TYPE_NORMAL ||
 +       create_params.in_tab_dragging || create_params.window ||
@@ -31,13 +48,21 @@ index 3b394efe9f..b59bc63659 100644
 +  }
    return Browser::Create(std::move(create_params));
  }
- 
-@@ -172,7 +181,7 @@ BrowserWindowInterface::CreationStatus GetBrowserWindowCreationStatusForProfile(
- 
+
+@@ -170,9 +191,15 @@ BrowserWindowInterface::CreationStatus GetBrowserWindowCreationStatusForProfile(
+     return BrowserWindowInterface::CreationStatus::kErrorShuttingDown;
+   }
+
++#if BUILDFLAG(IS_MAC)
++  if (!bark::CanCreateHostWindowForProfile(profile)) {
++    return BrowserWindowInterface::CreationStatus::kErrorProfileUnsuitable;
++  }
++#endif
++
    if (!IncognitoModePrefs::CanOpenBrowser(&profile) ||
        !profile.AllowsBrowserWindows() ||
 -      IsProfileDirectoryMarkedForDeletion(profile.GetPath())) {
 +      IsProfileDirectoryPendingDeletion(profile.GetPath())) {
      return BrowserWindowInterface::CreationStatus::kErrorProfileUnsuitable;
    }
- 
+

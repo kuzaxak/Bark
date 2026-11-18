@@ -155,6 +155,7 @@
 #include "bark/browser/ui/native_space_page.h"
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_window_host.h"
+#include "bark/browser/ui/bark_window_factory.h"
 
 using namespace barc::internal;
 
@@ -295,7 +296,7 @@ bool HostDiscoveryWindowRow(BrowserWindowInterface* browser,
   if (selected->browser() == browser) row->flags |= BARC_DISCOVERY_SELECTED_CLIENT;
   if (bark::BarkBrowserWindow::FromBrowser(browser)->app_created())
     row->flags |= BARC_DISCOVERY_WINDOW_APP_FACTORY;
-  if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP)
+  if (bark::UsesCompactHost(browser))
     row->flags |= BARC_DISCOVERY_COMPACT_MINI;
   if (selected->browser() == browser && host->awaiting_admission())
     row->flags |= BARC_DISCOVERY_AWAITING_ADMISSION;

@@ -9,21 +9,23 @@
 
 class BrowserWindow;
 class BrowserWindowInterface;
+class Profile;
+class SessionID;
+struct BrowserWindowCreateParams;
 
 namespace bark {
 
 class BarkWindowHost;
 
-// True when the process runs with --bark-window=host.
-bool IsHostWindowMode();
-
-// In host mode the app owns its normal windows and regular-profile popups.
-std::unique_ptr<BrowserWindow, BrowserWindowDeleter> MaybeCreateHostWindow(
-    BrowserWindowInterface* browser,
-    bool in_tab_dragging);
+bool CanCreateHostWindowForProfile(const Profile& profile);
+bool CanCreateHostWindow(const BrowserWindowCreateParams& params);
+std::unique_ptr<BrowserWindow, BrowserWindowDeleter> CreateHostWindow(
+    BrowserWindowInterface* browser);
+bool UsesCompactHost(const BrowserWindowInterface* browser);
 
 // The host window `owner` is shown in, while it can take another client.
 BarkWindowHost* HostToJoin(BrowserWindowInterface* owner);
+BarkWindowHost* HostToJoin(const SessionID& owner);
 
 // Browsers created while one of these lives are the app's own. With `join`,
 // the first one becomes a client of that host instead of opening a window.

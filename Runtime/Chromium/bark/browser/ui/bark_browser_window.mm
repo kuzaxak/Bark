@@ -9,7 +9,6 @@
 #include "bark/browser/ui/bark_window_factory.h"
 #include "bark/browser/ui/bark_window_host.h"
 #include "bark/browser/ui/bark_window_parts.h"
-#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/notimplemented.h"
 #include "chrome/browser/enterprise/data_protection/data_protection_navigation_controller.h"
@@ -20,6 +19,7 @@
 #include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/find_bar/find_bar.h"
@@ -89,34 +89,93 @@ bool ShouldHandleKeyboardEvent(const input::NativeWebKeyboardEvent& event) {
 
 }  // namespace
 
-bool IsHostWindowMode() {
-  return base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
-             "bark-window") == "host";
+bool UsesCompactHost(const BrowserWindowInterface* browser) {
+  switch (browser->GetType()) {
+    case BrowserWindowInterface::TYPE_POPUP:
+    case BrowserWindowInterface::TYPE_APP:
+    case BrowserWindowInterface::TYPE_APP_POPUP:
+    case BrowserWindowInterface::TYPE_DEVTOOLS:
+      return true;
+    default:
+      return false;
+  }
 }
 
-std::unique_ptr<BrowserWindow, BrowserWindowDeleter> MaybeCreateHostWindow(
-    BrowserWindowInterface* browser,
-    bool in_tab_dragging) {
-  const bool app_created = g_app_window_creation_depth != 0;
-  const auto type = browser->GetType();
-  const bool compact = type == BrowserWindowInterface::TYPE_POPUP &&
-                       browser->GetProfile()->IsRegularProfile();
-  if (in_tab_dragging || !IsHostWindowMode() ||
-      !(compact || (app_created && type == BrowserWindowInterface::TYPE_NORMAL))) {
+bool CanCreateHostWindowForProfile(const Profile& profile) {
+  // Bark presents ephemeral Guest sessions with their own native identity.
+  return !profile.IsOffTheRecord() || profile.IsGuestSession();
+}
+
+bool CanCreateHostWindow(const BrowserWindowCreateParams& params) {
+  if (params.window ||
+      !CanCreateHostWindowForProfile(*params.profile)) {
+    return false;
+  }
+  switch (params.type) {
+    case BrowserWindowInterface::TYPE_NORMAL:
+    case BrowserWindowInterface::TYPE_POPUP:
+    case BrowserWindowInterface::TYPE_APP:
+    case BrowserWindowInterface::TYPE_APP_POPUP:
+    case BrowserWindowInterface::TYPE_DEVTOOLS:
+      break;
+    default:
+      return false;
+  }
+  if (!params.native_window_owner) {
+    return true;
+  }
+  if (params.type != BrowserWindowInterface::TYPE_NORMAL ||
+      params.in_tab_dragging) {
+    return false;
+  }
+  auto* collection = GlobalBrowserCollection::GetInstance();
+  auto* owner = collection
+                    ? collection->FindBrowserWithID(*params.native_window_owner)
+                    : nullptr;
+  if (!HostToJoin(owner)) {
+    return false;
+  }
+  Profile* source = &*params.profile;
+  Profile* destination = owner->GetProfile();
+  return source == destination ||
+         (!source->IsOffTheRecord() && !destination->IsOffTheRecord());
+}
+
+std::unique_ptr<BrowserWindow, BrowserWindowDeleter> CreateHostWindow(
+    BrowserWindowInterface* browser) {
+  const auto& params = BrowserInitState::From(browser)->create_params();
+  if (!CanCreateHostWindow(params)) {
     return nullptr;
   }
-  const auto* init_state = BrowserInitState::From(browser);
-  if (init_state && init_state->create_params().native_window_owner) {
-    return nullptr;
+
+  BarkWindowHost* join = nullptr;
+  if (params.native_window_owner) {
+    join = HostToJoin(*params.native_window_owner);
+    if (!join) {
+      return nullptr;
+    }
+  } else if (browser->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
+             !params.in_tab_dragging) {
+    join = std::exchange(g_join_host, nullptr);
   }
+  const bool app_created =
+      g_app_window_creation_depth != 0 || params.native_window_owner.has_value();
   return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(
-      new BarkBrowserWindow(browser, compact ? nullptr : std::exchange(g_join_host, nullptr),
-                            app_created));
+      new BarkBrowserWindow(browser, join, app_created));
 }
 
 BarkWindowHost* HostToJoin(BrowserWindowInterface* owner) {
+  if (!owner || owner->IsDeleteScheduled() ||
+      owner->GetType() != BrowserWindowInterface::TYPE_NORMAL) {
+    return nullptr;
+  }
   auto* host = BarkWindowHost::ForBrowser(owner);
-  return host && !host->closing() ? host : nullptr;
+  return host && !host->closing() && host->widget() ? host : nullptr;
+}
+
+BarkWindowHost* HostToJoin(const SessionID& owner) {
+  auto* collection = GlobalBrowserCollection::GetInstance();
+  return HostToJoin(collection ? collection->FindBrowserWithID(owner) : nullptr);
 }
 
 ScopedAppWindowCreation::ScopedAppWindowCreation(BarkWindowHost* join)
@@ -394,9 +453,7 @@ gfx::Size BarkBrowserWindow::GetContentsSize() const {
 }
 
 void BarkBrowserWindow::SetContentsSize(const gfx::Size& size) {
-  if (!host_->widget() ||
-      (browser_->GetType() == BrowserWindowInterface::TYPE_POPUP &&
-       size.IsEmpty())) {
+  if (!host_->widget() || (UsesCompactHost(browser_) && size.IsEmpty())) {
     return;
   }
   const gfx::Size current = GetContentsSize();
@@ -721,7 +778,7 @@ bool BarkBrowserWindow::IsVisible() const {
 
 void BarkBrowserWindow::SetBounds(const gfx::Rect& bounds) {
   if (auto* widget = host_->widget()) {
-    if (browser_->GetType() == BrowserWindowInterface::TYPE_POPUP) {
+    if (UsesCompactHost(browser_)) {
       if (!bounds.IsEmpty()) {
         widget->SetBounds(BarkWindowHost::ConstrainCompactBounds(
             bounds, *display::Screen::Get()));

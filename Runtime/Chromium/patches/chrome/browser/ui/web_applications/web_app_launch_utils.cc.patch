@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/web_applications/web_app_launch_utils.cc b/chrome/browser/ui/web_applications/web_app_launch_utils.cc
+index 6d4d4daeb712af0ad8eeb67113a72f0196f1138c..505ab5d7db9821a35f34d2d91c9b9fa78d5276af 100644
+--- a/chrome/browser/ui/web_applications/web_app_launch_utils.cc
++++ b/chrome/browser/ui/web_applications/web_app_launch_utils.cc
+@@ -944,7 +944,7 @@ void FocusAppContainer(BrowserWindowInterface* browser, int tab_index) {
+     tab_strip_model->ActivateTabAt(tab_index);
+   }
+   // This call will un-minimize the window.
+-  CHECK_DEREF(BrowserView::GetBrowserViewForBrowser(browser)).Activate();
++  CHECK_DEREF(browser->GetWindow()).Activate();
+ }
+
+ }  // namespace web_app

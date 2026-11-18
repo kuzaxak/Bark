@@ -10,6 +10,7 @@
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_command_policy.h"
 #include "bark/browser/ui/bark_native_widget_mac.h"
+#include "bark/browser/ui/bark_window_factory.h"
 #include "base/apple/foundation_util.h"
 #include "base/auto_reset.h"
 #include "base/command_line.h"
@@ -232,7 +233,8 @@ class BarkWindowHost::Delegate : public views::WidgetDelegate {
       return false;
     }
     chrome::GetSavedWindowBoundsAndShowState(browser, bounds, show_state);
-    if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP) {
+    if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP ||
+        browser->GetType() == BrowserWindowInterface::TYPE_APP_POPUP) {
       const gfx::Rect requested =
           BrowserInitState::From(browser)->override_bounds();
       if (!requested.IsEmpty()) {
@@ -333,7 +335,7 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   auto* browser = first_client->browser();
   chrome::GetSavedWindowBoundsAndShowState(browser, &params.bounds,
                                            &params.show_state);
-  if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP) {
+  if (UsesCompactHost(browser)) {
     params.show_state = ui::mojom::WindowShowState::kNormal;
   }
   params.delegate = delegate_.get();
