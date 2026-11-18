@@ -38,11 +38,11 @@ def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
 
 
-def check_catalog():
+def check_native_harness(command):
     # Xcode resolves the shell's real package graph and the headers in its SDK.
     # The harness supplies its own bridge table, so it runs without an Engine.
     if platform.machine() != "x86_64":
-        raise ValueError("The catalog regression needs the Intel slice of the Bark SDK.")
+        raise ValueError("The native shell regression needs the Intel slice of the Bark SDK.")
     derived = REPO / "build/catalog-contributor-derived"
     packages = derived / "SourcePackages"
     products = derived / "Build/Products/Debug"
@@ -50,7 +50,8 @@ def check_catalog():
         run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "NookNativeShell",
             "-configuration", "Debug", "-destination", "generic/platform=macOS",
             "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
-            "-onlyUsePackageVersionsFromResolvedFile", "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO", "build")
+            "-onlyUsePackageVersionsFromResolvedFile", "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO",
+            "OTHER_SWIFT_FLAGS=$(inherited) -j4", "-jobs", "2", "build")
     finally:
         # The shared scheme also builds and registers an unsigned outer app.
         app = products / "Bark.app"
@@ -60,13 +61,14 @@ def check_catalog():
             subprocess.run([registrar, "-u", str(app)], capture_output=True)
     maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
     # SwiftPM bundle lookup uses the executable directory for command-line tools.
-    binary = products / "bark-catalog-check"
+    suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost"}[command]
+    binary = products / f"bark-{command}-check"
     run("xcrun", "swiftc", "-swift-version", "5", "-target", "x86_64-apple-macosx15.5",
         "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
         "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
         "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
         "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
-        REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests/ChromiumCatalog/Main.swift", "-o", binary)
+        REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / "Main.swift", "-o", binary)
     run(binary)
 
 
@@ -352,6 +354,7 @@ def main():
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("interaction", help="run the native command-window regression")
     commands.add_parser("catalog", help="run catalog and initial-window activation regressions on Intel")
+    commands.add_parser("page-host", help="check page ownership, transfer and close on Intel")
     for command in ("engine", "build", "verify", "smoke", "launch"):
         sub = commands.add_parser(command)
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE", str(DEFAULT_ENGINE)),
@@ -368,8 +371,8 @@ def main():
     if args.command == "interaction":
         run(sys.executable, REPO / "Tests/ChromiumShortcuts/check.py")
         return
-    if args.command == "catalog":
-        check_catalog()
+    if args.command in ("catalog", "page-host"):
+        check_native_harness(args.command)
         return
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
         working = Path(work)

@@ -56,10 +56,11 @@ python3 scripts/bark-check.py interaction
 
 The regression compiles the shipped command-routing code and checks it against real AppKit windows and a sheet. CI runs it after the Swift package tests.
 
-On Intel, run the catalog and startup-focus regressions against the Debug shell. This command uses the SDK headers in the checkout and the package versions in Xcode’s lockfile. Its test bridge supplies the engine calls.
+On Intel, run the catalog, startup-focus and page-ownership regressions against the Debug shell. This command uses the SDK headers in the checkout and the package versions in Xcode’s lockfile. Its test bridge supplies the engine calls.
 
 ```fish
 python3 scripts/bark-check.py catalog
+python3 scripts/bark-check.py page-host
 ```
 
 On an Intel Mac with Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.

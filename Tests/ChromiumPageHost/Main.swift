@@ -1,4 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
+#if BARK_CATALOG_FRAMEWORK
+@testable import NookNativeShell
+#endif
 import AppKit
 import BarcChromium
 import NookWeb
