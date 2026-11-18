@@ -54,8 +54,10 @@ enum Check {
         let main = stockMenu()
         var privateWindow = false
         var canResize = false
+        var canUpdate = false
         var toolbarShown = false
         let installer = ChromiumAppMenu(isOffered: {
+            if $0 == .checkForUpdates { return canUpdate }
             if $0 == .resizeSplitPanes { return canResize }
             return $0 != .manageExtensions || !privateWindow
         }, isToolbarShown: { toolbarShown }) { command in
@@ -141,6 +143,17 @@ enum Check {
             _ = entry.target?.perform(entry.action, with: entry)
             return ran.first
         }
+        let application = main.item(withTag: 57325)!.submenu!
+        precondition(application.items.allSatisfy { $0.title != "Check for Updates…" })
+        installer.install(in: main, showsUpdater: true)
+        let update = application.items.first { $0.title == "Check for Updates…" }!
+        precondition(!installer.validateMenuItem(update))
+        canUpdate = true
+        precondition(installer.validateMenuItem(update))
+        precondition(added("Check for Updates…", in: application) == .checkForUpdates)
+        installer.install(in: main, showsUpdater: true)
+        precondition(application.items.filter { $0.title == "Check for Updates…" }.count == 1)
+
         let view = main.item(withTag: 57327)!.submenu
         precondition(added("Toggle Sidebar", in: view) == .toggleSidebar)
         let toolbar = view!.items[1]
@@ -192,6 +205,44 @@ enum Check {
 
         let empty = NSMenu()
         ChromiumAppMenu { _ in }.install(in: empty)
+        verifyUpdateConfiguration()
         print("PASS chromium-app-menu")
     }
+    private static func verifyUpdateConfiguration() {
+        let key = Data(repeating: 7, count: 32).base64EncodedString()
+        let production: [String: Any] = ["SUFeedURL": "https://updates.synthetic.invalid/bark.xml", "SUPublicEDKey": key]
+        precondition(ChromiumUpdateConfiguration(info: production, isVerification: false, isRehearsal: false) != nil)
+        precondition(ChromiumUpdateConfiguration(info: production, isVerification: true, isRehearsal: false) == nil)
+        precondition(ChromiumUpdateConfiguration(info: production, isVerification: true, isRehearsal: true) == nil)
+        precondition(ChromiumUpdateConfiguration(info: ["SUFeedURL": production["SUFeedURL"]!],
+                                                 isVerification: false, isRehearsal: false) == nil)
+        precondition(ChromiumUpdateConfiguration(info: ["SUFeedURL": production["SUFeedURL"]!, "SUPublicEDKey": "invalid"],
+                                                 isVerification: false, isRehearsal: false) == nil)
+
+        let profile = UUID(), identity = "ee.qdo.bark.update-rehearsal." + UUID().uuidString
+        let root = "/private/tmp/bark-updates-test-" + UUID().uuidString
+        let signedMetadata = ["BarkUpdateRehearsal": ["Profile": profile.uuidString, "DataRoot": root]]
+        let rehearsal = try! ChromiumUpdateRehearsal.read(identifier: identity, info: signedMetadata)!
+        let isolation = (root: rehearsal.root, profile: rehearsal.profile)
+        let relaunched = try! ChromiumStartupConfiguration(arguments: ["Bark"], rehearsal: isolation)
+        precondition(relaunched.isVerification && relaunched.root.path == root && relaunched.profileID == profile)
+        precondition(relaunched.preferencesDomain.contains("verification."))
+        precondition(relaunched.engineArguments(executable: "Bark").contains("--use-mock-keychain"))
+        precondition((try? ChromiumStartupConfiguration(
+            arguments: ["Bark", "--barc-app-data-dir=/private/tmp/other", "--barc-app-profile=" + profile.uuidString],
+            rehearsal: isolation)) == nil)
+        precondition((try? ChromiumUpdateRehearsal.read(identifier: identity, info: [:])) == nil)
+        precondition((try? ChromiumUpdateRehearsal.read(identifier: "ee.qdo.bark", info: signedMetadata)) == nil)
+
+        let path = ChromiumUpdateConfiguration.rehearsalFeedPath
+        let valid = "http://127.0.0.1:43210" + path
+        for (feed, automatic, expected) in [(valid, false, true), (valid, true, false),
+            ("http://localhost:43210" + path, false, false), ("http://127.0.0.1" + path, false, false),
+            (valid + "?override=anything", false, false), ("http://127.0.0.1:43210/other.xml", false, false)] {
+            let info: [String: Any] = ["SUFeedURL": feed, "SUPublicEDKey": key, "SUEnableAutomaticChecks": automatic]
+            precondition((ChromiumUpdateConfiguration(info: info, isVerification: true, isRehearsal: true) != nil) == expected)
+            precondition(ChromiumUpdateConfiguration(info: info, isVerification: false, isRehearsal: false) == nil)
+        }
+    }
+
 }

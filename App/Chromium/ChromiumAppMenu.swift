@@ -9,7 +9,7 @@ final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
         case about, settings, importBrowser, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
         case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
-        case nextSpace, previousSpace, manageExtensions
+        case nextSpace, previousSpace, manageExtensions, checkForUpdates
     }
 
     // Values from the pinned chrome/app/chrome_command_ids.h.
@@ -49,7 +49,7 @@ final class ChromiumAppMenu: NSObject {
 
     private var toolbarTitle: String { isToolbarShown() ? "Hide Toolbar" : "Show Toolbar" }
 
-    func install(in main: NSMenu) {
+    func install(in main: NSMenu, showsUpdater: Bool = false) {
         guard let view = main.item(withTag: Tag.viewMenu)?.submenu else { return }
         // Chromium looks these menus up by tag at runtime, so they stay in the menu, hidden.
         let menus = [Tag.bookmarksMenu, Tag.profilesMenu, Tag.tabMenu].compactMap { main.item(withTag: $0) }
@@ -88,6 +88,11 @@ final class ChromiumAppMenu: NSObject {
             routedItems[route.command] = item
         }
         routedItems[.importBrowser]?.title = "Import from Another Browser…"
+        if showsUpdater, let app = main.item(withTag: Tag.appMenu)?.submenu,
+           !app.items.contains(where: { $0.representedObject as? Command == .checkForUpdates }) {
+            let index = app.item(withTag: Tag.about).map { app.index(of: $0) + 1 } ?? 0
+            app.insertItem(make("Check for Updates…", .checkForUpdates), at: index)
+        }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
         let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
                          ("Toggle AI Assistant", .toggleAIAssistant),

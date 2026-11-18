@@ -22,7 +22,8 @@ struct ChromiumStartupConfiguration {
         isVerification ? "ee.qdo.nook.chromium-verification.aiProvider." + rootDigest : "ee.qdo.nook.chromium.aiProvider"
     }
 
-    init(arguments: [String], applicationSupportDirectory: URL? = nil) throws {
+    init(arguments: [String], applicationSupportDirectory: URL? = nil,
+         rehearsal: (root: String, profile: UUID)? = nil) throws {
         func value(_ name: String) throws -> String? {
             let supplied = arguments.prefix { $0 != "--" }.filter { $0 == name || $0.hasPrefix(name + "=") }
             guard supplied.count <= 1 else { throw StartupError.invalidConfiguration }
@@ -44,7 +45,14 @@ struct ChromiumStartupConfiguration {
         if let backend = try value("--bark-window"), backend != "host" {
             throw StartupError.invalidConfiguration
         }
-        let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
+        let suppliedPath = try value("--barc-app-data-dir"), suppliedHint = try value("--barc-app-profile")
+        if let rehearsal, suppliedPath != nil || suppliedHint != nil {
+            guard suppliedPath == rehearsal.root,
+                  suppliedHint.flatMap(UUID.init(uuidString:)) == rehearsal.profile else {
+                throw StartupError.invalidConfiguration
+            }
+        }
+        let path = rehearsal?.root ?? suppliedPath, hint = rehearsal?.profile.uuidString ?? suppliedHint
         if path != nil || hint != nil {
             guard let path, path.hasPrefix("/private/tmp/"), let id = hint.flatMap(UUID.init(uuidString:)) else {
                 throw StartupError.invalidConfiguration

@@ -35,6 +35,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let mcpManager = MCPManager()
     private var aiService: AIService?
     private var appMenu: ChromiumAppMenu?
+    private let updater: ChromiumAppUpdater?
     private var mouseButtons: ChromiumMouseButtons?
     private let spaceFiles = ChromiumSpaceFiles()
     private let registry = WindowRegistry()
@@ -42,10 +43,12 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var ready: (@MainActor () -> Void)?
     private var opened: (@MainActor (Int32?) -> Void)?
 
-    private init(bridge: BarcBridge, engineMain: @escaping BarcEngineMain, configuration: ChromiumStartupConfiguration) {
+    private init(bridge: BarcBridge, engineMain: @escaping BarcEngineMain,
+                 configuration: ChromiumStartupConfiguration, updater: ChromiumAppUpdater?) {
         self.bridge = bridge
         self.engineMain = engineMain
         self.configuration = configuration
+        self.updater = updater
         catalog = ChromiumWindowCatalog(bridge: bridge)
         profileDeletion = ChromiumProfileDeletion(bridge: bridge)
         downloads = ChromiumDownloads(bridge: bridge)
@@ -65,9 +68,22 @@ final class ChromiumApplication: ChromiumStartupBridge {
     // Entered only after stock main initialized allocator, loaded framework and checked its table.
     static func run(bridge: BarcBridge, engineMain: @escaping BarcEngineMain, arguments: [String]) -> Int32 {
         do {
-            let config = try ChromiumStartupConfiguration(arguments: arguments)
+            let bundle = Bundle.main
+            let info = bundle.infoDictionary ?? [:]
+            let rehearsal = try ChromiumUpdateRehearsal.read(identifier: bundle.bundleIdentifier, info: info)
+            let config = try ChromiumStartupConfiguration(arguments: arguments,
+                rehearsal: rehearsal.map { (root: $0.root, profile: $0.profile) })
+            let update = ChromiumUpdateConfiguration(info: info, isVerification: config.isVerification,
+                                                     isRehearsal: rehearsal != nil)
+            let signedUpdater = update.flatMap { update in
+                ChromiumAppUpdater.isSigned(bundle) ? ChromiumAppUpdater(configuration: update, bundle: bundle) : nil
+            }
+            if rehearsal != nil, signedUpdater == nil {
+                throw ChromiumStartupConfiguration.StartupError.invalidConfiguration
+            }
             try config.prepare()
-            let app = ChromiumApplication(bridge: bridge, engineMain: engineMain, configuration: config)
+            let app = ChromiumApplication(bridge: bridge, engineMain: engineMain,
+                                          configuration: config, updater: signedUpdater)
             let startup = ChromiumStartup(bridge: app, profile: config.profileID) { message in
                 fputs(message + "\n", stderr)
             }
@@ -344,16 +360,19 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
-            let appMenu = ChromiumAppMenu(isOffered: { [weak manager, weak pageHost] command in
+            let appMenu = ChromiumAppMenu(isOffered: { [weak self, weak manager, weak pageHost] command in
+                if command == .checkForUpdates { return self?.acceptsWindows == true && self?.updater?.canCheckForUpdates == true }
                 if command == .resizeSplitPanes { return pageHost?.splitResizeRoot(in: NSApp.keyWindow) != nil }
                 return command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
                     chromium: true, privateWindow: manager?.windowRegistry?.activeWindow?.isIncognito == true)
             }, isToolbarShown: { [weak manager] in
                 manager?.nookSettings?.topBarAddressView == true
-            }) { [weak manager, weak shortcuts, weak pageHost] command in
+            }) { [weak self, weak manager, weak shortcuts, weak pageHost] command in
                 guard let manager, let shortcuts else { return }
                 switch command {
                 case .about: NSApp.orderFrontStandardAboutPanel(nil)
+                case .checkForUpdates:
+                    if self?.acceptsWindows == true { self?.updater?.checkForUpdates() }
                 case .settings: manager.openSettings(tab: .general)
                 case .importBrowser: manager.showImportDialog()
                 case .quit: manager.showQuitDialog()
@@ -374,7 +393,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 case .manageExtensions: manager.manageExtensions()
                 }
             }
-            if let mainMenu = NSApp.mainMenu { appMenu.install(in: mainMenu) }
+            if let mainMenu = NSApp.mainMenu { appMenu.install(in: mainMenu, showsUpdater: updater != nil) }
             self.appMenu = appMenu
             let menuShortcuts: [ChromiumAppMenu.Command: ShortcutAction] = [
                 .quit: .closeBrowser, .newTab: .newTab, .focusAddress: .focusAddressBar, .closeTab: .closeTab,
@@ -568,6 +587,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
               let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
         admission?.reflectInitialActivation(row)
         didPresentInitialWindow = true
+        updater?.start()
         if let manager = browserManager { spaceFiles.ready { [weak manager] in manager?.importSpaceFile(at: $0) } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
             guard let self, self.acceptsWindows else { return }
