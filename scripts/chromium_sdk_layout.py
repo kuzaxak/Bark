@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 # Licensed under GPL-3.0. See LICENSE.
-"""Locations shared by SDK publication, staging, and contributor checks."""
+"""Bark SDK locations and filesystem operations shared by producers and consumers."""
 
 import argparse
+import ctypes
+import os
 from pathlib import Path
 import platform
+import shutil
+import stat
 import subprocess
 import sys
 
@@ -12,6 +16,31 @@ GN_CPU = {"x86_64": "x64", "arm64": "arm64"}
 ARCHITECTURES = tuple(GN_CPU)
 SLICE = "macos-arm64_x86_64"
 XCFRAMEWORK = "BarkEngine.xcframework"
+
+
+def directory_id(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISDIR(info.st_mode):
+        raise ValueError(f"Expected a real SDK directory: {path}")
+    return [info.st_dev, info.st_ino]
+
+
+def swap(left, right):
+    rename = ctypes.CDLL(None, use_errno=True).renamex_np
+    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+    if rename(os.fsencode(left), os.fsencode(right), 0x00000002):  # RENAME_SWAP
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error), right)
+
+
+def remove_work(path):
+    # Sealed SDKs need writable directories for unlink, including on recovery.
+    for directory, _, _ in os.walk(path):
+        os.chmod(directory, os.stat(directory).st_mode | stat.S_IWUSR)
+    shutil.rmtree(path)
 
 
 def native_architecture():

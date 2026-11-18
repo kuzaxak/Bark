@@ -2,32 +2,21 @@
 # Licensed under GPL-3.0. See LICENSE.
 """Serialize preparation and recover an interrupted local SDK publication."""
 
-import ctypes
 import fcntl
 import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import stat
 import subprocess
 import sys
 from tempfile import mkdtemp
 from uuid import UUID, uuid4
 
-from chromium_sdk_layout import ARCHITECTURES, artifact_directory, headers_directory, pin_file, read_pin
+from chromium_sdk_layout import (ARCHITECTURES, artifact_directory, directory_id, headers_directory,
+                                 pin_file, read_pin, remove_work, swap)
 
 HEADERS = ("barc_bridge_api.h", "barc_public_headers_sha256.h")
-
-
-def directory_id(path):
-    try:
-        info = path.lstat()
-    except FileNotFoundError:
-        return None
-    if not stat.S_ISDIR(info.st_mode):
-        raise ValueError(f"Expected a real SDK directory: {path}")
-    return [info.st_dev, info.st_ino]
 
 
 def file_digest(path):
@@ -71,21 +60,6 @@ def tree_layout(engine):
             stat.S_IFMT(mode), mode & 0o111
         )
     return entries
-
-
-def swap(left, right):
-    rename = ctypes.CDLL(None, use_errno=True).renamex_np
-    rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-    if rename(os.fsencode(left), os.fsencode(right), 0x00000002):  # RENAME_SWAP
-        error = ctypes.get_errno()
-        raise OSError(error, os.strerror(error), right)
-
-
-def remove_work(path):
-    # Sealed SDKs need writable directories for unlink, including on recovery.
-    for directory, _, _ in os.walk(path):
-        os.chmod(directory, os.stat(directory).st_mode | stat.S_IWUSR)
-    shutil.rmtree(path)
 
 
 def write_atomic(work, target, content):

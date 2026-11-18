@@ -1237,6 +1237,8 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     wrong_helper = arm_helper(work, 'stage-arm-helper')
     refused('stage-helper-arch', 'an ARM64 helper within an Intel engine with a matching manifest',
             'must be exactly x86_64 and thin:', lambda a, e, p: add_helper(e / FRAMEWORK, wrong_helper))
+    refused('stage-helper-mode', 'a renderer with intact bytes but no execute permission',
+            'missing owner execute permission:', lambda a, e, p: add_helper(e / FRAMEWORK, shim).chmod(0o444))
 
     def external_helper(a, e, p):
         helper = add_helper(e / FRAMEWORK, wrong_helper)
@@ -1327,6 +1329,34 @@ def archive_transport_cases(fixture, artifact, contributor):
         check('archive installation retains framework aliases and executable bits',
               (cache / FRAMEWORK / 'Resources').readlink() == (artifact / FRAMEWORK / 'Resources').readlink()
               and (cache / executable).stat().st_mode & 0o777 == 0o544)
+        old_inode = cache.stat().st_ino
+        install = contributor['install_engine']
+        install(artifact, 'arm64')
+        check('installing over an intact pin reuses the sealed cache', cache.stat().st_ino == old_inode)
+        cached_current = cache / FRAMEWORK / 'Versions/Current'
+        cached_current.parent.chmod(0o755)
+        cached_current.unlink()
+        interrupted = cache.parent / '.bark-installing'
+        current.unlink()
+        try:
+            try:
+                install(artifact, 'arm64')
+            except subprocess.CalledProcessError:
+                check('a failed repair preserves the prior cache and removes the rejected copy',
+                      cache.stat().st_ino == old_inode and not interrupted.exists())
+            else:
+                check('a failed repair preserves the prior cache and removes the rejected copy', False)
+        finally:
+            current.symlink_to(version)
+        interrupted.mkdir()
+        (interrupted / 'partial').touch()
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            repairs = [pool.submit(install, artifact, 'arm64') for _ in range(2)]
+            for repair in repairs:
+                repair.result()
+        check('concurrent installs replace a damaged cache and retire interrupted staging',
+              cache.stat().st_ino != old_inode and cached_current.readlink() == version
+              and not interrupted.exists() and not cache.stat().st_mode & 0o222)
         export(cache, second, 'arm64')
         check('a transferred SDK reproduces the same archive', first.read_bytes() == second.read_bytes())
         try:

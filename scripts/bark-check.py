@@ -4,8 +4,6 @@
 
 import argparse
 from contextlib import contextmanager
-import ctypes
-import errno
 import fcntl
 import filecmp
 import gzip
@@ -32,7 +30,8 @@ from uuid import uuid4
 sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chromium_sdk_layout import ARCHITECTURES, local_engine, native_architecture, read_pin
+from chromium_sdk_layout import (ARCHITECTURES, directory_id, local_engine, native_architecture,
+                                 read_pin, remove_work, swap)
 from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
 
 REPO = Path(__file__).resolve().parents[1]
@@ -91,32 +90,53 @@ def check_official_engine(engine, architecture):
     print(f"Verified official Bark SDK provenance at {engine}", flush=True)
 
 
+def verify_engine(engine, architecture, require_official):
+    run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", engine)
+    if require_official:
+        check_official_engine(engine, architecture)
+
+
 def install_engine(engine, architecture, require_official=False):
     destination = cached_engine(architecture)
-    if not destination.is_dir():
-        cache = destination.parent.parent
-        cache.mkdir(parents=True, exist_ok=True)
-        with TemporaryDirectory(dir=cache) as stage:
-            copy = Path(stage) / "Engine"
-            run("/usr/bin/ditto", engine, copy)
-            # The tar data filter deliberately restores owner write permission.
-            run("/bin/chmod", "-R", "-P", "a-w", copy)
-            run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", copy)
-            if require_official:
-                check_official_engine(copy, architecture)
+    directory = destination.parent
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        # A killed install can leave a partial copy or the old tree from a
+        # successful swap in this pin's private staging directory.
+        slot = directory / ".bark-installing"
+        if engine.resolve().is_relative_to(directory.resolve() / slot.name):
+            raise ValueError(f"Choose an SDK source outside the installer's temporary directory: {slot}")
+        if directory_id(slot) is not None:
+            remove_work(slot)
+        if directory_id(destination) is not None:
             try:
-                # Keep the read-only SDK intact and publish its writable parent.
-                Path(stage).rename(destination.parent)
-            except OSError as error:
-                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                verify_engine(destination, architecture, require_official)
+            except (subprocess.CalledProcessError, ValueError):
+                if engine.resolve() == destination.resolve():
                     raise
-    run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", destination)
-    if require_official:
-        check_official_engine(destination, architecture)
-    # Repair installations copied by earlier versions from unpacked tar files.
-    if destination.stat().st_mode & 0o222 or any(
-            not path.is_symlink() and path.stat().st_mode & 0o222 for path in destination.rglob("*")):
-        run("/bin/chmod", "-R", "-P", "a-w", destination)
+                print(f"Repairing incomplete cached SDK at {destination}", flush=True)
+            else:
+                # Older archive installations could leave writable entries.
+                if destination.stat().st_mode & 0o222 or any(
+                        not path.is_symlink() and path.stat().st_mode & 0o222 for path in destination.rglob("*")):
+                    run("/bin/chmod", "-R", "-P", "a-w", destination)
+                print(f"Installed pinned SDK at {destination}")
+                return
+        slot.mkdir(mode=0o700)
+        try:
+            run("/usr/bin/ditto", engine, slot)
+            run("/bin/chmod", "-R", "-P", "a-w", slot)
+            verify_engine(slot, architecture, require_official)
+            # macOS can exchange sealed sibling directories. Moving a sealed
+            # directory across parents requires write access to the directory.
+            destination.mkdir(exist_ok=True)
+            swap(slot, destination)
+        finally:
+            remove_work(slot)
+    finally:
+        os.close(lock)
     print(f"Installed pinned SDK at {destination}")
 
 
@@ -124,7 +144,7 @@ def install_engine(engine, architecture, require_official=False):
 def pinned_engine(source, working, architecture, require_official=False):
     installed = cached_engine(architecture)
     if not source:
-        source = str(installed if installed.is_dir() else local_engine(PACKAGE, architecture))
+        source = str(installed if (installed / "SHA256SUMS").is_file() else local_engine(PACKAGE, architecture))
         if not Path(source).is_dir():
             raise ValueError("The pinned SDK is missing. Install it with bark-check.py engine --install "
                              "--engine PATH, or build it using Runtime/Chromium/README.md.")
@@ -144,9 +164,7 @@ def pinned_engine(source, working, architecture, require_official=False):
             package.extractall(unpacked, filter="data")
         path = unpacked if (unpacked / "SHA256SUMS").is_file() else unpacked / "Engine"
     path = path.resolve(strict=True)
-    run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", path)
-    if require_official:
-        check_official_engine(path, architecture)
+    verify_engine(path, architecture, require_official)
     yield path
 
 
@@ -428,11 +446,7 @@ def install_local_build(app, output, bundle_id="ee.qdo.bark"):
         processes = subprocess.check_output(["/bin/ps", "-axo", "comm="], text=True)
         if any(path.strip().startswith(str(output) + "/") for path in processes.splitlines()):
             raise ValueError(f"Quit the running copy before rebuilding {output}")
-        rename = ctypes.CDLL(None, use_errno=True).renamex_np
-        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
-        if rename(os.fsencode(app), os.fsencode(output), 0x00000002):  # RENAME_SWAP on macOS
-            error = ctypes.get_errno()
-            raise OSError(error, os.strerror(error), output)
+        swap(app, output)
     finally:
         os.close(parent)
 
@@ -527,7 +541,7 @@ def main():
                     if args.command == "build" else None)
     if launching and architecture != native:
         parser.error(f"Launching signed Bark requires the native {native} runtime.")
-    with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
+    with TemporaryDirectory(prefix="bark-check-", dir="/private/tmp") as work:
         working = Path(work)
         require_official = getattr(args, "require_official", False)
         with pinned_engine(args.engine, working, architecture, require_official) as engine:

@@ -5,6 +5,7 @@
 import argparse
 from pathlib import Path
 import plistlib
+import stat
 import subprocess
 import sys
 
@@ -17,18 +18,22 @@ MACH_O = {
 }
 
 
-def image_magic(path):
+def image_header(path):
     with path.open("rb") as handle:
-        return handle.read(4)
+        return handle.read(16)
 
 
-def check_image(path, architecture, magic):
+def check_image(path, architecture, header):
     result = subprocess.run(
         ["/usr/bin/lipo", "-archs", path], capture_output=True, text=True, check=False
     )
     archs = result.stdout.strip() if result.returncode == 0 else "unreadable"
-    if magic != THIN_64 or archs != architecture:
+    if header[:4] != THIN_64 or archs != architecture:
         raise ValueError(f"Engine Mach-O must be exactly {architecture} and thin: {path} (found {archs})")
+    # MH_EXECUTE images are launched as processes. Their bytes can match
+    # SHA256SUMS even when an archive has lost the owner's execute bit.
+    if int.from_bytes(header[12:16], "little") == 2 and not path.stat().st_mode & stat.S_IXUSR:
+        raise ValueError(f"Mach-O executable is missing owner execute permission: {path}")
 
 
 def check_framework(framework, architecture, engine_info=None):
@@ -52,7 +57,7 @@ def check_framework(framework, architecture, engine_info=None):
     image = versioned / executable
     if not image.is_file() or image.is_symlink() or versioned.is_symlink() or current.parent.is_symlink():
         raise ValueError(f"Missing versioned engine executable: {image}")
-    check_image(image, architecture, image_magic(image))
+    check_image(image, architecture, image_header(image))
     for entry in (executable, "Resources", "Libraries", "Helpers"):
         target = versioned / entry
         if entry not in (executable, "Resources") and not target.exists():
@@ -71,9 +76,9 @@ def check_framework(framework, architecture, engine_info=None):
             continue
         if not path.is_file():
             continue
-        magic = image_magic(path)
-        if path != image and magic in MACH_O:
-            check_image(path, architecture, magic)
+        header = image_header(path)
+        if path != image and header[:4] in MACH_O:
+            check_image(path, architecture, header)
 
 
 def main():
@@ -86,7 +91,7 @@ def main():
     try:
         architecture = args.arch or native_architecture()
         if args.image:
-            check_image(args.path, architecture, image_magic(args.path))
+            check_image(args.path, architecture, image_header(args.path))
         else:
             check_framework(args.path, architecture, args.engine_info)
     except (OSError, ValueError) as error:
