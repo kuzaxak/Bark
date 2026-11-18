@@ -106,18 +106,23 @@ bash "$barc_repo/scripts/publish-chromium-engine.sh" --arch "$arch" --require-of
 present. The shared SDK headers must still match the other architecture’s
 pinned headers. Check the resulting metadata change before adopting the pin.
 
-To hand off a candidate privately, send the exact source revision, the generated
-pin, the verified SDK archive and a locally signed copy of the app. Run these
-commands from `$barc_repo` with `BARK_SIGN_IDENTITY` set to a local Developer ID
-Application identity.
+For a private handoff, commit the published bridge header, generated header
+digest and architecture pin together on the local qualification branch. This
+lets a receiver reproduce the app when a bridge change also changes the
+generated header. Run the commands from `$barc_repo` with `BARK_SIGN_IDENTITY`
+set to a local Developer ID Application identity.
 
 ```fish
-set -l handoff (mktemp -d /private/tmp/bark-official-handoff.XXXXXXXX)
 set -l headers (python3 scripts/chromium_sdk_layout.py headers Packages/BarkEngine "$arch")
+set -l metadata "$headers/barc_bridge_api.h" "$headers/barc_public_headers_sha256.h" "$headers/engine-artifact-$arch.sha256"
+git add -- $metadata
+git diff --cached --quiet -- $metadata; or git commit --only -m "Pin the $arch SDK for native qualification" -- $metadata
+
+set -l handoff (mktemp -d /private/tmp/bark-official-handoff.XXXXXXXX)
 set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
 set -l archive "$handoff/BarkSDK-$arch-$pin.tar.gz"
-cp "$headers/engine-artifact-$arch.sha256" "$handoff/"
-git rev-parse HEAD > "$handoff/source-revision"
+set -l revision (git rev-parse HEAD)
+git archive --format=tar.gz --output="$handoff/Bark-source-$revision.tar.gz" "$revision"
 env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py engine --arch "$arch" --require-official \
     --archive "$archive"
 python3 scripts/bark-check.py build --arch "$arch" --require-official --engine "$archive" \
@@ -125,12 +130,14 @@ python3 scripts/bark-check.py build --arch "$arch" --require-official --engine "
 ditto -c -k --keepParent "$handoff/Bark.app" "$handoff/Bark-$arch.zip"
 ```
 
-On the receiving native Mac, check out that revision, review and place the
-generated pin beside the matching SDK headers, then verify and install the
-archive with `bark-check.py engine --arch "$arch" --require-official --install
---engine "$archive"`. Unpack the signed app and run `bark-check.py verify` and
-the native smoke and guarded walks against that app. The candidate workflow
-still requires a committed pin and independent release approval.
+Give the receiver the source tarball, SDK archive and signed app zip. On the
+receiving native Mac, extract the source tarball into an empty directory or
+check out the revision recorded in its filename. From that source root, install
+the SDK with `python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$archive"`.
+Unpack the signed app and compare it against the installed SDK with
+`python3 scripts/bark-check.py verify --arch "$arch" --require-official /path/to/Bark.app`.
+Run the native smoke and guarded walks against that app. Release preparation
+uses the approved revision of the qualification metadata.
 
 This checkout holds Chromium's downloaded sources and incremental compiler output.
 Keeping it outside the application worktree lets you clear the app's `build/`
