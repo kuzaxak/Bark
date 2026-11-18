@@ -10,6 +10,7 @@
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/extension_view_host.h"
 #include "chrome/browser/extensions/extension_view_host_factory.h"
@@ -410,33 +411,48 @@ void BarkExclusiveAccessContext::DestroyAnyExclusiveAccessBubble() {
   bubble_destruction_task_.reset();
 }
 
-bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
-                              const extensions::Extension& extension,
-                              ShowPopupCallback callback) {
+namespace {
+
+BarkWindowHost* ActionHost(BrowserWindowInterface& browser,
+                           content::WebContents* contents) {
   auto* client = BarkBrowserWindow::FromBrowser(&browser);
   auto* host = client ? client->host() : nullptr;
   if (!host || host->closing() || browser.IsDeleteScheduled() ||
-      !client->IsActive() || !client->IsVisible()) {
-    return false;
+      !client->IsActive() || !client->IsVisible() || !contents ||
+      contents != browser.GetTabStripModel()->GetActiveWebContents() ||
+      contents->GetBrowserContext() != browser.GetProfile()) {
+    return nullptr;
   }
 
+  return host->IsPageMounted(contents) ? host : nullptr;
+}
+
+const extensions::Extension* EnabledActionExtension(
+    Profile* profile,
+    const std::string& extension_id) {
+  const auto* registry = extensions::ExtensionRegistry::Get(profile);
+  if (!registry || (profile->IsOffTheRecord() &&
+                    !extensions::util::IsIncognitoEnabled(extension_id,
+                                                          profile))) {
+    return nullptr;
+  }
+  return registry->enabled_extensions().GetByID(extension_id);
+}
+
+}  // namespace
+
+bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
+                              const extensions::Extension& extension,
+                              ShowPopupCallback callback) {
   auto* contents = browser.GetTabStripModel()->GetActiveWebContents();
-  NSView* root = host->root_view().GetNativeNSView();
-  NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
-  if (!root || !page || ![page isDescendantOf:root] ||
-      page.isHiddenOrHasHiddenAncestor) {
+  auto* host = ActionHost(browser, contents);
+  if (!host) {
     return false;
   }
 
   auto* profile = browser.GetProfile();
-  const auto* registry = extensions::ExtensionRegistry::Get(profile);
-  const auto* installed = registry
-                              ? registry->enabled_extensions().GetByID(
-                                    extension.id())
-                              : nullptr;
-  if (!installed || (profile->IsOffTheRecord() &&
-                     !extensions::util::IsIncognitoEnabled(extension.id(),
-                                                           profile))) {
+  const auto* installed = EnabledActionExtension(profile, extension.id());
+  if (!installed) {
     return false;
   }
   auto* action = extensions::ExtensionActionManager::Get(profile)
@@ -447,9 +463,11 @@ bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
     return false;
   }
 
+  auto owner = browser.GetWeakPtr();
+  auto page = contents->GetWeakPtr();
   auto popup = extensions::ExtensionViewHostFactory::CreatePopupHost(
       *installed, action->GetPopupUrl(tab_id), &browser);
-  if (!popup) {
+  if (!popup || !owner || !page || ActionHost(*owner, page.get()) != host) {
     return false;
   }
   ExtensionPopup::ShowPopup(
@@ -457,6 +475,35 @@ bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
       views::BubbleBorder::TOP_RIGHT, PopupShowAction::kShow,
       std::move(callback));
   return true;
+}
+
+bool RunExtensionActionForPage(BrowserWindowInterface& browser,
+                               content::WebContents& contents,
+                               const std::string& extension_id) {
+  if (!ActionHost(browser, &contents)) {
+    return false;
+  }
+  auto* profile = browser.GetProfile();
+  scoped_refptr<const extensions::Extension> extension(
+      EnabledActionExtension(profile, extension_id));
+  auto* runner = extensions::ExtensionActionRunner::GetForWebContents(&contents);
+  if (!extension || !runner ||
+      !extensions::ExtensionActionManager::Get(profile)->GetExtensionAction(
+          *extension)) {
+    return false;
+  }
+
+  auto owner = browser.GetWeakPtr();
+  auto page = contents.GetWeakPtr();
+  switch (runner->RunAction(extension.get(), /*grant_tab_permissions=*/true)) {
+    case extensions::ExtensionAction::ShowAction::kNone:
+      return true;
+    case extensions::ExtensionAction::ShowAction::kShowPopup:
+      return owner && page && ActionHost(*owner, page.get()) &&
+             OpenExtensionActionPopup(*owner, *extension, ShowPopupCallback());
+    case extensions::ExtensionAction::ShowAction::kToggleSidePanel:
+      return false;
+  }
 }
 
 // BarkToolbarButtonProvider ---------------------------------------------------

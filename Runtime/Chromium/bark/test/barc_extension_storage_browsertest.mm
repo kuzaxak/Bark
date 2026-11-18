@@ -25,6 +25,7 @@
 #include "chrome/browser/extensions/chrome_test_extension_loader.h"
 #include "chrome/browser/extensions/extension_install_prompt.h"
 #include "chrome/browser/extensions/extension_install_prompt_show_params.h"
+#include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
@@ -33,9 +34,11 @@
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/sessions/core/session_id.h"
+#include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/web_contents.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
+#include "content/public/test/test_devtools_protocol_client.h"
 #include "extensions/browser/api/management/management_api_constants.h"
 #include "extensions/browser/api/messaging/message_service.h"
 #include "extensions/browser/api/messaging/native_message_host.h"
@@ -174,6 +177,21 @@ class BarcExtensionStorageBrowserTest : public InProcessBrowserTest {
               barc_window_profile_uuid(personal_id, uuid.data(), uuid.size()));
     EXPECT_STREQ(kPersonal, uuid.data());
   }
+  void MountPage(int32_t id) {
+    auto* host = bark::BarkWindowHost::ForBrowser(Window(id));
+    ASSERT_TRUE(host);
+    NSView* root = host->root_view().GetNativeNSView();
+    ASSERT_NE(nil, root);
+    NSView* page = (__bridge NSView*)barc_tab_native_view(
+        id, barc_window_tab_at(id, 0));
+    ASSERT_NE(nil, page);
+    for (NSView* mounted in root.subviews) {
+      [mounted removeFromSuperview];
+    }
+    page.frame = root.bounds;
+    [root addSubview:page];
+  }
+
   void InstallBoth(extensions::TestExtensionDir& dir,
                    Profile* work,
                    Profile* personal,
@@ -220,18 +238,7 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   auto* host = bark::BarkWindowHost::ForBrowser(work);
   ASSERT_TRUE(host);
   ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
-  auto mount = [host](int32_t id) {
-    NSView* root = host->root_view().GetNativeNSView();
-    for (NSView* mounted in root.subviews) {
-      [mounted removeFromSuperview];
-    }
-    NSView* page = (__bridge NSView*)barc_tab_native_view(
-        id, barc_window_tab_at(id, 0));
-    ASSERT_NE(nil, page);
-    page.frame = root.bounds;
-    [root addSubview:page];
-  };
-  ASSERT_NO_FATAL_FAILURE(mount(work_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(work_id));
   ASSERT_TRUE(base::test::RunUntil([&] {
     return host->widget()->IsActive() && work->IsSelectedForNativeWindow();
   }));
@@ -283,7 +290,7 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   EXPECT_TRUE(personal_hosts->GetHostsForExtension(extension->id()).empty());
 
   ASSERT_EQ(1, barc_window_select(personal_id));
-  ASSERT_NO_FATAL_FAILURE(mount(personal_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(personal_id));
   EXPECT_EQ(host->widget(), WidgetFor(personal));
   EXPECT_TRUE(personal->IsSelectedForNativeWindow());
   EXPECT_FALSE(work->IsSelectedForNativeWindow());
@@ -293,6 +300,72 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   EXPECT_NE(base::Value("shown"), invoke(work, work_id));
   EXPECT_TRUE(work_hosts->GetHostsForExtension(extension->id()).empty());
   EXPECT_TRUE(personal_hosts->GetHostsForExtension(extension->id()).empty());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
+                       DevToolsActionTargetsSelectedProfileAndPage) {
+  int32_t work_id = 0;
+  int32_t personal_id = 0;
+  ASSERT_NO_FATAL_FAILURE(OpenProfiles(work_id, personal_id));
+  auto* work = Window(work_id);
+  auto* personal = Window(personal_id);
+  ASSERT_NO_FATAL_FAILURE(MountPage(work_id));
+
+  extensions::TestExtensionDir dir;
+  dir.WriteManifest(R"({"manifest_version":3,"name":"Bark action click probe",
+    "version":"1.0","background":{"service_worker":"worker.js"},"action":{}})");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), R"(
+    chrome.action.onClicked.addListener(tab => {
+      chrome.test.sendMessage('clicked:' + tab.windowId + ':' + tab.id);
+    });
+  )");
+  extensions::ChromeTestExtensionLoader work_loader(work->GetProfile());
+  auto extension = work_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  extensions::ChromeTestExtensionLoader personal_loader(personal->GetProfile());
+  auto other = personal_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(other);
+  ASSERT_EQ(extension->id(), other->id());
+
+  content::TestDevToolsProtocolClient cdp;
+  cdp.AttachToBrowserTarget();
+  auto run_action = [&](BrowserWindowInterface* owner) {
+    auto* page = owner->GetTabStripModel()->GetActiveWebContents();
+    auto target = content::DevToolsAgentHost::GetOrCreateForTab(page);
+    base::DictValue params;
+    params.Set("id", extension->id());
+    params.Set("targetId", target->GetId());
+    cdp.SendCommandSync("Extensions.triggerAction", std::move(params));
+  };
+  const auto click_message = [](BrowserWindowInterface* owner) {
+    const auto* page = owner->GetTabStripModel()->GetActiveWebContents();
+    return "clicked:" + std::to_string(owner->GetSessionID().id()) + ":" +
+           std::to_string(extensions::ExtensionTabUtil::GetTabId(page));
+  };
+  ExtensionTestMessageListener clicked(click_message(work));
+  clicked.set_browser_context(work->GetProfile());
+  clicked.set_extension_id(extension->id());
+  ASSERT_TRUE(base::test::RunUntil([&] { return WidgetFor(work)->IsActive(); }));
+  run_action(work);
+  ASSERT_FALSE(cdp.error());
+  EXPECT_TRUE(clicked.WaitUntilSatisfied());
+
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(personal_id));
+  run_action(work);
+  ASSERT_TRUE(cdp.error());
+  const auto* error_message = cdp.error()->FindString("message");
+  ASSERT_TRUE(error_message);
+  EXPECT_EQ("Action unavailable for the selected page.", *error_message);
+  EXPECT_EQ(WidgetFor(work), WidgetFor(personal));
+
+  ExtensionTestMessageListener personal_clicked(click_message(personal));
+  personal_clicked.set_browser_context(personal->GetProfile());
+  personal_clicked.set_extension_id(extension->id());
+  run_action(personal);
+  ASSERT_FALSE(cdp.error());
+  EXPECT_TRUE(personal_clicked.WaitUntilSatisfied());
+  cdp.DetachProtocolClient();
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,

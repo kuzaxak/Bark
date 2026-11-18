@@ -26,20 +26,25 @@ diff --git a/chrome/browser/extensions/api/extension_action/extension_action_api
    ExtensionAction* extension_action =
        ExtensionActionManager::Get(browser_context)
            ->GetExtensionAction(extension);
-@@ -140,6 +147,16 @@
+@@ -140,6 +147,13 @@
                          const Extension& extension,
                          std::string* error,
                          ShowPopupCallback callback) {
 +#if BUILDFLAG(IS_MAC)
-+  if (!BrowserWindow::FromBrowser(&browser)->AsBrowserView()) {
-+    if (bark::OpenExtensionActionPopup(browser, extension,
-+                                       std::move(callback))) {
-+      return true;
-+    }
-+    *error = kFailedToOpenPopupGenericError;
-+    return false;
++  if (bark::OpenExtensionActionPopup(browser, extension, std::move(callback))) {
++    return true;
 +  }
-+#endif
++  *error = kFailedToOpenPopupGenericError;
++  return false;
++#else
  #if !BUILDFLAG(IS_ANDROID)
    // On Android, the extension toolbar exists if and only if ExtensionsContainer
    // exists, so the check below is sufficient.
+@@ -164,6 +178,7 @@
+   }
+
+   return true;
++#endif  // BUILDFLAG(IS_MAC)
+ }
+
+ }  // namespace

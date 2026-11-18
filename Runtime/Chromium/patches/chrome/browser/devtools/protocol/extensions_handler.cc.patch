@@ -1,0 +1,47 @@
+diff --git a/chrome/browser/devtools/protocol/extensions_handler.cc b/chrome/browser/devtools/protocol/extensions_handler.cc
+--- a/chrome/browser/devtools/protocol/extensions_handler.cc
++++ b/chrome/browser/devtools/protocol/extensions_handler.cc
+@@ -27,6 +27,10 @@
+ #include "extensions/browser/unpacked_installer.h"
+ #include "extensions/common/manifest.h"
+
++#if BUILDFLAG(IS_MAC)
++#include "bark/browser/ui/bark_extension_popup.h"
++#endif
++
+ namespace {
+
+ // Gets an extension with ID `id`. If no extension is found, returns a
+@@ -188,16 +192,30 @@
+   BrowserWindowInterface* browser =
+       extensions::browser_window_util::GetBrowserForTabContents(*web_contents);
+
++  if (!browser) {
++    return protocol::Response::ServerError("Tab has no browser window.");
++  }
++
++#if BUILDFLAG(IS_MAC)
++  return bark::RunExtensionActionForPage(*browser, *web_contents, extension_id)
++             ? protocol::DispatchResponse::Success()
++             : protocol::Response::ServerError(
++                   "Action unavailable for the selected page.");
++#else
+   ExtensionsContainer* extension_container =
+       ExtensionsContainer::From(*browser);
+-
+   ToolbarActionViewModel* extension_model =
+-      extension_container->GetActionForId(extension_id);
++      extension_container ? extension_container->GetActionForId(extension_id)
++                          : nullptr;
++  if (!extension_model) {
++    return protocol::Response::ServerError("Extension action unavailable.");
++  }
+
+   extension_model->ExecuteUserAction(
+       ExtensionActionViewModel::InvocationSource::kCdp);
+
+   return protocol::DispatchResponse::Success();
++#endif  // BUILDFLAG(IS_MAC)
+ }
+
+ ExtensionsHandler::ExtensionsHandler(protocol::UberDispatcher* dispatcher,
