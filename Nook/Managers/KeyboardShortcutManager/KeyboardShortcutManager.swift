@@ -538,6 +538,25 @@ class KeyboardShortcutManager {
     private func executeAction(_ action: ShortcutAction) {
         guard let browserManager = browserManager else { return }
         let isRepeat = lastShortcutWasRepeat
+        if browserManager.tabs.profileEngine == .chromium, action == .addSplitView {
+            guard !isRepeat, let window = windowRegistry?.activeWindow,
+                  let keyWindow = CommandWindow.key, window.window === keyWindow else { return }
+            let source = window.selectedItemID
+            let peeks = browserManager.peekManager
+            let peekID = peeks.page(in: window)?.itemID
+            DispatchQueue.main.async { [weak self, weak window] in
+                guard let self, let window, self.windowRegistry?.activeWindow === window,
+                      self.windowRegistry?.windows[window.id] === window, window.selectedItemID == source,
+                      let keyWindow = CommandWindow.key, window.window === keyWindow,
+                      peeks.page(in: window)?.itemID == peekID else { return }
+                if peekID != nil {
+                    peeks.moveToSplitView(in: window)
+                } else {
+                    browserManager.splitManager.addSplitView(in: window)
+                }
+            }
+            return
+        }
         if browserManager.tabs.profileEngine == .chromium, let command = action.pageCommand {
             guard let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key, window.window === keyWindow,
                   let page = browserManager.frontPage(in: window),

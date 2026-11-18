@@ -158,8 +158,10 @@ final class PeekManager {
     }
 
     func canEnterSplitView(in window: BrowserWindowState) -> Bool {
-        guard let browserManager else { return false }
-        return browserManager.splitManager.offersAddSplitView(in: window)
+        guard let browserManager, let tab = window.selectedItemID,
+              let entry = slots.page(tab: tab, window: window.id),
+              browserManager.splitManager.offersAddSplitView(in: window) else { return false }
+        return !entry.native || isCurrent(entry)
     }
 
     func tabClosed(_ itemID: UUID) {

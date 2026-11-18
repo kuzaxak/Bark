@@ -12,7 +12,7 @@ enum Check {
         }
         precondition(offeredButIdle.isEmpty, "offered on Chromium but not run: \(offeredButIdle)")
 
-        for action in [ShortcutAction.newWindow, .closeWindow, .toggleFullScreen, .capturePortrait, .toggleBookmark, .toggleTopBarAddressView] {
+        for action in [ShortcutAction.newWindow, .closeWindow, .toggleFullScreen, .capturePortrait, .toggleBookmark, .toggleTopBarAddressView, .addSplitView] {
             let key = KeyCombination(key: "j", modifiers: [.command, .control])
             precondition(action.takesKeyInChromium(key), "\(action) must take its rebound key")
         }
@@ -91,6 +91,11 @@ enum Check {
                      "Every saved shortcut stays as the person set it: \(merged.filter { $0.key != openLibrary.lookupKey && customized[$0.key] != $0.value })")
         precondition(merged.values.filter { $0.action == .toggleBookmark }.map(\.keyCombination) == [bookmark],
                      "A rebound default is not added again on its old key")
+
+        let movePeekToSplit = KeyCombination(key: "j", modifiers: [.command, .control])
+        merged = KeyboardShortcut.addingMissingDefaults(to: saved(rebind(.addSplitView, to: movePeekToSplit)))
+        precondition(merged.values.filter { $0.action == .addSplitView }.map(\.keyCombination) == [movePeekToSplit],
+                     "Opening a Peek in Split View keeps the existing Add Split View shortcut")
 
         let taken = saved(rebind(.toggleBookmark, to: openLibrary))
         merged = KeyboardShortcut.addingMissingDefaults(to: taken)
