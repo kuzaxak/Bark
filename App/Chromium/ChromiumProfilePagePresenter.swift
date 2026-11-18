@@ -27,8 +27,7 @@ final class ChromiumProfilePagePresenter {
     private final class Page {
         let navigation: ChromiumPageNavigation
         var view: NSView?
-        var presenter: (any ChromiumWindowPresenter)?
-        var attemptedAttach = false
+        var presenter: ChromiumHostPresenter?
         let isRecovery: Bool
         init(navigation: ChromiumPageNavigation, isRecovery: Bool) { self.navigation = navigation; self.isRecovery = isRecovery }
     }
@@ -103,7 +102,9 @@ final class ChromiumProfilePagePresenter {
         let tab = bridge.window_tab_at(window, 0)
         guard tab > 0 else { finish(request, .failure(.presentationFailed)); return }
         guard !request.cancelled, request.canPresent() else {
-            if bridge.tab_copy_title(window, tab, nil, 0) > 0 { _ = bridge.window_close(window) }
+            if ownsSelection(window: window, tab: tab, profile: request.profile.id), ownsRoot(window, root: nil) {
+                _ = bridge.window_close(window)
+            }
             finish(request, .failure(.profileUnavailable)); return
         }
         do {
@@ -130,11 +131,12 @@ final class ChromiumProfilePagePresenter {
                 self.release(page, window: window, detachHeader: outcome != .ownerEnded)
                 if let request { self.finish(request, .failure(.presentationFailed)) }
             }
-            guard request.canPresent(), ownsPage(page, window: window) else {
+            guard request.canPresent(), ownsSelectedPage(page, window: window) else {
                 refuse(request, window: window, page: page); return
             }
-            page.attemptedAttach = true
-            let presenter = ChromiumWindowPresenters.make(bridge: bridge, client: window, sidebar: view)
+            guard let presenter = ChromiumHostPresenter(bridge: bridge, client: window, sidebar: view) else {
+                refuse(request, window: window, page: page); return
+            }
             page.presenter = presenter
             let attached = presenter.attachSidebar(to: window)
             guard attached, !request.cancelled, request.canPresent(), ownsControls(page, window: window),
@@ -159,38 +161,49 @@ final class ChromiumProfilePagePresenter {
         }
     }
 
-    private func ownsPage(_ page: Page, window: Int32) -> Bool {
-        pages[window] === page && !page.navigation.isClosed &&
-        page.navigation.nativeWindowID == window &&
-        profileID(window) == page.navigation.profileID &&
-        bridge.tab_copy_title(window, page.navigation.nativeTabID, nil, 0) > 0
+    private func ownsSelectedPage(_ page: Page, window: Int32) -> Bool {
+        guard pages[window] === page, !page.navigation.isClosed,
+              page.navigation.nativeWindowID == window, let profile = page.navigation.profileID else { return false }
+        return ownsSelection(window: window, tab: page.navigation.nativeTabID, profile: profile)
+    }
+
+    private func ownsSelection(window: Int32, tab: Int32, profile: UUID) -> Bool {
+        guard profileID(window) == profile, bridge.tab_copy_title(window, tab, nil, 0) > 0,
+              let row = bridge.windowState(window) else { return false }
+        return row.window == window && row.physical_group != 0 && row.selected_client == window && row.active_tab == tab
     }
 
     private func ownsControls(_ page: Page, window: Int32) -> Bool {
-        guard ownsPage(page, window: window) else { return false }
+        guard ownsSelectedPage(page, window: window) else { return false }
         return page.presenter?.ownsSidebar(window) == true
+    }
+
+    private func ownsRoot(_ window: Int32, root: ChromiumWindowRoot?) -> Bool {
+        bridge.window_native_shell_is_owned(window, root.map { Unmanaged.passUnretained($0).toOpaque() }) == 1
     }
 
     private func release(_ page: Page, window: Int32, detachHeader: Bool = true) {
         if pages[window] === page { pages.removeValue(forKey: window) }
         // Revoke controls before AppKit/native detachment callbacks can reenter.
         page.navigation.invalidate()
-        if detachHeader, page.navigation.nativeCloseOutcome != .ownerEnded {
-            _ = page.presenter?.detachSidebar(from: window)
+        if detachHeader, page.navigation.nativeCloseOutcome != .ownerEnded,
+           let view = page.view, page.presenter?.root.holdsSidebar(view) == true {
+            view.removeFromSuperview()
         }
     }
 
     private func refuse(_ request: Request, window: Int32, page: Page? = nil, tab: Int32? = nil) {
-        // Never close the old window after its page has moved or another header
-        // replaced this one. Reentrant attach may finish after transfer cleanup;
-        // compare-and-detach again to release only our own late attachment.
+        // Once root attachment starts, the exact installed controls must
+        // still own the selected tab before failure can close a window.
         if let page {
-            if ownsPage(page, window: window),
-               !page.attemptedAttach || ownsControls(page, window: window) || bridge.window_native_shell_is_owned(window, nil) == 1 {
+            if ownsSelectedPage(page, window: window),
+               ownsRoot(window, root: nil) || ownsControls(page, window: window) {
                 _ = bridge.window_close(window)
+            } else {
+                release(page, window: window)
             }
-            else { release(page, window: window) }
-        } else if let tab, profileID(window) == request.profile.id, bridge.tab_copy_title(window, tab, nil, 0) > 0 {
+        } else if let tab, ownsSelection(window: window, tab: tab, profile: request.profile.id),
+                  ownsRoot(window, root: nil) {
             _ = bridge.window_close(window)
         }
         finish(request, .failure(request.canPresent() ? .presentationFailed : .profileUnavailable))

@@ -1,3 +1,6 @@
+#if BARK_CATALOG_FRAMEWORK
+@testable import NookNativeShell
+#endif
 import AppKit
 import BarcChromium
 import SwiftUI
@@ -12,15 +15,14 @@ private enum Native {
     static var calls: [String] = []
     static var observers: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var token: UInt64 = 1
-    static var attachAccepted = true
     static var showAccepted = true
     static var onAttach: (() -> Void)?
     static var onShow: (() -> Void)?
-    static var headers: [Int32: NSView] = [:]
+    static var roots: [Int32: ChromiumWindowRoot] = [:]
     static var members: [Int32: Set<Int32>] = [:]
-    static var detachAttempts = 0
-    /// Windows that are Bark's own (`--bark-window=host`), and their tabs' page views.
-    static var hostWindows: Set<Int32> = []
+    static var activeTabs: [Int32: Int32] = [:]
+    /// Blank factory windows own inert AppKit views. Only unsupported hosts are opted out.
+    static var unsupportedWindows: Set<Int32> = []
     static var pageViews: [Int32: NSView] = [:]
 
     static var bridge: BarcBridge {
@@ -33,39 +35,39 @@ private enum Native {
         bridge.tab_copy_title = { window, tab, _, _ in MainActor.assumeIsolated {
             Native.members[window]?.contains(tab) == true ? 1 : 0
         } }
-        bridge.window_detach_native_shell_if_owned = { window, expected in MainActor.assumeIsolated {
-            Native.detachAttempts += 1
-            guard let current = Native.headers[window],
-                  Unmanaged.passUnretained(current).toOpaque() == expected else { return 0 }
-            Native.headers[window] = nil
-            Native.calls.append("detach")
+        bridge.window_tab_at = { window, _ in MainActor.assumeIsolated { Native.members[window]?.first ?? 0 } }
+        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated {
+            guard Native.members[window] != nil, !Native.unsupportedWindows.contains(window) else { return 0 }
+            return UInt64(window)
+        } }
+        bridge.window_host_unobserve = { _ in }
+        bridge.window_native_shell_is_owned = { window, expected in MainActor.assumeIsolated {
+            guard Native.members[window] != nil, !Native.unsupportedWindows.contains(window) else { return 0 }
+            return Native.roots[window].map { Unmanaged.passUnretained($0).toOpaque() } == expected ? 1 : 0
+        } }
+        bridge.window_set_root_view = { window, pointer in MainActor.assumeIsolated {
+            guard let pointer, Native.members[window] != nil else { return 0 }
+            let root = Unmanaged<ChromiumWindowRoot>.fromOpaque(pointer).takeUnretainedValue()
+            if let existing = Native.roots[window] { return existing === root ? 1 : 0 }
+            Native.calls.append("root")
+            Native.onAttach?()
+            guard Native.members[window]?.isEmpty == false, Native.roots[window] == nil else { return 0 }
+            Native.roots[window] = root
             return 1
         } }
-        bridge.window_native_shell_is_owned = { window, expected in MainActor.assumeIsolated {
-            guard Native.members[window] != nil else { return 0 }
-            guard let current = Native.headers[window] else { return expected == nil ? 1 : 0 }
-            return Unmanaged.passUnretained(current).toOpaque() == expected ? 1 : 0
-        } }
-        bridge.window_tab_at = { window, _ in MainActor.assumeIsolated { Native.members[window]?.first ?? 0 } }
-        bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
-        bridge.window_host_unobserve = { _ in }
-        bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
-        bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
-        bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
-            guard Native.hostWindows.contains(window), Native.members[window]?.contains(tab) == true else { return nil }
-            return Native.pageViews[tab].map { Unmanaged.passUnretained($0).toOpaque() }
-        } }
-        bridge.window_attach_native_shell = { window, pointer in MainActor.assumeIsolated {
-            guard let pointer else { preconditionFailure("Unconditional header detach is forbidden") }
-            if Native.hostWindows.contains(window) { Native.calls.append("attach refused"); return 0 }
-            if Native.attachAccepted { Native.headers[window] = Unmanaged<NSView>.fromOpaque(pointer).takeUnretainedValue() }
-            Native.calls.append("attach"); Native.onAttach?()
-            return Native.attachAccepted ? 1 : 0
-        } }
+        bridge.window_set_chrome = { _, _ in 1 }
+        bridge.tab_native_view = { window, tab in
+            let address: UInt = MainActor.assumeIsolated {
+                guard Native.members[window]?.contains(tab) == true, let view = Native.pageViews[tab] else { return 0 }
+                return UInt(bitPattern: Unmanaged.passUnretained(view).toOpaque())
+            }
+            return UnsafeMutableRawPointer(bitPattern: address)
+        }
         bridge.window_select = { _ in MainActor.assumeIsolated { Native.calls.append("select"); return 1 } }
         bridge.window_discovery_state = { window, output in MainActor.assumeIsolated {
             guard let output, Native.members[window] != nil else { return 0 }
             output.pointee.window = window; output.pointee.physical_group = UInt64(window); output.pointee.selected_client = window
+            output.pointee.active_tab = Native.activeTabs[window] ?? Native.members[window]?.first ?? 0
             return 1
         } }
         bridge.window_show = { _ in MainActor.assumeIsolated {
@@ -108,6 +110,7 @@ private enum Native {
         let callback = self.callback, context = self.context
         self.callback = nil; self.context = nil
         members[window] = [window * 10]
+        pageViews[window * 10] = NSView()
         callback?(BARC_PROFILE_OK, window, context)
     }
 
@@ -120,12 +123,20 @@ private enum Native {
         }
     }
 
+    static func controls(_ window: Int32) -> NSHostingView<ChromiumProfilePageView> {
+        guard let root = roots[window],
+              let header = root.subviews.lazy.compactMap({
+                  $0.subviews.first as? NSHostingView<ChromiumProfilePageView>
+              }).first else { preconditionFailure("Window \(window) has no profile controls") }
+        return header
+    }
+
     static func close(_ window: Int32, flags: UInt32 = 128) {
         for (token, observer) in observers.filter({ $0.value.2 == window }) {
             observer.0?(observer.1, token, 7, window, observer.3, nil, nil, 0, flags)
             observers[token] = nil // Native CLOSED already ended observation.
         }
-        if flags & 128 != 0 { headers[window] = nil }
+        if flags & 128 != 0 { roots[window] = nil; members[window] = nil; activeTabs[window] = nil }
     }
 }
 
@@ -154,32 +165,29 @@ private enum ProfileChecks {
             Native.opened(window)
             guard case .success = outcomes.removeLast() else { preconditionFailure() }
             precondition(presenter.ownsNativeWindow(window))
-            precondition(Native.calls == ["open:" + profile.id.uuidString, "attach", "select", "navigate:" + route.1, "show"])
+            precondition(Native.calls == ["open:" + profile.id.uuidString, "root", "select", "navigate:" + route.1, "show"])
+            let controls = Native.controls(window)
             Native.close(window, flags: 0)
             // A plain CLOSED reaches the presenter on a later main-actor turn.
             for _ in 0..<8 where presenter.ownsNativeWindow(window) { await Task.yield() }
             precondition(!presenter.ownsNativeWindow(window))
-            precondition(Native.calls.last == "detach")
+            precondition(controls.superview == nil)
         }
 
-        // In host mode the window's root view holds the controls and the page; Chromium is never
-        // asked to attach or detach a sidebar.
-        Native.hostWindows = [50]
-        let hostPage = NSView()
-        Native.pageViews = [500: hostPage]
+        // The root contains both the inert native page and its Swift controls.
         Native.calls = []
         presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
-        Native.opened(50)
+        Native.opened(51)
         guard case .success = outcomes.removeLast() else { preconditionFailure("A host window opens the profile page") }
-        precondition(Native.calls == ["open:" + profile.id.uuidString, "select", "navigate:chrome://extensions/", "show"], "\(Native.calls)")
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "root", "select", "navigate:chrome://extensions/", "show"], "\(Native.calls)")
+        let hostPage = Native.pageViews[510]!
         let hostRoot = sequence(first: hostPage as NSView, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
-        precondition(hostRoot != nil && presenter.ownsNativeWindow(50), "The root shows the profile page")
+        precondition(hostRoot === Native.roots[51] && presenter.ownsNativeWindow(51), "The root shows the profile page")
         precondition(hostRoot!.subviews.contains { $0.subviews.first is NSHostingView<ChromiumProfilePageView> },
                      "The root holds the page's controls")
-        Native.close(50, flags: 0)
-        for _ in 0..<8 where presenter.ownsNativeWindow(50) { await Task.yield() }
-        precondition(!presenter.ownsNativeWindow(50) && !Native.calls.contains("detach"), "Closing needs no detach")
-        Native.hostWindows = []; Native.pageViews = [:]
+        Native.close(51, flags: 0)
+        for _ in 0..<8 where presenter.ownsNativeWindow(51) { await Task.yield() }
+        precondition(!presenter.ownsNativeWindow(51))
 
         // A kept/no-space identity is presented directly, never under the active space.
         let kept = TabTree().profiles(keeping: [KeptProfile(profile)]).first!
@@ -206,23 +214,22 @@ private enum ProfileChecks {
         precondition(Native.calls.count == 1)
         Native.profile = profile.id
 
-        Native.calls = []; Native.attachAccepted = false
+        Native.calls = []; Native.unsupportedWindows = [22]
         presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
         Native.opened(22)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(!Native.calls.contains("show") && Native.calls.last == "close")
-        precondition(Native.observers.values.contains { $0.2 == 22 })
-        Native.close(22); Native.attachAccepted = true
+        precondition(Native.calls == ["open:" + profile.id.uuidString])
+        precondition(!presenter.ownsNativeWindow(22) && Native.observers.isEmpty)
+        Native.close(22); Native.unsupportedWindows = []
 
         // An owner ending reentrantly during attachment cannot be shown/admitted.
-        let beforeOwnerEndDetaches = Native.detachAttempts
         Native.calls = []; Native.onAttach = { Native.close(23) }
         presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
         Native.opened(23); Native.onAttach = nil
         precondition(outcomes.count == 1)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(!Native.calls.contains("show"))
-        precondition(Native.detachAttempts == beforeOwnerEndDetaches)
+        precondition(Native.roots[23] == nil)
 
         Native.calls = []; available = true
         Native.onAttach = { available = false }
@@ -260,7 +267,7 @@ private enum ProfileChecks {
         presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
         Native.opened(40)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
-        let header = Native.headers[40] as! NSHostingView<ChromiumProfilePageView>
+        let header = Native.controls(40)
         let controls = header.rootView
         let late = Native.observers.first!.value
         let lateToken = Native.observers.first!.key
@@ -268,7 +275,7 @@ private enum ProfileChecks {
         precondition(Native.calls.last == "back:40:400")
         Native.calls = []
         Native.transfer(40, to: 41)
-        precondition(Native.calls == ["detach"] && Native.observers.isEmpty && Native.headers[40] == nil)
+        precondition(Native.calls.isEmpty && Native.observers.isEmpty && header.superview == nil)
         precondition(Native.members[41]?.contains(400) == true)
         Native.calls = []
         controls.goBack(); controls.goForward(); controls.reload(); controls.close()
@@ -282,45 +289,44 @@ private enum ProfileChecks {
         presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
         Native.opened(48)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
-        let queuedHeader = Native.headers[48] as! NSHostingView<ChromiumProfilePageView>
+        let queuedHeader = Native.controls(48)
         Native.members[48]?.remove(480)
         Native.members[49, default: []].insert(480)
         Native.calls = []
         queuedHeader.rootView.close(); queuedHeader.rootView.reload()
         precondition(Native.calls.isEmpty)
         Native.transfer(48, to: 49)
-        precondition(Native.calls == ["detach"] && Native.members[49]?.contains(480) == true)
+        precondition(Native.calls.isEmpty && queuedHeader.superview == nil && Native.members[49]?.contains(480) == true)
 
         // Exact expected-view comparison preserves a replacement product header.
         presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
         Native.opened(42)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
-        let replacedHeader = Native.headers[42] as! NSHostingView<ChromiumProfilePageView>
+        let replacedHeader = Native.controls(42)
         let replacementControls = replacedHeader.rootView
         let productHeader = NSView()
-        Native.headers[42] = productHeader
+        Native.roots[42]!.setSidebar(productHeader)
         Native.calls = []
         replacementControls.close(); replacementControls.reload()
         replacementControls.goBack(); replacementControls.goForward()
-        precondition(Native.calls.isEmpty && Native.headers[42] === productHeader)
+        precondition(Native.calls.isEmpty && Native.roots[42]!.holdsSidebar(productHeader))
         Native.transfer(42, to: 43)
-        precondition(Native.headers[42] === productHeader && Native.calls.isEmpty)
+        precondition(Native.roots[42]!.holdsSidebar(productHeader) && Native.calls.isEmpty)
         withExtendedLifetime(replacedHeader) {}
 
         // A reentrant replacement can win even when attachment returns zero.
         // Attempting attachment is enough to require exact header ownership
         // before any refusal cleanup may close a window.
-        let rejectedReplacement = NSView()
+        let rejectedReplacement = ChromiumWindowRoot(bridge: Native.bridge, client: 50) { _, _, _ in nil }
         Native.calls = []
         Native.onAttach = {
-            Native.headers[50] = rejectedReplacement
-            Native.attachAccepted = false
+            Native.roots[50] = rejectedReplacement
         }
         presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
-        Native.opened(50); Native.onAttach = nil; Native.attachAccepted = true
+        Native.opened(50); Native.onAttach = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(Native.headers[50] === rejectedReplacement)
-        precondition(Native.calls == ["open:" + profile.id.uuidString, "attach"] && Native.observers.isEmpty)
+        precondition(Native.roots[50] === rejectedReplacement)
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "root"] && Native.observers.isEmpty)
 
         // Transfers inside pending native callbacks fail exactly once without
         // closing/showing/navigating the old owner or following the live tab.
@@ -329,15 +335,28 @@ private enum ProfileChecks {
         presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
         Native.opened(44); Native.onAttach = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(Native.calls == ["open:" + profile.id.uuidString, "attach", "detach"])
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "root"])
         precondition(Native.members[45]?.contains(440) == true && Native.observers.isEmpty)
         Native.calls = []
         Native.onShow = { Native.transfer(46, to: 47) }
         presenter.open(profile, destination: .privacy, canPresent: { true }) { outcomes.append($0) }
         Native.opened(46); Native.onShow = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(Native.calls.suffix(2) == ["show", "detach"] && !Native.calls.contains("close"))
+        precondition(Native.calls.last == "show" && !Native.calls.contains("close"))
         precondition(Native.members[47]?.contains(460) == true && outcomes.isEmpty && Native.observers.isEmpty)
+        // A reentrant Show may replace the selection while the original tab stays in the window.
+        // Refusal can revoke our controls without closing the newly selected tab's window.
+        Native.calls = []
+        Native.onShow = {
+            Native.members[52]?.insert(521)
+            Native.activeTabs[52] = 521
+        }
+        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        Native.opened(52); Native.onShow = nil
+        guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
+        precondition(Native.calls.last == "show" && Native.activeTabs[52] == 521)
+        precondition(!presenter.ownsNativeWindow(52) && Native.observers.isEmpty)
+
         // Kept-only recovery returns only its admitted, still-owned native handle.
         var recovery: [Result<Int32, ProfilePageOpenError>] = []
         var settingsOpened = 0
@@ -350,10 +369,10 @@ private enum ProfileChecks {
         precondition(presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 700))
         precondition(!presenter.ownsRecoveryWindow(70, profile: UUID(), activeTab: 700))
         precondition(!presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 701))
-        let recoveryHeader = Native.headers[70] as! NSHostingView<ChromiumProfilePageView>
+        let recoveryHeader = Native.controls(70)
         recoveryHeader.rootView.openRecovery()
         precondition(settingsOpened == 1)
-        Native.headers[70] = NSView()
+        Native.roots[70]!.setSidebar(NSView())
         recoveryHeader.rootView.openRecovery()
         precondition(settingsOpened == 1 && !presenter.ownsRecoveryWindow(70, profile: kept.id, activeTab: 700))
         Native.transfer(70, to: 71)
@@ -376,7 +395,7 @@ private enum ProfileChecks {
         presenter.cancelPending()
         guard case .failure(.presentationUnavailable) = recovery.removeLast() else { preconditionFailure() }
         Native.opened(74)
-        precondition(recovery.isEmpty && Native.calls.suffix(1) == ["close"] && !Native.calls.contains("attach"))
+        precondition(recovery.isEmpty && Native.calls.suffix(1) == ["close"] && !Native.calls.contains("root"))
         precondition(!presenter.ownsRecoveryWindow(74, profile: kept.id, activeTab: 740))
         // Cancellation can reenter from native attachment; completion is
         // cleared first, so unwinding the old request cannot publish success.
@@ -415,7 +434,7 @@ private enum ProfileChecks {
             Native.callback = nil; Native.context = nil
         }
         presenter.cancelPending()
-        precondition(recovery.count == 2 && !Native.calls.contains("attach"))
+        precondition(recovery.count == 2 && !Native.calls.contains("root"))
         for result in recovery {
             guard case .failure(.presentationUnavailable) = result else { preconditionFailure() }
         }
