@@ -234,6 +234,16 @@ The SDK publisher checks the scripting definition, policy manifest, copyright an
 localized permission descriptions against the engine. Helper icons and the engine's
 internal assets stay inside the pinned framework.
 
+Bark’s macOS resource build applies its product name to translated browser labels
+before Chromium packs them into the framework. Given a prepared checkout, compare
+the generated labels with a staged or signed app, including its installed locales
+and grammatical-gender variants. Use the output directory for the app's architecture.
+
+```fish
+set -l src "$engine_checkout/src"
+python3 Tests/ChromiumWebUIBranding/check.py "$src" "$src/out/Barc-x64/gen/bark/app" --app build/Bark.app
+```
+
 The outer bundle and native shell inherit the project's `MARKETING_VERSION` and
 `CURRENT_PROJECT_VERSION`. A release can set its own app version and Sparkle build
 number. `BarkChromiumVersion` records the independent Chromium version and staging

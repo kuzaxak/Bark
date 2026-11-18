@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Check generated Mac branded_strings packs without launching a browser."""
+"""Check generated Bark labels and optionally the locale packs in a built app."""
 
 import argparse
 from pathlib import Path
@@ -26,7 +26,34 @@ CASE_LABELS = {
 }
 
 
-def check(grit_source, output, header_path):
+def check_installed(resources, generated, data_pack):
+    localizations = {path.parent.stem for path in resources.glob('*.lproj/InfoPlist.strings')}
+    if not localizations:
+        raise ValueError(f'No app localizations in {resources}')
+    framework = resources.parent / 'Frameworks/Bark Framework.framework/Versions/Current/Resources'
+    expected = {}
+    for file in generated:
+        locale, _, gender = file.stem.removeprefix('branded_strings_').partition('_')
+        name = 'en' if locale == 'en-US' else locale.replace('-', '_')
+        if name in localizations:
+            directory = f'{name}_{gender}' if gender else name
+            expected[framework / f'{directory}.lproj/locale.pak'] = file
+    names = {path.parent.stem for path in expected}
+    if missing := localizations - names:
+        raise ValueError(f'No generated browser strings for installed locales {sorted(missing)}')
+    installed = set(framework.glob('*.lproj/locale.pak'))
+    if expected.keys() != installed:
+        raise ValueError(f'Pack inventory differs. Missing {sorted(expected.keys() - installed)}. '
+                         f'Unexpected {sorted(installed - expected.keys())}.')
+    for path, source in expected.items():
+        final = data_pack.ReadDataPack(path).resources
+        for key, value in data_pack.ReadDataPack(source).resources.items():
+            if final.get(key) != value:
+                raise ValueError(f'{path.parent.name} resource {key} differs from {source.name}')
+    print(f'Checked the generated browser strings in all {len(installed)} installed locale packs')
+
+
+def check(grit_source, output, header_path, app):
     sys.path.insert(0, str(grit_source / 'tools/grit'))
     from grit.format import data_pack
 
@@ -58,6 +85,8 @@ def check(grit_source, output, header_path):
     if failures:
         raise SystemExit('\n'.join(failures))
     print(f'Verified localized Bark product labels and Chromium V8 attribution in {len(files)} packs')
+    if app is not None:
+        check_installed(app / 'Contents/Resources', files, data_pack)
 
 
 if __name__ == '__main__':
@@ -65,6 +94,7 @@ if __name__ == '__main__':
     parser.add_argument('grit_source', type=Path, help='Prepared Chromium source checkout')
     parser.add_argument('output', type=Path, help='Generated Bark locale pack directory')
     parser.add_argument('--header', type=Path, help='Optional explicit generated branded_strings.h')
+    parser.add_argument('--app', type=Path, help='Also check every packaged product string in this Bark.app')
     args = parser.parse_args()
     check(args.grit_source.resolve(), args.output.resolve(),
-          args.header or args.output.parents[1] / 'chrome/grit/branded_strings.h')
+          args.header or args.output.parents[1] / 'chrome/grit/branded_strings.h', args.app)
