@@ -249,7 +249,7 @@ def prepare_feed(server, feed, key):
 def exercise(check, installed, newer, root, versions, arch, server, output, *, engine):
     import ApplicationServices as ax
     import Quartz
-    from AppKit import NSRunningApplication
+    from AppKit import NSRunningApplication, NSWorkspace
 
     old, new = versions
     binary = installed / "Contents/MacOS/Bark"
@@ -259,6 +259,7 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
     root_digest = hashlib.sha256(os.fsencode(root)).hexdigest()
     domain = "ee.qdo.nook.chromium-verification." + root_digest
     lines = []
+    handoff = []
 
     def record(message):
         lines.append(message)
@@ -275,16 +276,20 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
         status, value = ax.AXUIElementCopyAttributeValue(element, attribute, None)
         return value if status == 0 else None
 
-    def find(roots, role, *names):
+    def accessibility_nodes(roots, max_depth=24):
         pending = [(root, 0) for root in roots]
         while pending:
             node, depth = pending.pop()
+            yield node
+            if depth < max_depth:
+                pending.extend((child, depth + 1) for child in value(node, "AXChildren") or [])
+
+    def find(roots, role, *names):
+        for node in accessibility_nodes(roots):
             if value(node, "AXRole") == role and any(
-                value(node, field) in names for field in ("AXTitle", "AXDescription", "AXValue")
+                value(node, field) in names for field in ("AXTitle", "AXDescription", "AXValue", "AXIdentifier")
             ):
                 return node
-            if depth < 24:
-                pending.extend((child, depth + 1) for child in value(node, "AXChildren") or [])
         return None
 
     def press(element):
@@ -395,18 +400,69 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                 wait_for("Sparkle did not download the valid archive",
                          lambda: server.saw(archive_path, start), proc, timeout=60)
 
+                handoff_started = time.monotonic()
+                next_sample = handoff_started
+                confirmations = set()
+
+                def note_handoff(event, **details):
+                    handoff.append({"elapsed_s": round(time.monotonic() - handoff_started, 2),
+                                    "event": event, **details})
+
                 def quit_for_install():
+                    nonlocal next_sample
                     if proc.poll() is not None:
+                        note_handoff("original-exit", status=proc.returncode)
                         return True
-                    # Sparkle owns extraction and relaunch after the user asks
-                    # to install. Observe that transition even if HID becomes
-                    # active, and wait for an idle, frontmost target to act.
-                    ready = find(value(app, "AXWindows") or [], "AXButton", "Install and Relaunch", "Quit")
-                    if ready is not None and value(ready, "AXEnabled") and idle_target(proc.pid):
-                        press(ready)
+                    now = time.monotonic()
+                    if now < next_sample:
+                        return False
+                    next_sample = now + .75
+                    roots = windows()
+                    available = [
+                        ("Install and Relaunch", find(roots, "AXButton", "SUStatusInstallAndRelaunch", "Install and Relaunch")),
+                        ("Quit", find(roots, "AXButton", "Quit")),
+                    ]
+                    enabled = [name for name, button in available if button is not None and value(button, "AXEnabled")]
+                    front = NSWorkspace.sharedWorkspace().frontmostApplication()
+                    dialogs = [window for window in roots if value(window, "AXTitle") != "Bark update fixture"]
+                    texts = []
+                    for node in accessibility_nodes(dialogs, max_depth=6):
+                        if value(node, "AXRole") == "AXStaticText":
+                            if text := value(node, "AXValue") or value(node, "AXTitle"):
+                                texts.append(str(text))
+                                if len(texts) == 12:
+                                    break
+                    status = {
+                        "windows": [str(value(window, "AXTitle") or "") for window in roots],
+                        "dialog_text": texts,
+                        "controls": {name: name in enabled for name, button in available if button is not None},
+                        "screen_owned": owns(),
+                        "console_available": console.available(),
+                        "console_idle": console.idle() >= 10,
+                        "candidate_frontmost": front is not None and front.processIdentifier() == proc.pid,
+                    }
+                    if not handoff or handoff[-1].get("status") != status:
+                        note_handoff("observation", status=status)
+                    # Sparkle owns extraction and relaunch. Only confirm an
+                    # offered action on the idle, frontmost candidate.
+                    for name, button in available:
+                        if name in enabled and name not in confirmations and idle_target(proc.pid):
+                            press(button)
+                            confirmations.add(name)
+                            note_handoff("confirmed", control=name)
+                            break
                     return False
 
-                wait_for("The installed app did not exit for Sparkle", quit_for_install, timeout=160)
+                note_handoff("valid-archive-requested", original_pid=proc.pid)
+                try:
+                    wait_for("The installed app did not exit for Sparkle", quit_for_install, timeout=160)
+                except RuntimeError:
+                    installed_version = None
+                    with contextlib.suppress(OSError, plistlib.InvalidFileException):
+                        installed_version = app_info(installed).get("CFBundleVersion")
+                    note_handoff("failed-before-cleanup", original_status=proc.poll(),
+                                 installed_version=installed_version)
+                    raise
                 if proc.returncode != 0:
                     raise RuntimeError(f"Original Bark exited with {proc.returncode}")
                 relaunch = wait_for("Sparkle did not relaunch the installed path", installed_app, timeout=80)
@@ -442,7 +498,10 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
     finally:
         server.shutdown()
         thread.join()
-        (output / "walk.json").write_text(json.dumps({"results": lines, "requests": server.requests}, indent=2) + "\n")
+        (output / "walk.json").write_text(json.dumps(
+            {"results": lines, "requests": server.requests, "bundle_id": bundle_id,
+             "sparkle_handoff": handoff}, indent=2
+        ) + "\n")
         subprocess.run([LSREGISTER, "-u", str(installed)], capture_output=True)
         for preference in (domain, "ee.qdo.nook.chromium-verification.aiProvider." + root_digest, bundle_id):
             subprocess.run(["/usr/bin/defaults", "delete", preference], capture_output=True)
