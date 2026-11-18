@@ -55,14 +55,21 @@ struct FolderSuggestionItem: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
-            SuggestionIcon(image: Image(systemName: "folder"))
-            SuggestionLines(title: folder.title, detail: folder.detail)
+            SuggestionIcon(image: Image(systemName: "folder")).accessibilityHidden(true)
+            SuggestionLines(title: folder.title, detail: folder.path, detailLineLimit: nil)
+                .fixedSize(horizontal: false, vertical: true)
+                .layoutPriority(1)
             Spacer()
-            if let icon = folder.spaceIcon { SpaceIcon(icon).foregroundStyle(.secondary) }
-            Text("Tab to search inside")
-                .font(NookDesign.Font.secondary)
-                .foregroundStyle(.secondary)
+            if let icon = folder.spaceIcon { SpaceIcon(icon).foregroundStyle(.secondary).accessibilityHidden(true) }
+            VStack(alignment: .trailing, spacing: 1) {
+                Text(folder.detail)
+                Text("Tab to search inside")
+            }
+            .fixedSize(horizontal: true, vertical: false)
+            .font(NookDesign.Font.secondary)
+            .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity)
+        .accessibilityElement(children: .combine)
     }
 }

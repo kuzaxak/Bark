@@ -15,7 +15,7 @@ import NookWeb
 public struct SpaceTab: View {
     let item: Item
     var menuContext: TabMenuContext = .sidebar
-    /// A tab with a trail of child tabs draws a chevron that collapses it, as a folder row does.
+    /// A tab with a trail of child tabs draws a chevron that collapses it.
     var hasChildren = false
 
     @State private var isHovering: Bool = false
@@ -48,7 +48,7 @@ public struct SpaceTab: View {
         self.hasChildren = hasChildren
     }
 
-    /// The folder row's chevron; clicking it collapses the trail without selecting the tab.
+    /// Clicking the chevron toggles the trail without selecting the tab.
     private var trailChevron: some View {
         let isOpen = tabs.isOpen(folder: item.id)
         return Button(action: {

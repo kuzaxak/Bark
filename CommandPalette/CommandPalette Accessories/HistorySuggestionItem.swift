@@ -60,6 +60,7 @@ struct SuggestionIcon: View {
 struct SuggestionLines: View {
     let title: String
     let detail: String
+    var detailLineLimit: Int? = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 1) {
@@ -71,7 +72,7 @@ struct SuggestionLines: View {
             Text(detail)
                 .font(NookDesign.Font.secondary)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                .lineLimit(detailLineLimit)
                 .truncationMode(.middle)
         }
     }

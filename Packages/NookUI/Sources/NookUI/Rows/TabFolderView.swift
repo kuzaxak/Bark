@@ -48,15 +48,10 @@ public struct TabFolderView: View {
             }
         }) {
             HStack(spacing: NookDesign.Tab.iconGap) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: NookDesign.Size.rowGlyph - 1, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(isOpen ? 90 : 0))
-                    .animation(NookDesign.Motion.standard, value: isOpen)
-
-                Image(systemName: liveSymbol ?? (isOpen ? "folder.fill" : "folder"))
-                    .font(.system(size: NookDesign.Size.spaceIcon, weight: .medium))
+                folderGlyph
+                    .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                     .foregroundStyle(tabs.space(spaceID)?.accentColor ?? .secondary)
+                    .accessibilityHidden(true)
 
                 if isRenaming {
                     TextField("", text: $draftName)
@@ -145,15 +140,31 @@ public struct TabFolderView: View {
         FolderContextMenu(itemID: item.id, onRename: startRenaming)
     }
 
+    @ViewBuilder
+    private var folderGlyph: some View {
+        if let liveSymbol {
+            Image(systemName: liveSymbol)
+                .font(.system(size: NookDesign.Size.spaceIcon, weight: .medium))
+        } else if isOpen {
+            OpenFolderGlyph()
+                .stroke(style: StrokeStyle(lineWidth: 1.2, lineCap: .round, lineJoin: .round))
+        } else {
+            Image(systemName: "folder")
+                .font(.system(size: NookDesign.Size.spaceIcon, weight: .medium))
+        }
+    }
+
     // MARK: - Live
 
     private var liveSymbol: String? {
         switch item.live {
         case nil: return nil
-        case .githubIssues?: return "smallcircle.filled.circle"
-        case .githubNotifications?: return "bell"
-        case .asanaTasks?: return "checkmark.circle"
-        case let source?: return source.feedURL != nil ? "dot.radiowaves.up.forward" : "arrow.triangle.pull"
+        case .githubIssues?: return isOpen ? "smallcircle.filled.circle.fill" : "smallcircle.filled.circle"
+        case .githubNotifications?: return isOpen ? "bell.fill" : "bell"
+        case .asanaTasks?: return isOpen ? "checkmark.circle.fill" : "checkmark.circle"
+        case let source?:
+            guard !isOpen else { return nil }
+            return source.feedURL != nil ? "dot.radiowaves.up.forward" : "arrow.triangle.pull"
         }
     }
 
@@ -188,5 +199,30 @@ public struct TabFolderView: View {
             tabs.rename(item.id, newName)
         }
         cancelRename()
+    }
+}
+
+/// SF Symbols provides a closed folder, so draw the open front and tab in the same-sized slot.
+private struct OpenFolderGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: rect.minX + rect.width * x / 16, y: rect.minY + rect.height * y / 16)
+        }
+
+        var path = Path()
+        path.move(to: point(1.5, 12.8))
+        path.addLine(to: point(1.5, 4))
+        path.addQuadCurve(to: point(2.5, 3), control: point(1.5, 3))
+        path.addLine(to: point(6, 3))
+        path.addLine(to: point(7.5, 4.5))
+        path.addLine(to: point(12, 4.5))
+        path.addQuadCurve(to: point(13, 5.5), control: point(13, 4.5))
+        path.addLine(to: point(13, 7))
+        path.move(to: point(1.5, 12.8))
+        path.addLine(to: point(3.7, 7))
+        path.addLine(to: point(15, 7))
+        path.addLine(to: point(12.8, 12.8))
+        path.closeSubpath()
+        return path
     }
 }

@@ -114,6 +114,8 @@ public class SearchManager {
         public let itemID: UUID
         public let title: String
         public let spaceIcon: String?
+        /// The location shown in the palette, including the owning profile when its name differs from the space.
+        public let path: String
         /// What it holds, e.g. "2 folders, 5 links".
         public let detail: String
     }
@@ -229,7 +231,14 @@ public class SearchManager {
             self.autofillHost = host
         }
 
-        let tabs = Array(searchTabsAndFolders(for: query).prefix(3))
+        let matches = searchTabsAndFolders(for: query)
+        // Keep exact folder destinations reachable when tab titles fill the first three rows.
+        let exactTitle = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        let namedFolders = matches.dropFirst(3).filter { row in
+            guard case .folder(let folder) = row.type else { return false }
+            return folder.title.localizedCaseInsensitiveCompare(exactTitle) == .orderedSame
+        }
+        let tabs = Array(matches.prefix(3)) + namedFolders
         // Paint what is already known for this keystroke, carrying each leg's last rows. The
         // palette puts its own row for the typed text above these.
         compose(tabs: tabs)
@@ -373,13 +382,31 @@ public class SearchManager {
         return TabMatch(itemID: item.id, title: title, url: url, favicon: favicon, spaceIcon: spaceIcon(of: item.id), detail: detail)
     }
 
-    @MainActor private func folderMatch(_ item: Item) -> FolderMatch {
-        let children = tabs?.children(of: .folder(itemID: item.id)) ?? []
+    @MainActor private func folderMatch(_ item: Item) -> FolderMatch? {
+        guard let tabs, let window else { return nil }
+        let tree = tabs.tree(tabs.owner(of: window))
+        guard let chain = tree.folderChain(of: item.id), let id = chain.section.spaceID,
+              let space = tree.space(id) else { return nil }
+        let section: String
+        switch chain.section {
+        case .pinned: section = "Pinned"
+        case .tabs: section = "Tabs"
+        case .favorites: section = "Favorites"
+        case .folder: return nil
+        }
+        var path = [space.name, section]
+        if let profile = tree.profile(ofSpace: id)?.name, !profile.isEmpty, profile != space.name {
+            path.insert(profile, at: 0)
+        }
+        path += chain.folders.reversed().compactMap { tree.item($0)?.displayTitle }
+        path.append(item.displayTitle)
+        let children = tree.children(of: .folder(itemID: item.id))
         let folders = children.filter(\.isFolder).count, links = children.count - folders
         var parts: [String] = []
         if folders > 0 { parts.append(folders == 1 ? "1 folder" : "\(folders) folders") }
         if links > 0 || folders == 0 { parts.append(links == 1 ? "1 link" : "\(links) links") }
-        return FolderMatch(itemID: item.id, title: item.displayTitle, spaceIcon: spaceIcon(of: item.id), detail: parts.joined(separator: ", "))
+        return FolderMatch(itemID: item.id, title: item.displayTitle, spaceIcon: spaceIcon(of: item.id),
+                           path: path.joined(separator: " › "), detail: parts.joined(separator: ", "))
     }
 
     /// The icon of the space holding `itemID`, when that is not the window's space.
@@ -407,8 +434,9 @@ public class SearchManager {
                 scored.append((SearchSuggestion(text: match.title, type: .tab(match), section: "Tabs"), score, index == 0, match.title.count))
             }
             for folder in tabs.folders(inSpace: spaceID).map(\.item) {
-                guard let score = PaletteText.matchScore(query: query, title: folder.displayTitle, detail: nil) else { continue }
-                scored.append((SearchSuggestion(text: folder.displayTitle, type: .folder(folderMatch(folder)), section: "Tabs"), score, index == 0, folder.displayTitle.count))
+                guard let score = PaletteText.matchScore(query: query, title: folder.displayTitle, detail: nil),
+                      let match = folderMatch(folder) else { continue }
+                scored.append((SearchSuggestion(text: folder.displayTitle, type: .folder(match), section: "Tabs"), score, index == 0, folder.displayTitle.count))
             }
         }
         return scored.sorted { lhs, rhs in
@@ -443,7 +471,9 @@ public class SearchManager {
         let parent = Parent.folder(itemID: folderID)
         if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let children = tabs.children(of: parent)
-            let folders = children.filter(\.isFolder).map { SearchSuggestion(text: $0.displayTitle, type: .folder(folderMatch($0))) }
+            let folders = children.filter(\.isFolder).compactMap(folderMatch).map {
+                SearchSuggestion(text: $0.title, type: .folder($0))
+            }
             let links = children.filter { !$0.isFolder }.compactMap { tabMatch($0) }.map { SearchSuggestion(text: $0.title, type: .tab($0)) }
             return Array((folders + links).prefix(Self.scopedLimit))
         }

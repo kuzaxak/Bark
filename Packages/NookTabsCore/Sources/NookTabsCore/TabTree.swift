@@ -53,7 +53,7 @@ public struct TabTree: Codable, Equatable, Sendable {
     /// Ids of the folders and parent tabs from the item's parent up to the section, nearest first.
     /// nil on a cycle or a missing parent. Follows tombstoned records so scope is known for deleted
     /// items too.
-    func folderChain(of id: UUID) -> (folders: [UUID], section: Parent)? {
+    public func folderChain(of id: UUID) -> (folders: [UUID], section: Parent)? {
         var folders: [UUID] = []
         var visited: Set<UUID> = [id]
         guard var parent = items[id]?.parent else { return nil }
