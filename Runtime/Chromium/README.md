@@ -290,7 +290,9 @@ migration work and are excluded from current host-only qualification claims.
 
 The updated host fixtures cover enterprise capture on selected and mounted
 pages, detached-pane focus, extension sheets and logical-owner lifetime,
-private command admission, and root lifetime. Check their results against the
+private command admission, and root lifetime. The application launch fixtures mount
+the selected page in a Bark root and exercise early URLs, Dock reopen, and
+commands received while no window is visible. Check their results against the
 marked host-only binary. Pre-cutover runs qualify only the older runtime.
 
 These regressions encode transfer/draft/scroll/history, profile binding,
