@@ -623,24 +623,26 @@ or fill a changed target. Enabled pages discover fields even when Pawl was locke
 or unavailable at startup, so refocusing after recovery does not require toggling
 the setting. Disabling Pawl removes native field observation.
 
-Password saving consumes Chromium's validated password-manager submission,
-retaining its origin and profile through login redirects. A connected Pawl
-consumer uses the existing native save card; disabled, disconnected or refused
-consumers leave Chromium's save UI available. A newer submission retires the old
-offer even when it falls back to Chromium. Owner retirement cancels offers and
-unsent saves. A user-approved save already dispatched to Pawl may finish there;
-its late reply cannot dismiss a newer offer. Ordinary card interaction and Pawl
-authentication still require product qualification.
+Password saving uses Chromium's validated submission and keeps its origin and
+profile through login redirects. The native save card belongs to the selected
+page mounted in the original Bark window. Switching to another profile cancels
+its pending offer. Switching back requires a fresh submission. A user-approved
+save already dispatched to Pawl may finish there. The app matches each reply
+to its original offer before updating the card.
 
-The Pawl passkey hooks add an explicit Pawl choice beside Chromium's stock
-authenticators. The initial provider supports ES256 creation and assertions with
-a nonempty credential allow-list; Chromium retains RP, origin, script-policy and
-response validation. The current document/profile/owner owns consent and reply.
-Retirement cancels queued vault requests before socket dispatch; authentication
-already sent may finish but cannot complete a retired Chromium request.
-Conditional account discovery, empty allow-lists and Pawl-aware platform-availability
-queries remain incomplete. Synthetic response tests do not qualify real Pawl
-authentication, hardware keys or server-side signature verification.
+The WebAuthn chooser offers Pawl alongside Chromium's other authenticators.
+The Intel browser tests exercise ES256 creation and assertions through
+`navigator.credentials` with a synthetic Pawl provider. A modal assertion
+accepts a credential allow-list or an empty list. With an empty list, the
+provider supplies the selected credential's user handle. Chromium validates
+the relying party and origin and produces the client data. Bark checks the
+current document, profile, selected page and physical window before delivering
+consent or a reply. Switching profiles cancels an outstanding request.
+
+Platform-authenticator availability reflects Pawl readiness for the requesting
+frame. Disconnected and guest contexts retain Chromium's ordinary availability
+behavior. Conditional account discovery, real Pawl authentication, hardware
+security keys and server-side signature verification still need qualification.
 
 Opt-in history text capture uses the current native page's text snapshot and the
 existing search index. It coalesces captures and rejects late results after a
