@@ -77,8 +77,15 @@ jobs:
           work="$(mktemp -d "$RUNNER_TEMP/bark-candidate.XXXXXXXX")"
           printf 'BARK_RELEASE_WORK=%s\n' "$work" >> "$GITHUB_ENV"
 
-      - name: Verify and install the pinned architecture SDK
-        run: python3 scripts/bark-check.py engine --arch "$BARK_ARCH" --require-official --install
+      - name: Verify, install and archive the pinned architecture SDK
+        id: sdk
+        run: |
+          set -euo pipefail
+          pin="$(python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$BARK_ARCH")"
+          name="BarkSDK-$BARK_ARCH-$pin"
+          python3 scripts/bark-check.py engine --arch "$BARK_ARCH" --require-official \
+            --install --archive "$BARK_RELEASE_WORK/$name.tar.gz"
+          printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
 
       - name: Build and verify the signed candidate
         run: |
@@ -108,6 +115,15 @@ jobs:
           path: |
             ${{ env.BARK_RELEASE_WORK }}/artifacts/Bark-*.dmg
             ${{ env.BARK_RELEASE_WORK }}/artifacts/bark-macos-*.xml
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Upload the SDK used to build this candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ${{ steps.sdk.outputs.name }}
+          path: ${{ env.BARK_RELEASE_WORK }}/${{ steps.sdk.outputs.name }}.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 14

@@ -91,6 +91,21 @@ python3 scripts/bark-check.py engine --arch x86_64 --install --engine ~/Download
 
 The export checks the finished archive against the checkout before creating the requested file. Add `--require-official` on both machines to require an optimized engine with verified build provenance.
 
+A successful **Prepare Bark Candidate** run makes its verified SDK available as
+a separate Actions artifact for 14 days. When a matching official candidate
+exists, use its run ID and the checkout’s pin to obtain the SDK. Enter the
+numeric run ID when prompted.
+
+```fish
+read -P 'Candidate run ID: ' run_id
+set -l arch (python3 scripts/chromium_sdk_layout.py native-arch)
+set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
+set -l sdk "BarkSDK-$arch-$pin"
+set -l download (mktemp -d)
+gh run download "$run_id" --repo kuzaxak/Nook --name "$sdk" --dir "$download"
+python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$download/$sdk.tar.gz"
+```
+
 The SDK headers build on Intel and Apple Silicon. Engine install and export, build,
 verification, and packaging default to the Mac’s native hardware architecture, even
 when Python runs under Rosetta. Use `--arch x86_64` or `--arch arm64` to work with
