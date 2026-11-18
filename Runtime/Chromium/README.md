@@ -14,8 +14,10 @@ Pinned inputs:
 
 `DEPS` at the Chromium revision owns dependency/toolchain pins. Do not update
 individual dependencies independently. The initial host is Intel macOS 15.8.1,
-Xcode 26.3 (17C529), SDK 26.2. This is a developer build: pinned official
-builds require SDK 26.5. ARM execution and installed signing remain separate gates.
+Xcode 26.3 (17C529), SDK 26.2. The signed Intel developer build passed
+installation from a disk image and a Sparkle update with a disposable profile.
+Official builds require SDK 26.5. Native Apple Silicon and notarized release
+qualification remain open. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
 
 Keep upstream's engine compilation deployment default, `13.0`, distinct from
 `mac_min_system_version = "15.5"` (the packaged `LSMinimumSystemVersion`) and the
