@@ -311,6 +311,17 @@ launcher, which isolates each test in its own child, with one job to avoid
 competing native windows; do not use `--single-process-tests` for this suite.
 Its unpacked test loader does not qualify store installation or permission UI.
 
+Bark reads extension actions from the selected page's Chromium toolbar model.
+Site Controls shows the current title, badge and pin state. Pinning writes to
+the owning profile. Pinned actions appear beside the address in either toolbar
+placement. The bridge checks the selected client, tab and mounted view before
+invoking an action. A profile switch dismisses the outgoing extension popup.
+
+Run `python3 scripts/bark-check.py extension-actions` to exercise the Swift
+consumer against a test bridge. The engine regressions load an unpacked MV3
+extension and cover script-initiated and DevTools actions, policy-enforced
+pinning, and closing the window during action enumeration.
+
 The storage suite also exercises a synthetic signed permission-increasing update
 and actual `permissions.request()` calls from workers and extension tabs. It
 checks owned dialog presentation, stale-owner cancellation and profile-local
