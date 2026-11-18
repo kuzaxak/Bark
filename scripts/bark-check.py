@@ -350,19 +350,30 @@ class SmokePage(BaseHTTPRequestHandler):
         pass
 
 
-def stop(proc):
+def signal_candidate_group(proc, signum):
     try:
-        os.killpg(proc.pid, signal.SIGTERM)
+        os.killpg(proc.pid, signum)
     except ProcessLookupError:
         pass
+    except PermissionError:
+        if proc.poll() is None:
+            raise
+        # Darwin can report EPERM for a group with only exited members. Check
+        # the whole group, since reaping the leader says nothing about helpers.
+        rows = subprocess.check_output(["/bin/ps", "-axo", "pgid=,state="], text=True)
+        group = str(proc.pid)
+        if any(pgid == group and not state.startswith("Z")
+               for pgid, state in (row.split() for row in rows.splitlines())):
+            raise
+
+
+def stop(proc):
+    signal_candidate_group(proc, signal.SIGTERM)
     try:
         proc.wait(timeout=5)
     except subprocess.TimeoutExpired:
         pass
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except ProcessLookupError:
-        pass
+    signal_candidate_group(proc, signal.SIGKILL)
     proc.wait()
 
 

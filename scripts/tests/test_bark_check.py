@@ -4,9 +4,13 @@ from contextlib import nullcontext, redirect_stderr
 from io import StringIO
 from pathlib import Path
 import runpy
+import signal
+import subprocess
+import sys
+import time
 import tempfile
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 CLI = Path(__file__).resolve().parents[1] / "bark-check.py"
 
@@ -70,6 +74,66 @@ class ArchitectureTests(unittest.TestCase):
                 patch.object(self.cli["subprocess"], "run", return_value=Mock(stdout="0\n1\n")) as probe:
             self.assertEqual(self.cli["native_architecture"](), "arm64")
         self.assertEqual(probe.call_args.args[0], ["/usr/sbin/sysctl", "-in", "hw.optional.arm64", "sysctl.proc_translated"])
+
+
+class CandidateCleanupTests(unittest.TestCase):
+    def setUp(self):
+        self.stop = runpy.run_path(str(CLI))["stop"]
+
+    def test_exited_leader_and_zombie_helper_do_not_shadow_original_failure(self):
+        proc = Mock(pid=2345)
+        proc.poll.return_value = -signal.SIGTERM
+        with patch("os.killpg", side_effect=[None, PermissionError()]) as kill, \
+                patch("subprocess.check_output", return_value=" 99 S\n 2345 Z+\n") as scan:
+            with self.assertRaisesRegex(ValueError, "original walk failure"):
+                try:
+                    raise ValueError("original walk failure")
+                finally:
+                    self.stop(proc)
+        self.assertEqual(kill.call_args_list,
+                         [call(proc.pid, signal.SIGTERM), call(proc.pid, signal.SIGKILL)])
+        scan.assert_called_once_with(["/bin/ps", "-axo", "pgid=,state="], text=True)
+        proc.wait.assert_called()
+
+    def test_exited_leader_does_not_hide_failure_to_stop_live_helper(self):
+        proc = Mock(pid=2345)
+        proc.poll.return_value = -signal.SIGTERM
+        with patch("os.killpg", side_effect=[None, PermissionError()]), \
+                patch("subprocess.check_output", return_value=" 2345 Z\n 2345 S\n"):
+            with self.assertRaises(PermissionError):
+                self.stop(proc)
+
+    def test_permission_failure_with_live_leader_is_not_ignored(self):
+        proc = Mock(pid=2345)
+        proc.poll.return_value = None
+        with patch("os.killpg", side_effect=PermissionError()), patch("subprocess.check_output") as scan:
+            with self.assertRaises(PermissionError):
+                self.stop(proc)
+        scan.assert_not_called()
+
+    def test_stop_terminates_a_group_with_a_term_resistant_helper(self):
+        program = """import os, signal, time
+if os.fork() == 0:
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    print(os.getpid(), flush=True)
+time.sleep(60)
+"""
+        proc = subprocess.Popen([sys.executable, "-c", program], start_new_session=True,
+                                stdout=subprocess.PIPE, text=True)
+        self.addCleanup(proc.stdout.close)
+        self.addCleanup(self.stop, proc)
+        helper = int(proc.stdout.readline())
+        self.stop(proc)
+        self.assertEqual(proc.returncode, -signal.SIGTERM)
+
+        until = time.monotonic() + 5
+        while time.monotonic() < until:
+            status = subprocess.run(["/bin/ps", "-p", str(helper), "-o", "state="],
+                                    capture_output=True, text=True)
+            if not status.stdout.strip() or status.stdout.strip().startswith("Z"):
+                return
+            time.sleep(0.05)
+        self.fail("A live helper remained after the candidate process group was stopped")
 
 
 if __name__ == "__main__":
