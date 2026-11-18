@@ -5,8 +5,8 @@ import hashlib
 import json
 import runpy
 import shlex
+import shutil
 import subprocess
-import struct
 import sys
 import tempfile
 import unittest
@@ -100,24 +100,14 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
             DTSDKBuild=sdk["build"], SCMRevision=pins["chromium"],
             CFBundleShortVersionString=(chromium / "CHROMIUM_VERSION").read_text().strip(),
         )
-        # Rewrite only LC_BUILD_VERSION's SDK field in a genuine thin ARM
-        # fixture. This exercises the production otool/lipo/receipt checks on
-        # Intel without requiring Chromium's pinned compile or executing ARM.
-        image = versioned / "Bark Framework"
-        binary = bytearray(image.read_bytes())
-        self.assertEqual(binary[:4], b"\xcf\xfa\xed\xfe")
-        commands, = struct.unpack_from("<I", binary, 16)
-        position = 32
-        for _ in range(commands):
-            command, size = struct.unpack_from("<II", binary, position)
-            if command == 0x32:
-                major, minor, *patch = map(int, sdk["version"].split("."))
-                struct.pack_into("<I", binary, position + 16, major << 16 | minor << 8 | (patch[0] if patch else 0))
-                break
-            position += size
-        else:
-            self.fail("Fixture has no LC_BUILD_VERSION")
-        image.write_bytes(binary)
+        # Link a thin ARM fixture with the SDK version the receipt verifier
+        # expects. It is inspected on Intel without running the ARM code.
+        linked = self.work / "official-arm64.dylib"
+        self.fixture["fake_framework"](linked, arch=(
+            "-arch", "arm64", "-mmacosx-version-min=15.5",
+            f"-Wl,-platform_version,macos,15.5,{sdk['version']}",
+        ))
+        shutil.copyfile(linked, versioned / "Bark Framework")
         env = self.fixture["publisher_environment"](self.build, self.siso)
         subprocess.run([
             sys.executable, "-B", "-c", """
