@@ -1,8 +1,32 @@
 diff --git a/chrome/browser/file_select_helper.h b/chrome/browser/file_select_helper.h
-index a2acc4f5af..eff19f0d8b 100644
 --- a/chrome/browser/file_select_helper.h
 +++ b/chrome/browser/file_select_helper.h
-@@ -156,6 +156,8 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
+@@ -18,6 +18,7 @@
+ #include "components/enterprise/common/files_scan_data.h"
+ #include "content/public/browser/browser_thread.h"
+ #include "content/public/browser/web_contents_observer.h"
++#include "content/public/browser/weak_document_ptr.h"
+ #include "net/base/directory_lister.h"
+ #include "third_party/blink/public/mojom/choosers/file_chooser.mojom.h"
+ #include "ui/shell_dialogs/select_file_dialog.h"
+@@ -65,6 +66,16 @@
+   FileSelectHelper(const FileSelectHelper&) = delete;
+   FileSelectHelper& operator=(const FileSelectHelper&) = delete;
+
++  // UI-thread observation of a live renderer upload chooser. The state
++  // survives the helper through switch settlement and carries no listener.
++  struct UploadChooserState {
++    content::WeakDocumentPtr document;
++    bool cancelled = false;
++    bool native_panel_is_running = false;
++  };
++  static std::vector<std::shared_ptr<const UploadChooserState>>
++  GetLiveUploadChoosers(content::WebContents* contents);
++
+   // Show the file chooser dialog.
+   static void RunFileChooser(
+       content::RenderFrameHost* render_frame_host,
+@@ -156,6 +167,8 @@
  
    void InitLifecycleObserver(content::WebContents* web_contents);
    void OnTabDeactivated(tabs::TabInterface* tab);
@@ -11,7 +35,15 @@ index a2acc4f5af..eff19f0d8b 100644
  
    void EnumerateDirectoryImpl(
        content::WebContents* tab,
-@@ -344,6 +346,9 @@ class FileSelectHelper : public base::RefCountedThreadSafe<
+@@ -310,6 +323,7 @@
+
+   // |listener_| receives the result of the FileSelectHelper.
+   scoped_refptr<content::FileSelectListener> listener_;
++  std::shared_ptr<UploadChooserState> upload_chooser_state_;
+
+   // Dialog box used for choosing files to upload from file form fields.
+   scoped_refptr<ui::SelectFileDialog> select_file_dialog_;
+@@ -344,6 +358,9 @@
    bool abort_on_missing_web_contents_in_tests_ = true;
  
    base::CallbackListSubscription tab_deactivated_subscription_;

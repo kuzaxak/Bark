@@ -1,8 +1,19 @@
 diff --git a/components/permissions/permission_request_manager.cc b/components/permissions/permission_request_manager.cc
-index f331f4df78..3ebab9c720 100644
 --- a/components/permissions/permission_request_manager.cc
 +++ b/components/permissions/permission_request_manager.cc
-@@ -915,6 +915,11 @@ content::WebContents* PermissionRequestManager::GetAssociatedWebContents() {
+@@ -466,6 +466,11 @@
+   request.Cancelled();
+ }
+
++bool PermissionRequestManager::HasPendingRequest(
++    const PermissionRequest& request) const {
++  return request_sources_map_.contains(request);
++}
++
+ void PermissionRequestManager::QueueRequest(
+     content::RenderFrameHost* source_frame,
+     std::unique_ptr<PermissionRequest> request) {
+@@ -915,6 +920,11 @@
  }
  
  bool PermissionRequestManager::RecreateView() {
@@ -14,7 +25,7 @@ index f331f4df78..3ebab9c720 100644
    const bool should_do_auto_response_for_testing =
        (current_request_prompt_disposition_ ==
         PermissionPromptDisposition::MAC_OS_PROMPT);
-@@ -930,7 +935,22 @@ bool PermissionRequestManager::RecreateView() {
+@@ -930,7 +940,22 @@
      }
      CalculateCurrentVariantForEmbeddedPrompt();
    }
@@ -38,7 +49,7 @@ index f331f4df78..3ebab9c720 100644
    if (!view_) {
      current_request_prompt_disposition_ =
          PermissionPromptDisposition::NONE_VISIBLE;
-@@ -1199,7 +1219,9 @@ void PermissionRequestManager::ShowPrompt() {
+@@ -1199,7 +1224,9 @@
    DCHECK(!web_contents()->HasUncommittedNavigationInPrimaryMainFrame());
    DCHECK(current_request_ui_to_use_);
  
@@ -49,7 +60,7 @@ index f331f4df78..3ebab9c720 100644
      NotifyPromptCreationFailedHiddenTab();
      return;
    }
-@@ -2020,7 +2042,8 @@ void PermissionRequestManager::AdoptTabInterfaceIfNeeded(
+@@ -2020,7 +2047,8 @@
    if (tab_insert_subscription_ || !tab_interface) {
      return;
    }
@@ -59,7 +70,7 @@ index f331f4df78..3ebab9c720 100644
    tab_insert_subscription_ = tab_interface->RegisterDidInsert(
        base::BindRepeating(&PermissionRequestManager::OnTabAttached,
                            weak_factory_.GetWeakPtr()));
-@@ -2032,6 +2055,11 @@ void PermissionRequestManager::AdoptTabInterfaceIfNeeded(
+@@ -2032,6 +2060,11 @@
  void PermissionRequestManager::RegisterTabSubscriptions(
      tabs::TabInterface* tab_interface) {
    tab_subscriptions_.clear();
@@ -71,7 +82,7 @@ index f331f4df78..3ebab9c720 100644
  
    tab_subscriptions_.push_back(tab_interface->RegisterDidActivate(
        base::BindRepeating(&PermissionRequestManager::OnTabActiveStatusChanged,
-@@ -2053,7 +2081,8 @@ void PermissionRequestManager::OnTabActiveStatusChanged(
+@@ -2053,7 +2086,8 @@
      bool is_active,
      tabs::TabInterface* tab_interface) {
    const bool prior_tab_is_active_ = tab_is_active_;
@@ -81,7 +92,7 @@ index f331f4df78..3ebab9c720 100644
    if (prior_tab_is_active_ != tab_is_active_) {
      OnTabActiveChanged();
    }
-@@ -2096,10 +2125,21 @@ void PermissionRequestManager::OnTabWillDiscardContents(
+@@ -2096,10 +2130,21 @@
  void PermissionRequestManager::OnTabAttached(
      tabs::TabInterface* tab_interface) {
    RegisterTabSubscriptions(tab_interface);
@@ -103,7 +114,7 @@ index f331f4df78..3ebab9c720 100644
    if (!tab_is_active_) {
      if (view_) {
        switch (view_->GetTabSwitchingBehavior()) {
-@@ -2122,7 +2162,8 @@ void PermissionRequestManager::OnTabActiveChanged() {
+@@ -2122,7 +2167,8 @@
      return;
    }
  

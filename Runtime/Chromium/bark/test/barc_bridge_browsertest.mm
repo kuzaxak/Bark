@@ -117,6 +117,10 @@
 #include "chrome/browser/printing/print_preview_dialog_controller.h"
 #include "chrome/browser/printing/test_print_preview_observer.h"
 #include "chrome/browser/ui/webui/print_preview/print_preview_ui.h"
+#include "bark/browser/ui/native_space_page.h"
+#include "chrome/browser/ui/webui/certificate_viewer/certificate_viewer_webui.h"
+#include "net/cert/x509_certificate.h"
+#include "net/cert/x509_util.h"
 #include "content/public/browser/navigation_entry.h"
 #include "content/public/browser/web_ui.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
@@ -1308,7 +1312,22 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
   scoped_refptr<ui::FakeSelectFileDialog> dialog = factory->GetLastDialog();
   ASSERT_TRUE(dialog);
   ASSERT_TRUE(dialog->listener());
-  ASSERT_EQ(1, barc_tab_select(personal_id, personal_tab));
+  BarcSpaceSwitchRequest request{
+      .size = sizeof(request), .request = 1, .window = work_id,
+      .client = personal_id, .tab = personal_tab,
+  };
+  int completions = 0;
+  ASSERT_EQ(1, barc_window_switch_space(
+      &request, [](const BarcSpaceSwitchResult* result, void* context) {
+        ++*static_cast<int*>(context);
+        EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, result->status);
+        ASSERT_EQ(1u, result->prompt_count);
+        const auto& prompt = *result->prompts;
+        EXPECT_EQ(BARC_SPACE_SWITCH_UPLOAD, prompt.kind);
+        EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_CANCELLED, prompt.disposition);
+        EXPECT_GT(prompt.document, 0u);
+      }, &completions));
+  EXPECT_EQ(1, completions);
   EXPECT_EQ(1, shown->cancelled);
   EXPECT_EQ(nullptr, dialog->listener());
   dialog->CallFileSelectionCanceled();
@@ -1991,6 +2010,83 @@ IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
   closed.Wait();
   content::RunAllTasksUntilIdle();
   EXPECT_EQ(4u, events.site_results.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
+                       CertificateViewerUsesTheVisibleCommittedPage) {
+  net::EmbeddedTestServer https_server(net::EmbeddedTestServer::TYPE_HTTPS);
+  https_server.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
+  https_server.ServeFilesFromSourceDirectory("chrome/test/data");
+  ASSERT_TRUE(https_server.Start());
+  ASSERT_TRUE(embedded_test_server()->Start());
+
+  const int32_t window_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* window = SharedWindow(window_id);
+  ASSERT_TRUE(window);
+  ASSERT_EQ(1, barc_window_show(window_id));
+  const int32_t tab = barc_window_tab_at(window_id, 0);
+  Navigate(window, https_server.GetURL("a.test", "/title1.html"));
+  auto* contents = window->GetTabStripModel()->GetActiveWebContents();
+
+  using CertBuffers = std::vector<bssl::UniquePtr<CRYPTO_BUFFER>>;
+  base::test::TestFuture<CertBuffers, content::WebContents*> viewer;
+  CertificateViewerDialog::MockForTesting(viewer.GetRepeatingCallback());
+  base::ScopedClosureRunner reset_viewer(base::BindOnce([] {
+    CertificateViewerDialog::MockForTesting({});
+  }));
+
+  EXPECT_EQ(BARC_CERTIFICATE_SECURE,
+            barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
+  ASSERT_EQ(1, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
+  ASSERT_TRUE(viewer.IsReady());
+  auto [certificates, shown_contents] = viewer.Take();
+  EXPECT_EQ(contents, shown_contents);
+  ASSERT_FALSE(certificates.empty());
+  EXPECT_TRUE(net::x509_util::CryptoBufferEqual(
+      certificates.front().get(), https_server.GetCertificate()->cert_buffer()));
+
+  ASSERT_TRUE(bark::SetNativeSpacePageSuppressed(window, true));
+  EXPECT_EQ(BARC_CERTIFICATE_UNAVAILABLE,
+            barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
+  ASSERT_TRUE(bark::SetNativeSpacePageSuppressed(window, false));
+
+  const int32_t other_tab = barc_tab_create(window_id, "about:blank", 1);
+  ASSERT_GT(other_tab, 0);
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, other_tab, BARC_PAGE_SHOW_CERTIFICATE));
+  ASSERT_EQ(1, barc_tab_select(window_id, tab));
+  Navigate(window, embedded_test_server()->GetURL("a.test", "/title2.html"));
+  EXPECT_EQ(BARC_CERTIFICATE_UNAVAILABLE,
+            barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
+  EXPECT_FALSE(viewer.IsReady());
+
+  net::EmbeddedTestServer untrusted(net::EmbeddedTestServer::TYPE_HTTPS);
+  net::EmbeddedTestServer::ServerCertificateConfig cert_config;
+  cert_config.root = net::EmbeddedTestServer::RootType::kUniqueRoot;
+  cert_config.dns_names = {"a.test"};
+  untrusted.SetSSLConfig(cert_config);
+  untrusted.ServeFilesFromSourceDirectory("chrome/test/data");
+  ASSERT_TRUE(untrusted.Start());
+  const auto untrusted_url = untrusted.GetURL("a.test", "/title1.html");
+  content::TestNavigationObserver failed(contents);
+  failed.set_expected_initial_url(untrusted_url);
+  ASSERT_EQ(1, barc_tab_navigate(window_id, tab, untrusted_url.spec().c_str()));
+  failed.Wait();
+  EXPECT_FALSE(failed.last_navigation_succeeded());
+  ASSERT_TRUE(base::test::RunUntil([&] { return !contents->IsLoading(); }));
+  EXPECT_EQ(BARC_CERTIFICATE_AVAILABLE,
+            barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
+  ASSERT_EQ(1, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
+  ASSERT_TRUE(viewer.IsReady());
+  auto [untrusted_certificates, untrusted_contents] = viewer.Take();
+  EXPECT_EQ(contents, untrusted_contents);
+  ASSERT_FALSE(untrusted_certificates.empty());
+  EXPECT_TRUE(net::x509_util::CryptoBufferEqual(
+      untrusted_certificates.front().get(), untrusted.GetCertificate()->cert_buffer()));
+  EXPECT_EQ(BARC_CERTIFICATE_AVAILABLE,
+            barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
@@ -4583,7 +4679,7 @@ IN_PROC_BROWSER_TEST_F(BarcDiscoveryBrowserTest,
 }
 
 TEST(BarcBridgeTableTest, TableDeclaresItsSizeAndFillsEveryMember) {
-  const BarcBridge* bridge = barc_bridge_v11();
+  const BarcBridge* bridge = barc_bridge_v12();
   ASSERT_TRUE(bridge);
   EXPECT_EQ(sizeof(BarcBridge), bridge->size);
   // Every member after `size` is a function pointer.

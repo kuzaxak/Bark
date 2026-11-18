@@ -24,7 +24,7 @@ final class ChromiumExistingPageBinding {
 /// Only native handles are cached here. TabsController remains the model owner.
 /// The app retains this host until Chromium stops delivering callbacks.
 @MainActor
-final class ChromiumNativePageHost: NativePageHost {
+final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     private struct CreationKey: Hashable { let window: UUID; let profile: UUID }
     @MainActor private final class Mount {
         weak var shell: NSView?
@@ -34,6 +34,8 @@ final class ChromiumNativePageHost: NativePageHost {
         // Only our last successful header attachment, never native selection.
         var attachedClient: Int32?
         var generation: UInt64 = 0
+        var spaceSwitchSequence: UInt64 = 0
+        var hasSettledEmptySelection = false
         // Ownership identity only; SplitRecord remains the model's sole layout.
         var presentedSplit: (client: Int32, member: Int32, collection: Int32, kind: UInt32, generation: UInt64, count: UInt32)?
         // Native Peek may return the same sidebar to its source before catalog
@@ -71,6 +73,7 @@ final class ChromiumNativePageHost: NativePageHost {
         let key: CreationKey
         let group: UInt64
         var requests: [Request]
+        var clientReady: [@MainActor (Int32?) -> Void] = []
         var native: Int32?
         var cleanupPages: [ChromiumPageNavigation] = []
         var cleanupTabs: Set<Int32> = []
@@ -114,10 +117,40 @@ final class ChromiumNativePageHost: NativePageHost {
         }
     }
     private var closing: [ObjectIdentifier: [@MainActor (PageCloseOutcome) -> Void]] = [:]
+    /// Copy the bridge's borrowed records before delivery returns.
+    private struct SettledSpaceSwitch {
+        let request: UInt64
+        let group: UInt64
+        let status: Int32
+        let client: Int32
+        let tab: Int32
+        let prompts: [BarcSpaceSwitchPrompt]
+
+        init?(_ result: BarcSpaceSwitchResult) {
+            guard result.size >= MemoryLayout<BarcSpaceSwitchResult>.size,
+                  result.prompt_count == 0 || result.prompts != nil else { return nil }
+            let prompts = Array(UnsafeBufferPointer(start: result.prompts, count: result.prompt_count))
+            guard prompts.allSatisfy({ $0.size >= MemoryLayout<BarcSpaceSwitchPrompt>.size }) else { return nil }
+            request = result.request
+            group = result.physical_group
+            status = result.status
+            client = result.selected_client
+            tab = result.active_tab
+            self.prompts = prompts
+        }
+    }
+
+    @MainActor private final class SpaceSwitchDelivery {
+        let finish: @MainActor (SettledSpaceSwitch?) -> Void
+        init(_ finish: @escaping @MainActor (SettledSpaceSwitch?) -> Void) { self.finish = finish }
+    }
+
     @MainActor private final class EmptySpaceOpening {
         weak var host: ChromiumNativePageHost?
         let key: CreationKey
         let group: UInt64
+        var ready: [@MainActor (Int32?) -> Void] = []
+        var pageRequests: [Request] = []
         init(host: ChromiumNativePageHost, key: CreationKey, group: UInt64) {
             self.host = host; self.key = key; self.group = group
         }
@@ -202,7 +235,9 @@ final class ChromiumNativePageHost: NativePageHost {
         guard let mount = mounts[window.id], mount.model === window, mount.shell != nil else {
             request.finish(.failure(HostError.missingWindow)); return
         }
-        if let batch = opening[key] {
+        if let empty = emptySpaceOpening[key] {
+            empty.pageRequests.append(request)
+        } else if let batch = opening[key] {
             guard batch.group == mount.group, batch.mount === mount else { request.finish(.failure(HostError.missingWindow)); return }
             batch.requests.append(request)
             if batch.failedAdmission { retryCleanup(batch) }
@@ -252,6 +287,10 @@ final class ChromiumNativePageHost: NativePageHost {
 
     private func opened(_ batch: Batch, status: barc_profile_status, native: Int32) {
         guard opening[batch.key] === batch else { return }
+        let clientReady = batch.clientReady
+        batch.clientReady.removeAll()
+        var preparedClient: Int32?
+        defer { for ready in clientReady { ready(preparedClient) } }
         if blocker != nil, status == BARC_PROFILE_OK, let row = liveState(native),
            row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue,
            bridge.identity(row) == batch.key.profile, row.physical_group == batch.group,
@@ -275,6 +314,7 @@ final class ChromiumNativePageHost: NativePageHost {
             return
         }
         batch.native = native
+        preparedClient = native
         batch.blank = bridge.window_tab_at(native, 0)
         blankTabs[native] = BlankReservation(tab: batch.blank!, group: batch.group)
         if let blocker {
@@ -752,20 +792,20 @@ final class ChromiumNativePageHost: NativePageHost {
 
     private func selected(_ page: ChromiumPageNavigation, in window: BrowserWindowState) -> Bool {
         guard let (_, row) = admission(page, in: window) else { return false }
-        return row.selected_client == page.nativeWindowID && row.active_tab == page.nativeTabID
+        return row.selected_client == page.nativeWindowID && row.presentedTab == page.nativeTabID
     }
 
     func isNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
         guard let page = navigation as? ChromiumPageNavigation,
               let (mount, row) = admission(page, in: window), mount.shell != nil,
-              row.selected_client == page.nativeWindowID, row.active_tab == page.nativeTabID else { return false }
+              row.selected_client == page.nativeWindowID, row.presentedTab == page.nativeTabID else { return false }
         return mount.presenter.ownsSidebar(page.nativeWindowID)
     }
 
     func acceptNativeSelection(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
         guard let page = navigation as? ChromiumPageNavigation,
               let (mount, row) = admission(page, in: window),
-              row.selected_client == page.nativeWindowID, row.active_tab == page.nativeTabID else { return false }
+              row.selected_client == page.nativeWindowID, row.presentedTab == page.nativeTabID else { return false }
         mount.generation &+= 1
         return attachSelected(page, in: window, mount: mount, attempt: mount.generation)
     }
@@ -887,8 +927,113 @@ final class ChromiumNativePageHost: NativePageHost {
         return false
     }
 
+    func switchSpace(to profile: Profile, page navigation: (any PageNavigation)?,
+                     in window: BrowserWindowState, isCurrent: @escaping @MainActor () -> Bool,
+                     completion: @escaping @MainActor (NativeSpaceSwitchOutcome) -> Void) {
+        guard let mount = mounts[window.id], mount.model === window, mount.shell != nil else {
+            completion(.closed); return
+        }
+        guard supports(profile, in: window), isCurrent() else { completion(.refused(retained: nil)); return }
+
+        let submit = { [weak self, weak window] (client: Int32?, tab: Int32) in
+            guard let self, let window, isCurrent() else { return }
+            guard self.mounts[window.id] === mount, mount.shell != nil else { completion(.closed); return }
+            let attached = mount.attachedClient.flatMap { client in
+                self.liveState(client)?.physical_group == mount.group ? client : nil
+            }
+            guard let owner = attached ?? self.liveClient(in: window.id) else { completion(.unresolved); return }
+            guard let client, let target = self.liveState(client),
+                  target.physical_group == mount.group, self.bridge.identity(target) == profile.id else {
+                completion(.refused(retained: nil)); return
+            }
+            mount.spaceSwitchSequence &+= 1
+            let sequence = mount.spaceSwitchSequence
+            let delivery = SpaceSwitchDelivery { [weak self, weak window] result in
+                guard let self, let window, isCurrent(), mount.spaceSwitchSequence == sequence else { return }
+                guard let result, result.request == sequence else { completion(.unresolved); return }
+                let status = UInt32(bitPattern: result.status)
+                if status == BARC_SPACE_SWITCH_CLOSED.rawValue, result.group == 0 || result.group == mount.group {
+                    completion(.closed); return
+                }
+                guard result.group == mount.group,
+                      self.mounts[window.id] === mount, mount.shell != nil,
+                      let row = self.liveState(result.client), row.physical_group == mount.group,
+                      row.selected_client == result.client, row.presentedTab == result.tab else {
+                    completion(.unresolved); return
+                }
+                let applied = status == BARC_SPACE_SWITCH_APPLIED.rawValue
+                let refused = status == BARC_SPACE_SWITCH_REFUSED.rawValue
+                guard applied ? (result.client == client && tab == result.tab)
+                              : (refused || status == BARC_SPACE_SWITCH_SUPERSEDED.rawValue) else {
+                    completion(.unresolved); return
+                }
+
+                let selection: NativeSpaceSwitchSelection
+                if result.tab == 0 {
+                    guard let identity = self.bridge.identity(row),
+                          self.attachEmptySpaceSidebar(result.client, mount: mount), isCurrent() else {
+                        completion(.unresolved); return
+                    }
+                    mount.hasSettledEmptySelection = true
+                    mount.presenter.setPageHidden(true, client: result.client)
+                    selection = .empty(profileID: identity)
+                } else {
+                    guard let selected = self.pages.values.first(where: {
+                        $0.window == window.id && $0.owned && $0.page.nativeWindowID == result.client &&
+                            $0.page.nativeTabID == result.tab && !$0.page.isClosed
+                    })?.page else { completion(.unresolved); return }
+                    guard self.acceptNativeSelection(selected, in: window), isCurrent() else {
+                        completion(.unresolved); return
+                    }
+                    mount.presenter.setPageHidden(false, client: result.client)
+                    guard self.isNativeSelection(selected, in: window) else { completion(.unresolved); return }
+                    mount.hasSettledEmptySelection = false
+                    selection = .page(selected)
+                }
+                guard isCurrent() else { return }
+                if refused { completion(.refused(retained: selection)) }
+                else if !applied { completion(.superseded(selection)) }
+                else {
+                    switch selection {
+                    case .page(let page): completion(.applied(page))
+                    case .empty: completion(.applied(nil))
+                    }
+                }
+            }
+            var request = BarcSpaceSwitchRequest(size: UInt32(MemoryLayout<BarcSpaceSwitchRequest>.size),
+                                                request: sequence, window: owner, client: client, tab: tab)
+            let context = Unmanaged.passRetained(delivery).toOpaque()
+            let accepted = self.bridge.window_switch_space(&request, { result, context in
+                MainActor.assumeIsolated {
+                    guard let context else { return }
+                    let delivery = Unmanaged<SpaceSwitchDelivery>.fromOpaque(context).takeRetainedValue()
+                    let copied = result.flatMap { pointer -> SettledSpaceSwitch? in
+                        guard pointer.pointee.size >= MemoryLayout<BarcSpaceSwitchResult>.size else { return nil }
+                        return SettledSpaceSwitch(pointer.pointee)
+                    }
+                    delivery.finish(copied)
+                }
+            }, context)
+            if accepted != 1 {
+                Unmanaged<SpaceSwitchDelivery>.fromOpaque(context).release()
+                completion(.refused(retained: nil))
+            }
+        }
+        if let navigation {
+            guard let page = navigation as? ChromiumPageNavigation, page.profileID == profile.id,
+                  admission(page, in: window) != nil || moveHere(page, in: window, isCurrent: isCurrent),
+                  admission(page, in: window) != nil else { completion(.refused(retained: nil)); return }
+            submit(page.nativeWindowID, page.nativeTabID)
+        } else if let client = liveClient(in: window.id, profile: profile.id) {
+            submit(client, 0)
+        } else {
+            prepareEmptySpaceClient(in: window, profile: profile.id) { submit($0, 0) }
+        }
+    }
+
     /// A page another window holds moves into this one, into its client of the page's profile.
-    private func moveHere(_ page: ChromiumPageNavigation, in window: BrowserWindowState) -> Bool {
+    private func moveHere(_ page: ChromiumPageNavigation, in window: BrowserWindowState,
+                          isCurrent: @escaping @MainActor () -> Bool = { true }) -> Bool {
         let id = ObjectIdentifier(page)
         guard !page.isClosed, !page.isPrivateSession, !window.isIncognito, let profile = page.profileID,
               let binding = pages[id], binding.page === page, binding.owned, binding.window != window.id,
@@ -898,14 +1043,14 @@ final class ChromiumNativePageHost: NativePageHost {
         var destination = liveClient(in: window.id, profile: profile) ?? 0
         let created = destination == 0
         if created { destination = bridge.window_new_peer_in_native_window(page.nativeWindowID, owner) }
-        guard destination > 0, let target = liveState(destination), target.physical_group == mount.group,
+        guard isCurrent(), destination > 0, let target = liveState(destination), target.physical_group == mount.group,
               bridge.identity(target) == profile else {
             if created && destination > 0 { _ = bridge.window_close(destination) }
             return false
         }
         let previous = binding.window
         let request = DetachedAdmission { [weak self, weak page, weak window] actual, tab in
-            guard let self, let page, let window, actual == destination, tab == page.nativeTabID,
+            guard isCurrent(), let self, let page, let window, actual == destination, tab == page.nativeTabID,
                   page.nativeWindowID == destination, self.pages[id] === binding,
                   self.mounts[window.id] === mount else { return false }
             binding.window = window.id
@@ -1461,46 +1606,90 @@ final class ChromiumNativePageHost: NativePageHost {
         if let client = liveClient(in: window.id, profile: profile) {
             return selectEmptySpaceClient(client, mount: mount) ? client : nil
         }
+        if open { prepareEmptySpaceClient(in: window, profile: profile) { _ in } }
+        return nil
+    }
+
+    private func prepareEmptySpaceClient(in window: BrowserWindowState, profile: UUID,
+                                         ready: @escaping @MainActor (Int32?) -> Void) {
+        guard let mount = mounts[window.id], mount.model === window, mount.shell != nil,
+              !window.isIncognito, let owner = liveClient(in: window.id) else { ready(nil); return }
         let key = CreationKey(window: window.id, profile: profile)
-        guard open, !window.isIncognito, emptySpaceOpening[key] == nil, opening[key] == nil,
-              let owner = liveClient(in: window.id) else { return nil }
+        if let request = emptySpaceOpening[key] { request.ready.append(ready); return }
+        if let batch = opening[key] {
+            if let native = batch.native { ready(native) }
+            else { batch.clientReady.append(ready) }
+            return
+        }
         let request = EmptySpaceOpening(host: self, key: key, group: mount.group)
+        request.ready.append(ready)
         emptySpaceOpening[key] = request
         profile.uuidString.withCString { uuid in
             bridge.profile_open_in_native_window(owner, uuid, BARC_PROFILE_BLANK, { status, native, pointer in
                 MainActor.assumeIsolated {
                     guard let pointer else { return }
-                    let request = Unmanaged<EmptySpaceOpening>.fromOpaque(pointer).takeUnretainedValue()
+                    let request = Unmanaged<EmptySpaceOpening>.fromOpaque(pointer).takeRetainedValue()
                     request.host?.openedEmptySpaceClient(request, status: status, native: native)
                 }
-            }, Unmanaged.passUnretained(request).toOpaque())
+            }, Unmanaged.passRetained(request).toOpaque())
         }
-        return nil
     }
 
     private func openedEmptySpaceClient(_ request: EmptySpaceOpening, status: barc_profile_status, native: Int32) {
         guard emptySpaceOpening[request.key] === request else { return }
         emptySpaceOpening.removeValue(forKey: request.key)
-        guard status == BARC_PROFILE_OK, let row = liveState(native), row.physical_group == request.group,
-              bridge.identity(row) == request.key.profile,
-              row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue else { return }
-        var blanks: [Int32] = []
-        while case let tab = bridge.window_tab_at(native, blanks.count), tab > 0 { blanks.append(tab) }
-        for tab in blanks { _ = bridge.tab_close(native, tab) }
+        var client: Int32?
+        if status == BARC_PROFILE_OK, let row = liveState(native), row.physical_group == request.group,
+           bridge.identity(row) == request.key.profile, row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue {
+            // The profile factory contributes exactly one blank. A page request
+            // may have arrived meanwhile, so leave that creation to enqueue.
+            let blank = bridge.window_tab_at(native, 0)
+            if blank > 0 {
+                _ = bridge.tab_close(native, blank)
+            }
+            if liveState(native)?.physical_group == request.group { client = native }
+        }
+        for ready in request.ready { ready(client) }
+        request.pageRequests.forEach(enqueue)
     }
 
     private func selectEmptySpaceClient(_ client: Int32, mount: Mount) -> Bool {
         guard mount.shell != nil, let row = liveState(client), row.physical_group == mount.group else { return false }
-        let presenter = mount.presenter
         if row.selected_client != client, bridge.window_select(client) != 1 { return false }
+        return attachEmptySpaceSidebar(client, mount: mount)
+    }
+
+    private func attachEmptySpaceSidebar(_ client: Int32, mount: Mount) -> Bool {
+        guard let window = mount.model, mounts[window.id] === mount, mount.shell != nil else { return false }
+        mount.generation &+= 1
+        let attempt = mount.generation
+        func current() -> Bool {
+            mounts[window.id] === mount && mount.generation == attempt &&
+                liveState(client).map { $0.physical_group == mount.group && $0.selected_client == client } == true
+        }
+        guard current() else { return false }
+        reconcilePeekSidebar(mount)
+        let presenter = mount.presenter
         if !presenter.ownsSidebar(client) {
-            if let old = mount.attachedClient, old != client, presenter.ownsSidebar(old),
-               !presenter.detachSidebar(from: old) { return false }
-            guard presenter.attachSidebar(to: client), presenter.ownsSidebar(client) else { return false }
+            if let old = mount.attachedClient, old != client, presenter.ownsSidebar(old) {
+                guard presenter.detachSidebar(from: old), current() else { return false }
+            }
+            let attached = presenter.attachSidebar(to: client)
+            let owns = presenter.ownsSidebar(client)
+            if owns {
+                if mount.generation == attempt { mount.attachedClient = client }
+                else if mount.attachedClient != client { _ = presenter.detachSidebar(from: client) }
+            }
+            guard attached, current(), owns else { return false }
         }
         mount.attachedClient = client
-        mount.generation &+= 1
-        return liveState(client)?.selected_client == client
+        return true
+    }
+
+    /// Discovery can distinguish an independent selection from a still-parked
+    /// native strip once the bridge has settled this window's empty-space intent.
+    func replacedEmptySpaceSelection(in window: BrowserWindowState) -> Bool {
+        window.showsNativeEmptySpace && mounts[window.id]?.hasSettledEmptySelection == true
     }
 
     /// Chromium keeps every emptied client of an app-owned window, Peek's included.

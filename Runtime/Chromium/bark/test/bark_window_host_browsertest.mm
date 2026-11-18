@@ -12,6 +12,7 @@
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/base_switches.h"
 #include "base/command_line.h"
+#include "base/compiler_specific.h"
 #include "base/run_loop.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
@@ -28,8 +29,12 @@
 #include "chrome/browser/ui/side_panel/side_panel_entry_key.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
+#include "components/constrained_window/constrained_window_views.h"
 #include "components/permissions/permission_request_manager.h"
+#include "components/permissions/test/mock_permission_prompt_factory.h"
+#include "components/permissions/test/mock_permission_request.h"
 #include "components/permissions/test/permission_request_observer.h"
+#include "ui/base/models/dialog_model.h"
 #include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -43,6 +48,7 @@
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest_mac.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+
 #include "ui/views/view.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/widget.h"
@@ -251,6 +257,278 @@ class BarkWindowHostBrowserTest : public InProcessBrowserTest {
 
 constexpr char kWorkProfile[] = "6f0bd61e-9a43-4b7f-8d8e-56b1a9a0c2d4";
 constexpr char kHomeProfile[] = "0d3b5c1e-8f2a-4e6b-9a7c-2b4d6e8f0a1c";
+
+namespace {
+
+struct SpaceOutcomes {
+  struct Entry {
+    BarcSpaceSwitchResult result;
+    std::vector<BarcSpaceSwitchPrompt> prompts;
+  };
+  std::vector<Entry> entries;
+
+  static void Receive(const BarcSpaceSwitchResult* result, void* context) {
+    auto& entries = static_cast<SpaceOutcomes*>(context)->entries;
+    std::vector<BarcSpaceSwitchPrompt> prompts;
+    // SAFETY: The bridge borrows this counted array through the callback.
+    for (size_t i = 0; i < result->prompt_count; ++i) {
+      prompts.push_back(UNSAFE_BUFFERS(result->prompts[i]));
+    }
+    entries.push_back({*result, std::move(prompts)});
+    entries.back().result.prompts = nullptr;
+  }
+
+  int Switch(uint64_t id, int32_t window, int32_t client, int32_t tab) {
+    const BarcSpaceSwitchRequest request{
+        .size = sizeof(request), .request = id,
+        .window = window, .client = client, .tab = tab,
+    };
+    return barc_window_switch_space(&request, &Receive, this);
+  }
+};
+
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SpaceSwitchSettlesNestedActivation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  const int32_t research =
+      OpenProfile("34db02c7-ec55-4553-96f9-2ae71a0fee4d", work);
+  const int32_t other = OpenProfile(kHomeProfile);
+  ASSERT_TRUE(HostOf(work));
+  ASSERT_EQ(HostOf(work), HostOf(home));
+  ASSERT_EQ(HostOf(work), HostOf(research));
+  ASSERT_NE(HostOf(work), HostOf(other));
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t work_tab = OpenPage(work, root, "/title1.html");
+  Place(work, work_tab, root);
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return HostOf(work)->widget()->IsActive(); }));
+  const int32_t home_tab = barc_window_tab_at(home, 0);
+  const int32_t research_tab = barc_window_tab_at(research, 0);
+  auto* contents = TabContents(work_tab);
+  auto* manager =
+      permissions::PermissionRequestManager::FromWebContents(contents);
+  ASSERT_TRUE(manager);
+  permissions::MockPermissionPromptFactory prompts(manager);
+  permissions::MockPermissionRequest::MockPermissionRequestState permission;
+  manager->AddRequest(
+      contents->GetPrimaryMainFrame(),
+      std::make_unique<permissions::MockPermissionRequest>(
+          embedded_test_server()->GetURL("/title1.html"),
+          permissions::RequestType::kGeolocation, permission.GetWeakPtr()));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  SpaceOutcomes outcomes;
+  auto activation = FindBrowser(home)->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) {
+        EXPECT_EQ(1, outcomes.Switch(2, work, research, research_tab));
+        EXPECT_TRUE(outcomes.entries.empty());
+      }));
+  ASSERT_EQ(1, outcomes.Switch(1, work, home, home_tab));
+  ASSERT_EQ(2u, outcomes.entries.size());
+  EXPECT_EQ(1u, outcomes.entries[0].result.request);
+  EXPECT_EQ(BARC_SPACE_SWITCH_SUPERSEDED, outcomes.entries[0].result.status);
+  EXPECT_EQ(2u, outcomes.entries[1].result.request);
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, outcomes.entries[1].result.status);
+  for (const auto& entry : outcomes.entries) {
+    EXPECT_EQ(HostOf(work)->physical_group(), entry.result.physical_group);
+    EXPECT_EQ(research, entry.result.selected_client);
+    EXPECT_EQ(research_tab, entry.result.active_tab);
+  }
+  ASSERT_EQ(1u, outcomes.entries[0].prompts.size());
+  const auto& parked = outcomes.entries[0].prompts[0];
+  EXPECT_EQ(BARC_SPACE_SWITCH_PERMISSION, parked.kind);
+  EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_PARKED, parked.disposition);
+  EXPECT_EQ(work, parked.client);
+  EXPECT_EQ(work_tab, parked.tab);
+  EXPECT_NE(0u, parked.document);
+  EXPECT_TRUE(outcomes.entries[1].prompts.empty());
+  EXPECT_FALSE(prompts.is_visible());
+  EXPECT_FALSE(permission.finished);
+  EXPECT_TRUE(FindBrowser(other)->IsSelectedForNativeWindow());
+
+  // Reject malformed input without delivery and refuse a valid request for
+  // an owner in another physical window while preserving the original target.
+  BarcSpaceSwitchRequest short_request{.size = 4, .request = 3,
+                                       .window = work, .client = research};
+  EXPECT_EQ(0, barc_window_switch_space(
+      &short_request, &SpaceOutcomes::Receive, &outcomes));
+  EXPECT_EQ(2u, outcomes.entries.size());
+  ASSERT_EQ(1, outcomes.Switch(3, work, other, barc_window_tab_at(other, 0)));
+  EXPECT_EQ(BARC_SPACE_SWITCH_REFUSED, outcomes.entries.back().result.status);
+  EXPECT_EQ(research, outcomes.entries.back().result.selected_client);
+
+  // Activation may close the requested pane while leaving the newly selected
+  // owner alive. That actual owner/pane wins over the obsolete page handle.
+  activation = {};
+  const int32_t retained_home_tab = barc_tab_create(home, "about:blank", 0);
+  ASSERT_GT(retained_home_tab, 0);
+  auto retire_requested_tab = FindBrowser(home)->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) {
+        EXPECT_EQ(1, barc_tab_close(home, home_tab));
+      }));
+  ASSERT_EQ(1, outcomes.Switch(4, work, home, home_tab));
+  const auto& retired = outcomes.entries.back().result;
+  EXPECT_EQ(BARC_SPACE_SWITCH_SUPERSEDED, retired.status);
+  EXPECT_EQ(home, retired.selected_client);
+  EXPECT_EQ(retained_home_tab, retired.active_tab);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SpaceSwitchParksLocationForEmptySpace) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t work_tab = OpenPage(work, root, "/title1.html");
+  const int32_t home_tab = OpenPage(home, root, "/title1.html");
+  ASSERT_EQ(1, barc_tab_select(work, work_tab));
+  Place(work, work_tab, root);
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return HostOf(work)->widget()->IsActive(); }));
+  auto* contents = TabContents(work_tab);
+  auto* manager =
+      permissions::PermissionRequestManager::FromWebContents(contents);
+  ASSERT_TRUE(manager);
+  permissions::MockPermissionPromptFactory prompts(manager);
+  permissions::MockPermissionRequest::MockPermissionRequestState permission;
+  manager->AddRequest(
+      contents->GetPrimaryMainFrame(),
+      std::make_unique<permissions::MockPermissionRequest>(
+          embedded_test_server()->GetURL("/title1.html"),
+          permissions::RequestType::kGeolocation, permission.GetWeakPtr()));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  SpaceOutcomes outcomes;
+  ASSERT_EQ(1, outcomes.Switch(1, work, work, 0));
+  ASSERT_EQ(1u, outcomes.entries.size());
+  const auto& empty = outcomes.entries.front();
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, empty.result.status);
+  EXPECT_EQ(work, empty.result.selected_client);
+  EXPECT_EQ(0, empty.result.active_tab);
+  ASSERT_EQ(1u, empty.prompts.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_PERMISSION, empty.prompts[0].kind);
+  EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_PARKED, empty.prompts[0].disposition);
+  EXPECT_EQ(work, empty.prompts[0].client);
+  EXPECT_EQ(work_tab, empty.prompts[0].tab);
+  const uint64_t work_document = empty.prompts[0].document;
+  EXPECT_NE(0u, work_document);
+  EXPECT_FALSE(prompts.is_visible());
+  EXPECT_FALSE(permission.finished);
+  EXPECT_EQ(0, barc_tab_execute_command(work, work_tab, BARC_PAGE_FIND));
+
+  ASSERT_EQ(1, outcomes.Switch(2, work, work, work_tab));
+  EXPECT_EQ(work_tab, outcomes.entries.back().result.active_tab);
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  ASSERT_EQ(1, outcomes.Switch(3, work, home, home_tab));
+  EXPECT_EQ(home, outcomes.entries.back().result.selected_client);
+  ASSERT_EQ(1u, outcomes.entries.back().prompts.size());
+  EXPECT_EQ(work_document, outcomes.entries.back().prompts[0].document);
+  EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_PARKED,
+            outcomes.entries.back().prompts[0].disposition);
+  EXPECT_FALSE(prompts.is_visible());
+  ASSERT_EQ(1, outcomes.Switch(4, home, work, work_tab));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+
+  // A nested request returning to the original page keeps its prompt eligible.
+  auto reverse_selection = FindBrowser(home)->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) {
+        EXPECT_EQ(1, outcomes.Switch(6, work, work, work_tab));
+      }));
+  ASSERT_EQ(1, outcomes.Switch(5, work, home, home_tab));
+  ASSERT_EQ(6u, outcomes.entries.size());
+  const auto& superseded = outcomes.entries[4];
+  const auto& returned = outcomes.entries[5];
+  EXPECT_EQ(BARC_SPACE_SWITCH_SUPERSEDED, superseded.result.status);
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, returned.result.status);
+  for (const auto* entry : {&superseded, &returned}) {
+    EXPECT_EQ(work, entry->result.selected_client);
+    EXPECT_EQ(work_tab, entry->result.active_tab);
+  }
+  ASSERT_EQ(1u, superseded.prompts.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_PERMISSION, superseded.prompts[0].kind);
+  EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_RETAINED,
+            superseded.prompts[0].disposition);
+  EXPECT_EQ(work_document, superseded.prompts[0].document);
+  EXPECT_TRUE(prompts.is_visible());
+  EXPECT_FALSE(permission.finished);
+  reverse_selection = {};
+  manager->Deny(std::monostate());
+  EXPECT_TRUE(permission.finished);
+  EXPECT_FALSE(permission.granted);
+
+  permissions::MockPermissionRequest::MockPermissionRequestState retired;
+  manager->AddRequest(
+      contents->GetPrimaryMainFrame(),
+      std::make_unique<permissions::MockPermissionRequest>(
+          embedded_test_server()->GetURL("/title1.html"),
+          permissions::RequestType::kGeolocation, retired.GetWeakPtr()));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
+  auto close_outgoing = FindBrowser(work)->RegisterNativeWindowSelectionChanged(
+      base::BindLambdaForTesting([&] {
+        if (!FindBrowser(work)->IsSelectedForNativeWindow()) {
+          EXPECT_EQ(1, barc_tab_close(work, work_tab));
+        }
+      }));
+  ASSERT_EQ(1, outcomes.Switch(7, work, home, home_tab));
+  ASSERT_EQ(1u, outcomes.entries.back().prompts.size());
+  EXPECT_EQ(work_document, outcomes.entries.back().prompts[0].document);
+  EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_RETIRED,
+            outcomes.entries.back().prompts[0].disposition);
+  EXPECT_TRUE(retired.finished);
+  EXPECT_FALSE(retired.granted);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, SpaceSwitchRefusedByModal) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t work_tab = OpenPage(work, root, "/title1.html");
+  Place(work, work_tab, root);
+  auto* widget = constrained_window::ShowWebModal(
+      ui::DialogModel::Builder().SetTitle(u"Retained dialog").Build(),
+      TabContents(work_tab));
+  ASSERT_TRUE(widget);
+  SpaceOutcomes outcomes;
+  ASSERT_EQ(1, outcomes.Switch(1, work, home, barc_window_tab_at(home, 0)));
+  ASSERT_EQ(1u, outcomes.entries.size());
+  const auto& outcome = outcomes.entries.front();
+  EXPECT_EQ(BARC_SPACE_SWITCH_REFUSED, outcome.result.status);
+  EXPECT_EQ(work, outcome.result.selected_client);
+  EXPECT_EQ(work_tab, outcome.result.active_tab);
+  ASSERT_EQ(1u, outcome.prompts.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_TAB_MODAL, outcome.prompts[0].kind);
+  EXPECT_EQ(BARC_SPACE_SWITCH_PROMPT_RETAINED, outcome.prompts[0].disposition);
+  widget->CloseNow();
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SpaceSwitchPhysicalWindowClosesDuringActivation) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  const int32_t other = OpenProfile(kHomeProfile);
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return HostOf(work)->widget()->IsActive(); }));
+  const uint64_t group = HostOf(work)->physical_group();
+  auto activation = FindBrowser(home)->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) {
+        HostOf(work)->widget()->CloseNow();
+      }));
+  SpaceOutcomes outcomes;
+  ASSERT_EQ(1, outcomes.Switch(1, work, home, barc_window_tab_at(home, 0)));
+  ASSERT_EQ(1u, outcomes.entries.size());
+  const auto& outcome = outcomes.entries.front().result;
+  EXPECT_EQ(BARC_SPACE_SWITCH_CLOSED, outcome.status);
+  EXPECT_EQ(group, outcome.physical_group);
+  EXPECT_EQ(0, outcome.selected_client);
+  EXPECT_EQ(0, outcome.active_tab);
+  EXPECT_TRUE(FindBrowser(other)->IsSelectedForNativeWindow());
+}
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, NormalBrowserGetsHostWindow) {
   EXPECT_NE(nullptr, BrowserView::GetBrowserViewForBrowser(browser()));

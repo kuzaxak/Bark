@@ -1,8 +1,17 @@
 diff --git a/chrome/browser/file_select_helper.cc b/chrome/browser/file_select_helper.cc
-index 227ace4086..034e85c961 100644
 --- a/chrome/browser/file_select_helper.cc
 +++ b/chrome/browser/file_select_helper.cc
-@@ -26,6 +26,7 @@
+@@ -11,6 +11,9 @@
+ #include <string>
+ #include <utility>
+
++#include "bark/browser/ui/native_space_page.h"
++#include "base/containers/flat_set.h"
++#include "base/no_destructor.h"
+ #include "base/files/file_path.h"
+ #include "base/files/file_util.h"
+ #include "base/functional/bind.h"
+@@ -26,6 +29,7 @@
  #include "chrome/browser/platform_util.h"
  #include "chrome/browser/profiles/profile.h"
  #include "chrome/browser/profiles/profile_manager.h"
@@ -10,9 +19,52 @@ index 227ace4086..034e85c961 100644
  #include "chrome/browser/ui/dialogs/browser_dialogs.h"
  #include "chrome/browser/ui/select_file_policy/chrome_select_file_policy.h"
  #include "chrome/grit/generated_resources.h"
-@@ -626,6 +627,10 @@ void FileSelectHelper::RunFileChooser(
+@@ -72,6 +76,11 @@
+
+ namespace {
+
++base::flat_set<FileSelectHelper*>& LiveUploadChoosers() {
++  static base::NoDestructor<base::flat_set<FileSelectHelper*>> choosers;
++  return *choosers;
++}
++
+ void DeleteFiles(std::vector<base::FilePath> paths) {
+   for (auto& file_path : paths)
+     base::DeleteFile(file_path);
+@@ -118,7 +127,26 @@
+       dialog_type_(ui::SelectFileDialog::SELECT_OPEN_FILE),
+       dialog_mode_(FileChooserParams::Mode::kOpen) {}
+
++std::vector<std::shared_ptr<const FileSelectHelper::UploadChooserState>>
++FileSelectHelper::GetLiveUploadChoosers(content::WebContents* contents) {
++  DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
++  std::vector<std::shared_ptr<const UploadChooserState>> active;
++  for (auto* chooser : LiveUploadChoosers()) {
++    if (chooser->web_contents_ == contents && chooser->listener_) {
++      chooser->upload_chooser_state_->native_panel_is_running =
++          chooser->select_file_dialog_ &&
++          chooser->select_file_dialog_->IsRunning(
++              platform_util::GetTopLevel(contents->GetNativeView()));
++      active.push_back(chooser->upload_chooser_state_);
++    }
++  }
++  return active;
++}
++
+ FileSelectHelper::~FileSelectHelper() {
++  if (upload_chooser_state_) {
++    LiveUploadChoosers().erase(this);
++  }
+   // There may be pending file dialogs, we need to tell them that we've gone
+   // away so they don't try and call back to us.
+   if (select_file_dialog_)
+@@ -625,7 +653,14 @@
+   render_frame_host_ = render_frame_host;
    web_contents_ = WebContents::FromRenderFrameHost(render_frame_host);
    listener_ = std::move(listener);
++  upload_chooser_state_ = std::make_shared<UploadChooserState>();
++  upload_chooser_state_->document = render_frame_host->GetWeakDocumentPtr();
++  LiveUploadChoosers().insert(this);
    InitLifecycleObserver(web_contents_);
 +  if (!HasSelectedNativeOwner()) {
 +    RunFileChooserEnd();
@@ -21,7 +73,7 @@ index 227ace4086..034e85c961 100644
  
  #if !BUILDFLAG(IS_ANDROID)
    if (PictureInPictureWindowManager::GetInstance()
-@@ -699,7 +704,7 @@ void FileSelectHelper::RunFileChooserOnUIThread(
+@@ -699,7 +734,7 @@
    // page sees this as a `cancel` event on the input.
    tabs::TabInterface* tab =
        tabs::TabInterface::MaybeGetFromContents(web_contents_);
@@ -30,7 +82,15 @@ index 227ace4086..034e85c961 100644
      RunFileChooserEnd();
      return;
    }
-@@ -770,6 +775,9 @@ void FileSelectHelper::RunFileChooserEnd() {
+@@ -762,6 +797,7 @@
+ // dialog or if the renderer was destroyed. Perform any cleanup and release the
+ // reference we added in RunFileChooser().
+ void FileSelectHelper::RunFileChooserEnd() {
++  auto keep_alive = base::WrapRefCounted(this);
+ #if !BUILDFLAG(IS_ANDROID)
+   // Ensure picture-in-picture occlusion mitigation stops, even if we need to
+   // keep this instance alive for temporary files.
+@@ -770,6 +806,9 @@
  #endif  // !BUILDFLAG(IS_ANDROID)
  
    tab_deactivated_subscription_ = {};
@@ -40,7 +100,22 @@ index 227ace4086..034e85c961 100644
    directory_enumeration_.reset();
  
    // If there are temporary files, then this instance needs to stick around
-@@ -866,6 +874,47 @@ void FileSelectHelper::InitLifecycleObserver(
+@@ -780,8 +819,12 @@
+   }
+
+   if (listener_) {
+-    listener_->FileSelectionCanceled();
+-    listener_.reset();
++    if (upload_chooser_state_) {
++      upload_chooser_state_->cancelled = true;
++    }
++    // Consume before notifying: cancellation can synchronously reenter.
++    auto listener = std::move(listener_);
++    listener->FileSelectionCanceled();
+   }
+   render_frame_host_ = nullptr;
+   web_contents_ = nullptr;
+@@ -866,6 +909,48 @@
      tab_deactivated_subscription_ =
          tab_interface->RegisterWillDeactivate(base::BindRepeating(
              &FileSelectHelper::OnTabDeactivated, base::Unretained(this)));
@@ -75,7 +150,8 @@ index 227ace4086..034e85c961 100644
 +    if (auto* tab = tabs::TabInterface::MaybeGetFromContents(web_contents_)) {
 +      auto* owner = tab->GetBrowserWindowInterface();
 +      return owner && !owner->IsDeleteScheduled() &&
-+             owner->IsSelectedForNativeWindow();
++             owner->IsSelectedForNativeWindow() &&
++             !bark::IsNativeSpacePageSuppressed(owner);
 +    }
 +  }
 +#endif

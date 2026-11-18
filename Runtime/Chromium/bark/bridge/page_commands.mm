@@ -90,7 +90,9 @@
 #include "base/json/json_writer.h"
 #include "base/version_info/version_info.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/certificate_viewer.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
+#include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/content_settings/host_content_settings_map_factory.h"
 #include "components/content_settings/core/browser/host_content_settings_map.h"
@@ -129,10 +131,12 @@
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/navigation_controller.h"
 #include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/ssl_status.h"
 #include "content/public/browser/browsing_data_filter_builder.h"
 #include "content/public/browser/browsing_data_remover.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "mojo/public/cpp/bindings/callback_helpers.h"
+#include "net/cert/cert_status_flags.h"
 #include "net/cookies/canonical_cookie.h"
 #include "net/cookies/cookie_partition_key_collection.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
@@ -152,8 +156,47 @@
 
 #include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/bridge_internal.h"
+#include "bark/browser/ui/native_space_page.h"
 
 using namespace barc::internal;
+
+namespace {
+int CertificateCommand(BrowserWindowInterface* window,
+                       tabs::TabInterface* tab, int32_t command) {
+  if (!tab || window->IsDeleteScheduled() || !window->GetWindow() ||
+      !window->IsSelectedForNativeWindow() ||
+      bark::IsNativeSpacePageSuppressed(window))
+    return BARC_CERTIFICATE_UNAVAILABLE;
+  auto* contents = tab->GetContents();
+  if (contents->IsBeingDestroyed() ||
+      contents->GetBrowserContext() != window->GetProfile())
+    return BARC_CERTIFICATE_UNAVAILABLE;
+  NSView* view = contents->GetNativeView().GetNativeNSView();
+  gfx::NativeWindow parent = window->GetWindow()->GetNativeWindow();
+  if (![view window] || [view window] != parent.GetNativeNSWindow() ||
+      [view isHiddenOrHasHiddenAncestor] || ![parent.GetNativeNSWindow() isVisible])
+    return BARC_CERTIFICATE_UNAVAILABLE;
+  auto& controller = contents->GetController();
+  auto* entry = controller.GetLastCommittedEntry();
+  if (!entry || entry != controller.GetVisibleEntry() ||
+      !entry->GetURL().SchemeIs(url::kHttpsScheme) ||
+      !entry->GetSSL().certificate)
+    return BARC_CERTIFICATE_UNAVAILABLE;
+  const bool certificate_error = net::IsCertStatusError(entry->GetSSL().cert_status);
+  if (entry->GetPageType() != content::PAGE_TYPE_NORMAL &&
+      (entry->GetPageType() != content::PAGE_TYPE_ERROR || !certificate_error))
+    return BARC_CERTIFICATE_UNAVAILABLE;
+  if (command == BARC_PAGE_CERTIFICATE_STATE) {
+    return !certificate_error &&
+                   chrome_security_state::GetSecurityLevel(contents) == security_state::SECURE
+               ? BARC_CERTIFICATE_SECURE
+               : BARC_CERTIFICATE_AVAILABLE;
+  }
+  auto certificate = entry->GetSSL().certificate;
+  ShowCertificateViewer(contents, parent, certificate.get());
+  return 1;
+}
+}  // namespace
 
 int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
                              int32_t command) {
@@ -162,6 +205,9 @@ int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
     return 0;
   auto* window = Window(window_id);
   auto* tab = LookupTab(window, tab_id);
+  if (command == BARC_PAGE_SHOW_CERTIFICATE ||
+      command == BARC_PAGE_CERTIFICATE_STATE)
+    return CertificateCommand(window, tab, command);
   if (command == BARC_PAGE_CLEAR_BACK_FORWARD_CACHE) {
     auto* unload = window ? UnloadController::From(window) : nullptr;
     auto* view = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
@@ -194,6 +240,7 @@ int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
   if (!tab || window->IsDeleteScheduled() ||
       tab->GetContents()->GetBrowserContext() != window->GetProfile() ||
       !window->IsSelectedForNativeWindow() ||
+      bark::IsNativeSpacePageSuppressed(window) ||
       window->GetTabStripModel()->GetActiveWebContents() != tab->GetContents())
     return 0;
   if (command == BARC_PAGE_HARD_RELOAD &&

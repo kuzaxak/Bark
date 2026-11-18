@@ -4,7 +4,7 @@
 
 extern "C" int ChromeMain(int argc, const char** argv);
 
-NO_STACK_PROTECTOR int barc_engine_main_v11(int argc, const char** argv) {
+NO_STACK_PROTECTOR int barc_engine_main_v12(int argc, const char** argv) {
   return ChromeMain(argc, argv);
 }
 

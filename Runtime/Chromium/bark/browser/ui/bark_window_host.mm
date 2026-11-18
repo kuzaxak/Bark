@@ -1,3 +1,4 @@
+#include "bark/browser/ui/native_space_page.h"
 #include "bark/browser/ui/bark_window_host.h"
 
 #import <AppKit/AppKit.h>
@@ -568,6 +569,9 @@ void BarkWindowHost::WatchSelectedPage() {
 }
 
 void BarkWindowHost::FocusSelectedPage() {
+  if (selected_ && IsNativeSpacePageSuppressed(selected_->browser())) {
+    return;
+  }
   auto* contents =
       selected_ ? selected_->browser()->GetTabStripModel()->GetActiveWebContents()
                 : nullptr;

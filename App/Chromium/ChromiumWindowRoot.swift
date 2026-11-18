@@ -294,7 +294,11 @@ final class ChromiumWindowRoot: NSView {
 
     /// The window shows no page of its own: an empty space, or a page another window holds.
     var pageHidden = false {
-        didSet { slots.forEach { $0.heldView?.isHidden = pageHidden } }
+        didSet {
+            guard pageHidden != oldValue else { return }
+            slots.forEach { $0.heldView?.isHidden = pageHidden }
+            if !pageHidden { focusPage() }
+        }
     }
 
     /// The focused page; nil once another root took it.

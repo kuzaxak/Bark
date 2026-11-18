@@ -100,11 +100,33 @@ import NookWeb
     static var onShow: ((Int32) -> Int32)?
     static var onCloseWindow: ((Int32) -> Int32)?
     static var onSelectWindow: ((Int32) -> Int32)?
+    static var onSpaceSwitch: ((BarcSpaceSwitchRequest, BarcSpaceSwitchCallback?, UnsafeMutableRawPointer?) -> Int32)?
     static var onOpen: ((Int32, barc_profile_window_callback?, UnsafeMutableRawPointer?) -> Void)?
     static var onAdmit: ((Int32) -> Void)?
     static var savedRequests: [(UUID, barc_profile_window_callback?, UnsafeMutableRawPointer?)] = []
     static var privateCallback: barc_profile_window_callback?
     static var privateContext: UnsafeMutableRawPointer?
+    static func selectClient(_ client: Int32, tab: Int32) {
+        guard let group = windows[client]?.physical_group else { return }
+        for key in Array(windows.keys) where windows[key]?.physical_group == group {
+            windows[key]?.selected_client = client
+        }
+        windows[client]?.flags &= ~BARC_DISCOVERY_SPACE_SUPPRESSED.rawValue
+        if tab > 0 { windows[client]?.active_tab = tab }
+    }
+
+    static func settle(_ request: BarcSpaceSwitchRequest, group: UInt64,
+                       status: BarcSpaceSwitchStatus, client: Int32, tab: Int32,
+                       prompts: [BarcSpaceSwitchPrompt] = [], callback: BarcSpaceSwitchCallback?,
+                       context: UnsafeMutableRawPointer?) {
+        prompts.withUnsafeBufferPointer { records in
+            var result = BarcSpaceSwitchResult(size: UInt32(MemoryLayout<BarcSpaceSwitchResult>.size),
+                status: Int32(status.rawValue), request: request.request, physical_group: group,
+                selected_client: client, active_tab: tab, prompts: records.baseAddress, prompt_count: records.count)
+            callback?(&result, context)
+        }
+    }
+
     static func copyPrivateID(_ window: Int32, _ output: UnsafeMutablePointer<CChar>?, _ capacity: Int) -> Int {
         privateIdentityReads += 1
         guard windows[window]?.profile_kind == BARC_DISCOVERY_GUEST.rawValue, let id = privateIDs[window] else { return 0 }
@@ -258,6 +280,22 @@ import NookWeb
         bridge.window_select = { owner in MainActor.assumeIsolated {
             guard let select = Native.onSelectWindow else { preconditionFailure("Discovery focused a window") }
             return select(owner)
+        } }
+        bridge.window_switch_space = { pointer, callback, context in MainActor.assumeIsolated {
+            guard let request = pointer?.pointee, request.size == MemoryLayout<BarcSpaceSwitchRequest>.size else { return 0 }
+            if let switchSpace = Native.onSpaceSwitch { return switchSpace(request, callback, context) }
+            guard let row = Native.windows[request.window],
+                  Native.windows[request.client]?.physical_group == row.physical_group else { return 0 }
+            let allowed = request.client == row.selected_client || Native.onSelectWindow?(request.client) != 0
+            if allowed {
+                Native.selectClient(request.client, tab: request.tab)
+                if request.tab == 0 { Native.windows[request.client]?.flags |= BARC_DISCOVERY_SPACE_SUPPRESSED.rawValue }
+            }
+            let client = allowed ? request.client : row.selected_client
+            Native.settle(request, group: row.physical_group, status: allowed ? BARC_SPACE_SWITCH_APPLIED : BARC_SPACE_SWITCH_REFUSED,
+                client: client, tab: allowed ? request.tab : Native.windows[client]?.active_tab ?? 0,
+                callback: callback, context: context)
+            return 1
         } }
         bridge.window_close = { window in MainActor.assumeIsolated {
             guard Native.restoring, let close = Native.onCloseWindow else { preconditionFailure("Discovery closed native contents") }
@@ -575,6 +613,7 @@ private struct NoTokens: KagiTokenStore {
         try checkClosingSelectionStaysWithNook()
         try checkSelfClosingPageKeepsNooksSpace()
         try checkLinkReachesEmptySpaceOfAnotherProfile()
+        try checkSpaceSwitchOutcomes()
         try checkPrivateSessions()
         try checkSavedWindowRestoration()
         try checkNewWindowLikeWebKit()
@@ -670,7 +709,7 @@ private struct NoTokens: KagiTokenStore {
     let route = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
     precondition(route?.window == 601 && route?.profile == Native.work && route?.space == empty)
     Native.tabs.append(Native.tab(6013, window: 601))
-    Native.windows[601]?.active_tab = 6013
+    Native.selectClient(601, tab: 6013)
     admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.selectedItemID == item(6013) && !window.showsNativeEmptySpace)
     Native.restoring = false
@@ -752,8 +791,6 @@ private struct NoTokens: KagiTokenStore {
     admission.apply(Native.bridge.readSnapshot()!)
     let window = registry.allWindows.first!
     registry.setActive(window)
-    tabs.setSpace(Native.personal, in: window)
-    precondition(window.showsNativeEmptySpace && window.spaceID == Native.personal)
     var opened: [(Int32, barc_profile_window_callback?, UnsafeMutableRawPointer?)] = []
     Native.onOpen = { owner, callback, pointer in opened.append((owner, callback, pointer)) }
     Native.onSelectWindow = { owner in
@@ -765,15 +802,17 @@ private struct NoTokens: KagiTokenStore {
     }
     Native.restoring = true
     defer { Native.restoring = false; Native.onOpen = nil; Native.onSelectWindow = nil }
-    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1, "The link waits")
-    precondition(admission.browserTarget(kind: 0, regularProfile: Native.work)?.window == -1 && opened.count == 1,
-                 "One client is opened for the empty space's profile")
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.nativeSpaceSwitchIsPending && window.spaceID == Native.work && !window.showsNativeEmptySpace)
+    precondition(opened.count == 1, "One client is opened for the empty space's profile")
     precondition(opened[0].0 == 631)
     Native.windows[632] = Native.window(632, group: 631, profile: Native.personal, flags: 0, active: 6320)
     Native.windows[632]?.selected_client = 631
     Native.tabs.append(Native.tab(6320, window: 632))
     opened[0].1?(BARC_PROFILE_OK, 632, opened[0].2)
     precondition(!Native.tabs.contains { $0.window == 632 }, "The new client's blank is closed")
+    precondition(window.showsNativeEmptySpace && window.spaceID == Native.personal &&
+                 tabs.controllableSession(in: window) == nil)
     Native.windows[632]?.active_tab = 0
     Native.windows[632]?.flags |= UInt32(BARC_DISCOVERY_EMPTY_STRIP.rawValue)
     let route = admission.incomingTarget(ruleSpace: nil, mini: false, regularProfile: Native.work)
@@ -782,6 +821,208 @@ private struct NoTokens: KagiTokenStore {
                  "The empty space's client is selected with the sidebar")
     Native.failedPrivateCloses = []; Native.privateCreatedClients = []; Native.restoredURLs = []
     Native.end(632); Native.end(631); tabs.saveNow()
+}
+
+@MainActor private func checkSpaceSwitchOutcomes() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcSpaceSwitch-\(UUID())")
+    let suite = "BarcSpaceSwitch-\(UUID())", registry = WindowRegistry()
+    let defaults = UserDefaults(suiteName: suite)!
+    defer {
+        Native.onSpaceSwitch = nil; Native.onOpen = nil; Native.onSelectWindow = nil; Native.restoring = false
+        Native.failedPrivateCloses.removeAll { $0.0 == 643 }
+        Native.splitLayouts[640] = nil
+        for owner in Array(Native.windows.keys) { Native.end(owner) }
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    tree.createSpace(id: Native.personal, name: "Personal", icon: "house", accentHex: "#123456", after: Native.work)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
+    tabs.nativePageHost = host
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    let group: UInt64 = 640
+    Native.windows[640] = Native.window(640, group: group, profile: Native.work, active: 6400)
+    Native.windows[641] = Native.window(641, group: group, profile: Native.personal, flags: 0, active: 6410)
+    Native.windows[642] = Native.window(642, group: 642, profile: Native.work, flags: 0, active: 6420)
+    Native.selectClient(640, tab: 6400)
+    Native.tabs = [Native.tab(6400, window: 640), Native.tab(6401, window: 640),
+                   Native.tab(6410, window: 641), Native.tab(6420, window: 642)]
+    func discover() { admission.apply(Native.bridge.readSnapshot()!) }
+    discover()
+
+    func page(_ tab: Int32) -> PageSession {
+        tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == tab }!
+    }
+    let work = page(6400), research = page(6401), personal = page(6410), otherPage = page(6420)
+    let window = registry.allWindows.first { $0.selectedItemID == work.itemID }!
+    let other = registry.allWindows.first { $0.selectedItemID == otherPage.itemID }!
+    registry.setActive(window)
+    func assertCommands(_ destination: PageSession, in state: BrowserWindowState) {
+        precondition(tabs.controllableSession(in: state) === destination)
+        precondition(host.isNativeSelection(destination.navigation!, in: state))
+    }
+    let researchSpace = tabs.createSpace(name: "Research", icon: "", accentHex: "#123456",
+        after: Native.personal, sharingLoginsWith: Native.work)!
+    tabs.move(research.itemID, to: .tabs(spaceID: researchSpace), after: nil)
+    let sharedEmpty = tabs.createSpace(name: "Empty", icon: "", accentHex: "#123456",
+        after: researchSpace, sharingLoginsWith: Native.work)!
+
+    // Keyboard switches between profiles. A palette selection of a tab in a
+    // different space can select a parked pane in the same original client.
+    precondition(tabs.selectNextSpace(in: window))
+    precondition(window.spaceID == Native.personal)
+    assertCommands(personal, in: window)
+    tabs.select(research.itemID, in: window)
+    precondition(window.spaceID == researchSpace)
+    assertCommands(research, in: window)
+    tabs.setSpace(sharedEmpty, in: window)
+    precondition(window.spaceID == sharedEmpty && window.showsNativeEmptySpace &&
+                 tabs.controllableSession(in: window) == nil && Native.windows[640]?.active_tab == 6401)
+    discover()
+    precondition(window.spaceID == sharedEmpty && tabs.controllableSession(in: window) == nil)
+    Native.windows[640]?.active_tab = 6400
+    discover()
+    precondition(window.spaceID == sharedEmpty && tabs.controllableSession(in: window) == nil,
+                 "A parked strip change leaves the empty space selected")
+    Native.selectClient(640, tab: 6400)
+    discover()
+    assertCommands(work, in: window)
+    precondition(window.spaceID == Native.work)
+
+    // Two spaces may intentionally show the very same shared favorite.
+    tabs.move(work.itemID, to: .favorites(spaceID: Native.work), after: nil)
+    let favorites = tabs.createSpace(name: "Favorites", icon: "", accentHex: "#123456",
+        after: sharedEmpty, sharingLoginsWith: Native.work)!
+    tabs.setSpace(favorites, in: window)
+    precondition(window.spaceID == favorites)
+    assertCommands(work, in: window)
+    tabs.setSpace(Native.work, in: window)
+    precondition(window.spaceID == Native.work)
+    assertCommands(work, in: window)
+
+    // Discovery can run during engine activation while Research wins. Only
+    // the terminal result claims that pane, even when the sidebar asked for Personal.
+    Native.onSpaceSwitch = { request, callback, context in
+        precondition(window.nativeSpaceSwitchIsPending && request.window == 640 &&
+                     request.client == 641 && request.tab == 6410)
+        Native.selectClient(640, tab: 6401)
+        discover()
+        precondition(window.spaceID == Native.work && window.selectedItemID == work.itemID &&
+                     tabs.controllableSession(in: window) == nil)
+        let outgoing = BarcSpaceSwitchPrompt(size: UInt32(MemoryLayout<BarcSpaceSwitchPrompt>.size),
+            kind: Int32(BARC_SPACE_SWITCH_PERMISSION.rawValue), disposition: Int32(BARC_SPACE_SWITCH_PROMPT_PARKED.rawValue),
+            client: 640, tab: 6400, document: 42)
+        Native.settle(request, group: group, status: BARC_SPACE_SWITCH_SUPERSEDED, client: 640, tab: 6401,
+                      prompts: [outgoing], callback: callback, context: context)
+        return 1
+    }
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.spaceID == researchSpace && !window.nativeSpaceSwitchIsPending)
+    assertCommands(research, in: window)
+    let mirrored = tabs.device
+    discover()
+    precondition(tabs.device == mirrored)
+
+    Native.onSpaceSwitch = { request, callback, context in
+        Native.settle(request, group: group, status: BARC_SPACE_SWITCH_REFUSED, client: 640, tab: 6401,
+                      callback: callback, context: context)
+        return 1
+    }
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.spaceID == researchSpace)
+    assertCommands(research, in: window)
+
+    // The native pane may already have changed while Swift was preparing.
+    // Refusal preserves the pane actually retained by the invoking group.
+    Native.onSpaceSwitch = { request, callback, context in
+        Native.selectClient(640, tab: 6400)
+        Native.settle(request, group: group, status: BARC_SPACE_SWITCH_REFUSED, client: 640, tab: 6400,
+                      callback: callback, context: context)
+        return 1
+    }
+    tabs.setSpace(Native.personal, in: window)
+    assertCommands(work, in: window)
+
+    // An existing mixed-profile split routes to its actual focused pane.
+    Native.onSpaceSwitch = nil
+    Native.restoring = true
+    Native.onSelectWindow = { owner in Native.selectClient(owner, tab: 0); return 1 }
+    let split = SplitRecord([research.itemID, personal.itemID], orientation: .vertical, dividers: [0.5])!
+    var splitReady = false
+    precondition(tabs.presentNativeSplit(split, activeItemID: research.itemID, in: window,
+                                        completion: { splitReady = $0 }))
+    precondition(splitReady && window.split == split)
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.split == split && window.spaceID == Native.personal)
+    assertCommands(personal, in: window)
+
+    // A newer intent takes ownership while a new empty profile client is starting.
+    let newProfileSpace = tabs.createSpace(name: "Fresh", icon: "", accentHex: "#123456", after: sharedEmpty)!
+    let newProfile = tabs.tree.dataStoreID(for: newProfileSpace)!
+    var factory: (barc_profile_window_callback?, UnsafeMutableRawPointer?)?
+    Native.onOpen = { _, callback, context in factory = (callback, context) }
+    Native.restoring = true
+    tabs.setSpace(newProfileSpace, in: window)
+    precondition(window.nativeSpaceSwitchIsPending && factory != nil)
+    tabs.setSpace(Native.personal, in: window)
+    assertCommands(personal, in: window)
+    Native.windows[643] = Native.window(643, group: group, profile: newProfile, flags: 0, active: 6430)
+    Native.windows[643]?.selected_client = 641
+    Native.tabs.append(Native.tab(6430, window: 643))
+    factory?.0?(BARC_PROFILE_OK, 643, factory?.1)
+    precondition(window.spaceID == Native.personal && Native.windows[641]?.selected_client == 641)
+    assertCommands(personal, in: window)
+
+    // A native result may also arrive after a newer request was fully published.
+    var finishOlder: (() -> Void)?
+    Native.onSpaceSwitch = { request, callback, context in
+        finishOlder = { Native.settle(request, group: group, status: BARC_SPACE_SWITCH_SUPERSEDED, client: 641,
+                                     tab: 6410, callback: callback, context: context) }
+        return 1
+    }
+    tabs.setSpace(Native.work, in: window)
+    precondition(window.nativeSpaceSwitchIsPending)
+    Native.onSpaceSwitch = nil
+    tabs.setSpace(researchSpace, in: window)
+    finishOlder?()
+    precondition(window.spaceID == researchSpace)
+    assertCommands(research, in: window)
+
+    Native.onSpaceSwitch = { request, callback, context in
+        Native.selectClient(640, tab: 6499)
+        Native.settle(request, group: group, status: BARC_SPACE_SWITCH_SUPERSEDED, client: 640, tab: 6499,
+                      callback: callback, context: context)
+        return 1
+    }
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.nativeSpaceSwitchIsUnresolved && tabs.controllableSession(in: window) == nil)
+    assertCommands(otherPage, in: other)
+    Native.selectClient(640, tab: 6400)
+    discover()
+    precondition(!window.nativeSpaceSwitchIsUnresolved && window.spaceID == researchSpace,
+                 "Discovery restores the shared favorite in the window's existing space")
+    assertCommands(work, in: window)
+
+    Native.onSpaceSwitch = { request, callback, context in
+        for owner: Int32 in [640, 641, 643] { Native.end(owner) }
+        Native.settle(request, group: 0, status: BARC_SPACE_SWITCH_CLOSED, client: 0, tab: 0,
+                      callback: callback, context: context)
+        return 1
+    }
+    tabs.setSpace(Native.personal, in: window)
+    precondition(window.nativeSpaceSwitchIsUnresolved && tabs.controllableSession(in: window) == nil)
+    assertCommands(otherPage, in: other)
+    discover()
+    precondition(registry.windows[window.id] == nil && registry.windows[other.id] === other)
+    tabs.saveNow()
 }
 
 /// Source was the sole product window: admission must register the destination

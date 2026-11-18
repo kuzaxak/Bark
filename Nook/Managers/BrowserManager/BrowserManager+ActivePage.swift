@@ -15,6 +15,7 @@ extension BrowserManager {
     /// The page shortcuts and menu commands act on in `window` (`FrontPage`). Nil when the window
     /// shows no page, or while another window holds its selected tab's page.
     func frontPage(in window: BrowserWindowState) -> PageSession? {
+        guard !window.nativeSpaceSwitchIsUnresolved else { return nil }
         let peek = peekManager.page(in: window)
         switch FrontPage(peek: peek?.itemID, selectedTab: window.selectedItemID) {
         case .peek?: return peek
@@ -125,8 +126,8 @@ extension BrowserManager {
             guard native.supportsTranslation, page.canTranslate || page.isTranslated else { return false }
             page.toggleTranslation(); return true
         }
-        if command == .boost { openBoostPanel(in: window); return true }
         guard tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return false }
+        if command == .boost { openBoostPanel(in: window); return true }
         if command == .developerMode {
             guard page.url.host != nil else { return false }
             toggleDeveloperSite(of: page, in: window)

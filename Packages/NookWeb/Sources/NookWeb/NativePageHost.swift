@@ -61,6 +61,28 @@ public protocol NativePageHost: NativePageResourceOwner {
                  activeItemID: UUID?, in window: BrowserWindowState) -> Bool
 }
 
+/// A native host can settle a space intent without inferring the winner from
+/// discovery notifications. The browser still owns all prompt interactions.
+@MainActor
+public protocol NativeSpaceSwitchHost: NativePageHost {
+    func switchSpace(to profile: Profile, page: (any PageNavigation)?,
+                     in window: BrowserWindowState, isCurrent: @escaping @MainActor () -> Bool,
+                     completion: @escaping @MainActor (NativeSpaceSwitchOutcome) -> Void)
+}
+
+public enum NativeSpaceSwitchOutcome {
+    case applied((any PageNavigation)?)
+    case superseded(NativeSpaceSwitchSelection)
+    case refused(retained: NativeSpaceSwitchSelection?)
+    case closed
+    case unresolved
+}
+
+public enum NativeSpaceSwitchSelection {
+    case page(any PageNavigation)
+    case empty(profileID: UUID)
+}
+
 struct NativePageCreation {
     let id: UUID
     let profileID: UUID

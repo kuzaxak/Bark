@@ -115,9 +115,10 @@ constexpr BarcBridge kBridge = {
     .window_set_chrome = &barc_window_set_chrome,
     .window_host_observe = &barc_window_host_observe,
     .window_host_unobserve = &barc_window_host_unobserve,
+    .window_switch_space = &barc_window_switch_space,
 };
 }  // namespace
 
-const BarcBridge* barc_bridge_v11() {
+const BarcBridge* barc_bridge_v12() {
   return &kBridge;
 }

@@ -28,8 +28,9 @@ extern "C" {
 #endif
 #define BARC_API __attribute__((visibility("default")))
 // Version 10 moves every call into one table and gives each crossing struct a
-// leading size. Version 11 adds the window host's calls.
-#define BARC_BRIDGE_VERSION 11
+// leading size. Version 11 adds the window host's calls. Version 12 adds
+// explicit space switch outcomes.
+#define BARC_BRIDGE_VERSION 12
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.
@@ -38,15 +39,15 @@ BARC_API const char* barc_public_headers_sha256(void);
 // version renames it, so an app and framework built for different versions fail
 // at dlsym, as Chromium's ChromeAppModeStart_v<N> does. Update the name in
 // chrome/app/framework.exports and framework.order with it.
-#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v11"
+#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v12"
 typedef int (*BarcEngineMain)(int argc, const char** argv);
-BARC_API int barc_engine_main_v11(int argc, const char** argv);
+BARC_API int barc_engine_main_v12(int argc, const char** argv);
 // The table for this version, valid for the process lifetime. Its name changes
 // with the entry's.
-#define BARC_BRIDGE_SYMBOL "barc_bridge_v11"
+#define BARC_BRIDGE_SYMBOL "barc_bridge_v12"
 struct BarcBridge;
 typedef const struct BarcBridge* (*BarcBridgeEntry)(void);
-BARC_API const struct BarcBridge* barc_bridge_v11(void);
+BARC_API const struct BarcBridge* barc_bridge_v12(void);
 
 // ---- Startup ----------------------------------------------------------------
 
@@ -167,7 +168,16 @@ enum BarcPageCommand {
   BARC_PAGE_CLEAR_BACK_FORWARD_CACHE = 11,
   BARC_PAGE_DEVTOOLS_CONSOLE = 12,
   BARC_PAGE_DEVTOOLS_NETWORK = 13,
-  BARC_PAGE_DEVTOOLS_PERFORMANCE = 14
+  BARC_PAGE_DEVTOOLS_PERFORMANCE = 14,
+  // These target an exact visible page, including an attached split pane or Peek.
+  BARC_PAGE_SHOW_CERTIFICATE = 15,
+  // Returns a BarcCertificateState for the visible committed document.
+  BARC_PAGE_CERTIFICATE_STATE = 16
+};
+enum BarcCertificateState {
+  BARC_CERTIFICATE_UNAVAILABLE = 0,
+  BARC_CERTIFICATE_AVAILABLE = 1,
+  BARC_CERTIFICATE_SECURE = 2
 };
 enum BarcHistoryDirection { BARC_HISTORY_BACK = 0, BARC_HISTORY_FORWARD = 1 };
 
@@ -407,7 +417,9 @@ enum BarcDiscoveryWindowFlags {
   BARC_DISCOVERY_OWNER_ENDING = 32,
   BARC_DISCOVERY_COMPACT_MINI = 64,
   BARC_DISCOVERY_EMPTY_STRIP = 128,
-  BARC_DISCOVERY_APP_LIFETIME = 256
+  BARC_DISCOVERY_APP_LIFETIME = 256,
+  // The selected space presents no page despite any parked strip selection.
+  BARC_DISCOVERY_SPACE_SUPPRESSED = 512
 };
 enum BarcDiscoveryTabFlags {
   BARC_DISCOVERY_ACTIVE_TAB = 1,
@@ -533,6 +545,64 @@ typedef void (*BarcWindowHostCallback)(const BarcWindowHostEvent* event,
                                        void* context);
 
 // ---- The table -----------------------------------------------------------------
+
+// A space is resolved by the app. Window anchors the physical group, client
+// names its requested logical owner, and tab is optional. With tab zero,
+// the selected space presents no page and its native tab strip stays parked.
+typedef struct BarcSpaceSwitchRequest {
+  uint32_t size;
+  uint64_t request;
+  int32_t window;
+  int32_t client;
+  int32_t tab;
+} BarcSpaceSwitchRequest;
+
+typedef enum BarcSpaceSwitchStatus {
+  BARC_SPACE_SWITCH_APPLIED = 1,
+  BARC_SPACE_SWITCH_SUPERSEDED = 2,
+  BARC_SPACE_SWITCH_REFUSED = 3,
+  BARC_SPACE_SWITCH_CLOSED = 4,
+} BarcSpaceSwitchStatus;
+
+typedef enum BarcSpaceSwitchPromptKind {
+  BARC_SPACE_SWITCH_PERMISSION = 1,
+  BARC_SPACE_SWITCH_UPLOAD = 2,
+  BARC_SPACE_SWITCH_TAB_MODAL = 3,
+} BarcSpaceSwitchPromptKind;
+
+typedef enum BarcSpaceSwitchPromptDisposition {
+  BARC_SPACE_SWITCH_PROMPT_PARKED = 1,
+  BARC_SPACE_SWITCH_PROMPT_RETAINED = 2,
+  BARC_SPACE_SWITCH_PROMPT_RETIRED = 3,
+  BARC_SPACE_SWITCH_PROMPT_CANCELLED = 4,
+  BARC_SPACE_SWITCH_PROMPT_WAITING = 5,  // Live chooser preparing its panel.
+} BarcSpaceSwitchPromptDisposition;
+
+typedef struct BarcSpaceSwitchPrompt {
+  uint32_t size;
+  int32_t kind;
+  int32_t disposition;
+  int32_t client;
+  int32_t tab;
+  uint64_t document;
+} BarcSpaceSwitchPrompt;
+
+typedef struct BarcSpaceSwitchResult {
+  uint32_t size;
+  int32_t status;
+  uint64_t request;
+  uint64_t physical_group;
+  int32_t selected_client;
+  int32_t active_tab;
+  // Observable outgoing renderer permissions, upload chooser callbacks and
+  // WebContents-modal dialogs. OS-wide and other external dialogs have no
+  // document-aware tracking here. A zero count describes the tracked kinds.
+  const BarcSpaceSwitchPrompt* prompts;
+  size_t prompt_count;
+} BarcSpaceSwitchResult;
+
+typedef void (*BarcSpaceSwitchCallback)(const BarcSpaceSwitchResult* result,
+                                       void* context);
 
 struct BarcBridge {
   size_t size;
@@ -754,11 +824,13 @@ struct BarcBridge {
   size_t (* _Nonnull tab_copy_launch_space)(int32_t window, int32_t tab,
                                             char* output, size_t capacity);
   int (* _Nonnull tab_application_pending)(int32_t window, int32_t tab);
-  // command is a BarcPageCommand. UI commands target only this exact selected
-  // logical owner and active tab. No selection/focus or fallback retargeting is
-  // performed. Return dispatch acceptance, not completion of a dialog, find
+  // command is a BarcPageCommand. UI commands normally target only this exact
+  // selected logical owner and active tab. Certificate commands use the exact
+  // attached visible page, including a split or Peek. No selection/focus or
+  // fallback retargeting is performed. Return dispatch acceptance (or a
+  // BarcCertificateState for CERTIFICATE_STATE), not completion of a dialog, find
   // result, print job or DevTools. Refused during bridge callbacks; callers may
-  // post a browser UI task. CLEAR_BACK_FORWARD_CACHE alone also admits an exact
+  // post a browser UI task. CLEAR_BACK_FORWARD_CACHE also admits an exact
   // background tab; it drops cached history documents without
   // selecting/reloading its live page.
   int (* _Nonnull tab_execute_command)(int32_t window, int32_t tab,
@@ -1116,6 +1188,15 @@ struct BarcBridge {
                                             void* context);
   // Stops delivery, including events already posted. Unknown tokens are ignored.
   void (* _Nonnull window_host_unobserve)(uint64_t observation);
+
+  // Explicit space selection in a shared physical window (version 12). Returns zero
+  // without a callback for invalid ABI input. Otherwise calls back exactly once
+  // with the final owner and actual active tab, even when selection is refused.
+  // Nested requests complete when the enclosing selection unwinds. The result
+  // and its prompt records are immutable borrowed data during the callback.
+  int (* _Nonnull window_switch_space)(const BarcSpaceSwitchRequest* request,
+                                         BarcSpaceSwitchCallback callback,
+                                         void* context);
 };
 
 #ifdef __cplusplus

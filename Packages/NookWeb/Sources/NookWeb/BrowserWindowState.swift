@@ -32,6 +32,11 @@ public class BrowserWindowState {
     /// a terminal notification, not presentation ownership or a retry scheduler.
     @ObservationIgnored public var nativePresentationDidSettle: (@MainActor (Bool) -> Void)?
     @ObservationIgnored var nativeSelectionGeneration: UUID?
+    @ObservationIgnored var nativeSpaceSwitchGeneration: UUID?
+    public var nativeSpaceSwitchIsPending: Bool {
+        nativeSpaceSwitchGeneration != nil && nativeSpaceSwitchGeneration == nativeSelectionGeneration
+    }
+    public internal(set) var nativeSpaceSwitchIsUnresolved = false
     @ObservationIgnored weak var nativeSelectionSession: PageSession?
     @ObservationIgnored var nativeSplitPreparation: NativeSplitPreparation?
 

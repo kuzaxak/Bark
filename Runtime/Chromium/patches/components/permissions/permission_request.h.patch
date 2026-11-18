@@ -1,0 +1,15 @@
+diff --git a/components/permissions/permission_request.h b/components/permissions/permission_request.h
+index 528d64f665..4097735b71 100644
+--- a/components/permissions/permission_request.h
++++ b/components/permissions/permission_request.h
+@@ -85,6 +85,10 @@ class PermissionRequest {
+
+   virtual ~PermissionRequest();
+
++  base::WeakPtr<PermissionRequest> GetWeakPtr() {
++    return weak_factory_.GetWeakPtr();
++  }
++
+   const GURL& requesting_origin() const { return data_->requesting_origin; }
+   const GURL& embedding_origin() const { return data_->embedding_origin; }
+   RequestType request_type() const;

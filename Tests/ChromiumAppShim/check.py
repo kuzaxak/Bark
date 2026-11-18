@@ -30,11 +30,11 @@ VERSION = '156.0.8078.80'
 FRAMEWORK = 'Bark Framework.framework'
 BUNDLE_ID = 'ee.qdo.bark'
 DELEGATING_ZONE = 'DelegatingDefaultZoneForPartitionAlloc'
-BRIDGE_VERSION = 11
+BRIDGE_VERSION = 12
 ENTRY = f'barc_engine_main_v{BRIDGE_VERSION}'
 TABLE = f'barc_bridge_v{BRIDGE_VERSION}'
-# The last revision with the version 10 app, which a version 11 engine must refuse.
-V10_REVISION = 'd5c7eec1'
+# A historical v11 app that a v12 engine must refuse.
+V11_REVISION = '606a81d47eb588589b36c18c13a0128c3744d54f'
 ABORT_STATUS = 134
 
 ENGINE_PLIST = dict(CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundleName='Bark',
@@ -285,6 +285,18 @@ def header_cases(work):
     symbols = subprocess.check_output(['nm', '-gjU', str(work / 'linkage.o')], text=True).split()
     check('from C++ the entry and the table keep C linkage', sorted(symbols) == sorted([f'_{ENTRY}', f'_{TABLE}']), symbols)
 
+    c = work / 'import.c'
+    c.write_text('#include "BarcChromium/barc_bridge_api.h"\n'
+                 'static void complete(const BarcSpaceSwitchResult* result, void* context) {}\n'
+                 'int select_space(const struct BarcBridge* bridge) {\n'
+                 '  const BarcSpaceSwitchRequest request = {sizeof(request), 1, 1, 2, 3};\n'
+                 '  return bridge->window_switch_space(&request, complete, (void*)0);\n'
+                 '}\n')
+    run = subprocess.run(['xcrun', 'clang', '-arch', 'x86_64', '-std=c11',
+                          f'-I{PUBLIC_HEADERS}', '-fsyntax-only', str(c)],
+                         capture_output=True, text=True)
+    check('C imports the size-checked space request and callback', run.returncode == 0, run.stderr[-600:])
+
     swift = work / 'import.swift'
     swift.write_text('import BarcChromium\n'
                      'let entry: String = BARC_ENGINE_MAIN_SYMBOL\n'
@@ -293,6 +305,10 @@ def header_cases(work):
                      'var split = BarcSplitLayout()\n'
                      'split.size = MemoryLayout<BarcSplitLayout>.size\n'
                      'let target = BarcApplicationTarget()\n'
+                     'var request = BarcSpaceSwitchRequest()\n'
+                     'request.size = UInt32(MemoryLayout<BarcSpaceSwitchRequest>.size)\n'
+                     'let callback: BarcSpaceSwitchCallback = { result, _ in _ = result?.pointee.active_tab }\n'
+                     'func switchSpace(_ bridge: BarcBridge) -> Int32 { bridge.window_switch_space(&request, callback, nil) }\n'
                      'func publish(_ bridge: BarcBridge) -> Int32 { bridge.page_tweaks_publish(nil, 0) }\n')
     run = subprocess.run(['xcrun', 'swiftc', '-target', 'x86_64-apple-macosx15.5', '-typecheck', '-I', str(PUBLIC_HEADERS), str(swift)],
                          capture_output=True, text=True)
@@ -366,13 +382,13 @@ def package_cases(work):
     check('linking the package adds no library', linked == ['/usr/lib/libSystem.B.dylib'], linked)
 
 
-def v10_shim(output):
-    """The version 10 app's main and headers, from the last revision that had them."""
-    tree = output.parent / 'v10-tree'
+def v11_shim(output):
+    """The version 11 app's main and headers, from the last revision that had them."""
+    tree = output.parent / 'v11-tree'
     module = tree / 'headers/BarcChromium'
     module.mkdir(parents=True)
     def show(path):
-        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{V10_REVISION}:{path}'], capture_output=True, check=True).stdout
+        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{V11_REVISION}:{path}'], capture_output=True, check=True).stdout
     for name in ['main.cc', 'early_zone_registration_apple.cc', 'early_zone_registration_apple.h', 'early_zone_registration_utils_apple.h']:
         (tree / name).write_bytes(show(f'ChromiumApp/{name}'))
     headers = f'Packages/BarkEngine/BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium'
@@ -426,20 +442,20 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
     check('that error names the missing entry', ENTRY in run.stderr, run.stderr)
 
-    v10_engine = work / 'framework-v10.dylib'
-    fake_framework(v10_engine, entry='barc_engine_main_v10', table='barc_bridge_v10', digest='a' * 64)
-    run, lines = launch('v11-app-v10-engine', framework=v10_engine)
-    check('a version 11 app with a version 10 engine aborts before the shell loads',
+    v11_engine = work / 'framework-v11.dylib'
+    fake_framework(v11_engine, entry='barc_engine_main_v11', table='barc_bridge_v11', digest='a' * 64)
+    run, lines = launch('v12-app-v11-engine', framework=v11_engine)
+    check('a version 12 app with a version 11 engine aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines and 'bridge-table' not in lines, (run.returncode, lines))
-    check('that error says the engine was built for another bridge version and names version 11',
-          ENTRY in run.stderr and 'another bridge version' in run.stderr and 'needs version 11' in run.stderr, run.stderr)
+    check('that error says the engine was built for another bridge version and names version 12',
+          ENTRY in run.stderr and 'another bridge version' in run.stderr and 'needs version 12' in run.stderr, run.stderr)
 
-    v10_app = v10_shim(work / 'v10-app')
-    run, lines = launch('v10-app-v11-engine', main=v10_app)
-    check('a version 10 app with a version 11 engine aborts before the shell loads',
+    v11_app = v11_shim(work / 'v11-app')
+    run, lines = launch('v11-app-v12-engine', main=v11_app)
+    check('a version 11 app with a version 12 engine aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines, (run.returncode, lines))
-    check('that error says the engine was built for another bridge version and names version 10',
-          'barc_engine_main_v10' in run.stderr and 'another bridge version' in run.stderr and 'needs version 10' in run.stderr, run.stderr)
+    check('that error says the engine was built for another bridge version and names version 11',
+          'barc_engine_main_v11' in run.stderr and 'another bridge version' in run.stderr and 'needs version 11' in run.stderr, run.stderr)
 
     no_table = work / 'framework-without-table.dylib'
     fake_framework(no_table, table=None)
@@ -791,7 +807,7 @@ def stage_cases(work, shim, framework_lib, shell_lib):
             lambda a, e, p: (versioned(e) / 'Bark Framework').write_text('other'), sealed=False)
     refused('unlisted-file', 'an artifact holding a file its checksums do not list', 'does not match its SHA256SUMS',
             lambda a, e, p: (e / 'extra').write_text('extra'), sealed=False)
-    refused('no-checksums', 'an artifact without its checksums', 'does not match its SHA256SUMS',
+    refused('no-checksums', 'an artifact without its checksums', 'Missing engine artifact manifest:',
             lambda a, e, p: (e / 'SHA256SUMS').unlink(), sealed=False)
     def other_pin(a, e, p):
         (p / 'include/BarcChromium/engine-artifact.sha256').write_text('0' * 64 + '\n')

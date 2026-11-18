@@ -235,7 +235,7 @@ extension TabsController {
     private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?,
                         nativeAdmitted: Bool = false, showingAgentSpace: Bool = false,
                         adoptionGeneration: UUID? = nil,
-                        validateNative: (() -> Bool)? = nil) {
+                        validateNative: (() -> Bool)? = nil, preferredSpace: UUID? = nil) {
         func admissionIsCurrent() -> Bool {
             (adoptionGeneration == nil || (window.nativeSelectionGeneration == adoptionGeneration &&
                 windowRegistry.windows[window.id] === window && item(itemID) != nil)) &&
@@ -253,6 +253,12 @@ extension TabsController {
             return selectForAgent(itemID)
         }
         if profileEngine == .chromium && !nativeAdmitted {
+            if !window.isIncognito, let host = nativePageHost as? any NativeSpaceSwitchHost,
+               let space = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source),
+               space != window.spaceID || window.showsNativeEmptySpace || window.nativeSpaceSwitchIsPending {
+                switchNativeSpace(space, itemID: itemID, in: window, through: host)
+                return
+            }
             prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
                 guard let self, let window else { return }
                 self.select(itemID, in: window, leaving: self.selectedSession(in: window),
@@ -266,15 +272,19 @@ extension TabsController {
             guard window.spaceID == agentSpaceID || showingAgentSpace else { return selectForAgent(itemID) }
             agentItemID = itemID
         }
-        let itemSpace = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source)
+        let itemSpace = preferredSpace ?? selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source)
         let movedSpace = itemSpace.map { $0 != window.spaceID } ?? false
-        if let itemSpace {
-            window.spaceID = itemSpace
+        guard let spaceID = itemSpace ?? window.spaceID else { return }
+        if preferredSpace != nil {
+            // An outcome supplies the space and its pane together. When the new
+            // space becomes visible its remembered pane is already up to date.
+            window.selectedItemBySpace[spaceID] = itemID
+            guard admissionIsCurrent() else { return }
         }
-        guard let spaceID = window.spaceID else { return }
+        if let itemSpace, preferredSpace == nil || movedSpace { window.spaceID = itemSpace }
         if movedSpace { sessionDelegate?.windowSpaceChanged(window) }
         guard admissionIsCurrent() else { return }
-        window.selectedItemBySpace[spaceID] = itemID
+        if preferredSpace == nil { window.selectedItemBySpace[spaceID] = itemID }
         guard admissionIsCurrent() else {
             // An observation callback can move a private page before this
             // setter returns. Never reclaim its newer owner or retain a stale
@@ -368,6 +378,12 @@ extension TabsController {
         guard source.space(spaceID) != nil else { return }
         if profileEngine == .chromium {
             let order = displayOrder(inSpace: spaceID)
+            if !window.isIncognito, let host = nativePageHost as? any NativeSpaceSwitchHost {
+                let remembered = window.selectedItemBySpace[spaceID].flatMap { order.contains($0) ? $0 : nil }
+                let destination = remembered ?? (window.emptiedSpaces.contains(spaceID) ? nil : order.first)
+                switchNativeSpace(spaceID, itemID: destination, in: window, through: host)
+                return
+            }
             if let remembered = window.selectedItemBySpace[spaceID], order.contains(remembered) {
                 select(remembered, in: window, leaving: selectedSession(in: window), showingAgentSpace: true)
             } else if !window.emptiedSpaces.contains(spaceID), let first = order.first {
@@ -399,6 +415,150 @@ extension TabsController {
             window.selectedItemBySpace[spaceID] = nil
             mirror(window)
             window.refreshCompositor()
+        }
+    }
+
+    private func switchNativeSpace(_ spaceID: UUID, itemID: UUID?, in window: BrowserWindowState,
+                                   through host: any NativeSpaceSwitchHost) {
+        guard !isTerminating, windowRegistry.windows[window.id] === window,
+              let profile = profile(forSpace: spaceID), isProfileAvailable(profile.id) else { return }
+        let generation = UUID()
+        window.nativeSpaceSwitchGeneration = generation
+        guard cancelNativeSplit(in: window), window.nativeSpaceSwitchGeneration == generation,
+              windowRegistry.windows[window.id] === window else { return }
+        let previous = window.nativeSelectionSession
+        window.nativeSelectionGeneration = generation
+        window.nativeSelectionSession = nil
+
+        let current = { [weak self, weak window, weak host] in
+            guard let self, let window, let host else { return false }
+            return window.nativeSelectionGeneration == generation && self.windowRegistry.windows[window.id] === window &&
+                !self.isTerminating && self.nativePageHost === host
+        }
+
+        let settle = { [weak self, weak window, weak host] (outcome: NativeSpaceSwitchOutcome) in
+            guard let self, let window, let host, current() else { return }
+            @MainActor func publishEmpty(_ destination: UUID) {
+                let changed = window.spaceID != destination
+                window.nativeEmptySpaceID = destination
+                guard current() else { return }
+                window.selectedItemBySpace[destination] = nil
+                guard current() else { return }
+                if changed { window.spaceID = destination }
+                guard current() else { return }
+                if changed { self.sessionDelegate?.windowSpaceChanged(window) }
+                guard current() else { return }
+                self.mirror(window)
+                window.refreshCompositor()
+            }
+
+            var presented = false
+            var selected: PageSession?
+            var destination = spaceID
+            var applied = false
+            let finalSelection: NativeSpaceSwitchSelection?
+            switch outcome {
+            case .applied(let navigation):
+                finalSelection = nil
+                if self.tree.dataStoreID(for: spaceID) == profile.id && self.isProfileAvailable(profile.id) {
+                    applied = true
+                    if let itemID, let navigation, let page = self.session(for: itemID), page.navigation === navigation,
+                       self.selectionSpaceID(for: itemID, currentSpaceID: spaceID, in: self.tree) == spaceID {
+                        selected = page
+                    } else if itemID == nil && navigation == nil {
+                        publishEmpty(spaceID)
+                        presented = true
+                    }
+                }
+            case .superseded(let selection), .refused(retained: .some(let selection)):
+                finalSelection = selection
+            case .refused(retained: nil), .closed, .unresolved:
+                finalSelection = nil
+            }
+            switch finalSelection {
+            case .page(let navigation):
+                if let previous = self.selectedSession(in: window), previous.navigation === navigation,
+                   host.isNativeSelection(navigation, in: window) {
+                    // A refusal can retain a favorite or pane in a space that
+                    // differs from its home. Both IDs are already correct.
+                    presented = true
+                } else {
+                    selected = self.sessions.first { $0.navigation === navigation }
+                    if let page = selected, let space = self.selectionSpaceID(for: page.itemID,
+                        currentSpaceID: window.spaceID, in: self.tree) {
+                        destination = space
+                    } else { selected = nil }
+                }
+            case .empty(let profileID):
+                let candidates = self.userSpaces(for: window).filter { self.tree.dataStoreID(for: $0.id) == profileID }
+                if let empty = candidates.first(where: { $0.id == window.spaceID })?.id ??
+                    (candidates.count == 1 ? candidates.first?.id : nil) {
+                    if window.spaceID != empty || !window.showsNativeEmptySpace { publishEmpty(empty) }
+                    presented = true
+                }
+            case nil:
+                break
+            }
+            if let selected, let navigation = selected.navigation,
+               navigation.profileID == self.tree.dataStoreID(for: destination),
+               host.isNativeSelection(navigation, in: window), current() {
+                self.select(selected.itemID, in: window, leaving: self.selectedSession(in: window),
+                            nativeAdmitted: true, showingAgentSpace: true, adoptionGeneration: generation,
+                            validateNative: { current() && host.isNativeSelection(navigation, in: window) },
+                            preferredSpace: destination)
+                presented = window.selectedItemID == selected.itemID && window.spaceID == destination &&
+                    host.isNativeSelection(navigation, in: window)
+            }
+            guard current() else { return }
+            if case .refused(retained: nil) = outcome {
+                // Preparation or the bridge rejected this before selecting.
+            } else {
+                window.nativeSpaceSwitchIsUnresolved = !presented
+            }
+            guard current() else { return }
+            window.nativeSelectionGeneration = nil
+            window.nativeSelectionSession = nil
+            if applied && presented, let selected, window.selectedItemID == selected.itemID {
+                selected.resumeStagedNativeSearch()
+                if window.nativeSelectionGeneration == nil && window.selectedItemID == selected.itemID {
+                    self.restoreSavedNativeSplitIfNeeded(in: window)
+                }
+            }
+            if window.nativeSelectionGeneration == nil {
+                window.nativePresentationDidSettle?(presented)
+            }
+        }
+
+        if previous?.itemID != itemID { previous?.cancelNativePreparation(in: window) }
+        guard current() else { return }
+        let submit = { [weak self, weak window, weak host] (page: (any PageNavigation)?) in
+            guard let self, let window, let host, current() else { return }
+            guard self.tree.dataStoreID(for: spaceID) == profile.id, self.isProfileAvailable(profile.id),
+                  itemID.map({ self.selectionSpaceID(for: $0, currentSpaceID: spaceID, in: self.tree) == spaceID }) ?? true else {
+                settle(.refused(retained: nil)); return
+            }
+            if let leaving = self.selectedSession(in: window), leaving.navigation !== page {
+                leaving.captureSwitcherSnapshot()
+            }
+            guard current() else { return }
+            // Once submitted, the window owns the result even if its requested
+            // page retires before the engine can report the final selection.
+            window.nativeSelectionSession = nil
+            host.switchSpace(to: profile, page: page, in: window, isCurrent: current, completion: settle)
+        }
+        guard let itemID else { submit(nil); return }
+        guard let page = ensureSession(for: itemID), page.profile?.id == profile.id else {
+            settle(.refused(retained: nil)); return
+        }
+        guard current() else { return }
+        window.nativeSelectionSession = page
+        page.ensureNativePage(in: window) { [weak self, weak page] prepared in
+            guard let self, current() else { return }
+            guard prepared, let page, self.session(for: itemID) === page,
+                  page.profile?.id == profile.id, let navigation = page.navigation else {
+                settle(.refused(retained: nil)); return
+            }
+            submit(navigation)
         }
     }
 

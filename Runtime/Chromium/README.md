@@ -368,7 +368,7 @@ import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
 `--barc-app-profile` remains temporary-root verification with mock keychain and
 isolated preferences; neither mode enables cloud sync.
 
-Normal startup requires bridge version 11 before ChromeMain. Native registration
+Normal startup requires bridge version 12 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default

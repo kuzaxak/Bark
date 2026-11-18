@@ -1,12 +1,12 @@
 diff --git a/chrome/app/framework.exports b/chrome/app/framework.exports
-index 37c881f5d2..3539ae9693 100644
+index 37c881f5d2..eeaa589921 100644
 --- a/chrome/app/framework.exports
 +++ b/chrome/app/framework.exports
 @@ -18,4 +18,7 @@
  
  _ChromeAppModeStart_v8
  _ChromeMain
-+_barc_bridge_v11
-+_barc_engine_main_v11
++_barc_bridge_v12
++_barc_engine_main_v12
 +_barc_public_headers_sha256
  _ChromeWebAppShortcutCopierMain

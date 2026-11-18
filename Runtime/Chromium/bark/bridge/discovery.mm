@@ -152,6 +152,7 @@
 
 #include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/bridge_internal.h"
+#include "bark/browser/ui/native_space_page.h"
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_window_host.h"
 
@@ -296,6 +297,8 @@ bool HostDiscoveryWindowRow(BrowserWindowInterface* browser,
   if (UnloadController::From(browser)->owner_close_admitted())
     row->flags |= BARC_DISCOVERY_OWNER_ENDING;
   if (browser->GetTabStripModel()->empty()) row->flags |= BARC_DISCOVERY_EMPTY_STRIP;
+  if (bark::IsNativeSpacePageSuppressed(browser))
+    row->flags |= BARC_DISCOVERY_SPACE_SUPPRESSED;
   if (AppLifetimeGroups().contains(row->physical_group))
     row->flags |= BARC_DISCOVERY_APP_LIFETIME;
   return true;
@@ -325,6 +328,8 @@ bool DiscoveryWindowRow(BrowserWindowInterface* browser,
   if (UnloadController::From(browser)->owner_close_admitted())
     row->flags |= BARC_DISCOVERY_OWNER_ENDING;
   if (browser->GetTabStripModel()->empty()) row->flags |= BARC_DISCOVERY_EMPTY_STRIP;
+  if (bark::IsNativeSpacePageSuppressed(browser))
+    row->flags |= BARC_DISCOVERY_SPACE_SUPPRESSED;
   if (AppLifetimeGroups().contains(row->physical_group))
     row->flags |= BARC_DISCOVERY_APP_LIFETIME;
   return true;

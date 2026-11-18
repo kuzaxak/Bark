@@ -1,8 +1,16 @@
 diff --git a/chrome/browser/permissions/chrome_permissions_client.cc b/chrome/browser/permissions/chrome_permissions_client.cc
-index 18110dccfe..d748ef4193 100644
+index 18110dccfe..5d6a49799b 100644
 --- a/chrome/browser/permissions/chrome_permissions_client.cc
 +++ b/chrome/browser/permissions/chrome_permissions_client.cc
-@@ -277,6 +277,31 @@ void ShowInfobar(content::WebContents* web_contents) {
+@@ -8,6 +8,7 @@
+ #include <optional>
+ #include <vector>
+
++#include "bark/browser/ui/native_space_page.h"
+ #include "base/check_deref.h"
+ #include "base/feature_list.h"
+ #include "base/functional/callback_helpers.h"
+@@ -277,6 +278,32 @@ void ShowInfobar(content::WebContents* web_contents) {
  #endif
  }  // namespace
  
@@ -12,7 +20,8 @@ index 18110dccfe..d748ef4193 100644
 +  if (tab) {
 +    auto* owner = tab->GetBrowserWindowInterface();
 +    return owner && !owner->IsDeleteScheduled() &&
-+             owner->IsSelectedForNativeWindow();
++           owner->IsSelectedForNativeWindow() &&
++           !bark::IsNativeSpacePageSuppressed(owner);
 +  }
 +#endif
 +  return true;

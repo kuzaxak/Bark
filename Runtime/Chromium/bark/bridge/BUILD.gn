@@ -1,6 +1,6 @@
 assert(is_mac)
 
-# The C bridge the app reaches through barc_bridge_v11(), and the hooks
+# The C bridge the app reaches through barc_bridge_v12(), and the hooks
 # upstream code calls.
 source_set("bridge") {
   sources = [
@@ -20,6 +20,7 @@ source_set("bridge") {
     "native_shell.mm",
     "page_commands.mm",
     "peek.mm",
+    "space_switch.mm",
     "splits.mm",
     "tab_observation.mm",
     "window_host.mm",
@@ -40,12 +41,14 @@ source_set("bridge") {
     "//chrome/app:command_ids",
     "//chrome/browser",
     "//chrome/browser/content_settings:content_settings_factory",
+    "//chrome/browser:certificate_viewer",
     "//chrome/browser/devtools",
     "//chrome/browser/lifetime",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/profiles:profile_manager",
     "//chrome/browser/profiles/keep_alive",
     "//chrome/browser/search_engines",
+    "//chrome/browser/ssl",
     "//chrome/browser/ui",
     "//chrome/browser/ui:browser_commands",
     "//chrome/browser/ui/browser_window",
@@ -62,11 +65,13 @@ source_set("bridge") {
     "//components/infobars/core",
     "//components/os_crypt/common:keychain_password_mac",
     "//components/password_manager/content/browser",
+    "//components/permissions",
     "//components/search_engines",
     "//components/sessions:session_id",
     "//components/split_tabs",
     "//components/tabs:public",
     "//components/viz/common",
+    "//components/web_modal",
     "//content/public/browser",
     "//mojo/public/cpp/bindings",
     "//net",

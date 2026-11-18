@@ -70,6 +70,7 @@
 #include "mojo/public/cpp/bindings/associated_receiver.h"
 #include "chrome/common/chrome_render_frame.mojom.h"
 #include "third_party/blink/public/common/associated_interfaces/associated_interface_provider.h"
+#include "bark/browser/ui/native_space_page.h"
 #include "content/public/browser/navigation_handle.h"
 #include "content/public/browser/page_navigator.h"
 #include "content/public/browser/navigation_discard_reason.h"
@@ -706,10 +707,22 @@ int barc_tab_transfer_with_admission(int32_t source, int32_t tab,
 }
 int barc_window_select(int32_t id) {
   auto* window = Window(id);
-  if (auto* bark_window = bark::BarkBrowserWindow::FromBrowser(window))
-    return bark_window->host()->Select(bark_window);
-  auto* view = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
-  return view && view->browser_widget()->SelectLogicalBrowserView(view);
+  if (!window) {
+    return 0;
+  }
+  const auto alive = window->GetWeakPtr();
+  bool selected = false;
+  if (auto* bark_window = bark::BarkBrowserWindow::FromBrowser(window)) {
+    selected = bark_window->host()->Select(bark_window);
+  } else if (auto* view = BrowserView::GetBrowserViewForBrowser(window)) {
+    selected = view->browser_widget()->SelectLogicalBrowserView(view);
+  }
+  if (selected && alive &&
+      bark::SetNativeSpacePageSuppressed(alive.get(), false)) {
+    alive->NotifyNativeWindowSelectionChanged();
+    barc::BrowserDiscoveryChanged();
+  }
+  return alive && alive->IsSelectedForNativeWindow() && selected;
 }
 size_t barc_tab_copy_launch_space(int32_t window, int32_t tab_id,
                                    char* buffer, size_t capacity) {

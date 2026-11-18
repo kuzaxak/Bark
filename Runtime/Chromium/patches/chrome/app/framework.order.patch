@@ -1,5 +1,5 @@
 diff --git a/chrome/app/framework.order b/chrome/app/framework.order
-index 6dbc3aeff3..4854588cc5 100644
+index 6dbc3aeff3..f5daff2cf5 100644
 --- a/chrome/app/framework.order
 +++ b/chrome/app/framework.order
 @@ -29,5 +29,10 @@ _ChromeAppModeStart_v8
@@ -7,8 +7,8 @@ index 6dbc3aeff3..4854588cc5 100644
  _ChromeWebAppShortcutCopierMain
  
 +# Bark entry, header digest and bridge table.
-+_barc_bridge_v11
-+_barc_engine_main_v11
++_barc_bridge_v12
++_barc_engine_main_v12
 +_barc_public_headers_sha256
 +
  # _ChromeMain must be listed last.  That's the whole point of this file.

@@ -114,6 +114,8 @@ void* barc_tab_native_view(int32_t window, int32_t tab);
 int barc_window_set_chrome(int32_t window, const BarcWindowChrome* chrome);
 uint64_t barc_window_host_observe(int32_t window, BarcWindowHostCallback callback, void* context);
 void barc_window_host_unobserve(uint64_t observation);
+int barc_window_switch_space(const BarcSpaceSwitchRequest* request,
+                             BarcSpaceSwitchCallback callback, void* context);
 #ifdef __cplusplus
 }
 #endif

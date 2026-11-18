@@ -1,8 +1,17 @@
 diff --git a/components/permissions/permission_request_manager.h b/components/permissions/permission_request_manager.h
-index 86dbfe3884..44cd8de442 100644
 --- a/components/permissions/permission_request_manager.h
 +++ b/components/permissions/permission_request_manager.h
-@@ -531,6 +531,7 @@ class PermissionRequestManager
+@@ -217,6 +217,9 @@
+   content::WebContents* GetAssociatedWebContents() override;
+   bool RecreateView() override;
+   const PermissionPrompt* GetCurrentPrompt() const override;
++  // Whether this exact request still belongs to the manager, including while
++  // another request has preempted it into the pending queue.
++  bool HasPendingRequest(const PermissionRequest& request) const;
+   EmbeddedPermissionPromptFlowModel* GetEmbeddedPromptFlowModel()
+       const override;
+   void CalculateCurrentVariantForEmbeddedPrompt() override;
+@@ -531,6 +534,7 @@
                                  content::WebContents* new_contents);
    void OnTabAttached(tabs::TabInterface* tab_interface);
    void OnTabActiveChanged();
@@ -10,7 +19,7 @@ index 86dbfe3884..44cd8de442 100644
  
    void RecordPostPromptSessionDuration();
  
-@@ -664,6 +665,9 @@ class PermissionRequestManager
+@@ -664,6 +668,9 @@
    // the bubble itself should be ignored.
    bool ignore_callbacks_from_prompt_ = false;
  

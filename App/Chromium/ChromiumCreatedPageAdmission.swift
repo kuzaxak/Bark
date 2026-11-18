@@ -1144,28 +1144,32 @@ final class ChromiumCreatedPageAdmission {
         }
 
         for (group, product) in products where liveGroups.contains(group) && !utilityGroups.contains(group) {
-            guard let original = selectedRows[group],
+            guard !product.state.nativeSpaceSwitchIsPending, let original = selectedRows[group],
                   let selected = bridge.windowState(original.window), selected.physical_group == group,
                   selected.selected_client == selected.window, eligible(selected),
-                  let session = sessions[selected.active_tab],
+                  let session = sessions[selected.presentedTab],
                   (session.navigation as? ChromiumPageNavigation)?.nativeWindowID == selected.window else { continue }
             // Reflection attaches the existing shell and publishes selection;
             // unlike ordinary selection it cannot select/focus/load in Chromium.
-            let alreadyMirrored = product.state.selectedItemID == session.itemID &&
+            let alreadyMirrored = !product.state.nativeSpaceSwitchIsUnresolved &&
+                product.state.selectedItemID == session.itemID &&
                 session.navigation.map { host.isNativeSelection($0, in: product.state) } == true
             // Chromium activates a neighbour when the active tab closes. While Nook
             // picks the next tab, only a page Chromium just opened, such as a link,
             // or the successor Nook named with the close takes the selection. A page
             // that closed itself reads closed here before its CLOSED reaches the model.
             let closedSelection = (tabs.selectedSession(in: product.state)?.navigation as? ChromiumPageNavigation)?.isClosed == true
+            let independentSelection = host.replacedEmptySpaceSelection(in: product.state)
             if tabs.nativeSelectionIsSettling(in: product.state) || closedSelection,
-               !created.contains(selected.active_tab), !tabs.isCloseSuccessor(session.itemID, in: product.state) {
+               !created.contains(selected.active_tab), !tabs.isCloseSuccessor(session.itemID, in: product.state),
+               !independentSelection {
                 if let page = session.navigation { _ = host.acceptNativeSelection(page, in: product.state) }
                 continue
             }
             guard alreadyMirrored || tabs.reflectNativeSelection(session.itemID, in: product.state),
                   let verified = bridge.windowState(selected.window), verified.physical_group == group,
-                  verified.selected_client == selected.window, verified.active_tab == selected.active_tab else { continue }
+                  verified.selected_client == selected.window, verified.presentedTab == selected.presentedTab else { continue }
+            if independentSelection { host.setPageHidden(false, in: product.state) }
             product.state.windowHandle = product.shell.window
             if let update = host.nativeSplitUpdate(in: product.state, selected: verified, sessions: sessions,
                 savedPages: (product.state.split?.itemIDs ?? []).compactMap { tabs.session(for: $0) }) {

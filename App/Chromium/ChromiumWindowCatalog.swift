@@ -74,6 +74,12 @@ extension BarcBridge {
 }
 
 extension BarcDiscoveryWindow {
+    /// Discovery keeps the logical tab strip's selection while an empty space
+    /// suppresses that page in the physical window.
+    var presentedTab: Int32 {
+        flags & BARC_DISCOVERY_SPACE_SUPPRESSED.rawValue == 0 ? active_tab : 0
+    }
+
     var profileID: UUID? {
         guard profile_kind == BARC_DISCOVERY_REGULAR.rawValue else { return nil }
         let bytes = withUnsafeBytes(of: regular_profile_uuid) { Array($0) }

@@ -107,4 +107,5 @@ let trappingBridge = BarcBridge(
     tab_native_view: { _, _ in fatalError("tab_native_view") },
     window_set_chrome: { _, _ in fatalError("window_set_chrome") },
     window_host_observe: { _, _, _ in fatalError("window_host_observe") },
-    window_host_unobserve: { _ in fatalError("window_host_unobserve") })
+    window_host_unobserve: { _ in fatalError("window_host_unobserve") },
+    window_switch_space: { _, _, _ in fatalError("window_switch_space") })

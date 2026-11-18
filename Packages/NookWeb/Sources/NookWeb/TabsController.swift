@@ -484,7 +484,11 @@ public final class TabsController {
     /// The window's selected page for actions (navigation, reload, find, zoom): nil while another
     /// window holds it. Display code uses `selectedSession(in:)`.
     public func controllableSession(in window: BrowserWindowState) -> PageSession? {
-        guard let session = selectedSession(in: window), !isPageShownElsewhere(session.itemID, from: window) else { return nil }
+        guard !window.nativeSpaceSwitchIsUnresolved,
+              let session = selectedSession(in: window), !isPageShownElsewhere(session.itemID, from: window) else { return nil }
+        if window.nativeSpaceSwitchIsPending {
+            guard let page = session.navigation, nativePageHost?.isNativeSelection(page, in: window) == true else { return nil }
+        }
         return session
     }
 
@@ -791,6 +795,7 @@ public final class TabsController {
             }
             window.nativeSelectionGeneration = nil
             window.nativeSelectionSession = nil
+            window.nativeSpaceSwitchIsUnresolved = false
             admitted()
             // Reopen may stage a cold query on an already-bound pinned page.
             // Resume only after this exact page owns the admitted selection.
@@ -1499,7 +1504,7 @@ public final class TabsController {
     /// window or bootstrapping another page. Adoption must have bound it first.
     @discardableResult
     public func reflectNativeSelection(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
-        guard cancelNativeSplit(in: window) else { return false }
+        guard !window.nativeSpaceSwitchIsPending, cancelNativeSplit(in: window) else { return false }
         guard profileEngine == .chromium, !isTerminating,
               windowRegistry.windows[window.id] === window,
               let session = session(for: itemID), let page = session.navigation,
@@ -1533,7 +1538,9 @@ public final class TabsController {
         guard validate() else { return false }
         finishNativeAdoption(session, in: window, opener: nil, parent: nil,
                              select: true, generation: generation, validateNative: validate)
-        return validate() && window.selectedItemID == itemID
+        guard validate(), window.selectedItemID == itemID else { return false }
+        window.nativeSpaceSwitchIsUnresolved = false
+        return validate()
     }
 
     /// The engine shows this page in `window` when the window's closing page goes.
