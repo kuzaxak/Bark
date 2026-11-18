@@ -1,16 +1,85 @@
 diff --git a/chrome/BUILD.gn b/chrome/BUILD.gn
-index d98c86e5da..e938e28ba6 100644
+index d98c86e..957261c 100644
 --- a/chrome/BUILD.gn
 +++ b/chrome/BUILD.gn
-@@ -1323,6 +1323,7 @@ if (is_win) {
- 
+@@ -535,35 +535,26 @@ if (is_win) {
+     }
+   }
+
+-  mac_app_bundle("chrome_app") {
+-    output_name = chrome_product_full_name
+-
++  # Publish the interactive app's metadata as an SDK input, never as the
++  # metadata of the raw build-tree bundle.
++  mac_info_plist("chrome_integrated_app_info_plist") {
++    executable_name = chrome_product_full_name
+     info_plist_target = ":chrome_app_plist"
+     extra_substitutions = [
+       "CHROMIUM_BUNDLE_ID=$chrome_mac_bundle_id",
+       "CHROMIUM_SHORT_NAME=$chrome_product_short_name",
+       "CHROMIUM_CREATOR=$chrome_mac_creator_code",
+     ]
++  }
+
+-    sources = [
+-      "app/chrome_exe_main_mac.cc",
+-      "app/llvm_profile_util.cc",
+-      "app/llvm_profile_util.h",
+-    ]
+-
+-    configs += [ "//build/config/compiler:wexit_time_destructors" ]
+-
+-    deps = [
+-      "//base:compiler_specific",
+-      "//base/allocator:early_zone_registration_apple",
+-      "//build:branding_buildflags",
+-      "//build/config/compiler:compiler_buildflags",
+-      "//chrome/common:buildflags",
+-      "//chrome/common:version_header",
+-    ]
++  mac_app_bundle("chrome_app") {
++    output_name = chrome_product_full_name
++    info_plist = "//bark/app/sdk_only-Info.plist"
++    sources = [ "//bark/app/bark_sdk_only_main.cc" ]
+
+     bundle_deps = [
+       ":chrome_app_strings_bundle_data",
++      ":chrome_integrated_app_info_plist",
+       ":chrome_resources",
+       ":chrome_versioned_bundle_data",
+     ]
+@@ -580,22 +571,6 @@ if (is_win) {
+       ldflags = [ "-Wl,-exported_symbols_list," +
+                   rebase_path("app/app.exports", root_build_dir) ]
+     }
+-
+-    if (is_component_build) {
+-      # In a component build, the framework is directly linked to the
+-      # executable because dlopen() and loading all the dependent dylibs
+-      # is time-consuming, see https://crbug.com/40176946.
+-      deps += [ ":chrome_framework+link" ]
+-      ldflags = [ "-Wl,-rpath,@executable_path/../Frameworks" ]
+-
+-      # The Framework is packaged inside the .app bundle. But when using the
+-      # component build, all the dependent shared libraries of :chrome_dll are
+-      # not packaged within the framework. This data_deps line makes all of
+-      # those dependent libraries runtime dependencies of the .app bundle.
+-      # This is a bit of a hack, since GN deliberately terminates its search
+-      # for runtime_deps at create_bundle nodes (https://crbug.com/40101435).
+-      data_deps = [ ":chrome_framework" ]
+-    }
+   }
+
+   if (verify_dynamic_libraries) {
+@@ -1323,6 +1298,7 @@ if (is_win) {
+
      deps = [
        ":dependencies",
 +      "//bark:engine",
        "//build:chromeos_buildflags",
        "//chrome/app:command_ids",
        "//chrome/browser:chrome_browser_application_mac",
-@@ -1395,6 +1396,7 @@ if (is_win) {
+@@ -1395,6 +1371,7 @@ if (is_win) {
        ":optimization_guide_library",
        ":swiftshader_binaries",
        ":widevine_cdm_library",

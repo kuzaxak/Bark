@@ -16,6 +16,7 @@ BRIDGE="$ROOT/Runtime/Chromium/bark/bridge"
 refuse() { echo "$1" >&2; exit 1; }
 PUBLIC_HEADERS=(barc_bridge_api.h)
 ENGINE_APP="$BUILD/Bark.app"
+INTEGRATED_APP_INFO="$BUILD/gen/chrome/chrome_integrated_app_info_plist.plist"
 FRAMEWORK_NAME='Bark Framework.framework'
 FRAMEWORK="$ENGINE_APP/Contents/Frameworks/$FRAMEWORK_NAME"
 SLICE="$PACKAGE/BarkEngine.xcframework/macos-x86_64"
@@ -23,7 +24,8 @@ ARTIFACT="$SLICE/Engine"
 [[ ! -e "$ARTIFACT" ]] || refuse "Engine artifact already published, read-only: chmod -R u+w and remove it first: $ARTIFACT"
 [[ -d "$FRAMEWORK" ]] || refuse 'Missing Bark framework'
 [[ -d "$BUILD/Bark Packaging" ]] || refuse 'Missing Bark Packaging'
-VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$ENGINE_APP/Contents/Info.plist")
+[[ -f "$INTEGRATED_APP_INFO" ]] || refuse 'Missing generated metadata for the integrated Bark app'
+VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INTEGRATED_APP_INFO")
 BINARY="$FRAMEWORK/Versions/$VERSION/Bark Framework"
 [[ -f "$BINARY" ]] || refuse 'Missing versioned engine executable'
 [[ $(/usr/bin/lipo -archs "$BINARY") == x86_64 ]] || refuse "Engine must be exactly x86_64: $BINARY"
@@ -59,7 +61,7 @@ PY
 /bin/mkdir -p "$ARTIFACT/Headers" "$SLICE/Headers/BarcChromium"
 /usr/bin/ditto "$FRAMEWORK" "$ARTIFACT/$FRAMEWORK_NAME"
 /usr/bin/ditto "$BUILD/Bark Packaging" "$ARTIFACT/Bark Packaging"
-/bin/cp "$ENGINE_APP/Contents/Info.plist" "$ARTIFACT/engine-Info.plist"
+/bin/cp "$INTEGRATED_APP_INFO" "$ARTIFACT/engine-Info.plist"
 for header in "${PUBLIC_HEADERS[@]}"; do
   /bin/cp "$BRIDGE/$header" "$ARTIFACT/Headers/$header"
   /bin/cp "$BRIDGE/$header" "$SLICE/Headers/BarcChromium/$header"

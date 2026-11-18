@@ -138,8 +138,9 @@ python3 "$barc_repo/Runtime/Chromium/replay_gate.py" "$engine_checkout/src"
 
 `Bark.app` is the outer bundle: the `NookChromiumApp` target owns its executable
 and `Info.plist`, and `Bark Framework.framework` is nested inside it. `BRANDING`
-sets the product name and the `ee.qdo.bark` bundle identifier in the engine's bundle,
-framework and helper names; its patch is `patches/chrome/app/theme/chromium/BRANDING.patch`.
+sets the product name, the integrated app and framework bundle identifier
+`ee.qdo.bark`, and the helper names. Its patch is
+`patches/chrome/app/theme/chromium/BRANDING.patch`.
 It does not reach `chromium_strings.grd`, so that file's patch sets the product name, helper name, window title
 formats and macOS permission reason there. Changing a translatable message drops its
 translations, so those strings show in English in every locale. The file's other
@@ -158,6 +159,13 @@ in main with a message naming the version the app needs. main also aborts when t
 smaller than the app's `struct BarcBridge`, then hands the table and the entry to the shell's
 `barc_native_main`. The shell calls `dlsym` for nothing. `ChromeMain` stays exported for the
 helpers.
+
+The raw GN output also has the `Bark.app` filename because the build tools use
+its bundle layout. Its executable exits before loading AppKit or the engine,
+and its background-only bundle uses `ee.qdo.bark.sdk` without URL or document
+handlers. Publish the generated integrated app metadata alongside the framework.
+Run `python3 Tests/ChromiumSDKLauncher/check.py <GN-output-directory>` to check
+direct launch and both property lists without opening a window.
 
 ### Publishing the engine
 
@@ -256,7 +264,8 @@ python3 Runtime/Chromium/run_browser_tests.py \
     --binary "$chromium_src/out/Barc-x64/bark_browser_tests"
 ```
 
-Add `--filter 'BarcBridgeBrowserTest.*'` for a focused run or `--summary` with
+Add `--filter 'BarkWindowHostDefaultBrowserTest.*:BarkWindowHostLegacySwitchBrowserTest.*'`
+for a focused run or `--summary` with
 a new output path for Chromium's JSON results. The launcher uses a disposable
 profile for each test, the mock keychain, one test at a time and zero retries.
 The runner takes the shared `/private/tmp/nook-screen-lock` mutex and stops
@@ -264,6 +273,23 @@ when hardware input resumes, the console locks, or the mutex is replaced.
 Exit status 3 indicates that the screen is unavailable. After a forced
 termination, inspect the recorded PID and its test processes before clearing
 an abandoned mutex.
+
+Before taking the screen mutex, the runner inspects the Mach-O image of the
+test executable and both framework copies in the output directory. All three
+must contain the capability emitted by the host-only Mac window factory.
+Stage the whole test runtime from one build. Historical browser-test binaries
+can open classic Chromium windows and are rejected before launch.
+
+Some legacy fixtures still assert details of the retired window. They remain
+migration work and are excluded from current host-only qualification claims.
+
+| Existing fixture | Required Bark test port |
+| --- | --- |
+| `BarcNativePolicyBrowserTest` | Replace physical `BrowserWidget`, `BrowserFrameView` and stored Views focus assertions with `BarkWindowHost` capture policy, mounted page views and native responder checks. |
+| `BarcExtensionDialogBrowserTest` | Use host lifetime and anchors for owner destruction, queued uninstall refusal, and private dialog routing. Several tests still dereference the logical client's `BrowserView`. |
+| `BarcExtensionStorageBrowserTest` | Use the host's shared widget and mount the selected extension/settings page before testing visibility, controls and ownership at close. Retain the original per-profile worker and storage assertions. |
+| `BarcPrivateCommandBrowserTest` and `BarcPrivateMenuPolicyBrowserTest` | Replace initial native sidebar attachment with Bark root admission and verify command targets from the selected private page. |
+| Legacy cases in `barc_bridge_browsertest.mm` | Replace sidebar and header attachment, `BrowserWidget` lifetime and modal anchors, and composed split and Peek views with Bark root, page placement and discovery assertions. Old peer-BrowserView, classic toolbar, and physical split-layout expectations describe retired implementations. |
 
 These regressions encode transfer/draft/scroll/history, profile binding,
 shared-window selection/lifetime and native policy cases; their presence is not
