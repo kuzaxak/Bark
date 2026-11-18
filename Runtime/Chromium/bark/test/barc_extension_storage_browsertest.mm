@@ -35,7 +35,11 @@
 #include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
-#include "components/prefs/pref_service.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
+#include "components/policy/core/common/policy_map.h"
+#include "components/policy/core/common/policy_types.h"
+#include "components/policy/policy_constants.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/web_contents.h"
@@ -56,7 +60,6 @@
 #include "extensions/browser/extension_host_registry.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/install/crx_install_error.h"
-#include "extensions/browser/pref_names.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/error_utils.h"
@@ -379,7 +382,34 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   EXPECT_TRUE(personal_clicked.WaitUntilSatisfied());
 }
 
-IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
+class BarcNativeExtensionActionsBrowserTest
+    : public BarcExtensionStorageBrowserTest {
+ protected:
+  void SetUpInProcessBrowserTestFixture() override {
+    BarcExtensionStorageBrowserTest::SetUpInProcessBrowserTestFixture();
+    policy_provider_.SetDefaultReturns(true, true);
+    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(
+        &policy_provider_);
+  }
+
+  void SetForcePin(const std::string& id) {
+    policy::PolicyMap policies;
+    if (!id.empty()) {
+      base::DictValue extensions;
+      extensions.Set(id, base::DictValue().Set("toolbar_pin", "force_pinned"));
+      policies.Set(policy::key::kExtensionSettings,
+                   policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                   policy::POLICY_SOURCE_PLATFORM,
+                   base::Value(std::move(extensions)), nullptr);
+    }
+    policy_provider_.UpdateChromePolicy(policies);
+  }
+
+ private:
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
+};
+
+IN_PROC_BROWSER_TEST_F(BarcNativeExtensionActionsBrowserTest,
                        NativeActionsScopeMetadataPinAndPopupToPresentedPage) {
   int32_t work_id = 0;
   int32_t personal_id = 0;
@@ -396,11 +426,13 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
     "action":{"default_title":"Default title","default_popup":"popup.html"}})");
   dir.WriteFile(FILE_PATH_LITERAL("worker.js"), "// Browser test action probe.");
   dir.WriteFile(FILE_PATH_LITERAL("popup.html"), "<p>Real action popup</p>");
-  extensions::ChromeTestExtensionLoader work_loader(work->GetProfile());
-  auto extension = work_loader.LoadExtension(dir.UnpackedPath());
+  const auto load = [&](Profile* profile) {
+    extensions::ChromeTestExtensionLoader loader(profile);
+    return loader.LoadExtension(dir.UnpackedPath());
+  };
+  auto extension = load(work->GetProfile());
   ASSERT_TRUE(extension);
-  extensions::ChromeTestExtensionLoader personal_loader(personal->GetProfile());
-  auto other = personal_loader.LoadExtension(dir.UnpackedPath());
+  auto other = load(personal->GetProfile());
   ASSERT_TRUE(other);
   const auto& id = extension->id();
   ASSERT_EQ(id, other->id());
@@ -468,14 +500,17 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   EXPECT_EQ(0, barc_tab_set_extension_pinned(
                    personal_id, personal_tab, id.c_str(), 1));
 
-  base::DictValue management;
-  management.Set(id, base::DictValue().Set("toolbar_pin", "force_pinned"));
-  work->GetProfile()->GetPrefs()->SetDict(
-      extensions::pref_names::kExtensionManagement, std::move(management));
-  ASSERT_EQ(1, list(work_id, work_tab));
-  ASSERT_EQ(1u, rows.size());
-  EXPECT_NE(0, rows[0].flags & BARC_EXTENSION_PIN_LOCKED);
+  SetForcePin(id);
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return list(work_id, work_tab) && rows.size() == 1 &&
+           (rows[0].flags & BARC_EXTENSION_PIN_LOCKED);
+  }));
   EXPECT_EQ(0, barc_tab_set_extension_pinned(work_id, work_tab, id.c_str(), 0));
+  SetForcePin({});
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return list(work_id, work_tab) && rows.size() == 1 &&
+           !(rows[0].flags & BARC_EXTENSION_PIN_LOCKED);
+  }));
 
   ASSERT_EQ(1, barc_window_select(personal_id));
   ASSERT_NO_FATAL_FAILURE(MountPage(personal_id));
