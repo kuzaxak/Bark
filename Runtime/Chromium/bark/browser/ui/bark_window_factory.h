@@ -3,8 +3,6 @@
 
 #include <memory>
 
-#include "base/memory/raw_ptr.h"
-#include "base/memory/scoped_refptr.h"
 #include "chrome/browser/ui/browser_window_deleter.h"
 
 class BrowserWindow;
@@ -27,18 +25,13 @@ bool UsesCompactHost(const BrowserWindowInterface* browser);
 BarkWindowHost* HostToJoin(BrowserWindowInterface* owner);
 BarkWindowHost* HostToJoin(const SessionID& owner);
 
-// Browsers created while one of these lives are the app's own. With `join`,
-// the first one becomes a client of that host instead of opening a window.
+// Marks browsers opened by an explicit app action for native discovery.
 class ScopedAppWindowCreation {
  public:
-  explicit ScopedAppWindowCreation(BarkWindowHost* join = nullptr);
+  ScopedAppWindowCreation();
   ScopedAppWindowCreation(const ScopedAppWindowCreation&) = delete;
   ScopedAppWindowCreation& operator=(const ScopedAppWindowCreation&) = delete;
   ~ScopedAppWindowCreation();
-
- private:
-  scoped_refptr<BarkWindowHost> join_;
-  raw_ptr<BarkWindowHost> previous_join_;
 };
 
 }  // namespace bark

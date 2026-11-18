@@ -59,12 +59,10 @@
 #include "chrome/browser/profiles/nuke_profile_directory_utils.h"
 #include "chrome/browser/profiles/profile_manager.h"
 #include "chrome/browser/ui/browser_tabstrip.h"
-#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
@@ -164,6 +162,10 @@ struct OpenRequest {
   std::unique_ptr<ScopedProfileKeepAlive> keep_alive;
 };
 
+bool CanJoinRegularWindow(BrowserWindowInterface* owner) {
+  return bark::HostToJoin(owner) && !owner->GetProfile()->IsOffTheRecord();
+}
+
 void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
   auto* manager = Manager();
@@ -217,28 +219,20 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
     return selected ? selected->GetWeakPtr()
                     : base::WeakPtr<BrowserWindowInterface>();
   };
-  bark::BarkWindowHost* join = nullptr;
   if (request->native_owner) {
     owner_alive = *request->native_owner;
-    if (owner_alive && !request->private_session) {
-      join = bark::HostToJoin(owner_alive.get());
-    }
-    if (!owner_alive || owner_alive->IsDeleteScheduled() ||
-        (!join && !BrowserWindow::CanCreateInNativeWindow(
-                      owner_alive->GetSessionID()))) {
+    if (!CanJoinRegularWindow(owner_alive.get())) {
       request->Complete(BARC_PROFILE_UNAVAILABLE, 0);
       return;
     }
-    if (!join) {
-      params.native_window_owner = owner_alive->GetSessionID();
-    }
+    params.native_window_owner = owner_alive->GetSessionID();
   }
   const auto selection_before = selected_owner();
   BrowserWindowInterface* created = nullptr;
   {
     std::optional<bark::ScopedAppWindowCreation> app_window;
-    if (!request->private_session)
-      app_window.emplace(join);
+    if (!request->private_session && !params.native_window_owner)
+      app_window.emplace();
     created = CreateBrowserWindow(std::move(params));
   }
   if (!created) {
@@ -246,8 +240,6 @@ void ProfileReady(std::unique_ptr<OpenRequest> request, Profile* profile) {
     return;
   }
   auto window_alive = created->GetWeakPtr();
-  if (auto* view = BrowserView::GetBrowserViewForBrowser(created))
-    view->MarkBarcAppFactoryOrigin();
   auto valid_context = [&] {
     if (!Manager() || !window_alive || window_alive->IsDeleteScheduled() ||
         window_alive->GetProfile() != profile || !window_alive->GetWindow()) {
@@ -336,9 +328,7 @@ void BeginOpen(std::unique_ptr<OpenRequest> request) {
   }
   if (request->native_owner) {
     auto owner = *request->native_owner;
-    if (!owner || owner->IsDeleteScheduled() ||
-        (!bark::HostToJoin(owner.get()) &&
-         !BrowserWindow::CanCreateInNativeWindow(owner->GetSessionID()))) {
+    if (!CanJoinRegularWindow(owner.get())) {
       request->Complete(BARC_PROFILE_UNAVAILABLE, 0);
       return;
     }

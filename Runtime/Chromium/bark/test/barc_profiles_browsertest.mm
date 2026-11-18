@@ -301,6 +301,43 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
+                       RegularProfileCannotJoinPrivateWindow) {
+  Result private_result;
+  barc_private_session_open_window(Completed, &private_result);
+  ASSERT_EQ(BARC_PROFILE_OK, private_result.Get<0>());
+  const int32_t private_id = private_result.Get<1>();
+  auto* private_window = Window(private_id);
+  ASSERT_NE(nullptr, private_window);
+  ASSERT_TRUE(private_window->GetProfile()->IsOffTheRecord());
+  auto* host = bark::BarkWindowHost::ForBrowser(private_window);
+  ASSERT_NE(nullptr, host);
+  auto* selected = private_window->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_NE(nullptr, selected);
+  char private_uuid[37];
+  ASSERT_EQ(sizeof(private_uuid),
+            barc_window_private_session_uuid(private_id, private_uuid,
+                                             sizeof(private_uuid)));
+
+  const size_t browser_count = GlobalBrowserCollection::GetInstance()->GetSize();
+  Result join_result;
+  barc_profile_open_in_native_window(private_id, kWork, BARC_PROFILE_SETTINGS,
+                                     Completed, &join_result);
+  EXPECT_EQ(BARC_PROFILE_UNAVAILABLE, join_result.Get<0>());
+  EXPECT_EQ(0, join_result.Get<1>());
+  EXPECT_EQ(browser_count, GlobalBrowserCollection::GetInstance()->GetSize());
+  ASSERT_EQ(private_window, Window(private_id));
+  EXPECT_EQ(host, bark::BarkWindowHost::ForBrowser(private_window));
+  EXPECT_EQ(selected,
+            private_window->GetTabStripModel()->GetActiveWebContents());
+  char unchanged_uuid[37];
+  ASSERT_EQ(sizeof(unchanged_uuid),
+            barc_window_private_session_uuid(private_id, unchanged_uuid,
+                                             sizeof(unchanged_uuid)));
+  EXPECT_STREQ(private_uuid, unchanged_uuid);
+  CloseBrowserSynchronously(private_window);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
                        PrivateSessionsOwnDataChildrenAndFinalDisposal) {
   ASSERT_NE(nullptr, bark::BarkWindowHost::ForBrowser(browser()));
   ASSERT_TRUE(embedded_test_server()->Start());

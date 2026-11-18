@@ -53,7 +53,6 @@ namespace bark {
 namespace {
 
 int g_app_window_creation_depth = 0;
-BarkWindowHost* g_join_host = nullptr;
 
 // Whether the event AppKit is handling is the person moving the keys into
 // `page`: a click on it, or Tab through the window's key views.
@@ -154,9 +153,6 @@ std::unique_ptr<BrowserWindow, BrowserWindowDeleter> CreateHostWindow(
     if (!join) {
       return nullptr;
     }
-  } else if (browser->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
-             !params.in_tab_dragging) {
-    join = std::exchange(g_join_host, nullptr);
   }
   const bool app_created =
       g_app_window_creation_depth != 0 || params.native_window_owner.has_value();
@@ -178,14 +174,12 @@ BarkWindowHost* HostToJoin(const SessionID& owner) {
   return HostToJoin(collection ? collection->FindBrowserWithID(owner) : nullptr);
 }
 
-ScopedAppWindowCreation::ScopedAppWindowCreation(BarkWindowHost* join)
-    : join_(join), previous_join_(std::exchange(g_join_host, join)) {
+ScopedAppWindowCreation::ScopedAppWindowCreation() {
   ++g_app_window_creation_depth;
 }
 
 ScopedAppWindowCreation::~ScopedAppWindowCreation() {
   --g_app_window_creation_depth;
-  g_join_host = previous_join_;
 }
 
 DEFINE_USER_DATA(BarkBrowserWindow);
