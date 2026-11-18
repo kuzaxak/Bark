@@ -114,7 +114,7 @@ architecture. The ARM64 runtime pin is still pending.
 
 `smoke` and `launch` require a pinned engine matching the host’s native architecture. `smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 
-For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label and `BARK_ENGINE_SOURCE` to the matching directory or archive source. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
+For the optional CI smoke, choose a trusted Mac with a logged-in desktop session and a verified SDK pin for its native CPU. Set `BARK_SMOKE_RUNNER` to a runner label unique to that configuration and `BARK_ENGINE_SOURCE` to the matching SDK directory or archive. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
 
 ### Run the signed UI walks
 

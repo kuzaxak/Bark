@@ -58,7 +58,7 @@ jobs:
       vars.BARK_SMOKE_RUNNER != '' &&
       vars.BARK_ENGINE_SOURCE != '' &&
       (vars.BARK_SIGN_IDENTITY != '' || vars.BARK_SMOKE_CANDIDATE != '')
-    runs-on: [self-hosted, macOS, x64, "${{ vars.BARK_SMOKE_RUNNER }}"]
+    runs-on: [self-hosted, macOS, "${{ vars.BARK_SMOKE_RUNNER }}"]
     timeout-minutes: 45
     steps:
       - name: Checkout code
