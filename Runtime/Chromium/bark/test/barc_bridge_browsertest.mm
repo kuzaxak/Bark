@@ -4317,9 +4317,8 @@ class BarcDiscoveryBrowserTest : public BarcSharedNativeWindowBrowserTest {
             return true;
           });
       CHECK_GT(initial, 0);
-      NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-      CHECK(barc_window_attach_native_shell(initial, (__bridge void*)header));
-      CHECK(barc_window_admit_discovered(initial, (__bridge void*)header));
+      NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+      CHECK(barc_window_set_root_view(initial, (__bridge void*)root));
       barc_runtime_complete_startup(initial);
     }, nullptr);
     BarcSharedNativeWindowBrowserTest::SetUp();
@@ -4329,6 +4328,18 @@ class BarcDiscoveryBrowserTest : public BarcSharedNativeWindowBrowserTest {
     return CreateBrowserWindow(BrowserWindowCreateParams(
         BrowserWindowInterface::TYPE_NORMAL, browser()->GetProfile(), false));
   }
+  void MountActivePage(int32_t id) {
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    ASSERT_EQ(1, barc_window_set_root_view(id, (__bridge void*)root));
+    const int32_t tab = barc_window_tab_at(id, 0);
+    ASSERT_NE(0, tab);
+    NSView* page = (__bridge NSView*)barc_tab_native_view(id, tab);
+    ASSERT_NE(nil, page);
+    page.frame = root.bounds;
+    [root addSubview:page];
+    ASSERT_EQ(1, barc_window_show(id));
+  }
+
   NSView* Attach(int32_t id) {
     NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
     EXPECT_EQ(1, barc_window_attach_native_shell(id, (__bridge void*)header));
@@ -10475,8 +10486,7 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticPrerenderBrowserTest,
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
-  Attach(work_id);
-  ASSERT_EQ(1, barc_window_show(work_id));
+  ASSERT_NO_FATAL_FAILURE(MountActivePage(work_id));
   InstallNativeBlocker(work_id, NativeCosmeticTestRules());
   Navigate(work, embedded_test_server()->GetURL("/title1.html"));
   auto* page = work->GetTabStripModel()->GetActiveWebContents();
@@ -10504,8 +10514,7 @@ IN_PROC_BROWSER_TEST_F(BarcNativeCosmeticPrerenderBrowserTest,
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
   auto* work = SharedWindow(work_id);
-  Attach(work_id);
-  ASSERT_EQ(1, barc_window_show(work_id));
+  ASSERT_NO_FATAL_FAILURE(MountActivePage(work_id));
   InstallNativeBlocker(work_id, NativeCosmeticTestRules());
   Navigate(work, embedded_test_server()->GetURL("/title1.html"));
   auto* page = work->GetTabStripModel()->GetActiveWebContents();
