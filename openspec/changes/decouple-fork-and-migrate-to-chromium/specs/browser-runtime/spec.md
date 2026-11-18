@@ -6,6 +6,23 @@ Deliver Chromium-compatible browsing within the native browser interface while p
 
 ## ADDED Requirements
 
+### Requirement: Bark owns macOS browser windows
+Every macOS browser window created by the application, its engine, or its browser tests SHALL use the Bark interface.
+
+#### Scenario: Create a window outside the sidebar
+- **WHEN** a page, extension, keyboard command or browser test creates a browser window
+- **THEN** Bark presents it with the initiating profile, private session and opener as applicable
+- **AND** a window that Bark cannot present never displays Chromium's original browser controls
+
+#### Scenario: Launch an incompatible development build
+- **WHEN** a user supplies a retired window mode or a maintained test runner receives an engine that can create the original Chromium browser interface
+- **THEN** the launch fails before a browser window appears
+
+#### Scenario: Open an SDK build product
+- **WHEN** someone opens the standalone SDK build product from Finder or the command line
+- **THEN** the process exits without opening a browser window
+- **AND** the product declares no URL or document handlers to macOS
+
 ### Requirement: Intel and Apple Silicon support
 The macOS browser SHALL support native execution on both Intel and Apple Silicon computers.
 

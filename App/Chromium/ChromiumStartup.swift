@@ -8,8 +8,6 @@ struct ChromiumStartupConfiguration {
     let profileID: UUID?
     let isVerification: Bool
     let launchArguments: [String]
-    /// Bark's own window host, unless `--bark-window=legacy` asks for Chromium's window.
-    let hostsWindows: Bool
 
     var rootDigest: String {
         SHA256.hash(data: Data(root.path.utf8)).map { String(format: "%02x", $0) }.joined()
@@ -43,10 +41,8 @@ struct ChromiumStartupConfiguration {
             if literal || !argument.hasPrefix("-") { positional.append(argument) }
         }
         launchArguments = positional
-        switch try value("--bark-window") {
-        case nil, "host": hostsWindows = true
-        case "legacy": hostsWindows = false
-        default: throw StartupError.invalidConfiguration
+        if let backend = try value("--bark-window"), backend != "host" {
+            throw StartupError.invalidConfiguration
         }
         let path = try value("--barc-app-data-dir"), hint = try value("--barc-app-profile")
         if path != nil || hint != nil {
@@ -99,10 +95,9 @@ struct ChromiumStartupConfiguration {
 
     func engineArguments(executable: String) -> [String] {
         var result = [executable, "--no-startup-window", "--no-first-run", "--no-default-browser-check",
-                      "--disable-sync", "--disable-features=MediaRouter", "--barc-shared-native-window", "--barc-native-shell",
+                      "--bark-window=host", "--disable-sync", "--disable-features=MediaRouter", "--barc-shared-native-window", "--barc-native-shell",
                       "--user-data-dir=" + root.appendingPathComponent("Engine").path]
         if isVerification { result.append("--use-mock-keychain") }
-        if hostsWindows { result.append("--bark-window=host") }
         if !launchArguments.isEmpty { result.append("--"); result += launchArguments }
         return result
     }

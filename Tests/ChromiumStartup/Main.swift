@@ -89,7 +89,7 @@ struct StartupTests {
         precondition(config.launchArguments.isEmpty)
         for launch in [["Nook"], ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"]] {
             let byDefault = try ChromiumStartupConfiguration(arguments: launch, applicationSupportDirectory: normalRoot)
-            precondition(byDefault.hostsWindows && byDefault.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
+            precondition(byDefault.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
                          "a launch with no window switch gets the Bark window: \(launch)")
         }
         let host = try ChromiumStartupConfiguration(arguments: ["Nook", "--bark-window=host"],
@@ -97,20 +97,21 @@ struct StartupTests {
         precondition(host.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
                      "host mode reaches the engine")
         precondition(!host.engineArguments(executable: "Nook").contains("--"), "host mode is an engine switch, not a page to open")
-        let legacy = try ChromiumStartupConfiguration(arguments: ["Nook", "--bark-window=legacy"],
-            applicationSupportDirectory: normalRoot)
-        precondition(!legacy.hostsWindows && !legacy.engineArguments(executable: "Nook").contains { $0.hasPrefix("--bark-window") },
-                     "--bark-window=legacy keeps Chromium's own window")
-        for bad in ["--bark-window=other", "--bark-window", "--bark-window="] {
+        for bad in ["--bark-window=legacy", "--bark-window=other", "--bark-window", "--bark-window="] {
             do {
                 _ = try ChromiumStartupConfiguration(arguments: ["Nook", bad], applicationSupportDirectory: normalRoot)
                 preconditionFailure("\(bad) is refused")
             } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         }
+        do {
+            _ = try ChromiumStartupConfiguration(arguments: ["Nook", "--bark-window=host", "--bark-window=legacy"],
+                                                 applicationSupportDirectory: normalRoot)
+            preconditionFailure("Conflicting window switches must fail before startup")
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         let literalLegacy = try ChromiumStartupConfiguration(arguments: ["Nook", "--", "--bark-window=legacy"],
             applicationSupportDirectory: normalRoot)
         let literalArguments = literalLegacy.engineArguments(executable: "Nook")
-        precondition(literalLegacy.hostsWindows && literalArguments.suffix(2) == ["--", "--bark-window=legacy"]
+        precondition(literalArguments.suffix(2) == ["--", "--bark-window=legacy"]
                      && literalArguments.filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host", "--bark-window=legacy"],
                      "a literal argument stays a page to open and does not pick the window: \(literalArguments)")
         try normal.prepare()
