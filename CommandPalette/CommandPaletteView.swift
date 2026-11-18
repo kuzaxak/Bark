@@ -512,6 +512,7 @@ struct CommandPaletteView: View {
                     selectedIndex: max(selectedSuggestionIndex, 0),
                     revealsFullURL: commandHeld,
                     returnPlacement: returnPlacement,
+                    tabDestination: { browserManager.tabs.tabSwitchDestination(for: $0, in: windowState) },
                     hoveredIndex: $hoveredSuggestionIndex,
                     maximumHeight: isNative ? min(470, max(80, (paletteFrame.height > 0 ? paletteFrame.height : windowState.window?.contentView?.bounds.height ?? 600) - (commandPalette.addSplit == nil ? 100 : 140))) : 470,
                     onSelect: { suggestion in
@@ -545,6 +546,7 @@ struct CommandPaletteView: View {
         let revealsFullURL: Bool
         /// Where Enter on the Return row goes, said under it: "this tab" or a new tab's place.
         let returnPlacement: String
+        let tabDestination: (UUID) -> (name: String, icon: String, profileName: String?)?
         @Binding var hoveredIndex: Int?
         var maximumHeight: CGFloat = 470
         let onSelect: (SearchManager.SearchSuggestion) -> Void
@@ -606,7 +608,7 @@ struct CommandPaletteView: View {
         ) -> some View {
             switch suggestion.type {
             case .tab(let tab):
-                TabSuggestionItem(tab: tab, showsFullURL: showsFullURL)
+                TabSuggestionItem(tab: tab, destination: tabDestination(tab.itemID), showsFullURL: showsFullURL)
             case .folder(let folder):
                 FolderSuggestionItem(folder: folder)
             case .action(let action):

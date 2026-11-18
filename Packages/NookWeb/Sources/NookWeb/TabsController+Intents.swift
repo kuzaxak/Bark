@@ -209,6 +209,24 @@ extension TabsController {
 
     // MARK: - Selection
 
+    /// A palette selection's destination, when it would leave the window's current space.
+    public func tabSwitchDestination(for itemID: UUID, in window: BrowserWindowState)
+        -> (name: String, icon: String, profileName: String?)? {
+        let source = tree(owner(of: window))
+        guard let spaceID = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source),
+              spaceID != window.spaceID, let space = source.space(spaceID) else { return nil }
+        let profileName = source.profile(ofSpace: spaceID)?.name
+        return (space.name, space.icon, profileName == space.name ? nil : profileName)
+    }
+
+    private func selectionSpaceID(for itemID: UUID, currentSpaceID: UUID?, in source: TabTree) -> UUID? {
+        guard let home = source.spaceID(of: itemID) else { return nil }
+        // A favorite shared with the window's space opens there, without switching spaces.
+        if case .favorites = source.section(of: itemID), let currentSpaceID,
+           source.sharesFavorites(home, currentSpaceID) { return currentSpaceID }
+        return home
+    }
+
     public func select(_ itemID: UUID, in window: BrowserWindowState) {
         select(itemID, in: window, leaving: selectedSession(in: window))
     }
@@ -248,12 +266,7 @@ extension TabsController {
             guard window.spaceID == agentSpaceID || showingAgentSpace else { return selectForAgent(itemID) }
             agentItemID = itemID
         }
-        // A favorite shared with the window's space opens there, without switching spaces.
-        let itemSpace = source.spaceID(of: itemID).map { home in
-            if case .favorites = source.section(of: itemID), let current = window.spaceID,
-               source.sharesFavorites(home, current) { return current }
-            return home
-        }
+        let itemSpace = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source)
         let movedSpace = itemSpace.map { $0 != window.spaceID } ?? false
         if let itemSpace {
             window.spaceID = itemSpace
