@@ -7,12 +7,15 @@ import ctypes
 import math
 import os
 from pathlib import Path
-import platform
 import signal
 import stat
 import subprocess
 import sys
 import time
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from chromium_sdk_layout import GN_CPU, native_architecture
 
 SCREEN_LOCK = Path("/private/tmp/nook-screen-lock")
 SCREEN_UNAVAILABLE = 3
@@ -60,7 +63,7 @@ def require_host_only_image(path, expected_arch=None):
 def require_host_only_runtime(binary):
     # Chromium's test launcher resolves its framework beside the executable.
     # The product bundle can launch helpers through its own framework copy.
-    arch = platform.machine()
+    arch = native_architecture()
     return tuple(require_host_only_image(path, expected_arch=arch) for path in (
         binary, binary.parent / TEST_FRAMEWORK, binary.parent / APP_FRAMEWORK,
     ))
@@ -240,7 +243,7 @@ def interrupted(_signal, _frame):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True, help="Chromium src directory")
-    parser.add_argument("--binary", type=Path, required=True, help="Path to bark_browser_tests")
+    parser.add_argument("--binary", type=Path, help="bark_browser_tests path (defaults to the native developer build)")
     parser.add_argument("--filter", help="Chromium gtest filter. Defaults to the full suite.")
     parser.add_argument("--summary", type=Path, help="New path for Chromium's JSON test summary")
     parser.add_argument("--wait", type=float, default=15, help="Seconds to wait for the screen mutex")
@@ -252,14 +255,14 @@ def main():
         parser.error("the local screen guard requires macOS")
     if not (args.checkout / "chrome" / "VERSION").is_file():
         parser.error("--checkout must point to the Chromium src directory")
-    if (args.binary.name != "bark_browser_tests" or not args.binary.is_file()
-            or not os.access(args.binary, os.X_OK)):
-        parser.error("--binary must point to an executable bark_browser_tests")
+    target = args.binary or args.checkout / "out" / f"Barc-{GN_CPU[native_architecture()]}" / "bark_browser_tests"
+    if target.name != "bark_browser_tests" or not target.is_file() or not os.access(target, os.X_OK):
+        parser.error(f"Expected the executable bark_browser_tests at {target}")
     if (not all(math.isfinite(seconds) for seconds in
                 (args.wait, args.min_idle, args.timeout))
             or args.wait < 0 or args.min_idle < 2 or args.timeout <= 0):
         parser.error("require --wait >= 0, --min-idle >= 2, and --timeout > 0")
-    binary = args.binary.resolve()
+    binary = target.resolve()
     command = [
         str(binary),
         "--test-launcher-jobs=1",

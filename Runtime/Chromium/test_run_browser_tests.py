@@ -72,6 +72,23 @@ class HostOnlyRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "Missing the compiled"):
                 require_host_only_image(self.binary)
 
+    def test_default_suite_checks_native_hardware_even_under_translated_python(self):
+        (self.checkout / "chrome").mkdir()
+        (self.checkout / "chrome/VERSION").touch()
+        for arm_flag, arch, cpu in (("1\n", "arm64", "arm64"), ("", "x86_64", "x64")):
+            binary = self.checkout / "out" / f"Barc-{cpu}" / "bark_browser_tests"
+            binary.parent.mkdir(parents=True)
+            binary.touch(mode=0o700)
+            with self.subTest(arch=arch), patch.object(sys, "argv", ["runner", "--checkout", str(self.checkout)]), \
+                    patch.object(sys, "platform", "darwin"), patch("platform.machine", return_value="x86_64"), \
+                    patch("chromium_sdk_layout.subprocess.run", return_value=Mock(stdout=arm_flag)), \
+                    patch("run_browser_tests.require_host_only_image", side_effect=ValueError("fixture")) as inspect, \
+                    patch("run_browser_tests.screen_lock") as lock, patch("run_browser_tests.signal.signal"), \
+                    patch("run_browser_tests.sys.stderr", new_callable=io.StringIO):
+                self.assertEqual(main(), 1)
+                inspect.assert_called_once_with(binary.resolve(), expected_arch=arch)
+                lock.assert_not_called()
+
     def test_exact_factory_marker_is_accepted(self):
         marker = HOST_ONLY_MARKER.hex(" ")
         with patch("run_browser_tests.subprocess.check_output", side_effect=[

@@ -106,6 +106,16 @@ class InterruptedPreparationTests(unittest.TestCase):
 
 
 class BuildArchitectureTests(unittest.TestCase):
+    def test_cli_defaults_to_native_gn_cpu_and_accepts_a_cross_build(self):
+        for hardware, extra, expected in (("arm64", [], "arm64"), ("x86_64", [], "x64"),
+                                           ("arm64", ["--arch", "x64"], "x64")):
+            argv = ["recipe", "build", "--dry-run", "--checkout", "/tmp/bark-fixture/checkout", *extra]
+            with self.subTest(hardware=hardware, flags=extra), mock.patch("sys.argv", argv), \
+                    mock.patch.object(build_engine, "native_architecture", return_value=hardware), \
+                    mock.patch.object(build_engine, "build") as build:
+                build_engine.main()
+                self.assertEqual(build.call_args.args[-1].arch, expected)
+
     def test_dry_run_selects_matching_cargo_target_and_gn_output(self):
         with tempfile.TemporaryDirectory() as directory:
             checkout = Path(directory)

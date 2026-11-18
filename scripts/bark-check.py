@@ -32,7 +32,7 @@ from uuid import uuid4
 sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chromium_sdk_layout import ARCHITECTURES, local_engine, read_pin
+from chromium_sdk_layout import ARCHITECTURES, local_engine, native_architecture, read_pin
 from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
 
 REPO = Path(__file__).resolve().parents[1]
@@ -77,13 +77,6 @@ def check_native_harness(command):
         "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
         REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / "Main.swift", "-o", binary)
     run(binary)
-
-
-def native_architecture():
-    # Unlike uname, this reports the hardware on translated Python as well.
-    arm64 = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
-                           capture_output=True, text=True)
-    return "arm64" if arm64.stdout.strip() == "1" else platform.machine()
 
 
 def cached_engine(architecture):

@@ -5,10 +5,7 @@ Use the architecture's pinned Bark SDK, Xcode, a local Developer ID Application 
 The [UI walk setup](../../CONTRIBUTING.md#run-the-signed-ui-walks) installs the pinned Python bindings.
 
 ```fish
-set -l bark_arch x86_64
-if test (sysctl -n hw.optional.arm64 2>/dev/null; or echo 0) = 1
-    set bark_arch arm64
-end
+set -l bark_arch (python3 scripts/chromium_sdk_layout.py native-arch)
 python3 scripts/bark-check.py engine --arch "$bark_arch" --install --engine /path/to/matching/Engine
 set -l derived (mktemp -d /private/tmp/bark-update-build.XXXXXX)
 xcodebuild -project Nook.xcodeproj -scheme NookNativeShell -configuration Release -destination generic/platform=macOS \

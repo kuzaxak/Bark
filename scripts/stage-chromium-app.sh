@@ -11,11 +11,12 @@ REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEFAULT_ADDITIONS="$REPO/ChromiumApp/Additions.plist"
 PACKAGE="$REPO/Packages/BarkEngine"
 LAYOUT="$REPO/scripts/chromium_sdk_layout.py"
-ARCH=x86_64
 if [[ ${1:-} == --arch ]]; then
   ARCH=${2:-}
   [[ $ARCH == x86_64 || $ARCH == arm64 ]] || { echo 'Expected --arch x86_64 or arm64' >&2; exit 2; }
   shift 2
+else
+  ARCH=$(python3 -B "$LAYOUT" native-arch)
 fi
 ENGINE_HEADERS=$(python3 -B "$LAYOUT" headers "$PACKAGE" "$ARCH")
 refuse() { echo "$1" >&2; exit 1; }

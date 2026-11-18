@@ -62,8 +62,9 @@ python3 "$recipe" check --checkout "$engine_checkout"
 python3 "$recipe" build --checkout "$engine_checkout" --jobs 8
 ```
 
-The build defaults to Intel. `build --arch arm64` selects the tracked ARM GN
-arguments and the matching Rust target. GN links and packages Cargo's dylib
+The build selects the Mac’s native CPU, including when Python runs under Rosetta.
+Use `build --arch x64` or `build --arch arm64` to cross-compile. The recipe selects
+the corresponding GN arguments and Rust target. GN links and packages Cargo's dylib
 from `src/out/BarkCargo/<target>/release/`. Each target has its own library
 and its own Chromium output directory. The app SDK pin currently qualifies
 the Intel engine.
@@ -103,7 +104,8 @@ checkout or compiling.
 
 `build` validates the prepared checkout again. It builds the Rust matcher and
 compiler override tool, generates GN, then builds the selected engine, macOS
-packaging and Bark browser tests. The default output is `src/out/Barc-x64`. Repeat the same command
+packaging and Bark browser tests. The developer output is `src/out/Barc-x64`
+on Intel or `src/out/Barc-arm64` on Apple Silicon. Repeat the same command
 to resume an interrupted build. The recipe refuses an output with different
 GN arguments, so give experimental arguments their own output. Wait for any
 build started outside the recipe to finish before reusing its checkout or
@@ -240,7 +242,8 @@ version to the bundle metadata, so a release number works across all locales.
 
 `Engine/` is read-only, because Python writes bytecode beside the signing tools and any new
 file fails its checksums at the next staging. From the engine source root, with depot_tools
-on `PATH`, publish the architecture you built. The default is `x86_64`. The publisher checks
+on `PATH`, publish the architecture you built. The publisher defaults to native hardware.
+For a cross-build, pass `--arch x86_64` or `--arch arm64` and the corresponding GN output. It checks
 each Mach-O in the framework and writes only the selected architecture’s artifact and pin.
 If the other architecture already has a pin, the public headers must match it.
 The publisher verifies a complete read-only SDK before publishing it. Repeating the
@@ -250,7 +253,8 @@ An interrupted publish resumes on the next invocation. Existing cached SDK versi
 are unaffected. Commit the public headers and matching pin after validation:
 
 ```fish
-bash "$barc_repo/scripts/publish-chromium-engine.sh" "$PWD/out/Barc-x64" "$barc_repo/Packages/BarkEngine"
+set gn_cpu (python3 "$barc_repo/scripts/chromium_sdk_layout.py" native-arch --gn)
+bash "$barc_repo/scripts/publish-chromium-engine.sh" "$PWD/out/Barc-$gn_cpu" "$barc_repo/Packages/BarkEngine"
 ```
 
 ### Building the app
@@ -341,11 +345,11 @@ checkout on an unlocked console.
 
 ```fish
 set chromium_src /path/to/chromium/src
-python3 Runtime/Chromium/run_browser_tests.py \
-    --checkout "$chromium_src" \
-    --binary "$chromium_src/out/Barc-x64/bark_browser_tests"
+python3 Runtime/Chromium/run_browser_tests.py --checkout "$chromium_src"
 ```
 
+The runner selects the native developer build. Pass `--binary` for an official
+build or another native output directory.
 Add `--filter 'BarkWindowHostDefaultBrowserTest.*:BarkWindowHostLegacySwitchBrowserTest.*'`
 for a focused run or `--summary` with
 a new output path for Chromium's JSON results. The launcher uses a disposable
@@ -358,7 +362,7 @@ an abandoned mutex.
 
 Before taking the screen mutex, the runner inspects the Mach-O image of the
 test executable and both framework copies in the output directory. All three
-must match the runner's architecture and contain the capability emitted by the
+must match the Mac’s hardware architecture and contain the capability emitted by the
 host-only Mac window factory. The same capability can be inspected offline in
 a thin Intel or Apple Silicon image without executing it.
 Stage the whole test runtime from one build. Historical browser-test binaries

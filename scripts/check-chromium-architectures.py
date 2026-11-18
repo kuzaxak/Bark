@@ -7,7 +7,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from chromium_sdk_layout import ARCHITECTURES
+from chromium_sdk_layout import ARCHITECTURES, native_architecture
 
 THIN_64 = b"\xcf\xfa\xed\xfe"
 MACH_O = {
@@ -51,13 +51,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", type=Path)
     parser.add_argument("--image", action="store_true", help="require a specific Mach-O executable or dylib")
-    parser.add_argument("--arch", choices=ARCHITECTURES, default="x86_64")
+    parser.add_argument("--arch", choices=ARCHITECTURES, help="defaults to native hardware")
     args = parser.parse_args()
     try:
+        architecture = args.arch or native_architecture()
         if args.image:
-            check_image(args.path, args.arch, image_magic(args.path))
+            check_image(args.path, architecture, image_magic(args.path))
         else:
-            check_framework(args.path, args.arch)
+            check_framework(args.path, architecture)
     except (OSError, ValueError) as error:
         sys.exit(str(error))
 

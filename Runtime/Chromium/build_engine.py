@@ -17,6 +17,9 @@ sys.dont_write_bytecode = True
 from replay_gate import HERE, MOUNTS, PATCHES, PINS, check_pin, temporary_index
 
 REPO = HERE.parents[1]
+sys.path.insert(0, str(REPO / "scripts"))
+from chromium_sdk_layout import GN_CPU, native_architecture
+
 ORIGINS = {
     "chromium": "https://chromium.googlesource.com/chromium/src.git",
     "depot_tools": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
@@ -377,14 +380,15 @@ def main():
     parser.add_argument("--checkout", type=Path, required=True, help="gclient root containing src/")
     parser.add_argument("--depot-tools", type=Path, help="defaults to depot_tools beside the gclient root")
     parser.add_argument("--official", action="store_true", help="build with the pinned macOS SDK and Chromium PGO profile")
-    parser.add_argument("--arch", choices=("x64", "arm64"), help="build architecture (default: x64)")
+    parser.add_argument("--arch", choices=("x64", "arm64"), help="build architecture (defaults to native hardware)")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), default=8, metavar="1..8")
     parser.add_argument("--resume", action="store_true", help="allow an existing pinned checkout during prepare")
     parser.add_argument("--dry-run", action="store_true", help="check existing inputs and print commands without writing")
     args = parser.parse_args()
     if (args.arch is not None or args.official) and args.action != "build":
         parser.error("--arch and --official select the configuration for build")
-    args.arch = args.arch or "x64"
+    if args.action == "build" and args.arch is None:
+        args.arch = GN_CPU[native_architecture()]
     if args.resume and args.action != "prepare":
         parser.error("--resume is for prepare. Repeating build resumes the same output")
     checkout = args.checkout.expanduser().resolve()

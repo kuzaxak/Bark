@@ -66,7 +66,7 @@ class ArchitectureTests(unittest.TestCase):
         self.assertIn("requires the native arm64 runtime", errors.getvalue())
 
     def test_hardware_probe_detects_arm_when_python_reports_intel(self):
-        with patch.object(self.cli["platform"], "machine", return_value="x86_64"), \
+        with patch("sys.platform", "darwin"), patch.object(self.cli["platform"], "machine", return_value="x86_64"), \
                 patch.object(self.cli["subprocess"], "run", return_value=Mock(stdout="1\n")) as probe:
             self.assertEqual(self.cli["native_architecture"](), "arm64")
         self.assertEqual(probe.call_args.args[0], ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"])

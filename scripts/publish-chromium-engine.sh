@@ -5,7 +5,7 @@
 # framework: main opens it after registering the malloc zone, and staging copies it from here. The
 # headers and the SHA are committed; the artifact stays local until uploads exist. Needs depot_tools on PATH.
 set -euo pipefail
-ARCH=x86_64
+ARCH=
 REPLACE=false
 WORK=
 if [[ ${1:-} == --prepare ]]; then
@@ -30,6 +30,7 @@ fi
 BUILD="$1"
 PACKAGE="$2"
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+ARCH=${ARCH:-$(python3 -B "$ROOT/scripts/chromium_sdk_layout.py" native-arch)}
 if [[ -z $WORK ]]; then
   exec python3 -B "$ROOT/scripts/publish_chromium_sdk.py" "$PACKAGE" "$ARCH" "$REPLACE" "$BUILD" "$ROOT/scripts/publish-chromium-engine.sh"
 fi

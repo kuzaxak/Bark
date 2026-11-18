@@ -16,9 +16,9 @@ class NativeArchitectureTests(unittest.TestCase):
         verify = contributor["verify_signed_shell"]
         app = Path("/fixture/Bark.app")
         for arm_feature, status, expected in [("1\n", 0, "arm64"), ("", 1, "x86_64")]:
-            with self.subTest(architecture=expected), patch("platform.machine", return_value="x86_64"), patch(
-                "subprocess.run", return_value=subprocess.CompletedProcess([], status, stdout=arm_feature)
-            ) as sysctl:
+            reply = subprocess.CompletedProcess([], status, stdout=arm_feature)
+            with self.subTest(architecture=expected), patch("sys.platform", "darwin"), \
+                    patch("platform.machine", return_value="x86_64"), patch("subprocess.run", return_value=reply) as sysctl:
                 self.assertEqual(verify_native_candidate(contributor, app), expected)
                 verify.assert_called_with(app, expected)
                 sysctl.assert_called_once_with(

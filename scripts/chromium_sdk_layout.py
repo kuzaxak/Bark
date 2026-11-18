@@ -4,11 +4,29 @@
 
 import argparse
 from pathlib import Path
+import platform
+import subprocess
 import sys
 
-ARCHITECTURES = ("x86_64", "arm64")
+GN_CPU = {"x86_64": "x64", "arm64": "arm64"}
+ARCHITECTURES = tuple(GN_CPU)
 SLICE = "macos-arm64_x86_64"
 XCFRAMEWORK = "BarkEngine.xcframework"
+
+
+def native_architecture():
+    # A translated interpreter on Apple Silicon reports x86_64 through uname.
+    if sys.platform == "darwin":
+        arm64 = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                               capture_output=True, text=True)
+        if arm64.stdout.strip() == "1":
+            return "arm64"
+    machine = platform.machine()
+    if machine == "aarch64":  # Non-macOS recipe dry runs use this spelling.
+        return "arm64"
+    if machine not in ARCHITECTURES:
+        raise ValueError(f"Unsupported architecture: {machine}")
+    return machine
 
 
 def headers_directory(package):
@@ -55,13 +73,20 @@ def read_pin(package, architecture, headers=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("kind", choices=("headers", "artifact", "local-engine", "pin-file", "digest"))
-    parser.add_argument("package", type=Path)
-    parser.add_argument("architecture", choices=ARCHITECTURES)
-    parser.add_argument("headers", type=Path, nargs="?")
+    commands = parser.add_subparsers(dest="kind", required=True)
+    native = commands.add_parser("native-arch", help="print the native hardware architecture")
+    native.add_argument("--gn", action="store_true", help="print the GN target_cpu spelling")
+    for kind in ("headers", "artifact", "local-engine", "pin-file", "digest"):
+        command = commands.add_parser(kind)
+        command.add_argument("package", type=Path)
+        command.add_argument("architecture", choices=ARCHITECTURES)
+        command.add_argument("headers", type=Path, nargs="?")
     args = parser.parse_args()
     try:
-        if args.kind == "headers":
+        if args.kind == "native-arch":
+            hardware = native_architecture()
+            result = GN_CPU[hardware] if args.gn else hardware
+        elif args.kind == "headers":
             result = headers_directory(args.package)
         elif args.kind == "artifact":
             result = artifact_directory(args.package, args.architecture)

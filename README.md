@@ -49,7 +49,10 @@ This branch builds Bark, a Swift/AppKit browser that embeds a pinned Chromium
 framework. The signed Intel developer app runs on macOS 15.5 or later. Building
 it requires Xcode 26 with the Metal toolchain, the matching Bark SDK and a local
 Developer ID Application signing identity. The contributor guide covers SDK
-installation and the checks you can run from a clean checkout.
+installation and the checks you can run from a clean checkout. The build and
+smoke commands select the Mac’s native architecture, including under Rosetta.
+The committed runtime pin currently covers Intel. Apple Silicon developers
+can build the ARM64 engine from source for native qualification.
 [Contributor setup](CONTRIBUTING.md#native-command-routing-and-signed-bark) ·
 [Build the SDK from source](Runtime/Chromium/README.md#checkout-and-build)
 
@@ -58,7 +61,7 @@ from the repository root. The smoke test opens a local fixture in a disposable
 profile and quits after the page renders.
 
 ```fish
-python3 scripts/bark-check.py build --arch x86_64
+python3 scripts/bark-check.py build
 python3 scripts/bark-check.py smoke build/Bark.app
 ```
 
