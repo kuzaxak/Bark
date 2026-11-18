@@ -99,6 +99,7 @@ public final class VaultService {
     @ObservationIgnored public weak var presenter: VaultPresenter?
     @ObservationIgnored public weak var securityKeyPresenter: SecurityKeyPresenter?
     @ObservationIgnored let client: any VaultRequests
+    @ObservationIgnored fileprivate let passkeyKeyWindow: @MainActor () -> NSWindow?
     @ObservationIgnored private let settings: NookSettingsService
     @ObservationIgnored private var lastNavigationRefresh: ContinuousClock.Instant?
     @ObservationIgnored private var settingObserver: NSObjectProtocol?
@@ -114,9 +115,11 @@ public final class VaultService {
         self.init(settings: settings, client: VaultClient())
     }
 
-    init(settings: NookSettingsService, client: any VaultRequests) {
+    init(settings: NookSettingsService, client: any VaultRequests,
+         passkeyKeyWindow: @escaping @MainActor () -> NSWindow? = { NSApp?.keyWindow }) {
         self.settings = settings
         self.client = client
+        self.passkeyKeyWindow = passkeyKeyWindow
         settingObserver = NotificationCenter.default.addObserver(
             forName: NookSettingsService.pawlVaultEnabledDidChange, object: nil, queue: .main
         ) { [weak self] _ in
@@ -302,7 +305,7 @@ private final class NativeVaultAttachment {
             }
         }
     }
-    private func passkeyCurrent(_ request: VaultNativePasskeyRequest, _ generation: UInt64) -> Bool {
+    private func passkeyOwnerCurrent(_ request: VaultNativePasskeyRequest, _ generation: UInt64) -> Bool {
         guard !stopped, passkeyGeneration == generation, passkey?.token == request.token,
               let service, service.isConnected, let page, let session,
               !session.isAgentPage, !session.nativeIsEnding,
@@ -310,9 +313,55 @@ private final class NativeVaultAttachment {
               session.profile?.id == page.vaultProfileID, page.vaultProfileID != nil,
               let view = request.view, let window = request.window,
               view.window === window, !view.isHiddenOrHasHiddenAncestor else { return false }
-        if let key = NSApp?.keyWindow, key !== window,
-           service.presenter?.ownsNativePasskeyPresentation(in:view,keyWindow:key) != true { return false }
         return page.vaultPasskeyIsCurrent(request.token)
+    }
+    private func passkeyCurrent(_ request: VaultNativePasskeyRequest, _ generation: UInt64) -> Bool {
+        guard passkeyOwnerCurrent(request, generation), let view = request.view else { return false }
+        guard let key = service?.passkeyKeyWindow(), key !== request.window else { return true }
+        return service?.presenter?.ownsNativePasskeyPresentation(in: view, keyWindow: key) == true
+    }
+
+    private func waitForPasskeyHost(_ request: VaultNativePasskeyRequest, _ generation: UInt64,
+                                    resume: @escaping @MainActor () -> Void) -> Bool {
+        guard let window = request.window, let service else { return false }
+        let key = service.passkeyKeyWindow()
+        let transient = key != nil && key !== window ? key : window.attachedSheet
+        guard let transient, transient !== window,
+              transient.sheetParent === window || transient.parent === window else { return false }
+
+        // Chromium has closed its chooser before dispatching. AppKit can still
+        // be returning key focus to the owner. Only this exact transient can
+        // delay presentation. The consent itself still requires the owner.
+        let center = NotificationCenter.default
+        let advance: @MainActor @Sendable () -> Void = { [weak self, weak service, weak window] in
+            guard let self, let service, let window, self.passkeyGeneration == generation else { return }
+            guard self.passkeyOwnerCurrent(request, generation) else { self.cancelPasskey(); return }
+            if service.passkeyKeyWindow() === window, window.attachedSheet == nil {
+                self.clearPasskeyObservers()
+                resume()
+            }
+        }
+        passkeyObservers.append(center.addObserver(forName: NSWindow.didBecomeKeyNotification,
+            object: nil, queue: .main) { [weak self, weak window, weak transient] notification in
+                MainActor.assumeIsolated {
+                    guard let self, self.passkeyGeneration == generation,
+                          let key = notification.object as? NSWindow else { return }
+                    if key === window { advance() }
+                    else if key !== transient { self.cancelPasskey() }
+                }
+            })
+        passkeyObservers.append(center.addObserver(forName: NSWindow.didEndSheetNotification,
+            object: window, queue: .main) { _ in MainActor.assumeIsolated { advance() } })
+        passkeyObservers.append(center.addObserver(forName: NSWindow.didUpdateNotification,
+            object: window, queue: .main) { _ in MainActor.assumeIsolated { advance() } })
+        passkeyObservers.append(center.addObserver(forName: NSWindow.willCloseNotification,
+            object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.passkeyGeneration == generation else { return }
+                    self.cancelPasskey()
+                }
+            })
+        return true
     }
     private func requireCurrentPasskey(_ request: VaultNativePasskeyRequest, _ generation: UInt64) -> Bool {
         guard passkeyCurrent(request,generation) else {
@@ -382,8 +431,9 @@ private final class NativeVaultAttachment {
         guard let request else { return }
         passkey = request
         let generation = passkeyGeneration
-        guard let service, let view = request.view,
-              request.arguments.utf8.count <= 65536,
+        guard let service else { cancelPasskey(); return }
+        if service.client is VerificationVault { VerificationVault.record("Bark verification vault: passkey requested") }
+        guard request.arguments.utf8.count <= 65536,
               let data = request.arguments.data(using:.utf8),
               let args = (try? JSONSerialization.jsonObject(with:data)) as? [String:Any],
               let rp = args["rpId"] as? String, !rp.isEmpty,
@@ -392,7 +442,25 @@ private final class NativeVaultAttachment {
               WebAuthnPolicy.isAllowedOrigin(scheme:originURL.scheme ?? "",host:originURL.host ?? ""),
               let hash = args["clientDataHash"] as? String, Base64URL.decode(hash)?.count == 32,
               let profile = page?.vaultProfileID?.uuidString else { cancelPasskey(); return }
-        guard passkeyCurrent(request,generation), let presenter = service.presenter else { cancelPasskey(); return }
+        guard passkeyOwnerCurrent(request, generation) else {
+            if service.client is VerificationVault { VerificationVault.record("Bark verification vault: passkey owner stale") }
+            cancelPasskey()
+            return
+        }
+        if waitForPasskeyHost(request, generation, resume: { [weak self] in
+            self?.presentPasskey(request, generation, args: args, rp: rp, origin: origin, hash: hash, profile: profile)
+        }) { return }
+        presentPasskey(request, generation, args: args, rp: rp, origin: origin, hash: hash, profile: profile)
+    }
+
+    private func presentPasskey(_ request: VaultNativePasskeyRequest, _ generation: UInt64,
+                                args: [String: Any], rp: String, origin: String, hash: String, profile: String) {
+        guard let service, let presenter = service.presenter, let view = request.view,
+              passkeyCurrent(request, generation) else {
+            if service?.client is VerificationVault { VerificationVault.record("Bark verification vault: passkey host inactive") }
+            cancelPasskey()
+            return
+        }
         cancel() // Retire an unrelated field picker before ceremony consent.
         guard requireCurrentPasskey(request,generation) else { return }
         passkeyView = view
@@ -405,6 +473,7 @@ private final class NativeVaultAttachment {
                   let excluded = args["excludeCredentials"] as? [String] else { cancelPasskey(); return }
             let call = VaultRegister(rpId:rp,rpName:name,user:.init(id:id,name:userName,displayName:displayName),
                 clientDataHash:hash,pubKeyCredParams:[-7],excludeCredentials:excluded,origin:origin,profile:profile)
+            if service.client is VerificationVault { VerificationVault.record("Bark verification vault: passkey consent requested") }
             presenter.confirmNativePasskeyCreation(rpId:VaultPrompt.displayText(rp),userName:VaultPrompt.displayText(userName),
                 in:view) { [weak self] accepted in
                 guard let self, self.requireCurrentPasskey(request,generation) else { return }

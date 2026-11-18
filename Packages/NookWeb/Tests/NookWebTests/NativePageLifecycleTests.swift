@@ -3982,6 +3982,47 @@ struct NativeVaultFormTests {
         #expect(native.passkeyReplies.filter { $0.1 != nil }.count == 1)
     }
 
+    @Test(arguments: ["returnsToOwner", "switchesWindow", "changesDocument"])
+    func nativePasskeyWaitsForExactChooserHandoff(change: String) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        var activeKey: NSWindow?
+        let vault = VaultService(settings: f.tabs.settings, client: transport,
+                                 passkeyKeyWindow: { activeKey })
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        let owner = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        owner.isReleasedWhenClosed = false
+        owner.contentView = native.vaultView
+        defer { owner.close() }
+        let child = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+        child.isReleasedWhenClosed = false
+        owner.addChildWindow(child, ordered: .above)
+        defer { owner.removeChildWindow(child); child.close() }
+        activeKey = child
+
+        native.requestPasskey(operation: 0)
+        #expect(presenter.creationConsent == nil)
+        #expect(native.passkeyReplies.isEmpty)
+        #expect(await transport.ceremonies.isEmpty)
+
+        if change == "changesDocument" { native.passkeyValid = false }
+        let nextKey = change == "switchesWindow" ? NSWindow() : owner
+        nextKey.isReleasedWhenClosed = false
+        defer { if nextKey !== owner { nextKey.close() } }
+        activeKey = nextKey
+        NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: nextKey)
+        if change == "returnsToOwner" {
+            let confirm = try #require(presenter.creationConsent)
+            confirm(false)
+        } else {
+            #expect(presenter.creationConsent == nil)
+        }
+        #expect(await transport.ceremonies.isEmpty)
+        #expect(native.passkeyReplies.count == 1 && native.passkeyReplies.first?.1 == nil)
+    }
+
     @Test(arguments:["decline","document","owner","profile","disable","disconnect","badHash","badOperation",
                      "window","otherKeyWindow","closedWindow","hiddenView"])
     func nativePasskeyRefusalNeverDispatchesOrCompletesStaleRequest(change:String) async throws {
