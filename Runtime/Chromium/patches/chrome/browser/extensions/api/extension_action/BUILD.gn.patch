@@ -1,0 +1,14 @@
+diff --git a/chrome/browser/extensions/api/extension_action/BUILD.gn b/chrome/browser/extensions/api/extension_action/BUILD.gn
+--- a/chrome/browser/extensions/api/extension_action/BUILD.gn
++++ b/chrome/browser/extensions/api/extension_action/BUILD.gn
+@@ -36,6 +36,10 @@
+     "//url",
+   ]
+
++  if (is_mac) {
++    deps += [ "//bark/browser/ui:extension_popup" ]
++  }
++
+   if (!is_android) {
+     deps += [
+       "//chrome/browser/ui:browser_window_header",

@@ -46,6 +46,8 @@
 #include "extensions/browser/extension_dialog_auto_confirm.h"
 #include "extensions/browser/extension_prefs.h"
 #include "extensions/browser/extension_registrar.h"
+#include "extensions/browser/extension_host.h"
+#include "extensions/browser/extension_host_registry.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/install/crx_install_error.h"
 #include "extensions/browser/process_manager.h"
@@ -207,6 +209,91 @@ class BarcExtensionStorageBrowserTest : public InProcessBrowserTest {
   extensions::ScopedTestNativeMessagingHost native_host_;
   std::unique_ptr<base::ScopedPathOverride> native_system_path_;
 };
+
+IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
+                       ActionPopupFollowsSelectedLogicalOwner) {
+  int32_t work_id = 0;
+  int32_t personal_id = 0;
+  ASSERT_NO_FATAL_FAILURE(OpenProfiles(work_id, personal_id));
+  auto* work = Window(work_id);
+  auto* personal = Window(personal_id);
+  auto* host = bark::BarkWindowHost::ForBrowser(work);
+  ASSERT_TRUE(host);
+  ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
+  auto mount = [host](int32_t id) {
+    NSView* root = host->root_view().GetNativeNSView();
+    for (NSView* mounted in root.subviews) {
+      [mounted removeFromSuperview];
+    }
+    NSView* page = (__bridge NSView*)barc_tab_native_view(
+        id, barc_window_tab_at(id, 0));
+    ASSERT_NE(nil, page);
+    page.frame = root.bounds;
+    [root addSubview:page];
+  };
+  ASSERT_NO_FATAL_FAILURE(mount(work_id));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return host->widget()->IsActive() && work->IsSelectedForNativeWindow();
+  }));
+
+  extensions::TestExtensionDir dir;
+  dir.WriteManifest(R"({"manifest_version":3,"name":"Bark action probe",
+    "version":"1.0","background":{"service_worker":"worker.js"},
+    "action":{"default_popup":"default.html"}})");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), "// Browser test action probe.");
+  dir.WriteFile(FILE_PATH_LITERAL("default.html"), "<p>Unexpected default popup</p>");
+  dir.WriteFile(FILE_PATH_LITERAL("selected.html"), "<p>Selected page popup</p>");
+  extensions::ChromeTestExtensionLoader work_loader(work->GetProfile());
+  auto extension = work_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  extensions::ChromeTestExtensionLoader personal_loader(personal->GetProfile());
+  auto other = personal_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(other);
+  ASSERT_EQ(extension->id(), other->id());
+
+  const auto invoke = [&](BrowserWindowInterface* owner, int32_t id) {
+    return Worker(owner->GetProfile(), extension->id(),
+                  "(async () => {"
+                  "  try {"
+                  "    const [tab] = await chrome.tabs.query({windowId: " +
+                      std::to_string(id) +
+                      ", active: true});"
+                  "    await chrome.action.setPopup({tabId: tab.id, "
+                  "                                  popup: 'selected.html'});"
+                  "    await chrome.action.openPopup({windowId: " +
+                      std::to_string(id) +
+                      "});"
+                  "    chrome.test.sendScriptResult('shown');"
+                  "  } catch (e) { chrome.test.sendScriptResult(e.message); }"
+                  "})();");
+  };
+
+  auto* work_hosts = extensions::ExtensionHostRegistry::Get(work->GetProfile());
+  auto* personal_hosts =
+      extensions::ExtensionHostRegistry::Get(personal->GetProfile());
+  ASSERT_EQ(base::Value("shown"), invoke(work, work_id));
+  const auto opened = work_hosts->GetHostsForExtension(extension->id());
+  ASSERT_EQ(1u, opened.size());
+  ASSERT_TRUE(opened[0]->has_loaded_once());
+  auto* popup = opened[0]->host_contents();
+  ASSERT_TRUE(popup);
+  EXPECT_EQ(work->GetProfile(), popup->GetBrowserContext());
+  EXPECT_EQ(extension->GetResourceURL("selected.html"),
+            popup->GetLastCommittedURL());
+  EXPECT_TRUE(personal_hosts->GetHostsForExtension(extension->id()).empty());
+
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_NO_FATAL_FAILURE(mount(personal_id));
+  EXPECT_EQ(host->widget(), WidgetFor(personal));
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  EXPECT_FALSE(work->IsSelectedForNativeWindow());
+  EXPECT_TRUE(base::test::RunUntil([&] {
+    return work_hosts->GetHostsForExtension(extension->id()).empty();
+  }));
+  EXPECT_NE(base::Value("shown"), invoke(work, work_id));
+  EXPECT_TRUE(work_hosts->GetHostsForExtension(extension->id()).empty());
+  EXPECT_TRUE(personal_hosts->GetHostsForExtension(extension->id()).empty());
+}
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
                        IsolatedStorageSurvivesWorkWorkerRestart) {

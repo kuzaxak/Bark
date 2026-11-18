@@ -1,0 +1,38 @@
+diff --git a/chrome/browser/ui/views/extensions/extension_popup.h b/chrome/browser/ui/views/extensions/extension_popup.h
+--- a/chrome/browser/ui/views/extensions/extension_popup.h
++++ b/chrome/browser/ui/views/extensions/extension_popup.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSION_POPUP_H_
+ #define CHROME_BROWSER_UI_VIEWS_EXTENSIONS_EXTENSION_POPUP_H_
+
++#include "base/callback_list.h"
+ #include "base/functional/callback.h"
+ #include "base/memory/raw_ptr.h"
+ #include "base/scoped_observation.h"
+@@ -102,6 +103,8 @@
+       const TabStripModelChange& change,
+       const TabStripSelectionChange& selection) override;
+
++  void OnTabStripModelDestroyed(TabStripModel* tab_strip_model) override;
++
+   // extensions::SecurityDialogTracker::Observer:
+   void OnSecurityDialogAdded(views::Widget* widget) override;
+
+@@ -124,6 +127,8 @@
+
+   // Shows the bubble, focuses its content, and registers listeners.
+   void ShowBubble();
++  void OnNativeWindowSelectionChanged();
++  void DismissSupersededPopup();
+
+   // Closes the bubble unless if there is
+   //   1. an attached DevTools inspection window, or
+@@ -161,6 +166,8 @@
+   const PopupShowAction show_action_;
+
+   ShowPopupCallback shown_callback_;
++  base::CallbackListSubscription native_selection_subscription_;
++  bool superseded_ = false;
+
+   base::ScopedObservation<views::Widget, views::WidgetObserver>
+       anchor_widget_observation_{this};

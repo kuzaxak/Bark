@@ -1,0 +1,66 @@
+diff --git a/chrome/browser/ui/views/extensions/extension_popup.cc b/chrome/browser/ui/views/extensions/extension_popup.cc
+--- a/chrome/browser/ui/views/extensions/extension_popup.cc
++++ b/chrome/browser/ui/views/extensions/extension_popup.cc
+@@ -130,6 +130,7 @@
+ void ExtensionPopup::OnWidgetDestroying(views::Widget* widget) {
+   BubbleDialogDelegateView::OnWidgetDestroying(widget);
+   anchor_widget_observation_.Reset();
++  native_selection_subscription_ = {};
+   extension_registry_observation_.Reset();
+   security_dialog_tracker_observation_.Reset();
+   extension_view_ = nullptr;
+@@ -231,7 +232,31 @@
+     TabStripModel* tab_strip_model,
+     const TabStripModelChange& change,
+     const TabStripSelectionChange& selection) {
+-  if (!tab_strip_model->empty() && selection.active_tab_changed()) {
++  if (selection.active_tab_changed()) {
++    DismissSupersededPopup();
++  }
++}
++
++void ExtensionPopup::OnTabStripModelDestroyed(TabStripModel* tab_strip_model) {
++  native_selection_subscription_ = {};
++  browser_ = nullptr;
++  DismissSupersededPopup();
++}
++
++void ExtensionPopup::OnNativeWindowSelectionChanged() {
++  if (!browser_ || !browser_->IsSelectedForNativeWindow()) {
++    DismissSupersededPopup();
++  }
++}
++
++void ExtensionPopup::DismissSupersededPopup() {
++  if (superseded_ || !GetWidget()) {
++    return;
++  }
++  superseded_ = true;
++  auto alive = deferred_close_weak_ptr_factory_.GetWeakPtr();
++  GetWidget()->Hide();
++  if (alive) {
+     CloseDeferredIfNecessary();
+   }
+ }
+@@ -297,6 +322,10 @@
+   set_close_on_deactivate(false);
+
+   browser_->GetTabStripModel()->AddObserver(this);
++  native_selection_subscription_ =
++      browser_->RegisterNativeWindowSelectionChanged(base::BindRepeating(
++          &ExtensionPopup::OnNativeWindowSelectionChanged,
++          base::Unretained(this)));
+
+   CHECK(anchor_widget());
+   anchor_widget_observation_.Observe(anchor_widget()->GetPrimaryWindowWidget());
+@@ -324,6 +353,10 @@
+ }
+
+ void ExtensionPopup::ShowBubble() {
++  if (superseded_ || !browser_ || !browser_->IsSelectedForNativeWindow()) {
++    DismissSupersededPopup();
++    return;
++  }
+   // Don't show the popup if there are visible security dialogs. This protects
+   // the security dialogs from spoofing.
+   if (extensions::SecurityDialogTracker::GetInstance()

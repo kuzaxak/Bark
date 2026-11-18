@@ -6,9 +6,13 @@
 #include <utility>
 
 #include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_extension_popup.h"
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/extensions/extension_tab_util.h"
+#include "chrome/browser/extensions/extension_view_host.h"
+#include "chrome/browser/extensions/extension_view_host_factory.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
@@ -19,10 +23,15 @@
 #include "chrome/browser/ui/fullscreen/browser_window_fullscreen_controller.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/exclusive_access/exclusive_access_bubble_views.h"
+#include "chrome/browser/ui/views/extensions/extension_popup.h"
 #include "chrome/browser/ui/views/translate/translate_bubble_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "components/strings/grit/components_strings.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_action_manager.h"
+#include "extensions/browser/extension_registry.h"
+#include "extensions/browser/extension_util.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget.h"
 
@@ -399,6 +408,55 @@ gfx::Rect BarkExclusiveAccessContext::GetTopContainerBoundsInScreen() {
 void BarkExclusiveAccessContext::DestroyAnyExclusiveAccessBubble() {
   bubble_.reset();
   bubble_destruction_task_.reset();
+}
+
+bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
+                              const extensions::Extension& extension,
+                              ShowPopupCallback callback) {
+  auto* client = BarkBrowserWindow::FromBrowser(&browser);
+  auto* host = client ? client->host() : nullptr;
+  if (!host || host->closing() || browser.IsDeleteScheduled() ||
+      !client->IsActive() || !client->IsVisible()) {
+    return false;
+  }
+
+  auto* contents = browser.GetTabStripModel()->GetActiveWebContents();
+  NSView* root = host->root_view().GetNativeNSView();
+  NSView* page = contents ? contents->GetNativeView().GetNativeNSView() : nil;
+  if (!root || !page || ![page isDescendantOf:root] ||
+      page.isHiddenOrHasHiddenAncestor) {
+    return false;
+  }
+
+  auto* profile = browser.GetProfile();
+  const auto* registry = extensions::ExtensionRegistry::Get(profile);
+  const auto* installed = registry
+                              ? registry->enabled_extensions().GetByID(
+                                    extension.id())
+                              : nullptr;
+  if (!installed || (profile->IsOffTheRecord() &&
+                     !extensions::util::IsIncognitoEnabled(extension.id(),
+                                                           profile))) {
+    return false;
+  }
+  auto* action = extensions::ExtensionActionManager::Get(profile)
+                     ->GetExtensionAction(*installed);
+  const int tab_id = extensions::ExtensionTabUtil::GetTabId(contents);
+  if (!action || !action->HasPopup(tab_id) ||
+      !action->GetIsVisibleIgnoringDeclarative(tab_id)) {
+    return false;
+  }
+
+  auto popup = extensions::ExtensionViewHostFactory::CreatePopupHost(
+      *installed, action->GetPopupUrl(tab_id), &browser);
+  if (!popup) {
+    return false;
+  }
+  ExtensionPopup::ShowPopup(
+      &browser, std::move(popup), views::BubbleAnchor(host->TrailingAnchor()),
+      views::BubbleBorder::TOP_RIGHT, PopupShowAction::kShow,
+      std::move(callback));
+  return true;
 }
 
 // BarkToolbarButtonProvider ---------------------------------------------------

@@ -1,5 +1,10 @@
 assert(is_mac)
 
+source_set("extension_popup") {
+  public = [ "bark_extension_popup.h" ]
+  public_deps = [ "//chrome/browser/ui/extensions:extension_popup_types" ]
+}
+
 source_set("ui") {
   sources = [
     "bark_browser_window.h",
@@ -18,9 +23,11 @@ source_set("ui") {
     "browser_window_interface_selection.cc",
   ]
   deps = [
+    ":extension_popup",
     "//base",
     "//chrome/browser:global_keyboard_shortcuts_mac",
     "//chrome/browser/enterprise",
+    "//chrome/browser/extensions",
     "//chrome/browser/profiles:profile",
     "//chrome/browser/themes",
     "//chrome/browser/ui:accelerator_table",
@@ -47,6 +54,7 @@ source_set("ui") {
     "//chrome/browser/ui/views/download",
     "//chrome/browser/ui/views/eye_dropper",
     "//chrome/browser/ui/views/exclusive_access",
+    "//chrome/browser/ui/views/extensions:extension_popup",
     "//chrome/browser/ui/views/translate",
     "//chrome/browser/ui/window_metadata",
     "//components/enterprise/buildflags",
@@ -58,6 +66,7 @@ source_set("ui") {
     "//components/tabs:public",
     "//components/web_modal",
     "//content/public/browser",
+    "//extensions/browser",
     "//ui/base",
     "//ui/base/accelerators/global_accelerator_listener",
     "//ui/display",
