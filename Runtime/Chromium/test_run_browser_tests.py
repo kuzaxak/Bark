@@ -82,8 +82,20 @@ class HostOnlyRuntimeTests(unittest.TestCase):
 
     def test_fat_mixed_architecture_image_is_rejected(self):
         with patch("run_browser_tests.subprocess.check_output", return_value="x86_64 arm64\n"):
-            with self.assertRaisesRegex(ValueError, "thin Intel"):
+            with self.assertRaisesRegex(ValueError, "thin macOS Bark"):
                 require_host_only_image(self.binary)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires Apple's Mach-O tools")
+    def test_inspects_cross_built_arm_marker_without_running_the_image(self):
+        source = self.checkout / "marker.c"
+        source.write_text('__attribute__((used, section("__TEXT,__barkhostonly")))\n'
+                          'static const char marker[] = "BARK_MAC_HOST_ONLY_FACTORY_V1";\n'
+                          'int main(void) { return 0; }\n')
+        subprocess.run(["xcrun", "clang", "-arch", "arm64", source, "-o", self.binary], check=True)
+        self.assertEqual((self.binary, file_identity(self.binary)),
+                         require_host_only_image(self.binary, expected_arch="arm64"))
+        with self.assertRaisesRegex(ValueError, "Expected x86_64"):
+            require_host_only_image(self.binary, expected_arch="x86_64")
 
     def test_new_runner_with_old_companion_framework_is_rejected(self):
         with patch("run_browser_tests.require_host_only_image", side_effect=[

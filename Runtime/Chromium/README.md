@@ -294,7 +294,9 @@ an abandoned mutex.
 
 Before taking the screen mutex, the runner inspects the Mach-O image of the
 test executable and both framework copies in the output directory. All three
-must contain the capability emitted by the host-only Mac window factory.
+must match the runner's architecture and contain the capability emitted by the
+host-only Mac window factory. The same capability can be inspected offline in
+a thin Intel or Apple Silicon image without executing it.
 Stage the whole test runtime from one build. Historical browser-test binaries
 can open classic Chromium windows and are rejected before launch.
 

@@ -7,6 +7,7 @@ import ctypes
 import math
 import os
 from pathlib import Path
+import platform
 import signal
 import stat
 import subprocess
@@ -25,22 +26,28 @@ def file_identity(path):
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def require_host_only_image(path):
+def require_host_only_image(path, expected_arch=None):
     """Inspect linked code without invoking the browser test executable."""
     try:
         identity = file_identity(path)
         arches = subprocess.check_output(
             ["/usr/bin/lipo", "-archs", str(path)], stderr=subprocess.PIPE, text=True
         ).split()
-        if arches != ["x86_64"]:
-            raise ValueError(f"Expected a thin Intel Mach-O: {path}")
+        if len(arches) != 1 or arches[0] not in ("arm64", "x86_64"):
+            raise ValueError(f"Expected a thin macOS Bark image: {path} ({' '.join(arches)})")
+        arch = arches[0]
+        if expected_arch is not None and arch != expected_arch:
+            raise ValueError(f"Expected {expected_arch} for native test execution: {path} ({arch})")
         sections = subprocess.check_output(
             ["/usr/bin/otool", "-s", "__TEXT", "__barkhostonly", str(path)],
             stderr=subprocess.PIPE, text=True,
         ).splitlines()
         heading = "Contents of (__TEXT,__barkhostonly) section"
         groups = [line.split()[1:] for line in sections[2:]]
-        data = bytes.fromhex(" ".join(word for group in groups for word in group))
+        # otool prints bytes on Intel and little-endian words on ARM. A final
+        # partial word can appear as individual bytes on ARM.
+        words = (bytes.fromhex(word) for group in groups for word in group)
+        data = b"".join(word[::-1] if arch == "arm64" else word for word in words)
         if len(sections) < 2 or sections[1] != heading or data != HOST_ONLY_MARKER:
             raise ValueError(f"Missing the compiled Bark host-only factory capability: {path}")
         if file_identity(path) != identity:
@@ -53,7 +60,8 @@ def require_host_only_image(path):
 def require_host_only_runtime(binary):
     # Chromium's test launcher resolves its framework beside the executable.
     # The product bundle can launch helpers through its own framework copy.
-    return tuple(require_host_only_image(path) for path in (
+    arch = platform.machine()
+    return tuple(require_host_only_image(path, expected_arch=arch) for path in (
         binary, binary.parent / TEST_FRAMEWORK, binary.parent / APP_FRAMEWORK,
     ))
 
