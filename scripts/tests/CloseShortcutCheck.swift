@@ -9,6 +9,7 @@ import AppKit
 @main
 struct CloseShortcutCheck {
     static func main() {
+        certificateHoldCases()
         let tab = CloseShortcut.BrowserWindow(showsCommandBar: false, showsPeek: false, showsTab: true)
         let empty = CloseShortcut.BrowserWindow(showsCommandBar: false, showsPeek: false, showsTab: false)
         precondition(CloseShortcut.target(in: tab, isRepeat: false) == .tab,
@@ -48,6 +49,30 @@ struct CloseShortcutCheck {
         precondition(key(",", ",", 13, [.command]) == "cmd+,", "Dvorak matches by the character it types")
         precondition(key("\u{F702}", "\u{F702}", 123, [.command, .option]) == "cmd+opt+left", "arrows")
         print("CloseShortcutCheck passed")
+    }
+
+    private static func certificateHoldCases() {
+        var hold = CloseShortcut.CertificateHold()
+        let browser = NSObject(), foreign = NSObject()
+        let owner = ObjectIdentifier(browser), other = ObjectIdentifier(foreign)
+        precondition(!hold.consume(in: other, isRepeat: false) { _ in false },
+                     "A viewer in another physical window never claims this command")
+        precondition(!hold.consume(in: owner, isRepeat: false) { _ in false },
+                     "A different page in the same window does not own the viewer")
+        precondition(hold.consume(in: owner, isRepeat: false) { dismiss in dismiss },
+                     "The document's focused certificate viewer dismisses on the first press")
+        precondition(hold.consume(in: owner, isRepeat: true) { _ in preconditionFailure() },
+                     "A held key cannot close the source tab after its viewer disappears")
+        precondition(!hold.consume(in: other, isRepeat: true) { dismiss in
+            precondition(!dismiss)
+            return false
+        }, "Another window keeps its own repeat handling")
+        precondition(!hold.consume(in: owner, isRepeat: false) { _ in false },
+                     "A new press can close the source tab")
+        precondition(hold.consume(in: owner, isRepeat: true) { dismiss in
+            precondition(!dismiss)
+            return true
+        }, "A focused viewer already closing can claim a repeat without another dismissal")
     }
 
     private static func key(_ ignoringModifiers: String, _ characters: String, _ keyCode: UInt16, _ flags: NSEvent.ModifierFlags) -> String? {

@@ -303,6 +303,10 @@ class KeyboardShortcutManager {
             }
         }
 
+        // The constrained Chromium WebUI has the key now. Check it before
+        // deferring an ordinary close to the browser model.
+        if shortcut.action == .closeTab, handleCertificateClose(isRepeat: event.isARepeat) { return true }
+
         // Read now: the action runs on the next turn of the run loop, when this event is gone.
         lastShortcutWasControlTab = Self.isControlTab(event)
         lastShortcutWasRepeat = event.isARepeat
@@ -505,10 +509,23 @@ class KeyboardShortcutManager {
         executeAction(action)
     }
 
+    private var certificateCloseHold = CloseShortcut.CertificateHold()
+
+    private func handleCertificateClose(isRepeat: Bool) -> Bool {
+        guard let browserManager, browserManager.tabs.profileEngine == .chromium,
+              let owner = CommandWindow.key,
+              let window = windowRegistry?.windows.values.first(where: { $0.window === owner }) else { return false }
+        return certificateCloseHold.consume(in: ObjectIdentifier(owner), isRepeat: isRepeat) { dismiss in
+            guard let page = browserManager.frontPage(in: window),
+                  let native = page.navigation as? ChromiumPageNavigation else { return false }
+            return native.handleCertificateClose(dismiss: dismiss)
+        }
+    }
+
     /// Close Tab from its shortcut, the File menu or the command bar, in the key window (see
     /// `CloseShortcut`).
     func closeTab(isRepeat: Bool) {
-        guard !CommandWindow.keyKeepsKeys else { return }
+        guard !CommandWindow.keyKeepsKeys, !handleCertificateClose(isRepeat: isRepeat) else { return }
         let keyWindow = CommandWindow.key ?? NSApp.mainWindow
         let state = keyWindow.flatMap { key in windowRegistry?.windows.values.first { $0.window === key } }
         let peeks = browserManager?.peekManager

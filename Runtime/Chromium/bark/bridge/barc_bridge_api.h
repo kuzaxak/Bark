@@ -172,7 +172,11 @@ enum BarcPageCommand {
   // These target an exact visible page, including an attached split pane or Peek.
   BARC_PAGE_SHOW_CERTIFICATE = 15,
   // Returns a BarcCertificateState for the visible committed document.
-  BARC_PAGE_CERTIFICATE_STATE = 16
+  BARC_PAGE_CERTIFICATE_STATE = 16,
+  // Only the certificate viewer opened for this document and holding the
+  // physical key window qualifies. The state query does not dismiss it.
+  BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED = 17,
+  BARC_PAGE_CLOSE_CERTIFICATE_VIEWER = 18
 };
 enum BarcCertificateState {
   BARC_CERTIFICATE_UNAVAILABLE = 0,

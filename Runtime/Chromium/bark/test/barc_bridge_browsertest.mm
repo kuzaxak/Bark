@@ -2004,6 +2004,15 @@ IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
   EXPECT_TRUE(net::x509_util::CryptoBufferEqual(
       certificates.front().get(), https_server.GetCertificate()->cert_buffer()));
 
+  // A show dispatch accepted by the test delegate does not create a focused
+  // native viewer and cannot claim Close Tab.
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, tab,
+                                       BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED));
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, tab,
+                                       BARC_PAGE_CLOSE_CERTIFICATE_VIEWER));
+  EXPECT_EQ(0, barc_tab_execute_command(0, tab,
+                                       BARC_PAGE_CLOSE_CERTIFICATE_VIEWER));
+
   ASSERT_TRUE(bark::SetNativeSpacePageSuppressed(window, true));
   EXPECT_EQ(BARC_CERTIFICATE_UNAVAILABLE,
             barc_tab_execute_command(window_id, tab, BARC_PAGE_CERTIFICATE_STATE));
@@ -2014,6 +2023,8 @@ IN_PROC_BROWSER_TEST_F(BarcSiteDataBrowserTest,
   ASSERT_GT(other_tab, 0);
   EXPECT_EQ(0, barc_tab_execute_command(window_id, tab, BARC_PAGE_SHOW_CERTIFICATE));
   EXPECT_EQ(0, barc_tab_execute_command(window_id, other_tab, BARC_PAGE_SHOW_CERTIFICATE));
+  EXPECT_EQ(0, barc_tab_execute_command(window_id, other_tab,
+                                       BARC_PAGE_CLOSE_CERTIFICATE_VIEWER));
   ASSERT_EQ(1, barc_tab_select(window_id, tab));
   Navigate(window, embedded_test_server()->GetURL("a.test", "/title2.html"));
   EXPECT_EQ(BARC_CERTIFICATE_UNAVAILABLE,

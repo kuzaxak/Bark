@@ -234,6 +234,11 @@ final class ChromiumPageNavigation: PageNavigation {
         executeNativePageCommand(Int32(BARC_PAGE_SHOW_CERTIFICATE.rawValue))
     }
 
+    func handleCertificateClose(dismiss: Bool) -> Bool {
+        let command = dismiss ? BARC_PAGE_CLOSE_CERTIFICATE_VIEWER : BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED
+        return executeNativePageCommand(Int32(command.rawValue))
+    }
+
     @discardableResult
     func clearBackForwardCache() -> Bool {
         executeNativePageCommand(Int32(BARC_PAGE_CLEAR_BACK_FORWARD_CACHE.rawValue))

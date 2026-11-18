@@ -90,7 +90,9 @@
 #include "base/json/json_writer.h"
 #include "base/version_info/version_info.h"
 #include "chrome/app/chrome_command_ids.h"
-#include "chrome/browser/certificate_viewer.h"
+#include "chrome/browser/ui/webui/certificate_viewer/certificate_viewer_webui.h"
+#include "content/public/browser/document_user_data.h"
+#include "ui/views/widget/widget.h"
 #include "chrome/browser/lifetime/browser_shutdown.h"
 #include "chrome/browser/ssl/chrome_security_state_util.h"
 #include "chrome/browser/devtools/devtools_window.h"
@@ -161,6 +163,20 @@
 using namespace barc::internal;
 
 namespace {
+
+class CertificateViewerOwner
+    : public content::DocumentUserData<CertificateViewerOwner> {
+ public:
+  base::WeakPtr<views::Widget> widget;
+
+ private:
+  friend class content::DocumentUserData<CertificateViewerOwner>;
+  explicit CertificateViewerOwner(content::RenderFrameHost* frame)
+      : DocumentUserData(frame) {}
+  DOCUMENT_USER_DATA_KEY_DECL();
+};
+DOCUMENT_USER_DATA_KEY_IMPL(CertificateViewerOwner);
+
 int CertificateCommand(BrowserWindowInterface* window,
                        tabs::TabInterface* tab, int32_t command) {
   if (!tab || window->IsDeleteScheduled() || !window->GetWindow() ||
@@ -176,6 +192,21 @@ int CertificateCommand(BrowserWindowInterface* window,
   if (![view window] || [view window] != parent.GetNativeNSWindow() ||
       [view isHiddenOrHasHiddenAncestor] || ![parent.GetNativeNSWindow() isVisible])
     return BARC_CERTIFICATE_UNAVAILABLE;
+  auto* frame = contents->GetPrimaryMainFrame();
+  if (!frame)
+    return BARC_CERTIFICATE_UNAVAILABLE;
+  if (command == BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED ||
+      command == BARC_PAGE_CLOSE_CERTIFICATE_VIEWER) {
+    auto* owner = CertificateViewerOwner::GetForCurrentDocument(frame);
+    auto* widget = owner ? owner->widget.get() : nullptr;
+    NSWindow* dialog_window =
+        widget ? widget->GetNativeWindow().GetNativeNSWindow() : nil;
+    if (!dialog_window || [NSApp keyWindow] != dialog_window)
+      return 0;
+    if (command == BARC_PAGE_CLOSE_CERTIFICATE_VIEWER && !widget->IsClosed())
+      widget->Close();
+    return 1;
+  }
   auto& controller = contents->GetController();
   auto* entry = controller.GetLastCommittedEntry();
   if (!entry || entry != controller.GetVisibleEntry() ||
@@ -192,8 +223,21 @@ int CertificateCommand(BrowserWindowInterface* window,
                ? BARC_CERTIFICATE_SECURE
                : BARC_CERTIFICATE_AVAILABLE;
   }
-  auto certificate = entry->GetSSL().certificate;
-  ShowCertificateViewer(contents, parent, certificate.get());
+  auto* owner = CertificateViewerOwner::GetForCurrentDocument(frame);
+  if (owner && owner->widget && !owner->widget->IsClosed())
+    return 1;
+  const auto document = frame->GetWeakDocumentPtr();
+  auto* viewer = CertificateViewerDialog::ShowConstrained(
+      entry->GetSSL().certificate->CopyCertBuffers(), contents, parent);
+  if (viewer) {
+    if (auto* widget = views::Widget::GetWidgetForNativeWindow(
+            viewer->GetNativeWebContentsModalDialog())) {
+      if (auto* document_frame = document.AsRenderFrameHostIfValid()) {
+        CertificateViewerOwner::GetOrCreateForCurrentDocument(document_frame)
+            ->widget = widget->GetWeakPtr();
+      }
+    }
+  }
   return 1;
 }
 }  // namespace
@@ -206,7 +250,9 @@ int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
   auto* window = Window(window_id);
   auto* tab = LookupTab(window, tab_id);
   if (command == BARC_PAGE_SHOW_CERTIFICATE ||
-      command == BARC_PAGE_CERTIFICATE_STATE)
+      command == BARC_PAGE_CERTIFICATE_STATE ||
+      command == BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED ||
+      command == BARC_PAGE_CLOSE_CERTIFICATE_VIEWER)
     return CertificateCommand(window, tab, command);
   if (command == BARC_PAGE_CLEAR_BACK_FORWARD_CACHE) {
     auto* unload = window ? UnloadController::From(window) : nullptr;

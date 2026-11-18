@@ -42,7 +42,7 @@ source_set("bridge") {
     "//chrome/app:command_ids",
     "//chrome/browser",
     "//chrome/browser/content_settings:content_settings_factory",
-    "//chrome/browser:certificate_viewer",
+    "//chrome/browser/ui/webui/certificate_viewer",
     "//chrome/browser/devtools",
     "//chrome/browser/extensions",
     "//chrome/browser/lifetime",

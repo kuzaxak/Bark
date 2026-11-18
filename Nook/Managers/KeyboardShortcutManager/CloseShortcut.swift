@@ -37,6 +37,20 @@ enum CloseShortcut {
         return isRepeat ? .nothing : .window
     }
 
+    /// A held Close Tab key that dismissed a viewer stops at its owner.
+    struct CertificateHold {
+        private var handledWindow: ObjectIdentifier?
+
+        mutating func consume(in window: ObjectIdentifier, isRepeat: Bool,
+                              handleViewer: (_ dismiss: Bool) -> Bool) -> Bool {
+            if !isRepeat { handledWindow = nil }
+            if handledWindow == window { return true }
+            guard handleViewer(!isRepeat) else { return false }
+            handledWindow = window
+            return true
+        }
+    }
+
     /// Whether a key press in a window that is not a browser window closes it. ⌘W does, whatever
     /// Close Tab is bound to: Close Tab took the place of the standard File → Close (⌘W).
     static func closesOtherWindow(lookupKey: String?) -> Bool {
