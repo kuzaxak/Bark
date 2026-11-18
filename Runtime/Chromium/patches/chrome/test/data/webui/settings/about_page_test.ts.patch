@@ -60,8 +60,8 @@ diff --git a/chrome/test/data/webui/settings/about_page_test.ts b/chrome/test/da
 +    assertEquals(null, page.shadowRoot.querySelector('#relaunch'));
 +    assertEquals(null, page.shadowRoot.querySelector('#help'));
 +
-+    assertEquals(true, page.shadowRoot.textContent?.includes(
-+        page.i18n('aboutBrowserVersion')));
++    assertEquals(page.i18n('aboutBrowserVersion'),
++        page.shadowRoot.querySelector('.cr-padded-text .secondary')?.textContent);
 +    assertTrue(!!page.shadowRoot.querySelector('a[href="chrome://credits/"]'));
 +  });
 +  // </if>
