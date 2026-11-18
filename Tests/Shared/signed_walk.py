@@ -158,20 +158,25 @@ def verify_native_candidate(contributor, app):
     return architecture
 
 
-def verify_official_sdk(contributor, architecture, app=None):
+def verify_pinned_sdk(contributor, architecture, app=None, *, require_official=False):
     """Return the cached SDK and evidence only after the required checks pass."""
     cached = contributor["cached_engine"](architecture)
     if not cached.is_dir():
         raise ValueError(f"Install this checkout's pinned {architecture} Bark SDK first.")
-    with tempfile.TemporaryDirectory(prefix="bark-official-preflight-", dir="/private/tmp") as folder:
+    with tempfile.TemporaryDirectory(prefix="bark-sdk-preflight-", dir="/private/tmp") as folder:
         working = Path(folder)
-        with contributor["pinned_engine"](str(cached), working, architecture, require_official=True) as engine:
+        with contributor["pinned_engine"](str(cached), working, architecture, require_official=require_official) as engine:
             if app is not None:
                 contributor["verify_candidate"](app, engine, working, architecture)
             digest = hashlib.sha256((engine / "SHA256SUMS").read_bytes()).hexdigest()
             if digest != contributor["read_pin"](contributor["PACKAGE"], architecture):
-                raise ValueError("The checkout SDK pin changed during official verification.")
-            return engine, {"architecture": architecture, "sdk_pin": digest, "official": True}
+                raise ValueError("The checkout SDK pin changed during verification.")
+            return engine, {"architecture": architecture, "sdk_pin": digest,
+                            "official": True if require_official else None}
+
+
+def verify_official_sdk(contributor, architecture, app=None):
+    return verify_pinned_sdk(contributor, architecture, app, require_official=True)
 
 
 def run_walk(description, name, serve, exercise, preferences=(), *,
@@ -180,7 +185,11 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
     parser.add_argument("--app", type=Path, required=True, help="Signed Bark.app for this Mac’s native architecture")
     parser.add_argument("--output", type=Path, required=True, help="New directory for test evidence")
     if official_qualification:
-        parser.add_argument("--require-official", action="store_true", help="verify the native official SDK and signed payload")
+        verification = parser.add_mutually_exclusive_group()
+        verification.add_argument("--require-official", action="store_true",
+                                  help="verify the native official SDK and signed payload")
+        verification.add_argument("--verify-sdk", action="store_true",
+                                  help="verify the pinned native SDK and signed payload without checking official provenance")
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("This walk requires macOS")
@@ -191,10 +200,11 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
     if not binary.is_file() or processes(app):
         parser.error("Pass a candidate that is not already running")
     contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
-    if getattr(args, "require_official", False):
+    if getattr(args, "require_official", False) or getattr(args, "verify_sdk", False):
         architecture = contributor["native_architecture"]()
         try:
-            _, qualification = verify_official_sdk(contributor, architecture, app)
+            _, qualification = verify_pinned_sdk(contributor, architecture, app,
+                                                  require_official=args.require_official)
         except (OSError, ValueError, subprocess.CalledProcessError) as error:
             parser.error(str(error))
     else:

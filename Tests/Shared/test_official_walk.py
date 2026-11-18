@@ -6,7 +6,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock
 
-from signed_walk import verify_official_sdk
+from signed_walk import verify_official_sdk, verify_pinned_sdk
 
 
 class OfficialWalkTests(unittest.TestCase):
@@ -46,6 +46,12 @@ class OfficialWalkTests(unittest.TestCase):
         self.calls.pinned_engine.assert_called_once_with(str(self.engine), "arm64", True)
         self.assertEqual(self.calls.verify_candidate.call_args.args[:2], (self.app, self.engine))
         self.assertEqual(self.calls.verify_candidate.call_args.args[-1], "arm64")
+
+    def test_pinned_developer_walk_does_not_claim_official_provenance(self):
+        _, evidence = verify_pinned_sdk(self.contributor, "x86_64", self.app)
+        self.assertEqual(evidence, {"architecture": "x86_64", "sdk_pin": self.pin, "official": None})
+        self.calls.pinned_engine.assert_called_once_with(str(self.engine), "x86_64", False)
+        self.calls.verify_candidate.assert_called_once()
 
     def test_developer_sdk_is_refused_before_signed_app_verification(self):
         self.refuse_sdk = True
