@@ -16,11 +16,7 @@ Please be respectful to maintainers and disclose AI assistance.
 
 You need a Mac and Xcode 26 or later. The package tests and native command-routing check run on Apple Silicon or Intel. The pinned Bark engine and signed-app smoke currently require Intel.
 
-1. **Clone the repository**
-   ```bash
-   git clone https://github.com/nook-browser/Nook.git
-   cd Nook
-   ```
+1. **Check out the Bark revision you want to build.** Run the commands below from the repository directory containing `Nook.xcodeproj` and `scripts/bark-check.py`.
 
 2. **Install the Metal Toolchain** (Xcode 26 and later ship without it; Nook has one shader)
    ```bash
@@ -33,14 +29,7 @@ You need a Mac and Xcode 26 or later. The package tests and native command-routi
    ```
    Swift packages resolve on their own the first time the project opens.
 
-4. **Build**
-
-   `Bark.app` is the native shell around a pinned Chromium engine. The `NookNativeShell` scheme builds the shell framework and the outer app against the engine's committed headers:
-   ```bash
-   xcodebuild -scheme NookNativeShell -configuration Release -destination 'generic/platform=macOS' \
-     -derivedDataPath build ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES CODE_SIGNING_ALLOWED=NO build
-   ```
-   Running it needs the published engine as well; "Building the app" in `Runtime/Chromium/README.md` stages a runnable bundle from both.
+4. **Build and run Bark.** Install the pinned Intel SDK once and use the signed build command below. It builds the Swift shell and outer app from the tracked sources, verifies the embedded engine, and places the finished app at `build/Bark.app`. The output directory can start empty. [Native command routing and signed Bark](#native-command-routing-and-signed-bark)
 
    Space sync's record types live in `scripts/cloudkit/schema.ckdb`. CloudKit refuses a save that carries a field the Production environment lacks, so before every release run `scripts/cloudkit/check-production-schema.sh path/to/management-token` (a CloudKit management token from CloudKit Console → Settings → Tokens & Keys). It lists what Production lacks and fails; then import the schema with `scripts/cloudkit/import-schema.sh path/to/management-token`, deploy it to Production in CloudKit Console, and run the check again.
 
@@ -56,12 +45,13 @@ python3 scripts/bark-check.py interaction
 
 The regression compiles the shipped command-routing code and checks it against real AppKit windows and a sheet. CI runs it after the Swift package tests.
 
-On Intel, run the catalog, startup-focus and page-ownership regressions against the Debug shell. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
+On Intel, run the catalog, startup focus, page ownership and extension action regressions against the Debug shell. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
 
 ```fish
 python3 scripts/bark-check.py catalog
 python3 scripts/bark-check.py page-host
 python3 scripts/bark-check.py profile-pages
+python3 scripts/bark-check.py extension-actions
 ```
 
 On an Intel Mac with Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
