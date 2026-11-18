@@ -348,12 +348,13 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   ASSERT_NE(HostOf(work), HostOf(other));
   NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
   const int32_t work_tab = OpenPage(work, root, "/title1.html");
-  Place(work, work_tab, root);
+  const int32_t home_tab = OpenPage(home, root, "/title2.html");
+  const int32_t research_tab = OpenPage(research, root, "/title3.html");
+  NSView* work_view = Place(work, work_tab, root);
   ASSERT_EQ(1, barc_window_show(work));
   ASSERT_TRUE(base::test::RunUntil(
       [&] { return HostOf(work)->widget()->IsActive(); }));
-  const int32_t home_tab = barc_window_tab_at(home, 0);
-  const int32_t research_tab = barc_window_tab_at(research, 0);
+  ASSERT_TRUE(HostOf(work)->IsPageMounted(TabContents(work_tab)));
   auto* contents = TabContents(work_tab);
   auto* manager =
       permissions::PermissionRequestManager::FromWebContents(contents);
@@ -367,6 +368,14 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
           permissions::RequestType::kGeolocation, permission.GetWeakPtr()));
   ASSERT_TRUE(base::test::RunUntil([&] { return prompts.is_visible(); }));
   SpaceOutcomes outcomes;
+  auto mount_research =
+      FindBrowser(research)->RegisterNativeWindowSelectionChanged(
+          base::BindLambdaForTesting([&] {
+            if (FindBrowser(research)->IsSelectedForNativeWindow()) {
+              [work_view removeFromSuperview];
+              Place(research, research_tab, root);
+            }
+          }));
   auto activation = FindBrowser(home)->RegisterDidBecomeActive(
       base::BindLambdaForTesting([&](BrowserWindowInterface*) {
         EXPECT_EQ(1, outcomes.Switch(2, work, research, research_tab));
@@ -393,6 +402,9 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   EXPECT_TRUE(outcomes.entries[1].prompts.empty());
   EXPECT_FALSE(prompts.is_visible());
   EXPECT_FALSE(permission.finished);
+  EXPECT_TRUE(HostOf(work)->IsPageMounted(TabContents(research_tab)));
+  EXPECT_FALSE(HostOf(work)->IsPageMounted(contents));
+  EXPECT_EQ(nil, work_view.window);
   EXPECT_TRUE(FindBrowser(other)->IsSelectedForNativeWindow());
 
   // Reject malformed input without delivery and refuse a valid request for
@@ -574,6 +586,68 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   EXPECT_EQ(0, outcome.selected_client);
   EXPECT_EQ(0, outcome.active_tab);
   EXPECT_TRUE(FindBrowser(other)->IsSelectedForNativeWindow());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SpaceSwitchWaitsForCancelledWindowClose) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t work_tab = OpenPage(work, root, "/title1.html");
+  const int32_t home_tab = OpenPage(home, root, "/title2.html");
+  NSView* work_view = Place(work, work_tab, root);
+  ASSERT_EQ(1, barc_window_show(work));
+  auto* host = HostOf(work);
+  ASSERT_TRUE(base::test::RunUntil([&] { return host->widget()->IsActive(); }));
+  auto* work_browser = FindBrowser(work);
+  auto* work_page = TabContents(work_tab);
+  ASSERT_TRUE(host->IsPageMounted(work_page));
+  ASSERT_TRUE(content::ExecJs(work_page, R"(
+    window.draft = 'retained across close veto';
+    onbeforeunload = () => 'keep';
+  )"));
+  content::PrepContentsForBeforeUnloadTest(work_page);
+  NSWindow* native = host->widget()->GetNativeWindow().GetNativeNSWindow();
+  [[native standardWindowButton:NSWindowCloseButton] performClick:nil];
+  auto* dialog = ui_test_utils::WaitForAppModalDialog();
+  ASSERT_TRUE(dialog->is_before_unload_dialog());
+  ASSERT_EQ(work_page, dialog->web_contents());
+
+  SpaceOutcomes outcomes;
+  ASSERT_EQ(1, outcomes.Switch(1, work, home, home_tab));
+  ASSERT_EQ(1u, outcomes.entries.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_REFUSED, outcomes.entries[0].result.status);
+  EXPECT_EQ(work, outcomes.entries[0].result.selected_client);
+  EXPECT_EQ(work_tab, outcomes.entries[0].result.active_tab);
+  EXPECT_TRUE(host->IsPageMounted(work_page));
+  EXPECT_EQ(work_page, dialog->web_contents());
+  dialog->view()->CancelAppModalDialog();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !UnloadController::From(work_browser)->is_attempting_to_close_browser();
+  }));
+
+  auto mount_home =
+      FindBrowser(home)->RegisterNativeWindowSelectionChanged(
+          base::BindLambdaForTesting([&] {
+            if (FindBrowser(home)->IsSelectedForNativeWindow()) {
+              [work_view removeFromSuperview];
+              Place(home, home_tab, root);
+            }
+          }));
+  ASSERT_EQ(1, outcomes.Switch(2, work, home, home_tab));
+  ASSERT_EQ(2u, outcomes.entries.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, outcomes.entries[1].result.status);
+  EXPECT_EQ(home, outcomes.entries[1].result.selected_client);
+  EXPECT_EQ(home_tab, outcomes.entries[1].result.active_tab);
+  EXPECT_EQ(host->physical_group(), outcomes.entries[1].result.physical_group);
+  EXPECT_TRUE(host->widget()->IsVisible());
+  EXPECT_EQ(2u, host->clients().size());
+  EXPECT_TRUE(host->IsPageMounted(TabContents(home_tab)));
+  EXPECT_FALSE(host->IsPageMounted(work_page));
+  EXPECT_EQ("retained across close veto",
+            content::EvalJs(work_page, "window.draft"));
+  ASSERT_TRUE(content::ExecJs(work_page, "onbeforeunload = null;"));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, NormalBrowserGetsHostWindow) {

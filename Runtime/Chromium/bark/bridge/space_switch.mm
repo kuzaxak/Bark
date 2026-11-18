@@ -9,21 +9,20 @@
 #include "bark/bridge/bridge_internal.h"
 #include "bark/browser/ui/bark_browser_window.h"
 #include "bark/browser/ui/bark_window_host.h"
+#include "bark/browser/ui/native_space_page.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/file_select_helper.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/browser_widget.h"
+#include "chrome/browser/ui/unload_controller.h"
 #include "components/permissions/permission_request.h"
 #include "components/permissions/permission_request_manager.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/web_modal/web_contents_modal_dialog_manager.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/document_user_data.h"
-#include "bark/browser/ui/native_space_page.h"
 #include "content/public/browser/render_frame_host.h"
 #include "content/public/browser/weak_document_ptr.h"
 #include "content/public/browser/web_contents.h"
@@ -66,26 +65,12 @@ struct PhysicalWindow {
     if (auto* bark_host = bark::BarkWindowHost::ForBrowser(browser)) {
       group = bark_host->physical_group();
       host = bark_host->GetWeakPtr();
-    } else if (auto* view = browser
-                                ? BrowserView::GetBrowserViewForBrowser(browser)
-                                : nullptr) {
-      if (auto* browser_widget = view->browser_widget()) {
-        group = browser_widget->barc_physical_group();
-        widget = browser_widget->GetWeakPtr();
-      }
     }
   }
 
   BrowserWindowInterface* SelectedClient() const {
     if (host && !host->closing() && host->selected()) {
       return host->selected()->browser();
-    }
-    if (widget && !widget->IsClosed()) {
-      auto* browser_widget = static_cast<BrowserWidget*>(widget.get());
-      auto* view = browser_widget->selected_browser_view();
-      if (view && !browser_widget->IsPhysicalCloseCommitted()) {
-        return view->browser();
-      }
     }
     return nullptr;
   }
@@ -104,7 +89,6 @@ struct PhysicalWindow {
 
   uint64_t group = 0;
   base::WeakPtr<bark::BarkWindowHost> host;
-  base::WeakPtr<views::Widget> widget;
 };
 
 PromptSnapshot Snapshot(BarcSpaceSwitchPromptKind kind,
@@ -232,7 +216,7 @@ int32_t SelectSpace(const PhysicalWindow& window,
   }
   auto* client = Window(request.client);
   if (barc::internal::navigation_callback_depth || !client ||
-      PhysicalWindow(client).group != window.group ||
+      bark::BarkWindowHost::ForBrowser(client) != window.host.get() ||
       client->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
       (request.tab && !LookupTab(client, request.tab))) {
     return BARC_SPACE_SWITCH_REFUSED;
@@ -254,7 +238,15 @@ int32_t SelectSpace(const PhysicalWindow& window,
       }
     }
   }
-  if (outgoing && HasModal(outgoing->GetContents())) {
+  // A before-unload veto can leave the window alive. Keep its current
+  // selection and prompts in place until the close attempt settles.
+  const bool close_pending = std::ranges::any_of(
+      window.host->clients(), [](const auto& host_client) {
+        auto* unload = UnloadController::From(host_client->browser());
+        return unload->is_attempting_to_close_browser() ||
+               unload->owner_close_admitted();
+      });
+  if (close_pending || (outgoing && HasModal(outgoing->GetContents()))) {
     return BARC_SPACE_SWITCH_REFUSED;
   }
 
@@ -264,10 +256,8 @@ int32_t SelectSpace(const PhysicalWindow& window,
   // cannot reopen during the owner callback sequence for an empty space.
   const bool suppressing =
       !request.tab && bark::SetNativeSpacePageSuppressed(client, true);
-  const bool selected = window.host
-      ? window.host->Select(bark::BarkBrowserWindow::FromBrowser(client))
-      : static_cast<BrowserWidget*>(window.widget.get())
-            ->SelectLogicalBrowserView(BrowserView::GetBrowserViewForBrowser(client));
+  const bool selected =
+      window.host->Select(bark::BarkBrowserWindow::FromBrowser(client));
   if (suppressing && destination_alive) {
     if (selected && destination_alive->IsSelectedForNativeWindow()) {
       if (before.client == request.client) {
@@ -313,9 +303,9 @@ int32_t SelectSpace(const PhysicalWindow& window,
       destination_alive->NotifyNativeWindowSelectionChanged();
       barc::BrowserDiscoveryChanged();
     }
-    if (contents && batch.requests.size() == count_before &&
+    if (window.host && contents && batch.requests.size() == count_before &&
         window.Selected() == Selection{request.client, request.tab}) {
-      contents->Focus();
+      window.host->FocusSelectedPage();
     }
     const auto focused = window.Selected();
     if (!focused.client) {
