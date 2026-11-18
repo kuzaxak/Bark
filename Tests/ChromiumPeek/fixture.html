@@ -21,9 +21,10 @@
             method: "POST", keepalive: true,
             body: JSON.stringify({
                 page: location.pathname, event, documentID, value: draft.value,
-                viewport: innerWidth, visibility: document.visibilityState,
+                viewport: innerWidth, scrollY, visibility: document.visibilityState,
                 wasDiscarded: document.wasDiscarded === true,
-                focused: document.activeElement?.id || "", ...properties
+                focused: document.activeElement?.id || "",
+                draftPoint: center(draft), linkPoint: center(link), ...properties
             })
         });
     }
@@ -32,8 +33,10 @@
         return [Math.round(rect.left + rect.width / 2), Math.round(rect.top + rect.height / 2)];
     }
 
-    report("ready", { draftPoint: center(draft), linkPoint: center(link) });
+    report("ready");
     addEventListener("resize", () => report("resize"));
+    addEventListener("scrollend", () => report("scrollend"));
+    document.addEventListener("pointerdown", event => report("page-pointer", { trusted: event.isTrusted }));
     document.addEventListener("visibilitychange", () => report("visibility"));
     document.addEventListener("keydown", event => report("key", {
         key: event.key, trusted: event.isTrusted, target: event.target.id || ""

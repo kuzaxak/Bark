@@ -8,6 +8,7 @@ Screen Recording access.
 ```fish
 python3 Tests/ChromiumPeek/walk.py --app /path/to/Bark.app --output /private/tmp/peek-walk
 python3 Tests/ChromiumPeek/keyboard_walk.py --app /path/to/Bark.app --output /private/tmp/peek-keys
+python3 Tests/ChromiumPeek/split_walk.py --app /path/to/Bark.app --output /private/tmp/peek-split
 ```
 
 The output directory must be new. The walk creates and removes its own
@@ -25,3 +26,8 @@ The keyboard walk focuses the link with Tab and opens Peek with Shift+Return.
 It checks that Escape restores the source link and draft, reopens the link,
 and presses the default Add Split View shortcut (Control+Shift+=). The target
 must keep its document and draft and receive the next typed character.
+
+The split walk creates a sibling pane before opening Peek over the original
+pane. It checks that Escape restores the original document, focused link,
+draft, viewport width and scroll position. A trusted click in the trailing
+gutter must still reach the sibling document while Peek is open.
