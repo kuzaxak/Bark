@@ -1,0 +1,27 @@
+diff --git a/chrome/browser/resources/settings/about_page/about_page.ts b/chrome/browser/resources/settings/about_page/about_page.ts
+--- a/chrome/browser/resources/settings/about_page/about_page.ts
++++ b/chrome/browser/resources/settings/about_page/about_page.ts
+@@ -135,9 +135,12 @@
+   override connectedCallback() {
+     super.connectedCallback();
+
++    // Bark on macOS checks for updates through the application menu.
++    // <if expr="not is_macosx or _google_chrome or _is_chrome_for_testing_branded">
+     this.aboutBrowserProxy_.pageReady();
+-
+-    // <if expr="not is_chromeos">
++    // </if>
++
++    // <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+     this.startListening_();
+     // </if>
+
+@@ -180,7 +183,7 @@
+     return '';
+   }
+
+-  // <if expr="not is_chromeos">
++  // <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+   private startListening_() {
+     this.addWebUiListener(
+         'update-status-changed', this.onUpdateStatusChanged_.bind(this));
