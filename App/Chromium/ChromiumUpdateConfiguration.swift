@@ -24,8 +24,10 @@ struct ChromiumUpdateRehearsal {
 struct ChromiumUpdateConfiguration {
     #if arch(arm64)
     static let rehearsalFeedPath = "/bark-macos-arm64.xml"
+    private static let otherArchitectureFeed = "bark-macos-x86_64.xml"
     #else
     static let rehearsalFeedPath = "/bark-macos-x86_64.xml"
+    private static let otherArchitectureFeed = "bark-macos-arm64.xml"
     #endif
 
     let feed: URL
@@ -44,7 +46,8 @@ struct ChromiumUpdateConfiguration {
                   components.percentEncodedPath == Self.rehearsalFeedPath,
                   components.query == nil, info["SUEnableAutomaticChecks"] as? Bool == false else { return nil }
         } else {
-            guard components.scheme == "https" else { return nil }
+            guard components.scheme == "https",
+                  feed.lastPathComponent != Self.otherArchitectureFeed else { return nil }
         }
         self.feed = feed
         self.isRehearsal = isRehearsal

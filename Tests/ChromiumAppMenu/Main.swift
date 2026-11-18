@@ -228,8 +228,19 @@ enum Check {
     }
     private static func verifyUpdateConfiguration() {
         let key = Data(repeating: 7, count: 32).base64EncodedString()
-        let production: [String: Any] = ["SUFeedURL": "https://updates.synthetic.invalid/bark.xml", "SUPublicEDKey": key]
+        let feedPath = ChromiumUpdateConfiguration.rehearsalFeedPath
+        let production: [String: Any] = [
+            "SUFeedURL": "https://updates.synthetic.invalid/releases" + feedPath, "SUPublicEDKey": key,
+        ]
+        let otherFeedPath = feedPath.contains("arm64") ? "/bark-macos-x86_64.xml" : "/bark-macos-arm64.xml"
+        var wrongArchitecture = production
+        wrongArchitecture["SUFeedURL"] = "https://updates.synthetic.invalid/releases" + otherFeedPath
+        precondition(ChromiumUpdateConfiguration(info: wrongArchitecture, isVerification: false,
+                                                 isRehearsal: false) == nil, "Reject the other CPU's update feed")
         precondition(ChromiumUpdateConfiguration(info: production, isVerification: false, isRehearsal: false) != nil)
+        var custom = production
+        custom["SUFeedURL"] = "https://updates.synthetic.invalid/bark.xml"
+        precondition(ChromiumUpdateConfiguration(info: custom, isVerification: false, isRehearsal: false) != nil)
         precondition(ChromiumUpdateConfiguration(info: production, isVerification: true, isRehearsal: false) == nil)
         precondition(ChromiumUpdateConfiguration(info: production, isVerification: true, isRehearsal: true) == nil)
         precondition(ChromiumUpdateConfiguration(info: ["SUFeedURL": production["SUFeedURL"]!],
