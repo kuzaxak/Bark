@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Runs the outer app's main, the public headers, publishing and staging against fake engine products."""
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
@@ -602,10 +603,17 @@ def fake_engine_build(root, framework_lib):
     return build
 
 
-def publish(build, package, siso=None, architecture=None):
+def publisher_environment(build, siso=None):
     fake = FAKE_SISO if siso is None else siso
-    env = {**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE_SISO_STATE': str(build / 'fake-siso-state.json')}
-    return subprocess.run(['bash', str(PUBLISH), *(['--arch', architecture] if architecture else []), str(build), str(package)], capture_output=True, text=True, env=env)
+    return {**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE_SISO_STATE': str(build / 'fake-siso-state.json')}
+
+
+def publish(build, package, siso=None, architecture=None, replace=False):
+    flags = ['--arch', architecture] if architecture else []
+    if replace:
+        flags.append('--replace')
+    return subprocess.run(['bash', str(PUBLISH), *flags, str(build), str(package)],
+                          capture_output=True, text=True, env=publisher_environment(build, siso))
 
 
 def same_text(a, b):
@@ -698,8 +706,114 @@ def publish_cases(work, framework_lib):
     executable = artifact / FRAMEWORK / f'Versions/{VERSION}/Bark Framework'
     check('a published artifact keeps its executable bits', os.access(executable, os.X_OK))
 
-    again = publish(work / 'publish-ok/engine', package)
-    check('publishing refuses to replace an artifact', again.returncode != 0 and 'already published' in again.stderr, (again.returncode, again.stderr))
+    again = publish(work / 'publish-ok/source/out/Barc-x64', package)
+    check('publishing identical inputs verifies the existing SDK', again.returncode == 0, (again.returncode, again.stderr))
+
+    build = work / 'publish-ok/source/out/Barc-x64'
+    engine_root = artifact / FRAMEWORK
+    alias = engine_root / 'Resources'
+    old_mode = engine_root.stat().st_mode
+    engine_root.chmod(old_mode | 0o200)
+    alias.unlink()
+    engine_root.chmod(old_mode)
+    missing_alias = publish(build, package)
+    check('identical checksums cannot hide a missing framework alias',
+          missing_alias.returncode != 0 and '--replace' in missing_alias.stderr and not alias.exists(),
+          missing_alias.stderr)
+    replacement = publish(build, package, replace=True)
+    check('explicit repair restores the sealed alias with the same digest',
+          replacement.returncode == 0 and alias.readlink() == Path('Versions/Current/Resources')
+          and pin == (published / 'engine-artifact-x86_64.sha256').read_text().strip(),
+          replacement.stderr)
+    executable.chmod(0o444)
+    no_execute = publish(build, package)
+    check('matching checksums cannot hide a lost executable bit',
+          no_execute.returncode != 0 and '--replace' in no_execute.stderr, no_execute.stderr)
+    repair_mode = publish(build, package, replace=True)
+    check('explicit repair restores native executability',
+          repair_mode.returncode == 0 and os.access(executable, os.X_OK), repair_mode.stderr)
+
+    interrupted = work / 'publish-obstructed'
+    blocked_build = fake_engine_build(interrupted, framework_lib)
+    blocked_package = interrupted / 'package'
+    blocked_package.mkdir()
+    obstacle = blocked_package / 'BarkEngine.xcframework'
+    obstacle.write_text('Keep this unrelated file intact')
+    blocked = publish(blocked_build, blocked_package)
+    check('publication failure leaves no incomplete final Engine',
+          blocked.returncode != 0 and not artifact_of(blocked_package).exists()
+          and obstacle.read_text() == 'Keep this unrelated file intact', blocked.stderr)
+    obstacle.unlink()
+    retry = publish(blocked_build, blocked_package)
+    check('publication can retry after correcting an obstructed destination', retry.returncode == 0, retry.stderr)
+
+    pin_file = published / 'engine-artifact-x86_64.sha256'
+    (build / 'Bark Packaging/signing/__init__.py').write_text('# New signing recipe\n')
+    refused_upgrade = publish(build, package)
+    check('a different artifact needs explicit replacement',
+          refused_upgrade.returncode != 0 and '--replace' in refused_upgrade.stderr
+          and pin_file.read_text().strip() == pin, refused_upgrade.stderr)
+
+    # Kill a real publisher after the atomic Engine swap and before it writes the pin.
+    kill_before_pin = """
+import os, signal, sys
+from pathlib import Path
+sys.path.insert(0, str(Path(sys.argv[3]).parent))
+import publish_chromium_sdk as publication
+write_atomic = publication.write_atomic
+def interrupted(work, target, content):
+    if target.name == "engine-artifact-x86_64.sha256":
+        os.kill(os.getpid(), signal.SIGKILL)
+    write_atomic(work, target, content)
+publication.write_atomic = interrupted
+publication.publish(Path(sys.argv[1]), "x86_64", True, sys.argv[2], sys.argv[3])
+"""
+    interrupted = subprocess.run([sys.executable, '-B', '-c', kill_before_pin, package, build, PUBLISH],
+                                 env=publisher_environment(build), capture_output=True, text=True)
+    check('an interrupted upgrade retains both sealed engines and the old pin',
+          interrupted.returncode == -9 and pin_file.read_text().strip() == pin
+          and (artifact / 'Bark Packaging/signing/__init__.py').read_text() == '# New signing recipe\n'
+          and len(list(artifact.parent.parent.glob('.publication-*'))) == 1
+          and not os.access(artifact, os.W_OK), interrupted.stderr)
+    repaired = publish(build, package)
+    check('retry recovers and verifies an interrupted SDK upgrade',
+          repaired.returncode == 0 and 'Recovered SDK publication' in repaired.stdout
+          and pin_file.read_text().strip() != pin
+          and not list(artifact.parent.parent.glob('.publication-*')), repaired.stderr)
+
+    arm = work / 'publish-race-arm.dylib'
+    fake_framework(arm, arch=('-arch', 'arm64'))
+    arm_build = fake_engine_build(work / 'publish-race-arm', arm)
+    concurrent = work / 'publish-race-package'
+    with ThreadPoolExecutor(max_workers=2) as workers:
+        intel = workers.submit(publish, build, concurrent)
+        silicon = workers.submit(publish, arm_build, concurrent, architecture='arm64')
+        results = [intel.result(), silicon.result()]
+    check('independent Intel and ARM publishers serialize shared package changes',
+          all(result.returncode == 0 for result in results)
+          and all((artifact_of(concurrent, arch) / 'SHA256SUMS').is_file()
+                  for arch in ['x86_64', 'arm64']), [result.stderr for result in results])
+
+    legacy = work / 'publish-legacy'
+    legacy_slice = legacy / 'BarkEngine.xcframework/macos-x86_64'
+    legacy_headers = legacy_slice / 'Headers/BarcChromium'
+    legacy_headers.mkdir(parents=True)
+    legacy_engine = legacy_slice / 'Engine'
+    legacy_engine.mkdir()
+    marker = legacy_engine / 'keep-me'
+    marker.write_text('legacy Intel SDK')
+    (legacy_headers / 'engine-artifact.sha256').write_text(pin + '\n')
+    shutil.copyfile(published / DIGEST_HEADER, legacy_headers / DIGEST_HEADER)
+    legacy_api = legacy_headers / HEADER_NAMES[0]
+    legacy_api.write_text('different ABI')
+    cross_drift = publish(arm_build, legacy, architecture='arm64')
+    check('publication preserves the other architecture ABI guard for legacy pins',
+          cross_drift.returncode != 0 and 'Public headers differ from the pinned x86_64 SDK' in cross_drift.stderr
+          and not artifact_of(legacy, 'arm64').exists(), cross_drift.stderr)
+    shutil.copyfile(published / HEADER_NAMES[0], legacy_api)
+    legacy_ok = publish(arm_build, legacy, architecture='arm64')
+    check('ARM publication preserves the existing legacy Intel SDK',
+          legacy_ok.returncode == 0 and marker.read_text() == 'legacy Intel SDK', legacy_ok.stderr)
 
     def refused(name, why, reason, mutate=None, framework=framework_lib):
         run, _ = attempt(name, mutate, framework)
@@ -723,8 +837,8 @@ def publish_cases(work, framework_lib):
 
     result, branded_package = attempt('publish-outer-artwork', different_artwork)
     check('publishing accepts differing outer artwork and localized names with the same SDK',
-          result.returncode == 0 and (artifact_of(branded_package) / 'SHA256SUMS').read_bytes() ==
-          (artifact / 'SHA256SUMS').read_bytes(), result.stderr)
+          result.returncode == 0 and (artifact_of(branded_package) / 'SHA256SUMS').read_text() == listed,
+          result.stderr)
 
     refused('publish-resource-drift', 'outer scripting resources that differ from the app\'s', 'differ from ChromiumApp/Resources',
             lambda b: (b / 'Bark.app/Contents/Resources/scripting.sdef').write_text('other'))

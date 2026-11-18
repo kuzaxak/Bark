@@ -149,3 +149,5 @@ ASSESSMENT.md
 ## Published Chromium engine binaries: local until uploads exist
 Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Engine/
 Packages/BarkEngine/RuntimeArtifacts/*/Engine/
+Packages/BarkEngine/RuntimeArtifacts/.publication-*/
+Packages/BarkEngine/RuntimeArtifacts/.publication/

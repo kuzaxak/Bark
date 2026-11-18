@@ -242,9 +242,12 @@ version to the bundle metadata, so a release number works across all locales.
 file fails its checksums at the next staging. From the engine source root, with depot_tools
 on `PATH`, publish the architecture you built. The default is `x86_64`. The publisher checks
 each Mach-O in the framework and writes only the selected architecture’s artifact and pin.
-If the other architecture already has a pin, the public header must match it. To replace
-an earlier artifact, remove its read-only `Engine/` directory after making it writable.
-Commit the public headers and matching pin after validation:
+If the other architecture already has a pin, the public headers must match it.
+The publisher verifies a complete read-only SDK before publishing it. Repeating the
+same publish verifies the installed local artifact. Pass `--replace` to publish a
+different build over the same local destination or repair an incomplete older artifact.
+An interrupted publish resumes on the next invocation. Existing cached SDK versions
+are unaffected. Commit the public headers and matching pin after validation:
 
 ```fish
 bash "$barc_repo/scripts/publish-chromium-engine.sh" "$PWD/out/Barc-x64" "$barc_repo/Packages/BarkEngine"

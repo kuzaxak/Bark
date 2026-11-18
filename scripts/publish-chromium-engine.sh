@@ -6,18 +6,33 @@
 # headers and the SHA are committed; the artifact stays local until uploads exist. Needs depot_tools on PATH.
 set -euo pipefail
 ARCH=x86_64
-if [[ ${1:-} == --arch ]]; then
-  ARCH=${2:-}
-  [[ $ARCH == x86_64 || $ARCH == arm64 ]] || { echo 'Expected --arch x86_64 or arm64' >&2; exit 2; }
-  shift 2
+REPLACE=false
+WORK=
+if [[ ${1:-} == --prepare ]]; then
+  WORK=$2
+  ARTIFACT=$3
+  shift 3
 fi
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    --arch)
+      ARCH=${2:-}
+      [[ $ARCH == x86_64 || $ARCH == arm64 ]] || { echo 'Expected --arch x86_64 or arm64' >&2; exit 2; }
+      shift 2 ;;
+    --replace) REPLACE=true; shift ;;
+    *) break ;;
+  esac
+done
 if [[ $# != 2 ]]; then
-  echo 'usage: bash scripts/publish-chromium-engine.sh [--arch x86_64|arm64] <engine build directory> <BarkEngine package directory>' >&2
+  echo 'usage: bash scripts/publish-chromium-engine.sh [--arch x86_64|arm64] [--replace] <engine build directory> <BarkEngine package directory>' >&2
   exit 2
 fi
 BUILD="$1"
 PACKAGE="$2"
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+if [[ -z $WORK ]]; then
+  exec python3 -B "$ROOT/scripts/publish_chromium_sdk.py" "$PACKAGE" "$ARCH" "$REPLACE" "$BUILD" "$ROOT/scripts/publish-chromium-engine.sh"
+fi
 BRIDGE="$ROOT/Runtime/Chromium/bark/bridge"
 refuse() { echo "$1" >&2; exit 1; }
 PUBLIC_HEADERS=(barc_bridge_api.h)
@@ -25,13 +40,7 @@ ENGINE_APP="$BUILD/Bark.app"
 INTEGRATED_APP_INFO="$BUILD/gen/chrome/chrome_integrated_app_info_plist.plist"
 FRAMEWORK_NAME='Bark Framework.framework'
 FRAMEWORK="$ENGINE_APP/Contents/Frameworks/$FRAMEWORK_NAME"
-LAYOUT="$ROOT/scripts/chromium_sdk_layout.py"
-HEADERS=$(python3 -B "$LAYOUT" headers "$PACKAGE" "$ARCH")
-ARTIFACT=$(python3 -B "$LAYOUT" artifact "$PACKAGE" "$ARCH")
-PIN="$HEADERS/engine-artifact-$ARCH.sha256"
-OTHER_ARCH=x86_64
-[[ $ARCH == x86_64 ]] && OTHER_ARCH=arm64
-[[ ! -e "$ARTIFACT" ]] || refuse "Engine artifact already published, read-only: chmod -R u+w and remove it first: $ARTIFACT"
+[[ ! -e "$ARTIFACT" && ! -L "$ARTIFACT" ]] || refuse "SDK preparation directory already used: $ARTIFACT"
 [[ -d "$FRAMEWORK" ]] || refuse 'Missing Bark framework'
 [[ -d "$BUILD/Bark Packaging" ]] || refuse 'Missing Bark Packaging'
 [[ -f "$INTEGRATED_APP_INFO" ]] || refuse 'Missing generated metadata for the integrated Bark app'
@@ -58,8 +67,7 @@ except ValueError as error:
 PYTHON
 # The source tree can move on after a build, so siso's record of each input is the evidence of what the
 # engine compiled. It keeps the digest from the last build that read the file.
-BUILD_RECORD=$(/usr/bin/mktemp)
-trap '/bin/rm -f "$BUILD_RECORD"' EXIT
+BUILD_RECORD="$WORK/build-record.json"
 siso fs export -C "$BUILD" > "$BUILD_RECORD" 2>/dev/null || refuse 'Cannot read the build record: siso fs export failed. Is depot_tools on PATH?'
 python3 - "$BUILD_RECORD" "$(cd "$BUILD/../.." && pwd -P)" "$BINARY" "$BRIDGE" <<'PY' || exit 1
 import hashlib, json, os, sys
@@ -164,21 +172,11 @@ PYTHON
 then
   refuse 'Engine outer resources differ from ChromiumApp/Resources: review the difference and update the app'
 fi
-# A second architecture may publish a different runtime, but it must use the same
-# public interface as the existing pin, including a legacy Intel pin.
-OTHER_PIN=$(python3 -B "$LAYOUT" pin-file "$PACKAGE" "$OTHER_ARCH")
-if [[ -f "$OTHER_PIN" ]]; then
-  python3 -B "$LAYOUT" digest "$PACKAGE" "$OTHER_ARCH" >/dev/null
-  for header in "${PUBLIC_HEADERS[@]}"; do
-    /usr/bin/cmp -s "$HEADERS/$header" "$BRIDGE/$header" ||
-      refuse "Public headers differ from the pinned $OTHER_ARCH SDK: $header"
-  done
-fi
 OFFICIAL_RECEIPT="$BUILD/official-build.json"
 if [[ -e "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_RECEIPT" ]]; then
   python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
 fi
-/bin/mkdir -p "$ARTIFACT/Headers" "$HEADERS"
+/bin/mkdir -p "$ARTIFACT/Headers"
 /usr/bin/ditto "$FRAMEWORK" "$ARTIFACT/$FRAMEWORK_NAME"
 /usr/bin/ditto "$BUILD/Bark Packaging" "$ARTIFACT/Bark Packaging"
 /bin/cp "$INTEGRATED_APP_INFO" "$ARTIFACT/engine-Info.plist"
@@ -187,13 +185,8 @@ if [[ -f "$OFFICIAL_RECEIPT" ]]; then
 fi
 for header in "${PUBLIC_HEADERS[@]}"; do
   /bin/cp "$BRIDGE/$header" "$ARTIFACT/Headers/$header"
-  /usr/bin/cmp -s "$BRIDGE/$header" "$HEADERS/$header" || /bin/cp "$BRIDGE/$header" "$HEADERS/$header"
 done
 python3 "$ROOT/Runtime/Chromium/bark/app/barc_public_headers_sha256.py" "$ARTIFACT/Headers/barc_public_headers_sha256.h" "${PUBLIC_HEADERS[@]/#/$BRIDGE/}"
-/usr/bin/cmp -s "$ARTIFACT/Headers/barc_public_headers_sha256.h" "$HEADERS/barc_public_headers_sha256.h" ||
-  /bin/cp "$ARTIFACT/Headers/barc_public_headers_sha256.h" "$HEADERS/barc_public_headers_sha256.h"
 (cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS -print0 | /usr/bin/sort -z | /usr/bin/xargs -0 /usr/bin/shasum -a 256 > SHA256SUMS)
-(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1) > "$PIN"
 # Python writes bytecode beside the signing tools, and any new file fails the checksums at the next staging.
 /bin/chmod -R a-w "$ARTIFACT"
-printf '%s\n' "Published engine $VERSION: $ARTIFACT" "Artifact SHA: $(cat "$PIN")"
