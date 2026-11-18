@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Bark action fixture",
+  "version": "1.0",
+  "action": {
+    "default_title": "Bark fixture action",
+    "default_popup": "popup.html"
+  }
+}

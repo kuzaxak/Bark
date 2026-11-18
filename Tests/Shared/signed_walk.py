@@ -129,11 +129,16 @@ class Screen:
         if self.ax.AXUIElementPerformAction(button, "AXPress") != 0:
             raise RuntimeError("The candidate refused the accessibility button action")
 
-    def screenshot(self, path):
+    def screenshot(self, path, *, include_owned_windows=False):
         self.guard()
         q = self.quartz
-        picture = q.CGWindowListCreateImage(q.CGRectNull, q.kCGWindowListOptionIncludingWindow,
-                                           self.windows()[0]["kCGWindowNumber"], q.kCGWindowImageBoundsIgnoreFraming)
+        if include_owned_windows:
+            rows = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID)
+            ids = [row["kCGWindowNumber"] for row in rows if row["kCGWindowOwnerPID"] == self.pid]
+            picture = q.CGWindowListCreateImageFromArray(q.CGRectNull, ids, q.kCGWindowImageBoundsIgnoreFraming)
+        else:
+            picture = q.CGWindowListCreateImage(q.CGRectNull, q.kCGWindowListOptionIncludingWindow,
+                                               self.windows()[0]["kCGWindowNumber"], q.kCGWindowImageBoundsIgnoreFraming)
         if not picture:
             raise RuntimeError("Candidate window capture failed")
         destination = q.CGImageDestinationCreateWithURL(self.url.fileURLWithPath_(str(path)), "public.png", 1, None)
