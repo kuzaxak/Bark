@@ -7,6 +7,7 @@
 //
 
 import AppKit
+import NookSettings
 import NookWeb
 
 extension TabsController {
@@ -18,7 +19,7 @@ extension TabsController {
             let alert = NSAlert()
             alert.alertStyle = .warning
             alert.messageText = "Tabs could not be loaded"
-            alert.informativeText = "Nook is running without saving tab changes because \(reason). The files are in \(directory.path)."
+            alert.informativeText = "\(ProductDisplayName.current) is running without saving tab changes because \(reason). The files are in \(directory.path)."
             alert.addButton(withTitle: "OK")
             alert.runModal()
         }

@@ -197,9 +197,9 @@ extension SpaceSyncState {
     }
 
     /// The report as text to paste: the account's id, counts, then one line per record.
-    public func reportText(account: String?, now: Date = Date()) -> String {
+    public func reportText(account: String?, now: Date = Date(), productName: String = "Nook") -> String {
         let time = Date.ISO8601FormatStyle()
-        var lines = ["Nook space sync report", "Generated: \(now.formatted(time))"]
+        var lines = ["\(productName) space sync report", "Generated: \(now.formatted(time))"]
         lines.append("Account ID: \(account.map(SpaceSyncCodec.accountID) ?? "none")")
         switch mode {
         case .own: lines.append("Zone: this account's")

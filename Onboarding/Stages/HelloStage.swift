@@ -7,12 +7,13 @@
 //
 
 import SwiftUI
+import NookSettings
 
 struct HelloStage: View {
 
     var body: some View {
         VStack(spacing: 24){
-            Text("Say Hi to Nook")
+            Text("Say Hi to \(ProductDisplayName.current)")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
             Image(.nookLogo1024)

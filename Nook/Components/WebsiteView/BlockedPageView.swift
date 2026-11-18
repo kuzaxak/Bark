@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookWeb
 
 struct BlockedPageView: View {
@@ -19,7 +20,7 @@ struct BlockedPageView: View {
             StandardDialog {
                 DialogHeader(
                     icon: "hand.raised",
-                    title: "Nook blocked this page",
+                    title: "\(ProductDisplayName.current) blocked this page",
                     subtitle: "\(host) is on one of the ad blocker's filter lists."
                 )
             } content: {

@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookDesign
 import NookWeb
 
@@ -46,7 +47,7 @@ struct MailCard: View {
         case .signedOut?:
             note("Sign in to Gmail in this favorite to see new mail")
         case .failed?:
-            note("Gmail didn't answer. Nook will try again shortly.")
+            note("Gmail didn't answer. \(ProductDisplayName.current) will try again shortly.")
         case nil:
             ProgressView()
                 .controlSize(.small)

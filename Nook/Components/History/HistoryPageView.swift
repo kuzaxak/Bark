@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import NookSettings
 import SwiftUI
 import NookDesign
 import NookWeb
@@ -73,7 +74,7 @@ struct HistoryPageView: View {
             }
             .padding(.bottom, NookDesign.Spacing.lg)
 
-            navRow("Nook History", symbol: "clock", isSelected: true) {}
+            navRow("\(ProductDisplayName.current) History", symbol: "clock", isSelected: true) {}
             navRow("Clear Browsing Data…", symbol: "trash", isSelected: false) {
                 browserManager.openSettings(tab: .privacy)
             }

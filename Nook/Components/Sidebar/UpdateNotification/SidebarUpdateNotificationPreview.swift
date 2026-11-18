@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookDesign
 
 #Preview {
@@ -25,7 +26,7 @@ import NookDesign
                 .clipShape(NookDesign.Radius.shape(NookDesign.Radius.md))
 
             VStack(alignment: .leading, spacing: 2) {
-                Text("A new version of Nook is available!")
+                Text("A new version of \(ProductDisplayName.current) is available!")
                     .font(NookDesign.Font.label)
                     .foregroundStyle(.white.opacity(0.9))
                     .lineLimit(1)

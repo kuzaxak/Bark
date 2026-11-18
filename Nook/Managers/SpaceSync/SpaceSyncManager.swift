@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import NookSettings
 import CloudKit
 import NookTabsCore
 import NookUI
@@ -108,7 +109,7 @@ final class SpaceSyncManager: SpaceSyncControls {
     }
 
     func syncReport() -> String {
-        state.reportText(account: state.account)
+        state.reportText(account: state.account, productName: ProductDisplayName.current)
     }
 
     // MARK: - Sharing
@@ -265,7 +266,7 @@ final class SpaceSyncManager: SpaceSyncControls {
         case .readOnly:
             state.lastError = "That link lets this iCloud account only view the spaces. Ask the person who shared them to allow changes."
         case .notASpacesShare:
-            state.lastError = "That link does not share Nook spaces."
+            state.lastError = "That link does not share \(ProductDisplayName.current) spaces."
         case .alreadyJoined:
             state.lastError = zone.ownerName == state.zoneOwner ? nil : "Leave the shared sync before joining another."
         case .sharingOwnZone:
@@ -816,11 +817,11 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// The error as Settings words it.
     private static func text(_ error: Error) -> String {
         switch (error as? CKError)?.code {
-        case .quotaExceeded?: return "iCloud storage is full. Nook syncs again when there is room."
-        case .networkUnavailable?, .networkFailure?: return "No network connection. Nook syncs when it is back."
-        case .requestRateLimited?, .zoneBusy?, .serviceUnavailable?: return "iCloud is busy. Nook tries again shortly."
+        case .quotaExceeded?: return "iCloud storage is full. \(ProductDisplayName.current) syncs again when there is room."
+        case .networkUnavailable?, .networkFailure?: return "No network connection. \(ProductDisplayName.current) syncs when it is back."
+        case .requestRateLimited?, .zoneBusy?, .serviceUnavailable?: return "iCloud is busy. \(ProductDisplayName.current) tries again shortly."
         case .notAuthenticated?: return "Sign in to iCloud to sync spaces."
-        default: return isOutdatedSchema(error) ? SpaceSyncErrorText.outdatedSchema : error.localizedDescription
+        default: return isOutdatedSchema(error) ? SpaceSyncErrorText.outdatedSchema(productName: ProductDisplayName.current) : error.localizedDescription
         }
     }
 

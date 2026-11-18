@@ -43,7 +43,7 @@ private struct PrivacyPreferenceSections: View {
             Section("Security") {
                 settingToggle(
                     "Warn before opening a site over HTTP",
-                    detail: "Nook always tries HTTPS first. Ask before opening a site that only works over HTTP.",
+                    detail: "\(ProductDisplayName.current) always tries HTTPS first. Ask before opening a site that only works over HTTP.",
                     isOn: $settings.warnBeforeHTTP
                 )
                 settingToggle(
@@ -57,7 +57,7 @@ private struct PrivacyPreferenceSections: View {
         Section("Passwords") {
             settingToggle(
                 "Use Pawl Vault for passwords and passkeys",
-                detail: "Fill and save passwords and sign in with passkeys from the Pawl Vault app. Nook keeps no copy of them.",
+                detail: "Fill and save passwords and sign in with passkeys from the Pawl Vault app. \(ProductDisplayName.current) keeps no copy of them.",
                 isOn: $settings.pawlVaultEnabled
             )
             if nookSettings.pawlVaultEnabled, let vault = browserManager.tabs.vault {
@@ -106,7 +106,7 @@ private struct PrivacyPreferenceSections: View {
         case nil: ("Checking…", .secondary)
         case .connected: ("Connected", .green)
         case .locked: ("Vault locked", .orange)
-        case .notTeamSigned: ("This Nook build is not signed by your team", .red)
+        case .notTeamSigned: ("This \(ProductDisplayName.current) build is not signed by your team", .red)
         case .notRunning: ("Pawl Vault is not running", .secondary)
         case .notPawlVault: ("Not Pawl Vault (signature check failed)", .red)
         }

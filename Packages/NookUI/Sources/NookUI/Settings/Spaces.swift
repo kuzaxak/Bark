@@ -8,6 +8,7 @@
 //
 
 import NookTabsCore
+import NookSettings
 import SwiftUI
 import NookDesign
 import NookWeb
@@ -91,7 +92,7 @@ public struct SpacesSettingsView: View {
                 .disabled(SpaceSyncShareLink.parse(joinLink) == nil)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("Paste the link someone on another iCloud account shared with you. Before anything syncs, Nook asks whether the spaces this Mac syncs now move in with theirs.")
+            Text("Paste the link someone on another iCloud account shared with you. Before anything syncs, \(ProductDisplayName.current) asks whether the spaces this Mac syncs now move in with theirs.")
         }
         .alert("Invite with Code", isPresented: $askingForInviteCode) {
             TextField("Invite code", text: $inviteCode)
@@ -333,7 +334,7 @@ public struct SpacesSettingsView: View {
             Text("iCloud Sync")
         } footer: {
             Text(status.availability == .needsSignedBuild
-                 ? "This copy of Nook is not signed for iCloud, so its spaces stay on this Mac."
+                 ? "This copy of \(ProductDisplayName.current) is not signed for iCloud, so its spaces stay on this Mac."
                  : "Pick what each space syncs to your other Macs with the cloud beside it. Favorites & Pinned sends its favorites, pinned tabs and folders; Everything also sends its open tabs. Logins, cookies, history, site data, Boosts, private windows and the Agent space never sync. Off stops this Mac syncing a space and leaves it in iCloud; deleting a space deletes it from iCloud. To sync with a Mac on another iCloud account, share with it: it joins these spaces and its own synced spaces move in, and leaving turns them Off there without deleting any.")
                 .settingsFooter()
         }
@@ -433,7 +434,7 @@ public struct SpacesSettingsView: View {
     private static func oldCopyWarning(_ old: SpaceSyncLeftBehind?) -> String {
         let spaces = old?.spaces == 1 ? "The space stays" : "The \(old?.spaces ?? 0) spaces stay"
         let macs = old.map { $0.devices.isEmpty ? "" : " It was synced there by \($0.devices.formatted(.list(type: .and)))." } ?? ""
-        return "\(spaces) in the shared sync and on this Mac; only the copy in this iCloud account's own sync is deleted.\(macs) Those Macs keep them if they run this version of Nook or later; an earlier version deletes them."
+        return "\(spaces) in the shared sync and on this Mac; only the copy in this iCloud account's own sync is deleted.\(macs) Those Macs keep them if they run this version of \(ProductDisplayName.current) or later; an earlier version deletes them."
     }
 
     /// Who spaces sync with, under the status line.
@@ -554,7 +555,7 @@ public struct SpacesSettingsView: View {
         switch availability {
         case .disabled: return "Sync is disabled in this runtime"
         case .needsSignedBuild: return "Sync needs a signed build"
-        case .readOnlyTabs: return "Sync is paused: Nook could not read its tabs"
+        case .readOnlyTabs: return "Sync is paused: \(ProductDisplayName.current) could not read its tabs"
         case .checking: return "Checking iCloud…"
         case .noAccount: return "Sign in to iCloud in System Settings to sync spaces"
         case .restricted: return "iCloud is restricted on this Mac"

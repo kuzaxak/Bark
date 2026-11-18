@@ -7,6 +7,7 @@
 //
 
 import NookDesign
+import NookSettings
 import SwiftUI
 
 struct ImportStage: View {
@@ -16,7 +17,7 @@ struct ImportStage: View {
 
     var body: some View {
         VStack(spacing: 24) {
-            Text("Transition to Nook")
+            Text("Transition to \(ProductDisplayName.current)")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
             HStack(spacing: 24) {

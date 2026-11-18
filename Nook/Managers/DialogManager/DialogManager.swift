@@ -7,6 +7,7 @@
 //
 
 import Observation
+import NookSettings
 import SwiftUI
 import Garnish
 import NookDesign
@@ -87,7 +88,7 @@ class DialogManager {
                             .scaledToFit()
                             .frame(width: 50, height: 50)
                             .nookElevation(.raised)
-                        Text("Quit Nook?")
+                        Text("Quit \(ProductDisplayName.current)?")
                             .font(NookDesign.Font.heading)
                             .foregroundStyle(AppColors.textPrimary)
                         Text("You may lose unsaved work in your tabs.")

@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import NookSettings
 import NookTabsCore
 import NookWeb
 import OSLog
@@ -34,7 +35,7 @@ extension BrowserManager {
         let name = file.space.name.replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         panel.nameFieldStringValue = "\(name.isEmpty ? "Space" : name).\(SpaceFile.fileExtension)"
-        panel.message = "Saves the space's favorites, pinned tabs and open tabs. Logins, cookies and history stay in Nook."
+        panel.message = "Saves the space's favorites, pinned tabs and open tabs. Logins, cookies and history stay in \(ProductDisplayName.current)."
         runPanel(panel) { [weak self] url in
             do {
                 try file.encoded().write(to: url, options: .atomic)
@@ -147,11 +148,11 @@ extension BrowserManager {
     private static func refusal(_ error: Error) -> String {
         switch error as? SpaceFileError {
         case .tooLarge: return "The file is larger than \(SpaceFile.maxBytes / 1024 / 1024) MB."
-        case .unreadable: return "The file is damaged or is not a Nook space."
-        case .wrongFormat: return "The file is not a Nook space."
-        case .newerVersion: return "The file comes from a newer version of Nook. Update Nook, then import it again."
+        case .unreadable: return "The file is damaged or is not a space file."
+        case .wrongFormat: return "The file is not a space file."
+        case .newerVersion: return "The file comes from a newer version of \(ProductDisplayName.current). Update \(ProductDisplayName.current), then import it again."
         case .tooManyItems: return "The space has more than \(SpaceFile.maxItems.formatted()) tabs and folders."
-        case .tooDeep: return "The space's folders are nested deeper than Nook allows."
+        case .tooDeep: return "The space's folders are nested deeper than \(ProductDisplayName.current) allows."
         case nil: return error.localizedDescription
         }
     }

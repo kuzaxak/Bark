@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookDesign
 
 struct SettingsDialog: DialogPresentable {
@@ -38,7 +39,7 @@ struct SettingsDialog: DialogPresentable {
         DialogHeader(
             icon: "gear",
             title: "Settings",
-            subtitle: "Customize your Nook experience"
+            subtitle: "Customize your \(ProductDisplayName.current) experience"
         )
     }
 

@@ -8,6 +8,7 @@
 //
 
 import AppKit
+import NookSettings
 import UniformTypeIdentifiers
 import SwiftUI
 import NookDesign
@@ -342,7 +343,7 @@ struct PortraitComposition: View {
                         Image(nsImage: NSApp.applicationIconImage)
                             .resizable()
                             .frame(width: unit * 0.014, height: unit * 0.014)
-                        Text("Captured with Nook")
+                        Text("Captured with \(ProductDisplayName.current)")
                             .font(.system(size: max(9, unit * 0.0085), weight: .semibold))
                             .foregroundStyle(.white.opacity(0.85))
                     }

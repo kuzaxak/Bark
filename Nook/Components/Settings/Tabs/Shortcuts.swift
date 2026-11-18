@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookDesign
 import NookUI
 
@@ -40,7 +41,7 @@ struct ShortcutsSettingsView: View {
                 }
             } footer: {
                 if detectsWebsiteShortcuts {
-                    Text("When a website uses the same shortcut, press once for the website, twice for Nook.")
+                    Text("When a website uses the same shortcut, press once for the website, twice for \(ProductDisplayName.current).")
                         .settingsFooter()
                 }
             }

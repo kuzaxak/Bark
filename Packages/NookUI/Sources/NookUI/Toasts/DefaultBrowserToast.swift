@@ -8,6 +8,7 @@
 
 #if os(macOS)
 import AppKit
+import NookSettings
 import NookDesign
 import SwiftUI
 
@@ -46,9 +47,9 @@ public struct DefaultBrowserToast: View {
     public var body: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.md) {
             VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                Text("Make Nook your default browser?")
+                Text("Make \(ProductDisplayName.current) your default browser?")
                     .font(NookDesign.Font.secondary.weight(.semibold))
-                Text("Links you open in other apps will open in Nook.")
+                Text("Links you open in other apps will open in \(ProductDisplayName.current).")
                     .font(NookDesign.Font.caption)
                     .foregroundStyle(.secondary)
             }

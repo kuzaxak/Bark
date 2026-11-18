@@ -9,6 +9,7 @@
 //
 
 import AppKit
+import NookSettings
 import SwiftUI
 import NookBlocker
 import NookDesign
@@ -226,7 +227,7 @@ struct LinkPreviewCard: View {
             Text(host)
                 .foregroundStyle(Self.footerInk)
             Spacer()
-            Text("Nook")
+            Text(ProductDisplayName.current)
                 .fontWeight(.bold)
                 .foregroundStyle(Self.footerInk)
         }

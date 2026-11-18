@@ -8,6 +8,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookDesign
 import NookWeb
 
@@ -26,10 +27,10 @@ struct MeetingCard: View {
         case .granted:
             timeline(MeetingTimeline(meetings: live.meetings, now: live.now))
         case .unknown:
-            prompt("Nook can show your next meetings from macOS Calendar.",
+            prompt("\(ProductDisplayName.current) can show your next meetings from macOS Calendar.",
                    button: "Connect Calendar", action: live.connectCalendar)
         case .denied:
-            prompt("To see your meetings here, allow Nook in System Settings → Privacy & Security → Calendars.",
+            prompt("To see your meetings here, allow \(ProductDisplayName.current) in System Settings → Privacy & Security → Calendars.",
                    button: "Open System Settings", action: live.openCalendarSettings)
         }
     }

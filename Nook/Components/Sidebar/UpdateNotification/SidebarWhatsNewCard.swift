@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import NookDesign
 import NookUI
 import NookWeb
@@ -30,7 +31,7 @@ struct SidebarWhatsNewCard: View {
                 browserManager.whatsNewVersion = nil
             } label: {
                 VStack(spacing: NookDesign.Spacing.xxs) {
-                    Text("What's new in Nook \(version)")
+                    Text("What's new in \(ProductDisplayName.current) \(version)")
                         .font(NookDesign.Font.secondary)
                         .foregroundStyle(.primary)
                     Text("See what changed")

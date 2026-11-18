@@ -38,7 +38,7 @@ struct SettingsDeveloperTab: View {
                     VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
                         Text("Allow agents to control this browser")
                             .font(NookDesign.Font.body)
-                        Text("Serves MCP on 127.0.0.1:47823 so a coding agent can drive Nook")
+                        Text("Serves MCP on 127.0.0.1:47823 so a coding agent can drive \(ProductDisplayName.current)")
                             .font(NookDesign.Font.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -52,7 +52,7 @@ struct SettingsDeveloperTab: View {
             } header: {
                 Text("Browser Control")
             } footer: {
-                Text("A client must send the token from \(tokenPath). Any program on this Mac can read that file, and with it run JavaScript in your tabs and read pages you are signed in to. Leave this off unless you are driving Nook from an agent.")
+                Text("A client must send the token from \(tokenPath). Any program on this Mac can read that file, and with it run JavaScript in your tabs and read pages you are signed in to. Leave this off unless you are driving \(ProductDisplayName.current) from an agent.")
                     .font(NookDesign.Font.caption)
                     .foregroundStyle(.secondary)
                     .settingsFooter()

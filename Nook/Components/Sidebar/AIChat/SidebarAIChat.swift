@@ -7,6 +7,7 @@
 //
 
 import SwiftUI
+import NookSettings
 import AppKit
 import NookDesign
 import NookWeb
@@ -140,7 +141,7 @@ struct SidebarAIChat: View {
     private var headerView: some View {
         HStack(spacing: 8) {
             if !aiService.messages.isEmpty {
-                Text("Ask Nook")
+                Text("Ask \(ProductDisplayName.current)")
                     .font(NookDesign.Font.title)
                     .foregroundStyle(.primary)
                     .transition(.blur.animation(NookDesign.Motion.standard))
@@ -341,7 +342,7 @@ struct SidebarAIChat: View {
                 .font(NookDesign.Font.display)
                 .foregroundStyle(webSearchEnabled && supportsWebSearch ? AnyShapeStyle(.green.opacity(0.6)) : AnyShapeStyle(.tertiary))
 
-            Text("Ask Nook")
+            Text("Ask \(ProductDisplayName.current)")
                 .font(NookDesign.Font.label)
                 .foregroundStyle(.primary)
 

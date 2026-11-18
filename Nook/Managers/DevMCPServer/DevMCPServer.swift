@@ -12,6 +12,7 @@
 //
 
 import AppKit
+import NookSettings
 import BarcChromium
 import Foundation
 import Network
@@ -296,7 +297,7 @@ final class DevMCPServer {
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": [:] as [String: Any]],
                 "serverInfo": ["name": "nook-dev", "version": "1"],
-                "instructions": "Drives the running Debug build of Nook. Page and tab tools act on the Agent space: a space in the person's window, made on first use, with the logins of the space they had open. Agent activity never changes the space they see; they open the Agent space to watch. Popups from its pages open as Agent space tabs. pick and selection use the person's active tab."
+                "instructions": "Drives the running Debug build of \(ProductDisplayName.current). Page and tab tools act on the Agent space: a space in the person's window, made on first use, with the logins of the space they had open. Agent activity never changes the space they see; they open the Agent space to watch. Popups from its pages open as Agent space tabs. pick and selection use the person's active tab."
             ]
         case "ping":
             result = [:]

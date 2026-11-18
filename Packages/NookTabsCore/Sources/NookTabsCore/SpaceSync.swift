@@ -214,7 +214,11 @@ public enum SpaceSyncDevice {
 
 /// CloudKit refusals Settings words for the person.
 public enum SpaceSyncErrorText {
-    public static let outdatedSchema = "iCloud hasn't been updated for this version of Nook yet; sync resumes once it is."
+    public static let outdatedSchema = outdatedSchema(productName: "Nook")
+
+    public static func outdatedSchema(productName: String) -> String {
+        "iCloud hasn't been updated for this version of \(productName) yet; sync resumes once it is."
+    }
     /// A sharing link this account cannot open: CloudKit answers Unknown Item (11) alike when
     /// the account was never invited and when the share is gone.
     public static let notInvited = "This Mac's iCloud account is not invited to that link, or sharing stopped. Send this Mac's invite code to the person sharing, then open the link again."

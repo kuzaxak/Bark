@@ -83,7 +83,7 @@ struct MoreMenuView: View {
                     icon: "bell.fill",
                     iconColor: .red,
                     label: "Notifications",
-                    detail: "Nook",
+                    detail: ProductDisplayName.current,
                     action: { openSystemSettings("Notifications") }
                 )
 
