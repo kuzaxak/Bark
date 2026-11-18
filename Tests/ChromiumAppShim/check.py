@@ -1031,8 +1031,12 @@ def stage_cases(work, shim, framework_lib, shell_lib):
             lambda a, e, p: (e / 'Bark Packaging/app-entitlements.plist').unlink())
     refused('packaging-exists', 'a packaging output that already exists', 'Packaging output already exists',
             lambda a, e, p: (a.parent.parent / 'out/Bark Packaging').mkdir(parents=True))
-    refused('additions-merge-fails', 'an addition that cannot merge into the staged app, leaving neither output',
-            'Cannot merge ChromiumApp/Additions.plist into', lambda a, e, p: None, additions={'Info': {'DTXcode': ['merged into a string']}})
+    refused('additions-replace-xcode-key', 'an addition replacing an Xcode-provided scalar',
+            "would replace the app's Info.plist key: DTXcode", lambda a, e, p: None,
+            additions={'Info': {'DTXcode': ['merged into a string']}})
+    refused('missing-supplemental-icon', 'a supplemental document icon without an outer file, leaving neither output',
+            'Missing outer resource declared by CFBundleTypeIconFile', lambda a, e, p: None,
+            additions={'Info': {'CFBundleDocumentTypes': [{**SPACE_DOCUMENT, 'CFBundleTypeIconFile': 'Missing.icns'}]}})
 
     fat_main = work / 'fat-main-binary'
     assert compile_shim(fat_main, extra=('-arch', 'x86_64', '-arch', 'arm64'))
