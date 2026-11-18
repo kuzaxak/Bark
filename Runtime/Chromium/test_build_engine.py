@@ -1,4 +1,7 @@
 """Exercise interrupted engine recipe preparation with tiny Git fixtures."""
+import argparse
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 import shutil
 import subprocess
@@ -99,6 +102,31 @@ class InterruptedPreparationTests(unittest.TestCase):
         self.assertEqual(edited.read_text(), local)
         self.assertFalse((self.src / "chromium_src/owned.cc").exists())
         self.assertTrue(self.marker.exists())
+
+
+class BuildArchitectureTests(unittest.TestCase):
+    def test_dry_run_selects_matching_cargo_target_and_gn_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            src = checkout / "src"
+            src.mkdir()
+            for arch, target in (("x64", "x86_64-apple-darwin"), ("arm64", "aarch64-apple-darwin")):
+                with self.subTest(arch=arch):
+                    out = src / "out" / f"Barc-{arch}"
+                    out.mkdir(parents=True)
+                    shutil.copy(build_engine.HERE / f"args-{arch}.gn", out / "args.gn")
+                    args = argparse.Namespace(arch=arch, dry_run=True, jobs=2)
+                    output = StringIO()
+                    with mock.patch.object(build_engine, "verify_gclient"), mock.patch.object(
+                        build_engine, "repository"
+                    ), mock.patch.object(build_engine, "replay"), redirect_stdout(output):
+                        build_engine.build(checkout, checkout / "tools", {}, args)
+                    commands = output.getvalue()
+                    self.assertIn(f"--target {target} --target-dir {src / 'out/BarkCargo'}", commands)
+                    self.assertIn(f"gn gen out/Barc-{arch}", commands)
+                    self.assertIn(f"autoninja -C out/Barc-{arch}", commands)
+                    self.assertFalse((src / "bark").exists())
+                    self.assertFalse((src / "out/BarkCargo").exists())
 
 
 if __name__ == "__main__":

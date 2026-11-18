@@ -45,7 +45,7 @@ of that root. Pass `--depot-tools PATH` to use a different directory. The source
 commits are pinned in `PINS.json`. Chromium's `DEPS` pins the downloaded inputs.
 
 Use Python 3.9 or newer, Git, the selected Xcode SDK, and Rust/Cargo with the
-`x86_64-apple-darwin` target installed. Cargo uses the checked-in lockfile and the
+`x86_64-apple-darwin` target for Intel or `aarch64-apple-darwin` for ARM. Cargo uses the checked-in lockfile and the
 selected local Rust compiler. The build prints its version. Allow several hours
 and at least 150 GB of available space. Use at most eight jobs. Keep the sandbox
 enabled.
@@ -59,6 +59,12 @@ python3 "$recipe" prepare --checkout "$engine_checkout" --jobs 8
 python3 "$recipe" check --checkout "$engine_checkout"
 python3 "$recipe" build --checkout "$engine_checkout" --jobs 8
 ```
+
+The build defaults to Intel. `build --arch arm64` selects the tracked ARM GN
+arguments and the matching Rust target. GN links and packages Cargo's dylib
+from `src/out/BarkCargo/<target>/release/`. Each target has its own library
+and its own Chromium output directory. The app SDK pin currently qualifies
+the Intel engine.
 
 This checkout holds Chromium's downloaded sources and incremental compiler output.
 Keeping it outside the application worktree lets you clear the app's `build/`

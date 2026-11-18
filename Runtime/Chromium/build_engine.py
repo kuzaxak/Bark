@@ -277,8 +277,8 @@ def build(checkout, depot_tools, env, args):
     repository(src, "chromium", create=False, dry_run=args.dry_run)
     repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
     replay(src)
-    argfile = HERE / "args-x64.gn"
-    out = src / "out" / "Barc-x64"
+    argfile = HERE / f"args-{args.arch}.gn"
+    out = src / "out" / f"Barc-{args.arch}"
     output_args = out / "args.gn"
     if out.parent.is_symlink() or out.is_symlink() or output_args.is_symlink():
         raise ValueError(f"{out}: symlinked build output or args.gn")
@@ -289,13 +289,13 @@ def build(checkout, depot_tools, env, args):
         raise ValueError(f"{out}: nonempty output without recipe args.gn")
 
     rust = REPO / "Nook/ThirdParty/AdblockRustFFI"
-    rust_target = "x86_64-apple-darwin"
-    rust_out = out / "nook-adblock"
-    matcher = src / "bark/browser/content_blocking/nook_adblock/libnook_adblock.dylib"
-    if matcher.is_symlink():
-        raise ValueError(f"{matcher}: expected a generated regular file")
+    rust_target, macho_arch = {"x64": ("x86_64-apple-darwin", "x86_64"),
+                             "arm64": ("aarch64-apple-darwin", "arm64")}[args.arch]
+    rust_out = src / "out" / "BarkCargo"
+    matcher = rust_out / rust_target / "release/libnook_adblock.dylib"
     wrapper = out / "bark_override_cc"
-    if wrapper.is_symlink() or rust_out.is_symlink():
+    if wrapper.is_symlink() or any(path.is_symlink() for path in
+                                   (rust_out, rust_out / rust_target, matcher.parent, matcher)):
         raise ValueError(f"{out}: expected local wrapper and Rust build paths")
     if not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
@@ -310,7 +310,9 @@ def build(checkout, depot_tools, env, args):
         run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror",
              "-o", wrapper, src / "bark/tools/override_cc.c"], src, env, True)
     else:
-        install_generated(rust_out / rust_target / "release/libnook_adblock.dylib", matcher)
+        actual_arch = subprocess.check_output(["/usr/bin/lipo", "-archs", matcher], text=True).strip()
+        if actual_arch != macho_arch:
+            raise ValueError(f"{matcher}: expected {macho_arch}, found {actual_arch}")
         with tempfile.TemporaryDirectory(dir=out) as scratch:
             compiled = Path(scratch) / wrapper.name
             run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror",
@@ -326,10 +328,14 @@ def main():
     parser.add_argument("action", choices=("prepare", "check", "build"))
     parser.add_argument("--checkout", type=Path, required=True, help="gclient root containing src/")
     parser.add_argument("--depot-tools", type=Path, help="defaults to depot_tools beside the gclient root")
+    parser.add_argument("--arch", choices=("x64", "arm64"), help="build architecture (default: x64)")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), default=8, metavar="1..8")
     parser.add_argument("--resume", action="store_true", help="allow an existing pinned checkout during prepare")
     parser.add_argument("--dry-run", action="store_true", help="check existing inputs and print commands without writing")
     args = parser.parse_args()
+    if args.arch is not None and args.action != "build":
+        parser.error("--arch selects the architecture for build")
+    args.arch = args.arch or "x64"
     if args.resume and args.action != "prepare":
         parser.error("--resume is for prepare. Repeating build resumes the same output")
     checkout = args.checkout.expanduser().resolve()

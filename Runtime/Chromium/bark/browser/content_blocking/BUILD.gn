@@ -1,6 +1,14 @@
-# Native matcher proof links the exact pinned Intel Rust artifact recorded in
-# the handoff. Other architectures remain unqualified, not silently substituted.
+# The engine recipe builds the locked Rust matcher with Cargo's macOS target
+# triple. The link and both runtime copies consume the same architecture.
 assert(is_mac)
+assert(current_cpu == "x64" || current_cpu == "arm64")
+if (current_cpu == "arm64") {
+  rust_target = "aarch64-apple-darwin"
+} else {
+  rust_target = "x86_64-apple-darwin"
+}
+matcher = "//out/BarkCargo/$rust_target/release/libnook_adblock.dylib"
+
 source_set("native_content_blocker") {
   sources = [
     "native_content_blocker.cc",
@@ -28,12 +36,12 @@ source_set("native_content_blocker") {
 }
 source_set("nook_adblock") {
   sources = [ "nook_adblock/nook_adblock.h" ]
-  libs = [ "//bark/browser/content_blocking/nook_adblock/libnook_adblock.dylib" ]
+  libs = [ matcher ]
   data_deps = [ ":nook_adblock_runtime" ]
 }
 
 copy("nook_adblock_runtime") {
-  sources = [ "nook_adblock/libnook_adblock.dylib" ]
+  sources = [ matcher ]
   outputs = [ "$root_out_dir/Libraries/{{source_file_part}}" ]
 }
 
