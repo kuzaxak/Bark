@@ -322,6 +322,15 @@ consumer against a test bridge. The engine regressions load an unpacked MV3
 extension and cover script-initiated and DevTools actions, policy-enforced
 pinning, and closing the window during action enumeration.
 
+To exercise the signed app on an idle Intel Mac with PyObjC and Accessibility
+access, use a fresh output directory. The walk installs its local fixture
+through Manage Extensions, invokes the pinned action from the sidebar and top
+toolbar, then unpins it and quits.
+
+```fish
+python3 Tests/ChromiumExtensionActions/walk.py --app build/Bark.app --output /private/tmp/bark-extension-walk
+```
+
 The storage suite also exercises a synthetic signed permission-increasing update
 and actual `permissions.request()` calls from workers and extension tabs. It
 checks owned dialog presentation, stale-owner cancellation and profile-local
