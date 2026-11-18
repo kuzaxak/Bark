@@ -7,6 +7,8 @@ AppKit. Chromium renders the pages.
 
 ## Using Bark
 
+Choose **Help → Bark Help** for a quick guide to the browser’s window controls.
+
 - Switch spaces from the sidebar to return to the tabs for that space and profile.
 - Open two pages in a split to work with both in one window. Select a pane to
   direct typing and page commands to it.

@@ -9,12 +9,12 @@ final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
         case about, settings, importBrowser, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
         case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
-        case nextSpace, previousSpace, manageExtensions, checkForUpdates
+        case nextSpace, previousSpace, manageExtensions, checkForUpdates, barkHelp
     }
 
     // Values from the pinned chrome/app/chrome_command_ids.h.
     private enum Tag {
-        static let appMenu = 57325, fileMenu = 57326, viewMenu = 57327, historyMenu = 57324
+        static let appMenu = 57325, fileMenu = 57326, viewMenu = 57327, historyMenu = 57324, helpMenu = 57330
         static let windowMenu = 57321, bookmarksMenu = 57333, profilesMenu = 57322, tabMenu = 57323
         static let about = 40018, settings = 40015, quit = 34031, newTab = 34014, reopenClosedTab = 34028, focusAddress = 39001
         static let closeTab = 34015, history = 40010, downloads = 40012
@@ -92,6 +92,10 @@ final class ChromiumAppMenu: NSObject {
            !app.items.contains(where: { $0.representedObject as? Command == .checkForUpdates }) {
             let index = app.item(withTag: Tag.about).map { app.index(of: $0) + 1 } ?? 0
             app.insertItem(make("Check for Updates…", .checkForUpdates), at: index)
+        }
+        if let help = main.item(withTag: Tag.helpMenu)?.submenu,
+           !help.items.contains(where: { $0.representedObject as? Command == .barkHelp }) {
+            help.insertItem(make("Bark Help", .barkHelp), at: 0)
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
         let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),

@@ -371,6 +371,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 guard let manager, let shortcuts else { return }
                 switch command {
                 case .about: NSApp.orderFrontStandardAboutPanel(nil)
+                case .barkHelp: self?.showBarkHelp()
                 case .checkForUpdates:
                     if self?.acceptsWindows == true { self?.updater?.checkForUpdates() }
                 case .settings: manager.openSettings(tab: .general)
@@ -536,6 +537,26 @@ final class ChromiumApplication: ChromiumStartupBridge {
         } catch {
             fputs("Chromium app stores refused: \(error)\n", stderr)
             completion(nil)
+        }
+    }
+
+    private func showBarkHelp() {
+        let alert = NSAlert()
+        alert.messageText = "Bark Help"
+        alert.informativeText = """
+        Spaces keep tabs and bookmark folders together. Switch spaces from the sidebar to return to their pages.
+
+        Choose View → Add Split View to use two pages in one window. Select a pane to direct typing and page commands to it.
+
+        Shift-click a link to open it in Peek. Press Escape to return to the original page.
+
+        In a compact window, choose Open in Space to move the page into the main window.
+        """
+        alert.addButton(withTitle: "Done")
+        if let window = CommandWindow.key ?? NSApp.mainWindow {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
         }
     }
 
