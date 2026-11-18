@@ -4,7 +4,7 @@ diff --git a/chrome/chrome_repack_locales.gni b/chrome/chrome_repack_locales.gni
 @@ -20,9 +20,16 @@
    repack_locales(target_name) {
      forward_variables_from(invoker, "*", [ "additional_source_patterns" ])
- 
+
 +    _branded_strings_path = "${root_gen_dir}/chrome/branded_strings_"
 +    _branded_strings_target = "//chrome/app:branded_strings"
 +    if (is_mac && !is_chrome_branded && !is_chrome_for_testing) {
