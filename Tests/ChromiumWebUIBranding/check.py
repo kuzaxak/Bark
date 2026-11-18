@@ -2,6 +2,7 @@
 """Check generated Bark labels and optionally the locale packs in a built app."""
 
 import argparse
+import gzip
 from pathlib import Path
 import re
 import runpy
@@ -26,7 +27,26 @@ CASE_LABELS = {
 }
 
 
-def check_installed(resources, generated, data_pack):
+def check_about_page(framework, header, data_pack):
+    resources = data_pack.ReadDataPack(framework / 'resources.pak').resources
+    # Optimized builds bundle the page with other Settings elements. Resolve its
+    # resource IDs from the generated header because they move across revisions.
+    pattern = r'^#define IDR_SETTINGS_(?:[A-Z_]+_ROLLUP|ABOUT_PAGE_ABOUT_PAGE(?:_HTML)?)_JS (\d+)$'
+    scripts = []
+    for number in re.findall(pattern, header.read_text(), re.M):
+        data = resources[int(number)]
+        scripts.append(gzip.decompress(data) if data.startswith(b'\x1f\x8b') else data)
+    javascript = b'\n'.join(scripts)
+    for marker in (b'$i18n{aboutProductTitle}', b'$i18n{aboutBrowserVersion}', b'$i18nRaw{aboutProductLicense}'):
+        if marker not in javascript:
+            raise ValueError(f'The installed Settings scripts are missing {marker.decode()}')
+    for marker in (b'id="updateStatusMessage"', b'chrome?p=update_error', b'update-status-changed'):
+        if marker in javascript:
+            raise ValueError(f'The installed Settings scripts still expose Chromium updates: {marker.decode()}')
+    print('Checked the About page in the installed Settings scripts')
+
+
+def check_installed(resources, generated, settings_header, data_pack):
     localizations = {path.parent.stem for path in resources.glob('*.lproj/InfoPlist.strings')}
     if not localizations:
         raise ValueError(f'No app localizations in {resources}')
@@ -51,6 +71,7 @@ def check_installed(resources, generated, data_pack):
             if final.get(key) != value:
                 raise ValueError(f'{path.parent.name} resource {key} differs from {source.name}')
     print(f'Checked the generated browser strings in all {len(installed)} installed locale packs')
+    check_about_page(framework, settings_header, data_pack)
 
 
 def check(grit_source, output, header_path, app):
@@ -86,7 +107,7 @@ def check(grit_source, output, header_path, app):
         raise SystemExit('\n'.join(failures))
     print(f'Verified localized Bark product labels and Chromium V8 attribution in {len(files)} packs')
     if app is not None:
-        check_installed(app / 'Contents/Resources', files, data_pack)
+        check_installed(app / 'Contents/Resources', files, header_path.with_name('settings_resources.h'), data_pack)
 
 
 if __name__ == '__main__':

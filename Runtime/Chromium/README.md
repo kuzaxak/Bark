@@ -237,7 +237,9 @@ internal assets stay inside the pinned framework.
 Bark’s macOS resource build applies its product name to translated browser labels
 before Chromium packs them into the framework. Given a prepared checkout, compare
 the generated labels with a staged or signed app, including its installed locales
-and grammatical-gender variants. Use the output directory for the app's architecture.
+and grammatical-gender variants. The same command checks that the installed About
+page shows the engine version and credits and leaves update checks to Bark’s app menu.
+Use the output directory for the app's architecture.
 
 ```fish
 set -l src "$engine_checkout/src"
