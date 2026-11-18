@@ -44,22 +44,15 @@ def check_native_harness(command):
     # The harness supplies its own bridge table, so it runs without an Engine.
     if platform.machine() != "x86_64":
         raise ValueError("The native shell regression needs the Intel slice of the Bark SDK.")
-    derived = REPO / "build/catalog-contributor-derived"
+    checkout = hashlib.sha256(os.fsencode(REPO)).hexdigest()[:16]
+    derived = Path.home() / "Library/Caches/BarkSDK/native-checks" / checkout
     packages = derived / "SourcePackages"
     products = derived / "Build/Products/Debug"
-    try:
-        run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "NookNativeShell",
-            "-configuration", "Debug", "-destination", "generic/platform=macOS",
-            "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
-            "-onlyUsePackageVersionsFromResolvedFile", "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO",
-            "OTHER_SWIFT_FLAGS=$(inherited) -j4", "-jobs", "2", "build")
-    finally:
-        # The shared scheme also builds and registers an unsigned outer app.
-        app = products / "Bark.app"
-        if app.exists():
-            registrar = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/"
-                         "LaunchServices.framework/Versions/Current/Support/lsregister")
-            subprocess.run([registrar, "-u", str(app)], capture_output=True)
+    run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "BarkNativeChecks",
+        "-configuration", "Debug", "-destination", "generic/platform=macOS",
+        "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
+        "-onlyUsePackageVersionsFromResolvedFile", "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO",
+        "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-jobs", "1", "build")
     maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
     # SwiftPM bundle lookup uses the executable directory for command-line tools.
     suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",

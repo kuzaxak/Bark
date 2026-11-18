@@ -56,7 +56,7 @@ python3 scripts/bark-check.py interaction
 
 The regression compiles the shipped command-routing code and checks it against real AppKit windows and a sheet. CI runs it after the Swift package tests.
 
-On Intel, run the catalog, startup-focus and page-ownership regressions against the Debug shell. This command uses the SDK headers in the checkout and the package versions in Xcode’s lockfile. Its test bridge supplies the engine calls.
+On Intel, run the catalog, startup-focus and page-ownership regressions against the Debug shell. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
 
 ```fish
 python3 scripts/bark-check.py catalog
