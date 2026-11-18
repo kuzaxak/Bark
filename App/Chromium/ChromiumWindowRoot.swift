@@ -151,7 +151,9 @@ final class ChromiumWindowRoot: NSView {
     private let peekWash = PeekWash()
     /// Every page slot: the panes' and the Peek's.
     private var allSlots: [Slot] { slots + (peekCard.map { [$0.slot] } ?? []) }
-    private var fullscreenObservers: [NSObjectProtocol] = []
+    private var windowObservers: [NSObjectProtocol] = []
+    private var startupSplitFocus: (pane: Pane, ready: Bool, isCurrent: () -> Bool)?
+    private var startupInputMonitor: Any?
     private(set) var pageFullscreen = false
 
     var sidebar: Sidebar = .shown {
@@ -348,7 +350,8 @@ final class ChromiumWindowRoot: NSView {
     required init?(coder: NSCoder) { nil }
 
     isolated deinit {
-        fullscreenObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        cancelStartupSplitFocus()
     }
 
     override var isFlipped: Bool { true }
@@ -527,6 +530,63 @@ final class ChromiumWindowRoot: NSView {
         window.makeFirstResponder(target)
     }
 
+    /// Transfers focus only to the live renderer of the exact presented pane.
+    @discardableResult
+    func focusPresentedPage(tab: Int32, of owner: Int32, replacing: (NSResponder?) -> Bool) -> Bool {
+        guard showsPage(tab: tab, of: owner), !pageHidden, peekCard == nil,
+              let window, window.isKeyWindow, NSApp.isActive,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              let page = heldPage, page.window === window, !page.isHiddenOrHasHiddenAncestor,
+              let target = page.subviews.first(where: {
+                  $0.window === window && !$0.isHiddenOrHasHiddenAncestor && $0.acceptsFirstResponder
+              }) else { return false }
+        if window.firstResponder === target { return true }
+        guard replacing(window.firstResponder), window.makeFirstResponder(target) else { return false }
+        return window.firstResponder === target
+    }
+
+    /// On initial presentation AppKit can select the divider as the first key
+    /// view before the saved page's renderer is ready. Any input ends this
+    /// startup-only intent before a user-selected divider/control is touched.
+    func beginStartupSplitFocus(_ pane: Pane, ready: Bool, isCurrent: @escaping () -> Bool) {
+        cancelStartupSplitFocus()
+        startupSplitFocus = (pane, ready, isCurrent)
+        startupInputMonitor = NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .leftMouseDown, .rightMouseDown, .otherMouseDown]
+        ) { [weak self] event in
+            MainActor.assumeIsolated { self?.cancelStartupSplitFocus() }
+            return event
+        }
+    }
+
+    func startupSplitRendererReady(_ pane: Pane) {
+        guard startupSplitFocus?.pane == pane else { return }
+        startupSplitFocus?.ready = true
+        restoreStartupSplitFocusIfReady()
+    }
+
+    func cancelStartupSplitFocus() {
+        startupSplitFocus = nil
+        if let startupInputMonitor { NSEvent.removeMonitor(startupInputMonitor) }
+        startupInputMonitor = nil
+    }
+
+    func restoreStartupSplitFocusIfReady() {
+        guard let pending = startupSplitFocus, pending.ready, let window, window.isKeyWindow else { return }
+        guard pending.isCurrent(), split != nil, !pageHidden, peekCard == nil,
+              window.attachedSheet == nil, NSApp.modalWindow == nil else {
+            cancelStartupSplitFocus()
+            return
+        }
+        let responder = window.firstResponder
+        let isAutomatic = responder == nil || responder === window || responder === window.contentView ||
+            splitDividers.contains { $0 === responder }
+        if focusPresentedPage(tab: pending.pane.tab, of: pending.pane.client, replacing: { _ in isAutomatic }) ||
+            !isAutomatic {
+            cancelStartupSplitFocus()
+        }
+    }
+
     private func applyLayout() {
         let layout = Self.layout(in: bounds, sidebar: sidebar, sidebarWidth: sidebarWidth, library: library, pageFullscreen: pageFullscreen)
         pageFrame.frame = layout.page
@@ -666,13 +726,25 @@ final class ChromiumWindowRoot: NSView {
 
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        fullscreenObservers.forEach(NotificationCenter.default.removeObserver)
-        fullscreenObservers = []
-        guard let window else { return }
+        windowObservers.forEach(NotificationCenter.default.removeObserver)
+        windowObservers = []
+        guard let window else { cancelStartupSplitFocus(); return }
         // AppKit rebuilds the titlebar when the window leaves full screen.
-        fullscreenObservers.append(NotificationCenter.default.addObserver(
+        windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated { self?.applyLights() }
+            })
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didBecomeKeyNotification, object: window, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.restoreStartupSplitFocusIfReady() }
+            })
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main) { [weak self] _ in
+                Task { @MainActor in self?.restoreStartupSplitFocusIfReady() }
+            })
+        windowObservers.append(NotificationCenter.default.addObserver(
+            forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.cancelStartupSplitFocus() }
             })
         applyLights()
     }

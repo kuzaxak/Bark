@@ -702,7 +702,25 @@ final class ChromiumCreatedPageAdmission {
         guard current(), let page = tabs.selectedSession(in: state)?.navigation as? ChromiumPageNavigation,
               page.nativeWindowID == native, page.profileID == profile, !page.isPrivateSession,
               host.isNativeSelection(page, in: state), modelLayoutPresented(in: state) else { return false }
-        if show, bridge.window_show(native) != 1 { return false }
+        let startupRoot = show && product.preservesSavedRecord && state.split != nil
+            ? host.presentedRoot(for: page, in: state) : nil
+        if let root = startupRoot {
+            let pane = ChromiumWindowRoot.Pane(client: native, tab: page.nativeTabID)
+            let split = state.split
+            let item = state.selectedItemID
+            root.beginStartupSplitFocus(pane, ready: page.state.url != nil && !page.state.isLoading) {
+                [weak self, weak state, weak page] in
+                guard let self, let state, let page else { return false }
+                return self.registry.windows[state.id] === state && state.split == split &&
+                    state.selectedItemID == item && self.host.isNativeSelection(page, in: state)
+            }
+            page.whenNativePageReady(for: .startup) { [weak root] in root?.startupSplitRendererReady(pane) }
+        }
+        if show, bridge.window_show(native) != 1 {
+            startupRoot?.cancelStartupSplitFocus()
+            return false
+        }
+        startupRoot?.restoreStartupSplitFocusIfReady()
         guard current(), host.isNativeSelection(page, in: state),
               tabs.selectedSession(in: state)?.navigation === page else { return false }
         product.preservesSavedRecord = false

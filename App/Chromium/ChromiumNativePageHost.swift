@@ -797,6 +797,18 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
             mount.presenter.root.showsPage(tab: page.nativeTabID, of: page.nativeWindowID)
     }
 
+    func presentedRoot(for page: ChromiumPageNavigation, in window: BrowserWindowState) -> ChromiumWindowRoot? {
+        guard isNativeSelection(page, in: window) else { return nil }
+        return mounts[window.id]?.presenter.root
+    }
+
+    @discardableResult
+    func focusPresentedPage(_ page: ChromiumPageNavigation, in window: BrowserWindowState,
+                            replacing: (NSResponder?) -> Bool) -> Bool {
+        presentedRoot(for: page, in: window)?.focusPresentedPage(
+            tab: page.nativeTabID, of: page.nativeWindowID, replacing: replacing) == true
+    }
+
     func extensionActionTarget(for page: ChromiumPageNavigation, in window: BrowserWindowState,
                                isFrontPage: @escaping () -> Bool) -> ChromiumExtensionActionTarget? {
         guard !window.isIncognito, !window.nativePresentationIsPreparing,

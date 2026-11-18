@@ -67,6 +67,13 @@ final class ChromiumPageNavigation: PageNavigation {
     // Host-only lifecycle channel. PageSession retains its event/state channels.
     var onNativeCloseOutcome: ((PageCloseOutcome) -> Void)?
     var onNativeOwnerChanged: ((Int32) -> Void)?
+    enum NativePageReadyConsumer { case startup, palette }
+    private var nativePageReadyActions: [NativePageReadyConsumer: () -> Void] = [:]
+
+    /// Replaces this consumer's pending action for the next main document.
+    func whenNativePageReady(for consumer: NativePageReadyConsumer, _ action: @escaping () -> Void) {
+        nativePageReadyActions[consumer] = action
+    }
     private let context = CallbackContext()
 
     private final class CallbackContext {
@@ -756,6 +763,7 @@ final class ChromiumPageNavigation: PageNavigation {
         onEvent = nil
         onNativeCloseOutcome = nil
         onNativeOwnerChanged = nil
+        nativePageReadyActions.removeAll()
         if token != 0 { bridge.tab_unobserve(token) }
     }
 
@@ -890,6 +898,11 @@ final class ChromiumPageNavigation: PageNavigation {
             onEvent?(.failed(failure, provisional: provisional, committedURL: url))
         case BARC_TAB_TITLE: if let title { onEvent?(.titleChanged(title)) }
         default: break  // INITIAL and STATE never invent a history visit.
+        }
+        if !invalidated, (event == BARC_TAB_COMMITTED && !sameDocument) || event == BARC_TAB_FINISHED {
+            let actions = nativePageReadyActions
+            nativePageReadyActions.removeAll()
+            for action in actions.values { action() }
         }
     }
 }
