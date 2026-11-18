@@ -29,8 +29,8 @@ extern "C" {
 #define BARC_API __attribute__((visibility("default")))
 // Version 10 moves every call into one table and gives each crossing struct a
 // leading size. Version 11 adds the window host's calls. Version 12 adds
-// explicit space switch outcomes.
-#define BARC_BRIDGE_VERSION 12
+// explicit space switch outcomes. Version 13 requires Bark-owned browser windows on macOS.
+#define BARC_BRIDGE_VERSION 13
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.
@@ -39,15 +39,15 @@ BARC_API const char* barc_public_headers_sha256(void);
 // version renames it, so an app and framework built for different versions fail
 // at dlsym, as Chromium's ChromeAppModeStart_v<N> does. Update the name in
 // chrome/app/framework.exports and framework.order with it.
-#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v12"
+#define BARC_ENGINE_MAIN_SYMBOL "barc_engine_main_v13"
 typedef int (*BarcEngineMain)(int argc, const char** argv);
-BARC_API int barc_engine_main_v12(int argc, const char** argv);
+BARC_API int barc_engine_main_v13(int argc, const char** argv);
 // The table for this version, valid for the process lifetime. Its name changes
 // with the entry's.
-#define BARC_BRIDGE_SYMBOL "barc_bridge_v12"
+#define BARC_BRIDGE_SYMBOL "barc_bridge_v13"
 struct BarcBridge;
 typedef const struct BarcBridge* (*BarcBridgeEntry)(void);
-BARC_API const struct BarcBridge* barc_bridge_v12(void);
+BARC_API const struct BarcBridge* barc_bridge_v13(void);
 
 // ---- Startup ----------------------------------------------------------------
 
@@ -496,9 +496,9 @@ typedef struct BarcBlockerState {
 } BarcBlockerState;
 
 // ---- Window host -------------------------------------------------------------
-// With --bark-window=host, a window the app creates is a Bark window host: one
-// NSWindow showing one root view the app sets, in which the app places each
-// tab's page view itself. Without the switch these calls return 0 or null.
+// A macOS browser window belongs to a Bark host. The app supplies its root view
+// and places the tabs' native page views in it. Unsupported window requests fail
+// without presenting another browser shell.
 
 // Window chrome the app owns, in points.
 typedef struct BarcWindowChrome {

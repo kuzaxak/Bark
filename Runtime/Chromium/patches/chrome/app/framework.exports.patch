@@ -6,7 +6,7 @@ index 37c881f5d2..eeaa589921 100644
  
  _ChromeAppModeStart_v8
  _ChromeMain
-+_barc_bridge_v12
-+_barc_engine_main_v12
++_barc_bridge_v13
++_barc_engine_main_v13
 +_barc_public_headers_sha256
  _ChromeWebAppShortcutCopierMain

@@ -30,11 +30,12 @@ VERSION = '156.0.8078.80'
 FRAMEWORK = 'Bark Framework.framework'
 BUNDLE_ID = 'ee.qdo.bark'
 DELEGATING_ZONE = 'DelegatingDefaultZoneForPartitionAlloc'
-BRIDGE_VERSION = 12
+BRIDGE_VERSION = 13
 ENTRY = f'barc_engine_main_v{BRIDGE_VERSION}'
 TABLE = f'barc_bridge_v{BRIDGE_VERSION}'
-# A historical v11 app that a v12 engine must refuse.
-V11_REVISION = '606a81d47eb588589b36c18c13a0128c3744d54f'
+# Last compatible app sources used to verify rejection before loading a shell.
+OLD_APPS = {11: '606a81d47eb588589b36c18c13a0128c3744d54f',
+            12: 'c581fddf0b7a9e1b7b4d560ecf4f9c95918a0f05'}
 ABORT_STATUS = 134
 
 ENGINE_PLIST = dict(CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundleName='Bark',
@@ -382,13 +383,13 @@ def package_cases(work):
     check('linking the package adds no library', linked == ['/usr/lib/libSystem.B.dylib'], linked)
 
 
-def v11_shim(output):
-    """The version 11 app's main and headers, from the last revision that had them."""
-    tree = output.parent / 'v11-tree'
+def historical_shim(output, version, revision):
+    """Build an older app entry with its own public headers."""
+    tree = output.parent / f'v{version}-tree'
     module = tree / 'headers/BarcChromium'
     module.mkdir(parents=True)
     def show(path):
-        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{V11_REVISION}:{path}'], capture_output=True, check=True).stdout
+        return subprocess.run(['git', '-C', str(ROOT), 'show', f'{revision}:{path}'], capture_output=True, check=True).stdout
     for name in ['main.cc', 'early_zone_registration_apple.cc', 'early_zone_registration_apple.h', 'early_zone_registration_utils_apple.h']:
         (tree / name).write_bytes(show(f'ChromiumApp/{name}'))
     headers = f'Packages/BarkEngine/BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium'
@@ -442,20 +443,20 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
     check('that error names the missing entry', ENTRY in run.stderr, run.stderr)
 
-    v11_engine = work / 'framework-v11.dylib'
-    fake_framework(v11_engine, entry='barc_engine_main_v11', table='barc_bridge_v11', digest='a' * 64)
-    run, lines = launch('v12-app-v11-engine', framework=v11_engine)
-    check('a version 12 app with a version 11 engine aborts before the shell loads',
-          run.returncode == ABORT_STATUS and 'shell' not in lines and 'bridge-table' not in lines, (run.returncode, lines))
-    check('that error says the engine was built for another bridge version and names version 12',
-          ENTRY in run.stderr and 'another bridge version' in run.stderr and 'needs version 12' in run.stderr, run.stderr)
+    for previous, revision in OLD_APPS.items():
+        old_entry = f'barc_engine_main_v{previous}'
+        old_engine = work / f'framework-v{previous}.dylib'
+        fake_framework(old_engine, entry=old_entry, table=f'barc_bridge_v{previous}', digest='a' * 64)
+        run, lines = launch(f'current-app-v{previous}-engine', framework=old_engine)
+        check(f'the current app rejects the v{previous} engine before loading its shell',
+              run.returncode == ABORT_STATUS and 'shell' not in lines and 'bridge-table' not in lines
+              and ENTRY in run.stderr and f'needs version {BRIDGE_VERSION}' in run.stderr, (run.stderr, lines))
 
-    v11_app = v11_shim(work / 'v11-app')
-    run, lines = launch('v11-app-v12-engine', main=v11_app)
-    check('a version 11 app with a version 12 engine aborts before the shell loads',
-          run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines, (run.returncode, lines))
-    check('that error says the engine was built for another bridge version and names version 11',
-          'barc_engine_main_v11' in run.stderr and 'another bridge version' in run.stderr and 'needs version 11' in run.stderr, run.stderr)
+        old_app = historical_shim(work / f'v{previous}-app', previous, revision)
+        run, lines = launch(f'v{previous}-app-current-engine', main=old_app)
+        check(f'the v{previous} app rejects the current engine before entering Chromium',
+              run.returncode == ABORT_STATUS and 'shell' not in lines and 'chrome-main' not in lines
+              and old_entry in run.stderr and f'needs version {previous}' in run.stderr, (run.stderr, lines))
 
     no_table = work / 'framework-without-table.dylib'
     fake_framework(no_table, table=None)

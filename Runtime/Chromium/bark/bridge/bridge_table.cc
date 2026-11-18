@@ -119,6 +119,6 @@ constexpr BarcBridge kBridge = {
 };
 }  // namespace
 
-const BarcBridge* barc_bridge_v12() {
+const BarcBridge* barc_bridge_v13() {
   return &kBridge;
 }
