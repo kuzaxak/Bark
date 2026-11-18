@@ -9,6 +9,7 @@
 import AppKit
 import SwiftUI
 import WebKit
+import NookSettings
 import NookWeb
 
 struct NookCommands: Commands {
@@ -77,16 +78,16 @@ struct NookCommands: Commands {
         // Replace the standard Quit menu item to route through showQuitDialog(),
         // which respects the "warn before quitting" setting
         CommandGroup(replacing: .appTermination) {
-            Button("Quit Nook") {
+            Button("Quit \(ProductDisplayName.current)") {
                 browserManager.showQuitDialog()
             }
             .keyboardShortcut("q", modifiers: .command)
         }
 
-        // App Menu Section (under Nook)
+        // App menu
         CommandGroup(after: .appInfo) {
             Divider()
-            Button("Make Nook Default Browser") {
+            Button("Make \(ProductDisplayName.current) Default Browser") {
                 browserManager.setAsDefaultBrowser()
             }
 
