@@ -451,6 +451,15 @@ def install_local_build(app, output, bundle_id="ee.qdo.bark"):
         os.close(parent)
 
 
+def release_shell_build_args(derived, architecture):
+    """Build the unsigned Release shell for signing and installed update rehearsals."""
+    return ("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "Bark",
+            "-configuration", "Release", "-destination", "generic/platform=macOS",
+            "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
+            f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=$(inherited) -j4",
+            "-jobs", "2", "build")
+
+
 def build_candidate(engine, output, identity, architecture, release_info=None):
     if not identity:
         raise ValueError("Supply --identity or BARK_SIGN_IDENTITY for local Developer ID signing.")
@@ -466,11 +475,7 @@ def build_candidate(engine, output, identity, architecture, release_info=None):
         stage.mkdir()
         unsigned = products / "Bark.app"
         try:
-            run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "Bark",
-                "-configuration", "Release", "-destination", "generic/platform=macOS",
-                "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
-                f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=$(inherited) -j4",
-                "-jobs", "2", "build")
+            run(*release_shell_build_args(derived, architecture))
             run("/bin/bash", STAGE, "--arch", architecture, unsigned, engine, products, stage / "Bark.app",
                 REPO / "ChromiumApp/Additions.plist")
             if release_info:

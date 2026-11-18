@@ -142,15 +142,11 @@ def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
 
-def build_checkout_shell(derived, arch, output):
+def build_checkout_shell(check, derived, arch, output):
     """Build the rehearsal shell from the tracked receiver source."""
     with (output / "build.log").open("wb") as log:
         try:
-            run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "Bark",
-                "-configuration", "Release", "-destination", "generic/platform=macOS",
-                "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
-                f"ARCHS={arch}", "CODE_SIGNING_ALLOWED=NO",
-                "OTHER_SWIFT_FLAGS=$(inherited) -j3", "-jobs", "1", "build",
+            run(*check["release_shell_build_args"](derived, arch),
                 stdout=log, stderr=subprocess.STDOUT)
         finally:
             unsigned = derived / "Build/Products/Release/Bark.app"
@@ -595,7 +591,7 @@ def main():
         work = Path(directory)
         if args.require_official:
             derived = work / "DerivedData"
-            build_checkout_shell(derived, arch, output)
+            build_checkout_shell(check, derived, arch, output)
         else:
             derived = args.derived_data.resolve()
         with UpdateServer(bark_release.feed_name(arch)) as server:
