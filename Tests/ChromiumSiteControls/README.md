@@ -20,6 +20,8 @@ Use `--url` to choose another public HTTPS page that stays on its host and
 serves the same certificate to both direct TLS clients. The walk verifies
 the host with normal TLS trust, then compares the peer certificate's
 SHA-256 fingerprint and issuer against the inspector in an isolated Bark
-profile. It uses physical clicks for **Secure** and **Close**, confirms the
-original page remains selected, and quits Bark. The walk does not accept
+profile. It opens the inspector with a physical **Secure** click, then verifies
+both physical **Close** and **Cmd+W** dismiss it while keeping the original
+page selected. It switches to the alternate tab and back to confirm both tabs
+survive, then quits Bark. The walk does not accept
 certificate exceptions or modify Keychain trust.

@@ -2,6 +2,7 @@
 """Verify the signed Bark site-controls certificate inspector on a trusted HTTPS site."""
 
 import argparse
+from copy import deepcopy
 import hashlib
 import json
 from pathlib import Path
@@ -10,6 +11,7 @@ import socket
 import ssl
 import sys
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 HERE = Path(__file__).resolve().parent
 controls = runpy.run_path(str(HERE.parent / "ChromiumExtensionActions/walk.py"))
@@ -32,13 +34,19 @@ def peer_certificate(url):
 
 
 def walk(url, host, issuer, fingerprint):
-    def prepare(root, _origin, _app, _profile):
+    def prepare(root, origin, _app, _profile):
         path = root / "App/Tabs/device.json"
         data = json.loads(path.read_text())
-        data["items"][0]["kind"]["tab"].update(url=url, pageTitle="Certificate test")
+        original = data["items"][0]
+        original["kind"]["tab"].update(url=url, pageTitle="Certificate test")
+        alternate = deepcopy(original)
+        alternate["id"] = str(uuid4()).upper()
+        alternate["order"] = "W"
+        alternate["kind"]["tab"].update(url=f"{origin}/source", pageTitle="Certificate alternate")
+        data["items"].append(alternate)
         path.write_text(json.dumps(data) + "\n")
 
-    def exercise(screen, process, _events, output):
+    def exercise(screen, process, events, output):
         access = controls["Accessibility"](screen, process)
         address_hosts = {host.removeprefix("www."), host}
         app_address = urlsplit(url)
@@ -59,27 +67,60 @@ def walk(url, host, issuer, fingerprint):
             return next((window for window in access.windows()
                          if any(label.startswith("Certificate Viewer: ") for label in access.names(window))), None)
 
+        def open_inspector(source):
+            access.hover(address(source))
+            access.press(access.control("Site Controls", ("AXButton",), root=source))
+            click(access.control("Secure, Show Certificate", ("AXButton",)))
+            inspector = wait_for("Physical Secure click did not open the Certificate Viewer", viewer, process)
+            wait_for("The certificate inspector did not show the directly verified fingerprint and issuer",
+                     lambda: access.find(fingerprint, root=inspector) and access.find(issuer, root=inspector),
+                     process)
+            return inspector
+
+        def require_preserved_page(source, title, action):
+            wait_for(f"{action} did not dismiss the Certificate Viewer", lambda: not viewer(), process)
+            wait_for(f"{action} did not preserve the original selected page",
+                     lambda: access.attribute(source, "AXTitle") == title and address(source)
+                     and access.find(title, ("AXWebArea",), root=source), process)
+
         try:
             source = wait_for(f"Missing selected address for {host}", lambda: next(
                 (window for window in access.windows() if address(window)), None), process, timeout=30)
             screen.guard()
             access.ax.AXUIElementSetAttributeValue(access.application, "AXEnhancedUserInterface", True)
-            access.hover(address(source))
-            access.press(access.control("Site Controls", ("AXButton",), root=source))
-            secure = access.control("Secure, Show Certificate", ("AXButton",))
+
+            inspector = open_inspector(source)
             title = access.attribute(source, "AXTitle")
-            click(secure)
-            inspector = wait_for("Physical Secure click did not open the Certificate Viewer", viewer, process)
-            wait_for("The certificate inspector did not show the directly verified fingerprint and issuer",
-                     lambda: access.find(fingerprint, root=inspector) and access.find(issuer, root=inspector),
-                     process)
             screen.screenshot(output / "certificate.png", include_owned_windows=True)
             click(access.control("Close", ("AXButton",), root=inspector))
-            wait_for("Physical Close did not dismiss the Certificate Viewer", lambda: not viewer(), process)
-            wait_for("The original selected page did not survive closing the Certificate Viewer",
-                     lambda: access.attribute(source, "AXTitle") == title and address(source), process)
+            require_preserved_page(source, title, "Physical Close")
+
+            inspector = open_inspector(source)
+            inspector_title = access.attribute(inspector, "AXTitle")
+
+            def inspector_focused():
+                element = access.attribute(access.application, "AXFocusedUIElement")
+                return (access.attribute(element, "AXRole") == "AXWebArea"
+                        and inspector_title in access.names(element))
+
+            wait_for("The certificate inspector did not receive keyboard focus", inspector_focused, process)
+            focus_window = access.attribute(access.application, "AXFocusedWindow")
+            focus = {"title": access.attribute(focus_window, "AXTitle"),
+                     "subrole": access.attribute(focus_window, "AXSubrole")}
+            (output / "keyboard-focus.json").write_text(json.dumps(focus, indent=2) + "\n")
+            screen.keys.update({"w": 13, "1": 18, "2": 19})
+            screen.key("w", screen.command)
+            require_preserved_page(source, title, "Cmd+W")
+
+            screen.key("2", screen.command)
+            alternate = controls["SOURCE"]
+            wait_for("Cmd+W lost the alternate tab", lambda: "/ready" in events
+                     and access.attribute(source, "AXTitle") == alternate, process)
+            screen.key("1", screen.command)
+            require_preserved_page(source, title, "Returning from the alternate tab")
             result = {"site": host, "issuer": issuer, "fingerprint_sha256": fingerprint,
-                      "page_after_close": title}
+                      "dismissal": ["physical Close", "Cmd+W"], "page_after_close": title,
+                      "alternate_tab": alternate}
             (output / "certificate.json").write_text(json.dumps(result, indent=2) + "\n")
             print(json.dumps(result), flush=True)
             screen.key("q", screen.command)
