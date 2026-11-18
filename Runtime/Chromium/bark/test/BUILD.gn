@@ -13,6 +13,7 @@ test("bark_browser_tests") {
     "barc_native_policy_browsertest.mm",
     "barc_profiles_browsertest.mm",
     "bark_engine_config_browsertest.mm",
+    "bark_host_peek_browsertest.mm",
     "bark_host_split_browsertest.mm",
     "bark_host_stock_ui_browsertest.mm",
     "bark_profile_reload_browsertest.mm",

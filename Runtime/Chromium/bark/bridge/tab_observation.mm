@@ -12,6 +12,7 @@
 #include <string_view>
 #include <objc/runtime.h>
 
+#include "bark/browser/ui/bark_window_host.h"
 #include "bark/browser/webauthn/barc_vault_authenticator.h"
 #include "chrome/browser/search_engines/template_url_service_factory.h"
 #include "net/base/url_util.h"
@@ -671,22 +672,35 @@ class TabObservation : public content::WebContentsObserver,
   bool CanRequestPeek(content::RenderFrameHost* frame) const {
     auto* tab = tab_.Get();
     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    if (!owner || owner->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+        !active_ || closing_ || !peek_enabled_ || PeekRoleFor(tab) ||
+        barc::IsPeekCloseCommitted(tab) || !frame || !frame->IsActive() ||
+        !web_contents() ||
+        content::WebContents::FromRenderFrameHost(frame) != web_contents() ||
+        !web_contents()->GetPrimaryMainFrame() ||
+        Window(owner->GetSessionID().id()) != owner ||
+        owner->GetProfile() != frame->GetBrowserContext() ||
+        UnloadController::From(owner)->owner_close_admitted() ||
+        !barc::CanResolveApplicationBrowser()) {
+      return false;
+    }
+
+    const bool selected = owner->IsSelectedForNativeWindow() &&
+                          owner->GetTabStripModel()->GetActiveTab() == tab;
+    if (auto* host = bark::BarkWindowHost::ForBrowser(owner)) {
+      return selected && !host->closing() &&
+             !UnloadController::From(owner)->is_attempting_to_close_browser();
+    }
+
+    auto* view = BrowserView::GetBrowserViewForBrowser(owner);
     std::array<char, 37> identity{};
-    auto* view = owner ? BrowserView::GetBrowserViewForBrowser(owner) : nullptr;
-    const bool managed = view && !view->browser_widget()->HasPhysicalClosePending() && owner &&
-        (barc_window_profile_uuid(owner->GetSessionID().id(), identity.data(), identity.size()) == identity.size() ||
-         barc_window_private_session_uuid(owner->GetSessionID().id(), identity.data(), identity.size()) == identity.size());
-    return managed && owner->GetType() == BrowserWindowInterface::TYPE_NORMAL &&
-        ((owner->IsSelectedForNativeWindow() && owner->GetTabStripModel()->GetActiveTab() == tab) ||
-         view->browser_widget()->IsBarcPresentedPane(tab)) &&
-        active_ && !closing_ && peek_enabled_ && !PeekRoleFor(tab) &&
-        !barc::IsPeekCloseCommitted(tab) && frame && frame->IsActive() && web_contents() &&
-        content::WebContents::FromRenderFrameHost(frame) == web_contents() &&
-        web_contents()->GetPrimaryMainFrame() && owner &&
-        Window(owner->GetSessionID().id()) == owner &&
-        owner->GetProfile() == frame->GetBrowserContext() &&
-        !UnloadController::From(owner)->owner_close_admitted() &&
-        barc::CanResolveApplicationBrowser();
+    const int32_t window = owner->GetSessionID().id();
+    return view && !view->browser_widget()->HasPhysicalClosePending() &&
+           (selected || view->browser_widget()->IsBarcPresentedPane(tab)) &&
+           (barc_window_profile_uuid(window, identity.data(), identity.size()) ==
+                identity.size() ||
+            barc_window_private_session_uuid(window, identity.data(),
+                                             identity.size()) == identity.size());
   }
   void RequestPeek(content::RenderFrameHost* frame,
                    const content::OpenURLParams& params) {
@@ -1149,6 +1163,13 @@ class TabObservation : public content::WebContentsObserver,
     pending->callback(context_.get(), token_, pending->request, "", 0);
   }
   void OnVisibilityChanged(content::Visibility visibility) override {
+    auto keep_alive = shared_from_this();
+    auto* tab = tab_.Get();
+    if (visibility == content::Visibility::HIDDEN && tab && PeekRoleFor(tab) &&
+        tab->GetContents() == web_contents() &&
+        bark::BarkWindowHost::ForBrowser(tab->GetBrowserWindowInterface())) {
+      SuspendPeekMedia();
+    }
     if (visibility != content::Visibility::VISIBLE) {
       ClearVaultFocus();
       CancelPicker();
@@ -1664,17 +1685,25 @@ class TabObservation : public content::WebContentsObserver,
     Emit(BARC_TAB_STATE);
     RefreshMedia();
   }
+  void SuspendPeekMedia() {
+    content::MediaSession::Get(web_contents())->Suspend(
+        media_session::mojom::MediaSession::SuspendType::kUI);
+  }
   void MediaStartedPlaying(const MediaPlayerInfo&, const content::MediaPlayerId&) override {
     auto keep_alive = shared_from_this();
     auto* tab = tab_.Get();
     if (!tab || !PeekRoleFor(tab) || tab->GetContents() != web_contents()) return;
     auto* owner = tab->GetBrowserWindowInterface();
+    if (bark::BarkWindowHost::ForBrowser(owner)) {
+      if (web_contents()->GetVisibility() == content::Visibility::HIDDEN) {
+        SuspendPeekMedia();
+      }
+      return;
+    }
     auto* view = owner ? BrowserView::GetBrowserViewForBrowser(owner) : nullptr;
-    // A retained hidden Peek is not an audible background tab. Use Chromium's
-    // real session pause, including a later autoplay after a refused card.
-    if (!view || !view->browser_widget()->IsBarcPeekVisible(tab))
-      content::MediaSession::Get(web_contents())->Suspend(
-          media_session::mojom::MediaSession::SuspendType::kUI);
+    if (!view || !view->browser_widget()->IsBarcPeekVisible(tab)) {
+      SuspendPeekMedia();
+    }
   }
   void MediaPictureInPictureChanged(bool) override { Emit(BARC_TAB_STATE); }
   void DidUpdateAudioMutingState(bool) override { Emit(BARC_TAB_STATE); }
@@ -2384,45 +2413,54 @@ int barc_tab_create_peek(uint64_t observation, int32_t serial,
   if (!owner || barc::PeekForSource(source)) return 0;
   auto source_alive = source->GetWeakPtr();
   auto owner_alive = owner->GetWeakPtr();
-  const int32_t peer_id = barc_window_new_peer_in_native_window(
-      owner->GetSessionID().id(), owner->GetSessionID().id());
-  auto* peer = Window(peer_id);
-  const auto close_empty = [&] {
-    auto* live = Window(peer_id);
-    if (live && live->GetTabStripModel()->empty()) live->GetWindow()->Close();
+  const int32_t owner_id = owner->GetSessionID().id();
+  const bool same_client = bark::BarkWindowHost::ForBrowser(owner) != nullptr;
+  const int32_t target_id = same_client
+      ? owner_id
+      : barc_window_new_peer_in_native_window(owner_id, owner_id);
+  auto* target = Window(target_id);
+  const auto close_empty_peer = [&] {
+    if (!same_client) {
+      auto* live = Window(target_id);
+      if (live && live->GetTabStripModel()->empty()) live->GetWindow()->Close();
+    }
   };
-  if (!peer || !source_alive || !owner_alive ||
+  if (!target || !source_alive || !owner_alive ||
       source_alive->GetBrowserWindowInterface() != owner_alive.get() ||
-      peer->GetProfile() != owner_alive->GetProfile() ||
+      target->GetProfile() != owner_alive->GetProfile() ||
       !observed->PeekRequestIsCurrent(serial) || barc::PeekForSource(source_alive.get())) {
-    close_empty(); return 0;
+    close_empty_peer(); return 0;
   }
   auto request = observed->TakePeekRequest(serial);
-  if (!request) { close_empty(); return 0; }
+  if (!request) { close_empty_peer(); return 0; }
   // Stock context-menu new-tab navigation has no invented JavaScript opener.
-  content::WebContents::CreateParams create(peer->GetProfile());
+  content::WebContents::CreateParams create(target->GetProfile());
   auto blank = content::WebContents::Create(create);
-  NavigateParams insert(peer, std::move(blank));
+  NavigateParams insert(target, std::move(blank));
   insert.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
   insert.window_action = NavigateParams::WindowAction::kNoAction;
   Navigate(&insert);
-  peer = Window(peer_id);
+  target = Window(target_id);
   auto* contents = insert.navigated_or_inserted_contents.get();
-  if (!peer || !contents || peer->GetTabStripModel()->GetIndexOfWebContents(contents) == TabStripModel::kNoTab) {
-    close_empty(); return 0;
+  if (!target || !contents || target->GetTabStripModel()->GetIndexOfWebContents(contents) == TabStripModel::kNoTab) {
+    close_empty_peer(); return 0;
   }
   auto* peek = tabs::TabInterface::GetFromContents(contents);
   auto peek_alive = peek->GetWeakPtr();
   const int32_t tab_id = peek->GetHandle().raw_value();
   auto current = [&] {
-    auto* live = Window(peer_id);
+    auto* live = Window(target_id);
+    auto* host = bark::BarkWindowHost::ForBrowser(live);
     auto* main = request->main_document.AsRenderFrameHostIfValid();
     return live && source_alive && owner_alive && peek_alive && main &&
         request->document.AsRenderFrameHostIfValid() &&
         source_alive->GetContents()->GetPrimaryMainFrame() == main &&
         source_alive->GetBrowserWindowInterface() == owner_alive.get() &&
         LookupTab(live, tab_id) == peek_alive.get() &&
-        live->GetTabStripModel()->GetActiveTab() == peek_alive.get() &&
+        (same_client
+             ? host && !host->closing() &&
+                   !UnloadController::From(live)->is_attempting_to_close_browser()
+             : live->GetTabStripModel()->GetActiveTab() == peek_alive.get()) &&
         owner_alive->IsSelectedForNativeWindow() &&
         owner_alive->GetTabStripModel()->GetActiveTab() == source_alive.get() &&
         live->GetProfile() == owner_alive->GetProfile() &&
@@ -2432,16 +2470,16 @@ int barc_tab_create_peek(uint64_t observation, int32_t serial,
   };
   auto refuse = [&] {
     if (peek_alive) ClearPeekRole(peek_alive.get());
-    if (auto* live = LookupTab(Window(peer_id), tab_id)) {
+    if (auto* live = LookupTab(Window(target_id), tab_id)) {
       // No target navigation has happened. A callback may have moved it; only
       // this still-owned untouched blank can be closed here.
       if (live->GetContents()->GetController().IsInitialBlankNavigation() &&
           !live->GetContents()->GetController().GetPendingEntry()) {
         ClearPeekRole(live);
-        barc_tab_close(peer_id, tab_id);
+        barc_tab_close(target_id, tab_id);
       }
     }
-    close_empty(); return 0;
+    close_empty_peer(); return 0;
   };
   if (!current()) return refuse();
   contents->WasHidden();
@@ -2451,7 +2489,7 @@ int barc_tab_create_peek(uint64_t observation, int32_t serial,
   int accepted = 0;
   {
     base::AutoReset guard(&navigation_callback_depth, navigation_callback_depth + 1);
-    accepted = admission(context, peer_id, tab_id);
+    accepted = admission(context, target_id, tab_id);
   }
   if (!accepted || !current() ||
       !barc::IsPeekPair(source_alive.get(), peek_alive.get()) ||
