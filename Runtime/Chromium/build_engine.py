@@ -2,6 +2,7 @@
 """Prepare, verify or build the pinned Bark Chromium engine."""
 import argparse
 import fcntl
+import json
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -360,6 +361,14 @@ def build(checkout, depot_tools, env, args):
     run([depot_tools / "gn", "gen", out.relative_to(src), "--fail-on-unused-args"], src, env, args.dry_run)
     run([depot_tools / "autoninja", "-C", out.relative_to(src), "-j", args.jobs, *TARGETS],
         src, {**env, "NINJA_SUMMARIZE_BUILD": "1"}, args.dry_run)
+    if args.official and not args.dry_run:
+        from official_provenance import RECEIPT, record
+
+        receipt = record(out, src, macho_arch, env)
+        with tempfile.TemporaryDirectory(dir=out) as scratch:
+            staged = Path(scratch) / RECEIPT
+            staged.write_text(json.dumps(receipt, sort_keys=True, indent=2) + "\n")
+            install_generated(staged, out / RECEIPT)
 
 
 def main():

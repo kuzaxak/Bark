@@ -89,7 +89,15 @@ def cached_engine(architecture):
     return Path.home() / "Library/Caches/BarkSDK" / read_pin(PACKAGE, architecture) / "Engine"
 
 
-def install_engine(engine, architecture):
+def check_official_engine(engine, architecture):
+    sys.path.insert(0, str(REPO / "Runtime/Chromium"))
+    from official_provenance import verify_cached
+
+    verify_cached(engine, architecture)
+    print(f"Verified official Bark SDK provenance at {engine}", flush=True)
+
+
+def install_engine(engine, architecture, require_official=False):
     destination = cached_engine(architecture)
     if not destination.is_dir():
         cache = destination.parent.parent
@@ -98,6 +106,8 @@ def install_engine(engine, architecture):
             copy = Path(stage) / "Engine"
             run("/usr/bin/ditto", engine, copy)
             run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", copy)
+            if require_official:
+                check_official_engine(copy, architecture)
             try:
                 # Keep the read-only SDK intact and publish its writable parent.
                 Path(stage).rename(destination.parent)
@@ -105,11 +115,13 @@ def install_engine(engine, architecture):
                 if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
                     raise
     run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", destination)
+    if require_official:
+        check_official_engine(destination, architecture)
     print(f"Installed pinned SDK at {destination}")
 
 
 @contextmanager
-def pinned_engine(source, working, architecture):
+def pinned_engine(source, working, architecture, require_official=False):
     installed = cached_engine(architecture)
     if not source:
         source = str(installed if installed.is_dir() else local_engine(PACKAGE, architecture))
@@ -133,6 +145,8 @@ def pinned_engine(source, working, architecture):
         path = unpacked if (unpacked / "SHA256SUMS").is_file() else unpacked / "Engine"
     path = path.resolve(strict=True)
     run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", path)
+    if require_official:
+        check_official_engine(path, architecture)
     yield path
 
 
@@ -450,6 +464,8 @@ def main():
         sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
+        if command in ("engine", "build", "package"):
+            sub.add_argument("--require-official", action="store_true", help="require verified official engine provenance")
         if command == "engine":
             sub.add_argument("--install", action="store_true", help="cache the verified SDK for clean checkouts")
         elif command == "build":
@@ -485,9 +501,10 @@ def main():
         parser.error(f"Launching signed Bark requires the native {native} runtime.")
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
         working = Path(work)
-        with pinned_engine(args.engine, working, architecture) as engine:
+        require_official = getattr(args, "require_official", False)
+        with pinned_engine(args.engine, working, architecture, require_official) as engine:
             if args.command == "engine" and args.install:
-                install_engine(engine, architecture)
+                install_engine(engine, architecture, require_official)
             elif args.command == "build":
                 build_candidate(engine, args.output, args.identity, architecture, release_info)
             elif args.command == "package":

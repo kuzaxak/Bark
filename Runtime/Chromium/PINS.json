@@ -4,5 +4,9 @@
   "official_macos_sdk": {
     "version": "26.5",
     "build": "25F70"
+  },
+  "official_pgo_profiles": {
+    "mac": "chrome-mac-8078-1793210039-d0da025478573e13f407f013182890d1e5d06d00-2bf76a0407535d2fe700f41a1ec47590d03948c0.profdata",
+    "mac-arm": "chrome-mac-arm-8078-1793210039-70a79c5304368db0122ec98c91db5c4c6851ed9a-2bf76a0407535d2fe700f41a1ec47590d03948c0.profdata"
   }
 }

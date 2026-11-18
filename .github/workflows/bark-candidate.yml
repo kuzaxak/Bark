@@ -78,11 +78,11 @@ jobs:
           printf 'BARK_RELEASE_WORK=%s\n' "$work" >> "$GITHUB_ENV"
 
       - name: Verify and install the pinned architecture SDK
-        run: python3 scripts/bark-check.py engine --arch "$BARK_ARCH" --install
+        run: python3 scripts/bark-check.py engine --arch "$BARK_ARCH" --require-official --install
 
       - name: Build and verify the signed candidate
         run: |
-          python3 scripts/bark-check.py build --arch "$BARK_ARCH" --engine "$BARK_ENGINE_SOURCE" \
+          env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py build --arch "$BARK_ARCH" --require-official \
             --identity "$BARK_SIGN_IDENTITY" --output "$BARK_RELEASE_WORK/Bark.app" \
             --release-version "$BARK_RELEASE_VERSION" --build-number "$BARK_BUILD_NUMBER" \
             --feed-base-url "$BARK_FEED_BASE_URL"
@@ -94,8 +94,8 @@ jobs:
           set -euo pipefail
           : "${BARK_SPARKLE_KEY:?Set the existing pinned Sparkle signing key in the environment}"
           printf '%s\n' "$BARK_SPARKLE_KEY" |
-            python3 scripts/bark-check.py package "$BARK_RELEASE_WORK/Bark.app" \
-              --arch "$BARK_ARCH" --engine "$BARK_ENGINE_SOURCE" --output "$BARK_RELEASE_WORK/artifacts" \
+            env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py package "$BARK_RELEASE_WORK/Bark.app" \
+              --arch "$BARK_ARCH" --require-official --output "$BARK_RELEASE_WORK/artifacts" \
               --identity "$BARK_SIGN_IDENTITY" --notary-profile "$BARK_NOTARY_PROFILE" \
               --download-base-url "$BARK_DOWNLOAD_BASE_URL" --ed-key-file -
           test -f "$BARK_RELEASE_WORK/artifacts/Bark-$BARK_RELEASE_VERSION-$BARK_BUILD_NUMBER-macos-$BARK_ARCH.dmg"

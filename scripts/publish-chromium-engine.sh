@@ -174,10 +174,17 @@ if [[ -f "$OTHER_PIN" ]]; then
       refuse "Public headers differ from the pinned $OTHER_ARCH SDK: $header"
   done
 fi
+OFFICIAL_RECEIPT="$BUILD/official-build.json"
+if [[ -e "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_RECEIPT" ]]; then
+  python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
+fi
 /bin/mkdir -p "$ARTIFACT/Headers" "$HEADERS"
 /usr/bin/ditto "$FRAMEWORK" "$ARTIFACT/$FRAMEWORK_NAME"
 /usr/bin/ditto "$BUILD/Bark Packaging" "$ARTIFACT/Bark Packaging"
 /bin/cp "$INTEGRATED_APP_INFO" "$ARTIFACT/engine-Info.plist"
+if [[ -f "$OFFICIAL_RECEIPT" ]]; then
+  /bin/cp "$OFFICIAL_RECEIPT" "$ARTIFACT/official-build.json"
+fi
 for header in "${PUBLIC_HEADERS[@]}"; do
   /bin/cp "$BRIDGE/$header" "$ARTIFACT/Headers/$header"
   /usr/bin/cmp -s "$BRIDGE/$header" "$HEADERS/$header" || /bin/cp "$BRIDGE/$header" "$HEADERS/$header"
