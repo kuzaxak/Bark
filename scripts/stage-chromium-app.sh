@@ -1,7 +1,7 @@
 #!/bin/bash
 # Stage an architecture-specific candidate: the app target's Bark.app with the published engine framework inside it, and
-# the engine's Bark Packaging beside it. The app's Info.plist keys and entitlements beyond the engine's are
-# declared in ChromiumApp/Additions.plist and merged here, into the staged Info.plist and the staged
+# the engine's Bark Packaging beside it. The app target owns its bundle identity and resources. Supplemental
+# Info.plist keys and entitlements are declared in ChromiumApp/Additions.plist and merged here, into the staged Info.plist and the staged
 # packaging's app-entitlements.plist.
 # Sign the staged bundle through Chromium's signing flow before execution.
 # With --check-signed, check a signed candidate instead: one blocker library, no unsigned Mach-O, and
@@ -68,8 +68,66 @@ check_engine() {
   python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" "$artifact/Bark Framework.framework"
   check_bundle "$artifact/Bark Framework.framework" unsigned
 }
-# ChromiumApp/Additions.plist: an Info dictionary, whose keys the engine's Info.plist lacks or whose arrays
-# add entries to the engine's, and an Entitlements dictionary of entitlements the engine does not grant.
+# Keep product metadata independent while checking the engine's runtime keys during staging.
+check_outer_metadata() {
+  python3 - "$@" <<'PYTHON' || exit 1
+import plistlib
+import sys
+from pathlib import Path
+
+bundle = Path(sys.argv[1])
+resources = bundle / 'Contents/Resources'
+with (bundle / 'Contents/Info.plist').open('rb') as handle:
+    app = plistlib.load(handle)
+
+with open(sys.argv[2], 'rb') as handle:
+    engine = plistlib.load(handle)
+engine_version = engine['CFBundleShortVersionString']
+app_engine_version = app.get('BarkChromiumVersion', app.get('CFBundleShortVersionString'))
+if app_engine_version != engine_version:
+    sys.exit(f'App engine version {app_engine_version!r} must match the pinned engine {engine_version!r}')
+
+if len(sys.argv) == 4 and sys.argv[3] == 'source':
+    app_owned = {
+        'CFBundleDisplayName', 'CFBundleName', 'CFBundleGetInfoString',
+        'CFBundleIconFile', 'CFBundleIconName',
+        'CFBundleShortVersionString', 'CFBundleVersion', 'BarkChromiumVersion',
+        'CFBundleDocumentTypes', 'CFBundleURLTypes', 'NSUserActivityTypes',
+        'UTImportedTypeDeclarations', 'UTExportedTypeDeclarations',
+    }
+    xcode = {'BuildMachineOSBuild', 'CFBundleSupportedPlatforms'}
+    differing = sorted(
+        key for key in app.keys() | engine.keys()
+        if key not in app_owned | xcode and not key.startswith('DT')
+        and app.get(key) != engine.get(key)
+    )
+    if differing:
+        sys.exit('ChromiumApp/Info.plist differs from the engine runtime metadata: ' + ', '.join(differing))
+
+def require_resource(name, key, *, icns_fallback=False):
+    if not isinstance(name, str) or not name or name in ('.', '..') or '/' in name:
+        sys.exit(f'Invalid outer resource name in {key}: {name!r}')
+    candidates = [resources / name]
+    if icns_fallback and not Path(name).suffix:
+        candidates.append(resources / f'{name}.icns')
+    if not any(path.is_file() and path.resolve().is_relative_to(resources.resolve()) for path in candidates):
+        sys.exit(f'Missing outer resource declared by {key}: {name}')
+
+if 'CFBundleIconFile' in app:
+    require_resource(app['CFBundleIconFile'], 'CFBundleIconFile', icns_fallback=True)
+if 'CFBundleIconName' in app:
+    require_resource('Assets.car', 'CFBundleIconName')
+for document_type in app.get('CFBundleDocumentTypes', []):
+    if 'CFBundleTypeIconFile' in document_type:
+        require_resource(document_type['CFBundleTypeIconFile'], 'CFBundleTypeIconFile', icns_fallback=True)
+if 'OSAScriptingDefinition' in app:
+    require_resource(app['OSAScriptingDefinition'], 'OSAScriptingDefinition')
+if not (resources / 'en.lproj/InfoPlist.strings').is_file():
+    sys.exit('Missing outer resource: en.lproj/InfoPlist.strings')
+PYTHON
+}
+# Supplemental Info entries are merged with the app's plist. Entitlement additions are
+# validated against the engine's signing configuration.
 additions() {
   python3 - "$@" <<'PY' || exit 1
 import os, plistlib, subprocess, sys
@@ -90,12 +148,12 @@ info, entitlements = listed.get('Info', {}), listed.get('Entitlements', {})
 def merged(base, added):
     return {**base, **{key: base.get(key, []) + value if isinstance(value, list) else value for key, value in added.items()}}
 if mode == 'validate':
-    engine_info, engine_entitlements = load(sys.argv[3]), load(sys.argv[4])
+    app_info, engine_entitlements = load(sys.argv[3]), load(sys.argv[4])
     for key, value in info.items():
-        if key in engine_info and not (isinstance(value, list) and isinstance(engine_info[key], list)):
-            sys.exit(f"ChromiumApp/Additions.plist would replace the engine's Info.plist key: {key}")
-        if isinstance(value, list) and any(entry in engine_info.get(key, []) for entry in value):
-            sys.exit(f"ChromiumApp/Additions.plist lists an entry already in the engine's {key}")
+        if key in app_info and not (isinstance(value, list) and isinstance(app_info[key], list)):
+            sys.exit(f"ChromiumApp/Additions.plist would replace the app's Info.plist key: {key}")
+        if isinstance(value, list) and any(entry in app_info.get(key, []) for entry in value):
+            sys.exit(f"ChromiumApp/Additions.plist lists an entry already in the app's {key}")
     for key in entitlements:
         if key in engine_entitlements:
             sys.exit(f"ChromiumApp/Additions.plist would replace the engine's entitlement: {key}")
@@ -142,6 +200,7 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   require_architecture "$2/Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell"
   require_architecture "$2/Contents/Frameworks/Bark Framework.framework/Versions/Current/Bark Framework"
   python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" "$2/Contents/Frameworks/Bark Framework.framework"
+  check_outer_metadata "$2" "$engine/engine-Info.plist"
   check_bundle "$2" signed
   additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
   echo "One libnook_adblock.dylib, every Mach-O signed, and the engine's entitlements plus the declared additions: $2"
@@ -166,7 +225,6 @@ ENGINE_FRAMEWORK="$ARTIFACT/$ENGINE_FRAMEWORK_NAME"
 ENGINE_INFO="$ARTIFACT/engine-Info.plist"
 APP_INFO="$APP/Contents/Info.plist"
 APP_MAIN="$APP/Contents/MacOS/Bark"
-APP_RESOURCES="$APP/Contents/Resources"
 NATIVE_FRAMEWORK="$PRODUCTS/NookNativeShell.framework"
 NATIVE="$NATIVE_FRAMEWORK/Versions/A/NookNativeShell"
 [[ ! -e "$OUTPUT" ]] || refuse 'Output already exists; refusing replacement'
@@ -181,18 +239,8 @@ ENGINE_ENTITLEMENTS="$ARTIFACT/Bark Packaging/app-entitlements.plist"
 [[ $(plist "$APP_INFO" CFBundleIdentifier) == ee.qdo.bark ]] || refuse 'App bundle identifier must be exactly ee.qdo.bark'
 [[ $(plist "$APP_INFO" NSPrincipalClass) == BrowserCrApplication ]] ||
   refuse 'App principal class must be BrowserCrApplication: Chromium owns NSApplication'
-python3 - "$APP_INFO" "$ENGINE_INFO" <<'PY' || exit 1
-import plistlib, sys
-app, engine = (plistlib.load(open(path, 'rb')) for path in sys.argv[1:3])
-ignored = lambda key: key.startswith('DT') or key in ('BuildMachineOSBuild', 'CFBundleSupportedPlatforms')
-differing = sorted(key for key in app.keys() | engine.keys() if not ignored(key) and app.get(key) != engine.get(key))
-if differing:
-    sys.exit('ChromiumApp/Info.plist differs from the engine: ' + ', '.join(differing) + '; ChromiumApp/Additions.plist declares what the app adds')
-PY
-additions validate "$ADDITIONS" "$ENGINE_INFO" "$ENGINE_ENTITLEMENTS"
-for resource in app.icns Assets.car scripting.sdef en.lproj/InfoPlist.strings; do
-  [[ -f "$APP_RESOURCES/$resource" ]] || refuse "Missing outer resource: $resource"
-done
+check_outer_metadata "$APP" "$ENGINE_INFO" source
+additions validate "$ADDITIONS" "$APP_INFO" "$ENGINE_ENTITLEMENTS"
 
 [[ -f "$NATIVE" ]] || refuse 'Missing versioned native shell framework executable'
 [[ -f "$NATIVE_FRAMEWORK/Versions/A/Resources/Assets.car" ]] || refuse 'Missing framework-owned native asset catalog'
@@ -259,5 +307,6 @@ done
 /usr/bin/ditto "$ARTIFACT/Bark Packaging" "$PACKAGING"
 /bin/chmod -R u+w "$PACKAGING"
 additions apply "$ADDITIONS" "$OUTPUT/Contents/Info.plist" "$PACKAGING/app-entitlements.plist"
+check_outer_metadata "$OUTPUT" "$ENGINE_INFO"
 trap - EXIT
 printf '%s\n' "Staged unsigned candidate: $OUTPUT" "Staged its packaging: $PACKAGING" 'Chromium signing is required before launch; no signing was performed.'

@@ -41,6 +41,7 @@ ABORT_STATUS = 134
 
 ENGINE_PLIST = dict(CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundleName='Bark',
                     NSPrincipalClass='BrowserCrApplication', CFBundleShortVersionString=VERSION,
+                    CFBundleIconFile='app.icns', CFBundleIconName='AppIcon',
                     LSEnvironment={'MallocNanoZone': '0'},
                     CFBundleURLTypes=[{'CFBundleURLSchemes': ['http', 'https']}],
                     CFBundleDocumentTypes=[{'CFBundleTypeRole': 'Viewer', 'LSItemContentTypes': ['public.html']}])
@@ -953,11 +954,47 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('resource-collision', 'a product bundle named like an app resource', 'Resource collision',
             lambda a, e, p: (a / 'Contents/Resources/NookWeb_NookWeb.bundle').mkdir())
 
+    def declare_icons(app, named=False):
+        edit_plist(app / 'Contents/Info.plist',
+                   CFBundleIconFile='app.icns', CFBundleIconName='AppIcon' if named else None)
+
     refused('no-resources', 'an app with no Resources directory', 'Missing outer resource',
             lambda a, e, p: shutil.rmtree(a / 'Contents/Resources'))
-    for name in ['app.icns', 'Assets.car', 'scripting.sdef', 'en.lproj/InfoPlist.strings']:
-        refused('no-' + name.replace('/', '-'), f'an app without {name}', f'Missing outer resource: {name}',
-                lambda a, e, p, n=name: (a / 'Contents/Resources' / n).unlink())
+    for name, key in [('app.icns', 'CFBundleIconFile'), ('Assets.car', 'CFBundleIconName')]:
+        refused('no-' + name, f'an app without its declared {name}', f'Missing outer resource declared by {key}',
+                lambda a, e, p, n=name: (declare_icons(a, named=n == 'Assets.car'), (a / 'Contents/Resources' / n).unlink()))
+    refused('no-scripting', 'an app without its scripting definition', 'Missing outer resource declared by OSAScriptingDefinition',
+            lambda a, e, p: (
+                edit_plist(a / 'Contents/Info.plist', OSAScriptingDefinition='scripting.sdef'),
+                edit_plist(e / 'engine-Info.plist', OSAScriptingDefinition='scripting.sdef'),
+                (a / 'Contents/Resources/scripting.sdef').unlink()))
+    refused('no-info-strings', 'an app without English InfoPlist.strings', 'Missing outer resource: en.lproj/InfoPlist.strings',
+            lambda a, e, p: (a / 'Contents/Resources/en.lproj/InfoPlist.strings').unlink())
+    refused('wrong-outer-engine-version', 'an app declaring the wrong pinned version', 'must match the pinned engine',
+            lambda a, e, p: edit_plist(a / 'Contents/Info.plist', BarkChromiumVersion='1.2.3.4'))
+
+    app, artifact, products = inputs('outer-identity')
+    resources = app / 'Contents/Resources'
+    (resources / 'app.icns').rename(resources / 'NativeIcon.icns')
+    shutil.copyfile(resources / 'NativeIcon.icns', resources / 'DocumentIcon.icns')
+    (resources / 'Assets.car').unlink()
+    document = {**ENGINE_DOCUMENT, 'CFBundleTypeIconFile': 'DocumentIcon.icns'}
+    identity = dict(CFBundleDisplayName='Native fixture', CFBundleIconFile='NativeIcon', CFBundleIconName=None,
+                    CFBundleShortVersionString='1.5.4', CFBundleVersion='120', BarkChromiumVersion=VERSION,
+                    CFBundleURLTypes=[], CFBundleDocumentTypes=[document])
+    edit_plist(app / 'Contents/Info.plist', **identity)
+    output = work / 'outer-identity/out/Bark.app'
+    output.parent.mkdir()
+    run = stage(app, artifact, products, output)
+    check('staging accepts product metadata and plist-declared outer icons alongside the pinned engine',
+          run.returncode == 0, run.stderr)
+    if run.returncode == 0:
+        identity['CFBundleDocumentTypes'] += read_plist(SHIPPED_ADDITIONS)['Info']['CFBundleDocumentTypes']
+        staged = read_plist(output / 'Contents/Info.plist')
+        check('staging preserves outer identity, icon bytes and product version after additions',
+              all(staged.get(key) == value for key, value in identity.items()) and
+              all((resources / name).read_bytes() == (output / 'Contents/Resources' / name).read_bytes()
+                  for name in ['NativeIcon.icns', 'DocumentIcon.icns']), staged)
 
     refused('no-versioned-binary', 'a framework without the file main loads', 'Missing versioned engine executable',
             lambda a, e, p: (versioned(e) / 'Bark Framework').unlink())
@@ -969,22 +1006,20 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('other-framework-version', 'a framework whose version differs from the app\'s', 'CFBundleShortVersionString',
             lambda a, e, p: edit_plist(versioned(e) / 'Resources/Info.plist', CFBundleShortVersionString='1.2.3.4'))
 
-    refused('plist-lost-key', 'an app plist missing a key the engine has', 'differs from the engine: LSEnvironment',
+    refused('plist-lost-key', 'an app plist missing a key the engine has', 'differs from the engine runtime metadata: LSEnvironment',
             lambda a, e, p: edit_plist(a / 'Contents/Info.plist', LSEnvironment=None))
-    refused('plist-new-engine-key', 'a new key only the engine has', 'differs from the engine: NewUpstreamKey',
+    refused('plist-new-engine-key', 'a new key only the engine has', 'differs from the engine runtime metadata: NewUpstreamKey',
             lambda a, e, p: edit_plist(e / 'engine-Info.plist', NewUpstreamKey='value'))
-    refused('plist-extra-app-key', 'a key only the app has', 'differs from the engine: AppOnlyKey',
+    refused('plist-extra-app-key', 'a key only the app has', 'differs from the engine runtime metadata: AppOnlyKey',
             lambda a, e, p: edit_plist(a / 'Contents/Info.plist', AppOnlyKey='value'))
-    refused('plist-changed-value', 'a value that differs', 'differs from the engine: CFBundleURLTypes',
-            lambda a, e, p: edit_plist(a / 'Contents/Info.plist', CFBundleURLTypes=[]))
-    refused('plist-key-outside-list', 'an app Info.plist key outside the declared additions', 'differs from the engine: AppOnlyKey',
+    refused('plist-key-outside-list', 'an app Info.plist key outside the declared additions', 'differs from the engine runtime metadata: AppOnlyKey',
             lambda a, e, p: edit_plist(a / 'Contents/Info.plist', AppOnlyKey='value'), additions=FIXTURE_ADDITIONS)
     refused('plist-listed-key-in-app', 'a listed key written into the app\'s Info.plist instead of the list',
-            'differs from the engine: NSCalendarsUsageDescription',
+            'differs from the engine runtime metadata: NSCalendarsUsageDescription',
             lambda a, e, p: edit_plist(a / 'Contents/Info.plist', NSCalendarsUsageDescription='Fixture calendars'), additions=FIXTURE_ADDITIONS)
-    refused('additions-replace-key', 'an addition that would replace an engine key', 'would replace the engine\'s Info.plist key: CFBundleName',
+    refused('additions-replace-key', 'an addition that would replace an engine key', 'would replace the app\'s Info.plist key: CFBundleName',
             lambda a, e, p: None, additions={'Info': {'CFBundleName': 'Other'}})
-    refused('additions-repeat-entry', 'an addition the engine\'s list already holds', 'already in the engine\'s CFBundleDocumentTypes',
+    refused('additions-repeat-entry', 'an addition the engine\'s list already holds', 'already in the app\'s CFBundleDocumentTypes',
             lambda a, e, p: None, additions={'Info': {'CFBundleDocumentTypes': [ENGINE_DOCUMENT]}})
     refused('additions-replace-entitlement', 'an entitlement the engine already grants', 'would replace the engine\'s entitlement: com.apple.security.device.camera',
             lambda a, e, p: None, additions={'Entitlements': {'com.apple.security.device.camera': False}})
@@ -1125,6 +1160,7 @@ def signed_cases(work, mach_o):
     libraries = f'Contents/Frameworks/{FRAMEWORK}/Versions/{VERSION}/Libraries'
     artifact = work / 'signed-engine'
     write_plist(artifact / 'Bark Packaging/app-entitlements.plist', **ENGINE_ENTITLEMENTS)
+    write_plist(artifact / 'engine-Info.plist', **ENGINE_PLIST)
     additions = additions_file(work / 'signed-additions.plist', FIXTURE_ADDITIONS)
     listed_info = {'NSCalendarsUsageDescription': 'Fixture calendars', 'CFBundleDocumentTypes': [ENGINE_DOCUMENT, SPACE_DOCUMENT],
                    'UTImportedTypeDeclarations': [SPACE_TYPE]}
@@ -1140,7 +1176,11 @@ def signed_cases(work, mach_o):
         app = work / name / 'Bark.app'
         (app / 'Contents/MacOS').mkdir(parents=True)
         shutil.copy2(main_binary, app / 'Contents/MacOS/Bark')
-        write_plist(app / 'Contents/Info.plist', CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID, CFBundlePackageType='APPL', **info)
+        write_plist(app / 'Contents/Info.plist', CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID,
+                    CFBundlePackageType='APPL', CFBundleShortVersionString='1.5.4', BarkChromiumVersion=VERSION, **info)
+        localized = app / 'Contents/Resources/en.lproj'
+        localized.mkdir(parents=True)
+        shutil.copyfile(APP_RESOURCES / 'en.lproj/InfoPlist.strings', localized / 'InfoPlist.strings')
         write_plist(work / name / 'entitlements.plist', **entitlements)
         # codesign refuses a bundle whose fake framework is not a framework, so the app is signed before it is added.
         subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(work / name / 'entitlements.plist'), str(app)],
