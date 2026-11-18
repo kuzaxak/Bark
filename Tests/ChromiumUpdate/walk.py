@@ -555,15 +555,14 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--derived-data", type=Path, help="Unsigned Release Bark build for a developer rehearsal")
+    parser.add_argument("--derived-data", type=Path,
+                        help="Reuse existing unsigned Release Bark products (developer only)")
     parser.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"), help="Local Developer ID Application")
     parser.add_argument("--output", type=Path, required=True, help="New evidence-only directory")
     parser.add_argument("--require-official", action="store_true", help="verify the native official SDK before preparation")
     args = parser.parse_args(argv)
     if args.require_official and args.derived_data is not None:
         parser.error("--require-official builds the checkout's shell. Omit --derived-data.")
-    if not args.require_official and args.derived_data is None:
-        parser.error("Pass --derived-data for a developer rehearsal.")
     if not args.identity:
         parser.error("Pass --identity or set BARK_SIGN_IDENTITY.")
     if args.output.resolve().is_relative_to(REPO):
@@ -589,7 +588,7 @@ def main():
     output.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix="bark-update-", dir="/private/tmp") as directory:
         work = Path(directory)
-        if args.require_official:
+        if args.derived_data is None:
             derived = work / "DerivedData"
             build_checkout_shell(check, derived, arch, output)
         else:

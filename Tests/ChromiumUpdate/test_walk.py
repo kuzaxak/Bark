@@ -55,13 +55,46 @@ class UpdateBuildInputTest(unittest.TestCase):
             build.assert_not_called()
             self.assertEqual(versions.call_args.args[1:5], (derived.resolve(), engine, "Fixture", "x86_64"))
 
+    def test_developer_rehearsal_builds_and_removes_temporary_products(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root.resolve() / "evidence"
+            engine = root / "Engine"
+            engine.mkdir()
+            argv = ["walk.py", "--identity", "Fixture", "--output", str(output)]
+            tools = {"native_architecture": lambda: "x86_64", "cached_engine": lambda arch: engine}
+
+            def build_shell(check, derived, arch, evidence):
+                self.assertEqual(check, tools)
+                self.assertEqual(arch, "x86_64")
+                self.assertEqual(evidence, output)
+                self.assertEqual(derived.name, "DerivedData")
+                derived.mkdir()
+
+            def use_versions(check, derived, sdk, identity, arch, work, server, evidence):
+                self.assertEqual((derived, sdk, identity, arch), (work / "DerivedData", engine, "Fixture", "x86_64"))
+                self.assertTrue(derived.is_dir())
+                return None, None, None, None
+
+            with patch.object(walk.sys, "argv", argv), patch.object(walk.runpy, "run_path", return_value=tools), \
+                    patch.object(walk, "build_checkout_shell", side_effect=build_shell) as build, \
+                    patch.object(walk, "UpdateServer"), patch.object(walk, "versions", side_effect=use_versions), \
+                    patch.object(walk, "exercise"), contextlib.redirect_stdout(StringIO()):
+                walk.main()
+            build.assert_called_once()
+            self.assertFalse(build.call_args.args[1].exists())
+            self.assertTrue((output / "candidate.json").is_file())
+
     def test_checkout_shell_uses_locked_release_configuration(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
             derived = root / "DerivedData"
             check = runpy.run_path(str(walk.REPO / "scripts/bark-check.py"))
-            with patch.object(walk, "run") as run:
+            unsigned = derived / "Build/Products/Release/Bark.app"
+            unsigned.mkdir(parents=True)
+            with patch.object(walk, "run") as run, patch.object(walk.subprocess, "run") as launch_services:
                 walk.build_checkout_shell(check, derived, "arm64", root)
+            launch_services.assert_called_once_with([walk.LSREGISTER, "-u", str(unsigned)], capture_output=True)
             self.assertEqual(run.call_args.args, check["release_shell_build_args"](derived, "arm64"))
             self.assertEqual(run.call_args.args[:7],
                              ("xcodebuild", "-project", walk.REPO / "Bark.xcodeproj",
