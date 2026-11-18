@@ -2,6 +2,7 @@ import AppKit
 import BarcChromium
 import Darwin
 import NookSettings
+import class NookTabsCore.TabStore
 import NookWeb
 import Observation
 import SwiftUI
@@ -337,7 +338,14 @@ final class ChromiumApplication: ChromiumStartupBridge {
         // the native profile; the CLI hint must never relabel a model profile.
         do {
             let storage = try ChromiumAppStorage(configuration: configuration)
-            let hadTabs = ChromiumOnboarding.hasTabs(in: storage.tabsDirectory)
+            let onboardingSetup = ChromiumOnboardingSetup(appDirectory: storage.tabsDirectory.deletingLastPathComponent())
+            let needsOnboarding = try onboardingSetup.requiresOnboarding(
+                explicitlyFinished: storage.settings.didFinishOnboarding,
+                hasSavedSetup: TabStore(directory: storage.tabsDirectory).hasSavedSetup()
+            )
+            if !needsOnboarding && !storage.settings.didFinishOnboarding {
+                storage.settings.didFinishOnboarding = true
+            }
             appearance = ChromiumAppearance(settings: storage.settings)
             let manager = BrowserManager(settings: storage.settings, windowRegistry: registry,
                 importManager: ImportManager(configuration: configuration),
@@ -524,13 +532,19 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 }), let self, let manager else { completion(nil); return }
                 manager.tabs.resumePendingProfileDeletion { [weak self] _ in
                     guard let self, self.acceptsWindows else { completion(nil); return }
-                    guard ChromiumOnboarding.isNeeded(didFinish: &storage.settings.didFinishOnboarding, hadTabs: hadTabs) else {
+                    guard needsOnboarding else {
                         self.openInitialModelWindow(completion: completion)
                         return
                     }
                     ChromiumOnboarding.present(manager: manager, settings: storage.settings) { [weak self] in
                         guard let self, self.acceptsWindows else { completion(nil); return }
-                        self.openInitialModelWindow(completion: completion)
+                        do {
+                            try onboardingSetup.finish()
+                            self.openInitialModelWindow(completion: completion)
+                        } catch {
+                            fputs("Chromium onboarding completion refused: \(error)\n", stderr)
+                            completion(nil)
+                        }
                     }
                 }
             }
@@ -543,12 +557,13 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private func showBarkHelp() {
         let alert = NSAlert()
         alert.messageText = "Bark Help"
+        let split = browserManager?.help("Add Split View", shortcut: .addSplitView) ?? "Add Split View"
         alert.informativeText = """
         Spaces keep tabs and bookmark folders together. Switch spaces from the sidebar to return to their pages.
 
         Choose View → Add Split View to use two pages in one window. Select a pane to direct typing and page commands to it.
 
-        Shift-click a link to open it in Peek. Press Escape to return to the original page.
+        With Shift-click Peek enabled, Shift-click a link or focus it and press Shift-Return to open it in Peek. While Peek is open, choose View → \(split) to keep it in a split, or press Escape to return to the original page.
 
         In a compact window, choose Open in Space to move the page into the main window.
         """

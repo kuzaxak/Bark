@@ -53,6 +53,32 @@ struct TabStoreTests {
         #expect(seeded.children(of: .tabs(spaceID: seeded.orderedSpaces[0].id)).count == 1)
     }
 
+    @Test func savedSetupRequiresReadableStructureAndRecordedDeviceCompletion() throws {
+        let dir = tempDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let (tree, device, _) = sample()
+        let store = TabStore(directory: dir)
+        let deviceURL = dir.appendingPathComponent("device.json")
+        #expect(!store.hasSavedSetup())
+        store.save(tree, device)
+        store.flush()
+        #expect(store.hasSavedSetup())
+        #expect(!FileManager.default.fileExists(atPath: dir.appendingPathComponent("Backups").path))
+
+        let original = try Data(contentsOf: deviceURL)
+        try FileManager.default.removeItem(at: deviceURL)
+        #expect(!store.hasSavedSetup())
+        try Data("{}".utf8).write(to: deviceURL)
+        #expect(!store.hasSavedSetup())
+        var unfinished = try JSONDecoder().decode(TabStore.DeviceFile.self, from: original)
+        unfinished.state.firstLaunchCompleted = false
+        try JSONEncoder().encode(unfinished).write(to: deviceURL)
+        #expect(!store.hasSavedSetup())
+        try original.write(to: deviceURL)
+        try Data("{}".utf8).write(to: dir.appendingPathComponent("structure.json"))
+        #expect(!store.hasSavedSetup())
+    }
+
     @Test func roundTripSplitsScopes() throws {
         let dir = tempDirectory()
         let (tree, device, _) = sample()

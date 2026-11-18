@@ -113,6 +113,40 @@ struct ChromiumStartupConfiguration {
     enum StartupError: Error { case invalidConfiguration }
 }
 
+/// Set before the model can write starter tabs. A pending setup survives an
+/// interrupted launch without being mistaken for a completed onboarding.
+struct ChromiumOnboardingSetup {
+    let appDirectory: URL
+    private var marker: URL { appDirectory.appendingPathComponent("onboarding-state") }
+    private static let pending = Data("pending\n".utf8)
+    private static let completed = Data("completed\n".utf8)
+
+    func requiresOnboarding(explicitlyFinished: Bool, hasSavedSetup: @autoclosure () -> Bool) throws -> Bool {
+        if explicitlyFinished {
+            try finish()
+            return false
+        }
+        if FileManager.default.fileExists(atPath: marker.path) {
+            let state = try Data(contentsOf: marker)
+            if state == Self.completed { return false }
+            guard state == Self.pending else { throw ChromiumStartupConfiguration.StartupError.invalidConfiguration }
+            return true
+        }
+        if hasSavedSetup() {
+            try finish()
+            return false
+        }
+        try Self.pending.write(to: marker, options: .atomic)
+        return true
+    }
+
+    func finish() throws {
+        if (try? Data(contentsOf: marker)) != Self.completed {
+            try Self.completed.write(to: marker, options: .atomic)
+        }
+    }
+}
+
 /// The concrete bridge owns Chromium; this object only sequences its callbacks.
 @MainActor
 protocol ChromiumStartupBridge: AnyObject {

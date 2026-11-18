@@ -106,6 +106,16 @@ public final class TabStore: @unchecked Sendable {
 
     public var isReadOnly: Bool { lock.withLock { readOnly } }
 
+    /// Read-only compatibility probe for a pre-marker install. Unlike normal
+    /// loading, setup cannot be inferred from a synthesized device state.
+    public func hasSavedSetup() -> Bool {
+        guard let data = try? Data(contentsOf: deviceURL),
+              let device = try? JSONDecoder().decode(DeviceFile.self, from: data),
+              (device.formatVersion == Self.formatVersion || device.formatVersion == 1),
+              device.state.firstLaunchCompleted else { return false }
+        return Self.decode(structure: structureURL, device: deviceURL) != nil
+    }
+
     /// Decodes both files, migrating a format-1 pair first. structure.json must hold at least one
     /// live space. A missing or unreadable device.json yields a fresh device state; a duplicate id
     /// keeps the synced copy.

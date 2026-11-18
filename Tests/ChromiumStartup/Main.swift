@@ -114,7 +114,15 @@ struct StartupTests {
         precondition(literalArguments.suffix(2) == ["--", "--bark-window=legacy"]
                      && literalArguments.filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host", "--bark-window=legacy"],
                      "a literal argument stays a page to open and does not pick the window: \(literalArguments)")
+        let legacy = normalRoot.appendingPathComponent("ee.qdo.nook", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        let legacyStore = legacy.appendingPathComponent("default.store")
+        let legacyBytes = Data("legacy data".utf8)
+        try legacyBytes.write(to: legacyStore)
         try normal.prepare()
+        let retainedLegacy = try Data(contentsOf: legacyStore)
+        precondition(retainedLegacy == legacyBytes)
+        precondition(!FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("App/default.store").path))
         precondition(FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("Engine").path))
         let redirected = normalRoot.appendingPathComponent("RedirectedSupport")
         try FileManager.default.createDirectory(at: redirected, withIntermediateDirectories: true)
