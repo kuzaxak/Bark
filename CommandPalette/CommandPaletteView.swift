@@ -24,6 +24,7 @@ struct CommandPaletteView: View {
     @Environment(\.colorScheme) private var colorScheme
 
     @FocusState private var isSearchFocused: Bool
+    @State private var pickedTabFocus: PaletteTabFocus?
     @State private var text: String = ""
     @State private var selectedSuggestionIndex: Int = -1
     @State private var hoveredSuggestionIndex: Int? = nil
@@ -226,7 +227,10 @@ struct CommandPaletteView: View {
                     canPresent: { nativeWindow in
                         windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState
                     }, onWindowBounds: { bounds in if paletteFrame != bounds { paletteFrame = bounds } },
-                    onRetire: { commandPalette.close() }) {
+                    onRetire: {
+                        commandPalette.close()
+                        pickedTabFocus?.panelDidClose()
+                    }) {
                     VStack(spacing: 4) {
                         if commandPalette.addSplit != nil {
                             HStack {
@@ -294,6 +298,7 @@ struct CommandPaletteView: View {
         .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
         .onChange(of: commandPalette.isVisible, initial: isNative) { oldVisible, newVisible in
             if newVisible {
+                pickedTabFocus = nil
                 searchManager.setTabs(browserManager.tabs, window: windowState)
                 searchManager.setHistoryManager(browserManager.historyManager)
                 searchManager.updateSpaceContext()
@@ -316,7 +321,7 @@ struct CommandPaletteView: View {
                 isSearchFocused = false
                 // Without this the field editor keeps first responder and Space no longer scrolls the page.
                 if isNative {
-                    if oldVisible, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
+                    if oldVisible, pickedTabFocus == nil, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
                        let page = browserManager.frontPage(in: windowState),
                        let native = page.navigation as? ChromiumPageNavigation,
                        browserManager.tabs.nativePageHost?.isNativeSelection(native, in: windowState) == true {
@@ -343,6 +348,9 @@ struct CommandPaletteView: View {
                 searchManager.updateSpaceContext()
                 searchManager.clearSuggestions()
             }
+        }
+        .onChange(of: windowState.selectedItemID) { _, selected in
+            pickedTabFocus?.selectionChanged(to: selected)
         }
         .onChange(of: commandPalette.addSplit?.shows(selectedItemID: windowState.selectedItemID, split: windowState.splitLayout)) { _, shows in
             if shows == false { commandPalette.close() }
@@ -684,6 +692,10 @@ struct CommandPaletteView: View {
             if commandPalette.addSplit != nil {
                 fillEmptyPane(with: match.itemID)
             } else {
+                if isNative {
+                    pickedTabFocus = PaletteTabFocus(item: match.itemID, manager: browserManager,
+                                                     window: windowState, palette: commandPalette)
+                }
                 browserManager.tabs.select(match.itemID, in: windowState)
             }
         case .folder(let folder):
@@ -1181,6 +1193,63 @@ struct CommandPaletteView: View {
         selectedSuggestionIndex = -1
         search(text)
         return true
+    }
+}
+
+/// A tab result may finish mounting after the palette's field editor goes away.
+/// Return its keys only to the requested item in the window that accepted the result.
+@MainActor
+private final class PaletteTabFocus {
+    let item: UUID
+    private let previous: UUID?
+    private weak var manager: BrowserManager?
+    private weak var window: BrowserWindowState?
+    private weak var palette: CommandPalette?
+    private var panelClosed = false
+    private var finished = false
+    private weak var waitingPage: ChromiumPageNavigation?
+
+    init(item: UUID, manager: BrowserManager, window: BrowserWindowState, palette: CommandPalette) {
+        self.item = item
+        previous = window.selectedItemID
+        self.manager = manager
+        self.window = window
+        self.palette = palette
+    }
+
+    func panelDidClose() {
+        panelClosed = true
+        // SwiftUI can still resign the detached field editor during this update.
+        DispatchQueue.main.async { [weak self] in self?.restore() }
+    }
+
+    func selectionChanged(to selected: UUID?) {
+        if selected != item && (waitingPage != nil || selected != previous) { finished = true }
+        restore()
+    }
+
+    private func restore(afterDocumentReady: Bool = false) {
+        guard panelClosed, !finished, let manager, let window, let palette else { return }
+        guard !palette.isVisible, let owner = window.window, owner.isKeyWindow,
+              manager.windowRegistry?.activeWindow === window,
+              owner.attachedSheet == nil, NSApp.modalWindow == nil,
+              !manager.dialogManager.isVisible, !window.isAddressEditing else { finished = true; return }
+        guard window.selectedItemID == item, !window.nativePresentationIsPreparing,
+              let session = manager.frontPage(in: window), session.itemID == item,
+              let page = session.navigation as? ChromiumPageNavigation,
+              let host = manager.tabs.nativePageHost as? ChromiumNativePageHost,
+              host.isNativeSelection(page, in: window) else { return }
+        let focused = host.focusPresentedPage(page, in: window) {
+            $0 == nil || $0 === owner || $0 === owner.contentView
+        }
+        if afterDocumentReady || (focused && !session.isLoading) {
+            finished = true
+        } else if waitingPage !== page {
+            waitingPage = page
+            page.whenNativePageReady(for: .palette) { [weak self] in
+                DispatchQueue.main.async { [weak self] in self?.restore(afterDocumentReady: true) }
+            }
+        }
     }
 }
 
