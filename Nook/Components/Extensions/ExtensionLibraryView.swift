@@ -6,6 +6,8 @@
 
 import AppKit
 import os
+import Security
+import SecurityInterface
 import SwiftUI
 import WebKit
 
@@ -14,6 +16,10 @@ import NookDesign
 import NookSettings
 import NookWeb
 import NookUI
+
+enum SiteCertificateState {
+    case unavailable, available, secure
+}
 
 struct ExtensionLibraryView: View {
     let browserManager: BrowserManager
@@ -81,6 +87,7 @@ struct ExtensionLibraryView: View {
             .buttonStyle(ActionTileStyle())
             .help("Share")
             .disabled(currentTab == nil)
+            .chromiumSiteControlsPointerTarget(enabled: currentTab != nil)
 
             Button {
                 browserManager.openBoostPanel(in: windowState)
@@ -91,6 +98,7 @@ struct ExtensionLibraryView: View {
             .buttonStyle(ActionTileStyle())
             .help(isPrivate ? "Boosts aren’t saved from private windows" : "Boost")
             .disabled(boostHost == nil)
+            .chromiumSiteControlsPointerTarget(enabled: boostHost != nil)
 
             Button {
                 onDismiss()
@@ -101,6 +109,7 @@ struct ExtensionLibraryView: View {
             .buttonStyle(ActionTileStyle())
             .help("Capture")
             .disabled(currentTab == nil)
+            .chromiumSiteControlsPointerTarget(enabled: currentTab != nil)
 
             MuteButton(tab: currentTab)
         }
@@ -206,7 +215,9 @@ struct ExtensionLibraryView: View {
                 ) {
                     HStack(spacing: NookDesign.Spacing.xxs) {
                         Button("Zoom Out", systemImage: "minus", action: zoomOut)
+                            .chromiumSiteControlsPointerTarget()
                         Button("Zoom In", systemImage: "plus", action: zoomIn)
+                            .chromiumSiteControlsPointerTarget()
                     }
                     .labelStyle(.iconOnly)
                     .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.rowButton + NookDesign.Spacing.xs))
@@ -237,15 +248,64 @@ struct ExtensionLibraryView: View {
 
     // MARK: - Footer
 
+    private func webKitCertificateView(for page: PageSession) -> WKWebView? {
+        guard let window = windowState.windowHandle as? NSWindow,
+              let view = browserManager.getWebView(for: page.itemID, in: windowState.id),
+              view.window === window, view.url == page.url, page.url.scheme == "https",
+              !view.isLoading, view.serverTrust != nil else { return nil }
+        return view
+    }
+
+    private var certificateState: SiteCertificateState {
+        guard let page = currentTab, !page.isLoading else { return .unavailable }
+        if isChromium {
+            return (page.navigation as? ChromiumPageNavigation)?.certificateState ?? .unavailable
+        }
+        guard let view = webKitCertificateView(for: page), let trust = view.serverTrust else { return .unavailable }
+        var result = SecTrustResultType.invalid
+        let trusted = SecTrustGetTrustResult(trust, &result) == errSecSuccess
+            && (result == .unspecified || result == .proceed)
+        return trusted && view.hasOnlySecureContent ? .secure : .available
+    }
+
+    private func showCertificate(for itemID: UUID, at url: URL) {
+        guard let page = currentTab, page.itemID == itemID, page.url == url, !page.isLoading else { return }
+        if isChromium {
+            guard (page.navigation as? ChromiumPageNavigation)?.showCertificate() == true else {
+                browserManager.showWindowToast("No certificate is available for this page.", in: windowState)
+                return
+            }
+        } else {
+            guard let view = webKitCertificateView(for: page), let trust = view.serverTrust,
+                  let window = view.window, window.attachedSheet == nil else { return }
+            let panel = SFCertificatePanel.shared()
+            panel?.certificateView()?.setDisplayTrust(false)
+            panel?.beginSheet(for: window, modalDelegate: nil, didEnd: nil, contextInfo: nil, trust: trust, showGroup: true)
+        }
+        onDismiss()
+    }
+
     private var footer: some View {
-        let secure = currentTab?.url.scheme == "https"
+        let certificate = certificateState
+        let secure = certificate == .secure
+        let title = secure ? "Secure" : "Not Secure"
+        let page = currentTab.map { (itemID: $0.itemID, url: $0.url) }
         return HStack {
-            Label(secure ? "Secure" : "Not Secure", systemImage: secure ? "lock.fill" : "lock.open.fill")
-                .font(NookDesign.Font.body)
-                .padding(.horizontal, NookDesign.Spacing.md)
-                .frame(height: NookDesign.Size.row)
-                .background(NookDesign.Surface.fillPressed, in: NookDesign.Radius.shape(NookDesign.Radius.md))
-                .help(currentHost ?? "")
+            Button {
+                if let page { showCertificate(for: page.itemID, at: page.url) }
+            } label: {
+                Label(title, systemImage: secure ? "lock.fill" : "lock.open.fill")
+                    .font(NookDesign.Font.body)
+                    .padding(.horizontal, NookDesign.Spacing.md)
+                    .frame(height: NookDesign.Size.row)
+                    .background(NookDesign.Surface.fillPressed, in: NookDesign.Radius.shape(NookDesign.Radius.md))
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(certificate == .unavailable)
+            .accessibilityLabel(certificate == .unavailable ? title : "\(title), Show Certificate")
+            .help(certificate == .unavailable ? "No certificate for this page" : "Show Certificate")
+            .chromiumSiteControlsPointerTarget(enabled: certificate != .unavailable)
 
             Spacer()
 
@@ -288,6 +348,7 @@ struct ExtensionLibraryView: View {
             .buttonStyle(.plain)
             .fixedSize()
             .help("More")
+            .chromiumSiteControlsPointerTarget()
         }
     }
 
@@ -411,6 +472,7 @@ private struct MuteButton: View {
         .buttonStyle(ActionTileStyle())
         .help(muted ? "Unmute" : "Mute")
         .disabled(tab == nil)
+        .chromiumSiteControlsPointerTarget(enabled: tab != nil)
     }
 }
 
@@ -557,6 +619,7 @@ private struct SiteSettingRow<Trailing: View>: View {
         .animation(NookDesign.Motion.quick, value: isOn)
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(action == nil ? [] : .isButton)
+        .chromiumSiteControlsPointerTarget(enabled: action != nil)
     }
 }
 

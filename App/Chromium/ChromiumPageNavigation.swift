@@ -221,6 +221,19 @@ final class ChromiumPageNavigation: PageNavigation {
         return bridge.tab_execute_command(window, tab, command) == 1
     }
 
+    var certificateState: SiteCertificateState {
+        guard !invalidated, !isClosed, window > 0 else { return .unavailable }
+        switch bridge.tab_execute_command(window, tab, Int32(BARC_PAGE_CERTIFICATE_STATE.rawValue)) {
+        case Int32(BARC_CERTIFICATE_SECURE.rawValue): return .secure
+        case Int32(BARC_CERTIFICATE_AVAILABLE.rawValue): return .available
+        default: return .unavailable
+        }
+    }
+
+    func showCertificate() -> Bool {
+        executeNativePageCommand(Int32(BARC_PAGE_SHOW_CERTIFICATE.rawValue))
+    }
+
     @discardableResult
     func clearBackForwardCache() -> Bool {
         executeNativePageCommand(Int32(BARC_PAGE_CLEAR_BACK_FORWARD_CACHE.rawValue))

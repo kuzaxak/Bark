@@ -97,6 +97,30 @@ private enum Checks {
         let top = root.subviews.last!
         precondition(top !== sidebar && top.frame == root.bounds, "a window panel covers the whole root above the sidebar")
         sidebar.frame.origin.x = 0
+        var outsideClicks = 0
+        whole.windowInput = ChromiumWindowPanelInput(
+            containsCardPoint: { point, _ in point.x > 50 },
+            containsControlPoint: { point, _ in point.x > 200 },
+            onOutsideClick: { outsideClicks += 1 })
+        whole.updatePanel()
+        let point = NSPoint(x: 10, y: 10)
+        func mouse(_ type: NSEvent.EventType, at point: NSPoint) -> NSEvent {
+            NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
+                               timestamp: 0, windowNumber: window.windowNumber,
+                               context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!
+        }
+        let target = root.hitTest(point)
+        precondition(target === top, "outside mouse down belongs to the panel, not the page or sidebar")
+        target?.mouseDown(with: mouse(.leftMouseDown, at: point))
+        precondition(outsideClicks == 0, "the shield waits to consume the matching release")
+        target?.mouseUp(with: mouse(.leftMouseUp, at: point))
+        precondition(outsideClicks == 1)
+        let passiveCardPoint = NSPoint(x: 70, y: 10)
+        let passiveTarget = root.hitTest(passiveCardPoint)
+        precondition(passiveTarget === top, "passive card clicks stay in the panel above the visible sidebar")
+        passiveTarget?.mouseDown(with: mouse(.leftMouseDown, at: passiveCardPoint))
+        passiveTarget?.mouseUp(with: mouse(.leftMouseUp, at: passiveCardPoint))
+        precondition(outsideClicks == 1, "passive card clicks leave the panel open")
         page.updatePanel(); fitted.updatePanel(); whole.updatePanel()
         precondition(root.pageFrame.subviews.count == 2 && root.subviews.last === top, "showing the sidebar moves no panel")
         root.pageFrame.frame = NSRect(x: 10, y: 10, width: 980, height: 680)

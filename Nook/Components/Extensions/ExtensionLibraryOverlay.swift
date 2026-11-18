@@ -56,6 +56,13 @@ struct ExtensionLibraryOverlay: View {
                         )
                         .frame(width: menuWidth)
                         .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.xl))
+                        .background {
+                            let shape = NookDesign.Radius.shape(NookDesign.Radius.xl)
+                            Color.clear
+                                .contentShape(shape)
+                                .onTapGesture {}
+                                .accessibilityHidden(true)
+                        }
                         // Arc's notch, pointing at the button the panel came from.
                         .overlay(alignment: .topLeading) {
                             PanelNotch()
@@ -63,6 +70,7 @@ struct ExtensionLibraryOverlay: View {
                                 .frame(width: notchWidth, height: notchHeight)
                                 .offset(x: buttonFrame.midX - originX(buttonFrame: buttonFrame, container: proxy.size) - notchWidth / 2,
                                         y: -notchHeight + 1)
+                                .allowsHitTesting(false)
                         }
                         // Grows out of the button rather than appearing whole.
                         .scaleEffect(appeared ? 1 : 0.88, anchor: UnitPoint(

@@ -173,8 +173,10 @@ struct ChromiumSidebarShell: View {
             }
             .background {
                 if window.isExtensionLibraryVisible {
-                    ChromiumPagePanel(content: ChromiumSiteControls(browserManager: browserManager, window: window,
-                        settings: storage.settings, anchor: siteControlsAnchor).defaultAppStorage(storage.defaults), fill: .window)
+                    let siteControls = ChromiumSiteControls(browserManager: browserManager, window: window,
+                        settings: storage.settings, anchor: siteControlsAnchor)
+                    ChromiumPagePanel(content: siteControls.defaultAppStorage(storage.defaults), fill: .window,
+                                      windowInput: siteControls.windowInput)
                 }
             }
             .background {

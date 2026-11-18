@@ -3,6 +3,12 @@ import SwiftUI
 
 enum ChromiumPanelFill { case fitted, window, page }
 
+struct ChromiumWindowPanelInput {
+    let containsCardPoint: @MainActor (NSPoint, NSWindow) -> Bool
+    let containsControlPoint: @MainActor (NSPoint, NSWindow) -> Bool
+    let onOutsideClick: @MainActor () -> Void
+}
+
 /// A window root that lays out the page itself (`ChromiumWindowRoot`, host mode). Panels declared in
 /// its sidebar go where it says, whether the sidebar is shown, hidden or floating.
 @MainActor
@@ -18,11 +24,63 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
 
     let content: Content
     var fill = Fill.fitted
+    var windowInput: ChromiumWindowPanelInput?
+
+    /// A window-sized popover owns its clicks at the AppKit boundary. Within
+    /// the card SwiftUI handles its controls and passive space stays inert.
+    private final class PanelHostingView: NSHostingView<AnyView> {
+        private enum OwnedPress { case card, outside }
+
+        var windowInput: ChromiumWindowPanelInput?
+        private var ownedPress: OwnedPress?
+
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            guard let windowInput else { return super.hitTest(point) }
+            guard let window, let superview, !isHiddenOrHasHiddenAncestor else { return nil }
+            let localPoint = convert(point, from: superview)
+            guard bounds.contains(localPoint) else { return nil }
+            let windowPoint = convert(localPoint, to: nil)
+            guard ownedPress == nil,
+                  windowInput.containsCardPoint(windowPoint, window),
+                  windowInput.containsControlPoint(windowPoint, window) else { return self }
+            return super.hitTest(point) ?? self
+        }
+
+        override func mouseDown(with event: NSEvent) {
+            ownedPress = nil
+            if let windowInput, let window = event.window {
+                let point = event.locationInWindow
+                if !windowInput.containsCardPoint(point, window) {
+                    ownedPress = .outside
+                    return
+                }
+                if !windowInput.containsControlPoint(point, window) {
+                    ownedPress = .card
+                    return
+                }
+            }
+            super.mouseDown(with: event)
+        }
+
+        override func mouseDragged(with event: NSEvent) {
+            if ownedPress == nil { super.mouseDragged(with: event) }
+        }
+
+        override func mouseUp(with event: NSEvent) {
+            guard let ownedPress else { super.mouseUp(with: event); return }
+            self.ownedPress = nil
+            if ownedPress == .outside, let windowInput, let window = event.window,
+               !windowInput.containsCardPoint(event.locationInWindow, window) {
+                windowInput.onOutsideClick()
+            }
+        }
+    }
 
     final class Anchor: NSView {
         var content: Content?
         var fill = Fill.fitted
-        private var host: NSHostingView<AnyView>?
+        var windowInput: ChromiumWindowPanelInput?
+        private var host: PanelHostingView?
         private var resizeObserver: NSObjectProtocol?
         private var closeObserver: NSObjectProtocol?
         private weak var closedWindow: NSWindow?
@@ -67,13 +125,13 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
             guard height > 0 else { removePanel(); return }
             let view = fill == .fitted ? AnyView(content.frame(maxHeight: height, alignment: .top)) : AnyView(content)
             if host?.superview !== root { removePanel() }
-            let panel: NSHostingView<AnyView>
+            let panel: PanelHostingView
             if let host {
                 panel = host
                 if heightLimit != height { panel.rootView = view }
             }
             else {
-                panel = NSHostingView(rootView: view)
+                panel = PanelHostingView(rootView: view)
                 panel.safeAreaRegions = []
                 host = panel
                 root.addSubview(panel, positioned: .above, relativeTo: nil)
@@ -82,6 +140,7 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
             switch fill {
             case .window:
                 panel.frame = root.bounds
+                panel.windowInput = windowInput
                 return
             case .page:
                 // The anchor spans the sidebar, on whichever side it sits.
@@ -119,12 +178,12 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
             let height = max(0, area.height - 24)
             let view = fill == .fitted ? AnyView(content.frame(maxHeight: height, alignment: .top)) : AnyView(content)
             if host?.superview !== container { removePanel() }
-            let panel: NSHostingView<AnyView>
+            let panel: PanelHostingView
             if let host {
                 panel = host
                 if heightLimit != height { panel.rootView = view }
             } else {
-                panel = NSHostingView(rootView: view)
+                panel = PanelHostingView(rootView: view)
                 panel.safeAreaRegions = []
                 host = panel
                 container.addSubview(panel, positioned: .above, relativeTo: nil)
@@ -133,6 +192,7 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
             guard fill == .fitted else {
                 panel.frame = area
                 panel.autoresizingMask = [.width, .height]
+                if fill == .window { panel.windowInput = windowInput }
                 return
             }
             let size = panel.fittingSize
@@ -165,9 +225,14 @@ struct ChromiumPagePanel<Content: View>: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> Anchor {
-        let anchor = Anchor(); anchor.content = content; anchor.fill = fill; return anchor
+        let anchor = Anchor()
+        anchor.content = content
+        anchor.fill = fill
+        anchor.windowInput = windowInput
+        return anchor
     }
     func updateNSView(_ anchor: Anchor, context: Context) {
+        anchor.windowInput = windowInput
         anchor.setContent(content)
     }
     static func dismantleNSView(_ anchor: Anchor, coordinator: ()) { anchor.stop() }
