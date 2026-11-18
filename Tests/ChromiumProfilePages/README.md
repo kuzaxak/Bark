@@ -37,3 +37,9 @@ The default run requires native focus to reach the selected renderer by
 keyboard. For diagnosis, `--allow-pointer-focus` can restore focus with a
 guarded click whose trusted receiver is checked. Such a run records the
 fallback and cannot qualify keyboard-only focus.
+
+Use `--mode pointer` to check the physical palette, Peek, Split View, and
+permission controls with the same document and persistence assertions.
+This mode uses keyboard events for draft text, and clicks the location
+denial only after macOS hit-testing confirms the visible control belongs
+to the requesting site.

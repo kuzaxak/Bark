@@ -19,7 +19,8 @@ function report(event, other = {}) {
   fetch('/events', {method: 'POST', keepalive: true, body: JSON.stringify({
     id, event, url: location.href, visible: document.visibilityState, viewport: innerWidth,
     hasFocus: document.hasFocus(), value: box.value, stored: localStorage.getItem(storageKey), focused: document.activeElement.id,
-    draftPoint: center(box), requestPoint: center(request), ...other
+    draftPoint: center(box), requestPoint: center(request),
+    linkPoint: center(document.querySelector('#follow')), ...other
   })});
 }
 box.value = localStorage.getItem(storageKey) || '';
