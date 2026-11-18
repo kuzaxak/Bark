@@ -1,0 +1,70 @@
+diff --git a/chrome/test/data/webui/settings/about_page_test.ts b/chrome/test/data/webui/settings/about_page_test.ts
+--- a/chrome/test/data/webui/settings/about_page_test.ts
++++ b/chrome/test/data/webui/settings/about_page_test.ts
+@@ -20,7 +20,7 @@
+ import type {PromoteUpdaterStatus} from 'chrome://settings/settings.js';
+ // </if>
+
+-// <if expr="not is_chromeos">
++// <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+ import {UpdateStatus} from 'chrome://settings/settings.js';
+ import {webUIListenerCallback} from 'chrome://resources/js/cr.js';
+ import {assertNotEquals} from 'chrome://webui-test/chai_assert.js';
+@@ -28,7 +28,7 @@
+ // </if>
+ // clang-format on
+
+-// <if expr="not is_chromeos">
++// <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+ function fireStatusChanged(
+     status: UpdateStatus, options: {progress?: number, message?: string} = {}) {
+   webUIListenerCallback('update-status-changed', {
+@@ -70,17 +70,13 @@
+     Router.getInstance().navigateTo(routes.ABOUT);
+     document.body.appendChild(page);
+     await microtasksFinished();
+-    // <if expr="is_chromeos">
+-    return;
+-    // </if>
+-
+-    // <if expr="not is_chromeos">
++    // <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+     await aboutBrowserProxy.whenCalled('refreshUpdateStatus');
+     await microtasksFinished();
+     // </if>
+   }
+
+-  // <if expr="not is_chromeos">
++  // <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+   const SPINNER_ICON: string = 'chrome://resources/images/throbber_small.svg';
+
+   async function assertSpinnerVisible(visible: boolean) {
+@@ -322,11 +318,28 @@
+   // </if>
+
+   // </if>
++  // <if expr="not is_macosx or _google_chrome or _is_chrome_for_testing_branded">
+   test('GetHelp', function() {
+     assertTrue(!!page.shadowRoot.querySelector('#help'));
+     page.shadowRoot.querySelector<HTMLElement>('#help')!.click();
+     return aboutBrowserProxy.whenCalled('openHelpPage');
+   });
++
++  // </if>
++
++  // <if expr="is_macosx and not _google_chrome and not _is_chrome_for_testing_branded">
++  test('UsesAppMenuForUpdatesAndHelp', function() {
++    assertEquals(0, aboutBrowserProxy.getCallCount('pageReady'));
++    assertEquals(0, aboutBrowserProxy.getCallCount('refreshUpdateStatus'));
++    assertEquals(null, page.shadowRoot.querySelector('#updateStatusMessage'));
++    assertEquals(null, page.shadowRoot.querySelector('#relaunch'));
++    assertEquals(null, page.shadowRoot.querySelector('#help'));
++
++    assertTrue(!!page.shadowRoot.textContent?.includes(
++        page.i18n('aboutBrowserVersion')));
++    assertTrue(!!page.shadowRoot.querySelector('a[href="chrome://credits/"]'));
++  });
++  // </if>
+
+   test('searchContents', async function() {
+     let result = await page.searchContents('foo');

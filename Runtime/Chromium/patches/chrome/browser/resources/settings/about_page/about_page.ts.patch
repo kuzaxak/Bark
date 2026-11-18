@@ -1,7 +1,16 @@
 diff --git a/chrome/browser/resources/settings/about_page/about_page.ts b/chrome/browser/resources/settings/about_page/about_page.ts
 --- a/chrome/browser/resources/settings/about_page/about_page.ts
 +++ b/chrome/browser/resources/settings/about_page/about_page.ts
-@@ -135,9 +135,12 @@
+@@ -53,6 +53,8 @@
+     productLogo: HTMLImageElement,
+     // <if expr="not is_chromeos">
+     deprecationWarning: HTMLElement,
++    // </if>
++    // <if expr="not is_chromeos and (not is_macosx or _google_chrome or _is_chrome_for_testing_branded)">
+     updateStatusMessage: HTMLElement,
+     // </if>
+   };
+@@ -135,9 +137,12 @@
    override connectedCallback() {
      super.connectedCallback();
 
@@ -16,7 +25,7 @@ diff --git a/chrome/browser/resources/settings/about_page/about_page.ts b/chrome
      this.startListening_();
      // </if>
 
-@@ -180,7 +183,7 @@
+@@ -180,7 +185,7 @@
      return '';
    }
 
