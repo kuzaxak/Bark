@@ -867,37 +867,53 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         else { mount.peekSidebarOwners = nil }
     }
 
+    /// Shows `page` in a Peek card over `source`, one of the window's pages, and returns the card's
+    /// generation, or 0. `dismiss` runs on a click outside the card in a Bark window; Chromium's
+    /// own window handles that click itself.
     func presentPeek(source: ChromiumPageNavigation, page: ChromiumPageNavigation,
-                     header: NSView, actions: NSView, in window: BrowserWindowState) -> UInt64 {
+                     header: NSView, actions: NSView, dismiss: @escaping () -> Void, in window: BrowserWindowState) -> UInt64 {
         guard source !== page, source.profileID == page.profileID,
               let (mount, _) = admission(source, in: window),
-              let (peekMount, _) = admission(page, in: window), mount === peekMount,
-              let shell = mount.shell else { return 0 }
+              let (peekMount, _) = admission(page, in: window), mount === peekMount, mount.shell != nil else { return 0 }
+        let presenter = mount.presenter
+        if presenter.laysOutSplits, !selected(source, in: window) { return 0 }
+        let sourcePane = ChromiumWindowRoot.Pane(client: source.nativeWindowID, tab: source.nativeTabID)
+        let peekPane = ChromiumWindowRoot.Pane(client: page.nativeWindowID, tab: page.nativeTabID)
         mount.generation &+= 1
         let attempt = mount.generation
-        let owners = (source: source.nativeWindowID, peek: page.nativeWindowID)
-        let generation = bridge.tab_present_peek(owners.source, source.nativeTabID, owners.peek, page.nativeTabID,
-            Unmanaged.passUnretained(shell).toOpaque(), Unmanaged.passUnretained(header).toOpaque(),
-            Unmanaged.passUnretained(actions).toOpaque())
-        guard mount.generation == attempt else { return 0 }
-        mount.peekSidebarOwners = owners
-        reconcilePeekSidebar(mount)
+        let generation = presenter.presentPeek(source: sourcePane, page: peekPane, header: header, actions: actions,
+                                               dismiss: dismiss)
+        guard generation != 0 else { return 0 }
+        // A Peek request leaves the renderer's input callback before the card
+        // is mounted. AppKit responder focus alone cannot activate this tab.
+        let activated = !presenter.laysOutSplits || (mount.generation == attempt &&
+            (selected(page, in: window) || page.selectNativePage()) && selected(page, in: window))
+        guard mounts[window.id] === mount, mount.generation == attempt, activated,
+              presenter.isPeekPresented(source: sourcePane, page: peekPane, generation: generation,
+                                        header: header, actions: actions) else {
+            presenter.hidePeek(source: sourcePane, page: peekPane, generation: generation, header: header, actions: actions)
+            return 0
+        }
+        if presenter.sidebarFollowsClient {
+            mount.peekSidebarOwners = (source: source.nativeWindowID, peek: page.nativeWindowID)
+            reconcilePeekSidebar(mount)
+        }
         return generation
     }
 
     func isPeekPresented(sourceWindow: Int32, sourceTab: Int32, peekWindow: Int32, peekTab: Int32,
-                         generation: UInt64, header: NSView, actions: NSView) -> Bool {
-        guard generation != 0 else { return false }
-        return bridge.tab_is_peek_presented(sourceWindow, sourceTab, peekWindow, peekTab, generation,
-            Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque()) == 1
+                         generation: UInt64, header: NSView, actions: NSView, in window: BrowserWindowState) -> Bool {
+        guard generation != 0, let mount = mounts[window.id], mount.model === window else { return false }
+        return mount.presenter.isPeekPresented(source: .init(client: sourceWindow, tab: sourceTab), page: .init(client: peekWindow, tab: peekTab),
+                                               generation: generation, header: header, actions: actions)
     }
 
     func hidePeek(sourceWindow: Int32, sourceTab: Int32, peekWindow: Int32, peekTab: Int32,
                   generation: UInt64, header: NSView, actions: NSView, in window: BrowserWindowState) {
-        guard generation != 0 else { return }
-        _ = bridge.tab_hide_peek(sourceWindow, sourceTab, peekWindow, peekTab, generation,
-            Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque())
-        if let mount = mounts[window.id], mount.model === window { reconcilePeekSidebar(mount) }
+        guard generation != 0, let mount = mounts[window.id], mount.model === window else { return }
+        mount.presenter.hidePeek(source: .init(client: sourceWindow, tab: sourceTab), page: .init(client: peekWindow, tab: peekTab),
+                                 generation: generation, header: header, actions: actions)
+        reconcilePeekSidebar(mount)
     }
 
     func selectPage(_ navigation: any PageNavigation, in window: BrowserWindowState) -> Bool {
@@ -1563,12 +1579,21 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         closePage(navigation, successor: successor as? ChromiumPageNavigation, completion: completion)
     }
 
+    /// A page with a Peek over it in its own client closes the Peek first, showing the page next,
+    /// then itself; a Peek that stays keeps the page too.
     private func closePage(_ navigation: any PageNavigation, successor: ChromiumPageNavigation?,
                            completion: @escaping @MainActor (PageCloseOutcome) -> Void) {
         guard let page = navigation as? ChromiumPageNavigation else { completion(.cancelled); return }
         if page.isClosed { completion(page.nativeCloseOutcome ?? .closed); return }
         let id = ObjectIdentifier(page)
         guard pages[id]?.page === page else { completion(.cancelled); return }
+        if let peek = peek(over: page) {
+            closePage(peek, successor: page) { [weak self, weak page] outcome in
+                guard outcome != .cancelled, let self, let page else { completion(.cancelled); return }
+                self.closePage(page, successor: successor, completion: completion)
+            }
+            return
+        }
         if closing[id] != nil { closing[id]?.append(completion); return }
         closing[id] = [completion]
         let accepted = page.requestNativeClose(showing: successor)
@@ -1576,6 +1601,14 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         if !accepted, let callbacks = closing.removeValue(forKey: id) {
             callbacks.forEach { $0(.cancelled) }
         }
+    }
+
+    /// The bound Peek over `page` in `page`'s own client, as in a Bark window.
+    private func peek(over page: ChromiumPageNavigation) -> ChromiumPageNavigation? {
+        guard let tab = bridge.readSnapshot()?.tabs.first(where: {
+            $0.window == page.nativeWindowID && $0.flags & BARC_DISCOVERY_TAB_PEEK.rawValue != 0 && $0.peek_source_tab == page.nativeTabID
+        })?.tab else { return nil }
+        return pages.values.first { $0.page.nativeWindowID == page.nativeWindowID && $0.page.nativeTabID == tab && !$0.page.isClosed }?.page
     }
 
     private func supports(_ profile: Profile, in window: BrowserWindowState) -> Bool {

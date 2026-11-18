@@ -50,6 +50,11 @@ private enum Native {
     /// Clients whose window is Bark's own (`--bark-window=host`), and their tabs' page views.
     static var hostWindows: Set<Int32> = []
     static var pageViews: [Int32: NSView] = [:]
+    /// Calls to the old window's Peek card.
+    static var peekCalls = 0
+    /// Each Peek tab's source tab, in its own client.
+    static var peekSources: [Int32: Int32] = [:]
+    static var closesSelecting: [(tab: Int32, successor: Int32)] = []
 
     static func row(_ window: Int32) -> BarcDiscoveryWindow? {
         let group = groups[window] ?? 1
@@ -118,24 +123,39 @@ private enum Native {
         bridge.window_set_native_header = { _, _, _, _, _ in 0 }
         bridge.window_host_observe = { window, _, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? UInt64(window) : 0 } }
         bridge.window_host_unobserve = { _ in }
+        bridge.tab_present_peek = { _, _, _, _, _, _, _ in MainActor.assumeIsolated { Native.peekCalls += 1; return 0 } }
+        bridge.tab_is_peek_presented = { _, _, _, _, _, _, _ in MainActor.assumeIsolated { Native.peekCalls += 1; return 0 } }
+        bridge.tab_hide_peek = { _, _, _, _, _, _, _ in MainActor.assumeIsolated { Native.peekCalls += 1; return 0 } }
         bridge.window_set_root_view = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
         bridge.window_set_chrome = { window, _ in MainActor.assumeIsolated { Native.hostWindows.contains(window) ? 1 : 0 } }
         bridge.tab_native_view = { window, tab in MainActor.assumeIsolated {
             guard Native.hostWindows.contains(window), Native.tabs[window]?.contains(tab) == true else { return nil }
             return Native.pageViews[tab].map { Unmanaged.passUnretained($0).toOpaque() }
         } }
-        bridge.discovery_snapshot = { windows, capacity, _, _, output in MainActor.assumeIsolated {
+        bridge.discovery_snapshot = { windows, capacity, tabRows, tabCapacity, output in MainActor.assumeIsolated {
             guard let output, output.pointee.size >= MemoryLayout<BarcDiscoverySnapshot>.size,
-                  capacity == 0 || windows![0].size >= MemoryLayout<BarcDiscoveryWindow>.size else {
+                  capacity == 0 || windows![0].size >= MemoryLayout<BarcDiscoveryWindow>.size,
+                  tabCapacity == 0 || tabRows![0].size >= MemoryLayout<BarcDiscoveryTab>.size else {
                 return Int32(BARC_DISCOVERY_READ_INVALID_ARGUMENT.rawValue)
             }
             guard Native.catalogAvailable else { return 2 }
             let rows = Native.profiles.keys.sorted().compactMap { Native.row($0) }
-            output.pointee.window_count = rows.count; output.pointee.tab_count = 0
+            let tabs = rows.flatMap { row in (Native.tabs[row.window] ?? []).map { tab in
+                var entry = BarcDiscoveryTab()
+                entry.size = MemoryLayout<BarcDiscoveryTab>.size; entry.window = row.window; entry.tab = tab
+                if let source = Native.peekSources[tab] { entry.flags = BARC_DISCOVERY_TAB_PEEK.rawValue; entry.peek_source_tab = source }
+                return entry
+            } }
+            output.pointee.window_count = rows.count; output.pointee.tab_count = tabs.count
             output.pointee.revision = 1
-            guard capacity >= rows.count else { return 1 }
+            guard capacity >= rows.count, tabCapacity >= tabs.count else { return 1 }
             for (index, row) in rows.enumerated() { windows?[index] = row }
+            for (index, tab) in tabs.enumerated() { tabRows?[index] = tab }
             return 0
+        } }
+        bridge.tab_close_selecting = { observation, successor in MainActor.assumeIsolated {
+            guard let entry = Native.observations[observation] else { return 0 }
+            Native.closesSelecting.append((entry.3, successor)); return 1
         } }
         bridge.window_discovery_state = { window, output in MainActor.assumeIsolated {
             guard let output, output.pointee.size >= MemoryLayout<BarcDiscoveryWindow>.size,
@@ -280,7 +300,32 @@ private enum Native {
     precondition(Native.windowCloses == [75], "Only unselected empty duplicates close")
     precondition(Native.row(70) != nil && Native.row(77) != nil)
 
-    for client: Int32 in [70, 71, 72, 75, 76, 77] { Native.profiles[client] = nil; Native.tabs[client] = nil }
+    // A tab with a Peek over it in its own client closes the Peek first, its source shown next, then itself.
+    for cancelled in [false, true] {
+        let client: Int32 = cancelled ? 79 : 78
+        let (pair, _, pairPages) = mounted(client: client, tab: client * 10, pages: 2, group: UInt64(client))
+        let source = pairPages[0], peek = pairPages[1]
+        Native.peekSources = [peek.nativeTabID: source.nativeTabID]
+        Native.closesSelecting = []; Native.nativeCloses = []
+        var outcomes: [PageCloseOutcome] = []
+        pair.closePage(source) { outcomes.append($0) }
+        precondition(Native.closesSelecting.map(\.tab) == [peek.nativeTabID] && Native.closesSelecting.first?.successor == source.nativeTabID
+                     && !Native.nativeCloses.contains { $0.1 == source.nativeTabID } && outcomes.isEmpty,
+                     "closing a tab with a Peek closes the Peek first, showing its source next: \(Native.closesSelecting)")
+        if cancelled {
+            close(peek, client: client, event: 8); drain()
+            precondition(outcomes == [.cancelled] && !Native.nativeCloses.contains { $0.1 == source.nativeTabID },
+                         "a cancelled Peek close keeps both")
+        } else {
+            close(peek, client: client); drain()
+            precondition(Native.nativeCloses.contains { $0.1 == source.nativeTabID } && outcomes.isEmpty, "then the tab closes")
+            close(source, client: client); drain()
+            precondition(outcomes == [.closed])
+        }
+        Native.peekSources = [:]
+    }
+
+    for client: Int32 in [70, 71, 72, 75, 76, 77, 78, 79] { Native.profiles[client] = nil; Native.tabs[client] = nil }
     Native.appLifetime = []
     Native.selected = 10
     print("Chromium last-page checks PASS")
@@ -301,12 +346,6 @@ private enum Native {
     let window = BrowserWindowState(), shell: NSView = MoveCounter()
     precondition(host.registerWindow(window, nativeOwner: 80, shell: shell, initialBlankTab: 800))
     let root = shell.superview?.superview as? ChromiumWindowRoot
-    _ = NSApplication.shared
-    let frame = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 800),
-                         styleMask: [.titled], backing: .buffered, defer: false)
-    frame.isReleasedWhenClosed = false
-    frame.contentView = root
-    defer { frame.contentView = nil }
     precondition(root?.holdsSidebar(shell) == true, "A host window's root view holds the sidebar")
     var page: ChromiumPageNavigation!
     _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
@@ -332,6 +371,10 @@ private enum Native {
     precondition(host.setPageHeader(nil, replacing: bar, height: 0, in: window) && bar.superview == nil)
     precondition(Native.attachmentCalls == attachments, "Host mode never attaches the sidebar through Chromium")
     let probe = shell as! MoveCounter
+    let frame = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 600), styleMask: [.titled], backing: .buffered, defer: true)
+    frame.isReleasedWhenClosed = false
+    frame.contentView = root
+    defer { frame.contentView = nil }
     let moves = probe.moves
     precondition(moves == (1, 1), "the sidebar went into the root once, and the root into its window once: \(moves)")
 
@@ -360,6 +403,8 @@ private enum Native {
     precondition(probe.moves == moves && root!.holdsSidebar(shell), "the sidebar stays through the rollback: \(probe.moves)")
     Native.pageViews[810] = page810
 
+    try hostWindowPeek(host: host, window: window, root: root!, source: second, page: page, sources: (page801, page800))
+
     let third = UUID()
     Native.hostWindows.insert(82); Native.groups[82] = 80
     precondition(host.emptySpaceClient(in: window, profile: third, open: true) == nil && Native.opens == opens + 2
@@ -382,6 +427,43 @@ private enum Native {
     Native.hostWindows = []; Native.pageViews = [:]
     Native.profiles[80] = nil; Native.tabs[80] = nil; Native.appLifetime = []; Native.selected = 10
     print("Chromium host window checks PASS")
+}
+
+/// A Peek in a Bark window is laid out by the root: no call reaches the old window's card, the
+/// generation names the pair and its two views, and hiding then showing again keeps the page.
+@MainActor private func hostWindowPeek(host: ChromiumNativePageHost, window: BrowserWindowState, root: ChromiumWindowRoot,
+                                       source: ChromiumPageNavigation, page: ChromiumPageNavigation,
+                                       sources views: (source: NSView, page: NSView)) throws {
+    precondition(host.selectPage(source, in: window) && views.source.isDescendant(of: root))
+    let header = NSView(), actions = NSView(), calls = Native.peekCalls
+    var dismissed = 0
+    let generation = host.presentPeek(source: source, page: page, header: header, actions: actions,
+                                      dismiss: { dismissed += 1 }, in: window)
+    func shown(_ generation: UInt64, header: NSView = header, actions: NSView = actions) -> Bool {
+        host.isPeekPresented(sourceWindow: source.nativeWindowID, sourceTab: source.nativeTabID, peekWindow: page.nativeWindowID,
+                             peekTab: page.nativeTabID, generation: generation, header: header, actions: actions, in: window)
+    }
+    precondition(generation != 0 && shown(generation) && views.page.isDescendant(of: root) && views.source.isDescendant(of: root),
+                 "the root shows the Peek over its source")
+    precondition(Native.activeTabs[page.nativeWindowID] == page.nativeTabID,
+                 "the Peek owns native commands even when there is no AppKit input event")
+    precondition(!shown(generation &+ 1) && !shown(generation, header: NSView()) && !shown(generation, actions: NSView()),
+                 "only that generation with those views is shown")
+    precondition(!host.isPeekPresented(sourceWindow: source.nativeWindowID, sourceTab: page.nativeTabID, peekWindow: page.nativeWindowID,
+                                       peekTab: source.nativeTabID, generation: generation, header: header, actions: actions, in: window),
+                 "and only that pair")
+    host.hidePeek(sourceWindow: source.nativeWindowID, sourceTab: source.nativeTabID, peekWindow: page.nativeWindowID, peekTab: page.nativeTabID,
+                  generation: generation, header: header, actions: actions, in: window)
+    precondition(!shown(generation) && views.page.superview == nil && views.source.isDescendant(of: root), "hiding takes the card down")
+    precondition(host.selectPage(source, in: window))
+    let again = host.presentPeek(source: source, page: page, header: header, actions: actions, dismiss: { dismissed += 1 }, in: window)
+    precondition(again != 0 && again != generation && shown(again) && views.page.isDescendant(of: root), "shown again with the same page")
+    host.hidePeek(sourceWindow: source.nativeWindowID, sourceTab: source.nativeTabID, peekWindow: page.nativeWindowID, peekTab: page.nativeTabID,
+                  generation: generation, header: header, actions: actions, in: window)
+    precondition(shown(again), "a stale generation hides nothing")
+    host.hidePeek(sourceWindow: source.nativeWindowID, sourceTab: source.nativeTabID, peekWindow: page.nativeWindowID, peekTab: page.nativeTabID,
+                  generation: again, header: header, actions: actions, in: window)
+    precondition(!shown(again) && Native.peekCalls == calls && dismissed == 0, "no call reached the old window's card")
 }
 
 private final class FocusableHostPage: NSView {
@@ -498,6 +580,7 @@ private final class MoveCounter: NSView {
     host.showModelSplit([ids[0], ids[1], ids[2], nil], vertical: true, dividers: [0.25, 0.5, 0.75], focused: ids[2],
                         page: { navigations[$0] }, in: window)
     precondition(root.split?.panes.last == .some(nil) && root.split?.panes.count == 4, "Add Split View's empty pane follows the model")
+    precondition(host.splitResizeRoot(in: frame) == nil, "No resize command is offered while filling Add Split View")
     host.showModelSplit(three.itemIDs, vertical: true, dividers: three.dividers.map { CGFloat($0) }, focused: ids[2],
                         page: { navigations[$0] }, in: window)
     precondition(root.split?.panes.count == 3 && !root.split!.panes.contains(nil), "and goes with it")

@@ -123,25 +123,49 @@ final class ChromiumCreatedPageAdmission {
 
     /// Promotion returns the same live document to its exact source owner; a
     /// different profile or another product window is never chosen as fallback.
-    func promotePeek(_ session: PageSession, source: PageSession, in window: BrowserWindowState) -> Bool {
+    /// A Peek already in its source's client, as in a Bark window, stays there.
+    func promotePeek(_ session: PageSession, source: PageSession, in window: BrowserWindowState,
+                     intoSplit split: SplitRecord? = nil) -> Bool {
         guard registry.windows[window.id] === window, window.selectedItemID == source.itemID,
               session.isDetached, let profile = session.profile,
               tabs.isNativePageOwner(source, in: window),
               let origin = source.navigation as? ChromiumPageNavigation,
               let page = session.navigation as? ChromiumPageNavigation,
               origin.profileID == profile.id, page.profileID == profile.id,
+              split == nil || (page.nativeWindowID == origin.nativeWindowID && host.laysOutSplits(in: window)
+                && split?.contains(source.itemID) == true && split?.contains(session.itemID) == true),
               let space = window.isIncognito ? window.spaceID : tabs.spaceID(of: source.itemID) else { return false }
-        return host.promoteDetachedPage(page, profile: profile, to: origin.nativeWindowID, in: window,
-                                       peekSource: origin) { [weak self, weak session, weak source, weak window] in
+        let commit = { [weak self, weak session, weak source, weak window] () -> Bool in
             guard let self, let session, let source, let window,
                   self.registry.windows[window.id] === window,
                   self.tabs.isNativePageOwner(source, in: window),
-                  self.host.acceptNativeSelection(page, in: window),
+                  split == nil ? self.host.acceptNativeSelection(page, in: window)
+                               : self.host.isNativeSelection(page, in: window),
                   let id = self.tabs.adoptDetachedNativePage(session, through: self.host, in: window,
                       spaceID: space, from: source.itemID, select: false),
                   self.tabs.session(for: id) === session, session.navigation === page else { return false }
-            return self.tabs.reflectNativeSelection(id, in: window)
+            return split != nil || self.tabs.reflectNativeSelection(id, in: window)
         }
+        if page.nativeWindowID == origin.nativeWindowID {
+            guard ownsPeek(session, source: source, in: window), host.admitMovedPeek(page, commit: commit) else { return false }
+            if let split {
+                // Keep the source layout mounted until the engine clears the
+                // Peek role and the split can place the existing card page.
+                let stillOwned = { [weak self, weak window, weak session] in
+                    guard let self, let window, let session else { return false }
+                    return self.tabs.session(for: session.itemID) === session && session.navigation === page
+                }
+                tabs.presentNativeSplit(split, activeItemID: session.itemID, in: window, liveAdmission: stillOwned) {
+                    [weak self, weak window] admitted in
+                    guard !admitted, let self, let window, window.selectedItemID == source.itemID,
+                          stillOwned(), self.host.isNativeSelection(page, in: window) else { return }
+                    _ = self.tabs.reflectNativeSelection(session.itemID, in: window)
+                }
+            }
+            return true
+        }
+        return host.promoteDetachedPage(page, profile: profile, to: origin.nativeWindowID, in: window,
+                                       peekSource: origin, commit: commit)
     }
 
     /// Reuse the model's regular-profile preference for external links. A private

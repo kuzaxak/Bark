@@ -9,6 +9,7 @@
 import AppKit
 import Foundation
 import NookDesign
+import NookTabsCore
 import NookWeb
 import SwiftUI
 
@@ -134,7 +135,17 @@ final class PeekManager {
     }
 
     func moveToSplitView(in window: BrowserWindowState) {
-        guard let browserManager, let tab = window.selectedItemID, let itemID = adopt(in: window) else { return }
+        guard let browserManager, canEnterSplitView(in: window), let tab = window.selectedItemID else { return }
+        if let entry = slots.page(tab: tab, window: window.id), entry.native,
+           (browserManager.tabs.nativePageHost as? ChromiumNativePageHost)?.laysOutSplits(in: window) == true {
+            let split = browserManager.splitManager.shownSplit(in: window)
+            let record = split.map { $0.inserting(entry.page.itemID, beside: tab, after: true) }
+                ?? SplitRecord([tab, entry.page.itemID])
+            guard let record else { return }
+            adopt(in: window, intoSplit: record)
+            return
+        }
+        guard let itemID = adopt(in: window) else { return }
         // The adopted page is selected; pair it with the tab the Peek was over.
         if tab != itemID {
             browserManager.tabs.select(tab, in: window)
@@ -186,12 +197,17 @@ final class PeekManager {
         guard let host = browserManager?.tabs.nativePageHost as? ChromiumNativePageHost else {
             completion?(false); return
         }
-        host.closePage(navigation) { [weak self] outcome in
+        let closed: @MainActor (PageCloseOutcome) -> Void = { [weak self] outcome in
             guard let self else { return }
             // The native page already ended. PageSession receives its terminal
             // event after this callback; do not tear down or close it again.
             if outcome != .cancelled { self.remove(entry) }
             completion?(outcome == .closed)
+        }
+        if let shownNext = source.navigation as? ChromiumPageNavigation {
+            host.closePage(navigation, showing: shownNext, completion: closed)
+        } else {
+            host.closePage(navigation, completion: closed)
         }
     }
 
@@ -202,13 +218,13 @@ final class PeekManager {
 
     /// Moves the current tab's Peek into the tab tree, nested under that tab.
     @discardableResult
-    private func adopt(in window: BrowserWindowState) -> UUID? {
+    private func adopt(in window: BrowserWindowState, intoSplit split: SplitRecord? = nil) -> UUID? {
         guard let browserManager, let tab = window.selectedItemID,
               let entry = slots.page(tab: tab, window: window.id) else { return nil }
         let page = entry.page
         if entry.native {
             guard let source = entry.source, isNativePresented(entry),
-                  nativeAdmission?.promotePeek(page, source: source, in: window) == true else { return nil }
+                  nativeAdmission?.promotePeek(page, source: source, in: window, intoSplit: split) == true else { return nil }
             remove(entry)
             return page.itemID
         }
@@ -287,7 +303,10 @@ final class PeekManager {
               let page = entry.page.navigation as? ChromiumPageNavigation,
               let host = browserManager?.tabs.nativePageHost as? ChromiumNativePageHost,
               let header = entry.header, let actions = entry.actions, !isNativePresented(entry) else { return }
-        let generation = host.presentPeek(source: source, page: page, header: header, actions: actions, in: window)
+        let generation = host.presentPeek(source: source, page: page, header: header, actions: actions, dismiss: { [weak self, weak entry] in
+            guard let self, let entry, self.isCurrent(entry) else { return }
+            self.dismiss(entry)
+        }, in: window)
         if generation != 0 {
             entry.presentation = (source.nativeWindowID, source.nativeTabID, page.nativeWindowID, page.nativeTabID, generation)
         }
@@ -298,10 +317,10 @@ final class PeekManager {
     }
 
     private func isNativePresented(_ entry: Entry) -> Bool {
-        guard let host = browserManager?.tabs.nativePageHost as? ChromiumNativePageHost,
+        guard let host = browserManager?.tabs.nativePageHost as? ChromiumNativePageHost, let window = entry.window,
               let p = entry.presentation, let header = entry.header, let actions = entry.actions else { return false }
         return host.isPeekPresented(sourceWindow: p.sourceWindow, sourceTab: p.sourceTab,
-            peekWindow: p.peekWindow, peekTab: p.peekTab, generation: p.generation, header: header, actions: actions)
+            peekWindow: p.peekWindow, peekTab: p.peekTab, generation: p.generation, header: header, actions: actions, in: window)
     }
 
     private func hideNative(_ entry: Entry) {

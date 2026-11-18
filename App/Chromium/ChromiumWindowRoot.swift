@@ -19,6 +19,8 @@ final class ChromiumWindowRoot: NSView {
         static let revealMargin: CGFloat = 5
         /// Between two panes of a split, where the window's backdrop shows.
         static let splitGap: CGFloat = 10
+        /// The Peek card's page, rounded at its bottom corners.
+        static let peekCornerRadius: CGFloat = 16
         static let revealCornerRadius: CGFloat = 10
     }
 
@@ -143,6 +145,12 @@ final class ChromiumWindowRoot: NSView {
     private weak var header: NSView?
     private var headerHeight: CGFloat = 0
     private var crashedTabs: Set<Int32> = []
+    private var peekCard: PeekCard?
+    private var peekGeneration: UInt64 = 0
+    private let peekLayer = PeekLayer()
+    private let peekWash = PeekWash()
+    /// Every page slot: the panes' and the Peek's.
+    private var allSlots: [Slot] { slots + (peekCard.map { [$0.slot] } ?? []) }
     private var fullscreenObservers: [NSObjectProtocol] = []
     private(set) var pageFullscreen = false
 
@@ -276,6 +284,9 @@ final class ChromiumWindowRoot: NSView {
         }
         shownTab = split.focused
         client = focused.client
+        // If the card was promoted to a pane, its view is already in the
+        // new slot. Removing the card now keeps the view in this window.
+        if let card = peekCard, card.peek.source != focused { removePeek() }
         layoutPageArea()
         if focusChanged { focusPage() }
         return true
@@ -290,14 +301,14 @@ final class ChromiumWindowRoot: NSView {
     }
 
     func showsCrashedPage(tab: Int32) -> Bool {
-        slots.contains { $0.pane?.tab == tab && !$0.crashed.isHidden }
+        allSlots.contains { $0.pane?.tab == tab && !$0.crashed.isHidden }
     }
 
     /// The window shows no page of its own: an empty space, or a page another window holds.
     var pageHidden = false {
         didSet {
             guard pageHidden != oldValue else { return }
-            slots.forEach { $0.heldView?.isHidden = pageHidden }
+            allSlots.forEach { $0.heldView?.isHidden = pageHidden }
             if !pageHidden { focusPage() }
         }
     }
@@ -321,6 +332,8 @@ final class ChromiumWindowRoot: NSView {
         addSubview(pageFrame)
         pageFrame.addSubview(dividerLayer)
         pageFrame.addSubview(pagePanels)
+        peekWash.onClick = { [weak self] in self?.peekCard?.dismiss() }
+        peekLayer.addSubview(peekWash)
         libraryDismissal.isHidden = true
         addSubview(libraryDismissal)
         sidebarColumn.wantsLayer = true
@@ -386,6 +399,7 @@ final class ChromiumWindowRoot: NSView {
             self.split?.focused = tab
             shownTab = tab
             client = owner
+            if let card = peekCard, card.peek.source != pane { removePeek() }
             if pageFullscreen { layoutPageArea() }
             if changed { focusPage() }
             return true
@@ -417,6 +431,7 @@ final class ChromiumWindowRoot: NSView {
             pageFrame.addSubview(slot.container, positioned: .below, relativeTo: dividerLayer)
         }
         slots = next
+        if let card = peekCard, !next.contains(where: { $0.pane == card.peek.source }) { removePeek() }
     }
 
     private func place(_ view: NSView, in slot: Slot) {
@@ -460,16 +475,27 @@ final class ChromiumWindowRoot: NSView {
             applyLights()
         case .pageCrashed(let tab, let view):
             crashedTabs.insert(tab)
-            for slot in slots where slot.pane?.tab == tab && slot.holds(view) { slot.crashed.isHidden = false }
+            for slot in allSlots where slot.pane?.tab == tab && slot.holds(view) { slot.crashed.isHidden = false }
         case .pageRestored(let tab):
             crashedTabs.remove(tab)
-            for slot in slots where slot.pane?.tab == tab { slot.crashed.isHidden = true }
+            for slot in allSlots where slot.pane?.tab == tab { slot.crashed.isHidden = true }
         }
     }
 
     /// A retired page leaves the window; a tab that replaced its contents shows its new page. A
     /// pane whose page closed stays empty until the split changes.
     private func pageRetired(_ view: UnsafeMutableRawPointer?) {
+        if let card = peekCard, let view, card.slot.view.map({ Unmanaged.passUnretained($0).toOpaque() }) == view {
+            if card.slot.heldView != nil { card.slot.view?.removeFromSuperview() }
+            card.slot.view = nil
+            card.slot.crashed.isHidden = true
+            guard let next = bridge.tab_native_view(card.peek.page.client, card.peek.page.tab), next != view else {
+                hidePeek(generation: card.generation)
+                return
+            }
+            place(Unmanaged<NSView>.fromOpaque(next).takeUnretainedValue(), in: card.slot)
+            return
+        }
         guard let view, let slot = slots.first(where: { $0.view.map { Unmanaged.passUnretained($0).toOpaque() } == view }),
               let pane = slot.pane else { return }
         if slot.heldView != nil { slot.view?.removeFromSuperview() }
@@ -483,9 +509,11 @@ final class ChromiumWindowRoot: NSView {
     }
 
     /// Keys go to the page shown, unless the person is typing in a field outside it.
-    private func focusPage() {
-        guard let window, let page = heldPage, !pageHidden else { return }
+    private func focusPage(preferred: NSView? = nil) {
+        guard let window, let page = peekCard?.slot.heldView ?? heldPage, !pageHidden else { return }
         if let editor = window.firstResponder as? NSText, !editor.isDescendant(of: pageFrame) { return }
+        if let preferred, preferred.window === window, preferred.isDescendant(of: page),
+           window.makeFirstResponder(preferred) { return }
         guard let target = page.subviews.first(where: \.acceptsFirstResponder) ?? (page.acceptsFirstResponder ? page : nil)
         else { return }
         window.makeFirstResponder(target)
@@ -519,15 +547,28 @@ final class ChromiumWindowRoot: NSView {
         let panes = split.map { split in
             SplitDrop.paneFrames(in: area, count: split.panes.count, vertical: split.vertical, dividers: split.dividers, gap: Arc.splitGap)
         }
+        var washFrame = area
         for (index, slot) in slots.enumerated() {
             let paneFrame = pageFullscreen ? nil : panes.flatMap { $0.indices.contains(index) ? $0[index] : nil }
+            let frame = paneFrame ?? area
             slot.container.isHidden = pageFullscreen && panes != nil && slot.pane?.tab != shownTab
-            slot.container.frame = paneFrame ?? area
+            // Update the frame and logical viewport together before sizing the renderer.
+            slot.container.autoresizesSubviews = false
+            if let card = peekCard, slot.pane == card.peek.source, paneFrame != nil {
+                washFrame = frame
+                slot.container.frame = frame.insetBy(dx: min(9, frame.width / 8), dy: min(10, frame.height / 8))
+            } else {
+                slot.container.frame = frame
+            }
+            // Keep the document viewport stable while its pane is inset behind a Peek.
+            slot.container.bounds.size = frame.size
+            slot.container.autoresizesSubviews = true
             slot.container.autoresizingMask = panes == nil ? [.width, .height] : []
             slot.container.layer?.cornerRadius = paneFrame == nil ? 0 : Arc.pageCornerRadius
             slot.fillContainer()
         }
         layoutDividers(panes.flatMap { pageFullscreen || split?.panes.contains(nil) == true ? nil : $0 } ?? [], in: area)
+        layoutPeek(in: area, washFrame: washFrame)
     }
 
     var canResizeSplit: Bool {
@@ -657,4 +698,147 @@ final class ChromiumWindowRoot: NSView {
 
 extension ChromiumWindowRoot: ChromiumPanelHost {
     func panelContainer(for fill: ChromiumPanelFill) -> NSView { fill == .window ? self : pagePanels }
+
+    // MARK: - Peek
+
+    /// A Peek: `page` shown in a card over the page area while `source`, a page the window shows,
+    /// stays placed under the card's wash.
+    struct Peek: Equatable {
+        var source: Pane
+        var page: Pane
+    }
+
+    /// The card stays centred across all panes.
+    struct PeekLayout: Equatable {
+        var header: CGRect
+        var page: CGRect
+        var actions: CGRect
+    }
+
+    nonisolated static func peekLayout(in size: CGSize) -> PeekLayout {
+        let width = max(0, min((size.width * 0.82).rounded(.down), size.width - 88))
+        let x = ((size.width - width) / 2).rounded(.down)
+        let height = max(0, size.height - 16)
+        return PeekLayout(header: CGRect(x: x, y: 8, width: width, height: min(32, height)),
+                          page: CGRect(x: x, y: 40, width: width, height: max(0, height - 32)),
+                          actions: CGRect(x: x + width + 8, y: 14, width: 28, height: max(0, min(96, height - 6))))
+    }
+
+    /// Shows `peek`'s page in the card with `header` above it and `actions` beside it; the page then
+    /// has the keys. Returns the card's generation, or 0 when the window does not show the source or
+    /// has no page view for the Peek. A click on the wash calls `dismiss`.
+    @discardableResult
+    func showPeek(_ peek: Peek, header: NSView, actions: NSView, dismiss: @escaping () -> Void) -> UInt64 {
+        guard peek.page != peek.source, let source = slots.first(where: { $0.pane == peek.source })?.heldView,
+              let view = pageView(peek.page) else { return 0 }
+        removePeek()
+        peekGeneration = peekGeneration == .max ? 1 : peekGeneration + 1
+        let card = PeekCard(peek: peek, generation: peekGeneration, slot: Slot(pane: peek.page, bridge: bridge),
+                            header: header, actions: actions, dismiss: dismiss)
+        if let responder = window?.firstResponder as? NSView, responder.isDescendant(of: source) {
+            card.sourceResponder = responder
+        }
+        card.slot.container.layer?.maskedCorners = [.layerMinXMinYCorner, .layerMaxXMinYCorner]
+        peekLayer.addSubview(card.slot.container)
+        peekLayer.addSubview(header)
+        peekLayer.addSubview(actions)
+        peekCard = card
+        place(view, in: card.slot)
+        pageFrame.addSubview(peekLayer, positioned: .above, relativeTo: dividerLayer)
+        layoutPageArea()
+        focusPage()
+        return card.generation
+    }
+
+    /// Takes the card of `generation` down, its page leaving the window; the keys go back to the page
+    /// shown under it.
+    @discardableResult
+    func hidePeek(generation: UInt64) -> Bool {
+        guard let card = peekCard, card.generation == generation else { return false }
+        removePeek()
+        focusPage(preferred: card.sourceResponder)
+        return true
+    }
+
+    /// An Esc the page left alone closes the Peek card; with no card it goes on to the window.
+    override func cancelOperation(_ sender: Any?) {
+        guard let card = peekCard else {
+            _ = nextResponder?.tryToPerform(#selector(cancelOperation(_:)), with: sender)
+            return
+        }
+        card.dismiss()
+    }
+
+    func showsPeek(_ peek: Peek, generation: UInt64, header: NSView, actions: NSView) -> Bool {
+        guard let card = peekCard, card.peek == peek, card.generation == generation,
+              card.header === header, card.actions === actions else { return false }
+        return header.superview === peekLayer && actions.superview === peekLayer && card.slot.heldView != nil
+            && peekLayer.superview === pageFrame
+    }
+
+    private func removePeek() {
+        guard let card = peekCard else { return }
+        peekCard = nil
+        if card.slot.heldView != nil { card.slot.view?.removeFromSuperview() }
+        card.slot.container.removeFromSuperview()
+        for view in [card.header, card.actions] where view?.superview === peekLayer { view?.removeFromSuperview() }
+        peekLayer.removeFromSuperview()
+        layoutPageArea()
+    }
+
+    private func layoutPeek(in area: CGRect, washFrame: CGRect) {
+        guard let card = peekCard else { return }
+        peekLayer.frame = area
+        peekWash.frame = peekLayer.convert(washFrame, from: pageFrame)
+        let layout = Self.peekLayout(in: area.size)
+        for view in [peekWash, card.header, card.actions] { view?.isHidden = pageFullscreen }
+        card.header?.frame = layout.header
+        card.actions?.frame = layout.actions
+        card.slot.container.frame = pageFullscreen ? peekLayer.bounds : layout.page
+        card.slot.container.layer?.cornerRadius = pageFullscreen ? 0 : Arc.peekCornerRadius
+        card.slot.fillContainer()
+    }
+
+    private final class PeekCard {
+        let peek: Peek
+        let generation: UInt64
+        let slot: Slot
+        weak var sourceResponder: NSView?
+        weak var header: NSView?
+        weak var actions: NSView?
+        let dismiss: () -> Void
+
+        init(peek: Peek, generation: UInt64, slot: Slot, header: NSView, actions: NSView, dismiss: @escaping () -> Void) {
+            self.peek = peek; self.generation = generation; self.slot = slot
+            self.header = header; self.actions = actions; self.dismiss = dismiss
+        }
+    }
+
+    /// Uncovered siblings keep receiving pointer and scroll events.
+    private final class PeekLayer: NSView {
+        override var isFlipped: Bool { true }
+        override func hitTest(_ point: NSPoint) -> NSView? {
+            let hit = super.hitTest(point)
+            return hit === self ? nil : hit
+        }
+    }
+
+    /// A click on the dimmed source dismisses the card.
+    private final class PeekWash: NSView {
+        var onClick: (() -> Void)?
+
+        override init(frame: NSRect) {
+            super.init(frame: frame)
+            wantsLayer = true
+            layer?.backgroundColor = NSColor(white: 128 / 255, alpha: 115 / 255).cgColor
+        }
+
+        @available(*, unavailable)
+        required init?(coder: NSCoder) { nil }
+
+        override func mouseDown(with event: NSEvent) { onClick?() }
+        override func rightMouseDown(with event: NSEvent) {}
+        override func otherMouseDown(with event: NSEvent) {}
+        override func scrollWheel(with event: NSEvent) {}
+    }
 }

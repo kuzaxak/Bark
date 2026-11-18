@@ -29,6 +29,16 @@ protocol ChromiumWindowPresenter: AnyObject {
     func showSplit(_ split: ChromiumWindowRoot.Split?) -> Bool
     /// The split the window shows; nil for one page, and where the app does not lay out the page.
     var shownSplit: ChromiumWindowRoot.Split? { get }
+    /// Whether the sidebar moves to the client whose page the window shows.
+    var sidebarFollowsClient: Bool { get }
+    /// Shows `page` in a Peek card over `source`, with `header` above it and `actions` beside it.
+    /// Returns the card's generation, or 0. `dismiss` runs on a click outside the card.
+    func presentPeek(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, header: NSView, actions: NSView,
+                     dismiss: @escaping () -> Void) -> UInt64
+    func isPeekPresented(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, generation: UInt64,
+                         header: NSView, actions: NSView) -> Bool
+    func hidePeek(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, generation: UInt64,
+                  header: NSView, actions: NSView)
 }
 
 enum ChromiumWindowPresenters {
@@ -87,6 +97,27 @@ final class ChromiumLegacyPresenter: ChromiumWindowPresenter {
     func showSplit(_ split: ChromiumWindowRoot.Split?) -> Bool { false }
 
     var shownSplit: ChromiumWindowRoot.Split? { nil }
+
+    var sidebarFollowsClient: Bool { true }
+
+    func presentPeek(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, header: NSView, actions: NSView,
+                     dismiss: @escaping () -> Void) -> UInt64 {
+        guard let pointer else { return 0 }
+        return bridge.tab_present_peek(source.client, source.tab, page.client, page.tab, pointer,
+                                       Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque())
+    }
+
+    func isPeekPresented(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, generation: UInt64,
+                         header: NSView, actions: NSView) -> Bool {
+        bridge.tab_is_peek_presented(source.client, source.tab, page.client, page.tab, generation,
+                                     Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque()) == 1
+    }
+
+    func hidePeek(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, generation: UInt64,
+                  header: NSView, actions: NSView) {
+        _ = bridge.tab_hide_peek(source.client, source.tab, page.client, page.tab, generation,
+                                 Unmanaged.passUnretained(header).toOpaque(), Unmanaged.passUnretained(actions).toOpaque())
+    }
 }
 
 /// Bark's own window, whose root view holds the sidebar and places the pages of every client in it,
@@ -151,4 +182,22 @@ final class ChromiumHostPresenter: ChromiumWindowPresenter {
     }
 
     var shownSplit: ChromiumWindowRoot.Split? { root.split }
+
+    var sidebarFollowsClient: Bool { false }
+
+    func presentPeek(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, header: NSView, actions: NSView,
+                     dismiss: @escaping () -> Void) -> UInt64 {
+        root.showPeek(.init(source: source, page: page), header: header, actions: actions, dismiss: dismiss)
+    }
+
+    func isPeekPresented(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, generation: UInt64,
+                         header: NSView, actions: NSView) -> Bool {
+        root.showsPeek(.init(source: source, page: page), generation: generation, header: header, actions: actions)
+    }
+
+    func hidePeek(source: ChromiumWindowRoot.Pane, page: ChromiumWindowRoot.Pane, generation: UInt64,
+                  header: NSView, actions: NSView) {
+        guard root.showsPeek(.init(source: source, page: page), generation: generation, header: header, actions: actions) else { return }
+        root.hidePeek(generation: generation)
+    }
 }

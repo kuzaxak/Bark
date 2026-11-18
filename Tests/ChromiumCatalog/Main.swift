@@ -161,10 +161,13 @@ import NookWeb
     static var pageViews: [Int32: NSView] = [:]
     /// Tabs whose page has no view to place.
     static var viewless: Set<Int32> = []
+    static var peekCapable = false
     static var miniShellCalls: [String] = []
     static var miniCloses: [Int32] = []
     /// The root view each Bark window was given; a window takes one.
     static var roots: [Int32: UnsafeMutableRawPointer] = [:]
+    /// Makes a Peek for (source client, source tab, request): its client and tab.
+    static var onCreatePeek: ((Int32, Int32, Int32) -> (Int32, Int32))?
     static var splitLayouts: [Int32: BarcSplitLayout] = [:]
     static var splitGeneration: UInt64 = 0
     static var allowSplit = true
@@ -401,7 +404,8 @@ import NookWeb
         bridge.tab_reload = { _, _ in preconditionFailure("Existing page was reloaded") }
         bridge.tab_stop = { _, _ in preconditionFailure("Existing page was stopped") }
         bridge.tab_select = { window, tab in MainActor.assumeIsolated {
-            precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
+            precondition((Native.restoring || Native.hostWindows.contains(window)) &&
+                         Native.tabs.contains { $0.window == window && $0.tab == tab })
             if let select = Native.onSelectWindow, select(window) != 1 { return 0 }
             Native.windows[window]?.active_tab = tab; return 1
         } }
@@ -423,7 +427,16 @@ import NookWeb
         bridge.tab_observe_vault = { _, _ in 1 }
         bridge.tab_observe_vault_save = { _, _ in 1 }
         bridge.tab_observe_vault_passkeys = { _, _ in 1 }
-        bridge.tab_enable_peek = { _, _ in 0 }
+        bridge.tab_enable_peek = { _, _ in MainActor.assumeIsolated { Native.peekCapable ? 1 : 0 } }
+        bridge.tab_create_peek = { observation, request, admission, context in MainActor.assumeIsolated {
+            guard let source = Native.observers[observation], let make = Native.onCreatePeek else { return 0 }
+            let (owner, tab) = make(source.2, source.3, request)
+            var row = Native.tab(tab, window: owner, opener: source.3, flags: UInt32(BARC_DISCOVERY_TAB_PEEK.rawValue))
+            row.peek_source_tab = source.3
+            Native.tabs.append(row)
+            guard admission?(context, owner, tab) == 1 else { Native.tabs.removeAll { $0.tab == tab }; return 0 }
+            return 1
+        } }
         bridge.blocker_set_tab_policy = { _, _, _, _, _ in 0 }
         bridge.tab_set_user_css = { _, _, _, _, _ in 0 }
         bridge.tab_close_selecting = { token, successor in MainActor.assumeIsolated {
@@ -633,6 +646,10 @@ private struct NoTokens: KagiTokenStore {
         try checkMixedProfileSplitAdmission()
         try checkSavedSplitInBarkWindow()
         try checkNativePeekAdmission()
+        try checkPeekInBarkWindow(promoteToSplit: false)
+        try checkPeekInBarkWindow(promoteToSplit: true)
+        try checkPeekInBarkWindow(promoteToSplit: true, existingSplit: true)
+        print("Chromium same-client Peek activation and split promotion checks passed")
         print("Chromium catalog admission checks passed")
     }
 }
@@ -2828,6 +2845,130 @@ private struct NoTokens: KagiTokenStore {
     for owner in Array(Native.windows.keys) { Native.end(owner) }
     tabs.saveNow(); settings.flushBoosts()
     print("Chromium Peek promotion/moved-owner checks passed")
+}
+
+/// In a Bark window a Peek is a background tab of its source's own client. It is made, owned and
+/// promoted there with no second client; while the engine reports it active, the model stays on the
+/// source and never adopts it as an ordinary tab.
+@MainActor private func checkPeekInBarkWindow(promoteToSplit: Bool, existingSplit: Bool = false) throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcBarkPeek-\(UUID())")
+    let suite = "BarcBarkPeek-\(UUID())"
+    let defaults = UserDefaults(suiteName: suite)!
+    defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+    Native.windows.removeAll(); Native.tabs.removeAll(); Native.shells.removeAll(); Native.observers.removeAll()
+    Native.transfersEnabled = true; Native.sameOwnerAdmissions = 0; Native.peekRoleClears = 0
+    Native.restoring = false; Native.onSelectWindow = nil; Native.onAttach = nil
+    Native.peekCapable = true; Native.hostWindows = [8300]
+    defer {
+        Native.transfersEnabled = false; Native.peekCapable = false
+        Native.hostWindows = []; Native.pageViews = [:]; Native.roots[8300] = nil
+        Native.onCreatePeek = nil; Native.onSelectWindow = nil
+    }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let registry = WindowRegistry()
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let window = BrowserWindowState(); window.spaceID = Native.work
+    registry.register(window); registry.setActive(window); tabs.attach(window: window, restoringSavedState: false)
+    let host = ChromiumNativePageHost(bridge: Native.bridge)
+    tabs.nativePageHost = host
+    let shell = NSView(), profile = tabs.profile(forSpace: Native.work)!
+    Native.windows[8300] = Native.window(8300, group: 8300, profile: profile.id, flags: 1 | 4, active: 83001)
+    Native.tabs = [Native.tab(83001, window: 8300)]
+    precondition(host.registerWindow(window, nativeOwner: 8300, shell: shell))
+    guard case .success(let sourceBinding) = host.bindExistingPage(nativeWindow: 8300, tab: 83001, profile: profile, in: window) else { preconditionFailure() }
+    let sourceID = tabs.adoptNativePage(sourceBinding.navigation, through: host, in: window, spaceID: Native.work, select: false)!
+    sourceBinding.finish(adopted: true)
+    precondition(tabs.reflectNativeSelection(sourceID, in: window))
+    let source = tabs.session(for: sourceID)!, sourceNavigation = source.navigation as! ChromiumPageNavigation
+    var originalSplit: SplitRecord?
+    if existingSplit {
+        Native.tabs.append(Native.tab(83003, window: 8300))
+        guard case .success(let sibling) = host.bindExistingPage(nativeWindow: 8300, tab: 83003,
+                                                               profile: profile, in: window) else { preconditionFailure() }
+        let siblingID = tabs.adoptNativePage(sibling.navigation, through: host, in: window, spaceID: Native.work, select: false)!
+        sibling.finish(adopted: true)
+        originalSplit = SplitRecord([sourceID, siblingID], orientation: .vertical)
+        precondition(tabs.presentNativeSplit(originalSplit, activeItemID: sourceID, in: window) && window.split == originalSplit)
+    }
+    let sourceView = Native.pageViews[83001]!
+    let barkRoot = sequence(first: sourceView as NSView, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
+    precondition(barkRoot != nil, "the Bark window shows the source")
+    let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs, registry: registry,
+        isUtility: { _ in false }, makeShell: { _ in NSView() })
+    precondition(admission.registerInitial(ChromiumProductWindow(state: window, shell: shell), nativeWindow: 8300))
+
+    var unbound = Native.tab(83009, window: 8300, opener: 83001, flags: UInt32(BARC_DISCOVERY_TAB_PEEK.rawValue))
+    unbound.peek_source_tab = 83001
+    Native.tabs.append(unbound)
+    let items = tabs.tree.items.count
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(tabs.tree.items.count == items && !tabs.sessions.contains { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 83009 },
+                 "a Peek tab of the source's own client is never adopted as an ordinary tab")
+    Native.tabs.removeAll { $0.tab == 83009 }
+
+    let observation = Native.observers.first { $0.value.3 == 83001 }!
+    "https://fixture.invalid/peek-target".withCString { url in
+        observation.value.0?(observation.value.1, observation.key, Int32(BARC_TAB_PEEK_REQUESTED.rawValue), 8300, 83001, url, nil, 7, 0)
+    }
+    precondition(sourceNavigation.pendingPeekRequestID == 7, "the source asked for a Peek")
+    Native.onCreatePeek = { owner, _, _ in (owner, 83002) }
+    let clients = Native.windows.count
+    guard let created = admission.createPeek(from: source, request: 7, in: window) else { preconditionFailure("the Peek is made") }
+    let peek = created.page, peekID = peek.itemID, peekNavigation = peek.navigation as! ChromiumPageNavigation
+    precondition(created.accepted && peek.isDetached && peekNavigation.nativeWindowID == 8300 && Native.windows.count == clients,
+                 "the Peek is a tab of its source's own client, with no second client")
+    precondition(admission.ownsPeek(peek, source: source, in: window), "it is owned as the source's Peek")
+
+    let header = NSView(), actions = NSView()
+    Native.onSelectWindow = { _ in 0 }
+    precondition(host.presentPeek(source: sourceNavigation, page: peekNavigation,
+                                 header: header, actions: actions, dismiss: {}, in: window) == 0
+        && header.superview == nil && actions.superview == nil && Native.windows[8300]?.active_tab == 83001,
+        "a refused native selection leaves the card unmounted and keeps the source selected")
+    Native.onSelectWindow = nil
+    let generation = host.presentPeek(source: sourceNavigation, page: peekNavigation,
+                                      header: header, actions: actions, dismiss: {}, in: window)
+    precondition(generation != 0 && Native.windows[8300]?.active_tab == 83002,
+                 "the card explicitly activates the Peek outside the renderer's input event")
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(window.selectedItemID == sourceID && tabs.item(peekID) == nil && peek.isDetached,
+                 "while the Peek has the keys the model stays on the source and does not adopt the Peek as a tab")
+    let peekView = Native.pageViews[83002]!
+    let sourceContainer = sourceView.superview
+    precondition(sourceView.isDescendant(of: barkRoot!) && peekView.isDescendant(of: barkRoot!),
+                 "the source stays placed behind the Peek")
+
+    let split = promoteToSplit
+        ? (originalSplit?.inserting(peekID, beside: sourceID, after: true) ?? SplitRecord([sourceID, peekID]))
+        : nil
+    let siblingView = Native.pageViews[83003], siblingContainer = siblingView?.superview
+    let tokens = Native.nextToken, clears = Native.peekRoleClears
+    precondition(admission.promotePeek(peek, source: source, in: window, intoSplit: split),
+                 "the Peek is promoted in place")
+    precondition(tabs.session(for: peekID) === peek && peek.navigation === peekNavigation && !peek.isDetached
+                 && peekNavigation.nativeWindowID == 8300 && Native.peekRoleClears == clears + 1 && Native.nextToken == tokens,
+                 "the same live page becomes a tab of the same client, its Peek role cleared, with no new observation")
+    precondition(tabs.opener(of: peekID) == sourceID && window.selectedItemID == peekID
+                 && window.split == split && peekView.isDescendant(of: barkRoot!),
+                 "the same document is selected either as a tab or in the new split")
+    if promoteToSplit {
+        precondition(barkRoot?.split?.focused == 83002 && sourceView.superview === sourceContainer,
+                     "split promotion focuses the Peek and retains the original source slot")
+        if existingSplit {
+            precondition(barkRoot?.split?.panes.compactMap { $0?.tab } == [83001, 83002, 83003] &&
+                         barkRoot?.split?.vertical == true && siblingView?.superview === siblingContainer,
+                         "the new pane goes beside the source, keeping the sibling slot and split orientation")
+        }
+    }
+    precondition(header.superview == nil && actions.superview == nil, "promotion removes the card controls")
+    for owner in Array(Native.windows.keys) { Native.end(owner) }
+    tabs.saveNow()
 }
 
 /// The first selected page can wait for context policy before the saved split

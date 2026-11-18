@@ -68,7 +68,7 @@ private enum Engine {
 }
 
 /// A page view whose first subview takes keys, as a renderer's view does.
-private final class PageView: NSView {
+fileprivate final class PageView: NSView {
     let input = Focusable()
     override init(frame: NSRect) { super.init(frame: frame); addSubview(input) }
     required init?(coder: NSCoder) { nil }
@@ -88,6 +88,7 @@ private final class PageView: NSView {
         _ = NSApplication.shared
         layoutCases()
         libraryLayoutCases()
+        peekLayoutCases()
         lightsCases()
 
         Engine.rootAccepted = 0
@@ -179,6 +180,8 @@ private final class PageView: NSView {
             precondition(root.show(tab: 11, of: 5) && root.split == nil && inRoot(second, root) == shown, "back to one page after the split cases")
             firstClientGoneCases(root: root, window: window)
             precondition(root.show(tab: 11, of: 5) && root.client == 5 && inRoot(second, root) == shown, "back to the first client's page")
+            peekCases(root: root, window: window, source: second)
+            precondition(root.show(tab: 11, of: 5) && root.split == nil && inRoot(second, root) == shown, "back to one page after the Peek cases")
             libraryCases(root: root, sidebar: sidebar, page: second, lights: lights)
             root.frame = NSRect(x: 0, y: 0, width: 1200, height: 800)
             root.layoutSubtreeIfNeeded()
@@ -650,6 +653,169 @@ private final class PageView: NSView {
         }
         precondition(released == nil && Engine.unobserved.count == 1, "a released compact root stops observing")
         print("Compact root: header and lights over the page, full screen, crashed and retired pages, grows once by the header")
+    }
+
+    /// The Peek card in a page area of W × H: centred, min(0.82 W, W − 88) wide, a 32 high header at 8, the page
+    /// from 40 to H − 8, and the 28 × 96 actions column 8 to the card's right at 14.
+    @MainActor static func peekLayoutCases() {
+        typealias L = ChromiumWindowRoot.PeekLayout
+        let cases: [(CGSize, L)] = [
+            (CGSize(width: 1663, height: 971), L(header: CGRect(x: 150, y: 8, width: 1363, height: 32),
+                page: CGRect(x: 150, y: 40, width: 1363, height: 923), actions: CGRect(x: 1521, y: 14, width: 28, height: 96))),
+            (CGSize(width: 400, height: 300), L(header: CGRect(x: 44, y: 8, width: 312, height: 32),
+                page: CGRect(x: 44, y: 40, width: 312, height: 252), actions: CGRect(x: 364, y: 14, width: 28, height: 96))),
+            (CGSize(width: 50, height: 20), L(header: CGRect(x: 25, y: 8, width: 0, height: 4),
+                page: CGRect(x: 25, y: 40, width: 0, height: 0), actions: CGRect(x: 33, y: 14, width: 28, height: 0))),
+        ]
+        for (size, expected) in cases {
+            let actual = ChromiumWindowRoot.peekLayout(in: size)
+            precondition(actual == expected, "Peek layout in \(size): \(actual)")
+        }
+    }
+
+    /// A Peek takes focus in a centered card. Its source stays mounted and its wash leaves siblings interactive.
+    @MainActor fileprivate static func peekCases(root: ChromiumWindowRoot, window: NSWindow, source: PageView) {
+        typealias Pane = ChromiumWindowRoot.Pane
+        typealias Peek = ChromiumWindowRoot.Peek
+        let page = PageView(), header = NSView(), actions = NSView()
+        Engine.pages[50] = page
+        defer { Engine.pages[50] = nil }
+        let area = CGRect(x: 247, y: 10, width: 943, height: 780)
+        let peek = Peek(source: Pane(client: 5, tab: 11), page: Pane(client: 5, tab: 50))
+        func card(_ rect: CGRect, in frame: CGRect) -> CGRect { rect.offsetBy(dx: frame.minX, dy: frame.minY) }
+        func hit(_ point: CGPoint) -> NSView? { root.hitTest(root.convert(point, to: root.superview)) }
+        precondition(root.showPeek(Peek(source: Pane(client: 5, tab: 10), page: peek.page), header: header, actions: actions, dismiss: {}) == 0,
+                     "a Peek over a tab the window does not show is refused")
+        precondition(root.showPeek(Peek(source: peek.source, page: Pane(client: 5, tab: 51)), header: header, actions: actions, dismiss: {}) == 0,
+                     "a Peek page with no page view is refused")
+        var dismissed = 0
+        let generation = root.showPeek(peek, header: header, actions: actions, dismiss: { dismissed += 1 })
+        let layout = ChromiumWindowRoot.peekLayout(in: area.size)
+        precondition(generation != 0 && root.showsPeek(peek, generation: generation, header: header, actions: actions), "the card shows")
+        precondition(inRoot(page, root) == card(layout.page, in: area) && inRoot(header, root) == card(layout.header, in: area)
+                     && inRoot(actions, root) == card(layout.actions, in: area),
+                     "the card in the page area: \(inRoot(page, root)) \(inRoot(header, root)) \(inRoot(actions, root))")
+        precondition(inRoot(source, root) == area, "the source stays placed under the wash")
+        precondition(window.firstResponder === page.input, "the Peek page has the keys")
+        let under = hit(CGPoint(x: area.minX + 20, y: area.maxY - 20))
+        precondition(under != nil && under?.isDescendant(of: source) == false && under !== root && under?.isDescendant(of: page) == false,
+                     "the page under the wash gets no click: \(String(describing: under))")
+        precondition(hit(CGPoint(x: inRoot(page, root).midX, y: inRoot(page, root).midY))?.isDescendant(of: page) == true, "the Peek page gets its clicks")
+        under?.mouseDown(with: NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                  windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1)!)
+        precondition(dismissed == 1, "a click on the wash dismisses the Peek")
+        precondition(page.input.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: nil) && dismissed == 2,
+                     "an Esc the page leaves alone reaches the root and dismisses the Peek")
+
+        root.pageHidden = true
+        precondition(page.isHidden, "an empty space hides the Peek page too")
+        root.pageHidden = false
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_CRASHED, tab: 50, view: page)
+        precondition(root.showsCrashedPage(tab: 50) && !root.showsCrashedPage(tab: 11), "a crashed Peek page shows the card's crashed state")
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_RESTORED, tab: 50, view: page)
+        precondition(!root.showsCrashedPage(tab: 50))
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_PAGE)
+        precondition(inRoot(page, root) == root.bounds && header.isHiddenOrHasHiddenAncestor && actions.isHiddenOrHasHiddenAncestor,
+                     "page full screen from the Peek: its page fills the window: \(inRoot(page, root))")
+        Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
+        precondition(inRoot(page, root) == card(layout.page, in: area) && !header.isHiddenOrHasHiddenAncestor, "and back in the card")
+
+        precondition(!root.hidePeek(generation: generation + 1) && root.showsPeek(peek, generation: generation, header: header, actions: actions),
+                     "a stale generation hides nothing")
+        precondition(root.hidePeek(generation: generation) && page.superview == nil && header.superview == nil && actions.superview == nil
+                     && !root.showsPeek(peek, generation: generation, header: header, actions: actions) && window.firstResponder === source.input,
+                     "hiding takes the card down with its page, and the keys go back to the source")
+        precondition(hit(CGPoint(x: area.minX + 20, y: area.maxY - 20))?.isDescendant(of: source) == true, "the source takes clicks again")
+        _ = source.input.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: nil)
+        precondition(dismissed == 2, "with no card the root passes an Esc on")
+        let again = root.showPeek(peek, header: header, actions: actions, dismiss: {})
+        precondition(again > generation && page.isDescendant(of: root) && root.showsPeek(peek, generation: again, header: header, actions: actions),
+                     "the same Peek shows again with its page")
+        precondition(root.show(tab: 10, of: 5) && page.superview == nil && header.superview == nil
+                     && !root.showsPeek(peek, generation: again, header: header, actions: actions),
+                     "showing another tab takes the card down with its page")
+        precondition(root.show(tab: 11, of: 5) && window.firstResponder === source.input, "back to the source")
+
+        let bar = NSView()
+        precondition(root.setHeader(bar, replacing: nil, height: 40))
+        let barred = root.showPeek(peek, header: header, actions: actions, dismiss: {})
+        let below = CGRect(x: 247, y: 50, width: 943, height: 740)
+        precondition(inRoot(page, root) == card(ChromiumWindowRoot.peekLayout(in: below.size).page, in: below)
+                     && hit(CGPoint(x: below.minX + 5, y: below.minY + 5))?.isDescendant(of: source) == false
+                     && hit(CGPoint(x: below.minX + 5, y: 45))?.isDescendant(of: bar) != false,
+                     "with a bar the wash and the card fill the page area below it")
+        precondition(root.hidePeek(generation: barred) && root.setHeader(nil, replacing: bar, height: 0))
+
+        let panes = (60...62).map { _ in CountingPage() }
+        for (offset, pane) in panes.enumerated() { Engine.pages[Int32(60 + offset)] = pane }
+        defer { for tab: Int32 in 60...62 { Engine.pages[tab] = nil } }
+        precondition(root.showSplit(ChromiumWindowRoot.Split(panes: (60...62).map { Pane(client: 5, tab: $0) }, vertical: false,
+                                                             dividers: [1.0 / 3, 2.0 / 3], focused: 61)))
+        let overSplit = Peek(source: Pane(client: 5, tab: 61), page: peek.page)
+        let sourcePane = panes[1]
+        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 160, height: 100))
+        let document = NSView(frame: NSRect(x: 0, y: 0, width: 160, height: 1200))
+        let draft = NSTextView(frame: NSRect(x: 4, y: 130, width: 150, height: 68))
+        draft.string = "unfinished draft"
+        document.addSubview(draft)
+        scroll.documentView = document
+        sourcePane.addSubview(scroll)
+        precondition(window.makeFirstResponder(draft))
+        scroll.contentView.scroll(to: CGPoint(x: 0, y: 120))
+        let oldScroll = scroll.contentView.bounds.origin
+        precondition(oldScroll.y == 120)
+        let originalFrames = panes.map { inRoot($0, root) }
+        let sourceSize = sourcePane.bounds.size
+        let paneMoves = panes.map(\.windowMoves)
+        var splitPeek: UInt64 = 0
+        splitPeek = root.showPeek(overSplit, header: header, actions: actions) {
+            precondition(root.hidePeek(generation: splitPeek))
+        }
+        precondition(splitPeek != 0 && inRoot(page, root) == card(layout.page, in: area))
+        for index in panes.indices {
+            let frame = inRoot(panes[index], root)
+            let outsideCard = CGPoint(x: frame.midX, y: originalFrames[index].maxY - 3)
+            let reachesPane = hit(outsideCard)?.isDescendant(of: panes[index]) == true
+            if index == 1 {
+                precondition(!reachesPane && frame.width < originalFrames[index].width &&
+                             abs(sourcePane.bounds.width - sourceSize.width) < 0.001 &&
+                             abs(sourcePane.bounds.height - sourceSize.height) < 0.001, "source hit=\(reachesPane), frame=\(frame) was \(originalFrames[index]), viewport=\(sourcePane.bounds.size) was \(sourceSize)")
+            } else {
+                precondition(reachesPane && originalFrames[index] == frame, "an uncovered sibling pane keeps its position and input")
+            }
+        }
+        precondition(page.input.tryToPerform(#selector(NSResponder.cancelOperation(_:)), with: nil))
+        let restoredScroll = scroll.contentView.bounds.origin
+        precondition(window.firstResponder === draft && draft.string == "unfinished draft" &&
+                     abs(restoredScroll.x - oldScroll.x) < 0.001 && abs(restoredScroll.y - oldScroll.y) < 0.001 &&
+                     panes.map(\.windowMoves) == paneMoves &&
+                     panes.map { inRoot($0, root) } == originalFrames, "Escape restores the same source editor, draft and scroll position")
+        scroll.removeFromSuperview()
+
+        let beforeSwitch = root.showPeek(overSplit, header: header, actions: actions, dismiss: {})
+        precondition(beforeSwitch != 0 && root.show(tab: 62, of: 5))
+        precondition(!root.showsPeek(overSplit, generation: beforeSwitch, header: header, actions: actions)
+                     && page.window == nil && window.firstResponder === panes[2].input,
+                     "selecting an uncovered sibling parks the Peek and leaves the sibling focused")
+        precondition(root.show(tab: 61, of: 5))
+        let beforePromotion = root.showPeek(overSplit, header: header, actions: actions, dismiss: {})
+        let promotionMoves = panes.map(\.windowMoves)
+        precondition(beforePromotion != 0 && root.showSplit(.init(
+            panes: [Pane(client: 5, tab: 60), overSplit.source, overSplit.page, Pane(client: 5, tab: 62)],
+            vertical: false, dividers: [0.25, 0.5, 0.75], focused: overSplit.page.tab)))
+        precondition(!root.showsPeek(overSplit, generation: beforePromotion, header: header, actions: actions)
+                     && page.window === window && window.firstResponder === page.input
+                     && panes.map(\.windowMoves) == promotionMoves,
+                     "promoting the card to a pane preserves each mounted document and keeps the Peek focused")
+
+        precondition(root.show(tab: 11, of: 5))
+        let retiring = root.showPeek(peek, header: header, actions: actions, dismiss: {})
+        Engine.pages[50] = nil
+        Engine.send(kind: BARC_WINDOW_HOST_PAGE_VIEW_RETIRED, tab: 50, view: page)
+        precondition(page.superview == nil && header.superview == nil && !root.showsPeek(peek, generation: retiring, header: header, actions: actions),
+                     "a Peek page that leaves the window takes the card with it")
+        precondition(window.firstResponder === source.input,
+                     "native view retirement restores the source responder before the close callback")
     }
 
     /// A download that starts flies over the page into the sidebar's downloads button, as in the WebKit
