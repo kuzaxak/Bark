@@ -48,6 +48,7 @@ check_engine() {
     /usr/bin/cmp -s "$artifact/Headers/$header" "$headers/$header" ||
       refuse "App was compiled against another $header than the engine's: $artifact/Headers/$header"
   done
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" "$artifact/Bark Framework.framework"
   check_bundle "$artifact/Bark Framework.framework" unsigned
 }
 # ChromiumApp/Additions.plist: an Info dictionary, whose keys the engine's Info.plist lacks or whose arrays
@@ -119,6 +120,7 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   ENGINE_ENTITLEMENTS="${4:-$ENGINE_SLICE/Engine}/Bark Packaging/app-entitlements.plist"
   [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
   [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" "$2/Contents/Frameworks/Bark Framework.framework"
   check_bundle "$2" signed
   additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
   echo "One libnook_adblock.dylib, every Mach-O signed, and the engine's entitlements plus the declared additions: $2"

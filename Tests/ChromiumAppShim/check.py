@@ -228,6 +228,21 @@ def versioned_framework(root, binary=None):
     return framework
 
 
+def add_helper(framework, binary):
+    helper = framework / f'Versions/{VERSION}/Helpers/Bark Helper (Renderer).app/Contents/MacOS/Bark Helper (Renderer)'
+    helper.parent.mkdir(parents=True)
+    shutil.copy2(binary, helper)
+    return helper
+
+
+def arm_helper(work, name):
+    helper = work / name
+    source = helper.with_suffix('.c')
+    source.write_text('int main(void) { return 0; }\n')
+    subprocess.run(['xcrun', 'clang', '-arch', 'arm64', str(source), '-o', str(helper)], check=True)
+    return helper
+
+
 def shell_framework(root, binary):
     framework = root / 'NookNativeShell.framework'
     (framework / 'Versions/A/Resources').mkdir(parents=True)
@@ -684,6 +699,9 @@ def publish_cases(work, framework_lib):
     fat = work / 'publish-fat.dylib'
     fake_framework(fat, arch=('-arch', 'x86_64', '-arch', 'arm64'))
     refused('publish-fat', 'an engine that is not exactly x86_64', 'must be exactly x86_64', framework=fat)
+    wrong_helper = arm_helper(work, 'publish-arm-helper')
+    refused('publish-helper-arch', 'an ARM64 helper within an Intel engine', 'must be exactly x86_64 and thin:',
+            lambda b: add_helper(b / 'Bark.app/Contents/Frameworks' / FRAMEWORK, wrong_helper))
 
     for name in HEADER_NAMES:
         key = name.replace('.', '_')
@@ -926,6 +944,17 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     fake_framework(fat_framework, arch=('-arch', 'x86_64', '-arch', 'arm64'))
     refused('fat-framework', 'an engine that is not exactly x86_64', 'must be exactly x86_64',
             lambda a, e, p: shutil.copy2(fat_framework, versioned(e) / 'Bark Framework'))
+    wrong_helper = arm_helper(work, 'stage-arm-helper')
+    refused('stage-helper-arch', 'an ARM64 helper within an Intel engine with a matching manifest',
+            'must be exactly x86_64 and thin:', lambda a, e, p: add_helper(e / FRAMEWORK, wrong_helper))
+
+    def external_helper(a, e, p):
+        helper = add_helper(e / FRAMEWORK, wrong_helper)
+        helper.unlink()
+        helper.symlink_to(wrong_helper)
+
+    refused('stage-external-helper', 'a helper alias outside the framework',
+            'alias must remain inside the framework:', external_helper)
 
     other_zone = work / 'other-zone.dylib'
     fake_framework(other_zone, zone='DelegatingDefaultZoneForSomethingElse')
@@ -1002,6 +1031,30 @@ def signed_cases(work, mach_o):
         if mutate:
             mutate(app)
         return subprocess.run(['bash', str(STAGE), '--check-signed', str(app), str(additions), str(artifact)], capture_output=True, text=True)
+
+    universal = work / 'signed-Sparkle'
+    compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'arm64')
+
+    def add_signed_sparkle(app):
+        sparkle = app / 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle'
+        sparkle.parent.mkdir(parents=True)
+        shutil.copy2(universal, sparkle)
+        subprocess.run(['codesign', '--force', '--sign', '-', str(sparkle)], capture_output=True, check=True)
+
+    run = check_signed('signed-sparkle', add_signed_sparkle)
+    check('--check-signed allows a universal Sparkle dependency outside the engine',
+          run.returncode == 0, run.stderr)
+
+    wrong_helper = arm_helper(work, 'signed-arm-helper')
+
+    def add_wrong_helper(app):
+        helper = add_helper(app / 'Contents/Frameworks' / FRAMEWORK, wrong_helper)
+        subprocess.run(['codesign', '--force', '--sign', '-', str(helper)], capture_output=True, check=True)
+
+    run = check_signed('signed-helper-arch', add_wrong_helper)
+    check('--check-signed refuses a genuinely signed ARM64 engine helper',
+          run.returncode != 0 and 'must be exactly x86_64 and thin:' in run.stderr
+          and 'Bark Helper (Renderer)' in run.stderr, (run.returncode, run.stderr))
 
     run = check_signed('signed-one')
     check('a signed bundle with one blocker library and the listed additions passes --check-signed', run.returncode == 0, run.stderr)
