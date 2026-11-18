@@ -62,11 +62,12 @@ python3 "$recipe" build --checkout "$engine_checkout" --jobs 8
 
 `prepare` creates the pinned Git checkouts, runs gclient dependency sync and
 hooks, mounts the Bark trees and applies the patches. Use `prepare --resume`
-after an interrupted checkout or dependency sync. It accepts a pristine pinned
-checkout or one that already passes the exact recipe replay. It refuses a
-mismatched pin, altered gclient configuration, nonmatching Bark changes, or
-partial patch state. Keep that checkout for inspection and use a new directory
-when you need a pristine run. The recipe never asks Git to reset or clean.
+after an interrupted checkout, dependency sync or recipe application. It accepts
+a pristine pinned checkout or one that already passes the exact recipe replay.
+A preparation marker lets the recipe finish its own interrupted application
+after checking that existing mounts and applied patches match the recipe. It
+refuses a mismatched pin, altered gclient configuration or local edits. Keep
+that checkout for inspection and use a new directory when you need a pristine run. The recipe never asks Git to reset or clean.
 `--dry-run` prints the plan and validates available inputs without creating the
 checkout or compiling.
 

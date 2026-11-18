@@ -7,6 +7,7 @@ The recipe is pristine Chromium at CHROMIUM_VERSION, plus bark/ and chromium_src
 src/chromium_src, plus every patch in patches/. The checkout passes when it holds exactly that, apart from the Rust matcher the recipe builds.
 The budget check runs first.
 """
+from contextlib import contextmanager
 import json
 import os
 import subprocess
@@ -33,15 +34,8 @@ def check_pin(src):
         raise ValueError(f'checkout is Chromium {built}, the recipe pins {pinned}')
 
 
-def main():
-    src = Path(sys.argv[1]).resolve()
-    evidence = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
-    if subprocess.run([sys.executable, str(HERE / 'budget.py'), '--check']).returncode:
-        sys.exit('replay gate: budget check failed')
-    try:
-        check_pin(src)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        sys.exit(f'replay gate: {error}')
+@contextmanager
+def temporary_index(src):
     objects = subprocess.check_output(
         ['git', '-C', str(src), 'rev-parse', '--path-format=absolute', '--git-path', 'objects'],
         text=True,
@@ -59,6 +53,19 @@ def main():
             return result.stdout
 
         git('read-tree', 'HEAD')
+        yield git
+
+
+def main():
+    src = Path(sys.argv[1]).resolve()
+    evidence = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
+    if subprocess.run([sys.executable, str(HERE / 'budget.py'), '--check']).returncode:
+        sys.exit('replay gate: budget check failed')
+    try:
+        check_pin(src)
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit(f'replay gate: {error}')
+    with temporary_index(src) as git:
         files = sorted((mount, p) for mount, root in MOUNTS.items() for p in root.rglob('*') if p.is_file())
         blobs = git('hash-object', '-w', '--stdin-paths', input='\n'.join(str(p) for _, p in files) + '\n').split()
         entries = ''.join(f'{"100755" if os.access(p, os.X_OK) else "100644"} {blob}\t'

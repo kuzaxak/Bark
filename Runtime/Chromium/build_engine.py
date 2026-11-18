@@ -2,6 +2,7 @@
 """Prepare, verify or build the pinned Bark Chromium engine."""
 import argparse
 import fcntl
+from hashlib import sha256
 import os
 from pathlib import Path
 import shlex
@@ -11,7 +12,7 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
-from replay_gate import HERE, MOUNTS, PATCHES, PINS, check_pin
+from replay_gate import HERE, MOUNTS, PATCHES, PINS, check_pin, temporary_index
 
 REPO = HERE.parents[1]
 ORIGINS = {
@@ -28,14 +29,16 @@ def run(command, cwd=REPO, env=None, dry_run=False):
         subprocess.run(command, cwd=cwd, env=env, check=True)
 
 
-def git(path, *args, required=True):
+def git(path, *args, required=True, strip=True):
     result = subprocess.run(
         ["git", "-C", str(path), *args], capture_output=True, text=True,
         env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
     )
     if result.returncode and required:
         raise ValueError(f"{path}: {result.stderr.strip()}")
-    return result.stdout.strip() if not result.returncode else None
+    if result.returncode:
+        return None
+    return result.stdout.strip() if strip else result.stdout
 
 
 def repository(path, name, create, dry_run):
@@ -71,8 +74,11 @@ def budget():
     run([sys.executable, HERE / "budget.py", "--check"])
 
 
-def patches(src, *options, dry_run=False):
-    inputs = sorted(PATCHES.rglob("*.patch"))
+def patches(src, *options, inputs=None, dry_run=False):
+    if inputs is None:
+        inputs = sorted(PATCHES.rglob("*.patch"))
+    if not inputs:
+        return
     mode = "check" if "--check" in options else "apply"
     print(f"{src}: {mode} {len(inputs)} tracked Chromium patches", flush=True)
     if not dry_run:
@@ -91,12 +97,106 @@ def pristine(src):
     )
 
 
-def apply_recipe(src):
-    patches(src, "--check", "--index")
-    for mount, source in MOUNTS.items():
-        shutil.copytree(source, src / mount)
-    patches(src)
+def preparation_inputs():
+    mounts = {}
+    for name, directory in MOUNTS.items():
+        for path in sorted(directory.rglob("*")):
+            if path.is_symlink() and not path.is_file():
+                raise ValueError(f"{path}: missing mounted file")
+            if path.is_file():
+                mounts[Path(name) / path.relative_to(directory)] = path
+    recipe_patches = {
+        patch.relative_to(PATCHES).as_posix().removesuffix(".patch"): patch
+        for patch in sorted(PATCHES.rglob("*.patch"))
+    }
+    return mounts, recipe_patches
+
+
+def recipe_digest(mounts, recipe_patches):
+    digest = sha256()
+    for name, source in (*mounts.items(), *recipe_patches.items()):
+        digest.update(os.fsencode(name) + b"\0")
+        digest.update(bytes([os.access(source, os.X_OK)]))
+        digest.update(sha256(source.read_bytes()).digest())
+    return digest.hexdigest()
+
+
+def recover_preparation(src, mounts, recipe_patches):
+    staged = git(src, "diff", "--cached", "--name-only", "HEAD")
+    changed = git(src, "diff", "--name-only", "--no-renames", "-z", "HEAD", strip=False).split("\0")
+    changed = [name for name in changed if name]
+    untracked = git(src, "ls-files", "--others", "--exclude-standard", "--directory", "-z", strip=False).split("\0")
+    allowed_roots = set(MOUNTS)
+    if staged or any(name not in recipe_patches for name in changed) or any(
+        name and name.split("/", 1)[0] not in allowed_roots for name in untracked
+    ):
+        raise ValueError(f"{src}: local changes outside the interrupted recipe")
+
+    if changed:
+        diff = ("diff", "--no-color", "--no-textconv", "--no-ext-diff", "--no-renames",
+                "--src-prefix=a/", "--dst-prefix=b/", "--binary", "--full-index")
+        with temporary_index(src) as index_git:
+            index_git("apply", "--cached", *[recipe_patches[name] for name in changed])
+            expected = index_git(*diff, "--cached", "HEAD", "--", *changed)
+        if git(src, *diff, "HEAD", "--", *changed, strip=False) != expected:
+            raise ValueError(f"{src}: local edits within Chromium patch files: {', '.join(changed)}")
+
+    allowed_dirs = {parent for name in mounts for parent in name.parents}
+    for name in MOUNTS:
+        root = src / name
+        if root.is_symlink() or (root.exists() and not root.is_dir()):
+            raise ValueError(f"{root}: expected a recipe mount directory")
+        for path in root.rglob("*"):
+            relative = path.relative_to(src)
+            source = mounts.get(relative)
+            if not path.is_symlink():
+                if path.is_dir() and relative in allowed_dirs:
+                    continue
+                if (source and path.is_file() and path.read_bytes() == source.read_bytes()
+                        and os.access(path, os.X_OK) == os.access(source, os.X_OK)):
+                    continue
+            raise ValueError(f"{path}: differs from the interrupted recipe mount")
+    return [patch for name, patch in recipe_patches.items() if name not in changed]
+
+
+def apply_recipe(src, marker, dry_run=False):
+    mounts, recipe_patches = preparation_inputs()
+    digest = recipe_digest(mounts, recipe_patches)
+    if marker.is_symlink():
+        raise ValueError(f"{marker}: expected a local preparation marker")
+    if marker.exists():
+        if marker.read_text() != digest:
+            raise ValueError(f"{marker}: interrupted preparation uses a different recipe")
+        pending = recover_preparation(src, mounts, recipe_patches)
+        patches(src, "--check", inputs=pending)
+    else:
+        pending = list(recipe_patches.values())
+        patches(src, "--check", inputs=pending)
+        if not dry_run:
+            with tempfile.TemporaryDirectory(dir=marker.parent) as scratch:
+                staged = Path(scratch) / "marker"
+                with staged.open("w") as state:
+                    state.write(digest)
+                    state.flush()
+                    os.fsync(state.fileno())
+                os.link(staged, marker)
+    if dry_run:
+        print(f"{src}: would complete the recipe mounts and {len(pending)} pending patches")
+        return
+
+    with tempfile.TemporaryDirectory(dir=src.parent) as scratch:
+        staged = Path(scratch) / "mount"
+        for relative, source in mounts.items():
+            dest = src / relative
+            if dest.exists():
+                continue
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, staged)
+            os.link(staged, dest)
+            staged.unlink()
+    patches(src, inputs=pending)
     replay(src)
+    marker.unlink()
 
 
 def engine_env(depot_tools, jobs):
@@ -121,18 +221,26 @@ def verify_gclient(checkout, required=True):
 def prepare(checkout, depot_tools, env, args):
     src = checkout / "src"
     gclient = verify_gclient(checkout, required=False)
+    marker = checkout / ".bark-engine-preparing"
     if not args.resume and any(p.exists() or p.is_symlink() for p in (src, gclient, depot_tools)):
         raise ValueError("prepare expects a new checkout and depot_tools. Use --resume for existing paths")
     budget()
     if repository(src, "chromium", create=True, dry_run=args.dry_run):
         check_pin(src)
+        if marker.exists() or marker.is_symlink():
+            if not args.resume:
+                raise ValueError("use prepare --resume to finish the interrupted recipe")
+            verify_gclient(checkout)
+            repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
+            apply_recipe(src, marker, dry_run=args.dry_run)
+            return
         if not pristine(src):
             print("Checking existing Bark changes before resuming", flush=True)
             replay(src)
             repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
             verify_gclient(checkout)
             return
-        patches(src, "--check", "--index")
+        patches(src, "--check")
     repository(depot_tools, "depot_tools", create=True, dry_run=args.dry_run)
     if not args.dry_run:
         if not gclient.exists():
@@ -142,13 +250,13 @@ def prepare(checkout, depot_tools, env, args):
          "--revision", f"src@{PINS['chromium']}", "--jobs", args.jobs], checkout, env, args.dry_run)
     run([depot_tools / "gclient", "runhooks", "--jobs", args.jobs], checkout, env, args.dry_run)
     if args.dry_run:
-        patches(src, "--check", "--index", dry_run=True)
+        patches(src, "--check", dry_run=True)
         print("Then copy Bark's trees, apply the patches and verify the replay.")
         return
     check_pin(src)
     if not pristine(src):
         raise ValueError(f"{src}: dependency setup left working-tree changes")
-    apply_recipe(src)
+    apply_recipe(src, marker)
 
 
 def install_generated(source, destination):
