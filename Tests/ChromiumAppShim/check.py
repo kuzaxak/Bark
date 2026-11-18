@@ -721,11 +721,23 @@ def publish_cases(work, framework_lib):
     check('identical checksums cannot hide a missing framework alias',
           missing_alias.returncode != 0 and '--replace' in missing_alias.stderr and not alias.exists(),
           missing_alias.stderr)
+    finder = artifact.parent / '.DS_Store'
+    finder.write_bytes(b'Finder metadata')
+    finder_inode = finder.stat().st_ino
     replacement = publish(build, package, replace=True)
     check('explicit repair restores the sealed alias with the same digest',
           replacement.returncode == 0 and alias.readlink() == Path('Versions/Current/Resources')
           and pin == (published / 'engine-artifact-x86_64.sha256').read_text().strip(),
           replacement.stderr)
+    check('replacement preserves Finder metadata outside the sealed engine',
+          finder.read_bytes() == b'Finder metadata' and finder.stat().st_ino == finder_inode)
+    unrelated = artifact.parent / 'keep-me'
+    unrelated.write_text('User data')
+    wrong_layout = publish(build, package, replace=True)
+    check('replacement still refuses unrelated architecture directory entries',
+          wrong_layout.returncode != 0 and str(unrelated) in wrong_layout.stderr
+          and unrelated.read_text() == 'User data', wrong_layout.stderr)
+    unrelated.unlink()
     executable.chmod(0o444)
     no_execute = publish(build, package)
     check('matching checksums cannot hide a lost executable bit',

@@ -107,8 +107,10 @@ def destination_paths(package, architecture, work):
         if parent.stat().st_dev != work.stat().st_dev:
             raise ValueError(f"SDK publication requires destinations on the package volume: {parent}")
     if directory_id(engine.parent) is not None:
-        if any(child.name != "Engine" for child in engine.parent.iterdir()):
-            raise ValueError(f"SDK architecture directory contains another entry: {engine.parent}")
+        for child in engine.parent.iterdir():
+            if child.name == "Engine" or (child.name == ".DS_Store" and stat.S_ISREG(child.lstat().st_mode)):
+                continue
+            raise ValueError(f"SDK architecture directory contains another entry: {child}")
         directory_id(engine)
     for path in (*[headers / name for name in HEADERS], pin):
         if path.is_symlink() or (path.exists() and not path.is_file()):
@@ -139,6 +141,16 @@ def finish(package, pending, *, recovering):
         if recovering and verified_digest(candidate / "Engine") != digest:
             raise ValueError("Prepared SDK differs from its publication record")
         if live.exists():
+            # Keep the same inode for Finder windows that are still writing it.
+            finder = candidate / ".DS_Store"
+            finder.unlink(missing_ok=True)
+            try:
+                os.link(live / finder.name, finder, follow_symlinks=False)
+            except FileNotFoundError:
+                pass
+            else:
+                if not stat.S_ISREG(finder.lstat().st_mode):
+                    raise ValueError(f"Expected regular Finder metadata: {live / finder.name}")
             swap(candidate, live)
         else:
             candidate.rename(live)
