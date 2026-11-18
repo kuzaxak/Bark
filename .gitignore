@@ -26,6 +26,8 @@ xcuserdata/
 
 ## compatibility with Xcode 3 and earlier (ignoring not required starting Xcode 4)
 build/
+# Chromium's patch tree mirrors upstream source directories named build.
+!/Runtime/Chromium/patches/**/build/
 DerivedData/
 *.moved-aside
 *.pbxuser
