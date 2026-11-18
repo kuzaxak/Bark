@@ -77,6 +77,21 @@ accept `--arch arm64` once the separately qualified ARM64 pin is available.
 
 For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label and `BARK_ENGINE_SOURCE` to the matching directory or archive source. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
 
+### Prepare a Bark distribution candidate
+
+The manual **Prepare Bark Candidate** workflow builds one architecture from the protected default branch and uploads a notarized, stapled DMG and architecture-specific Sparkle appcast as workflow artifacts for review. Feed and download publication are separate release steps. The public Nook transition feed uses the existing Nook release workflow.
+
+Configure the `bark-candidate-x86_64` or `bark-candidate-arm64` environment with required approval and a default-branch deployment restriction. Set `BARK_ENGINE_SOURCE` to the architecture’s pinned engine directory or archive. Set `BARK_SIGN_IDENTITY` and `BARK_NOTARY_PROFILE` to a Developer ID Application identity and notarytool profile on the dedicated runner. Use the existing Sparkle private key as the environment secret `SPARKLE_SIGNING_KEY`. An unavailable architecture pin stops the build.
+
+Use a separate runner with the matching `bark-candidate-x86_64` or `bark-candidate-arm64` label, Xcode 26 and its Metal Toolchain installed. Before connecting it, install [the runner guard](scripts/runner/job-started-hook.sh) outside the runner’s work directory. Point `ACTIONS_RUNNER_HOOK_JOB_STARTED` at an executable wrapper outside the checkout. Use the installed guard path and the exact protected default ref.
+
+```bash
+#!/bin/bash
+exec "$HOME/actions-runner-bark/hooks/job-started-guard.sh" --bark-candidate refs/heads/develop
+```
+
+The runner-side guard permits only this repository’s Bark candidate workflow on that ref. Keep the signing runner separate from PR jobs and the legacy Nook release runner. The [local packaging commands](Runtime/Chromium/README.md#prepare-bark-distribution-files) use the same checks.
+
 ## Code Style & Standards
 
 ### Conventions

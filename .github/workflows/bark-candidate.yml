@@ -1,0 +1,122 @@
+name: Prepare Bark Candidate
+
+# Dedicated runners enforce this workflow and the protected default ref before
+# checkout. The branch check below also keeps other manual refs off those runners.
+on:
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: Bark SDK and runner architecture
+        type: choice
+        options: [x86_64, arm64]
+        required: true
+      release_version:
+        description: Bark marketing version
+        type: string
+        required: true
+      build_number:
+        description: Increasing Sparkle build number for this architecture
+        type: string
+        required: true
+      feed_base_url:
+        description: HTTPS directory intended to serve the Bark appcast
+        type: string
+        required: true
+      download_base_url:
+        description: HTTPS directory intended to serve the Bark disk image
+        type: string
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bark-candidate-${{ inputs.arch }}
+  cancel-in-progress: false
+
+jobs:
+  package:
+    name: Package Bark for ${{ inputs.arch }}
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'kuzaxak/Nook' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    environment: bark-candidate-${{ inputs.arch }}
+    runs-on:
+      - self-hosted
+      - macOS
+      - "${{ inputs.arch == 'arm64' && 'arm64' || 'x64' }}"
+      - "bark-candidate-${{ inputs.arch }}"
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      BARK_ARCH: ${{ inputs.arch }}
+      BARK_RELEASE_VERSION: ${{ inputs.release_version }}
+      BARK_BUILD_NUMBER: ${{ inputs.build_number }}
+      BARK_FEED_BASE_URL: ${{ inputs.feed_base_url }}
+      BARK_DOWNLOAD_BASE_URL: ${{ inputs.download_base_url }}
+      BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
+      BARK_SIGN_IDENTITY: ${{ vars.BARK_SIGN_IDENTITY }}
+      BARK_NOTARY_PROFILE: ${{ vars.BARK_NOTARY_PROFILE }}
+    steps:
+      - name: Checkout the approved revision
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prepare isolated candidate paths
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = "$BARK_ARCH"
+          : "${BARK_ENGINE_SOURCE:?Set the matching pinned SDK source in the environment}"
+          : "${BARK_SIGN_IDENTITY:?Set the local Developer ID identity in the environment}"
+          : "${BARK_NOTARY_PROFILE:?Set the local notarytool profile in the environment}"
+          work="$(mktemp -d "$RUNNER_TEMP/bark-candidate.XXXXXXXX")"
+          printf 'BARK_RELEASE_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+
+      - name: Verify and install the pinned architecture SDK
+        run: python3 scripts/bark-check.py engine --arch "$BARK_ARCH" --install
+
+      - name: Build and verify the signed candidate
+        run: |
+          python3 scripts/bark-check.py build --arch "$BARK_ARCH" --engine "$BARK_ENGINE_SOURCE" \
+            --identity "$BARK_SIGN_IDENTITY" --output "$BARK_RELEASE_WORK/Bark.app" \
+            --release-version "$BARK_RELEASE_VERSION" --build-number "$BARK_BUILD_NUMBER" \
+            --feed-base-url "$BARK_FEED_BASE_URL"
+
+      - name: Notarize and package Bark
+        env:
+          BARK_SPARKLE_KEY: ${{ secrets.SPARKLE_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          : "${BARK_SPARKLE_KEY:?Set the existing pinned Sparkle signing key in the environment}"
+          printf '%s\n' "$BARK_SPARKLE_KEY" |
+            python3 scripts/bark-check.py package "$BARK_RELEASE_WORK/Bark.app" \
+              --arch "$BARK_ARCH" --engine "$BARK_ENGINE_SOURCE" --output "$BARK_RELEASE_WORK/artifacts" \
+              --identity "$BARK_SIGN_IDENTITY" --notary-profile "$BARK_NOTARY_PROFILE" \
+              --download-base-url "$BARK_DOWNLOAD_BASE_URL" --ed-key-file -
+          test -f "$BARK_RELEASE_WORK/artifacts/Bark-$BARK_RELEASE_VERSION-$BARK_BUILD_NUMBER-macos-$BARK_ARCH.dmg"
+          test -f "$BARK_RELEASE_WORK/artifacts/bark-macos-$BARK_ARCH.xml"
+
+      - name: Upload the Bark candidate files
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bark-macos-${{ inputs.arch }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ env.BARK_RELEASE_WORK }}/artifacts/Bark-*.dmg
+            ${{ env.BARK_RELEASE_WORK }}/artifacts/bark-macos-*.xml
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+
+      - name: Remove this run's temporary output
+        if: always() && env.BARK_RELEASE_WORK != ''
+        run: |
+          set -euo pipefail
+          case "$BARK_RELEASE_WORK" in
+            "$RUNNER_TEMP"/bark-candidate.*) rm -rf -- "$BARK_RELEASE_WORK" ;;
+            *) echo "Unexpected candidate directory" >&2; exit 1 ;;
+          esac

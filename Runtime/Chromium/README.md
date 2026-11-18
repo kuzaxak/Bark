@@ -268,6 +268,42 @@ only with a fresh `/private/tmp` synthetic app root and explicit profile UUID;
 never use a real profile. Patch application, compilation and mechanical tests do
 not establish native interaction, media, profile isolation or release readiness.
 
+### Prepare Bark distribution files
+
+Choose the architecture and corresponding pinned SDK. Use a positive build number
+that increases on that architecture’s Sparkle feed, including when the Chromium
+version changes. Use the intended HTTPS feed and download directories for that
+candidate. The build embeds the architecture-specific feed URL and the existing
+pinned Sparkle public key before signing.
+
+Set the variables below for the candidate and use a fresh output directory.
+
+```fish
+python3 scripts/bark-check.py build --arch "$bark_arch" --engine "$bark_engine" \
+    --identity "$signing_identity" --output "$bark_app" \
+    --release-version "$bark_version" --build-number "$bark_build" \
+    --feed-base-url "$bark_feed_base_url"
+
+python3 scripts/bark-check.py package "$bark_app" --arch "$bark_arch" \
+    --engine "$bark_engine" --identity "$signing_identity" \
+    --output "$bark_candidate_directory" --download-base-url "$bark_download_base_url" \
+    --ed-key-file "$sparkle_key_file" --notary-profile "$notary_profile"
+```
+
+Choose a path ending in `Bark.app` for `$bark_app`. The package command
+re-verifies its embedded SDK and produces
+`Bark-<version>-<build>-macos-<arch>.dmg` and `bark-macos-<arch>.xml`. The
+notarytool profile enables notarization and stapling of the app and image.
+Use the private key matching the pinned public key. `--ed-key-file -` accepts
+it on standard input. Keep the key out of command arguments and logs.
+
+These commands and the [manual preparation workflow](../../CONTRIBUTING.md#prepare-a-bark-distribution-candidate)
+prepare files for review. Before publication, verify the installed app and an
+update from the previous release on the matching native Mac. If approved for
+publication, make the DMG available at the appcast’s enclosure URL before
+making that appcast available on the Bark feed. The public Nook transition feed
+continues on its existing URL.
+
 ### Regression scope and remaining qualification
 
 The maintained `bark_browser_tests` target in `bark/test/BUILD.gn` includes
