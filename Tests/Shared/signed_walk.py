@@ -15,6 +15,8 @@ from uuid import uuid4
 
 
 REPO = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO / "Runtime/Chromium"))
+from run_browser_tests import ScreenUnavailable
 
 
 def wait_for(description, predicate, process=None, timeout=12):
@@ -56,11 +58,13 @@ class Screen:
 
     def guard(self, target=None):
         if not self.owns_screen() or not self.console.available():
-            raise RuntimeError("The screen lock or unlocked console was lost")
+            raise ScreenUnavailable("The screen lock or unlocked console was lost")
         expected = target if target is not None else self.point
         actual = self.console.pointer()
         if math.dist(expected, actual) > 6:
-            raise RuntimeError(f"Pointer moved from {expected} to {actual}")
+            if target is None:
+                raise ScreenUnavailable(f"Pointer moved between test inputs from {expected} to {actual}")
+            raise RuntimeError(f"Posted pointer event missed {target}, observed {actual}")
         asn = subprocess.check_output(["lsappinfo", "front"], text=True).strip()
         front = subprocess.check_output(["lsappinfo", "info", "-only", "pid", asn], text=True).strip()
         if front.split("=")[-1] != str(self.pid):
@@ -180,8 +184,7 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
     args = parser.parse_args()
     if sys.platform != "darwin":
         parser.error("This walk requires macOS")
-    sys.path.insert(0, str(REPO / "Runtime/Chromium"))
-    from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole, ScreenUnavailable,
+    from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
                                    require_idle_console, screen_lock)
     app = args.app.resolve(strict=True)
     binary = app / "Contents/MacOS/Bark"

@@ -6,7 +6,20 @@ import subprocess
 import unittest
 from unittest.mock import Mock, patch
 
-from signed_walk import REPO, verify_native_candidate
+from signed_walk import REPO, Screen, ScreenUnavailable, verify_native_candidate
+
+
+class InputOwnershipTests(unittest.TestCase):
+    def test_pointer_interruption_and_missed_post_stop_before_further_input(self):
+        screen = Screen.__new__(Screen)
+        screen.owns_screen = lambda: True
+        screen.console = Mock()
+        screen.console.pointer.return_value = (1400, 450)
+        screen.point = (428, 453)
+        with self.assertRaisesRegex(ScreenUnavailable, "between test inputs"):
+            screen.key("q")
+        with self.assertRaisesRegex(RuntimeError, "Posted pointer event missed"):
+            screen.guard(target=(420, 450))
 
 
 class NativeArchitectureTests(unittest.TestCase):

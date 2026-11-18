@@ -121,7 +121,9 @@ disk image and restores a saved draft through an actual app update.
 To measure first input and return to a parked tab on an official candidate,
 install its pinned native SDK and run the startup walk on the same Mac.
 The walk checks the signed app against the SDK before timing and records
-the verified SDK digest with the measurements.
+the verified SDK digest with the measurements. Exit status 3 means the
+desktop became unavailable, for example when the pointer moved between
+test inputs. Use a completed run for timing.
 
 ```fish
 set -l evidence (mktemp -d /private/tmp/bark-timing.XXXXXX)
