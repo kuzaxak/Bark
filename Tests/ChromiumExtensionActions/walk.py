@@ -92,6 +92,83 @@ def install_extension(screen, access, fixture):
     print("Installed the fixture in Chromium’s extension manager", flush=True)
 
 
+def open_manager(access, source):
+    access.menu("Manage Extensions")
+    manager = wait_for("Missing extension utility window",
+                       lambda: access.owner("Load unpacked", ("AXButton",)), access.process)
+    if manager == source:
+        raise RuntimeError("The extension manager replaced the source window")
+    return manager
+
+
+def close_manager(access, manager, source):
+    close = access.find("Close Window", ("AXButton",), root=manager)
+    close = close or access.attribute(manager, "AXCloseButton")
+    if close is None:
+        raise RuntimeError("Missing extension utility close button")
+    access.press(close)
+    wait_for("Extension utility did not close",
+             lambda: manager not in access.windows(), access.process)
+    wait_for("Source window did not regain focus",
+             lambda: access.attribute(access.application, "AXFocusedWindow") == source, access.process)
+
+
+def fixture_remove_button(access, manager):
+    heading = access.find(EXTENSION, ("AXHeading",), root=manager)
+    parent = access.attribute(heading, "AXParent")
+    # Chromium exposes each card as siblings beginning with its heading.
+    in_card = False
+    for node in access.attribute(parent, "AXChildren") or ():
+        role = access.attribute(node, "AXRole")
+        if role == "AXHeading":
+            if in_card:
+                break
+            in_card = node == heading
+        elif (in_card and role == "AXButton" and "Remove" in access.names(node)
+              and access.attribute(node, "AXEnabled")):
+            return node
+    return None
+
+
+def fixture_removal_dialog(access, manager):
+    titles = {f'Remove "{EXTENSION}"?', f'Remove “{EXTENSION}”?'}
+    for element in access.tree(manager):
+        if (access.attribute(element, "AXRole") in ("AXSheet", "AXDialog")
+                or access.attribute(element, "AXSubrole") in ("AXDialog", "AXApplicationAlertDialog")):
+            if any(titles.intersection(access.names(node)) for node in access.tree(element)):
+                return element
+    return None
+
+
+def verify_removal(screen, access, source, events, output):
+    screen.keys["r"] = 15
+    for choice in ("Cancel", "Remove"):
+        manager = open_manager(access, source)
+        remove = wait_for("Missing Remove on the fixture's card",
+                          lambda: fixture_remove_button(access, manager), access.process)
+        access.press(remove)
+        dialog = wait_for("Missing fixture removal confirmation in the extension utility",
+                          lambda: fixture_removal_dialog(access, manager), access.process)
+        screen.screenshot(output / f"uninstall-{choice.lower()}.png", include_owned_windows=True)
+        access.press(access.control(choice, ("AXButton",), root=dialog))
+        wait_for("Fixture removal confirmation did not dismiss",
+                 lambda: not fixture_removal_dialog(access, manager), access.process)
+        access.control("Load unpacked", ("AXButton",), root=manager)
+        if choice == "Cancel":
+            access.control(EXTENSION, ("AXHeading",), root=manager)
+        else:
+            wait_for("The uninstalled fixture remained in the manager",
+                     lambda: not access.find(EXTENSION, ("AXHeading",), root=manager), access.process)
+        close_manager(access, manager, source)
+
+        ready = events.count("/ready")
+        screen.key("r", screen.command)
+        wait_for("The source did not reload after extension removal confirmation",
+                 lambda: events.count("/ready") > ready, access.process)
+        access.control(SOURCE, ("AXHeading",), root=source)
+        print(f"The source reloaded after {choice}.", flush=True)
+
+
 def show_site_controls(screen, access, source):
     def address():
         return next((element for element in access.tree(source)
@@ -121,16 +198,7 @@ def exercise(screen, process, events, output):
                            lambda: access.owner("Load unpacked", ("AXButton",)), process)
         if utility == source:
             raise RuntimeError("The extension manager replaced the source window")
-        close = access.find("Close Window", ("AXButton",), root=utility)
-        close = close or access.attribute(utility, "AXCloseButton")
-        if close is None:
-            raise RuntimeError("Missing extension utility close button")
-        access.press(close)
-        wait_for("Extension utility did not close",
-                 lambda: not access.owner("Load unpacked", ("AXButton",)), process)
-        wait_for("Source window did not regain focus",
-                 lambda: access.attribute(access.application, "AXFocusedWindow") == source,
-                 process)
+        close_manager(access, utility, source)
 
         pin, unpin = f"Pin {ACTION}", f"Unpin {ACTION}"
         show_site_controls(screen, access, source)
@@ -172,6 +240,8 @@ def exercise(screen, process, events, output):
             raise RuntimeError("The unpinned action remained in the address bar")
         print("Unpinned the action in the presenting profile", flush=True)
 
+        verify_removal(screen, access, source, events, output)
+
         screen.key("q", screen.command)
         quit_button = wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process, timeout=5)
         screen.press_button(quit_button)
@@ -181,4 +251,5 @@ def exercise(screen, process, events, output):
 
 
 if __name__ == "__main__":
-    sys.exit(run_walk("Signed extension action sidebar", "actions", serve, exercise))
+    sys.exit(run_walk("Signed Bark extension actions and removal", "actions", serve,
+                      exercise, official_qualification=True))
