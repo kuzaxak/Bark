@@ -256,6 +256,30 @@ class TabObservation : public content::WebContentsObserver,
   uint64_t vault_submission_serial_ = 0;
   bool vault_save_notification_posted_ = false;
   int32_t close_successor_ = 0;
+  // The physical widget can be shared by several profile clients. A vault
+  // interaction belongs to the selected tab actually mounted in its Bark root.
+  views::Widget* MountedVaultWidget() const {
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    auto* host = bark::BarkWindowHost::ForBrowser(owner);
+    if (!host || host->closing() || !host->widget() || owner->IsDeleteScheduled() ||
+        !owner->IsSelectedForNativeWindow() ||
+        owner->GetTabStripModel()->GetActiveTab() != tab ||
+        !web_contents() || tab->GetContents() != web_contents() ||
+        owner->GetProfile() != web_contents()->GetBrowserContext() ||
+        UnloadController::From(owner)->is_attempting_to_close_browser() ||
+        UnloadController::From(owner)->owner_close_admitted()) {
+      return nullptr;
+    }
+    NSView* root = host->root_view().GetNativeNSView();
+    NSView* page = web_contents()->GetNativeView().GetNativeNSView();
+    NSWindow* window = host->widget()->GetNativeWindow().GetNativeNSWindow();
+    if (!window || root.window != window || page.window != window ||
+        ![page isDescendantOf:root] || page.hiddenOrHasHiddenAncestor) {
+      return nullptr;
+    }
+    return host->widget();
+  }
   bool VaultSaveCurrent(uint64_t serial) const {
     auto* tab = tab_.Get();
     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
@@ -263,7 +287,7 @@ class TabObservation : public content::WebContentsObserver,
         vault_submission_ && serial && vault_submission_->token == serial &&
         web_contents() && tab && tab->GetContents() == web_contents() && owner &&
         !owner->IsDeleteScheduled() && owner == vault_submission_->owner.get() &&
-        owner->GetProfile() == web_contents()->GetBrowserContext();
+        MountedVaultWidget();
   }
   void NotifyVaultSave() {
     if (vault_save_notification_posted_) return;
@@ -297,6 +321,7 @@ class TabObservation : public content::WebContentsObserver,
   void ObserveVaultSave(BarcVaultSaveCallback callback) {
     ClearVaultSave();
     vault_save_callback_ = callback;
+    ObserveVaultOwner();
   }
   bool OfferVaultSave(const password_manager::PasswordForm& credentials) {
     auto* tab = tab_.Get();
@@ -307,8 +332,7 @@ class TabObservation : public content::WebContentsObserver,
       ClearVaultSave();
     const auto origin = url::Origin::Create(credentials.url);
     if (!vault_save_callback_ || !active_ || closing_ || discovery_stopped || !owner ||
-        owner->IsDeleteScheduled() || !web_contents() ||
-        owner->GetProfile() != web_contents()->GetBrowserContext() ||
+        !MountedVaultWidget() ||
         origin.opaque() || !(origin.scheme() == "https" ||
             (origin.scheme() == "http" && net::IsLocalhost(origin.GetURL()))) ||
         credentials.username_value.empty() || credentials.password_value.empty() ||
@@ -350,12 +374,8 @@ class TabObservation : public content::WebContentsObserver,
     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
     if (!frame || !frame->IsActive() || !frame->IsRenderFrameLive() || !owner ||
         owner != expected_owner.get() || owner->IsDeleteScheduled() ||
-        !owner->IsSelectedForNativeWindow() || owner->GetTabStripModel()->GetActiveTab() != tab ||
-        UnloadController::From(owner)->is_attempting_to_close_browser() ||
-        UnloadController::From(owner)->owner_close_admitted() ||
-        tab->GetContents() != web_contents() || frame->GetBrowserContext() != owner->GetProfile()) return false;
-    auto* view = BrowserView::GetBrowserViewForBrowser(owner);
-    return view && widget && view->browser_widget() == widget.get();
+        frame->GetBrowserContext() != owner->GetProfile()) return false;
+    return widget && MountedVaultWidget() == widget.get();
   }
   void NotifyVaultPasskey() {
     if (vault_passkey_notification_posted_) return;
@@ -392,8 +412,8 @@ class TabObservation : public content::WebContentsObserver,
   base::OnceClosure StartVaultPasskey(content::RenderFrameHost* frame,int operation,
       std::string arguments,base::OnceCallback<void(std::optional<std::string>)> reply) {
     auto* tab = tab_.Get(); auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
-    auto* view = owner ? BrowserView::GetBrowserViewForBrowser(owner) : nullptr;
-    if (!vault_passkey_callback_ || !frame || !view || !view->browser_widget() ||
+    auto* widget = MountedVaultWidget();
+    if (!vault_passkey_callback_ || !frame || !widget ||
         vault_passkey_ || !frame->IsActive() ||
         content::WebContents::FromRenderFrameHost(frame) != web_contents()) {
       base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(FROM_HERE,
@@ -402,7 +422,7 @@ class TabObservation : public content::WebContentsObserver,
     CHECK_NE(vault_passkey_serial_,UINT64_MAX);
     const uint64_t serial = ++vault_passkey_serial_;
     vault_passkey_.emplace(VaultPasskey{serial,frame->GetWeakDocumentPtr(),owner->GetWeakPtr(),
-        view->browser_widget()->GetWeakPtr(),operation,std::move(arguments),std::move(reply)});
+        widget->GetWeakPtr(),operation,std::move(arguments),std::move(reply)});
     if (!VaultPasskeyCurrent(serial)) { CancelVaultPasskey(); return {}; }
     NotifyVaultPasskey();
     return base::BindOnce([](std::weak_ptr<TabObservation> weak,uint64_t serial) {
@@ -481,7 +501,7 @@ class TabObservation : public content::WebContentsObserver,
     vault_selection_ = {}; vault_active_ = {}; vault_inactive_ = {}; vault_tab_ = {};
     auto* tab = tab_.Get();
     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
-    if ((!vault_callback_ && !vault_passkey_callback_) || !owner) return;
+    if ((!vault_callback_ && !vault_passkey_callback_ && !vault_save_callback_) || !owner) return;
     vault_selection_ = owner->RegisterNativeWindowSelectionChanged(base::BindRepeating(
         [](std::weak_ptr<TabObservation> weak) { if (auto self = weak.lock()) self->InvalidateVaultIfNeeded(); }, weak_from_this()));
     auto changed = base::BindRepeating([](std::weak_ptr<TabObservation> weak, BrowserWindowInterface*) {
@@ -507,12 +527,11 @@ class TabObservation : public content::WebContentsObserver,
         web_contents()->GetFocusedFrame() != frame) return false;
     auto* view = web_contents()->GetRenderWidgetHostView();
     if (!view || (foreground && !view->HasFocus())) return false;
-    auto* owner_view = BrowserView::GetBrowserViewForBrowser(owner);
-    if (!owner_view || !vault_focus_->physical_widget ||
-        owner_view->browser_widget() != vault_focus_->physical_widget.get()) return false;
+    auto* widget = MountedVaultWidget();
+    if (!widget || widget != vault_focus_->physical_widget.get()) return false;
     // Preserve the stock owned-prompt gate; Pawl never restores focus behind
     // an unrelated Chrome permission/install/modal widget.
-    for (views::Widget* child : views::Widget::GetAllOwnedWidgets(owner_view->browser_widget()->GetNativeView()))
+    for (views::Widget* child : views::Widget::GetAllOwnedWidgets(widget->GetNativeView()))
       if (child->IsVisible()) return false;
     auto* cache_frame = vault_focus_->cache_document.AsRenderFrameHostIfValid();
     auto* manager = vault_focus_->manager.get();
@@ -525,6 +544,7 @@ class TabObservation : public content::WebContentsObserver,
          field->form_control_type() == autofill::FormControlType::kInputPassword);
   }
   void InvalidateVaultIfNeeded() {
+    if (vault_submission_ && !VaultSaveCurrent(vault_submission_->token)) ClearVaultSave();
     if (vault_passkey_ && !VaultPasskeyCurrent(vault_passkey_->serial)) CancelVaultPasskey();
     if (!vault_focus_) return;
     if (!VaultCurrent(vault_focus_->token, false)) ClearVaultFocus();
@@ -586,11 +606,11 @@ class TabObservation : public content::WebContentsObserver,
     }
     auto* tab = tab_.Get();
     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
-    auto* owner_view = owner ? BrowserView::GetBrowserViewForBrowser(owner) : nullptr;
-    if (!owner_view) return;
+    auto* widget = MountedVaultWidget();
+    if (!widget) return;
     CHECK_NE(vault_serial_, UINT64_MAX);
     const uint64_t serial = ++vault_serial_;
-    vault_focus_.emplace(VaultFocus{serial, frame->GetWeakDocumentPtr(), cache_frame->GetWeakDocumentPtr(), manager.GetWeakPtr(), owner->GetWeakPtr(), owner_view->browser_widget()->GetWeakPtr(), form_id, field_id, username, code, pair.autofill_field->bounds()});
+    vault_focus_.emplace(VaultFocus{serial, frame->GetWeakDocumentPtr(), cache_frame->GetWeakDocumentPtr(), manager.GetWeakPtr(), owner->GetWeakPtr(), widget->GetWeakPtr(), form_id, field_id, username, code, pair.autofill_field->bounds()});
     if (!VaultCurrent(serial)) { vault_focus_.reset(); return; }
     NotifyVaultFocus();
   }
@@ -2044,7 +2064,7 @@ class TabObservation : public content::WebContentsObserver,
       return;
     strip_ = owner->GetTabStripModel();
     strip_->AddObserver(this);
-    if (vault_callback_ || vault_passkey_callback_) ObserveVaultOwner();
+    if (vault_callback_ || vault_passkey_callback_ || vault_save_callback_) ObserveVaultOwner();
     window_cancelled_ = owner->RegisterBrowserCloseCancelled(base::BindRepeating(
         &TabObservation::WindowCloseCancelled, base::Unretained(this)));
   }
@@ -2512,12 +2532,12 @@ base::RepeatingCallback<bool()> VaultPasskeyContext(content::RenderFrameHost* fr
     if (observer->web_contents() != contents || !observer->active() || !observer->vault_passkey_callback_) continue;
     auto* tab = tabs::TabInterface::GetFromContents(contents);
     auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
-    auto* view = owner ? BrowserView::GetBrowserViewForBrowser(owner) : nullptr;
-    if (!frame || !view || !view->browser_widget()) return {};
+    auto* widget = observer->MountedVaultWidget();
+    if (!frame || !widget) return {};
     return base::BindRepeating([](std::weak_ptr<TabObservation> weak,content::WeakDocumentPtr document,
         base::WeakPtr<BrowserWindowInterface> owner,base::WeakPtr<views::Widget> widget) {
       auto self = weak.lock(); return self && self->VaultPasskeyContextCurrent(document,owner,widget);
-    },std::weak_ptr<TabObservation>(observer),frame->GetWeakDocumentPtr(),owner->GetWeakPtr(),view->browser_widget()->GetWeakPtr());
+    },std::weak_ptr<TabObservation>(observer),frame->GetWeakDocumentPtr(),owner->GetWeakPtr(),widget->GetWeakPtr());
   }
   return {};
 }

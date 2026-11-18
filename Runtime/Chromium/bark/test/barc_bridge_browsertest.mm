@@ -4994,7 +4994,7 @@ IN_PROC_BROWSER_TEST_F(BarcEarlyPostedReturnBrowserTest,
 
 namespace {
 
-void MountApplicationLaunchPage(BrowserWindowInterface* browser) {
+void MountSelectedHostPage(BrowserWindowInterface* browser) {
   CHECK(browser);
   auto* host = bark::BarkWindowHost::ForBrowser(browser);
   CHECK(host);
@@ -5049,7 +5049,7 @@ class BarcApplicationLaunchBrowserTest
             auto* browser = SharedWindow(pending_window);
             auto* host = bark::BarkWindowHost::ForBrowser(browser);
             if (host && host->root_view().GetNativeNSView()) {
-              MountApplicationLaunchPage(browser);
+              MountSelectedHostPage(browser);
             }
             output->presentation = self->mini ? BARC_APPLICATION_MINI : BARC_APPLICATION_CURRENT_SPACE;
             output->window = pending_window;
@@ -5079,7 +5079,7 @@ class BarcApplicationLaunchBrowserTest
           // URLs must go into the real Barc Work profile created below.
           GlobalBrowserCollection::GetInstance()->ForEach(
               [](BrowserWindowInterface* browser) {
-                MountApplicationLaunchPage(browser);
+                MountSelectedHostPage(browser);
                 return true;
               });
           barc_profile_open_window(
@@ -5089,7 +5089,7 @@ class BarcApplicationLaunchBrowserTest
                     static_cast<BarcApplicationLaunchBrowserTest*>(pointer);
                 CHECK_EQ(BARC_PROFILE_OK, status);
                 self->target = window;
-                MountApplicationLaunchPage(SharedWindow(window));
+                MountSelectedHostPage(SharedWindow(window));
                 // This exact C-factory blank is excluded from discovery
                 // admission. The fixture binds its target before explicit
                 // startup presentation.
@@ -5156,7 +5156,7 @@ class BarcApplicationLaunchBrowserTest
         std::make_unique<EarlyURL>());
   }
   void Admit(int32_t window) {
-    MountApplicationLaunchPage(SharedWindow(window));
+    MountSelectedHostPage(SharedWindow(window));
     ASSERT_EQ(1, barc_window_show(window));
   }
   int CountURL(const GURL& url) {
@@ -5429,7 +5429,7 @@ class BarcCancelledApplicationLaunchBrowserTest
     void PostBrowserStart() override {
       GlobalBrowserCollection::GetInstance()->ForEach(
           [](BrowserWindowInterface* browser) {
-            MountApplicationLaunchPage(browser);
+            MountSelectedHostPage(browser);
             return true;
           });
       [AppController.sharedController
@@ -10922,6 +10922,8 @@ std::unique_ptr<net::test_server::HttpResponse> VaultForm(
 }  // namespace
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultFocusedPasswordAndOtpUseTypedFieldCapabilities) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&VaultForm));
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL url = embedded_test_server()->GetURL("/vault-form");
@@ -10954,6 +10956,8 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultFocusedPasswordAndOtpUseTyped
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultFieldCapabilityEndsOnBlurNavigationAndUnobserve) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&VaultForm));
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), embedded_test_server()->GetURL("/vault-form")));
@@ -10984,6 +10988,8 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultFieldCapabilityEndsOnBlurNavi
 
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultOwnedPickerNeedsRestoredNativeFocusAndCancellationCannotRevive) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&VaultForm));
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), embedded_test_server()->GetURL("/vault-form")));
@@ -11028,6 +11034,8 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultOwnedPickerNeedsRestoredNativ
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultFrameOriginAndFieldIdsNeverRetargetParent) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   net::EmbeddedTestServer child_server;
   child_server.RegisterRequestHandler(base::BindRepeating(&VaultForm));
   ASSERT_TRUE(child_server.Start());
@@ -11106,6 +11114,8 @@ std::unique_ptr<password_manager::PasswordFormManagerForUI> VaultFormManager(
 // not the Barc helper. Chromium's UI-manager object represents the accepted
 // submission; its original origin must survive the completed login redirect.
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultSaveAdmissionOwnsOnePromptAcrossRedirectAndReplacement) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL login = embedded_test_server()->GetURL("/title1.html");
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),login));
@@ -11158,6 +11168,8 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultSaveAdmissionOwnsOnePromptAcr
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, VaultSaveOwnerTransferRetiresSubmissionAndInvalidOriginFallsBack) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("/title1.html")));
   auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
@@ -11532,7 +11544,74 @@ std::string PawlRegistrationReply(const std::string& rp) {
 }
 }  // namespace
 
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       VaultRequestsRetireWhenSelectedHostPageChanges) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  const int32_t personal = Open(kSharedPersonal, work, BARC_PROFILE_BLANK);
+  ASSERT_EQ(1, barc_window_select(work));
+  auto* owner = SharedWindow(work);
+  ASSERT_NO_FATAL_FAILURE(Navigate(owner, embedded_test_server()->GetURL("/title1.html")));
+  MountSelectedHostPage(owner);
+  ASSERT_EQ(1, barc_window_show(work));
+  auto* contents = owner->GetTabStripModel()->GetActiveWebContents();
+  auto* frame = contents->GetPrimaryMainFrame();
+  const int32_t tab = barc_window_tab_at(work, 0);
+
+  struct Prompts {
+    uint64_t request = 0;
+    uint64_t submission = 0;
+  } prompts;
+  const uint64_t observation = barc_tab_observe(work, tab, PawlEvents::Tab, &prompts);
+  ASSERT_NE(0u, observation);
+  base::ScopedClosureRunner stop(base::BindOnce(&barc_tab_unobserve, observation));
+  ASSERT_EQ(1, barc_tab_observe_vault_passkeys(observation,
+      [](void* context, uint64_t, uint64_t request, int32_t, const char*, void*) {
+        static_cast<Prompts*>(context)->request = request;
+      }));
+  EXPECT_TRUE(barc::IsVaultPasskeyAvailable(frame));
+  NSView* page = contents->GetNativeView().GetNativeNSView();
+  NSView* root = page.superview;
+  ASSERT_TRUE(root.window);
+  // A sibling of the product root is in the same NSWindow but is not its page.
+  [root.superview addSubview:page];
+  EXPECT_FALSE(barc::IsVaultPasskeyAvailable(frame));
+  [root addSubview:page];
+  ASSERT_TRUE(barc::IsVaultPasskeyAvailable(frame));
+
+  base::test::TestFuture<std::optional<std::string>> reply;
+  auto cancel = barc::StartVaultPasskeyRequest(frame, frame->GetLastCommittedOrigin(),
+      1, base::DictValue(), reply.GetCallback());
+  ASSERT_TRUE(cancel);
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.request != 0; }));
+  const uint64_t request = prompts.request;
+
+  ASSERT_EQ(1, barc_tab_observe_vault_save(observation,
+      [](void* context, uint64_t, uint64_t submission, const char*, const char*, const char*, void*) {
+        static_cast<Prompts*>(context)->submission = submission;
+      }));
+  password_manager::PasswordForm credentials;
+  credentials.url = contents->GetLastCommittedURL();
+  credentials.username_value = u"work";
+  credentials.password_value = password_manager::PasswordString(std::u16string(u"synthetic"));
+  auto* client = ChromePasswordManagerClient::FromWebContents(contents);
+  ASSERT_TRUE(client->PromptUserToSaveOrUpdatePassword(VaultFormManager(credentials), false));
+  ASSERT_TRUE(base::test::RunUntil([&] { return prompts.submission != 0; }));
+  const uint64_t submission = prompts.submission;
+
+  ASSERT_EQ(1, barc_window_select(personal));
+  EXPECT_FALSE(barc::IsVaultPasskeyAvailable(frame));
+  EXPECT_EQ(std::nullopt, reply.Get());
+  EXPECT_EQ(0, barc_tab_vault_save_is_current(observation, submission));
+  ASSERT_EQ(1, barc_window_select(work));
+  EXPECT_TRUE(barc::IsVaultPasskeyAvailable(frame));
+  EXPECT_EQ(0, barc_tab_complete_vault_passkey(observation, request, 1, "{}"));
+  EXPECT_EQ(0, barc_tab_vault_save_is_current(observation, submission));
+}
+
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,PawlProviderMapsChromiumHashEs256AndAllowListResponses) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("/title1.html")));
   auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
@@ -11599,6 +11678,8 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,PawlProviderMapsChromiumHashEs256An
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,PawlProviderUnsupportedCancellationAndLateReplyNeverCompleteWrongDocument) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("/title1.html")));
   auto* contents = browser()->tab_strip_model()->GetActiveWebContents();auto* frame=contents->GetPrimaryMainFrame();
@@ -11796,6 +11877,8 @@ class PawlReadinessObserver final : public device::FidoRequestHandlerBase::Obser
 };
 }  // namespace
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,PawlAdditionalDiscoveryDoesNotOverwriteStockReadinessOrHoldCancellation) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("/title1.html")));
   auto* contents=browser()->tab_strip_model()->GetActiveWebContents();auto* frame=contents->GetPrimaryMainFrame();
@@ -11901,6 +11984,8 @@ class BarcPawlWebAuthnBrowserTest : public BarcBridgeBrowserTest {
 };
 
 IN_PROC_BROWSER_TEST_F(BarcPawlWebAuthnBrowserTest,PawlNormalWebAuthnCreateThenAllowListAssertionUsesChromeCeremonyAndClientData) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("localhost", "/title1.html")));
   auto* contents=browser()->tab_strip_model()->GetActiveWebContents();
@@ -11957,6 +12042,8 @@ IN_PROC_BROWSER_TEST_F(BarcPawlWebAuthnBrowserTest,PawlNormalWebAuthnCreateThenA
 }
 
 IN_PROC_BROWSER_TEST_F(BarcPawlWebAuthnBrowserTest,PawlNormalModalEmptyAllowListReturnsActualUserHandleWithoutResidentMetadata) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("localhost", "/title1.html")));
   auto* contents=browser()->tab_strip_model()->GetActiveWebContents();
@@ -11984,6 +12071,8 @@ IN_PROC_BROWSER_TEST_F(BarcPawlWebAuthnBrowserTest,PawlNormalModalEmptyAllowList
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,PawlAvailabilityUsesExactFrameReadinessAndRetainsDisconnectedStockAndGuestFallback) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
   ASSERT_TRUE(embedded_test_server()->Start());
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(),embedded_test_server()->GetURL("localhost", "/title1.html")));
   auto* contents=browser()->tab_strip_model()->GetActiveWebContents();auto* frame=contents->GetPrimaryMainFrame();
