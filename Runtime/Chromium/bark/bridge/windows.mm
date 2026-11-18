@@ -908,10 +908,9 @@ int barc_window_set_native_header(int32_t id, void* expected_sidebar,
 
 int barc_window_native_shell_is_owned(int32_t id, void* expected_view) {
   auto* window = Window(id);
-  auto* browser = window ? BrowserView::GetBrowserViewForBrowser(window) : nullptr;
-  auto* host = browser ? browser->barc_native_shell() : nullptr;
-  return host &&
-         host->native_view().GetNativeNSView() == (__bridge NSView*)expected_view;
+  auto* host = window ? bark::BarkWindowHost::ForBrowser(window) : nullptr;
+  return host && !host->closing() &&
+         host->root_view().GetNativeNSView() == (__bridge NSView*)expected_view;
 }
 int barc_window_detach_native_shell_if_owned(int32_t id, void* expected_view) {
   return expected_view && barc_window_native_shell_is_owned(id, expected_view)
