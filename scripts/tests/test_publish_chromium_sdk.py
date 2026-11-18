@@ -13,6 +13,7 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[2]
+PGO_FIXTURE = b"synthetic PGO fixture"
 
 
 class FirstOfficialPublicationTests(unittest.TestCase):
@@ -21,6 +22,18 @@ class FirstOfficialPublicationTests(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory(prefix="bark-first-official-")
         self.addCleanup(temporary.cleanup)
         self.work = Path(temporary.name).resolve()
+        # The publisher subprocesses use the real verifier and an isolated
+        # recipe whose ARM hash pins these fixture bytes.
+        self.repo = self.work / "repo"
+        self.chromium = self.repo / "Runtime/Chromium"
+        shutil.copytree(ROOT / "Runtime/Chromium", self.chromium)
+        shutil.copytree(ROOT / "scripts", self.repo / "scripts")
+        (self.repo / "ChromiumApp").symlink_to(ROOT / "ChromiumApp", target_is_directory=True)
+        pins_path = self.chromium / "PINS.json"
+        pins = json.loads(pins_path.read_text())
+        pins["official_pgo_sha256"]["mac-arm"] = hashlib.sha256(PGO_FIXTURE).hexdigest()
+        pins_path.write_text(json.dumps(pins))
+        self.publisher = self.repo / "scripts/publish-chromium-engine.sh"
         self.package = self.work / "package"
         self.addCleanup(self.make_writable)
         self.siso = self.work / "fake-tools"
@@ -45,7 +58,7 @@ class FirstOfficialPublicationTests(unittest.TestCase):
     def publish(self, *options, build=None, arch="arm64"):
         build = self.build if build is None else build
         return subprocess.run([
-            "/bin/bash", self.fixture["PUBLISH"], "--arch", arch,
+            "/bin/bash", self.publisher, "--arch", arch,
             *options, build, self.package,
         ], env=self.fixture["publisher_environment"](build, self.siso),
             capture_output=True, text=True)
@@ -62,8 +75,8 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
                     require_official=sys.argv[6] == 'true')
 """
         return subprocess.run([
-            sys.executable, "-B", "-c", wrapped, ROOT / "scripts",
-            self.package, arch, build, self.fixture["PUBLISH"], str(official).lower(),
+            sys.executable, "-B", "-c", wrapped, self.repo / "scripts",
+            self.package, arch, build, self.publisher, str(official).lower(),
         ], env=self.fixture["publisher_environment"](build, self.siso),
             capture_output=True, text=True)
 
@@ -73,7 +86,7 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
         )
 
     def make_official(self):
-        chromium = ROOT / "Runtime/Chromium"
+        chromium = self.chromium
         pins = json.loads((chromium / "PINS.json").read_text())
         source = self.build.parent.parent
         profile_name = pins["official_pgo_profiles"]["mac-arm"]
@@ -82,7 +95,7 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
         selector.write_text(profile_name + "\n")
         profile = selector.parent / "pgo_profiles" / profile_name
         profile.parent.mkdir()
-        profile.write_bytes(b"synthetic PGO fixture")
+        profile.write_bytes(PGO_FIXTURE)
         self.tool("gn", "printf '%s\\n' " + shlex.quote(f"-fprofile-use={profile}"))
         state_file = self.build / "fake-siso-state.json"
         state = json.loads(state_file.read_text())

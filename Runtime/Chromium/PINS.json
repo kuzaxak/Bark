@@ -8,5 +8,9 @@
   "official_pgo_profiles": {
     "mac": "chrome-mac-8078-1793210039-d0da025478573e13f407f013182890d1e5d06d00-2bf76a0407535d2fe700f41a1ec47590d03948c0.profdata",
     "mac-arm": "chrome-mac-arm-8078-1793210039-70a79c5304368db0122ec98c91db5c4c6851ed9a-2bf76a0407535d2fe700f41a1ec47590d03948c0.profdata"
+  },
+  "official_pgo_sha256": {
+    "mac": "9acafe2a2140cc9751ac68c89bc76625c95950d6018892150913131cd06226e5",
+    "mac-arm": "1acb662d07e224d2c38f2f8cb80b63c06b5b4c927ec90b79adde5843a26c5b88"
   }
 }

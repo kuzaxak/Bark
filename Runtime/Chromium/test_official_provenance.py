@@ -39,6 +39,9 @@ class OfficialProvenanceTests(unittest.TestCase):
         self.profile.write_bytes(b"pinned PGO")
         self.profile_flag = f"-fprofile-use={self.profile}"
         self.recorded_hash = provenance.digest(self.profile)
+        pins = patch.dict(provenance.PINS, {"official_pgo_sha256": {"mac": self.recorded_hash}})
+        pins.start()
+        self.addCleanup(pins.stop)
         self.recorded_time = self.image.stat().st_mtime_ns
         mock = patch.object(provenance.subprocess, "check_output", side_effect=self.tools)
         mock.start()
@@ -103,6 +106,23 @@ class OfficialProvenanceTests(unittest.TestCase):
         info["SCMRevision"] = "0" * 40
         self.info.write_bytes(plistlib.dumps(info))
         with self.assertRaisesRegex(ValueError, "revision"):
+            provenance.verify_cached(self.artifact, self.arch)
+
+    def test_wrong_cached_profile_fails_despite_matching_siso_evidence(self):
+        self.profile.write_bytes(b"unrelated PGO with the pinned name")
+        self.recorded_hash = provenance.digest(self.profile)
+        with self.assertRaisesRegex(ValueError, "PGO profile SHA-256 differs"):
+            provenance.verify_pgo_profile(self.src, "mac")
+        with self.assertRaisesRegex(ValueError, "PGO profile SHA-256 differs"):
+            provenance.record(self.out, self.src, self.arch, {})
+
+    def test_wrong_receipt_profile_digest_fails_even_when_sealed(self):
+        receipt = self.sealed_receipt()
+        data = json.loads(receipt.read_text())
+        data["pgo_sha256"] = "0" * 64
+        receipt.write_text(json.dumps(data))
+        (self.artifact / "SHA256SUMS").write_text(f"{provenance.digest(receipt)}  ./{provenance.RECEIPT}\n")
+        with self.assertRaisesRegex(ValueError, "does not match"):
             provenance.verify_cached(self.artifact, self.arch)
 
     def test_unrecorded_or_unconfigured_pgo_is_refused(self):

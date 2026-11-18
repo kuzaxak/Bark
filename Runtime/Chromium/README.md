@@ -72,14 +72,16 @@ the Intel engine.
 For an official optimized engine, select an Xcode installation whose default
 macOS SDK matches `official_macos_sdk` in `PINS.json` (26.5, build 25F70
 for this Chromium revision). The recipe checks the SDK before building,
-fetches Chromium's pinned PGO profile for the target architecture, and enables
-official compilation and profile-guided optimization. The dedicated
+fetches Chromium's pinned PGO profile for the target architecture, and checks
+the SHA-256 of the decompressed profile before enabling profile-guided
+optimization. A file already cached at that name must pass the same check. The dedicated
 `Barc-<arch>-official` and `BarkCargo-official` directories keep developer
 and official products independent.
 
 After the link, the recipe records the framework hashes, Chromium revision,
-SDK build, GN arguments and the PGO profile used by the browser target in
-`official-build.json`. SDK publication rechecks the build outputs and includes
+SDK build, GN arguments and the pinned PGO name and SHA-256 in
+`official-build.json`. The receipt requires Siso evidence that the target read
+those exact PGO bytes. SDK publication rechecks the build outputs and includes
 the receipt in the pinned manifest. A consumer can verify an installed official
 SDK without the Chromium checkout using `bark-check.py engine --require-official`.
 

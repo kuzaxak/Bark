@@ -61,17 +61,24 @@ def recipe_inputs(arch):
         "SDK": PINS["official_macos_sdk"],
         "gn_args_sha256": sha256(engine_args(gn_arch, True)).hexdigest(),
         "pgo_profile": PINS["official_pgo_profiles"][target],
+        "pgo_sha256": PINS["official_pgo_sha256"][target],
     }
+
+
+def verify_pgo_profile(src, target):
+    name = PINS["official_pgo_profiles"][target]
+    if (src / "chrome/build" / f"{target}.pgo.txt").read_text().strip() != name:
+        raise ValueError("The Chromium PGO selector does not match the Bark pin")
+    profile = src / "chrome/build/pgo_profiles" / name
+    if digest(profile) != PINS["official_pgo_sha256"][target]:
+        raise ValueError(f"The Chromium PGO profile SHA-256 differs from the Bark pin: {profile}")
+    return profile
 
 
 def record(out, src, arch, env):
     expected = recipe_inputs(arch)
     _, target = ARCHES[arch]
-    pin = expected["pgo_profile"]
-    if (src / "chrome/build" / f"{target}.pgo.txt").read_text().strip() != pin:
-        raise ValueError("The Chromium PGO selector does not match the Bark pin")
-    profile = src / "chrome/build/pgo_profiles" / pin
-    pgo_hash = digest(profile)
+    profile = verify_pgo_profile(src, target)
     flags = subprocess.check_output(["gn", "desc", str(out), "//chrome/browser:browser", "cflags"],
                                     cwd=src, env=env, text=True).splitlines()
     if not any(flag.startswith("-fprofile-use=") and
@@ -82,14 +89,14 @@ def record(out, src, arch, env):
     # Siso retains the digest of the profile input it actually read.
     state = subprocess.check_output(["siso", "fs", "export", "-C", out], cwd=src, env=env)
     for entry in json.loads(state)["entries"]:
-        if (entry.get("name") == str(profile) and entry.get("digest", {}).get("hash") == pgo_hash
+        if (entry.get("name") == str(profile) and entry.get("digest", {}).get("hash") == expected["pgo_sha256"]
                 and int(entry.get("id", {}).get("mod_time", linked + 1)) <= linked):
             break
     else:
         raise ValueError("The official build has no matching Siso input record for the pinned PGO profile")
     if digest(out / "args.gn") != expected["gn_args_sha256"]:
         raise ValueError("The actual GN arguments do not match the official recipe")
-    return {**expected, **framework_inputs(framework, arch), "pgo_sha256": pgo_hash}
+    return {**expected, **framework_inputs(framework, arch)}
 
 
 def verify(receipt, framework, arch):
@@ -98,9 +105,7 @@ def verify(receipt, framework, arch):
         raise ValueError("No official Bark SDK build receipt. Build the pinned engine with --official.")
     data = json.loads(receipt.read_text())
     expected = {**recipe_inputs(arch), **actual}
-    if (not isinstance(data, dict) or data.keys() != expected.keys() | {"pgo_sha256"}
-            or any(data.get(key) != value for key, value in expected.items())
-            or not re.fullmatch("[0-9a-f]{64}", str(data.get("pgo_sha256")))):
+    if data != expected:
         raise ValueError("The official SDK receipt does not match the pinned recipe and framework")
 
 
