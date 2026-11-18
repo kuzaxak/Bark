@@ -47,6 +47,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts/tests
           python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
+          python3 -B -m unittest discover -s Tests/Shared
           python3 -B Tests/ChromiumAppShim/check.py
 
   signed-smoke:

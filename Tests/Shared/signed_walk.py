@@ -164,8 +164,10 @@ def verify_official_sdk(contributor, architecture, app=None):
         with contributor["pinned_engine"](str(cached), working, architecture, require_official=True) as engine:
             if app is not None:
                 contributor["verify_candidate"](app, engine, working, architecture)
-            pin = contributor["read_pin"](contributor["PACKAGE"], architecture)
-            return engine, {"architecture": architecture, "sdk_pin": pin, "official": True}
+            digest = hashlib.sha256((engine / "SHA256SUMS").read_bytes()).hexdigest()
+            if digest != contributor["read_pin"](contributor["PACKAGE"], architecture):
+                raise ValueError("The checkout SDK pin changed during official verification.")
+            return engine, {"architecture": architecture, "sdk_pin": digest, "official": True}
 
 
 def run_walk(description, name, serve, exercise, preferences=(), *,

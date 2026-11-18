@@ -53,6 +53,7 @@ revisions. These tests run before a full Chromium build is available.
 ```fish
 python3 -B -m unittest discover -s scripts/tests
 python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
+python3 -B -m unittest discover -s Tests/Shared
 python3 -B Tests/ChromiumAppShim/check.py
 ```
 
@@ -116,6 +117,16 @@ source "$walk_env/bin/activate.fish"
 
 The [installed update walk](Tests/ChromiumUpdate/README.md) exercises a signed
 disk image and restores a saved draft through an actual app update.
+
+To measure first input and return to a parked tab on an official candidate,
+install its pinned native SDK and run the startup walk on the same Mac.
+The walk checks the signed app against the SDK before timing and records
+the verified SDK digest with the measurements.
+
+```fish
+set -l evidence (mktemp -d /private/tmp/bark-timing.XXXXXX)
+python3 Tests/ChromiumStartup/walk.py --app build/Bark.app --require-official --output "$evidence/startup"
+```
 
 ### Prepare a Bark distribution candidate
 

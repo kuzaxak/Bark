@@ -1,5 +1,6 @@
 """Offline checks for signed walk official qualification."""
 from contextlib import contextmanager
+import hashlib
 from pathlib import Path
 import tempfile
 import unittest
@@ -15,7 +16,9 @@ class OfficialWalkTests(unittest.TestCase):
         self.engine = Path(scratch.name)
         self.app = Path("/fixture/Bark.app")
         self.package = Path("/fixture/BarkEngine")
-        self.pin = "a" * 64
+        manifest = b"pinned SDK fixture\n"
+        (self.engine / "SHA256SUMS").write_bytes(manifest)
+        self.pin = hashlib.sha256(manifest).hexdigest()
         self.calls = Mock()
         self.calls.read_pin.return_value = self.pin
         self.refuse_sdk = False
@@ -50,6 +53,12 @@ class OfficialWalkTests(unittest.TestCase):
             verify_official_sdk(self.contributor, "x86_64", self.app)
         self.calls.verify_candidate.assert_not_called()
         self.calls.read_pin.assert_not_called()
+
+    def test_another_checkout_pin_cannot_label_the_verified_sdk(self):
+        self.calls.read_pin.return_value = "b" * 64
+        with self.assertRaisesRegex(ValueError, "pin changed"):
+            verify_official_sdk(self.contributor, "arm64", self.app)
+        self.calls.verify_candidate.assert_called_once()
 
     def test_mismatched_signed_app_prevents_evidence(self):
         self.calls.verify_candidate.side_effect = ValueError("signed payload mismatch")
