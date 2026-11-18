@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare, verify or build the pinned Bark Chromium engine."""
+"""Prepare, update, verify or build the pinned Bark Chromium engine."""
 import argparse
 import fcntl
 import json
@@ -264,6 +264,21 @@ def prepare(checkout, depot_tools, env, args):
     apply_recipe(src, marker)
 
 
+def update(checkout, depot_tools, env, args):
+    from update_checkout import update_from_revision
+
+    src = checkout / "src"
+    verify_gclient(checkout)
+    repository(src, "chromium", create=False, dry_run=True)
+    repository(depot_tools, "depot_tools", create=False, dry_run=True)
+    check_pin(src)
+    budget()
+    marker = checkout / ".bark-engine-preparing"
+    if marker.exists() or marker.is_symlink():
+        raise ValueError("Finish the interrupted prepare before updating its recipe")
+    update_from_revision(src, args.from_revision, args.dry_run)
+
+
 def install_generated(source, destination):
     if destination.is_symlink():
         raise ValueError(f"{destination}: expected a regular file")
@@ -424,15 +439,18 @@ def build(checkout, depot_tools, env, args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "check", "build"))
+    parser.add_argument("action", choices=("prepare", "update", "check", "build"))
     parser.add_argument("--checkout", type=Path, required=True, help="gclient root containing src/")
     parser.add_argument("--depot-tools", type=Path, help="defaults to depot_tools beside the gclient root")
     parser.add_argument("--official", action="store_true", help="build with the pinned macOS SDK and Chromium PGO profile")
     parser.add_argument("--arch", choices=("x64", "arm64"), help="build architecture (defaults to native hardware)")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), default=8, metavar="1..8")
+    parser.add_argument("--from-revision", help="Bark commit previously applied to this checkout (for update)")
     parser.add_argument("--resume", action="store_true", help="allow an existing pinned checkout during prepare")
     parser.add_argument("--dry-run", action="store_true", help="check existing inputs and print commands without writing")
     args = parser.parse_args()
+    if bool(args.from_revision) != (args.action == "update"):
+        parser.error("update requires --from-revision and only update accepts it")
     if (args.arch is not None or args.official) and args.action != "build":
         parser.error("--arch and --official select the configuration for build")
     if args.action == "build" and args.arch is None:
@@ -451,7 +469,7 @@ def main():
         repository(depot_tools, "depot_tools", create=False, dry_run=True)
         replay(checkout / "src")
         return
-    action = {"prepare": prepare, "build": build}[args.action]
+    action = {"prepare": prepare, "update": update, "build": build}[args.action]
     if args.dry_run:
         action(checkout, depot_tools, env, args)
         return

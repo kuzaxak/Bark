@@ -59,3 +59,19 @@ The project SHALL let a contributor with the matching SDK, supported toolchain a
 - **GIVEN** a previously verified local app and an SDK with a different artifact digest
 - **WHEN** the contributor attempts to replace the app using that SDK
 - **THEN** the command reports the mismatch and the previous app remains usable
+
+### Requirement: Reuse a prepared engine checkout
+
+A contributor SHALL be able to apply a revised Bark engine recipe to an existing checkout of the same pinned Chromium and dependencies while retaining its incremental build outputs.
+
+#### Scenario: Continue an interrupted recipe update
+
+- **GIVEN** a prepared checkout where some files already match the destination recipe and the rest still match the starting recipe
+- **WHEN** the contributor repeats the update
+- **THEN** the resulting sources match the destination recipe and existing compiler outputs remain available for the next build
+
+#### Scenario: Protect local source work
+
+- **GIVEN** a local source edit that matches neither recipe
+- **WHEN** the contributor requests the update
+- **THEN** it identifies the conflicting source before replacing any files

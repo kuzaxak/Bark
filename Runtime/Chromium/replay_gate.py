@@ -45,9 +45,9 @@ def temporary_index(src):
                'GIT_ALTERNATE_OBJECT_DIRECTORIES': objects, 'GIT_OPTIONAL_LOCKS': '0'}
         os.mkdir(f'{scratch}/objects')
 
-        def git(*args, **kwargs):
+        def git(*args, binary=False, **kwargs):
             command = ['git', '-C', str(src), *args]
-            result = subprocess.run(command, env=env, capture_output=True, text=True, **kwargs)
+            result = subprocess.run(command, env=env, capture_output=True, text=not binary, **kwargs)
             if result.returncode:
                 sys.exit(f'replay gate: git {args[0]} failed in {src}: {result.stderr.strip()}')
             return result.stdout
@@ -56,34 +56,59 @@ def temporary_index(src):
         yield git
 
 
+def load_recipe(git, recipe):
+    files = []
+    for mount in MOUNTS:
+        root = recipe / mount
+        if not root.is_dir():
+            raise ValueError(f'{root}: missing recipe mount')
+        for path in sorted(root.rglob('*')):
+            if path.is_symlink() and not path.is_file():
+                raise ValueError(f'{path}: missing mounted file')
+            if path.is_file():
+                files.append((path.relative_to(recipe).as_posix(), path))
+    if files:
+        blobs = git('hash-object', '-w', '--', *(path for _, path in files)).split()
+        entries = ''.join(f'{"100755" if os.access(path, os.X_OK) else "100644"} {blob}\t{name}\0'
+                          for (name, path), blob in zip(files, blobs))
+        git('update-index', '--add', '-z', '--index-info', input=entries)
+    patches = sorted((recipe / 'patches').rglob('*.patch'))
+    if patches:
+        git('apply', '--cached', *patches)
+    return len(patches), len(files)
+
+
+def differences(git):
+    fields = git('diff', '--no-ext-diff', '--no-renames', '--name-status', '-z').split('\0')[:-1]
+    result = {name: status for status, name in zip(fields[::2], fields[1::2])}
+    for name in git('ls-files', '--others', '--exclude-standard', '-z').split('\0'):
+        if name and name not in LEFTOVERS:
+            result[name] = '?'
+    return result
+
+
 def main():
     src = Path(sys.argv[1]).resolve()
     evidence = Path(sys.argv[2]).resolve() if len(sys.argv) > 2 else None
     if subprocess.run([sys.executable, str(HERE / 'budget.py'), '--check']).returncode:
         sys.exit('replay gate: budget check failed')
-    try:
-        check_pin(src)
-    except (ValueError, OSError, subprocess.CalledProcessError) as error:
-        sys.exit(f'replay gate: {error}')
+    check_pin(src)
     with temporary_index(src) as git:
-        files = sorted((mount, p) for mount, root in MOUNTS.items() for p in root.rglob('*') if p.is_file())
-        blobs = git('hash-object', '-w', '--stdin-paths', input='\n'.join(str(p) for _, p in files) + '\n').split()
-        entries = ''.join(f'{"100755" if os.access(p, os.X_OK) else "100644"} {blob}\t'
-                          f'{mount}/{p.relative_to(MOUNTS[mount]).as_posix()}\n' for (mount, p), blob in zip(files, blobs))
-        git('update-index', '--add', '--index-info', input=entries)
-        patches = sorted(PATCHES.rglob('*.patch'))
-        git('apply', '--cached', *patches)
-        differences = git('diff', '--name-status', '--no-color').splitlines()
-        untracked = [p for p in git('ls-files', '--others', '--exclude-standard').splitlines() if p not in LEFTOVERS]
-    report = [f'patches: {len(patches)}', f'mounted files: {len(files)}'] + differences + [f'?\t{p}' for p in untracked]
+        patch_count, file_count = load_recipe(git, HERE)
+        changes = differences(git)
+    report = [f'patches: {patch_count}', f'mounted files: {file_count}']
+    report.extend(f'{status}\t{name}' for name, status in sorted(changes.items()))
     if evidence:
         evidence.mkdir(parents=True, exist_ok=True)
         (evidence / 'replay-gate.txt').write_text('\n'.join(report) + '\n')
     print('\n'.join(report))
-    if differences or untracked:
+    if changes:
         sys.exit('replay gate: the checkout differs from the recipe')
     print('replay gate: the checkout is the recipe')
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit(f'replay gate: {error}')

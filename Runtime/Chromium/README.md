@@ -171,6 +171,21 @@ that checkout for inspection and use a new directory when you need a pristine ru
 `--dry-run` prints the plan and validates available inputs without creating the
 checkout or compiling.
 
+When a Bark patch or mounted resource changes and the upstream pins stay
+the same, reuse the existing checkout and its compiled objects. Supply the
+Bark Git revision whose recipe you previously applied. Run from a Bark Git
+checkout with the destination changes in its working tree.
+
+```fish
+python3 "$recipe" update --checkout "$engine_checkout" --from-revision "$previous_bark_revision" --dry-run
+python3 "$recipe" update --checkout "$engine_checkout" --from-revision "$previous_bark_revision"
+```
+
+The preview checks actual source bytes and executable modes. The update
+preserves build outputs and reports conflicting local changes before modifying
+source. Repeat the same command to finish an interrupted update. A change
+to the upstream pins or dependency configuration requires a fresh preparation.
+
 `build` validates the prepared checkout again. It builds the Rust matcher and
 compiler override tool, generates GN, then builds the selected engine, macOS
 packaging and Bark browser tests. The developer output is `src/out/Barc-x64`
