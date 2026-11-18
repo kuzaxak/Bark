@@ -15,6 +15,7 @@ final class ChromiumCompactRoot: NSView {
     private lazy var link = ChromiumWindowHostLink(bridge: bridge) { [weak self] in self?.handle($0) }
     private var slot: ChromiumPageSlot?
     private weak var header: NSView?
+    private var initialTab: Int32?
     private(set) var shownTab: Int32 = 0
     private(set) var pageFullscreen = false
     private var crashedTabs: Set<Int32> = []
@@ -43,6 +44,13 @@ final class ChromiumCompactRoot: NSView {
         guard link.attach(self, client: client) else { return false }
         applyLights()
         return true
+    }
+
+    func attach(header: NSView, showing tab: Int32) -> Bool {
+        setHeader(header)
+        initialTab = tab
+        defer { initialTab = nil }
+        return attach()
     }
 
     /// The header across the top; nil takes it out.
@@ -166,6 +174,12 @@ final class ChromiumCompactRoot: NSView {
         fullscreenObservers = []
         guard let window else { return }
         growOnce(window)
+        // Chromium may order the window immediately after attaching this view.
+        // Wait for attachment before moving a renderer out of its current superview.
+        if let tab = initialTab {
+            initialTab = nil
+            show(tab: tab)
+        }
         // AppKit rebuilds the titlebar when the window leaves full screen.
         fullscreenObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didExitFullScreenNotification, object: window, queue: .main) { [weak self] _ in

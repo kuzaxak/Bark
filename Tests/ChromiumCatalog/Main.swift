@@ -1943,6 +1943,21 @@ private struct NoTokens: KagiTokenStore {
     Native.tabs = [Native.tab(21001, window: 2101), Native.tab(21002, window: 2101)]
     Native.miniShellCalls = []; Native.miniCloses = []
     var miniBridge = Native.bridge
+    miniBridge.window_set_root_view = { window, pointer in MainActor.assumeIsolated {
+        guard Native.hostWindows.contains(window), let pointer else { return 0 }
+        if let previous = Native.roots[window] { return previous == pointer ? 1 : 0 }
+        Native.roots[window] = pointer
+        let root = Unmanaged<ChromiumCompactRoot>.fromOpaque(pointer).takeUnretainedValue()
+        let popup = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
+                             styleMask: [.borderless], backing: .buffered, defer: false)
+        popup.contentView = root
+        // The engine can show the window as soon as AppKit has installed this root.
+        let header = root.subviews.first { !$0.isHidden && $0.frame.height == ChromiumCompactRoot.headerHeight }
+        precondition(header != nil && root.shownTab == 21001 && Native.pageViews[21001]?.isDescendant(of: root) == true,
+                     "The first popup frame must contain its header and its live page")
+        popup.contentView = nil
+        return 1
+    } }
     miniBridge.window_native_shell_is_owned = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("owned"); return 0 } }
     miniBridge.window_attach_native_shell = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("attach"); return 0 } }
     miniBridge.window_detach_native_shell_if_owned = { _, _ in MainActor.assumeIsolated { Native.miniShellCalls.append("detach"); return 0 } }
@@ -1967,8 +1982,12 @@ private struct NoTokens: KagiTokenStore {
     precondition(headerAndPage == 2, "the header over the page")
     precondition(mini.present(canPresent: { true }) && Native.roots.count == 1, "presenting again changes nothing")
     let second = controller(21002)
-    precondition(!second.present(canPresent: { true }) && second.presentationRefused && mini.isPresented,
+    Native.windows[2101]?.active_tab = 21002
+    precondition(!second.present(canPresent: { true }) && second.presentationRefused,
                  "a second tab's controller cannot take the window")
+    Native.windows[2101]?.active_tab = 21001
+    precondition(mini.isPresented && Native.pageViews[21001]?.isDescendant(of: compact!) == true && Native.pageViews[21002]?.superview == nil,
+                 "refusing a second root preserves the admitted page")
     mini.close()
     precondition(Native.miniCloses == [21001], "Close closes the page")
     for (token, observer) in Native.observers where observer.3 == 21001 {

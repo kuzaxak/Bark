@@ -44,11 +44,13 @@ final class ChromiumWindowHostLink {
             }
         }, Unmanaged.passUnretained(self).toOpaque())
         guard observation != 0 else { return false }
+        // The root can install its window chrome synchronously during attachment.
+        self.observation = observation
         guard bridge.window_set_root_view(client, Unmanaged.passUnretained(root).toOpaque()) == 1 else {
+            self.observation = 0
             bridge.window_host_unobserve(observation)
             return false
         }
-        self.observation = observation
         return true
     }
 

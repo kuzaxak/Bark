@@ -94,15 +94,18 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
         guard !ended, canPresent(), page.navigation === navigation,
               navigation.nativeWindowID == window, !navigation.isClosed else { return false }
         if admitted && ownsControls() { installCommandOMonitor(); return true }
-        if root == nil, header == nil {
-            let compact = ChromiumCompactRoot(bridge: api.bridge, client: window)
-            if compact.attach() { root = compact }
+        let tab = navigation.nativeTabID
+        guard api.canUse(window, tab) else {
+            presentationRefused = true
+            clearHeaderServices()
+            return false
         }
+        let compactHost = root != nil || api.bridge.tab_native_view(window, tab) != nil
         let view: NSView
         if let header { view = header }
         else {
             view = NSHostingView(rootView: ChromiumMiniHeader(page: page,
-                leadingInset: root == nil ? 12 : ChromiumMiniHeader.besideLights,
+                leadingInset: compactHost ? ChromiumMiniHeader.besideLights : 12,
                 promote: { [weak self] in self?.openInSpace() },
                 canPromote: { [weak self] in self.map { $0.canPromote($0.page) } == true },
                 destinations: { [weak self] in self.map { $0.page.isPrivate ? [] : $0.destinations($0.page) } ?? [] },
@@ -110,6 +113,15 @@ final class ChromiumMiniWindowController: DetachedPageWindowController, NativePa
                 share: { [weak self] in _ = self?.share() },
                 close: { [weak self] in self?.close() }))
             header = view
+        }
+        if compactHost, root == nil {
+            let compact = ChromiumCompactRoot(bridge: api.bridge, client: window)
+            guard compact.attach(header: view, showing: tab) else {
+                presentationRefused = true
+                clearHeaderServices()
+                return false
+            }
+            root = compact
         }
         if let root {
             root.setHeader(view)
