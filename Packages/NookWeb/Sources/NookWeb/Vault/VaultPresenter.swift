@@ -81,6 +81,7 @@ public protocol VaultPresenter: AnyObject {
     func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView,
                                       completion: @escaping (Bool) -> Void)
     func dismissNativePasskey(in view: NSView)
+    func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool
     /// Asks before the vault creates a passkey. `completion(true)` means go ahead.
     func confirmPasskeyCreation(rpId: String, userName: String, in webView: NSView,
                                 completion: @escaping (Bool) -> Void)
@@ -92,6 +93,7 @@ extension VaultPresenter {
     public func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView,
                                              completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissNativePasskey(in view: NSView) { dismissPicker(in:view) }
+    public func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool { false }
     public func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
                                 completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissSave(in view: NSView) {}

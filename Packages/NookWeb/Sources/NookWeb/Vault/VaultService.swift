@@ -42,8 +42,10 @@ public struct VaultNativeSubmission {
     public let token: UInt64
     public let origin, username, password: String
     public weak var view: NSView?
+    public private(set) weak var window: NSWindow?
     public init(token: UInt64, origin: String, username: String, password: String, view: NSView) {
-        self.token = token; self.origin = origin; self.username = username; self.password = password; self.view = view
+        self.token = token; self.origin = origin; self.username = username; self.password = password
+        self.view = view; self.window = view.window
     }
 }
 /// A Chromium request-owned ceremony selected in the native provider chooser.
@@ -53,8 +55,10 @@ public struct VaultNativePasskeyRequest {
     public let operation: Int32
     public let arguments: String
     public weak var view: NSView?
+    public private(set) weak var window: NSWindow?
     public init(token: UInt64, operation: Int32, arguments: String, view: NSView) {
-        self.token = token; self.operation = operation; self.arguments = arguments; self.view = view
+        self.token = token; self.operation = operation; self.arguments = arguments
+        self.view = view; self.window = view.window
     }
 }
 @MainActor
@@ -230,6 +234,7 @@ private final class NativeVaultAttachment {
     private var passkeyTask: Task<Void,Never>?
     private var passkey: VaultNativePasskeyRequest?
     private var passkeyGeneration: UInt64 = 0
+    private var passkeyObservers: [NSObjectProtocol] = []
     private weak var passkeyView: NSView?
     private weak var saveView: NSView?
     init(service: VaultService, page: any VaultNativePage, session: PageSession) {
@@ -243,6 +248,7 @@ private final class NativeVaultAttachment {
             page?.observeVault(nil)
             page?.observeVaultSave(nil)
             page?.observeVaultPasskeys(nil)
+            clearPasskeyObservers()
             if let view = passkeyView { service?.presenter?.dismissNativePasskey(in:view) }
             if let view = saveView { service?.presenter?.dismissSave(in: view) }
             if let view = pickerView { service?.presenter?.dismissPicker(in: view) }
@@ -302,16 +308,60 @@ private final class NativeVaultAttachment {
               !session.isAgentPage, !session.nativeIsEnding,
               session.navigation === page as AnyObject,
               session.profile?.id == page.vaultProfileID, page.vaultProfileID != nil,
-              request.view != nil else { return false }
+              let view = request.view, let window = request.window,
+              view.window === window, !view.isHiddenOrHasHiddenAncestor else { return false }
+        if let key = NSApp?.keyWindow, key !== window,
+           service.presenter?.ownsNativePasskeyPresentation(in:view,keyWindow:key) != true { return false }
         return page.vaultPasskeyIsCurrent(request.token)
+    }
+    private func requireCurrentPasskey(_ request: VaultNativePasskeyRequest, _ generation: UInt64) -> Bool {
+        guard passkeyCurrent(request,generation) else {
+            if passkeyGeneration == generation { cancelPasskey() }
+            return false
+        }
+        return true
+    }
+    private func trackPasskeyWindow(_ request: VaultNativePasskeyRequest, _ generation: UInt64) {
+        guard let window = request.window else { return }
+        let center = NotificationCenter.default
+        passkeyObservers.append(center.addObserver(forName:NSWindow.didBecomeKeyNotification,
+            object:nil,queue:.main) { [weak self] notice in
+                MainActor.assumeIsolated {
+                    guard let self, self.passkeyGeneration == generation, let key = notice.object as? NSWindow,
+                          let request = self.passkey, let view = request.view else { return }
+                    if key !== request.window &&
+                        self.service?.presenter?.ownsNativePasskeyPresentation(in:view,keyWindow:key) != true {
+                        self.cancelPasskey()
+                    }
+                }
+            })
+        passkeyObservers.append(center.addObserver(forName:NSWindow.willCloseNotification,
+            object:window,queue:.main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.passkeyGeneration == generation else { return }
+                    self.cancelPasskey()
+                }
+            })
+        passkeyObservers.append(center.addObserver(forName:NSWindow.didUpdateNotification,
+            object:window,queue:.main) { [weak self] _ in
+                MainActor.assumeIsolated {
+                    guard let self, self.passkeyGeneration == generation, let request = self.passkey else { return }
+                    _ = self.requireCurrentPasskey(request,generation)
+                }
+            })
+    }
+    private func clearPasskeyObservers() {
+        passkeyObservers.forEach(NotificationCenter.default.removeObserver)
+        passkeyObservers.removeAll()
     }
     private func cancelPasskey() {
         passkeyGeneration &+= 1
         let task = passkeyTask; passkeyTask = nil; task?.cancel()
         let old = passkey; passkey = nil
         let view = passkeyView; passkeyView = nil
-        if let old { _ = page?.completeVaultPasskey(old.token,result:nil) }
+        clearPasskeyObservers()
         if let view { service?.presenter?.dismissNativePasskey(in:view) }
+        if let old { _ = page?.completeVaultPasskey(old.token,result:nil) }
     }
     private func finishPasskey(_ request: VaultNativePasskeyRequest, _ generation: UInt64, _ result: [String:Any]) {
         guard passkeyCurrent(request,generation), let page,
@@ -321,6 +371,7 @@ private final class NativeVaultAttachment {
         }
         // Consume before native completion can publish a cancellation/new request.
         passkey = nil; passkeyView = nil; passkeyTask = nil; passkeyGeneration &+= 1
+        clearPasskeyObservers()
         if !page.completeVaultPasskey(request.token,result:json) {
             _ = page.completeVaultPasskey(request.token,result:nil)
         }
@@ -343,7 +394,9 @@ private final class NativeVaultAttachment {
               let profile = page?.vaultProfileID?.uuidString else { cancelPasskey(); return }
         guard passkeyCurrent(request,generation), let presenter = service.presenter else { cancelPasskey(); return }
         cancel() // Retire an unrelated field picker before ceremony consent.
+        guard requireCurrentPasskey(request,generation) else { return }
         passkeyView = view
+        trackPasskeyWindow(request,generation)
         if request.operation == 0 {
             guard let name = args["rpName"] as? String, let user = args["user"] as? [String:String],
                   let id = user["id"], let userID = Base64URL.decode(id), (1...64).contains(userID.count),
@@ -354,10 +407,10 @@ private final class NativeVaultAttachment {
                 clientDataHash:hash,pubKeyCredParams:[-7],excludeCredentials:excluded,origin:origin,profile:profile)
             presenter.confirmNativePasskeyCreation(rpId:VaultPrompt.displayText(rp),userName:VaultPrompt.displayText(userName),
                 in:view) { [weak self] accepted in
-                guard let self, self.passkeyCurrent(request,generation) else { return }
+                guard let self, self.requireCurrentPasskey(request,generation) else { return }
                 guard accepted else { self.cancelPasskey(); return }
                 self.passkeyTask = Task { [weak self] in
-                    guard let self, self.passkeyCurrent(request,generation) else { return }
+                    guard let self, self.requireCurrentPasskey(request,generation) else { return }
                     do {
                         let result = try await service.send(call)
                         self.finishPasskey(request,generation,["credentialId":result.credentialId,
@@ -369,21 +422,22 @@ private final class NativeVaultAttachment {
         } else if request.operation == 1 {
             guard let allowed = args["allowCredentials"] as? [String] else { cancelPasskey(); return }
             passkeyTask = Task { [weak self] in
+                guard let self, self.requireCurrentPasskey(request,generation) else { return }
                 do {
                     let matches = try await service.send(VaultPasskeys(rpId:rp,allowCredentials:allowed,profile:profile)).passkeys
-                    guard let self, self.passkeyCurrent(request,generation) else { return }
+                    guard self.requireCurrentPasskey(request,generation) else { return }
                     let items = matches.filter { allowed.isEmpty || allowed.contains($0.credentialId) }.map(VaultPickerItem.init)
                     guard !items.isEmpty else { self.cancelPasskey(); return }
                     self.passkeyTask = nil
                     presenter.presentNativePicker(host:VaultPrompt.displayText(rp),items:items,
                         anchor:CGRect(x:view.bounds.midX,y:view.isFlipped ? 0 : max(0,view.bounds.height - 1),width:1,height:1),
                         in:view,validateSelection:{ [weak self] in self?.passkeyCurrent(request,generation) == true }) { [weak self] result in
-                        guard let self, self.passkeyCurrent(request,generation) else { return }
+                        guard let self, self.requireCurrentPasskey(request,generation) else { return }
                         guard case .selected(let item) = result, case .passkey(let credential) = item.kind,
                               items.contains(where: { $0.id == item.id }),
                               (allowed.isEmpty || allowed.contains(credential)) else { self.cancelPasskey(); return }
                         self.passkeyTask = Task { [weak self] in
-                            guard let self, self.passkeyCurrent(request,generation) else { return }
+                            guard let self, self.requireCurrentPasskey(request,generation) else { return }
                             do {
                                 let result = try await service.send(VaultAssert(rpId:rp,credentialId:credential,
                                     clientDataHash:hash,userVerification:"required",origin:origin,profile:profile))
@@ -401,7 +455,7 @@ private final class NativeVaultAttachment {
                         }
                     }
                 } catch {
-                    if let self, self.passkeyGeneration == generation { self.cancelPasskey() }
+                    if self.passkeyGeneration == generation { self.cancelPasskey() }
                 }
             }
         } else { cancelPasskey() }
@@ -412,15 +466,23 @@ private final class NativeVaultAttachment {
               !session.isAgentPage, !session.nativeIsEnding,
               session.navigation === page as AnyObject,
               session.profile?.id == page.vaultProfileID, page.vaultProfileID != nil,
-              offer.view != nil else { return false }
+              let view = offer.view, let window = offer.window, view.window === window,
+              !view.isHiddenOrHasHiddenAncestor else { return false }
         return page.vaultSaveIsCurrent(offer.token)
+    }
+    private func requireCurrentSave(_ offer: VaultNativeSubmission, _ generation: UInt64) -> Bool {
+        guard saveCurrent(offer,generation) else {
+            if saveGeneration == generation { cancelSave() }
+            return false
+        }
+        return true
     }
     private func cancelSave() {
         saveGeneration &+= 1
         let old = submission; submission = nil
         let view = saveView; saveView = nil
-        if let old { page?.cancelVaultSave(old.token) }
         if let view { service?.presenter?.dismissSave(in: view) }
+        if let old { page?.cancelVaultSave(old.token) }
     }
     private func offered(_ offer: VaultNativeSubmission?) {
         guard offer?.token != submission?.token else { return }
@@ -436,18 +498,18 @@ private final class NativeVaultAttachment {
         Task { [weak self] in
             do {
                 let logins = try await service.send(VaultLogins(origin:offer.origin,profile:profile)).logins
-                guard let self, self.saveCurrent(offer,generation) else { return }
+                guard let self, self.requireCurrentSave(offer,generation) else { return }
                 guard !logins.contains(where: { $0.username == offer.username }), let presenter = service.presenter else {
                     self.cancelSave(); return
                 }
                 self.saveView = view
                 presenter.offerNativeSave(host:url.host ?? "",username:VaultPrompt.displayText(offer.username),
                     itemID:itemID,in:view) { [weak self] accepted in
-                    guard let self, self.saveCurrent(offer,generation) else { return }
+                    guard let self, self.requireCurrentSave(offer,generation) else { return }
                     if accepted {
                         // The prompt belongs to a validated submission, not the redirected document.
                         Task { [weak self] in
-                            guard let self, self.saveCurrent(offer,generation) else { return }
+                            guard let self, self.requireCurrentSave(offer,generation) else { return }
                             _ = try? await service.send(VaultSave(origin:offer.origin,username:offer.username,
                                 password:offer.password,profile:profile))
                             if self.saveGeneration == generation { self.cancelSave() }
@@ -482,7 +544,8 @@ private final class NativeVaultAttachment {
               !session.isAgentPage, !session.nativeIsEnding,
               session.navigation === page as AnyObject,
               session.profile?.id == page.vaultProfileID, page.vaultProfileID != nil,
-              focus.view != nil, focus.view?.window === focus.window,
+              let view = focus.view, let window = focus.window,
+              view.window === window, !view.isHiddenOrHasHiddenAncestor,
               page.vaultFieldIsCurrent(focus.token),
               !foreground || page.vaultFocusIsCurrent(focus.token) else { return false }
         return true
@@ -525,7 +588,10 @@ private final class NativeVaultAttachment {
         trackFocusWindows(focus)
         session?.nativeVaultNotice = nil
         let generation = generation
-        guard current(focus, generation), let service, let profile = page?.vaultProfileID?.uuidString else { return }
+        guard current(focus, generation), let service, let profile = page?.vaultProfileID?.uuidString else {
+            cancel()
+            return
+        }
         Task { [weak self, weak service] in
             guard let service else { return }
             let logins: [VaultLogin]

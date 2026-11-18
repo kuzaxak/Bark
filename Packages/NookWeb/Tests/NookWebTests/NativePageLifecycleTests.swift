@@ -3902,7 +3902,7 @@ struct NativeVaultFormTests {
         #expect(saves.first?.3 == native.profileID?.uuidString)
     }
 
-    @Test(arguments:["decline", "replacement", "owner", "profile", "disable", "disconnect"])
+    @Test(arguments:["decline", "replacement", "owner", "profile", "disable", "disconnect", "window"])
     func endedSaveCannotWriteOrDismissNewerOffer(change:String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -3918,6 +3918,13 @@ struct NativeVaultFormTests {
         case "owner": native.vaultSaveValid = false; native.vaultSave?(nil)
         case "profile": native.vaultProfileOverride = UUID()
         case "disable": f.tabs.settings.pawlVaultEnabled = false
+        case "window":
+            let other = NSWindow(contentRect:.zero,styleMask:.borderless,backing:.buffered,defer:true)
+            other.isReleasedWhenClosed = false
+            other.contentView?.addSubview(native.vaultView)
+            old(true)
+            #expect(presenter.saveCompletion == nil && !native.vaultSaveValid)
+            other.close()
         default: await transport.disconnect(); _ = await vault.refresh()
         }
         old(true); await agentCallbacks()
@@ -3975,7 +3982,8 @@ struct NativeVaultFormTests {
         #expect(native.passkeyReplies.filter { $0.1 != nil }.count == 1)
     }
 
-    @Test(arguments:["decline","document","owner","profile","disable","disconnect","badHash","badOperation"])
+    @Test(arguments:["decline","document","owner","profile","disable","disconnect","badHash","badOperation",
+                     "window","otherKeyWindow","closedWindow","hiddenView"])
     func nativePasskeyRefusalNeverDispatchesOrCompletesStaleRequest(change:String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -3987,9 +3995,18 @@ struct NativeVaultFormTests {
             badHash:change == "badHash",emptyAllow:change == "emptyAllow")
         await agentCallbacks()
         let answer = presenter.creationConsent
+        let other = NSWindow(contentRect:.zero,styleMask:.borderless,backing:.buffered,defer:true)
+        other.isReleasedWhenClosed = false
+        defer { other.close() }
         switch change {
         case "document","owner": native.passkeyValid = false; native.passkeyCallback?(nil)
         case "profile": native.vaultProfileOverride = UUID()
+        case "window": other.contentView?.addSubview(native.vaultView)
+        case "otherKeyWindow": NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: other)
+        case "closedWindow": NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: native.vaultView.window)
+        case "hiddenView":
+            native.vaultView.isHidden = true
+            NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: native.vaultView.window)
         case "disable": f.tabs.settings.pawlVaultEnabled = false
         case "disconnect": await transport.disconnect(); _ = await vault.refresh()
         default: break
@@ -3997,9 +4014,13 @@ struct NativeVaultFormTests {
         answer?(change != "decline"); await agentCallbacks()
         #expect(await transport.ceremonies.isEmpty)
         #expect(native.passkeyReplies.filter { $0.1 != nil }.isEmpty)
+        if ["window","otherKeyWindow","closedWindow","hiddenView"].contains(change) {
+            #expect(native.passkeyReplies.count == 1 && presenter.creationConsent == nil)
+        }
     }
 
-    @Test func latePawlAuthenticationCannotCompleteCancelledRequestOrDismissNewConsent() async throws {
+    @Test(arguments:[false,true])
+    func latePawlAuthenticationCannotCompleteCancelledRequestOrDismissNewConsent(switchSpace:Bool) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
@@ -4010,7 +4031,15 @@ struct NativeVaultFormTests {
         native.requestPasskey(operation:0); await agentCallbacks()
         presenter.creationConsent?(true)
         for await _ in transport.ceremonyStarted.stream { break }
-        native.passkeyValid = false; native.passkeyCallback?(nil)
+        if switchSpace {
+            let frame = try #require(native.vaultView.superview)
+            frame.isHidden = true
+            NotificationCenter.default.post(name: NSWindow.didUpdateNotification, object: native.vaultView.window)
+            #expect(!native.passkeyValid && presenter.creationConsent == nil)
+            frame.isHidden = false
+        } else {
+            native.passkeyValid = false; native.passkeyCallback?(nil)
+        }
         native.requestPasskey(operation:0); await agentCallbacks()
         #expect(presenter.creationConsent != nil)
         await transport.releaseCeremony(); await agentCallbacks()
@@ -4533,7 +4562,19 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
         let current = passkeyValid; passkeyValid = false
         passkeyReplies.append((token,current ? result : nil)); return current
     }
+    private lazy var vaultWindow: NSWindow = {
+        _ = NSApplication.shared
+        let window = NSWindow(contentRect:CGRect(x:0,y:0,width:640,height:480),
+            styleMask:.borderless,backing:.buffered,defer:true)
+        window.isReleasedWhenClosed = false
+        return window
+    }()
+    private func mountVaultView() {
+        if vaultView.window == nil { vaultWindow.contentView?.addSubview(vaultView) }
+        precondition(vaultView.window != nil)
+    }
     func requestPasskey(operation:Int32,badHash:Bool = false,emptyAllow:Bool = false) {
+        mountVaultView()
         passkeySerial += 1; passkeyValid = true
         let args: [String:Any] = ["rpId":"vault.synthetic.invalid","rpName":"Synthetic",
             "origin":"https://vault.synthetic.invalid", "clientDataHash":badHash ? "AQ" : Base64URL.encode(Data(repeating:0,count:32)),
@@ -4551,6 +4592,7 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
     func vaultSaveIsCurrent(_ token: UInt64) -> Bool { vaultSaveValid && token == vaultSaveSerial }
     func cancelVaultSave(_ token: UInt64) { if token == vaultSaveSerial { vaultSaveValid = false } }
     func submitVault() {
+        mountVaultView()
         vaultSaveSerial += 1; vaultSaveValid = true
         vaultSave?(VaultNativeSubmission(token:vaultSaveSerial,origin:"https://vault.synthetic.invalid",
             username:"new-synthetic-user",password:"typed-synthetic-password",view:vaultView))
@@ -4573,6 +4615,7 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
     }
     func focusVault(code: Bool = false, origin: String = "https://vault.synthetic.invalid") {
         vaultCurrent = true; vaultDocumentCurrent = true; vaultSerial += 1
+        mountVaultView()
         vaultFocus?(VaultNativeFocus(token:vaultSerial,origin:origin,isCode:code,view:vaultView,anchor:CGRect(x:10,y:10,width:150,height:24)))
     }
 

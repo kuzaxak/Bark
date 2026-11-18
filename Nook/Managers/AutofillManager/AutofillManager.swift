@@ -20,6 +20,7 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
         let id = UUID()
         let itemID: UUID
         weak var view: NSView?
+        weak var window: NSWindow?
         let host: String
         let username: String
         fileprivate let respond: (Bool) -> Void
@@ -28,7 +29,7 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
     /// The pending save offer and the page it belongs to.
     private(set) var saveOffer: SaveOffer?
 
-    @ObservationIgnored private var nativeCreation: (id: UUID, alert: NSAlert, view: NSView, reply: (Bool) -> Void)?
+    @ObservationIgnored private var nativeCreation: (id: UUID, alert: NSAlert, view: NSView, owner: NSWindow, reply: (Bool) -> Void)?
     @ObservationIgnored private var popover: NSPopover?
     @ObservationIgnored private weak var popoverWebView: NSView?
     @ObservationIgnored private weak var pickerOwnerWindow: NSWindow?
@@ -66,7 +67,8 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
                             nativeCheck: (@MainActor () -> Bool)?, nativeFailure: (() -> Void)?,
                             completion: @escaping (VaultPickerItem?) -> Void) {
         closePicker(with: nil)
-        guard webView.window != nil else { return completion(nil) }
+        guard let window = webView.window else { return completion(nil) }
+        if let nativeCheck, !window.isVisible || !nativeCheck() { nativeFailure?(); return }
         pickerGeneration += 1
         let generation = pickerGeneration
         let popover = NSPopover()
@@ -76,7 +78,7 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
             rootView: VaultPickerView(host: host, items: items) { [weak self] item in self?.pick(item, generation:generation) })
         self.popover = popover
         popoverWebView = webView
-        pickerOwnerWindow = webView.window
+        pickerOwnerWindow = window
         pickerCompletion = completion
         nativeSelectionCheck = nativeCheck
         nativeFocusFailure = nativeFailure
@@ -148,7 +150,7 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
         let generation = saveGeneration
         answerSaveOffer(false)
         guard saveGeneration == generation else { completion(false); return }
-        let offer = SaveOffer(itemID: itemID, view:view, host: host, username: username, respond: completion)
+        let offer = SaveOffer(itemID: itemID, view:view, window:view.window, host: host, username: username, respond: completion)
         saveOffer = offer
         let offerID = offer.id
         Task { [weak self] in
@@ -169,6 +171,12 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
 
     // MARK: - Passkey creation
 
+    func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool {
+        if let request = nativeCreation, request.view === view, view.window === request.owner,
+           request.alert.window === keyWindow { return true }
+        return ownsNativePicker(in:view) && popover?.contentViewController?.view.window === keyWindow
+    }
+
     func dismissNativePasskey(in view: NSView) {
         // Detach exact sheet identity before closing a picker can reenter.
         let request = nativeCreation?.view === view ? nativeCreation : nil
@@ -181,17 +189,21 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
         request.reply(false)
     }
     func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView, completion: @escaping (Bool) -> Void) {
-        guard nativeCreation == nil, let window = view.window else { completion(false); return }
+        guard nativeCreation == nil, let window = view.window, window.isVisible,
+              window.attachedSheet == nil, !view.isHiddenOrHasHiddenAncestor,
+              NSApp.keyWindow == nil || NSApp.keyWindow === window else { completion(false); return }
         let id = UUID(), alert = NSAlert()
         alert.messageText = "Create a passkey for \(rpId)?"
         alert.informativeText = "Pawl Vault will save a passkey for \(userName)."
         alert.addButton(withTitle:"Continue").keyEquivalent = ""
         alert.addButton(withTitle:"Cancel")
-        nativeCreation = (id,alert,view,completion)
+        nativeCreation = (id,alert,view,window,completion)
         alert.beginSheetModal(for:window) { [weak self] result in
             guard let self, let request = self.nativeCreation, request.id == id else { return }
             self.nativeCreation = nil
-            request.reply(result == .alertFirstButtonReturn)
+            request.reply(result == .alertFirstButtonReturn && request.view.window === request.owner &&
+                          !request.view.isHiddenOrHasHiddenAncestor &&
+                          (NSApp.keyWindow == nil || NSApp.keyWindow === request.owner || NSApp.keyWindow === request.alert.window))
         }
     }
     func confirmPasskeyCreation(rpId: String, userName: String, in webView: NSView, completion: @escaping (Bool) -> Void) {

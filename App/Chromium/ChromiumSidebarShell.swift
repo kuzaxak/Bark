@@ -79,6 +79,7 @@ struct ChromiumSidebarShell: View {
                     .modifier(ChromiumSidebarFade(outOfWindow: hostedSidebar == .hidden))
             }
             if let offer = browserManager.autofillManager.saveOffer,
+               let view = offer.view, let owner = offer.window, view.window === owner, !view.isHiddenOrHasHiddenAncestor,
                let page = browserManager.frontPage(in:window), offer.itemID == page.itemID {
                 VStack {
                     VaultSaveOfferView(offer:offer) { browserManager.autofillManager.answerSaveOffer($0,id:offer.id) }
