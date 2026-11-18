@@ -102,18 +102,31 @@ def is_publication_slot(name):
     return False
 
 
+def verify_official_sdk(engine, architecture):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Runtime/Chromium"))
+    from official_provenance import verify_cached
+
+    verify_cached(engine, architecture)
+
+
 def finish(package, pending, *, recovering):
     record = json.loads((pending / "transaction.json").read_text())
     architecture, digest, identity, slot = record["arch"], record["digest"], record["identity"], record["slot"]
-    if architecture not in ARCHITECTURES or not is_publication_slot(slot):
+    official = record.get("official", False)
+    if architecture not in ARCHITECTURES or not is_publication_slot(slot) or not isinstance(official, bool):
         raise ValueError("Invalid SDK publication record")
     engine, headers, pin = destination_paths(package, architecture, pending)
     live, candidate = engine.parent, engine.parent.with_name(slot)
-    if directory_id(live) != identity:
-        if directory_id(candidate) != identity:
-            raise ValueError("Cannot find the prepared SDK in either publication directory")
-        if recovering and verified_digest(candidate / "Engine") != digest:
-            raise ValueError("Prepared SDK differs from its publication record")
+    promoted = directory_id(live) == identity
+    if not promoted and directory_id(candidate) != identity:
+        raise ValueError("Cannot find the prepared SDK in either publication directory")
+    if recovering:
+        recovered_engine = engine if promoted else candidate / "Engine"
+        if verified_digest(recovered_engine) != digest:
+            raise ValueError("SDK differs from its publication record")
+        if official:
+            verify_official_sdk(recovered_engine, architecture)
+    if not promoted:
         if live.exists():
             # Keep the same inode for Finder windows that are still writing it.
             finder = candidate / ".DS_Store"
@@ -128,8 +141,6 @@ def finish(package, pending, *, recovering):
             swap(candidate, live)
         else:
             candidate.rename(live)
-    elif recovering and verified_digest(engine) != digest:
-        raise ValueError("Promoted SDK differs from its publication record")
     for name in HEADERS:
         write_atomic(pending, headers / name, (engine / "Headers" / name).read_bytes())
     # The pin is the commit marker for existing fail-closed SDK readers.
@@ -154,6 +165,17 @@ def check_other_architecture(package, architecture, engine):
             raise ValueError(f"Public headers differ from the pinned {other} SDK: {name}")
 
 
+def recover_previous(package, state, *, preserve=None):
+    pending = state / "pending"
+    if directory_id(pending) is not None:
+        recovered, digest = finish(package, pending, recovering=True)
+        print(f"Recovered SDK publication: {recovered} ({digest})")
+    for abandoned in state.parent.glob(".publication-*"):
+        if abandoned != preserve and is_publication_slot(abandoned.name):
+            directory_id(abandoned)
+            remove_work(abandoned)
+
+
 def publish(package, architecture, replace, build, script, *, require_official=False):
     package.mkdir(parents=True, exist_ok=True)
     package = package.resolve()
@@ -168,13 +190,8 @@ def publish(package, architecture, replace, build, script, *, require_official=F
             directory_id(abandoned)
             remove_work(abandoned)
         pending = state / "pending"
-        if directory_id(pending) is not None:
-            recovered, digest = finish(package, pending, recovering=True)
-            print(f"Recovered SDK publication: {recovered} ({digest})")
-        for abandoned in state.parent.glob(".publication-*"):
-            if is_publication_slot(abandoned.name):
-                directory_id(abandoned)
-                remove_work(abandoned)
+        if not require_official:
+            recover_previous(package, state)
         work = Path(mkdtemp(prefix="work-", dir=state))
         candidate = None
         try:
@@ -190,6 +207,10 @@ def publish(package, architecture, replace, build, script, *, require_official=F
             subprocess.run(["/bin/bash", script, "--prepare", work, prepared, "--arch", architecture,
                             *flags, build, package], check=True, pass_fds=(lock,))
             digest = verified_digest(prepared)
+            if require_official:
+                verify_official_sdk(prepared, architecture)
+                # An invalid official request must leave any pending pin untouched.
+                recover_previous(package, state, preserve=candidate)
             check_other_architecture(package, architecture, prepared)
             if engine.exists():
                 same_metadata = (pin.is_file() and pin.read_text().strip() == digest and
@@ -208,7 +229,7 @@ def publish(package, architecture, replace, build, script, *, require_official=F
                 if not replace:
                     raise ValueError(f"Engine already published. Use --replace to publish different inputs: {engine}")
             record = {"arch": architecture, "digest": digest, "identity": directory_id(candidate),
-                      "slot": candidate.name}
+                      "slot": candidate.name, "official": require_official}
             (work / "transaction.json").write_text(json.dumps(record))
             work.rename(pending)
             engine, digest = finish(package, pending, recovering=False)

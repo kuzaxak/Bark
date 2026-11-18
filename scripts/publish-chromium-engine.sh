@@ -39,10 +39,6 @@ if [[ $REQUIRE_OFFICIAL == true && ( ! -f "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_R
   refuse "No official Bark SDK build receipt: $OFFICIAL_RECEIPT. Build with --official and publish its -official output."
 fi
 if [[ -z $WORK ]]; then
-  if [[ $REQUIRE_OFFICIAL == true ]]; then
-    # This must precede publication recovery, which can write a pending pin.
-    python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
-  fi
   exec python3 -B "$ROOT/scripts/publish_chromium_sdk.py" "$PACKAGE" "$ARCH" "$REPLACE" "$BUILD" "$ROOT/scripts/publish-chromium-engine.sh" "$REQUIRE_OFFICIAL"
 fi
 BRIDGE="$ROOT/Runtime/Chromium/bark/bridge"
