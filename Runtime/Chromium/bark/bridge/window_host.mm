@@ -5,6 +5,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "bark/bridge/barc_bridge_functions.h"
@@ -252,25 +253,18 @@ void HostObservation::Post(BarcWindowHostEvent event, NSView* view) {
       FROM_HERE, base::BindOnce(&DeliverPosted, token_, event, view));
 }
 
-}  // namespace
-
-int barc_tab_list_extension_actions(int32_t id,
-                                    int32_t tab_id,
-                                    BarcExtensionActionCallback callback,
-                                    void* context) {
-  if (!callback) {
-    return 0;
-  }
+std::optional<std::vector<ActionRow>> SnapshotActions(int32_t id,
+                                                       int32_t tab_id) {
   const auto target = FindActionTarget(id, tab_id);
   if (!target) {
-    return 0;
+    return std::nullopt;
   }
   auto* host = bark::BarkWindowHost::ForBrowser(target->browser);
   for (const auto& entry : Observations()) {
     entry.second->ObserveActions(host, target->model, id);
   }
   if (!target->model->actions_initialized()) {
-    return 0;
+    return std::nullopt;
   }
   const int extension_tab_id =
       extensions::ExtensionTabUtil::GetTabId(target->contents);
@@ -291,7 +285,11 @@ int barc_tab_list_extension_actions(int32_t id,
                                              *target->contents, *extension)) {
       flags |= BARC_EXTENSION_ENABLED;
     }
-    rows.push_back({extension_id, action->GetTitle(extension_tab_id),
+    auto title = action->GetTitle(extension_tab_id);
+    if (title.empty()) {
+      title = extension->name();
+    }
+    rows.push_back({extension_id, std::move(title),
                     action->GetDisplayBadgeText(extension_tab_id), flags});
   };
   for (const auto& extension_id : target->model->pinned_action_ids()) {
@@ -303,8 +301,25 @@ int barc_tab_list_extension_actions(int32_t id,
     }
   }
 
+  return rows;
+}
+
+}  // namespace
+
+int barc_tab_list_extension_actions(int32_t id,
+                                    int32_t tab_id,
+                                    BarcExtensionActionCallback callback,
+                                    void* context) {
+  if (!callback) {
+    return 0;
+  }
+  const auto rows = SnapshotActions(id, tab_id);
+  if (!rows) {
+    return 0;
+  }
+
   // The receiver may change selection, mutate pins, or close the window.
-  for (const auto& row : rows) {
+  for (const auto& row : *rows) {
     callback(context, row.id.c_str(), row.title.c_str(), row.badge.c_str(),
              row.flags);
   }
@@ -318,14 +333,17 @@ int barc_tab_set_extension_pinned(int32_t id,
   if (!extension_id || (pinned != 0 && pinned != 1)) {
     return 0;
   }
-  const auto target = FindActionTarget(id, tab_id);
-  if (!target || !AvailableAction(*target, extension_id) ||
-      target->model->IsActionForcePinned(extension_id)) {
+  auto target = FindActionTarget(id, tab_id);
+  const std::string action_id(extension_id);
+  if (!target || !AvailableAction(*target, action_id) ||
+      target->model->IsActionForcePinned(action_id)) {
     return 0;
   }
+  auto* model = target->model.get();
+  target.reset();
   const bool desired = pinned != 0;
-  if (target->model->IsActionPinned(extension_id) != desired) {
-    target->model->SetActionVisibility(extension_id, desired);
+  if (model->IsActionPinned(action_id) != desired) {
+    model->SetActionVisibility(action_id, desired);
   }
   return 1;
 }
@@ -336,10 +354,15 @@ int barc_tab_invoke_extension(int32_t id,
   if (!extension_id) {
     return 0;
   }
-  const auto target = FindActionTarget(id, tab_id);
-  return target && AvailableAction(*target, extension_id) &&
-         bark::RunExtensionActionForPage(*target->browser, *target->contents,
-                                         extension_id);
+  auto target = FindActionTarget(id, tab_id);
+  const std::string action_id(extension_id);
+  if (!target || !AvailableAction(*target, action_id)) {
+    return 0;
+  }
+  auto* browser = target->browser.get();
+  auto* contents = target->contents.get();
+  target.reset();
+  return bark::RunExtensionActionForPage(*browser, *contents, action_id);
 }
 
 int barc_window_set_root_view(int32_t id, void* root_view) {

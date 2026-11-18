@@ -509,6 +509,36 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   EXPECT_TRUE(rows.empty());
   EXPECT_EQ(0, barc_tab_set_extension_pinned(guest_id, guest_tab, id.c_str(), 1));
   EXPECT_EQ(0, barc_tab_invoke_extension(guest_id, guest_tab, id.c_str()));
+
+  ASSERT_EQ(1, list(work_id, work_tab));
+  const int prior_title = invalidations;
+  EXPECT_EQ(base::Value("updated"), Worker(work->GetProfile(), id, R"(
+    (async () => {
+      const [tab] = await chrome.tabs.query({active: true});
+      await chrome.action.setTitle({tabId: tab.id, title: ''});
+      chrome.test.sendScriptResult('updated');
+    })();
+  )"));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return list(work_id, work_tab) && invalidations > prior_title &&
+           rows.size() == 1 && rows[0].title == "Bark native action";
+  }));
+  struct CloseDuringList {
+    int32_t window;
+    int rows = 0;
+  } closing{work_id};
+  EXPECT_EQ(1, barc_tab_list_extension_actions(
+                   work_id, work_tab,
+                   [](void* context, const char*, const char*, const char*,
+                      int) {
+                     auto& state = *static_cast<CloseDuringList*>(context);
+                     if (++state.rows == 1) {
+                       EXPECT_EQ(1, barc_window_close(state.window));
+                     }
+                   },
+                   &closing));
+  EXPECT_EQ(1, closing.rows);
+  EXPECT_TRUE(base::test::RunUntil([&] { return !Window(work_id); }));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
