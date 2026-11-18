@@ -5,6 +5,7 @@
 import argparse
 from contextlib import contextmanager
 import ctypes
+import errno
 import fcntl
 import filecmp
 import hashlib
@@ -72,8 +73,39 @@ def check_native_harness(command):
     run(binary)
 
 
+def cached_engine():
+    pin = (DEFAULT_ENGINE.parent / "Headers/BarcChromium/engine-artifact.sha256").read_text().strip()
+    if len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
+        raise ValueError("Invalid SDK artifact digest in the checked-in headers.")
+    return Path.home() / "Library/Caches/BarkSDK" / pin / "Engine"
+
+
+def install_engine(engine):
+    destination = cached_engine()
+    if not destination.is_dir():
+        cache = destination.parent.parent
+        cache.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(dir=cache) as stage:
+            copy = Path(stage) / "Engine"
+            run("/usr/bin/ditto", engine, copy)
+            run("/bin/bash", STAGE, "--check-engine", copy)
+            try:
+                # Keep the read-only SDK intact and publish its writable parent.
+                Path(stage).rename(destination.parent)
+            except OSError as error:
+                if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
+                    raise
+    run("/bin/bash", STAGE, "--check-engine", destination)
+    print(f"Installed pinned SDK at {destination}")
+
+
 @contextmanager
 def pinned_engine(source, working):
+    if not source:
+        source = str(DEFAULT_ENGINE if DEFAULT_ENGINE.is_dir() else cached_engine())
+        if not Path(source).is_dir():
+            raise ValueError("The pinned SDK is missing. Install it with bark-check.py engine --install "
+                             "--engine PATH, or build it using Runtime/Chromium/README.md.")
     path = Path(source).expanduser()
     if not path.is_dir():
         if not hasattr(tarfile, "data_filter"):
@@ -357,9 +389,11 @@ def main():
     commands.add_parser("page-host", help="check page ownership, transfer and close on Intel")
     for command in ("engine", "build", "verify", "smoke", "launch"):
         sub = commands.add_parser(command)
-        sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE", str(DEFAULT_ENGINE)),
+        sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
-        if command == "build":
+        if command == "engine":
+            sub.add_argument("--install", action="store_true", help="cache the verified SDK for clean checkouts")
+        elif command == "build":
             sub.add_argument("--output", type=Path, default=REPO / "build/Bark.app")
             sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"),
                              help="local Developer ID Application signing identity")
@@ -377,7 +411,9 @@ def main():
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
         working = Path(work)
         with pinned_engine(args.engine, working) as engine:
-            if args.command == "build":
+            if args.command == "engine" and args.install:
+                install_engine(engine)
+            elif args.command == "build":
                 build_candidate(engine, args.output, args.identity)
             elif args.command != "engine":
                 app = args.app.resolve(strict=True)

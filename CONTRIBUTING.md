@@ -66,7 +66,7 @@ python3 scripts/bark-check.py page-host
 On an Intel Mac with Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
 
 ```fish
-set -lx BARK_ENGINE_SOURCE /path/to/Engine
+python3 scripts/bark-check.py engine --install --engine /path/to/Engine
 set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
 python3 scripts/bark-check.py build
 python3 scripts/bark-check.py smoke build/Bark.app
@@ -77,7 +77,7 @@ python3 scripts/bark-check.py launch build/Bark.app
 
 To verify an existing signed app, use `python3 scripts/bark-check.py verify /path/to/Bark.app`.
 
-`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Engine/` directory next to the committed Bark SDK headers. The check verifies the manifest against the checkout pin and compares the signed bundle's embedded engine files against that artifact.
+`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Engine/` directory next to the committed Bark SDK headers. The install command keeps a verified copy under `~/Library/Caches/BarkSDK/<pin>/Engine`. A fresh checkout can then build using that pin. The verifier compares the signed app’s embedded files with the selected SDK.
 
 `smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 
