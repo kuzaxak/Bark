@@ -147,7 +147,8 @@ class Screen:
             raise RuntimeError("Writing the candidate window capture failed")
 
 
-def run_walk(description, name, serve, exercise, preferences=()):
+def run_walk(description, name, serve, exercise, preferences=(), *,
+             source_host="127.0.0.1", prepare_fixture=None):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--app", type=Path, required=True, help="Signed Intel Bark.app")
     parser.add_argument("--output", type=Path, required=True, help="New directory for test evidence")
@@ -178,7 +179,10 @@ def run_walk(description, name, serve, exercise, preferences=()):
             profile = str(uuid4()).upper()
             root = Path(folder)
             domain = "ee.qdo.nook.chromium-verification." + hashlib.sha256(os.fsencode(root)).hexdigest()
-            contributor["seed_profile"](root, profile, f"http://127.0.0.1:{server.server_port}/source")
+            origin = f"http://{source_host}:{server.server_port}"
+            contributor["seed_profile"](root, profile, f"{origin}/source")
+            if prepare_fixture:
+                prepare_fixture(root, origin, app, profile)
             preferences = [*preferences, ("settings.defaultBrowserPromptDismissedAt", "-float", str(time.time()))]
             try:
                 for key, kind, value in preferences:
@@ -187,7 +191,8 @@ def run_walk(description, name, serve, exercise, preferences=()):
                     start_pointer = console.pointer()
                     time.sleep(0.4)
                     require_idle_console(console, owns_screen, start_pointer, min_idle=10)
-                    proc = subprocess.Popen([str(binary), f"--barc-app-data-dir={root}", f"--barc-app-profile={profile}"],
+                    proc = subprocess.Popen([str(binary), f"--barc-app-data-dir={root}",
+                                             f"--barc-app-profile={profile}"],
                                             stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
                     try:
                         screen = Screen(console, owns_screen, proc.pid, start_pointer)

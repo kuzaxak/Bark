@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Bark disposable vault</title>
+<h1>Bark disposable vault</h1>
+<main></main>
+<script>
+const report = event => fetch("/event", {method: "POST", body: event});
+const main = document.querySelector("main");
+
+if (["/signed-in", "/passkey"].includes(location.pathname)) {
+  main.innerHTML = `
+    <p>Signed in to the disposable fixture</p>
+    <button type="button" id="passkey">Start disposable passkey</button>
+    <a href="/saved-form">Check the saved fixture account</a>
+  `;
+  document.querySelector("#passkey").onclick = async function () {
+    this.disabled = true;
+    report("passkey-started");
+    try {
+      await navigator.credentials.create({publicKey: {
+        challenge: crypto.getRandomValues(new Uint8Array(32)),
+        rp: {id: "localhost", name: "Bark disposable vault"},
+        user: {id: new Uint8Array([1, 2, 3]), name: "synthetic-passkey", displayName: "Synthetic passkey"},
+        pubKeyCredParams: [{type: "public-key", alg: -7}],
+        authenticatorSelection: {residentKey: "required", userVerification: "required"},
+        attestation: "none",
+        timeout: 30000
+      }});
+      await report("passkey-created");
+    } catch (error) {
+      await report(error.name === "NotAllowedError" ? "passkey-cancelled" : "passkey-error");
+    }
+  };
+} else {
+  main.innerHTML = `
+    <form method="post" action="/signed-in">
+      <label>Fixture account <input name="username" autocomplete="username" required></label>
+      <label>Fixture password <input name="password" type="password" autocomplete="current-password" required></label>
+      <button type="submit">Sign in to fixture</button>
+    </form>
+    <a href="/new-form">Use a new fixture account</a>
+    <a href="/passkey">Open the passkey fixture</a>
+  `;
+  let verified = false;
+  const account = document.querySelector("[name=username]");
+  const password = document.querySelector("[name=password]");
+  function checkFill() {
+    const saved = location.pathname === "/saved-form";
+    const expectedAccount = saved ? "synthetic-new" : "synthetic-existing";
+    const expectedPassword = saved ? "disposable-new-password" : "fixture-password";
+    if (!verified && account.value === expectedAccount && password.value === expectedPassword) {
+      verified = true;
+      report(saved ? "saved-fields-filled" : "typed-fields-filled");
+    }
+  }
+  account.addEventListener("input", checkFill);
+  password.addEventListener("input", checkFill);
+  account.addEventListener("change", checkFill);
+  password.addEventListener("change", checkFill);
+  const fillCheck = setInterval(() => {
+    checkFill();
+    if (verified) clearInterval(fillCheck);
+  }, 100);
+}
+report("ready:" + location.pathname);
+</script>
+</html>
