@@ -12,8 +12,9 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 - Switch spaces from the sidebar to return to the tabs for that space and profile.
 - Open two pages in a split to work with both in one window. Select a pane to
   direct typing and page commands to it.
-- Shift-click a link to open it in Peek. Escape returns focus to the source pane.
-  Promote Peek to a split to keep the same live page and its edits.
+- Shift-click a link, or focus it and press Shift+Return, to open it in Peek.
+  Escape returns focus to the source pane. Use **Add Split View** (Control+Shift+= by
+  default) to keep the preview and its edits in a second pane.
 - External links can open in a compact window. Choose **Open in Space** to move
   the page into the main window with its draft intact.
 
