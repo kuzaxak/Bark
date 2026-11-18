@@ -35,6 +35,16 @@ EXPORTS=$(/usr/bin/nm -gjU "$BINARY")
 /usr/bin/grep -x "_$ENTRY" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $ENTRY"
 /usr/bin/grep -x "_$TABLE" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $TABLE"
 /usr/bin/grep -x _barc_public_headers_sha256 <<<"$EXPORTS" > /dev/null || refuse 'Engine does not export barc_public_headers_sha256'
+python3 -B - "$ROOT/Runtime/Chromium" "$BINARY" <<'PYTHON' || exit 1
+from pathlib import Path
+import sys
+sys.path.insert(0, sys.argv[1])
+from run_browser_tests import require_host_only_image
+try:
+    require_host_only_image(Path(sys.argv[2]))
+except ValueError as error:
+    sys.exit(str(error))
+PYTHON
 # The source tree can move on after a build, so siso's record of each input is the evidence of what the
 # engine compiled. It keeps the digest from the last build that read the file.
 BUILD_RECORD=$(/usr/bin/mktemp)

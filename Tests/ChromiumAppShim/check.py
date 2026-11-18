@@ -176,7 +176,7 @@ def table_size():
 
 
 def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x86_64'), digest=headers_digest(),
-                   table=TABLE, size=None):
+                   table=TABLE, size=None, host_only=True):
     extra = ['-dynamiclib', f'-DZONE_NAME="{zone}"', *arch]
     if entry:
         extra.append(f'-DENTRY_FUNCTION={entry}')
@@ -184,7 +184,9 @@ def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=('-arch', 'x8
         extra.append(f'-DHEADERS_SHA256="{digest}"')
     if table:
         extra += [f'-DTABLE_FUNCTION={table}', f'-DTABLE_SIZE={size if size is not None else table_size()}']
-    compile_c(FAKE_FRAMEWORK, output, *extra)
+    marker = ('__attribute__((used, section("__TEXT,__barkhostonly"))) '
+              'static const char host_only[] = "BARK_MAC_HOST_ONLY_FACTORY_V1";\n') if host_only else ''
+    compile_c(marker + FAKE_FRAMEWORK, output, *extra)
 
 
 def fake_shell(output, arch=('-arch', 'x86_64')):
@@ -625,6 +627,12 @@ def publish_cases(work, framework_lib):
             mutate(build)
         package = root / 'package'
         return publish(build, package), package
+
+    unmarked = work / 'unmarked.dylib'
+    fake_framework(unmarked, host_only=False)
+    result, _ = attempt('publish-unmarked', framework=unmarked)
+    check('publishing rejects matching ABI exports from an engine without a host-only factory',
+          result.returncode != 0 and 'host-only factory capability' in result.stderr, result.stderr)
 
     run, package = attempt('publish-ok')
     check('publishing a valid engine succeeds', run.returncode == 0, run.stderr)
