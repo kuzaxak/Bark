@@ -161,10 +161,10 @@ def run_walk(description, name, serve, exercise, preferences=()):
     binary = app / "Contents/MacOS/Bark"
     if not binary.is_file() or processes(app):
         parser.error("Pass a candidate that is not already running")
-    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
+    contributor["verify_signed_shell"](app)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     console = QuartzConsole()
     crashes = crash_reports()
 

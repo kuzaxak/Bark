@@ -542,12 +542,13 @@ def write_build_record(build, **headers):
 
 
 def fake_engine_build(root, framework_lib):
-    """What the engine's build directory holds: its Bark.app with outer resources and stock launcher, and Bark Packaging."""
+    """What the engine's build directory holds: its SDK-only bundle, integrated app metadata and signing recipe."""
     build = root / 'source/out/Barc-x64'
     engine = build / 'Bark.app/Contents'
     (engine / 'MacOS').mkdir(parents=True)
-    (engine / 'MacOS/Bark').write_text('stock launcher that must not ship')
-    write_plist(engine / 'Info.plist', **ENGINE_PLIST)
+    (engine / 'MacOS/Bark').write_text('SDK-only launcher')
+    write_plist(engine / 'Info.plist', CFBundleIdentifier='ee.qdo.bark.sdk', LSBackgroundOnly=True)
+    write_plist(build / 'gen/chrome/chrome_integrated_app_info_plist.plist', **ENGINE_PLIST)
     (engine / 'Frameworks').mkdir()
     versioned_framework(engine / 'Frameworks', framework_lib)
     shutil.copytree(APP_RESOURCES, engine / 'Resources')

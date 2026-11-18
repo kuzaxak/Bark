@@ -187,8 +187,15 @@ def unsigned_mach_digest(path, payload_size, original_vmsize=None, signed_size=N
         return digest.digest(), vmsize
 
 
-def verify_candidate(app, engine, working):
+def verify_signed_shell(app):
+    sys.path.insert(0, str(REPO / "Runtime/Chromium"))
+    from run_browser_tests import TEST_FRAMEWORK, require_host_only_image
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)
+    return require_host_only_image(app / "Contents/Frameworks" / TEST_FRAMEWORK)
+
+
+def verify_candidate(app, engine, working):
+    verify_signed_shell(app)
     run("/bin/bash", STAGE, "--check-signed", app, REPO / "ChromiumApp/Additions.plist", engine)
     expected = framework_files(engine / FRAMEWORK)
     embedded = framework_files(app / "Contents/Frameworks" / FRAMEWORK)

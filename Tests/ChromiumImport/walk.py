@@ -297,10 +297,10 @@ def main():
     binary = app / "Contents/MacOS/Bark"
     if not binary.is_file() or app_processes(app):
         parser.error("Pass a signed Bark candidate that is not running")
-    subprocess.run(["codesign", "--verify", "--deep", "--strict", str(app)], check=True)
+    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
+    contributor["verify_signed_shell"](app)
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     console = QuartzConsole()
 
     with tempfile.TemporaryDirectory(prefix="bark-import-", dir="/private/tmp") as tmp,             HTTPServer(("127.0.0.1", 0), contributor["SmokePage"]) as fixture:
