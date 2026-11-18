@@ -152,6 +152,94 @@ class Screen:
             raise RuntimeError("Writing the candidate window capture failed")
 
 
+class Accessibility:
+    def __init__(self, screen, process):
+        self.screen = screen
+        self.process = process
+        self.ax = screen.ax
+        self.application = self.ax.AXUIElementCreateApplication(process.pid)
+
+    def attribute(self, element, key):
+        if element is None:
+            return None
+        status, value = self.ax.AXUIElementCopyAttributeValue(element, key, None)
+        return value if status == 0 else None
+
+    def names(self, element):
+        return [value for name in ("AXTitle", "AXDescription", "AXValue")
+                if isinstance(value := self.attribute(element, name), str)]
+
+    def tree(self, root):
+        pending = [(root, 0)] if root is not None else []
+        while pending:
+            element, depth = pending.pop()
+            yield element
+            if depth < 24:
+                pending.extend((child, depth + 1)
+                               for child in self.attribute(element, "AXChildren") or ())
+
+    def windows(self):
+        return self.attribute(self.application, "AXWindows") or ()
+
+    def find(self, label, roles=(), root=None):
+        for start in (root,) if root is not None else self.windows():
+            for element in self.tree(start):
+                if (not roles or self.attribute(element, "AXRole") in roles) and label in self.names(element):
+                    return element
+        return None
+
+    def control(self, label, roles=(), root=None):
+        return wait_for(f"Missing {label}", lambda: self.find(label, roles, root), self.process, timeout=10)
+
+    def owner(self, label, roles=()):
+        return next((window for window in self.windows() if self.find(label, roles, root=window)), None)
+
+    def press(self, element):
+        self.screen.press_button(element)
+
+    def center(self, element):
+        self.screen.guard()
+
+        def position(key, kind):
+            ref = self.attribute(element, key)
+            if ref is None:
+                raise RuntimeError(f"Missing {key} on the candidate control")
+            ok, value = self.ax.AXValueGetValue(ref, kind, None)
+            if not ok:
+                raise RuntimeError(f"Unreadable {key} on the candidate control")
+            return value
+
+        origin = position("AXPosition", self.ax.kAXValueCGPointType)
+        size = position("AXSize", self.ax.kAXValueCGSizeType)
+        return (origin.x + size.width / 2, origin.y + size.height / 2)
+
+    def hover(self, element):
+        point = self.center(element)
+        if not any(bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
+                   and bounds["Y"] <= point[1] < bounds["Y"] + bounds["Height"]
+                   for window in self.screen.windows()
+                   if (bounds := window["kCGWindowBounds"])):
+            raise RuntimeError("The address control is outside the disposable candidate")
+        quartz = self.screen.quartz
+        event = quartz.CGEventCreateMouseEvent(self.screen.source, quartz.kCGEventMouseMoved, point, 0)
+        quartz.CGEventPost(quartz.kCGHIDEventTap, event)
+        time.sleep(0.15)
+        self.screen.guard(point)
+        self.screen.point = point
+
+    def menu(self, label):
+        menu = self.attribute(self.application, "AXMenuBar")
+        self.press(self.control(label, ("AXMenuItem",), root=menu))
+
+    def dump(self, path):
+        labels = []
+        for window in self.windows():
+            for element in self.tree(window):
+                if names := self.names(element):
+                    labels.append([self.attribute(element, "AXRole"), names[:2]])
+        path.write_text(json.dumps(labels, default=str, indent=2)[:200_000])
+
+
 def verify_native_candidate(contributor, app):
     architecture = contributor["native_architecture"]()
     contributor["verify_signed_shell"](app, architecture)

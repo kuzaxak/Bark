@@ -11,8 +11,7 @@ from uuid import uuid4
 
 HERE = Path(__file__).resolve().parent
 peek = runpy.run_path(str(HERE.parent / "ChromiumPeek/walk.py"))
-controls = runpy.run_path(str(HERE.parent / "ChromiumExtensionActions/walk.py"))
-from signed_walk import run_walk, wait_for
+from signed_walk import Accessibility, run_walk, wait_for
 
 
 @contextmanager
@@ -106,7 +105,7 @@ def select_named_page(screen, process, events, output, access, selected, space, 
 
 
 def exercise(screen, process, events, output):
-    access = controls["Accessibility"](screen, process)
+    access = Accessibility(screen, process)
     screen.keys.update({"t": 17, "s": 1, "h": 4, "a": 0, "r": 15, "e": 14, "d": 2, "w": 13, "p": 35})
 
     def record(name, value):

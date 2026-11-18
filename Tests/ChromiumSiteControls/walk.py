@@ -15,7 +15,7 @@ from uuid import uuid4
 
 HERE = Path(__file__).resolve().parent
 controls = runpy.run_path(str(HERE.parent / "ChromiumExtensionActions/walk.py"))
-from signed_walk import run_walk, wait_for
+from signed_walk import Accessibility, run_walk, wait_for
 
 
 def peer_certificate(url):
@@ -47,7 +47,7 @@ def walk(url, host, issuer, fingerprint):
         path.write_text(json.dumps(data) + "\n")
 
     def exercise(screen, process, events, output):
-        access = controls["Accessibility"](screen, process)
+        access = Accessibility(screen, process)
         address_hosts = {host.removeprefix("www."), host}
         app_address = urlsplit(url)
         if app_address.port not in (None, 443):

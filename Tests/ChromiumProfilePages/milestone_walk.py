@@ -7,8 +7,8 @@ import json
 import sys
 from urllib.parse import urlsplit
 
-from walk import controls, focus_snapshot, peek, prepare, select_named_page, serve
-from signed_walk import run_walk, wait_for
+from walk import focus_snapshot, peek, prepare, select_named_page, serve
+from signed_walk import Accessibility, run_walk, wait_for
 
 allow_pointer_focus = False
 
@@ -18,7 +18,7 @@ class Session:
         self.screen, self.process, self.events, self.output = screen, process, events, output
         self.mode = mode
         self.pointer = mode == "pointer"
-        self.access = controls["Accessibility"](screen, process)
+        self.access = Accessibility(screen, process)
         self.begin = len(events)
         screen.keys.update({"t": 17, "s": 1, "h": 4, "a": 0, "r": 15, "e": 14, "d": 2, "w": 13,
                             "p": 35, "Tab": 48, "=": 24, "Right": 124})
