@@ -964,6 +964,85 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, TwoProfilesShareOneWindow) {
   EXPECT_EQ("", content::EvalJs(home_page, "document.cookie"));
 }
 
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       LocationPromptFollowsItsProfileInASharedWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t tab = OpenPage(work, root, "/title1.html");
+  Place(work, tab, root);
+  ASSERT_EQ(1, barc_window_show(work));
+  auto* page = TabContents(tab);
+  auto* manager = permissions::PermissionRequestManager::FromWebContents(page);
+
+  // Both pages can remain visible in a mixed-profile split.
+  ASSERT_EQ(1, barc_window_select(home));
+  content::ExecuteScriptAsync(page,
+      "navigator.geolocation.getCurrentPosition(() => {},"
+      "error => document.title = 'denied:' + error.code)");
+  ASSERT_TRUE(base::test::RunUntil([&] { return manager->IsRequestInProgress(); }));
+  content::RunAllTasksUntilIdle();
+  EXPECT_FALSE(manager->GetCurrentPrompt());
+
+  ASSERT_EQ(1, barc_window_select(work));
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(manager->GetCurrentPrompt());
+  ASSERT_EQ(1, barc_window_select(home));
+  EXPECT_FALSE(manager->GetCurrentPrompt());
+  EXPECT_TRUE(manager->IsRequestInProgress());
+  ASSERT_EQ(1, barc_window_select(work));
+  content::RunAllTasksUntilIdle();
+  ASSERT_TRUE(manager->GetCurrentPrompt());
+  content::TitleWatcher denied(page, u"denied:1");
+  manager->Deny(std::monostate());
+  EXPECT_EQ(u"denied:1", denied.WaitAndGetTitle());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       ActivationSupersessionStillNotifiesOutgoingClient) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  const int32_t third =
+      OpenProfile("34db02c7-ec55-4553-96f9-2ae71a0fee4d", work);
+  auto* work_browser = FindBrowser(work);
+  auto* home_browser = FindBrowser(home);
+  auto* third_browser = FindBrowser(third);
+  ASSERT_TRUE(work_browser);
+  ASSERT_TRUE(home_browser);
+  ASSERT_TRUE(third_browser);
+  auto* host = HostOf(work);
+  ASSERT_TRUE(host);
+  ASSERT_EQ(host, HostOf(home));
+  ASSERT_EQ(host, HostOf(third));
+  ASSERT_EQ(1, barc_window_select(work));
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil([&] { return host->widget()->IsActive(); }));
+  ASSERT_TRUE(work_browser->IsSelectedForNativeWindow());
+
+  int deselections = 0;
+  auto deselected = work_browser->RegisterNativeWindowSelectionChanged(
+      base::BindLambdaForTesting([&] {
+        EXPECT_FALSE(work_browser->IsSelectedForNativeWindow());
+        ++deselections;
+      }));
+  int activations = 0;
+  auto activated = home_browser->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) {
+        EXPECT_TRUE(home_browser->IsSelectedForNativeWindow());
+        ++activations;
+        EXPECT_EQ(1, barc_window_select(third));
+      }));
+
+  EXPECT_EQ(0, barc_window_select(home));
+  EXPECT_EQ(1, activations);
+  EXPECT_EQ(1, deselections);
+  EXPECT_FALSE(work_browser->IsSelectedForNativeWindow());
+  EXPECT_FALSE(home_browser->IsSelectedForNativeWindow());
+  EXPECT_TRUE(third_browser->IsSelectedForNativeWindow());
+}
+
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, UnselectedClientsTabRetires) {
   const int32_t work = OpenProfile(kWorkProfile);
   const int32_t home = OpenProfile(kHomeProfile, work);

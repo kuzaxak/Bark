@@ -358,17 +358,35 @@ void BarkWindowHost::SetSelected(BarkBrowserWindow* client,
   if (client->browser()->IsDeleteScheduled()) {
     return;
   }
-  const bool active = widget_ && widget_->IsActive();
-  if (previous && active) {
+  auto still_selected = [&] {
+    return !closing_ && incoming && selected_ == incoming.get() &&
+           !incoming->browser()->IsDeleteScheduled();
+  };
+  if (previous && widget_ && widget_->IsActive()) {
     previous->OnHostActivationChanged(false);
   }
-  if (incoming && active && selected_ == incoming.get()) {
-    incoming->OnHostActivationChanged(true);
+  // Activation observers may already have selected a third client. The
+  // outgoing profile still needs to hide its prompts if it lost selection.
+  if (!closing_ && previous && previous.get() != selected_) {
+    previous->browser()->NotifyNativeWindowSelectionChanged();
   }
-  if (!incoming || selected_ != incoming.get() || closing_) {
+  if (!still_selected()) {
     return;
   }
+  if (widget_ && widget_->IsActive()) {
+    incoming->OnHostActivationChanged(true);
+    if (!still_selected()) {
+      return;
+    }
+  }
   OnSelectedPageChanged();
+  if (!still_selected()) {
+    return;
+  }
+  incoming->browser()->NotifyNativeWindowSelectionChanged();
+  if (!still_selected()) {
+    return;
+  }
   widget_->UpdateWindowTitle();
   fullscreen_kind_ = CurrentFullscreenKind();
   observers_.Notify(&Observer::OnFullscreenChanged,
