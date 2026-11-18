@@ -52,7 +52,6 @@
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest_mac.h"
-#include "ui/events/event.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 
@@ -60,6 +59,7 @@
 #include "ui/views/view.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/widget.h"
+#include "ui/views/window/dialog_client_view.h"
 
 @interface NSWindow (BarkWindowHostTest)
 - (BOOL)_hasActiveAppearance;
@@ -1561,10 +1561,10 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   ASSERT_TRUE(base::test::RunUntil([&] { return error->GetBubbleView(); }));
   auto* bubble = owned_bubble();
   ASSERT_TRUE(bubble && bubble->GetCancelButton());
-  const ui::MouseEvent click(ui::EventType::kMousePressed, gfx::Point(),
-                             gfx::Point(), base::TimeTicks(),
-                             ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
-  views::test::ButtonTestApi(bubble->GetCancelButton()).NotifyClick(click);
+  auto* dialog = bubble->GetDialogClientView();
+  ASSERT_TRUE(dialog);
+  dialog->ResetViewShownTimeStampForTesting();
+  views::test::ButtonTestApi(bubble->GetCancelButton()).NotifyDefaultMouseClick();
   ASSERT_TRUE(base::test::RunUntil([&] { return !error->GetBubbleView(); }));
   EXPECT_EQ((std::vector<base::FilePath>{owner->GetProfile()->GetPath()}),
             error->canceled_profiles);
