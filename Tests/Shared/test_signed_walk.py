@@ -15,14 +15,15 @@ class NativeArchitectureTests(unittest.TestCase):
         contributor["verify_signed_shell"] = Mock()
         verify = contributor["verify_signed_shell"]
         app = Path("/fixture/Bark.app")
-        for arm_feature, status, expected in [("1\n", 0, "arm64"), ("", 1, "x86_64")]:
-            reply = subprocess.CompletedProcess([], status, stdout=arm_feature)
+        for probe_values, expected in [("1\n0\n", "arm64"), ("0\n1\n", "arm64"), ("", "x86_64")]:
+            reply = subprocess.CompletedProcess([], 0, stdout=probe_values)
             with self.subTest(architecture=expected), patch("sys.platform", "darwin"), \
                     patch("platform.machine", return_value="x86_64"), patch("subprocess.run", return_value=reply) as sysctl:
                 self.assertEqual(verify_native_candidate(contributor, app), expected)
                 verify.assert_called_with(app, expected)
                 sysctl.assert_called_once_with(
-                    ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"], capture_output=True, text=True,
+                    ["/usr/sbin/sysctl", "-in", "hw.optional.arm64", "sysctl.proc_translated"],
+                    capture_output=True, text=True, check=True,
                 )
 
     def test_timing_report_survives_missing_cpu_brand(self):

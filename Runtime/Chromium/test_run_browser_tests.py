@@ -75,7 +75,7 @@ class HostOnlyRuntimeTests(unittest.TestCase):
     def test_default_suite_checks_native_hardware_even_under_translated_python(self):
         (self.checkout / "chrome").mkdir()
         (self.checkout / "chrome/VERSION").touch()
-        for arm_flag, arch, cpu in (("1\n", "arm64", "arm64"), ("", "x86_64", "x64")):
+        for arm_flag, arch, cpu in (("0\n1\n", "arm64", "arm64"), ("", "x86_64", "x64")):
             binary = self.checkout / "out" / f"Barc-{cpu}" / "bark_browser_tests"
             binary.parent.mkdir(parents=True)
             binary.touch(mode=0o700)

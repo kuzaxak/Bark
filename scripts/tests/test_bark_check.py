@@ -67,9 +67,9 @@ class ArchitectureTests(unittest.TestCase):
 
     def test_hardware_probe_detects_arm_when_python_reports_intel(self):
         with patch("sys.platform", "darwin"), patch.object(self.cli["platform"], "machine", return_value="x86_64"), \
-                patch.object(self.cli["subprocess"], "run", return_value=Mock(stdout="1\n")) as probe:
+                patch.object(self.cli["subprocess"], "run", return_value=Mock(stdout="0\n1\n")) as probe:
             self.assertEqual(self.cli["native_architecture"](), "arm64")
-        self.assertEqual(probe.call_args.args[0], ["/usr/sbin/sysctl", "-n", "hw.optional.arm64"])
+        self.assertEqual(probe.call_args.args[0], ["/usr/sbin/sysctl", "-in", "hw.optional.arm64", "sysctl.proc_translated"])
 
 
 if __name__ == "__main__":

@@ -15,13 +15,13 @@ XCFRAMEWORK = "BarkEngine.xcframework"
 
 
 def native_architecture():
-    # A translated interpreter on Apple Silicon reports x86_64 through uname.
-    if sys.platform == "darwin":
-        arm64 = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
-                               capture_output=True, text=True)
-        if arm64.stdout.strip() == "1":
-            return "arm64"
     machine = platform.machine()
+    if sys.platform == "darwin" and machine == "x86_64":
+        # sysctl may itself run natively or under Rosetta. Intel Macs can lack both keys.
+        probe = subprocess.run(["/usr/sbin/sysctl", "-in", "hw.optional.arm64", "sysctl.proc_translated"],
+                               capture_output=True, text=True, check=True)
+        if "1" in probe.stdout.split():
+            return "arm64"
     if machine == "aarch64":  # Non-macOS recipe dry runs use this spelling.
         return "arm64"
     if machine not in ARCHITECTURES:
