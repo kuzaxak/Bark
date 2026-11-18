@@ -5,7 +5,6 @@
 import argparse
 import base64
 import contextlib
-from functools import partial
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -107,6 +106,16 @@ def app_info(app):
     return plistlib.loads((app / "Contents/Info.plist").read_bytes())
 
 
+def outer_icon(app):
+    name = app_info(app).get("CFBundleIconFile")
+    if not name:
+        return None
+    relative = Path("Contents/Resources") / name
+    if not (app / relative).is_file() and not relative.suffix:
+        relative = relative.with_suffix(".icns")
+    return relative
+
+
 def run(*args, **kwargs):
     return subprocess.run([str(arg) for arg in args], check=True, **kwargs)
 
@@ -152,6 +161,18 @@ print(key.rawRepresentation.base64EncodedString())
         run("/bin/bash", check["STAGE"], "--arch", arch, products / "Bark.app", engine, products, unsigned,
             REPO / "ChromiumApp/Additions.plist", stdout=log, stderr=subprocess.STDOUT)
         base_info = info.read_bytes()
+        source = products / "Bark.app"
+        icon = outer_icon(source)
+        if icon:
+            icon_bytes = (source / icon).read_bytes()
+            (output / "outer-icon.json").write_text(json.dumps({
+                "path": str(icon), "sha256": hashlib.sha256(icon_bytes).hexdigest(),
+            }, indent=2) + "\n")
+
+        def verify_icon(candidate):
+            if icon and (outer_icon(candidate) != icon or (candidate / icon).read_bytes() != icon_bytes):
+                raise RuntimeError("The candidate differs from the app target's declared icon")
+        verify_icon(unsigned)
         for version, build in (("1.0.0", "100"), ("1.0.1", "101")):
             expectation = dict(common, CFBundleShortVersionString=version, CFBundleVersion=build)
             settings.append(expectation)
@@ -161,8 +182,11 @@ print(key.rawRepresentation.base64EncodedString())
             run(sys.executable, REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed,
                 stdout=log, stderr=subprocess.STDOUT)
             app = signed / "stable/Bark.app"
-            verify = partial(check["verify_candidate"], engine=engine, working=work,
-                             architecture=arch, release_info=expectation)
+            def verify(candidate):
+                check["verify_candidate"](candidate, engine=engine, working=work,
+                                          architecture=arch, release_info=expectation)
+                verify_icon(candidate)
+
             verify(app)
             if set(bark_release.HANDLER_KEYS).intersection(app_info(app)):
                 raise RuntimeError("A rehearsal bundle advertises browser or document handlers.")
@@ -376,7 +400,10 @@ def exercise(check, installed, newer, root, versions, arch, server, output):
                 final = app_info(installed)
                 if any(final.get(key) != val for key, val in new.items()):
                     raise RuntimeError("The installed and relaunched app is not the sealed new version")
-                for relative in ("Contents/MacOS/Bark", "Contents/Info.plist"):
+                exact_files = ["Contents/MacOS/Bark", "Contents/Info.plist"]
+                if icon := outer_icon(newer):
+                    exact_files.append(icon)
+                for relative in exact_files:
                     if (installed / relative).read_bytes() != (newer / relative).read_bytes():
                         raise RuntimeError(f"The installed update differs from v101 at {relative}")
                 check["verify_signed_shell"](installed, arch)
