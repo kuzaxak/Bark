@@ -6,7 +6,6 @@ import json
 from hashlib import sha256
 import os
 from pathlib import Path
-import plistlib
 import shlex
 import shutil
 import subprocess
@@ -291,17 +290,18 @@ def install_generated(source, destination):
         staged.replace(destination)
 
 
-def official_sdk():
-    """Require the selected Xcode's default macOS SDK for both GN and Cargo."""
-    path = Path(subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
-                                        text=True).strip())
-    with (path / "System/Library/CoreServices/SystemVersion.plist").open("rb") as info:
-        installed = plistlib.load(info)
+def official_sdk(path=None):
+    from bark.tools.macos_sdk_info import read_macos_sdk
+
+    if path is None:
+        path = Path(subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                                            text=True).strip())
+    path = path.expanduser().resolve(strict=True)
+    version, build_id = read_macos_sdk(path)
     required = PINS["official_macos_sdk"]
-    version, build_id = installed.get("ProductVersion"), installed.get("ProductBuildVersion")
     if (version, build_id) != (required["version"], required["build"]):
         raise ValueError(f"Official Bark builds require the macOS {required['version']} SDK "
-                         f"({required['build']}). Selected Xcode provides {version} ({build_id}) at {path}")
+                         f"({required['build']}). Found {version} ({build_id}) at {path}")
     return path
 
 
@@ -311,6 +311,20 @@ OFFICIAL_CC_WRAPPER = "bark_official_pgo_cc_v1"
 
 def compiler_wrapper_arg(wrapper):
     return f'cc_wrapper = "./{wrapper}"\n'.encode()
+
+
+def official_sdk_arg(arch):
+    return f'mac_sdk_path = "//out/Barc-{arch}-official/MacOSX.sdk"\n'.encode()
+
+
+def bind_official_sdk(out, sdk, *, dry_run):
+    link = out / "MacOSX.sdk"
+    if link.is_symlink() and link.readlink() == sdk:
+        return
+    if link.is_symlink() or link.exists():
+        raise ValueError(f"{link}: already bound to another SDK or occupied. Use a fresh official output.")
+    if not dry_run:
+        link.symlink_to(sdk, target_is_directory=True)
 
 
 def engine_args(arch, official):
@@ -328,7 +342,7 @@ def engine_args(arch, official):
     version = PINS["official_macos_sdk"]["version"]
     return contents.replace(developer_mode, (
         'is_official_build = true\nchrome_pgo_phase = 2\nuse_system_xcode = true\n'
-        f'mac_sdk_min = "{version}"\n').encode())
+        f'mac_sdk_min = "{version}"\n').encode()) + official_sdk_arg(arch)
 
 
 def build(checkout, depot_tools, env, args):
@@ -336,11 +350,14 @@ def build(checkout, depot_tools, env, args):
     src = checkout / "src"
     repository(src, "chromium", create=False, dry_run=args.dry_run)
     repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
+    sdk = None
+    if args.official and (not args.dry_run or args.macos_sdk is not None):
+        sdk = official_sdk(args.macos_sdk)
+        env = {**env, "SDKROOT": str(sdk)}
     if args.official and not args.dry_run:
         from official_provenance import engine_source_digest
 
         official_source = engine_source_digest()
-        env = {**env, "SDKROOT": str(official_sdk())}
     replay(src)
     configured_args = engine_args(args.arch, args.official)
     suffix = "-official" if args.official else ""
@@ -351,9 +368,12 @@ def build(checkout, depot_tools, env, args):
     existing_args = None
     if output_args.is_file():
         existing_args = output_args.read_bytes()
-        prior_official_args = configured_args.replace(compiler_wrapper_arg(OFFICIAL_CC_WRAPPER),
-                                                      compiler_wrapper_arg(DEVELOPER_CC_WRAPPER))
-        if existing_args != configured_args and not (args.official and existing_args == prior_official_args):
+        accepted_args = {configured_args}
+        if args.official:
+            prior_args = configured_args.removesuffix(official_sdk_arg(args.arch))
+            accepted_args.update((prior_args, prior_args.replace(compiler_wrapper_arg(OFFICIAL_CC_WRAPPER),
+                                                                 compiler_wrapper_arg(DEVELOPER_CC_WRAPPER))))
+        if existing_args not in accepted_args:
             raise ValueError(f"{output_args}: differs from the requested recipe. "
                              f"Move {out} aside and rerun to create a fresh GN output directory.")
     elif out.exists() and (not out.is_dir() or any(out.iterdir())):
@@ -368,6 +388,8 @@ def build(checkout, depot_tools, env, args):
     if wrapper.is_symlink() or any(path.is_symlink() for path in
                                    (rust_out, rust_out / rust_target, matcher.parent, matcher)):
         raise ValueError(f"{out}: expected local wrapper and Rust build paths")
+    if sdk is not None:
+        bind_official_sdk(out, sdk, dry_run=True)
     if not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
         if existing_args != configured_args:
@@ -378,6 +400,8 @@ def build(checkout, depot_tools, env, args):
                         (output_args.read_bytes() if output_args.exists() else None) != existing_args):
                     raise ValueError(f"{output_args}: changed during build setup")
                 staged.replace(output_args)
+        if sdk is not None:
+            bind_official_sdk(out, sdk, dry_run=False)
     if args.official:
         pgo_target = "mac" if args.arch == "x64" else "mac-arm"
         command = [sys.executable, src / "tools/update_pgo_profiles.py", f"--target={pgo_target}",
@@ -443,6 +467,8 @@ def main():
     parser.add_argument("--checkout", type=Path, required=True, help="gclient root containing src/")
     parser.add_argument("--depot-tools", type=Path, help="defaults to depot_tools beside the gclient root")
     parser.add_argument("--official", action="store_true", help="build with the pinned macOS SDK and Chromium PGO profile")
+    parser.add_argument("--macos-sdk", type=Path, metavar="SDK",
+                        help="use this macOS SDK with the selected Xcode tools for an official engine build")
     parser.add_argument("--arch", choices=("x64", "arm64"), help="build architecture (defaults to native hardware)")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), default=8, metavar="1..8")
     parser.add_argument("--from-revision", help="Bark commit previously applied to this checkout (for update)")
@@ -453,6 +479,8 @@ def main():
         parser.error("update requires --from-revision and only update accepts it")
     if (args.arch is not None or args.official) and args.action != "build":
         parser.error("--arch and --official select the configuration for build")
+    if args.macos_sdk is not None and not args.official:
+        parser.error("--macos-sdk requires build --official")
     if args.action == "build" and args.arch is None:
         args.arch = GN_CPU[native_architecture()]
     if args.resume and args.action != "prepare":

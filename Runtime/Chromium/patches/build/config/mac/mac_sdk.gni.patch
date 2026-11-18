@@ -1,0 +1,45 @@
+diff --git a/build/config/mac/mac_sdk.gni b/build/config/mac/mac_sdk.gni
+--- a/build/config/mac/mac_sdk.gni
++++ b/build/config/mac/mac_sdk.gni
+@@ -88,6 +88,8 @@
+   _hermetic_xcode_path = "//build/mac_files/xcode_binaries"
+ }
+
++_use_explicit_mac_sdk = use_system_xcode && mac_sdk_path != ""
++
+ script_name = "//build/config/apple/sdk_info.py"
+ sdk_info_args = []
+ if (!use_system_xcode) {
+@@ -99,7 +101,7 @@
+
+ # RBE requires paths relative to source directory. When using system
+ # Xcode, this is done by creating symbolic links in root_build_dir.
+-if (use_system_xcode) {
++if (use_system_xcode && !_use_explicit_mac_sdk) {
+   sdk_info_args += [
+     "--get_sdk_info",
+     "--create_symlink_at",
+@@ -118,7 +120,22 @@
+   mac_sdk_path = _mac_sdk_result.sdk_path
+ }
+
+-if (use_system_xcode) {
++if (_use_explicit_mac_sdk) {
++  _explicit_sdk = exec_script(
++      "//bark/tools/macos_sdk_info.py",
++      [
++        rebase_path(mac_sdk_path, root_build_dir),
++        mac_sdk_min,
++      ],
++      "json",
++      [
++        "$mac_sdk_path/SDKSettings.json",
++        "$mac_sdk_path/System/Library/CoreServices/SystemVersion.plist",
++      ])
++  mac_sdk_version = _explicit_sdk.version
++  mac_sdk_build_version = _explicit_sdk.build
++  mac_bin_path = _explicit_sdk.bin_path
++} else if (use_system_xcode) {
+   # The tool will print the SDK path on the first line, and the version on the
+   # second line.
+   find_sdk_args = [

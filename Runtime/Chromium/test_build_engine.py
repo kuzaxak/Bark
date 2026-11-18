@@ -1,5 +1,6 @@
 """Exercise interrupted engine recipe preparation with tiny Git fixtures."""
 import argparse
+import json
 import plistlib
 from contextlib import redirect_stdout
 from io import StringIO
@@ -11,6 +12,16 @@ import unittest
 from unittest import mock
 
 import build_engine
+
+
+def write_sdk(path, version="26.5", build="25F70", canonical=None):
+    system = path / "System/Library/CoreServices/SystemVersion.plist"
+    system.parent.mkdir(parents=True, exist_ok=True)
+    system.write_bytes(plistlib.dumps({"ProductVersion": version, "ProductBuildVersion": build}))
+    (path / "SDKSettings.json").write_text(json.dumps({
+        "Version": version, "CanonicalName": canonical or f"macosx{version}",
+    }))
+    return path
 
 
 class InterruptedPreparationTests(unittest.TestCase):
@@ -145,7 +156,7 @@ class BuildArchitectureTests(unittest.TestCase):
             checkout = Path(directory)
             for arch, pgo in (("x64", "mac"), ("arm64", "mac-arm")):
                 with self.subTest(arch=arch):
-                    args = argparse.Namespace(arch=arch, official=True, dry_run=True, jobs=3)
+                    args = argparse.Namespace(arch=arch, official=True, dry_run=True, jobs=3, macos_sdk=None)
                     output = StringIO()
                     with mock.patch.object(build_engine, "verify_gclient"), mock.patch.object(
                         build_engine, "repository"
@@ -171,79 +182,152 @@ class BuildArchitectureTests(unittest.TestCase):
                     self.assertFalse((checkout / "src/out").exists())
 
     def test_official_output_migrates_atomically_and_retries(self):
-        with tempfile.TemporaryDirectory() as directory:
-            checkout = Path(directory)
-            out = checkout / "src/out/Barc-arm64-official"
-            out.mkdir(parents=True)
-            selector = checkout / "src/chrome/build/mac-arm.pgo.txt"
-            selector.parent.mkdir(parents=True)
-            selector.write_text(build_engine.PINS["official_pgo_profiles"]["mac-arm"] + "\n")
-            output_args = out / "args.gn"
-            configured = build_engine.engine_args("arm64", True)
-            previous = configured.replace(b'cc_wrapper = "./bark_official_pgo_cc_v1"\n',
-                                          b'cc_wrapper = "./bark_override_cc"\n')
-            self.assertNotEqual(previous, configured)
+        for wrapper in (build_engine.DEVELOPER_CC_WRAPPER, build_engine.OFFICIAL_CC_WRAPPER):
+            with self.subTest(wrapper=wrapper), tempfile.TemporaryDirectory() as directory:
+                self.check_official_output_migration(Path(directory).resolve(), wrapper)
+
+    def check_official_output_migration(self, checkout, wrapper):
+        sdk = write_sdk(checkout / "MacOSX26.5.sdk")
+        out = checkout / "src/out/Barc-arm64-official"
+        out.mkdir(parents=True)
+        selector = checkout / "src/chrome/build/mac-arm.pgo.txt"
+        selector.parent.mkdir(parents=True)
+        selector.write_text(build_engine.PINS["official_pgo_profiles"]["mac-arm"] + "\n")
+        output_args = out / "args.gn"
+        configured = build_engine.engine_args("arm64", True)
+        previous = configured.removesuffix(build_engine.official_sdk_arg("arm64")).replace(
+            build_engine.compiler_wrapper_arg(build_engine.OFFICIAL_CC_WRAPPER),
+            build_engine.compiler_wrapper_arg(wrapper))
+        self.assertNotEqual(previous, configured)
+        output_args.write_bytes(previous)
+        existing_product = out / "keep.o"
+        existing_product.touch()
+        args = argparse.Namespace(arch="arm64", official=True, dry_run=True, jobs=2, macos_sdk=None)
+        with mock.patch.multiple(build_engine, verify_gclient=mock.DEFAULT,
+                                 repository=mock.DEFAULT, replay=mock.DEFAULT,
+                                 run=mock.DEFAULT) as commands, mock.patch.object(
+                build_engine, "official_sdk", wraps=build_engine.official_sdk) as resolve_sdk:
+            build_engine.build(checkout, checkout / "tools", {}, args)
+            self.assertEqual(output_args.read_bytes(), previous)
+            resolve_sdk.assert_not_called()
+
+            args.dry_run = False
+            args.macos_sdk = sdk
+            with mock.patch.object(Path, "replace", side_effect=InterruptedError("replace")):
+                with self.assertRaisesRegex(InterruptedError, "replace"):
+                    build_engine.build(checkout, checkout / "tools", {}, args)
+            self.assertEqual(output_args.read_bytes(), previous)
+            self.assertEqual(set(out.iterdir()), {output_args, existing_product})
+
+            modified = previous + b"# external edit\n"
+            write_bytes = Path.write_bytes
+
+            def edit_during_staging(path, data):
+                write_bytes(path, data)
+                write_bytes(output_args, modified)
+
+            with mock.patch.object(Path, "write_bytes", edit_during_staging):
+                with self.assertRaisesRegex(ValueError, "changed during build setup"):
+                    build_engine.build(checkout, checkout / "tools", {}, args)
+            self.assertEqual(output_args.read_bytes(), modified)
+
+            for invalid in (modified, build_engine.engine_args("arm64", False)):
+                output_args.write_bytes(invalid)
+                commands["run"].reset_mock()
+                with self.assertRaisesRegex(ValueError, "fresh GN output directory"):
+                    build_engine.build(checkout, checkout / "tools", {}, args)
+                commands["run"].assert_not_called()
+                self.assertEqual(output_args.read_bytes(), invalid)
+
             output_args.write_bytes(previous)
-            existing_product = out / "keep.o"
-            existing_product.touch()
-            args = argparse.Namespace(arch="arm64", official=True, dry_run=True, jobs=2)
-            with mock.patch.multiple(build_engine, verify_gclient=mock.DEFAULT,
-                                     repository=mock.DEFAULT, replay=mock.DEFAULT,
-                                     official_sdk=mock.DEFAULT, run=mock.DEFAULT) as commands:
-                build_engine.build(checkout, checkout / "tools", {}, args)
-                self.assertEqual(output_args.read_bytes(), previous)
-                commands["official_sdk"].assert_not_called()
-
-                args.dry_run = False
-                with mock.patch.object(Path, "replace", side_effect=InterruptedError("replace")):
-                    with self.assertRaisesRegex(InterruptedError, "replace"):
-                        build_engine.build(checkout, checkout / "tools", {}, args)
-                self.assertEqual(output_args.read_bytes(), previous)
-                self.assertEqual(set(out.iterdir()), {output_args, existing_product})
-
-                modified = previous + b"# external edit\n"
-                write_bytes = Path.write_bytes
-
-                def edit_during_staging(path, data):
-                    write_bytes(path, data)
-                    write_bytes(output_args, modified)
-
-                with mock.patch.object(Path, "write_bytes", edit_during_staging):
-                    with self.assertRaisesRegex(ValueError, "changed during build setup"):
-                        build_engine.build(checkout, checkout / "tools", {}, args)
-                self.assertEqual(output_args.read_bytes(), modified)
-
-                for invalid in (modified, build_engine.engine_args("arm64", False)):
-                    output_args.write_bytes(invalid)
-                    commands["run"].reset_mock()
-                    with self.assertRaisesRegex(ValueError, "fresh GN output directory"):
-                        build_engine.build(checkout, checkout / "tools", {}, args)
-                    commands["run"].assert_not_called()
-                    self.assertEqual(output_args.read_bytes(), invalid)
-
-                output_args.write_bytes(previous)
-                commands["run"].side_effect = InterruptedError("profile preparation")
-                for _ in range(2):
-                    with self.assertRaisesRegex(InterruptedError, "profile preparation"):
-                        build_engine.build(checkout, checkout / "tools", {}, args)
-                    self.assertEqual(output_args.read_bytes(), configured)
-                    self.assertEqual(set(out.iterdir()), {output_args, existing_product})
+            commands["run"].side_effect = InterruptedError("profile preparation")
+            for _ in range(2):
+                with self.assertRaisesRegex(InterruptedError, "profile preparation"):
+                    build_engine.build(checkout, checkout / "tools", {}, args)
+                self.assertEqual(output_args.read_bytes(), configured)
+                self.assertEqual(set(out.iterdir()), {output_args, existing_product, out / "MacOSX.sdk"})
+                self.assertEqual((out / "MacOSX.sdk").readlink(), sdk)
 
     def test_official_build_checks_sdk_version_and_build_id(self):
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory)
-            info = path / "System/Library/CoreServices/SystemVersion.plist"
-            info.parent.mkdir(parents=True)
-            with mock.patch.object(build_engine.subprocess, "check_output", return_value=str(path)):
-                for version, build, matches in (("26.2", "25C58", False), ("26.5", "other", False),
-                                                ("26.5", "25F70", True)):
-                    with self.subTest(version=version, build=build):
-                        info.write_bytes(plistlib.dumps({"ProductVersion": version, "ProductBuildVersion": build}))
-                        if matches:
-                            self.assertEqual(build_engine.official_sdk(), path)
-                        else:
-                            with self.assertRaisesRegex(ValueError, "Official Bark builds require"):
+            path = Path(directory).resolve() / "MacOSX26.5.sdk"
+            installed = path.with_name("MacOSX.sdk")
+            installed.symlink_to(path)
+            for version, build, canonical, error in (
+                ("26.2", "25C58", None, "Official Bark builds require"),
+                ("26.5", "25F71", None, "Official Bark builds require"),
+                ("26.5", "25F70", "iphoneos26.5", "inconsistent macOS SDK identity"),
+                ("26.5", "25F70", None, None),
+            ):
+                with self.subTest(version=version, build=build, canonical=canonical):
+                    write_sdk(path, version, build, canonical)
+                    with mock.patch.object(build_engine.subprocess, "check_output",
+                                           return_value=str(installed) + "\n") as xcrun:
+                        if error:
+                            with self.assertRaisesRegex(ValueError, error):
+                                build_engine.official_sdk(installed)
+                            xcrun.assert_not_called()
+                            with self.assertRaisesRegex(ValueError, error):
                                 build_engine.official_sdk()
+                        else:
+                            self.assertEqual(build_engine.official_sdk(installed), path)
+                            xcrun.assert_not_called()
+                            self.assertEqual(build_engine.official_sdk(), path)
+                        xcrun.assert_called_once_with(
+                            ["xcrun", "--sdk", "macosx", "--show-sdk-path"], text=True)
+
+    def test_official_sdk_alias_never_replaces_existing_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            sdk = write_sdk(root / "MacOSX26.5.sdk")
+            foreign_sdk = write_sdk(root / "CopiedMacOSX26.5.sdk")
+            for arch in ("x64", "arm64"):
+                out = root / "src/out" / f"Barc-{arch}-official"
+                out.mkdir(parents=True)
+                link = out / "MacOSX.sdk"
+                build_engine.bind_official_sdk(out, sdk, dry_run=True)
+                self.assertFalse(link.is_symlink())
+                build_engine.bind_official_sdk(out, sdk, dry_run=False)
+                build_engine.bind_official_sdk(out, sdk, dry_run=False)
+                with self.assertRaisesRegex(ValueError, "already bound"):
+                    build_engine.bind_official_sdk(out, foreign_sdk, dry_run=False)
+                self.assertEqual(link.readlink(), sdk)
+                self.assertEqual((link / "SDKSettings.json").read_bytes(),
+                                 (sdk / "SDKSettings.json").read_bytes())
+
+            link.unlink()
+            link.symlink_to(root / "missing")
+            with self.assertRaisesRegex(ValueError, "already bound"):
+                build_engine.bind_official_sdk(out, sdk, dry_run=True)
+            self.assertEqual(link.readlink(), root / "missing")
+            link.unlink()
+            link.write_bytes(b"foreign contents")
+            with self.assertRaisesRegex(ValueError, "occupied"):
+                build_engine.bind_official_sdk(out, sdk, dry_run=False)
+            self.assertEqual(link.read_bytes(), b"foreign contents")
+
+    def test_explicit_sdk_dry_run_routes_sdkroot_to_cargo_and_tool_graph(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            sdk = write_sdk(root / "external SDKs/MacOSX26.5.sdk")
+            checkout = root / "checkout"
+            tools = root / "tools"
+            env = {"SDKROOT": "/unexpected/installed.sdk"}
+            for arch in ("x64", "arm64"):
+                with self.subTest(arch=arch), mock.patch.multiple(
+                    build_engine, verify_gclient=mock.DEFAULT, repository=mock.DEFAULT,
+                    replay=mock.DEFAULT, run=mock.DEFAULT,
+                ) as commands:
+                    args = argparse.Namespace(arch=arch, official=True, dry_run=True, jobs=2, macos_sdk=sdk)
+                    build_engine.build(checkout, tools, env, args)
+                    calls = {Path(call.args[0][0]).name: call.args[2]
+                             for call in commands["run"].call_args_list}
+                    for command in ("cargo", "xcrun", "gn", "autoninja"):
+                        self.assertEqual(calls[command]["SDKROOT"], str(sdk))
+                    self.assertIn(f'mac_sdk_path = "//out/Barc-{arch}-official/MacOSX.sdk"\n'.encode(),
+                                  build_engine.engine_args(arch, True))
+                    self.assertFalse(checkout.exists())
+                    self.assertEqual(env["SDKROOT"], "/unexpected/installed.sdk")
 
 
 if __name__ == "__main__":

@@ -254,15 +254,27 @@ class OfficialProvenanceTests(unittest.TestCase):
 
     def test_official_build_refuses_receipt_after_source_changes(self):
         (self.src / "build/config/siso").mkdir(parents=True)
-        options = argparse.Namespace(arch="x64", official=True, dry_run=False, jobs=1)
+        sdk_pin = provenance.PINS["official_macos_sdk"]
+        sdk = self.root / f"MacOSX{sdk_pin['version']}.sdk"
+        system = sdk / "System/Library/CoreServices/SystemVersion.plist"
+        system.parent.mkdir(parents=True)
+        system.write_bytes(plistlib.dumps({
+            "ProductVersion": sdk_pin["version"], "ProductBuildVersion": sdk_pin["build"],
+        }))
+        (sdk / "SDKSettings.json").write_text(json.dumps({
+            "Version": sdk_pin["version"], "CanonicalName": "macosx" + sdk_pin["version"],
+        }))
+        options = argparse.Namespace(arch="x64", official=True, dry_run=False, jobs=1, macos_sdk=sdk)
         with patch.multiple(build_engine, verify_gclient=DEFAULT,
                             repository=DEFAULT, replay=DEFAULT,
-                            official_sdk=DEFAULT, run=DEFAULT,
+                            run=DEFAULT,
                             install_generated=DEFAULT), patch.object(
                                 provenance, "engine_source_digest", return_value="before"), patch.object(
-                                provenance, "record", return_value={"engine_source_sha256": "after"}):
+                                provenance, "record", return_value={"engine_source_sha256": "after"}) as record:
             with self.assertRaisesRegex(ValueError, "source recipe changed"):
                 build_engine.build(self.root, self.root / "depot_tools", {}, options)
+        self.assertEqual(record.call_args.args[3]["SDKROOT"], str(sdk))
+        self.assertEqual((self.out / "MacOSX.sdk").readlink(), sdk)
         self.assertFalse((self.out / provenance.RECEIPT).exists())
 
     def test_wrong_receipt_profile_digest_fails_even_when_sealed(self):

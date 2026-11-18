@@ -75,3 +75,19 @@ A contributor SHALL be able to apply a revised Bark engine recipe to an existing
 - **GIVEN** a local source edit that matches neither recipe
 - **WHEN** the contributor requests the update
 - **THEN** it identifies the conflicting source before replacing any files
+
+### Requirement: Select the macOS SDK for an official engine build
+
+A maintainer SHALL be able to build the optimized engine with the pinned Apple SDK installed separately from the selected Xcode.
+
+#### Scenario: Xcode defaults to a different SDK
+
+- **GIVEN** compatible build tools and a separate copy of the pinned SDK
+- **WHEN** the maintainer selects that SDK for an official engine build
+- **THEN** the compiled engine and its framework metadata identify the selected SDK
+- **AND** Xcode keeps its existing default SDK
+
+#### Scenario: Selected SDK has the wrong build
+
+- **WHEN** the maintainer selects an SDK with the expected version and a different Apple build identifier
+- **THEN** the build reports the mismatch before compiling or replacing existing outputs

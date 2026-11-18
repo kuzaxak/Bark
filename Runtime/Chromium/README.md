@@ -69,12 +69,28 @@ from `src/out/BarkCargo/<target>/release/`. Each target has its own library
 and its own Chromium output directory. The app SDK pin currently qualifies
 the Intel engine.
 
-For an official optimized engine, select an Xcode installation whose default
-macOS SDK matches `official_macos_sdk` in `PINS.json` (26.5, build 25F70
-for this Chromium revision). The recipe checks the SDK before building,
-fetches Chromium's pinned PGO profile for the target architecture, and checks
-the SHA-256 of the decompressed profile before enabling profile-guided
-optimization. If bytes already cached at the pinned name fail verification,
+An official optimized build requires the macOS SDK in `PINS.json` (26.5,
+build 25F70 for this Chromium revision). The recipe uses the selected Xcode's
+default SDK, or accepts a separate SDK directory through `--macos-sdk`.
+In either case it checks Apple's SDK metadata, uses the same sysroot for
+Chromium and Cargo, and takes the build tools from the selected Xcode.
+Keep the SDK at the same location while reusing an official output.
+
+Apple ships this SDK in the signed Command Line Tools for Xcode 26.6
+package. Its SHA-256 is
+`debe353b27a13cd678b26ab216a040acf07b62c0639d8ac522df4ca07d121eb2`.
+Check the package signature with `pkgutil --check-signature` and extract it
+with `pkgutil --expand-full`. The SDK directory inside the expanded package is
+`Payload/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`.
+[Apple SDK package](https://swcdn.apple.com/content/downloads/33/19/140-17812-A_21ZLMMLY4E/zu3xwktttpoe71qiawhzgzvqss6rovawsa/CLTools_macOSNMOS_SDK.pkg)
+
+```fish
+python3 "$recipe" build --checkout "$engine_checkout" --official --macos-sdk /path/to/MacOSX26.5.sdk --jobs 8
+```
+
+The recipe fetches Chromium's pinned PGO profile for the target architecture
+and checks the SHA-256 of the decompressed profile before enabling
+profile-guided optimization. If bytes already cached at the pinned name fail verification,
 the recipe preserves the rejected regular file under
 `chrome/build/.bark-rejected-pgo-*/` and asks Chromium's updater to fetch a
 replacement once. The replacement must pass the same hash check. Unexpected
@@ -94,10 +110,11 @@ digest of the profile explicitly passed to the browser-core compile. The
 receipt checks that compile before the raw framework link and matches the
 raw and packaged framework bytes. The versioned official compiler wrapper
 keeps this compile distinct from previous, unwitnessed build actions. A normal
-`build --official` updates a prior official output if its GN arguments differ
-only by the previous wrapper name. The update is atomic and a dry run leaves
-it untouched. If other GN arguments differ, move that GN output directory
-aside and rerun to create a fresh one.
+`build --official` recognizes the previous official GN arguments, including
+outputs that predate the output-local SDK link and compiler wrapper. It writes
+the new arguments atomically. If other GN arguments differ or the output is
+bound to another SDK directory, use a fresh official output. A dry run leaves
+the existing output untouched.
 SDK publication rechecks the build outputs and includes the receipt in the
 pinned manifest. A consumer can verify an installed official
 SDK without the Chromium checkout using `bark-check.py engine --require-official`.
