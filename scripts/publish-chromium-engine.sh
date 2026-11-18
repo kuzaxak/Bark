@@ -49,7 +49,8 @@ VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INTEG
 BINARY="$FRAMEWORK/Versions/$VERSION/Bark Framework"
 [[ -f "$BINARY" ]] || refuse 'Missing versioned engine executable'
 [[ $(/usr/bin/lipo -archs "$BINARY") == "$ARCH" ]] || refuse "Engine must be exactly $ARCH: $BINARY"
-python3 -B "$ROOT/scripts/check-chromium-architectures.py" --arch "$ARCH" "$FRAMEWORK"
+python3 -B "$ROOT/scripts/check-chromium-architectures.py" --arch "$ARCH" \
+  --engine-info "$INTEGRATED_APP_INFO" "$FRAMEWORK"
 ENTRY=$(/usr/bin/sed -nE 's/^#define BARC_ENGINE_MAIN_SYMBOL "(.*)"$/\1/p' "$BRIDGE/barc_bridge_api.h")
 TABLE=$(/usr/bin/sed -nE 's/^#define BARC_BRIDGE_SYMBOL "(.*)"$/\1/p' "$BRIDGE/barc_bridge_api.h")
 EXPORTS=$(/usr/bin/nm -gjU "$BINARY")

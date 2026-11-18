@@ -232,6 +232,9 @@ def versioned_framework(root, binary=None):
     write_plist(framework / f'Versions/{VERSION}/Resources/Info.plist', CFBundleShortVersionString=VERSION)
     (framework / 'Resources').symlink_to('Versions/Current/Resources')
     (framework / f'Versions/{VERSION}/Libraries').mkdir()
+    (framework / 'Libraries').symlink_to('Versions/Current/Libraries')
+    (framework / f'Versions/{VERSION}/Helpers').mkdir()
+    (framework / 'Helpers').symlink_to('Versions/Current/Helpers')
     (framework / f'Versions/{VERSION}/Libraries/libnook_adblock.dylib').write_text('blocker library')
     if binary:
         shutil.copy2(binary, framework / f'Versions/{VERSION}/Bark Framework')
@@ -1275,6 +1278,19 @@ def archive_transport_cases(fixture, artifact, contributor):
     (artifact / executable).chmod(0o744)
     export = contributor['archive_engine']
     with patch.dict(export.__globals__, STAGE=scripts / STAGE.name, cached_engine=lambda arch: cache):
+        current = artifact / FRAMEWORK / 'Versions/Current'
+        version = current.readlink()
+        current.unlink()
+        current.symlink_to('missing')
+        try:
+            with contributor['pinned_engine'](str(artifact), receiver, 'arm64'):
+                check('SDK intake refuses an invalid Current alias despite matching file hashes', False)
+        except subprocess.CalledProcessError:
+            check('SDK intake refuses an invalid Current alias despite matching file hashes',
+                  not (current / 'Bark Framework').exists())
+        finally:
+            current.unlink()
+            current.symlink_to(version)
         export(artifact, first, 'arm64')
         with contributor['pinned_engine'](str(first), receiver, 'arm64') as restored:
             contributor['install_engine'](restored, 'arm64')
@@ -1431,6 +1447,18 @@ def signed_cases(work, mach_o):
         subprocess.run(['codesign', '--remove-signature', str(app / 'Contents/Frameworks/extra.dylib')], capture_output=True)
     run = check_signed('signed-unsigned', unsigned)
     check('--check-signed refuses an unsigned Mach-O',
+          run.returncode != 0 and 'Unsigned Mach-O: Contents/Frameworks/extra.dylib' in run.stderr, (run.returncode, run.stderr))
+
+    unsigned_slices = []
+    for architecture in ('x86_64', 'arm64'):
+        image = work / f'unsigned-{architecture}.dylib'
+        compile_c('int fixture(void) { return 0; }\n', image, '-dynamiclib',
+                  '-arch', architecture, '-Wl,-no_adhoc_codesign')
+        unsigned_slices.append(image)
+    fat64 = work / 'unsigned-fat64.dylib'
+    subprocess.run(['/usr/bin/lipo', '-create', '-fat64', *unsigned_slices, '-output', fat64], check=True)
+    run = check_signed('signed-unsigned-fat64', lambda app: shutil.copy2(fat64, app / 'Contents/Frameworks/extra.dylib'))
+    check('--check-signed recognizes and refuses an unsigned FAT64 Mach-O',
           run.returncode != 0 and 'Unsigned Mach-O: Contents/Frameworks/extra.dylib' in run.stderr, (run.returncode, run.stderr))
 
     run = check_signed('signed-extra-entitlement', entitlements={**listed_entitlements, 'com.apple.security.cs.disable-library-validation': True})

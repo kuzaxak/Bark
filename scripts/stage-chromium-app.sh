@@ -29,7 +29,7 @@ check_bundle() {
   python3 - "$1" "$2" <<'PY' || exit 1
 import os, subprocess, sys
 bundle, mode = sys.argv[1:3]
-MACH_O = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca'}
+MACH_O = {b'\xcf\xfa\xed\xfe', b'\xce\xfa\xed\xfe', b'\xfe\xed\xfa\xcf', b'\xfe\xed\xfa\xce', b'\xca\xfe\xba\xbe', b'\xbe\xba\xfe\xca', b'\xca\xfe\xba\xbf', b'\xbf\xba\xfe\xca'}
 files = [os.path.join(root, name) for root, _, names in os.walk(bundle) for name in names]
 files = [path for path in files if not os.path.islink(path)]
 copies = [os.path.relpath(path, bundle) for path in files if os.path.basename(path) == 'libnook_adblock.dylib']
@@ -66,7 +66,8 @@ check_engine() {
     /usr/bin/cmp -s "$artifact/Headers/$header" "$headers/$header" ||
       refuse "App was compiled against another $header than the engine's: $artifact/Headers/$header"
   done
-  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" "$artifact/Bark Framework.framework"
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" \
+    --engine-info "$artifact/engine-Info.plist" "$artifact/Bark Framework.framework"
   check_bundle "$artifact/Bark Framework.framework" unsigned
 }
 # Keep product metadata independent while checking the engine's runtime keys during staging.
@@ -199,8 +200,8 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
   require_architecture "$2/Contents/MacOS/Bark"
   require_architecture "$2/Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell"
-  require_architecture "$2/Contents/Frameworks/Bark Framework.framework/Versions/Current/Bark Framework"
-  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" "$2/Contents/Frameworks/Bark Framework.framework"
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" \
+    --engine-info "$engine/engine-Info.plist" "$2/Contents/Frameworks/Bark Framework.framework"
   check_outer_metadata "$2" "$engine/engine-Info.plist"
   check_bundle "$2" signed
   additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
