@@ -3,20 +3,33 @@
 #include <cmath>
 #include <map>
 #include <memory>
+#include <optional>
+#include <string>
+#include <vector>
 
 #include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/bridge_internal.h"
 #include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_extension_popup.h"
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/check.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/no_destructor.h"
+#include "base/scoped_observation.h"
+#include "chrome/browser/extensions/extension_tab_util.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
+#include "chrome/browser/ui/tabs/tab_strip_model.h"
+#include "chrome/browser/ui/toolbar/toolbar_actions_model.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/browser_task_traits.h"
 #include "content/public/browser/browser_thread.h"
 #include "content/public/browser/web_contents.h"
+#include "extensions/browser/extension_action.h"
+#include "extensions/browser/extension_action_manager.h"
+#include "extensions/browser/extension_registry.h"
+#include "extensions/common/extension.h"
 
 using namespace barc::internal;
 
@@ -25,6 +38,56 @@ namespace {
 bool OnUIThread() {
   return content::BrowserThread::CurrentlyOn(content::BrowserThread::UI);
 }
+
+struct ActionTarget {
+  raw_ptr<BrowserWindowInterface> browser;
+  raw_ptr<content::WebContents> contents;
+  raw_ptr<ToolbarActionsModel> model;
+  raw_ptr<extensions::ExtensionRegistry> registry;
+};
+
+std::optional<ActionTarget> FindActionTarget(int32_t id, int32_t tab_id) {
+  if (!OnUIThread()) {
+    return std::nullopt;
+  }
+  auto* browser = Window(id);
+  auto* host = bark::BarkWindowHost::ForBrowser(browser);
+  if (!host || host->closing() || browser->IsDeleteScheduled() ||
+      !browser->IsSelectedForNativeWindow()) {
+    return std::nullopt;
+  }
+  auto* profile = browser->GetProfile();
+  if (profile->IsGuestSession() || profile->IsOffTheRecord()) {
+    return std::nullopt;
+  }
+  auto* tab = LookupTab(browser, tab_id);
+  auto* contents = tab ? tab->GetContents() : nullptr;
+  if (!contents || contents->GetBrowserContext() != profile ||
+      contents != browser->GetTabStripModel()->GetActiveWebContents() ||
+      !host->IsPageMounted(contents)) {
+    return std::nullopt;
+  }
+  auto* model = ToolbarActionsModel::Get(profile);
+  auto* registry = extensions::ExtensionRegistry::Get(profile);
+  if (!model || !registry) {
+    return std::nullopt;
+  }
+  return ActionTarget{browser, contents, model, registry};
+}
+
+const extensions::Extension* AvailableAction(const ActionTarget& target,
+                                             const std::string& id) {
+  return target.model->actions_initialized() && target.model->HasAction(id)
+             ? target.registry->enabled_extensions().GetByID(id)
+             : nullptr;
+}
+
+struct ActionRow {
+  std::string id;
+  std::string title;
+  std::string badge;
+  int flags;
+};
 
 BarcFullscreenKind Kind(bark::HostFullscreen fullscreen) {
   switch (fullscreen) {
@@ -39,7 +102,8 @@ BarcFullscreenKind Kind(bark::HostFullscreen fullscreen) {
 
 // One window_host_observe registration. It forwards the host's notices as
 // posted events, which still arrive after the host is gone.
-class HostObservation : public bark::BarkWindowHost::Observer {
+class HostObservation : public bark::BarkWindowHost::Observer,
+                        public ToolbarActionsModel::Observer {
  public:
   HostObservation(uint64_t token,
                   bark::BarkWindowHost* host,
@@ -86,6 +150,53 @@ class HostObservation : public bark::BarkWindowHost::Observer {
          nil);
   }
 
+  void ObserveActions(bark::BarkWindowHost* host,
+                      ToolbarActionsModel* model,
+                      int32_t owner) {
+    if (host_.get() != host) {
+      return;
+    }
+    action_owner_ = owner;
+    if (!actions_.IsObservingSource(model)) {
+      actions_.Reset();
+      actions_.Observe(model);
+    }
+  }
+
+  void OnToolbarActionAdded(const ToolbarActionsModel::ActionId&) override {
+    ScheduleActionChange();
+  }
+  void OnToolbarActionRemoved(const ToolbarActionsModel::ActionId&) override {
+    ScheduleActionChange();
+  }
+  void OnToolbarActionUpdated(const ToolbarActionsModel::ActionId&) override {
+    ScheduleActionChange();
+  }
+  void OnToolbarModelInitialized() override { ScheduleActionChange(); }
+  void OnToolbarPinnedActionsChanged() override { ScheduleActionChange(); }
+  void OnToolbarActionsModelShutdown() override {
+    actions_.Reset();
+    action_owner_ = 0;
+  }
+
+  void DeliverActionChange() {
+    action_change_pending_ = false;
+    if (!actions_.IsObserving() || !host_ || host_->closing()) {
+      return;
+    }
+    auto* selected = host_->selected();
+    if (!selected ||
+        selected->browser()->GetSessionID().id() != action_owner_) {
+      actions_.Reset();
+      action_owner_ = 0;
+      return;
+    }
+    Deliver(BarcWindowHostEvent{
+        .size = sizeof(BarcWindowHostEvent),
+        .kind = BARC_WINDOW_HOST_EXTENSION_ACTIONS_CHANGED,
+        .window = action_owner_});
+  }
+
   void Deliver(const BarcWindowHostEvent& event) {
     callback_(&event, context_);
   }
@@ -93,7 +204,12 @@ class HostObservation : public bark::BarkWindowHost::Observer {
  private:
   // Keeps the event's page view alive until it is delivered.
   void Post(BarcWindowHostEvent event, NSView* view);
+  void ScheduleActionChange();
 
+  base::ScopedObservation<ToolbarActionsModel, ToolbarActionsModel::Observer>
+      actions_{this};
+  int32_t action_owner_ = 0;
+  bool action_change_pending_ = false;
   const uint64_t token_;
   base::WeakPtr<bark::BarkWindowHost> host_;
   const BarcWindowHostCallback callback_;
@@ -115,12 +231,116 @@ void DeliverPosted(uint64_t token, BarcWindowHostEvent event, NSView* view) {
   }
 }
 
+void DeliverPostedActionChange(uint64_t token) {
+  auto& observations = Observations();
+  auto found = observations.find(token);
+  if (found != observations.end()) {
+    found->second->DeliverActionChange();
+  }
+}
+
+void HostObservation::ScheduleActionChange() {
+  if (!action_change_pending_) {
+    action_change_pending_ = true;
+    content::GetUIThreadTaskRunner({})->PostTask(
+        FROM_HERE, base::BindOnce(&DeliverPostedActionChange, token_));
+  }
+}
+
 void HostObservation::Post(BarcWindowHostEvent event, NSView* view) {
   content::GetUIThreadTaskRunner({})->PostTask(
       FROM_HERE, base::BindOnce(&DeliverPosted, token_, event, view));
 }
 
 }  // namespace
+
+int barc_tab_list_extension_actions(int32_t id,
+                                    int32_t tab_id,
+                                    BarcExtensionActionCallback callback,
+                                    void* context) {
+  if (!callback) {
+    return 0;
+  }
+  const auto target = FindActionTarget(id, tab_id);
+  if (!target) {
+    return 0;
+  }
+  auto* host = bark::BarkWindowHost::ForBrowser(target->browser);
+  for (const auto& entry : Observations()) {
+    entry.second->ObserveActions(host, target->model, id);
+  }
+  if (!target->model->actions_initialized()) {
+    return 0;
+  }
+  const int extension_tab_id =
+      extensions::ExtensionTabUtil::GetTabId(target->contents);
+  auto* actions =
+      extensions::ExtensionActionManager::Get(target->browser->GetProfile());
+  std::vector<ActionRow> rows;
+  auto append = [&](const std::string& extension_id, bool pinned) {
+    const auto* extension = AvailableAction(*target, extension_id);
+    auto* action = extension ? actions->GetExtensionAction(*extension) : nullptr;
+    if (!action) {
+      return;
+    }
+    int flags = pinned ? BARC_EXTENSION_PINNED : 0;
+    if (target->model->IsActionForcePinned(extension_id)) {
+      flags |= BARC_EXTENSION_PIN_LOCKED;
+    }
+    if (bark::IsExtensionActionEnabledForPage(*target->browser,
+                                             *target->contents, *extension)) {
+      flags |= BARC_EXTENSION_ENABLED;
+    }
+    rows.push_back({extension_id, action->GetTitle(extension_tab_id),
+                    action->GetDisplayBadgeText(extension_tab_id), flags});
+  };
+  for (const auto& extension_id : target->model->pinned_action_ids()) {
+    append(extension_id, true);
+  }
+  for (const auto& extension_id : target->model->action_ids()) {
+    if (!target->model->IsActionPinned(extension_id)) {
+      append(extension_id, false);
+    }
+  }
+
+  // The receiver may change selection, mutate pins, or close the window.
+  for (const auto& row : rows) {
+    callback(context, row.id.c_str(), row.title.c_str(), row.badge.c_str(),
+             row.flags);
+  }
+  return 1;
+}
+
+int barc_tab_set_extension_pinned(int32_t id,
+                                  int32_t tab_id,
+                                  const char* extension_id,
+                                  int pinned) {
+  if (!extension_id || (pinned != 0 && pinned != 1)) {
+    return 0;
+  }
+  const auto target = FindActionTarget(id, tab_id);
+  if (!target || !AvailableAction(*target, extension_id) ||
+      target->model->IsActionForcePinned(extension_id)) {
+    return 0;
+  }
+  const bool desired = pinned != 0;
+  if (target->model->IsActionPinned(extension_id) != desired) {
+    target->model->SetActionVisibility(extension_id, desired);
+  }
+  return 1;
+}
+
+int barc_tab_invoke_extension(int32_t id,
+                              int32_t tab_id,
+                              const char* extension_id) {
+  if (!extension_id) {
+    return 0;
+  }
+  const auto target = FindActionTarget(id, tab_id);
+  return target && AvailableAction(*target, extension_id) &&
+         bark::RunExtensionActionForPage(*target->browser, *target->contents,
+                                         extension_id);
+}
 
 int barc_window_set_root_view(int32_t id, void* root_view) {
   auto* window = Window(id);

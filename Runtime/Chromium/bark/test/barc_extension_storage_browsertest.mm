@@ -14,6 +14,8 @@
 #include <utility>
 
 #include "base/command_line.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/json/json_file_value_serializer.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
@@ -33,6 +35,7 @@
 #include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "components/prefs/pref_service.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/devtools_agent_host.h"
 #include "content/public/browser/web_contents.h"
@@ -53,6 +56,7 @@
 #include "extensions/browser/extension_host_registry.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/install/crx_install_error.h"
+#include "extensions/browser/pref_names.h"
 #include "extensions/browser/process_manager.h"
 #include "extensions/browser/test_extension_registry_observer.h"
 #include "extensions/common/error_utils.h"
@@ -369,6 +373,142 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   ASSERT_FALSE(cdp.error());
   EXPECT_TRUE(personal_clicked.WaitUntilSatisfied());
   cdp.DetachProtocolClient();
+}
+
+IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
+                       NativeActionsScopeMetadataPinAndPopupToPresentedPage) {
+  int32_t work_id = 0;
+  int32_t personal_id = 0;
+  ASSERT_NO_FATAL_FAILURE(OpenProfiles(work_id, personal_id));
+  auto* work = Window(work_id);
+  auto* personal = Window(personal_id);
+  ASSERT_NO_FATAL_FAILURE(MountPage(work_id));
+  const int32_t work_tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
+
+  extensions::TestExtensionDir dir;
+  dir.WriteManifest(R"({"manifest_version":3,"name":"Bark native action",
+    "version":"1.0","background":{"service_worker":"worker.js"},
+    "action":{"default_title":"Default title","default_popup":"popup.html"}})");
+  dir.WriteFile(FILE_PATH_LITERAL("worker.js"), "// Browser test action probe.");
+  dir.WriteFile(FILE_PATH_LITERAL("popup.html"), "<p>Real action popup</p>");
+  extensions::ChromeTestExtensionLoader work_loader(work->GetProfile());
+  auto extension = work_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(extension);
+  extensions::ChromeTestExtensionLoader personal_loader(personal->GetProfile());
+  auto other = personal_loader.LoadExtension(dir.UnpackedPath());
+  ASSERT_TRUE(other);
+  const auto& id = extension->id();
+  ASSERT_EQ(id, other->id());
+
+  struct Row {
+    std::string id;
+    std::string title;
+    std::string badge;
+    int flags;
+  };
+  const auto append = [](void* context, const char* extension_id,
+                         const char* title, const char* badge, int flags) {
+    static_cast<std::vector<Row>*>(context)->push_back(
+        {extension_id, title, badge, flags});
+  };
+  std::vector<Row> rows;
+  const auto list = [&](int32_t owner, int32_t tab) {
+    rows.clear();
+    return barc_tab_list_extension_actions(owner, tab, append, &rows);
+  };
+  int invalidations = 0;
+  const uint64_t observation = barc_window_host_observe(
+      work_id,
+      [](const BarcWindowHostEvent* event, void* context) {
+        if (event->kind == BARC_WINDOW_HOST_EXTENSION_ACTIONS_CHANGED) {
+          ++*static_cast<int*>(context);
+        }
+      },
+      &invalidations);
+  ASSERT_NE(0u, observation);
+  base::ScopedClosureRunner unobserve(base::BindOnce(
+      barc_window_host_unobserve, observation));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return WidgetFor(work)->IsActive() && list(work_id, work_tab) &&
+           rows.size() == 1;
+  }));
+
+  const int prior_update = invalidations;
+  EXPECT_EQ(base::Value("updated"), Worker(work->GetProfile(), id, R"(
+    (async () => {
+      const [tab] = await chrome.tabs.query({active: true});
+      await chrome.action.setTitle({tabId: tab.id, title: 'Work title'});
+      await chrome.action.setBadgeText({tabId: tab.id, text: 'W'});
+      chrome.test.sendScriptResult('updated');
+    })();
+  )"));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return invalidations > prior_update && list(work_id, work_tab) &&
+           rows.size() == 1 && rows[0].badge == "W";
+  }));
+  EXPECT_EQ(id, rows[0].id);
+  EXPECT_EQ("Work title", rows[0].title);
+  EXPECT_NE(0, rows[0].flags & BARC_EXTENSION_ENABLED);
+
+  const int initial_pin = (rows[0].flags & BARC_EXTENSION_PINNED) == 0;
+  const int before_pin = invalidations;
+  ASSERT_EQ(1, barc_tab_set_extension_pinned(work_id, work_tab, id.c_str(),
+                                             initial_pin));
+  ASSERT_TRUE(base::test::RunUntil([&] { return invalidations > before_pin; }));
+  EXPECT_EQ(1, barc_tab_set_extension_pinned(work_id, work_tab, id.c_str(), 1));
+  ASSERT_EQ(1, list(work_id, work_tab));
+  ASSERT_EQ(1u, rows.size());
+  EXPECT_NE(0, rows[0].flags & BARC_EXTENSION_PINNED);
+  EXPECT_EQ(0, list(personal_id, personal_tab));
+  EXPECT_EQ(0, barc_tab_set_extension_pinned(
+                   personal_id, personal_tab, id.c_str(), 1));
+
+  base::DictValue management;
+  management.Set(id, base::DictValue().Set("toolbar_pin", "force_pinned"));
+  work->GetProfile()->GetPrefs()->SetDict(
+      extensions::pref_names::kExtensionManagement, std::move(management));
+  ASSERT_EQ(1, list(work_id, work_tab));
+  ASSERT_EQ(1u, rows.size());
+  EXPECT_NE(0, rows[0].flags & BARC_EXTENSION_PIN_LOCKED);
+  EXPECT_EQ(0, barc_tab_set_extension_pinned(work_id, work_tab, id.c_str(), 0));
+
+  ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(personal_id));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return list(personal_id, personal_tab) && rows.size() == 1; }));
+  EXPECT_EQ("Default title", rows[0].title);
+  EXPECT_TRUE(rows[0].badge.empty());
+  EXPECT_EQ(0, rows[0].flags & (BARC_EXTENSION_PINNED | BARC_EXTENSION_PIN_LOCKED));
+  EXPECT_EQ(0, barc_tab_invoke_extension(work_id, work_tab, id.c_str()));
+
+  auto* personal_hosts =
+      extensions::ExtensionHostRegistry::Get(personal->GetProfile());
+  ASSERT_EQ(1, barc_tab_invoke_extension(personal_id, personal_tab, id.c_str()));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    const auto popups = personal_hosts->GetHostsForExtension(id);
+    return popups.size() == 1 && popups[0]->has_loaded_once();
+  }));
+  EXPECT_TRUE(extensions::ExtensionHostRegistry::Get(work->GetProfile())
+                  ->GetHostsForExtension(id)
+                  .empty());
+  ASSERT_EQ(1, barc_window_select(work_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(work_id));
+  EXPECT_TRUE(base::test::RunUntil(
+      [&] { return personal_hosts->GetHostsForExtension(id).empty(); }));
+
+  OpenResult guest;
+  barc_private_session_open_window(Opened, &guest);
+  ASSERT_EQ(BARC_PROFILE_OK, guest.Get<0>());
+  const int32_t guest_id = guest.Get<1>();
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  ASSERT_EQ(1, barc_window_set_root_view(guest_id, (__bridge void*)root));
+  ASSERT_NO_FATAL_FAILURE(MountPage(guest_id));
+  const int32_t guest_tab = barc_window_tab_at(guest_id, 0);
+  EXPECT_EQ(0, list(guest_id, guest_tab));
+  EXPECT_TRUE(rows.empty());
+  EXPECT_EQ(0, barc_tab_set_extension_pinned(guest_id, guest_tab, id.c_str(), 1));
+  EXPECT_EQ(0, barc_tab_invoke_extension(guest_id, guest_tab, id.c_str()));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,

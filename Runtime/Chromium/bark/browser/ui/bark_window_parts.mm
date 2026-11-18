@@ -10,6 +10,7 @@
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/functional/bind.h"
 #include "base/task/single_thread_task_runner.h"
+#include "chrome/browser/extensions/api/side_panel/side_panel_service.h"
 #include "chrome/browser/extensions/extension_action_runner.h"
 #include "chrome/browser/extensions/extension_tab_util.h"
 #include "chrome/browser/extensions/extension_view_host.h"
@@ -33,6 +34,7 @@
 #include "extensions/browser/extension_action_manager.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/browser/extension_util.h"
+#include "extensions/browser/permissions/site_permissions_helper.h"
 #include "ui/base/l10n/l10n_util.h"
 #include "ui/views/widget/widget.h"
 
@@ -477,6 +479,38 @@ bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
   return true;
 }
 
+bool IsExtensionActionEnabledForPage(BrowserWindowInterface& browser,
+                                     content::WebContents& contents,
+                                     const extensions::Extension& extension) {
+  if (!ActionHost(browser, &contents)) {
+    return false;
+  }
+  auto* profile = browser.GetProfile();
+  auto* runner = extensions::ExtensionActionRunner::GetForWebContents(&contents);
+  auto* action = extensions::ExtensionActionManager::Get(profile)
+                     ->GetExtensionAction(extension);
+  if (!runner || !action) {
+    return false;
+  }
+  if (runner->GetBlockedActions(extension.id())) {
+    return true;
+  }
+  const int tab_id = extensions::ExtensionTabUtil::GetTabId(&contents);
+  auto* panels = extensions::SidePanelService::Get(profile);
+  if (panels && panels->HasSidePanelActionForTab(extension, tab_id)) {
+    return false;
+  }
+  if (action->GetIsVisible(tab_id)) {
+    return true;
+  }
+  using Interaction = extensions::SitePermissionsHelper::SiteInteraction;
+  const auto interaction =
+      extensions::SitePermissionsHelper(profile).GetSiteInteraction(
+          extension, &contents);
+  return interaction == Interaction::kWithheld ||
+         interaction == Interaction::kActiveTab;
+}
+
 bool RunExtensionActionForPage(BrowserWindowInterface& browser,
                                content::WebContents& contents,
                                const std::string& extension_id) {
@@ -486,12 +520,11 @@ bool RunExtensionActionForPage(BrowserWindowInterface& browser,
   auto* profile = browser.GetProfile();
   scoped_refptr<const extensions::Extension> extension(
       EnabledActionExtension(profile, extension_id));
-  auto* runner = extensions::ExtensionActionRunner::GetForWebContents(&contents);
-  if (!extension || !runner ||
-      !extensions::ExtensionActionManager::Get(profile)->GetExtensionAction(
-          *extension)) {
+  if (!extension || !IsExtensionActionEnabledForPage(browser, contents,
+                                                     *extension)) {
     return false;
   }
+  auto* runner = extensions::ExtensionActionRunner::GetForWebContents(&contents);
 
   auto owner = browser.GetWeakPtr();
   auto page = contents.GetWeakPtr();

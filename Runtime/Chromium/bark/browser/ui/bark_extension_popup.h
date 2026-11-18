@@ -20,6 +20,10 @@ bool OpenExtensionActionPopup(BrowserWindowInterface& browser,
                               const extensions::Extension& extension,
                               ShowPopupCallback callback);
 
+bool IsExtensionActionEnabledForPage(BrowserWindowInterface& browser,
+                                     content::WebContents& contents,
+                                     const extensions::Extension& extension);
+
 // Runs a user-invoked action only on the exact currently presented page.
 bool RunExtensionActionForPage(BrowserWindowInterface& browser,
                                content::WebContents& contents,
