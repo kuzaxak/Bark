@@ -1,0 +1,6 @@
+# Python bindings used by the signed macOS UI walks.
+pyobjc-core==13.0
+pyobjc-framework-Cocoa==13.0
+pyobjc-framework-CoreText==13.0
+pyobjc-framework-Quartz==13.0
+pyobjc-framework-ApplicationServices==13.0

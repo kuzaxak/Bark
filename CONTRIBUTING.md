@@ -77,9 +77,26 @@ accept `--arch arm64` once the separately qualified ARM64 pin is available.
 
 For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label and `BARK_ENGINE_SOURCE` to the matching directory or archive source. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
 
+### Run the signed UI walks
+
+From the repository root, install the macOS Python bindings in a virtual
+environment you can reuse across checkouts. This setup uses Python 3.13. Run
+the walks on an idle desktop with macOS Accessibility and event-posting access.
+Individual walks list any additional permissions they use.
+
+```fish
+set -l walk_env "$HOME/Library/Caches/BarkSDK/signed-walk-python"
+python3.13 -m venv "$walk_env"
+"$walk_env/bin/python" -m pip install -r Tests/Shared/requirements-macos.txt
+source "$walk_env/bin/activate.fish"
+```
+
+The [installed update walk](Tests/ChromiumUpdate/README.md) exercises a signed
+disk image and restores a saved draft through an actual app update.
+
 ### Prepare a Bark distribution candidate
 
-The manual **Prepare Bark Candidate** workflow builds one architecture from the protected default branch and uploads a notarized, stapled DMG and architecture-specific Sparkle appcast as workflow artifacts for review. Feed and download publication are separate release steps. The public Nook transition feed uses the existing Nook release workflow.
+The manual **Prepare Bark Candidate** workflow uses the architecture's pinned official SDK. It checks the build receipt and embedded framework before signing, then uploads the notarized, stapled DMG and Sparkle appcast for review. Feed and download publication are separate release steps. The public Nook transition feed uses the existing Nook release workflow.
 
 Configure the `bark-candidate-x86_64` or `bark-candidate-arm64` environment with required approval and a default-branch deployment restriction. Set `BARK_ENGINE_SOURCE` to the architecture’s pinned engine directory or archive. Set `BARK_SIGN_IDENTITY` and `BARK_NOTARY_PROFILE` to a Developer ID Application identity and notarytool profile on the dedicated runner. Use the existing Sparkle private key as the environment secret `SPARKLE_SIGNING_KEY`. An unavailable architecture pin stops the build.
 

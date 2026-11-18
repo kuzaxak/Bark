@@ -2,6 +2,8 @@
 
 Use the architecture's pinned Bark SDK, Xcode, a local Developer ID Application identity and a Python interpreter with PyObjC and Accessibility access. The display must be unlocked and idle. Run the Release build with the checked-in Swift package lock before starting the walk. You can reuse those unsigned build products on subsequent runs.
 
+The [UI walk setup](../../CONTRIBUTING.md#run-the-signed-ui-walks) installs the pinned Python bindings.
+
 ```fish
 set -l derived (mktemp -d /private/tmp/bark-update-build.XXXXXX)
 xcodebuild -project Nook.xcodeproj -scheme NookNativeShell -configuration Release -destination generic/platform=macOS \

@@ -40,25 +40,27 @@
 
 ## Getting Started  
 
-### Download
+### Download the released Nook app
 [![Download for macOS](https://img.shields.io/badge/Download%20for-macOS-000000?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/nook-browser/Nook/releases/latest)
 
-### or, Build from Source
+### Build the Chromium integration branch
 
-#### Prerequisites  
-- macOS 15.6 (Sequoia) or later, Apple Silicon. Xcode 26 needs 15.6; the built app runs on 15.5 and later
-- On-device AI chat and Tab Organizer require macOS 26 or later with Apple Intelligence enabled
-- [Xcode](https://developer.apple.com/xcode/) 26 or later
-```bash
+This branch builds Bark, a Swift/AppKit browser that embeds a pinned Chromium
+framework. The signed Intel developer app runs on macOS 15.5 or later. Building
+it requires Xcode 26 with the Metal toolchain, the matching Bark SDK and a local
+Developer ID Application signing identity. The contributor guide covers SDK
+installation and the checks you can run from a clean checkout.
+[Contributor setup](CONTRIBUTING.md#native-command-routing-and-signed-bark) ·
+[Build the SDK from source](Runtime/Chromium/README.md#checkout-and-build)
 
-git clone https://github.com/nook-browser/Nook.git
-cd Nook
-open Nook.xcodeproj
+After installing the SDK and setting `BARK_SIGN_IDENTITY`, run these commands
+from the repository root. The smoke test opens a local fixture in a disposable
+profile and quits after the page renders.
+
+```fish
+python3 scripts/bark-check.py build --arch x86_64
+python3 scripts/bark-check.py smoke build/Bark.app
 ```
-
-Nook builds for Apple Silicon only: the on-device tab organizer depends on MLX, which has no x86_64 slice. Xcode resolves the Swift packages on open.
-
-You’ll need to set your personal Development Team in Signing to build locally.
 
 ## Project Structure
 
