@@ -133,6 +133,13 @@ source "$walk_env/bin/activate.fish"
 The [installed update walk](Tests/ChromiumUpdate/README.md) exercises a signed
 disk image and restores a saved draft through an actual app update.
 
+The signed quit walk holds the disposable app’s Network Service during its
+ten-second shutdown flush and checks the exit status and remaining helpers.
+
+```fish
+python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)/quit
+```
+
 To measure first input and return to a parked tab on an official candidate,
 install its pinned native SDK and run the startup walk on the same Mac.
 The walk checks the signed app against the SDK before timing and records
