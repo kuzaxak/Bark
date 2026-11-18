@@ -167,7 +167,7 @@ def archive_engine(engine, output, architecture, require_official=False):
     def portable_metadata(entry):
         entry.uid = entry.gid = entry.mtime = 0
         entry.uname = entry.gname = ""
-        entry.mode = 0o555 if entry.isdir() or entry.issym() or entry.mode & 0o111 else 0o444
+        entry.mode = 0o555 if entry.isdir() or entry.issym() else 0o444 | (entry.mode & 0o111)
         return entry
 
     output.parent.mkdir(parents=True, exist_ok=True)

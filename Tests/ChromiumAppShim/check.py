@@ -1245,6 +1245,8 @@ def archive_transport_cases(fixture, artifact, contributor):
     shutil.copytree(fixture / 'candidate/package' / XCFRAMEWORK.name, package / XCFRAMEWORK.name)
     cache = receiver / 'cache/pin/Engine'
     first, second = fixture / 'sdk.tar.gz', fixture / 'repacked.tar.gz'
+    executable = Path(FRAMEWORK) / 'Bark Framework'
+    (artifact / executable).chmod(0o744)
     export = contributor['archive_engine']
     with patch.dict(export.__globals__, STAGE=scripts / STAGE.name, cached_engine=lambda arch: cache):
         export(artifact, first, 'arm64')
@@ -1254,7 +1256,7 @@ def archive_transport_cases(fixture, artifact, contributor):
               all(not p.stat().st_mode & 0o222 for p in [cache, *cache.rglob('*')] if not p.is_symlink()))
         check('archive installation retains framework aliases and executable bits',
               (cache / FRAMEWORK / 'Resources').readlink() == (artifact / FRAMEWORK / 'Resources').readlink()
-              and os.access(cache / FRAMEWORK / 'Bark Framework', os.X_OK))
+              and (cache / executable).stat().st_mode & 0o777 == 0o544)
         export(cache, second, 'arm64')
         check('a transferred SDK reproduces the same archive', first.read_bytes() == second.read_bytes())
         try:
