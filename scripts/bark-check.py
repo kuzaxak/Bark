@@ -495,7 +495,7 @@ def main():
     commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
     for command in ("engine", "build", "verify", "smoke", "launch", "package"):
         sub = commands.add_parser(command)
-        sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture")
+        sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture (default: native hardware)")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
         if command in ("engine", "build", "package"):
@@ -528,8 +528,8 @@ def main():
         check_native_harness(args.command)
         return
     launching = args.command in ("smoke", "launch")
-    native = native_architecture() if launching else None
-    architecture = args.arch or native or "x86_64"
+    native = native_architecture()
+    architecture = args.arch or native
     release_info = (production_settings(args.release_version, args.build_number, args.feed_base_url, architecture)
                     if args.command == "build" else None)
     if launching and architecture != native:

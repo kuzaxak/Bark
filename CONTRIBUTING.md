@@ -29,7 +29,7 @@ You need a Mac and Xcode 26 or later. The package tests and native command-routi
    ```
    Swift packages resolve on their own the first time the project opens.
 
-4. **Build and run Bark.** Install the pinned Intel SDK once and use the signed build command below. It builds the Swift shell and outer app from the tracked sources, verifies the embedded engine, and places the finished app at `build/Bark.app`. The output directory can start empty. [Native command routing and signed Bark](#native-command-routing-and-signed-bark)
+4. **Build and run Bark.** Install the pinned SDK for your Mac and use the signed build command below. It builds the Swift shell and outer app from the tracked sources, verifies the embedded engine, and places the finished app at `build/Bark.app`. The output directory can start empty. [Native command routing and signed Bark](#native-command-routing-and-signed-bark)
 
    Space sync's record types live in `scripts/cloudkit/schema.ckdb`. CloudKit refuses a save that carries a field the Production environment lacks, so before every release run `scripts/cloudkit/check-production-schema.sh path/to/management-token` (a CloudKit management token from CloudKit Console → Settings → Tokens & Keys). It lists what Production lacks and fails; then import the schema with `scripts/cloudkit/import-schema.sh path/to/management-token`, deploy it to Production in CloudKit Console, and run the check again.
 
@@ -54,7 +54,7 @@ python3 scripts/bark-check.py profile-pages
 python3 scripts/bark-check.py extension-actions
 ```
 
-On an Intel Mac with Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
+With Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin for your Mac. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
 
 ```fish
 python3 scripts/bark-check.py engine --install --engine /path/to/Engine
@@ -79,8 +79,11 @@ python3 scripts/bark-check.py engine --arch x86_64 --install --engine ~/Download
 
 The export checks the finished archive against the checkout before creating the requested file. Add `--require-official` on both machines to require an optimized engine with verified build provenance.
 
-The SDK headers build on Intel and Apple Silicon. Artifact commands keep Intel as the default and
-accept `--arch arm64` once the separately qualified ARM64 pin is available.
+The SDK headers build on Intel and Apple Silicon. Engine install and export, build,
+verification, and packaging default to the Mac’s native hardware architecture, even
+when Python runs under Rosetta. Use `--arch x86_64` or `--arch arm64` to work with
+artifacts for another architecture. The checkout needs a pin for the selected
+architecture. The ARM64 runtime pin is still pending.
 
 `smoke` and `launch` require a pinned engine matching the host’s native architecture. `smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 

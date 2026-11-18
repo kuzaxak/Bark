@@ -263,8 +263,7 @@ set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
 python3 scripts/bark-check.py build
 ```
 
-The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. A successful rebuild replaces the previous app at the same path. `engine`, `build`, and `verify` select Intel by default and accept `--arch arm64`
-once the ARM64 pin is available. `smoke` and `launch` require the native hardware architecture.
+The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. A successful rebuild replaces the previous app at the same path. The contributor commands default to the Mac’s native hardware architecture. Use `--arch` to select a different pinned architecture for `engine`, `build`, `verify`, or `package`. `smoke` and `launch` require the native hardware architecture.
 Keep build inputs in Git and the verified SDK in the versioned cache. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
 
 Do not sign or launch a partially staged bundle. The framework requires its
