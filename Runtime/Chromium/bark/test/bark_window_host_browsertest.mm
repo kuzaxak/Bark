@@ -27,6 +27,9 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/global_error/global_error.h"
+#include "chrome/browser/ui/global_error/global_error_service.h"
+#include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_id.h"
 #include "chrome/browser/ui/side_panel/side_panel_entry_key.h"
 #include "chrome/browser/ui/side_panel/side_panel_ui.h"
@@ -49,8 +52,11 @@
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "testing/gtest_mac.h"
+#include "ui/events/event.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
+#include "ui/views/controls/button/md_text_button.h"
 
+#include "ui/views/test/button_test_api.h"
 #include "ui/views/view.h"
 #include "ui/views/widget/native_widget_mac.h"
 #include "ui/views/widget/widget.h"
@@ -1476,6 +1482,93 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, TwoProfilesShareOneWindow) {
   ASSERT_TRUE(content::ExecJs(work_page, "document.cookie = 'client=work'"));
   EXPECT_EQ("client=work", content::EvalJs(work_page, "document.cookie"));
   EXPECT_EQ("", content::EvalJs(home_page, "document.cookie"));
+}
+
+namespace {
+class FixtureGlobalError : public GlobalErrorWithStandardBubble {
+ public:
+  bool HasMenuItem() override { return false; }
+  int MenuItemCommandID() override { return 0; }
+  std::u16string MenuItemLabel() override { return {}; }
+  void ExecuteMenuItem(BrowserWindowInterface*) override {}
+  std::u16string GetBubbleViewTitle() override { return u"Fixture alert"; }
+  std::vector<std::u16string> GetBubbleViewMessages() override {
+    return {u"Fixture warning owned by Work"};
+  }
+  std::u16string GetBubbleViewAcceptButtonLabel() override { return u"OK"; }
+  std::u16string GetBubbleViewCancelButtonLabel() override { return u"Cancel"; }
+  void OnBubbleViewDidClose(BrowserWindowInterface*) override {}
+  void BubbleViewAcceptButtonPressed(BrowserWindowInterface*) override {}
+  void BubbleViewCancelButtonPressed(BrowserWindowInterface* browser) override {
+    canceled_profiles.push_back(browser->GetProfile()->GetPath());
+  }
+  std::vector<base::FilePath> canceled_profiles;
+  base::WeakPtr<GlobalErrorWithStandardBubble> AsWeakPtr() override {
+    return weak_factory_.GetWeakPtr();
+  }
+
+ private:
+  base::WeakPtrFactory<FixtureGlobalError> weak_factory_{this};
+};
+}  // namespace
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       GlobalErrorWaitsForItsOwnMountedWindow) {
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  ASSERT_GT(home, 0);
+  auto* owner = FindBrowser(work);
+  auto* host = HostOf(work);
+  ASSERT_TRUE(owner && host);
+  auto warning = std::make_unique<FixtureGlobalError>();
+  auto* error = warning.get();
+  auto* service = GlobalErrorServiceFactory::GetForProfile(owner->GetProfile());
+  service->AddGlobalError(std::move(warning));
+
+  // The external-install callback can run before the shell admits this window.
+  error->ShowBubbleView(owner);
+  EXPECT_FALSE(error->HasShownBubbleView());
+  EXPECT_EQ(nullptr, error->GetBubbleView());
+  ASSERT_NO_FATAL_FAILURE(AdmitWindow(work));
+  ASSERT_EQ(1, barc_window_show(home));
+  ASSERT_EQ(1, barc_window_select(work));
+  ASSERT_EQ(1, barc_window_select(home));
+  content::RunAllTasksUntilIdle();
+  EXPECT_FALSE(error->HasShownBubbleView());
+  EXPECT_EQ(nullptr, error->GetBubbleView());
+
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil([&] { return error->GetBubbleView(); }));
+  EXPECT_TRUE(error->HasShownBubbleView());
+  auto owned_bubble = [&]() -> views::BubbleDialogDelegate* {
+    for (const auto& child :
+         views::Widget::GetAllChildWidgets(host->widget()->GetNativeView())) {
+      if (child->IsClosed())
+        continue;
+      auto* delegate = child->widget_delegate();
+      auto* bubble = delegate ? delegate->AsBubbleDialogDelegate() : nullptr;
+      if (bubble && bubble->GetAnchorView() == host->TrailingAnchor())
+        return bubble;
+    }
+    return nullptr;
+  };
+  ASSERT_TRUE(owned_bubble());
+
+  ASSERT_EQ(1, barc_window_select(home));
+  ASSERT_TRUE(base::test::RunUntil([&] { return !error->GetBubbleView(); }));
+  EXPECT_FALSE(error->HasShownBubbleView());
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil([&] { return error->GetBubbleView(); }));
+  auto* bubble = owned_bubble();
+  ASSERT_TRUE(bubble && bubble->GetCancelButton());
+  const ui::MouseEvent click(ui::EventType::kMousePressed, gfx::Point(),
+                             gfx::Point(), base::TimeTicks(),
+                             ui::EF_LEFT_MOUSE_BUTTON, ui::EF_LEFT_MOUSE_BUTTON);
+  views::test::ButtonTestApi(bubble->GetCancelButton()).NotifyClick(click);
+  ASSERT_TRUE(base::test::RunUntil([&] { return !error->GetBubbleView(); }));
+  EXPECT_EQ((std::vector<base::FilePath>{owner->GetProfile()->GetPath()}),
+            error->canceled_profiles);
+  service->RemoveGlobalError(error);
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,

@@ -1,0 +1,52 @@
+diff --git a/chrome/browser/ui/views/global_error_bubble_view.cc b/chrome/browser/ui/views/global_error_bubble_view.cc
+--- a/chrome/browser/ui/views/global_error_bubble_view.cc
++++ b/chrome/browser/ui/views/global_error_bubble_view.cc
+@@ -20,7 +20,9 @@
+ #include "chrome/browser/ui/global_error/global_error_service_factory.h"
+ #include "chrome/browser/ui/views/chrome_layout_provider.h"
+ #include "chrome/browser/ui/views/elevation_icon_setter.h"
++#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
+ #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
++#include "ui/base/base_window.h"
+ #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
+ #include "ui/base/buildflags.h"
+ #include "ui/base/metadata/metadata_impl_macros.h"
+@@ -47,9 +49,38 @@
+           : nullptr;
+   views::BubbleAnchor anchor =
+       anchor_view ? views::BubbleAnchor(anchor_view) : views::BubbleAnchor();
++#if BUILDFLAG(IS_MAC)
++  if (!anchor) {
++    // The Bark window has an app-owned root and no toolbar menu button.
++    auto* window = browser->GetWindow();
++    auto* buttons = ToolbarButtonProvider::From(browser);
++    if (!window || !window->IsVisible() || !window->IsActive() ||
++        !buttons || !browser->IsSelectedForNativeWindow()) {
++      return nullptr;
++    }
++    anchor = buttons->GetDefaultExtensionDialogAnchor();
++    if (!anchor.GetIfView() || !anchor.GetIfView()->GetWidget())
++      return nullptr;
++  }
++#endif
+   GlobalErrorBubbleView* bubble_view = new GlobalErrorBubbleView(
+       anchor, views::BubbleBorder::TOP_RIGHT, browser, error);
+   views::BubbleDialogDelegateView::CreateBubble(bubble_view);
++#if BUILDFLAG(IS_MAC)
++  if (!anchor_view) {
++    bubble_view->owner_selection_subscription_ =
++        browser->RegisterNativeWindowSelectionChanged(base::BindRepeating(
++            [](GlobalErrorBubbleView* bubble,
++               base::WeakPtr<BrowserWindowInterface> owner) {
++              if (!owner || !owner->IsSelectedForNativeWindow()) {
++                if (bubble->error_)
++                  bubble->error_->ReofferBubbleView();
++                bubble->CloseBubbleView();
++              }
++            },
++            base::Unretained(bubble_view), browser->GetWeakPtr()));
++  }
++#endif
+   bubble_view->GetWidget()->Show();
+   return bubble_view;
+ }

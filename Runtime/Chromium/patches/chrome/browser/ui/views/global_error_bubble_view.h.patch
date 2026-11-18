@@ -1,0 +1,22 @@
+diff --git a/chrome/browser/ui/views/global_error_bubble_view.h b/chrome/browser/ui/views/global_error_bubble_view.h
+--- a/chrome/browser/ui/views/global_error_bubble_view.h
++++ b/chrome/browser/ui/views/global_error_bubble_view.h
+@@ -5,6 +5,7 @@
+ #ifndef CHROME_BROWSER_UI_VIEWS_GLOBAL_ERROR_BUBBLE_VIEW_H_
+ #define CHROME_BROWSER_UI_VIEWS_GLOBAL_ERROR_BUBBLE_VIEW_H_
+ 
++#include "base/callback_list.h"
+ #include "base/memory/weak_ptr.h"
+ #include "chrome/browser/ui/global_error/global_error_bubble_view_base.h"
+ #include "ui/base/metadata/metadata_header_macros.h"
+@@ -36,7 +37,10 @@
+   void CloseBubbleView() override;
+ 
+  private:
++  friend class GlobalErrorBubbleViewBase;
++
+   base::WeakPtr<GlobalErrorWithStandardBubble> error_;
++  base::CallbackListSubscription owner_selection_subscription_;
+ 
+   std::unique_ptr<ElevationIconSetter> elevation_icon_setter_;
+ };

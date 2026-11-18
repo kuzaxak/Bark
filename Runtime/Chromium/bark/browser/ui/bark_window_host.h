@@ -198,6 +198,10 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   bool widget_fullscreen_ = false;
   HostFullscreen fullscreen_kind_ = HostFullscreen::kNone;
   base::ObserverList<Observer> observers_;
+  void SchedulePendingGlobalError();
+  void ShowPendingGlobalError();
+  bool global_error_scheduled_ = false;
+
   base::WeakPtrFactory<BarkWindowHost> weak_factory_{this};
 };
 

@@ -1,0 +1,11 @@
+diff --git a/chrome/browser/ui/views/BUILD.gn b/chrome/browser/ui/views/BUILD.gn
+--- a/chrome/browser/ui/views/BUILD.gn
++++ b/chrome/browser/ui/views/BUILD.gn
+@@ -1385,6 +1385,7 @@
+   deps = [
+     ":elevation_icon_setter",
+     ":layout_provider",
++    "//chrome/browser/ui/views/frame:toolbar_button_provider",
+     "//chrome/browser:primitives",
+     "//chrome/browser/ui:browser_element_identifiers",
+     "//chrome/browser/ui:bubble_anchor_util",

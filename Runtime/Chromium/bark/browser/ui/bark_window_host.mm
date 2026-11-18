@@ -32,6 +32,10 @@
 #include "chrome/browser/ui/browser_window_state.h"
 #include "chrome/browser/ui/exclusive_access/exclusive_access_manager.h"
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
+#include "chrome/browser/profiles/profile.h"
+#include "chrome/browser/ui/global_error/global_error.h"
+#include "chrome/browser/ui/global_error/global_error_service.h"
+#include "chrome/browser/ui/global_error/global_error_service_factory.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
@@ -707,6 +711,39 @@ void BarkWindowHost::OnSelectedPageChanged() {
   if (selected_) {
     selected_->OnHostBoundsChanged();
   }
+  SchedulePendingGlobalError();
+}
+
+void BarkWindowHost::SchedulePendingGlobalError() {
+  if (closing_ || global_error_scheduled_)
+    return;
+  global_error_scheduled_ = true;
+  base::SequencedTaskRunner::GetCurrentDefault()->PostTask(
+      FROM_HERE, base::BindOnce(&BarkWindowHost::ShowPendingGlobalError,
+                                weak_factory_.GetWeakPtr()));
+}
+
+void BarkWindowHost::ShowPendingGlobalError() {
+  global_error_scheduled_ = false;
+  if (closing_ || !selected_ || !root_view() || !widget_ ||
+      !widget_->IsVisible() || !widget_->IsActive()) {
+    return;
+  }
+  auto* browser = selected_->browser();
+  if (browser->IsDeleteScheduled() ||
+      browser->GetType() != BrowserWindowInterface::TYPE_NORMAL ||
+      browser->GetProfile()->IsOffTheRecord()) {
+    return;
+  }
+  auto* service = GlobalErrorServiceFactory::GetForProfile(browser->GetProfile());
+  if (std::ranges::any_of(service->errors(), [](const auto& error) {
+        return error->GetBubbleView() != nullptr;
+      })) {
+    return;
+  }
+  if (auto* error = service->GetFirstGlobalErrorWithBubbleView()) {
+    error->ShowBubbleView(browser);
+  }
 }
 
 void BarkWindowHost::OnClientActiveTabChanged(BarkBrowserWindow* client) {
@@ -789,6 +826,8 @@ void BarkWindowHost::OnWidgetActivationChanged(views::Widget* widget,
   if (selected_) {
     selected_->OnHostActivationChanged(active);
   }
+  if (active)
+    SchedulePendingGlobalError();
   barc::BrowserDiscoveryChanged();
 }
 

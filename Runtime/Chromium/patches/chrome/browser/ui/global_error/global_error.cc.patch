@@ -1,0 +1,16 @@
+diff --git a/chrome/browser/ui/global_error/global_error.cc b/chrome/browser/ui/global_error/global_error.cc
+--- a/chrome/browser/ui/global_error/global_error.cc
++++ b/chrome/browser/ui/global_error/global_error.cc
+@@ -42,9 +42,11 @@
+ 
+ void GlobalErrorWithStandardBubble::ShowBubbleView(
+     BrowserWindowInterface* browser) {
+-  has_shown_bubble_view_ = true;
++  if (bubble_view_)
++    return;
+   bubble_view_ =
+       GlobalErrorBubbleViewBase::ShowStandardBubbleView(browser, AsWeakPtr());
++  has_shown_bubble_view_ |= !!bubble_view_;
+ }
+ 
+ GlobalErrorBubbleViewBase* GlobalErrorWithStandardBubble::GetBubbleView() {

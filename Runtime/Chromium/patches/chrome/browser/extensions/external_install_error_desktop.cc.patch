@@ -1,0 +1,55 @@
+diff --git a/chrome/browser/extensions/external_install_error_desktop.cc b/chrome/browser/extensions/external_install_error_desktop.cc
+--- a/chrome/browser/extensions/external_install_error_desktop.cc
++++ b/chrome/browser/extensions/external_install_error_desktop.cc
+@@ -125,6 +125,7 @@
+   void ExecuteMenuItem(BrowserWindowInterface* browser) override;
+ 
+   // GlobalErrorWithStandardBubble implementation.
++  void ShowBubbleView(BrowserWindowInterface* browser) override;
+   std::u16string GetBubbleViewTitle() override;
+   std::vector<std::u16string> GetBubbleViewMessages() override;
+   std::u16string GetBubbleViewAcceptButtonLabel() override;
+@@ -225,8 +226,18 @@
+   // |browser| is nullptr in unit test.
+   if (browser) {
+     ShowBubbleView(browser);
+-  }
+-  error_->DidOpenBubbleView();
++  } else {
++    error_->DidOpenBubbleView();
++  }
++}
++
++void ExternalInstallBubbleAlert::ShowBubbleView(
++    BrowserWindowInterface* browser) {
++  if (GetBubbleView())
++    return;
++  GlobalErrorWithStandardBubble::ShowBubbleView(browser);
++  if (GetBubbleView())
++    error_->DidOpenBubbleView();
+ }
+ 
+ std::u16string ExternalInstallBubbleAlert::GetBubbleViewTitle() {
+@@ -481,16 +492,15 @@
+     error_service_->AddUnownedGlobalError(global_error_.get());
+ 
+     if (!manager_->has_currently_visible_install_alert()) {
+-      // |browser| is nullptr during unit tests, so call
+-      // DidChangeInstallAlertVisibility() regardless because we depend on this
+-      // in unit tests.
+-      manager_->DidChangeInstallAlertVisibility(this, true);
++      auto* profile = Profile::FromBrowserContext(browser_context_);
+       BrowserWindowInterface* browser =
+-          ProfileBrowserCollection::GetForProfile(
+-              Profile::FromBrowserContext(browser_context_))
+-              ->FindTabbedBrowser(/*match_original_profiles=*/true);
++          ProfileBrowserCollection::GetForProfile(profile)->FindTabbedBrowser(
++              /*match_original_profiles=*/false);
+       if (browser) {
+         global_error_->ShowBubbleView(browser);
++      } else if (profile->AsTestingProfile()) {
++        // Unit tests observe an alert even without a browser.
++        manager_->DidChangeInstallAlertVisibility(this, true);
+       }
+     }
+   } else {

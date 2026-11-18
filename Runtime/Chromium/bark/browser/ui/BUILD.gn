@@ -41,6 +41,7 @@ source_set("ui") {
     "//chrome/browser/ui/cocoa",
     "//chrome/browser/ui/find_bar",
     "//chrome/browser/ui/fullscreen",
+    "//chrome/browser/ui/global_error",
     "//chrome/browser/ui/location_bar",
     "//chrome/browser/ui/side_panel",
     "//chrome/browser/ui/tabs:tab_strip",

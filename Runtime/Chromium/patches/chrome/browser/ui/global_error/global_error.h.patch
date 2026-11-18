@@ -1,0 +1,13 @@
+diff --git a/chrome/browser/ui/global_error/global_error.h b/chrome/browser/ui/global_error/global_error.h
+--- a/chrome/browser/ui/global_error/global_error.h
++++ b/chrome/browser/ui/global_error/global_error.h
+@@ -107,6 +107,9 @@
+   // it either.
+   virtual void BubbleViewDidClose(BrowserWindowInterface* browser);
+ 
++  // A host can offer the pending error again after its owner returns.
++  void ReofferBubbleView() { has_shown_bubble_view_ = false; }
++
+  private:
+   bool has_shown_bubble_view_ = false;
+   raw_ptr<GlobalErrorBubbleViewBase> bubble_view_ = nullptr;
