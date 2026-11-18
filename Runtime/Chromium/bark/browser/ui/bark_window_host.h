@@ -19,6 +19,10 @@
 
 class BrowserWindowInterface;
 
+namespace display {
+class Screen;
+}
+
 namespace views {
 class NativeViewHost;
 class View;
@@ -57,6 +61,9 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   static BarkWindowHost* ForBrowser(const BrowserWindowInterface* browser);
   static BarkWindowHost* ForNativeWindow(gfx::NativeWindow window);
 
+  static gfx::Rect ConstrainCompactBounds(gfx::Rect bounds,
+                                          const display::Screen& screen);
+
   explicit BarkWindowHost(BarkBrowserWindow* first_client);
   BarkWindowHost(const BarkWindowHost&) = delete;
   BarkWindowHost& operator=(const BarkWindowHost&) = delete;
@@ -75,6 +82,13 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   // Makes `client` the one the window shows and answers for: lookups by
   // window, activation, the title and full-screen events follow it.
   bool Select(BarkBrowserWindow* client);
+
+  enum class Presentation { kNone, kShow, kShowInactive, kActivate };
+  // A host becomes presentable when the app's root is attached. Before then
+  // the selected client's most recent presentation request is retained.
+  bool DeferPresentation(Presentation request);
+  void CancelPendingPresentation();
+  bool awaiting_admission() const { return pending_ != Presentation::kNone; }
 
   // The app's root view is set once. Setting the same view again succeeds; a
   // different one is refused.
@@ -167,6 +181,8 @@ class BarkWindowHost : public base::RefCounted<BarkWindowHost>,
   raw_ptr<views::View> unselected_anchor_ = nullptr;
   std::unique_ptr<PageWatch> page_watch_;
   std::unique_ptr<KeyReturn> key_return_;
+  Presentation pending_ = Presentation::kNone;
+  bool attaching_root_ = false;
   bool closing_ = false;
   bool resetting_close_ = false;
   bool widget_fullscreen_ = false;

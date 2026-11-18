@@ -12,6 +12,7 @@ test("bark_browser_tests") {
     "barc_extension_storage_browsertest.mm",
     "barc_native_policy_browsertest.mm",
     "barc_profiles_browsertest.mm",
+    "bark_compact_bounds_browsertest.mm",
     "bark_engine_config_browsertest.mm",
     "bark_host_peek_browsertest.mm",
     "bark_host_split_browsertest.mm",
@@ -21,6 +22,7 @@ test("bark_browser_tests") {
     "real_pointer_isolation.mm",
   ]
   deps = [
+    "//ui/display",
     "//chrome/browser/download",
     "//chrome/browser/download/bubble",
     "//chrome/browser/ui/webui/certificate_viewer",

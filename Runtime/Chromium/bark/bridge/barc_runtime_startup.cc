@@ -26,6 +26,8 @@
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "bark/bridge/barc_bridge.h"
+#include "bark/browser/ui/bark_browser_window.h"
+#include "bark/browser/ui/bark_window_factory.h"
 #include "bark/browser/ui/bark_window_host.h"
 #include "chrome/browser/profiles/keep_alive/profile_keep_alive_types.h"
 #include "chrome/browser/profiles/keep_alive/scoped_profile_keep_alive.h"
@@ -450,6 +452,9 @@ void RunInApplicationBrowser(int32_t kind, std::string url,
 }
 
 bool IsApplicationMini(const BrowserWindowInterface* browser) {
+  if (auto* client = bark::BarkBrowserWindow::FromBrowser(browser))
+    return IsNativeApplicationRegistered() && !browser->IsDeleteScheduled() &&
+           client->is_application_mini();
   const auto* view = browser && !browser->IsDeleteScheduled()
       ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
   return IsNativeApplicationRegistered() && view && view->barc_compact_shell() &&
@@ -494,6 +499,9 @@ ApplicationPage CreateApplicationPage(Profile* profile, BrowserWindowInterface* 
       params.initial_bounds = gfx::Rect(area.CenterPoint().x() - width / 2,
           area.CenterPoint().y() - height / 2, width, height);
     }
+    std::optional<bark::ScopedAppWindowCreation> app_popup;
+    if (mini)
+      app_popup.emplace();
     browser = CreateBrowserWindow(std::move(params));
   }
   if (!browser) return {};
@@ -554,9 +562,15 @@ void CloseUnusedApplicationPage(ApplicationPage page) {
     auto* tab = tabs::TabHandle(page.tab).Get();
     auto* browser = tab->GetBrowserWindowInterface();
     if (IsApplicationMini(browser)) {
-      auto* view = BrowserView::GetBrowserViewForBrowser(browser);
-      close = barc_window_native_shell_is_owned(page.window, nullptr) ||
-          view->HasConfirmedBarcCompactShell();
+      if (auto* host = bark::BarkWindowHost::ForBrowser(browser)) {
+        // A pending external URL owns only its marked blank page, both while
+        // waiting for admission and after the compact root has been attached.
+        close = !host->closing();
+      } else {
+        auto* view = BrowserView::GetBrowserViewForBrowser(browser);
+        close = barc_window_native_shell_is_owned(page.window, nullptr) ||
+                view->HasConfirmedBarcCompactShell();
+      }
     }
   }
   AbandonApplicationPageRequest(page.tab, page.request);

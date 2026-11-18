@@ -58,6 +58,7 @@ source_set("ui") {
     "//content/public/browser",
     "//ui/base",
     "//ui/base/accelerators/global_accelerator_listener",
+    "//ui/display",
     "//ui/gfx",
     "//ui/menus",
     "//ui/views",

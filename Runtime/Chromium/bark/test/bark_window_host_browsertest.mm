@@ -216,6 +216,10 @@ class BarkWindowHostBrowserTest : public InProcessBrowserTest {
   bark::BarkWindowHost* HostOf(int32_t id) {
     return bark::BarkWindowHost::ForBrowser(FindBrowser(id));
   }
+  void AdmitWindow(int32_t window) {
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    ASSERT_EQ(1, barc_window_set_root_view(window, (__bridge void*)root));
+  }
   // A shown host window with the app's root view and one loaded tab.
   int32_t OpenPage(int32_t window, NSView* root, const char* path) {
     EXPECT_EQ(1, barc_window_set_root_view(window, (__bridge void*)root));
@@ -511,6 +515,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   const int32_t work = OpenProfile(kWorkProfile);
   const int32_t home = OpenProfile(kHomeProfile, work);
   const int32_t other = OpenProfile(kHomeProfile);
+  AdmitWindow(work);
   ASSERT_EQ(1, barc_window_show(work));
   ASSERT_TRUE(base::test::RunUntil(
       [&] { return HostOf(work)->widget()->IsActive(); }));
@@ -592,6 +597,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, NoStockChromeViewsExist) {
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, EmptyStripKeepsWindow) {
   const int32_t kept = OpenHostWindow();
+  AdmitWindow(kept);
   ASSERT_EQ(1, barc_window_set_app_lifetime(kept));
   const int32_t tab = barc_tab_create(kept, "about:blank", 1);
   ASSERT_NE(0, tab);
@@ -622,6 +628,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, EmptyStripKeepsWindow) {
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, CloseRunsBeforeUnload) {
   ASSERT_TRUE(embedded_test_server()->Start());
   const int32_t peer = OpenHostWindow();
+  AdmitWindow(peer);
   const int32_t tab = barc_tab_create(
       peer, embedded_test_server()->GetURL("/title1.html").spec().c_str(), 1);
   ASSERT_NE(0, tab);
@@ -654,17 +661,64 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, CloseRunsBeforeUnload) {
   EXPECT_EQ(nullptr, FindBrowser(peer));
 }
 
-IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, PopupKeepsBrowserView) {
-  BrowserWindowInterface* popup = nullptr;
-  {
-    bark::ScopedAppWindowCreation app_window;
-    popup = CreateBrowserWindow(BrowserWindowCreateParams(
-        BrowserWindowInterface::TYPE_POPUP, *browser()->GetProfile(), true));
-  }
-  ASSERT_NE(nullptr, popup);
-  EXPECT_NE(nullptr, BrowserView::GetBrowserViewForBrowser(popup));
-  EXPECT_EQ(nullptr, bark::BarkBrowserWindow::FromBrowser(popup));
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, PopupUsesCompactHost) {
+  for (bool created_by_app : {false, true}) {
+    auto create = [&] {
+      return CreateBrowserWindow(BrowserWindowCreateParams(
+          BrowserWindowInterface::TYPE_POPUP, *browser()->GetProfile(), true));
+    };
+    BrowserWindowInterface* popup;
+    if (created_by_app) {
+      bark::ScopedAppWindowCreation scope;
+      popup = create();
+    } else {
+      popup = create();
+    }
+    ASSERT_NE(nullptr, popup);
+    const int32_t window = popup->GetSessionID().id();
+    ASSERT_NE(nullptr, HostOf(window));
+    EXPECT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(popup));
+    EXPECT_EQ(0, barc_window_set_app_lifetime(window));
 
+    popup->GetWindow()->Show();
+    BarcDiscoveryWindow row = {.size = sizeof(BarcDiscoveryWindow)};
+    ASSERT_EQ(1, barc_window_discovery_state(window, &row));
+    EXPECT_TRUE(row.flags & BARC_DISCOVERY_COMPACT_MINI);
+    EXPECT_EQ(created_by_app, !!(row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY));
+    EXPECT_TRUE(row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+    EXPECT_FALSE(popup->GetWindow()->IsVisible());
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 580, 420)];
+    ASSERT_EQ(1, barc_window_set_root_view(window, (__bridge void*)root));
+    EXPECT_TRUE(popup->GetWindow()->IsVisible());
+    ASSERT_EQ(1, barc_window_discovery_state(window, &row));
+    EXPECT_FALSE(row.flags & BARC_DISCOVERY_AWAITING_ADMISSION);
+
+    const int32_t tab = barc_tab_create(window, "about:blank", 1);
+    ASSERT_GT(tab, 0);
+    ui_test_utils::BrowserDestroyedObserver closed(popup);
+    ASSERT_EQ(1, barc_tab_close(window, tab));
+    closed.Wait();
+    EXPECT_EQ(nullptr, FindBrowser(window));
+  }
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, HiddenRequestIsNotReplayed) {
+  const int32_t window = OpenHostWindow();
+  ASSERT_NE(nullptr, HostOf(window));
+  auto* client = FindBrowser(window)->GetWindow();
+  client->Show();
+  client->Hide();
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 580, 420)];
+  ASSERT_EQ(1, barc_window_set_root_view(window, (__bridge void*)root));
+  EXPECT_FALSE(client->IsVisible());
+  client->ShowInactive();
+  EXPECT_TRUE(client->IsVisible());
+  client->Hide();
+  ASSERT_EQ(1, barc_window_set_root_view(window, (__bridge void*)root));
+  EXPECT_FALSE(client->IsVisible());
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, UnownedNormalKeepsBrowserView) {
   auto* normal = CreateBrowserWindow(
       BrowserWindowCreateParams(*browser()->GetProfile(), true));
   ASSERT_NE(nullptr, normal);
@@ -1089,6 +1143,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ChromeMetricsMoveLights) {
   ASSERT_EQ(1, barc_window_set_chrome(peer, &chrome));
   EXPECT_NSEQ(NSMakePoint(13, 16), LightsOrigin(window));
 
+  AdmitWindow(peer);
   ASSERT_EQ(1, barc_window_show(peer));
   ASSERT_TRUE(base::test::RunUntil([&] { return window.visible; }));
   EXPECT_NSEQ(NSMakePoint(13, 16), LightsOrigin(window));
@@ -1114,6 +1169,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, LightsGreyUntilHovered) {
   const int32_t peer = OpenHostWindow();
   NSWindow* window =
       HostOf(peer)->widget()->GetNativeWindow().GetNativeNSWindow();
+  AdmitWindow(peer);
   ASSERT_EQ(1, barc_window_show(peer));
   for (NSWindow* key : {old_path, window}) {
     [NSApp activateIgnoringOtherApps:YES];
@@ -1295,6 +1351,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   ASSERT_EQ(host, HostOf(home));
   ASSERT_EQ(host, HostOf(third));
   ASSERT_EQ(1, barc_window_select(work));
+  AdmitWindow(work);
   ASSERT_EQ(1, barc_window_show(work));
   ASSERT_TRUE(base::test::RunUntil([&] { return host->widget()->IsActive(); }));
   ASSERT_TRUE(work_browser->IsSelectedForNativeWindow());
@@ -1348,6 +1405,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   auto* home_browser = FindBrowser(home);
   auto* collection = GlobalBrowserCollection::GetInstance();
   const gfx::NativeWindow native = work_browser->GetWindow()->GetNativeWindow();
+  AdmitWindow(work);
   ASSERT_EQ(1, barc_window_show(work));
   [NSApp activateIgnoringOtherApps:YES];
   [native.GetNativeNSWindow() makeKeyAndOrderFront:nil];
@@ -1390,6 +1448,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ClosingOneClientKeepsWindow) {
   const int32_t work = OpenProfile(kWorkProfile);
   const int32_t home = OpenProfile(kHomeProfile, work);
   ASSERT_GT(home, 0);
+  AdmitWindow(home);
   ASSERT_EQ(1, barc_window_show(home));
   auto* work_browser = FindBrowser(work);
   auto* host = HostOf(work);
@@ -1461,8 +1520,11 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, CloseButtonAsksEveryClient) {
 // finished closing but is not deleted yet.
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
                        ClosedBrowserIgnoresActivation) {
-  ASSERT_EQ(1, barc_window_show(OpenHostWindow()));
+  const int32_t background = OpenHostWindow();
+  AdmitWindow(background);
+  ASSERT_EQ(1, barc_window_show(background));
   const int32_t closing = OpenHostWindow();
+  AdmitWindow(closing);
   ASSERT_EQ(1, barc_window_show(closing));
   auto* browser = FindBrowser(closing);
   auto* host = HostOf(closing);
@@ -1497,6 +1559,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, ClosedClientIsNotSelected) {
   const int32_t work = OpenProfile(kWorkProfile);
   const int32_t home = OpenProfile(kHomeProfile, work);
   ASSERT_GT(home, 0);
+  AdmitWindow(work);
   ASSERT_EQ(1, barc_window_show(work));
   auto* work_browser = FindBrowser(work);
   auto* home_browser = FindBrowser(home);

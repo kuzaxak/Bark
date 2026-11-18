@@ -293,7 +293,12 @@ bool HostDiscoveryWindowRow(BrowserWindowInterface* browser,
   if (host->widget()->IsActive()) row->flags |= BARC_DISCOVERY_PHYSICAL_ACTIVE;
   if (host->widget()->IsVisible()) row->flags |= BARC_DISCOVERY_PHYSICAL_VISIBLE;
   if (selected->browser() == browser) row->flags |= BARC_DISCOVERY_SELECTED_CLIENT;
-  row->flags |= BARC_DISCOVERY_WINDOW_APP_FACTORY;
+  if (bark::BarkBrowserWindow::FromBrowser(browser)->app_created())
+    row->flags |= BARC_DISCOVERY_WINDOW_APP_FACTORY;
+  if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP)
+    row->flags |= BARC_DISCOVERY_COMPACT_MINI;
+  if (selected->browser() == browser && host->awaiting_admission())
+    row->flags |= BARC_DISCOVERY_AWAITING_ADMISSION;
   if (UnloadController::From(browser)->owner_close_admitted())
     row->flags |= BARC_DISCOVERY_OWNER_ENDING;
   if (browser->GetTabStripModel()->empty()) row->flags |= BARC_DISCOVERY_EMPTY_STRIP;

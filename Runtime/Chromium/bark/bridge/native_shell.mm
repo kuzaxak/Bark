@@ -116,6 +116,7 @@
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "bark/bridge/barc_runtime_startup.h"
+#include "bark/browser/ui/bark_browser_window.h"
 #include "chrome/browser/ui/views/infobars/confirm_infobar.h"
 #include "components/infobars/content/content_infobar_manager.h"
 #include "components/infobars/core/confirm_infobar_delegate.h"
@@ -310,6 +311,8 @@ int NativeShellHeight(const BrowserView* browser_view) {
       header->native_view().GetNativeNSView() == paired.view ? paired.height : 0;
 }
 bool ConfigureNativeMini(BrowserWindowInterface* browser) {
+  if (auto* client = bark::BarkBrowserWindow::FromBrowser(browser))
+    return client->MarkApplicationMini();
   auto* view = browser && !browser->IsDeleteScheduled()
       ? BrowserView::GetBrowserViewForBrowser(browser) : nullptr;
   return view && view->InitializeBarcCompactShell();

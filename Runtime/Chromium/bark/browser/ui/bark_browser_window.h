@@ -50,11 +50,16 @@ class BarkBrowserWindow : public BrowserWindow,
   static BarkBrowserWindow* FromBrowser(const BrowserWindowInterface* browser);
 
   // With `join`, the window is another client of that host.
-  BarkBrowserWindow(BrowserWindowInterface* browser, BarkWindowHost* join);
+  BarkBrowserWindow(BrowserWindowInterface* browser,
+                    BarkWindowHost* join,
+                    bool app_created);
   BarkBrowserWindow(const BarkBrowserWindow&) = delete;
   BarkBrowserWindow& operator=(const BarkBrowserWindow&) = delete;
   ~BarkBrowserWindow() override;
 
+  bool app_created() const { return app_created_; }
+  bool MarkApplicationMini();
+  bool is_application_mini() const { return application_mini_; }
   BrowserWindowInterface* browser() const { return browser_.get(); }
   BarkWindowHost* host() const { return host_.get(); }
   base::WeakPtr<BarkBrowserWindow> GetWeakPtr() {
@@ -227,6 +232,8 @@ class BarkBrowserWindow : public BrowserWindow,
   void NotifyPageCrashed(content::WebContents* contents, bool crashed);
 
   const raw_ptr<BrowserWindowInterface> browser_;
+  const bool app_created_;
+  bool application_mini_ = false;
   scoped_refptr<BarkWindowHost> host_;
   std::unique_ptr<BarkStubLocationBar> location_bar_;
   std::unique_ptr<BarkModalDialogHost> modal_dialog_host_;

@@ -38,6 +38,7 @@
 #include "content/public/browser/web_contents.h"
 #include "content/public/browser/web_contents_observer.h"
 #include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/display/screen.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/mac/coordinate_conversion.h"
 #include "ui/native_theme/native_theme.h"
@@ -93,8 +94,12 @@ bool IsHostWindowMode() {
 std::unique_ptr<BrowserWindow, BrowserWindowDeleter> MaybeCreateHostWindow(
     BrowserWindowInterface* browser,
     bool in_tab_dragging) {
-  if (!g_app_window_creation_depth || in_tab_dragging || !IsHostWindowMode() ||
-      browser->GetType() != BrowserWindowInterface::Type::TYPE_NORMAL) {
+  const bool app_created = g_app_window_creation_depth != 0;
+  const auto type = browser->GetType();
+  const bool compact = type == BrowserWindowInterface::TYPE_POPUP &&
+                       browser->GetProfile()->IsRegularProfile();
+  if (in_tab_dragging || !IsHostWindowMode() ||
+      !(compact || (app_created && type == BrowserWindowInterface::TYPE_NORMAL))) {
     return nullptr;
   }
   const auto* init_state = BrowserInitState::From(browser);
@@ -102,7 +107,8 @@ std::unique_ptr<BrowserWindow, BrowserWindowDeleter> MaybeCreateHostWindow(
     return nullptr;
   }
   return std::unique_ptr<BrowserWindow, BrowserWindowDeleter>(
-      new BarkBrowserWindow(browser, std::exchange(g_join_host, nullptr)));
+      new BarkBrowserWindow(browser, compact ? nullptr : std::exchange(g_join_host, nullptr),
+                            app_created));
 }
 
 BarkWindowHost* HostToJoin(BrowserWindowInterface* owner) {
@@ -167,8 +173,10 @@ class BarkBrowserWindow::TabWatcher : public content::WebContentsObserver {
 };
 
 BarkBrowserWindow::BarkBrowserWindow(BrowserWindowInterface* browser,
-                                     BarkWindowHost* join)
+                                     BarkWindowHost* join,
+                                     bool app_created)
     : browser_(browser),
+      app_created_(app_created),
       scoped_user_data_(browser->GetUnownedUserDataHost(), *this) {
   if (join && join->AddClient(this)) {
     host_ = join;
@@ -205,6 +213,15 @@ BarkBrowserWindow::~BarkBrowserWindow() {
   location_bar_.reset();
   host_->RemoveClient(this);
   host_.reset();
+}
+
+bool BarkBrowserWindow::MarkApplicationMini() {
+  if (!app_created_ || browser_->GetType() != BrowserWindowInterface::TYPE_POPUP ||
+      browser_->IsDeleteScheduled()) {
+    return false;
+  }
+  application_mini_ = true;
+  return true;
 }
 
 gfx::Rect BarkBrowserWindow::GetPageBoundsInScreen() const {
@@ -356,8 +373,13 @@ gfx::Size BarkBrowserWindow::GetContentsSize() const {
 }
 
 void BarkBrowserWindow::SetContentsSize(const gfx::Size& size) {
+  if (!host_->widget() ||
+      (browser_->GetType() == BrowserWindowInterface::TYPE_POPUP &&
+       size.IsEmpty())) {
+    return;
+  }
   const gfx::Size current = GetContentsSize();
-  if (size == current || !host_->widget()) {
+  if (size == current) {
     return;
   }
   gfx::Rect bounds = GetBounds();
@@ -638,23 +660,35 @@ void BarkBrowserWindow::Show() {
   if (!widget || host_->closing() || !host_->Select(this)) {
     return;
   }
+  if (host_->DeferPresentation(BarkWindowHost::Presentation::kShow)) {
+    return;
+  }
+  auto alive = GetWeakPtr();
   BrowserActiveStateManager::From(browser_)->DidBecomeActive();
+  if (!alive || host_->closing() || !IsSelectedForNativeWindow() ||
+      browser_->IsDeleteScheduled()) {
+    return;
+  }
   if (widget->IsVisible()) {
     widget->Activate();
   } else {
     widget->Show();
   }
-  EnsureActiveTabHasNonZeroSize();
+  if (alive) {
+    EnsureActiveTabHasNonZeroSize();
+  }
 }
 
 void BarkBrowserWindow::ShowInactive() {
-  if (host_->widget() && !host_->closing() && host_->Select(this)) {
+  if (host_->widget() && !host_->closing() && host_->Select(this) &&
+      !host_->DeferPresentation(BarkWindowHost::Presentation::kShowInactive)) {
     host_->widget()->ShowInactive();
   }
 }
 
 void BarkBrowserWindow::Hide() {
   if (host_->widget() && IsSelectedForNativeWindow()) {
+    host_->CancelPendingPresentation();
     host_->widget()->Hide();
   }
 }
@@ -665,12 +699,22 @@ bool BarkBrowserWindow::IsVisible() const {
 }
 
 void BarkBrowserWindow::SetBounds(const gfx::Rect& bounds) {
-  if (host_->widget()) {
-    host_->widget()->SetBounds(bounds);
+  if (auto* widget = host_->widget()) {
+    if (browser_->GetType() == BrowserWindowInterface::TYPE_POPUP) {
+      if (!bounds.IsEmpty()) {
+        widget->SetBounds(BarkWindowHost::ConstrainCompactBounds(
+            bounds, *display::Screen::Get()));
+      }
+    } else {
+      widget->SetBounds(bounds);
+    }
   }
 }
 
 void BarkBrowserWindow::Close() {
+  if (IsSelectedForNativeWindow()) {
+    host_->CancelPendingPresentation();
+  }
   auto* unload = UnloadController::From(browser_);
   if (!unload || unload->is_delete_scheduled()) {
     return;
@@ -687,7 +731,8 @@ void BarkBrowserWindow::Close() {
 }
 
 void BarkBrowserWindow::Activate() {
-  if (host_->widget() && host_->Select(this)) {
+  if (host_->widget() && host_->Select(this) &&
+      !host_->DeferPresentation(BarkWindowHost::Presentation::kActivate)) {
     host_->widget()->Activate();
   }
 }

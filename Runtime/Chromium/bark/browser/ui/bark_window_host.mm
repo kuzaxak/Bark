@@ -12,12 +12,14 @@
 #include "bark/browser/ui/bark_native_widget_mac.h"
 #include "base/apple/foundation_util.h"
 #include "base/auto_reset.h"
+#include "base/command_line.h"
 #include "base/functional/bind.h"
 #include "base/memory/weak_ptr.h"
 #include "base/task/sequenced_task_runner.h"
 #include "chrome/browser/ui/accelerator_table.h"
 #include "chrome/browser/ui/browser_commands.h"
 #include "chrome/browser/ui/browser_element_identifiers.h"
+#include "chrome/browser/ui/browser_init_state.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/bubble_anchor_util_views.h"
 #include "chrome/browser/ui/views/chrome_layout_provider.h"
@@ -28,6 +30,8 @@
 #include "chrome/browser/ui/exclusive_access/fullscreen_controller.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/window_metadata/window_metadata_controller.h"
+#include "ui/base/mojom/window_show_state.mojom.h"
+#include "ui/display/screen.h"
 #include "ui/views/bubble/bubble_border.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/native/native_view_host.h"
@@ -37,6 +41,7 @@
 #include "ui/views/view_class_properties.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/window/client_view.h"
+#include "ui/views/window/non_client_view.h"
 
 namespace bark {
 
@@ -224,6 +229,24 @@ class BarkWindowHost::Delegate : public views::WidgetDelegate {
       return false;
     }
     chrome::GetSavedWindowBoundsAndShowState(browser, bounds, show_state);
+    if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP) {
+      const gfx::Rect requested =
+          BrowserInitState::From(browser)->override_bounds();
+      if (!requested.IsEmpty()) {
+        // WindowSizer has already constrained the position. Keep the original
+        // request so a fully offscreen popup can use its nearest display.
+        *bounds = requested;
+        chrome::internal::UpdateWindowBoundsAndShowStateFromCommandLine(
+            *base::CommandLine::ForCurrentProcess(), bounds, show_state);
+      }
+      // Popup bounds describe an outer origin and an inner size. The compact
+      // root reserves its header when mounted.
+      bounds->set_size(widget->non_client_view()
+                           ->GetWindowBoundsForClientBounds(*bounds)
+                           .size());
+      *bounds = ConstrainCompactBounds(*bounds, *display::Screen::Get());
+      *show_state = ui::mojom::WindowShowState::kNormal;
+    }
     return true;
   }
   views::ClientView* CreateClientView(views::Widget* widget) override {
@@ -261,6 +284,26 @@ BarkWindowHost* BarkWindowHost::ForNativeWindow(gfx::NativeWindow window) {
                 : nullptr;
 }
 
+gfx::Rect BarkWindowHost::ConstrainCompactBounds(
+    gfx::Rect bounds,
+    const display::Screen& screen) {
+  const auto& displays = screen.GetAllDisplays();
+  if (displays.empty()) {
+    return bounds;
+  }
+  display::Display target = screen.GetDisplayMatching(bounds);
+  if (!target.bounds().Intersects(bounds)) {
+    target = *std::ranges::min_element(
+        displays, {}, [&bounds](const display::Display& display) {
+          return display.bounds().ManhattanInternalDistance(bounds);
+        });
+  }
+  if (!target.work_area().IsEmpty()) {
+    bounds.AdjustToFit(target.work_area());
+  }
+  return bounds;
+}
+
 BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
     : physical_group_(
           static_cast<uint64_t>(first_client->browser()->GetSessionID().id())),
@@ -284,8 +327,12 @@ BarkWindowHost::BarkWindowHost(BarkBrowserWindow* first_client)
   views::Widget::InitParams params(
       views::Widget::InitParams::CLIENT_OWNS_WIDGET);
   params.name = "BarkWindowHost";
-  chrome::GetSavedWindowBoundsAndShowState(first_client->browser(),
-                                           &params.bounds, &params.show_state);
+  auto* browser = first_client->browser();
+  chrome::GetSavedWindowBoundsAndShowState(browser, &params.bounds,
+                                           &params.show_state);
+  if (browser->GetType() == BrowserWindowInterface::TYPE_POPUP) {
+    params.show_state = ui::mojom::WindowShowState::kNormal;
+  }
   params.delegate = delegate_.get();
   params.native_widget =
       new BarkNativeWidgetMac(weak_factory_.GetWeakPtr(), widget_.get());
@@ -332,6 +379,7 @@ void BarkWindowHost::RemoveClient(BarkBrowserWindow* client) {
   if (selected_ != client) {
     return;
   }
+  CancelPendingPresentation();
   selected_ = nullptr;
   if (!clients_.empty() && !closing_) {
     SetSelected(clients_.front(), false);
@@ -355,6 +403,7 @@ void BarkWindowHost::SetSelected(BarkBrowserWindow* client,
   auto previous = previous_stays && selected_ ? selected_->GetWeakPtr()
                                               : base::WeakPtr<BarkBrowserWindow>();
   auto incoming = client->GetWeakPtr();
+  CancelPendingPresentation();
   selected_ = client;
   if (client->browser()->IsDeleteScheduled()) {
     return;
@@ -395,6 +444,23 @@ void BarkWindowHost::SetSelected(BarkBrowserWindow* client,
   barc::BrowserDiscoveryChanged();
 }
 
+bool BarkWindowHost::DeferPresentation(Presentation request) {
+  if (root_view() && !attaching_root_) {
+    return false;
+  }
+  if (pending_ != request) {
+    pending_ = request;
+    barc::BrowserDiscoveryChanged();
+  }
+  return true;
+}
+
+void BarkWindowHost::CancelPendingPresentation() {
+  if (std::exchange(pending_, Presentation::kNone) != Presentation::kNone) {
+    barc::BrowserDiscoveryChanged();
+  }
+}
+
 bool BarkWindowHost::SetRootView(gfx::NativeView root) {
   NSView* view = root.GetNativeNSView();
   if (closing_ || !root_host_ || !view) {
@@ -408,8 +474,30 @@ bool BarkWindowHost::SetRootView(gfx::NativeView root) {
   if (view.window && view.window != window) {
     return false;
   }
-  root_host_->Attach(root);
-  return root_host_ && root_host_->native_view().GetNativeNSView() == view;
+  if (attaching_root_) {
+    return false;
+  }
+  scoped_refptr<BarkWindowHost> keep_alive(this);
+  {
+    base::AutoReset<bool> attaching(&attaching_root_, true);
+    root_host_->Attach(root);
+  }
+  if (closing_ || !root_host_ || root_view().GetNativeNSView() != view) {
+    return false;
+  }
+  const auto request = std::exchange(pending_, Presentation::kNone);
+  if (request != Presentation::kNone) {
+    barc::BrowserDiscoveryChanged();
+    if (selected_ && !selected_->browser()->IsDeleteScheduled()) {
+      if (request == Presentation::kShowInactive) {
+        selected_->ShowInactive();
+      } else {
+        // Activating an as-yet hidden window must also order it on screen.
+        selected_->Show();
+      }
+    }
+  }
+  return !closing_ && root_view().GetNativeNSView() == view;
 }
 
 gfx::NativeView BarkWindowHost::root_view() const {

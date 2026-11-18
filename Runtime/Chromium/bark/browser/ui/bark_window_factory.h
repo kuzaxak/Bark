@@ -17,8 +17,7 @@ class BarkWindowHost;
 // True when the process runs with --bark-window=host.
 bool IsHostWindowMode();
 
-// Bark's window for a normal browser the app creates while host mode is on;
-// null for every other browser, which keeps upstream's BrowserView.
+// In host mode the app owns its normal windows and regular-profile popups.
 std::unique_ptr<BrowserWindow, BrowserWindowDeleter> MaybeCreateHostWindow(
     BrowserWindowInterface* browser,
     bool in_tab_dragging);
