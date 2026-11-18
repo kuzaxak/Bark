@@ -1,5 +1,4 @@
 "Chromium Shortcut" = "Chromium-genväg";
-CFBundleGetInfoString = "Bark 156.0.8078.80, Upphovsrätt 2026 The Chromium Authors. Med ensamrätt.";
 NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

@@ -1,5 +1,4 @@
 "Chromium Shortcut" = "Chromium ஷார்ட்கட்";
-CFBundleGetInfoString = "Bark 156.0.8078.80, பதிப்புரிமை 2026 Chromium உருவாக்குநர்கள். அனைத்து உரிமைகளும் பாதுகாக்கப்பட்டவை.";
 NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

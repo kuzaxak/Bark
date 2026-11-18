@@ -1,5 +1,4 @@
 "Chromium Shortcut" = "‮Chromium‬ ‮Shortcut‬";
-CFBundleGetInfoString = "Bark 156.0.8078.80, ‮Copyright‬ 2026 ‮The‬ ‮Chromium‬ ‮Authors‬. ‮All‬ ‮rights‬ ‮reserved‬.";
 NSAudioCaptureUsageDescription = "‮Once‬ ‮Bark‬ ‮has‬ ‮access‬, ‮websites‬ ‮will‬ ‮be‬ ‮able‬ ‮to‬ ‮ask‬ ‮you‬ ‮for‬ ‮access‬.";
 NSBluetoothAlwaysUsageDescription = "‮Once‬ ‮Bark‬ ‮has‬ ‮access‬, ‮websites‬ ‮will‬ ‮be‬ ‮able‬ ‮to‬ ‮ask‬ ‮you‬ ‮for‬ ‮access‬.";
 NSBluetoothPeripheralUsageDescription = "‮Once‬ ‮Bark‬ ‮has‬ ‮access‬, ‮websites‬ ‮will‬ ‮be‬ ‮able‬ ‮to‬ ‮ask‬ ‮you‬ ‮for‬ ‮access‬.";

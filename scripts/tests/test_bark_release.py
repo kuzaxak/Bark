@@ -20,8 +20,12 @@ class ReleaseTests(unittest.TestCase):
         self.app = self.root / "Bark.app"
         self.info_path = self.app / "Contents/Info.plist"
         self.info_path.parent.mkdir(parents=True)
-        self.base = {"CFBundleIdentifier": "ee.qdo.bark", "CFBundleVersion": "8078.80",
-                     "CFBundleShortVersionString": "156.0.8078.80", "LSMinimumSystemVersion": "15.5",
+        framework = self.app / "Contents/Frameworks/Bark Framework.framework/Resources/Info.plist"
+        framework.parent.mkdir(parents=True)
+        framework.write_bytes(plistlib.dumps({"CFBundleShortVersionString": "156.0.8078.80"}))
+        self.base = {"CFBundleIdentifier": "ee.qdo.bark", "CFBundleVersion": "120",
+                     "CFBundleShortVersionString": "1.5.4", "BarkChromiumVersion": "156.0.8078.80",
+                     "LSMinimumSystemVersion": "15.5",
                      "CFBundleDocumentTypes": [{"CFBundleTypeName": "Web page"}]}
         self.info_path.write_bytes(plistlib.dumps(self.base))
         self.release = production_settings("1.4.0.2", "102", "https://update.example/bark/", "x86_64")
@@ -30,6 +34,8 @@ class ReleaseTests(unittest.TestCase):
         configure_release(self.app, self.release)
         info = plistlib.loads(self.info_path.read_bytes())
         self.assertEqual(info["BarkChromiumVersion"], "156.0.8078.80")
+        self.assertEqual(info["CFBundleShortVersionString"], "1.4.0.2")
+        self.assertEqual(info["CFBundleVersion"], "102")
         self.assertEqual(info["CFBundleDocumentTypes"], self.base["CFBundleDocumentTypes"])
         self.assertEqual(check_distribution_settings(info, "x86_64", "https://downloads.example/releases"),
                          ("ee.qdo.bark", "1.4.0.2", "102"))
@@ -37,6 +43,16 @@ class ReleaseTests(unittest.TestCase):
             check_distribution_settings(info, "arm64", "https://downloads.example/releases")
         with self.assertRaises(ValueError):
             check_distribution_settings({**info, "SUPublicEDKey": "AA=="}, "x86_64", "https://downloads.example")
+
+    def test_imports_the_version_from_legacy_staged_apps_and_refuses_mismatches(self):
+        legacy = self.base.copy()
+        legacy["CFBundleShortVersionString"] = legacy.pop("BarkChromiumVersion")
+        self.info_path.write_bytes(plistlib.dumps(legacy))
+        configure_release(self.app, self.release)
+        self.assertEqual(plistlib.loads(self.info_path.read_bytes())["BarkChromiumVersion"], "156.0.8078.80")
+        self.info_path.write_bytes(plistlib.dumps({**self.base, "BarkChromiumVersion": "155.0.0.1"}))
+        with self.assertRaisesRegex(ValueError, "embedded engine"):
+            configure_release(self.app, self.release)
 
     def test_developer_and_release_configuration(self):
         self.assertIsNone(production_settings(None, None, None, "arm64"))

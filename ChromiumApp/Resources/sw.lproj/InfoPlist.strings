@@ -1,5 +1,4 @@
 "Chromium Shortcut" = "Njia ya Mkato ya Chromium";
-CFBundleGetInfoString = "Bark 156.0.8078.80, Hakimiliki 2026 Wasanidi wa Chromium. Haki zote zimehifadhiwa.";
 NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

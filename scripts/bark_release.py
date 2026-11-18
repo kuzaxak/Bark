@@ -65,12 +65,20 @@ def production_settings(version, build, feed_base, architecture):
     }
 
 
+def framework_version(app):
+    path = app / "Contents/Frameworks/Bark Framework.framework/Resources/Info.plist"
+    return plistlib.loads(path.read_bytes())["CFBundleShortVersionString"]
+
+
 def configure_release(app, settings):
     """Apply app-owned release metadata to the staged bundle before signing."""
     path = app / "Contents/Info.plist"
     info = plistlib.loads(path.read_bytes())
-    info["BarkChromiumVersion"] = info["CFBundleShortVersionString"]
+    engine_version = framework_version(app)
+    if info.get("BarkChromiumVersion", info["CFBundleShortVersionString"]) != engine_version:
+        raise ValueError("The declared Chromium version differs from the embedded engine.")
     info.update(settings)
+    info["BarkChromiumVersion"] = engine_version
     if "BarkUpdateRehearsal" in settings:
         # A separately identified rehearsal app never advertises web or
         # document handlers in the developer's Launch Services database.
@@ -180,8 +188,7 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         subprocess.run(["/usr/bin/ditto", app, installed], check=True)
         if plistlib.loads((installed / "Contents/Info.plist").read_bytes()) != info:
             raise ValueError("The source app changed while the release was being staged.")
-        framework_info = installed / "Contents/Frameworks/Bark Framework.framework/Resources/Info.plist"
-        if info.get("BarkChromiumVersion") != plistlib.loads(framework_info.read_bytes())["CFBundleShortVersionString"]:
+        if info.get("BarkChromiumVersion") != framework_version(installed):
             raise ValueError("The declared Chromium version differs from the embedded engine.")
         subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R",
                         requirement + f' and identifier "{bundle_id}"', installed], check=True)

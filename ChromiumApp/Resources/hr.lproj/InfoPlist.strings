@@ -1,5 +1,4 @@
 "Chromium Shortcut" = "Prečac za Chrome";
-CFBundleGetInfoString = "Bark 156.0.8078.80, Autorska prava 2026. Autori Chromiuma. Sva prava pridržana.";
 NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";

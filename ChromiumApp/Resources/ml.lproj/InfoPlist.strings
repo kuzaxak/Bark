@@ -1,5 +1,4 @@
 "Chromium Shortcut" = "Chromium കുറുക്കുവഴി";
-CFBundleGetInfoString = "Bark 156.0.8078.80, പകർപ്പവകാശം 2026 Chromium രചയിതാക്കൾ. എല്ലാ അവകാശങ്ങളും നിക്ഷിപ്‌തം.";
 NSAudioCaptureUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothAlwaysUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
 NSBluetoothPeripheralUsageDescription = "Once Bark has access, websites will be able to ask you for access.";
