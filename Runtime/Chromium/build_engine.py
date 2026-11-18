@@ -290,7 +290,12 @@ def official_sdk():
     return path
 
 
+DEVELOPER_CC_WRAPPER = "bark_override_cc"
 OFFICIAL_CC_WRAPPER = "bark_official_pgo_cc_v1"
+
+
+def compiler_wrapper_arg(wrapper):
+    return f'cc_wrapper = "./{wrapper}"\n'.encode()
 
 
 def engine_args(arch, official):
@@ -300,11 +305,11 @@ def engine_args(arch, official):
     developer_mode = b"is_official_build = false\n"
     if contents.splitlines(keepends=True).count(developer_mode) != 1:
         raise ValueError(f"args-{arch}.gn: missing developer build setting")
-    developer_wrapper = b'cc_wrapper = "./bark_override_cc"\n'
+    developer_wrapper = compiler_wrapper_arg(DEVELOPER_CC_WRAPPER)
     if contents.splitlines(keepends=True).count(developer_wrapper) != 1:
         raise ValueError(f"args-{arch}.gn: missing developer compiler wrapper")
     # Keep the witnessed compile distinct from previous, unwitnessed Siso actions.
-    contents = contents.replace(developer_wrapper, f'cc_wrapper = "./{OFFICIAL_CC_WRAPPER}"\n'.encode())
+    contents = contents.replace(developer_wrapper, compiler_wrapper_arg(OFFICIAL_CC_WRAPPER))
     version = PINS["official_macos_sdk"]["version"]
     return contents.replace(developer_mode, (
         'is_official_build = true\nchrome_pgo_phase = 2\nuse_system_xcode = true\n'
@@ -325,9 +330,14 @@ def build(checkout, depot_tools, env, args):
     output_args = out / "args.gn"
     if out.parent.is_symlink() or out.is_symlink() or output_args.is_symlink():
         raise ValueError(f"{out}: symlinked build output or args.gn")
+    existing_args = None
     if output_args.is_file():
-        if output_args.read_bytes() != configured_args:
-            raise ValueError(f"{output_args}: differs from the requested recipe. Use a separate checkout")
+        existing_args = output_args.read_bytes()
+        prior_official_args = configured_args.replace(compiler_wrapper_arg(OFFICIAL_CC_WRAPPER),
+                                                      compiler_wrapper_arg(DEVELOPER_CC_WRAPPER))
+        if existing_args != configured_args and not (args.official and existing_args == prior_official_args):
+            raise ValueError(f"{output_args}: differs from the requested recipe. "
+                             f"Move {out} aside and rerun to create a fresh GN output directory.")
     elif out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise ValueError(f"{out}: nonempty output without recipe args.gn")
 
@@ -336,16 +346,19 @@ def build(checkout, depot_tools, env, args):
                              "arm64": ("aarch64-apple-darwin", "arm64")}[args.arch]
     rust_out = src / "out" / f"BarkCargo{suffix}"
     matcher = rust_out / rust_target / "release/libnook_adblock.dylib"
-    wrapper = out / (OFFICIAL_CC_WRAPPER if args.official else "bark_override_cc")
+    wrapper = out / (OFFICIAL_CC_WRAPPER if args.official else DEVELOPER_CC_WRAPPER)
     if wrapper.is_symlink() or any(path.is_symlink() for path in
                                    (rust_out, rust_out / rust_target, matcher.parent, matcher)):
         raise ValueError(f"{out}: expected local wrapper and Rust build paths")
     if not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
-        if not output_args.is_file():
+        if existing_args != configured_args:
             with tempfile.TemporaryDirectory(dir=out) as scratch:
                 staged = Path(scratch) / "args.gn"
                 staged.write_bytes(configured_args)
+                if (output_args.is_symlink() or
+                        (output_args.read_bytes() if output_args.exists() else None) != existing_args):
+                    raise ValueError(f"{output_args}: changed during build setup")
                 staged.replace(output_args)
     if args.official:
         pgo_target = "mac" if args.arch == "x64" else "mac-arm"

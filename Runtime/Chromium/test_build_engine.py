@@ -170,6 +170,62 @@ class BuildArchitectureTests(unittest.TestCase):
                     self.assertNotIn("is_official_build = false", gn)
                     self.assertFalse((checkout / "src/out").exists())
 
+    def test_official_output_migrates_atomically_and_retries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            out = checkout / "src/out/Barc-arm64-official"
+            out.mkdir(parents=True)
+            output_args = out / "args.gn"
+            configured = build_engine.engine_args("arm64", True)
+            previous = configured.replace(b'cc_wrapper = "./bark_official_pgo_cc_v1"\n',
+                                          b'cc_wrapper = "./bark_override_cc"\n')
+            self.assertNotEqual(previous, configured)
+            output_args.write_bytes(previous)
+            existing_product = out / "keep.o"
+            existing_product.touch()
+            args = argparse.Namespace(arch="arm64", official=True, dry_run=True, jobs=2)
+            with mock.patch.multiple(build_engine, verify_gclient=mock.DEFAULT,
+                                     repository=mock.DEFAULT, replay=mock.DEFAULT,
+                                     official_sdk=mock.DEFAULT, run=mock.DEFAULT) as commands:
+                build_engine.build(checkout, checkout / "tools", {}, args)
+                self.assertEqual(output_args.read_bytes(), previous)
+                commands["official_sdk"].assert_not_called()
+
+                args.dry_run = False
+                with mock.patch.object(Path, "replace", side_effect=InterruptedError("replace")):
+                    with self.assertRaisesRegex(InterruptedError, "replace"):
+                        build_engine.build(checkout, checkout / "tools", {}, args)
+                self.assertEqual(output_args.read_bytes(), previous)
+                self.assertEqual(set(out.iterdir()), {output_args, existing_product})
+
+                modified = previous + b"# external edit\n"
+                write_bytes = Path.write_bytes
+
+                def edit_during_staging(path, data):
+                    write_bytes(path, data)
+                    write_bytes(output_args, modified)
+
+                with mock.patch.object(Path, "write_bytes", edit_during_staging):
+                    with self.assertRaisesRegex(ValueError, "changed during build setup"):
+                        build_engine.build(checkout, checkout / "tools", {}, args)
+                self.assertEqual(output_args.read_bytes(), modified)
+
+                for invalid in (modified, build_engine.engine_args("arm64", False)):
+                    output_args.write_bytes(invalid)
+                    commands["run"].reset_mock()
+                    with self.assertRaisesRegex(ValueError, "fresh GN output directory"):
+                        build_engine.build(checkout, checkout / "tools", {}, args)
+                    commands["run"].assert_not_called()
+                    self.assertEqual(output_args.read_bytes(), invalid)
+
+                output_args.write_bytes(previous)
+                commands["run"].side_effect = InterruptedError("profile preparation")
+                for _ in range(2):
+                    with self.assertRaisesRegex(InterruptedError, "profile preparation"):
+                        build_engine.build(checkout, checkout / "tools", {}, args)
+                    self.assertEqual(output_args.read_bytes(), configured)
+                    self.assertEqual(set(out.iterdir()), {output_args, existing_product})
+
     def test_official_build_checks_sdk_version_and_build_id(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
