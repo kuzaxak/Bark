@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 #include <algorithm>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -265,14 +266,35 @@ IN_PROC_BROWSER_TEST_F(BarkHostPeekBrowserTest,
   EXPECT_EQ(downloads, download_count());
 }
 
-IN_PROC_BROWSER_TEST_F(BarkHostPeekBrowserTest, ShiftClickSettingUsesStockWindow) {
+IN_PROC_BROWSER_TEST_F(BarkHostPeekBrowserTest,
+                       ShiftClickWithPeekOffOpensBarkWindow) {
   ASSERT_NO_FATAL_FAILURE(OpenSource());
   ASSERT_EQ(1, barc_tab_enable_peek(source_observation_, BARC_TAB_PEEK_CAPABLE));
-  const size_t browsers = GlobalBrowserCollection::GetInstance()->GetSize();
+  auto* collection = GlobalBrowserCollection::GetInstance();
+  std::set<int32_t> existing;
+  collection->ForEach([&](BrowserWindowInterface* window) {
+    existing.insert(window->GetSessionID().id());
+    return true;
+  });
   ClickLink(blink::WebInputEvent::kShiftKey);
-  ASSERT_TRUE(base::test::RunUntil([&] {
-    return GlobalBrowserCollection::GetInstance()->GetSize() == browsers + 1;
-  }));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return collection->GetSize() == existing.size() + 1; }));
+  BrowserWindowInterface* opened = nullptr;
+  collection->ForEach([&](BrowserWindowInterface* window) {
+    if (!existing.contains(window->GetSessionID().id())) {
+      opened = window;
+      return false;
+    }
+    return true;
+  });
+  ASSERT_NE(nullptr, opened);
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(opened));
+  EXPECT_EQ(BrowserWindowInterface::TYPE_NORMAL, opened->GetType());
+  EXPECT_EQ(Owner()->GetProfile(), opened->GetProfile());
+  auto* target = opened->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_NE(nullptr, target);
+  ASSERT_TRUE(content::WaitForLoadStop(target));
+  EXPECT_EQ(TargetURL(), target->GetLastCommittedURL());
   EXPECT_EQ(0, source_request_.count);
   EXPECT_EQ(SourceURL(), Contents(source_)->GetLastCommittedURL());
 }

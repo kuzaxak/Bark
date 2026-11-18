@@ -1,7 +1,9 @@
 #import <AppKit/AppKit.h>
 
 #include "bark/bridge/barc_bridge.h"
+#include "bark/bridge/barc_bridge_functions.h"
 #include "bark/bridge/barc_profiles.h"
+#include "bark/browser/ui/bark_window_host.h"
 
 #include <array>
 #include <string>
@@ -17,8 +19,6 @@
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
-#include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/test/browser_test.h"
@@ -29,6 +29,7 @@
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/base_window.h"
 #include "ui/base/test/ui_controls.h"
+#include "ui/views/widget/widget.h"
 
 namespace {
 constexpr char kWork[] = "46bad13a-f9f9-4524-b376-299b82a19268";
@@ -77,11 +78,11 @@ class BarcExtensionFocusBrowserTest : public InProcessBrowserTest {
 IN_PROC_BROWSER_TEST_F(BarcExtensionFocusBrowserTest,
                        ProfileSwitchRoutesRealFocusEventsWithoutNativeSwitch) {
   OpenResult first;
-  barc_profile_open_window(kWork, BARC_PROFILE_SETTINGS, Opened, &first);
+  barc_profile_open_window(kWork, BARC_PROFILE_BLANK, Opened, &first);
   ASSERT_EQ(BARC_PROFILE_OK, first.Get<0>());
   const int32_t work_id = first.Get<1>();
   OpenResult second;
-  barc_profile_open_in_native_window(work_id, kPersonal, BARC_PROFILE_SETTINGS,
+  barc_profile_open_in_native_window(work_id, kPersonal, BARC_PROFILE_BLANK,
                                      Opened, &second);
   ASSERT_EQ(BARC_PROFILE_OK, second.Get<0>());
   const int32_t personal_id = second.Get<1>();
@@ -97,11 +98,9 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionFocusBrowserTest,
   ASSERT_EQ(uuid.size(),
             barc_window_profile_uuid(personal_id, uuid.data(), uuid.size()));
   ASSERT_STREQ(kPersonal, uuid.data());
-  auto* work_view = BrowserView::GetBrowserViewForBrowser(work);
-  auto* personal_view = BrowserView::GetBrowserViewForBrowser(personal);
-  ASSERT_NE(nullptr, work_view);
-  ASSERT_NE(nullptr, personal_view);
-  ASSERT_EQ(work_view->GetWidget(), personal_view->GetWidget());
+  auto* host = bark::BarkWindowHost::ForBrowser(work);
+  ASSERT_NE(nullptr, host);
+  ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal));
   ASSERT_EQ(work->GetWindow()->GetNativeWindow(),
             personal->GetWindow()->GetNativeWindow());
   extensions::TestExtensionDir extension_dir;
@@ -144,10 +143,12 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionFocusBrowserTest,
     ExtensionTestMessageListener work_focus("focus:" + std::to_string(work_id));
     ScopeListener(work_focus, work->GetProfile(), extension_id);
     ASSERT_EQ(1, barc_window_select(work_id));
-    work_view->GetWidget()
-        ->Activate();  // The only physical activation in this test.
+    NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+    ASSERT_EQ(1, barc_window_set_root_view(work_id, (__bridge void*)root));
+    ASSERT_EQ(1, barc_window_show(work_id));
+    host->widget()->Activate();
     ASSERT_TRUE(base::test::RunUntil([&] {
-      return work_view->IsActive() &&
+      return host->widget()->IsActive() && work->IsSelectedForNativeWindow() &&
              NSApp.keyWindow ==
                  work->GetWindow()->GetNativeWindow().GetNativeNSWindow();
     }));

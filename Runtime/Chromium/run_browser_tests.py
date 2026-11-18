@@ -15,6 +15,48 @@ import time
 
 SCREEN_LOCK = Path("/private/tmp/nook-screen-lock")
 SCREEN_UNAVAILABLE = 3
+HOST_ONLY_MARKER = b"BARK_MAC_HOST_ONLY_FACTORY_V1\0"
+TEST_FRAMEWORK = Path("Bark Framework.framework/Versions/Current/Bark Framework")
+APP_FRAMEWORK = Path("Bark.app/Contents/Frameworks") / TEST_FRAMEWORK
+
+
+def file_identity(path):
+    info = path.stat()
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def require_host_only_image(path):
+    """Inspect linked code without invoking the browser test executable."""
+    try:
+        identity = file_identity(path)
+        arches = subprocess.check_output(
+            ["/usr/bin/lipo", "-archs", str(path)], stderr=subprocess.PIPE, text=True
+        ).split()
+        if arches != ["x86_64"]:
+            raise ValueError(f"Expected a thin Intel Mach-O: {path}")
+        sections = subprocess.check_output(
+            ["/usr/bin/otool", "-s", "__TEXT", "__barkhostonly", str(path)],
+            stderr=subprocess.PIPE, text=True,
+        ).splitlines()
+        heading = "Contents of (__TEXT,__barkhostonly) section"
+        groups = [line.split()[1:] for line in sections[2:]]
+        data = bytes.fromhex(" ".join(word for group in groups for word in group))
+        if len(sections) < 2 or sections[1] != heading or data != HOST_ONLY_MARKER:
+            raise ValueError(f"Missing the compiled Bark host-only factory capability: {path}")
+        if file_identity(path) != identity:
+            raise ValueError(f"Test runtime changed during inspection: {path}")
+        return path, identity
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"Cannot inspect the Bark test runtime: {path}") from error
+
+
+def require_host_only_runtime(binary):
+    # Chromium's test launcher resolves its framework beside the executable.
+    # The product bundle can launch helpers through its own framework copy.
+    return tuple(require_host_only_image(path) for path in (
+        binary, binary.parent / TEST_FRAMEWORK, binary.parent / APP_FRAMEWORK,
+    ))
+
 
 
 class ScreenUnavailable(Exception):
@@ -158,10 +200,14 @@ def stop_tests(process):
         process.wait()
 
 
-def run_tests(command, checkout, console, owns_screen, min_idle, timeout):
+def run_tests(command, checkout, console, owns_screen, min_idle, timeout, verified_files=()):
     pointer = console.pointer()
     time.sleep(0.4)
     require_idle_console(console, owns_screen, pointer, min_idle)
+
+    for path, identity in verified_files:
+        if file_identity(path) != identity:
+            raise ValueError(f"Test runtime changed before launch: {path}")
 
     deadline = time.monotonic() + timeout
     with subprocess.Popen(command, cwd=checkout, start_new_session=True) as process:
@@ -205,8 +251,9 @@ def main():
                 (args.wait, args.min_idle, args.timeout))
             or args.wait < 0 or args.min_idle < 2 or args.timeout <= 0):
         parser.error("require --wait >= 0, --min-idle >= 2, and --timeout > 0")
+    binary = args.binary.resolve()
     command = [
-        str(args.binary.resolve()),
+        str(binary),
         "--test-launcher-jobs=1",
         "--test-launcher-batch-limit=1",
         "--test-launcher-retry-limit=0",
@@ -221,10 +268,11 @@ def main():
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
+        verified_files = require_host_only_runtime(binary)
         with screen_lock(SCREEN_LOCK, args.wait) as owns_screen:
             result = run_tests(
                 command, args.checkout, QuartzConsole(), owns_screen,
-                args.min_idle, args.timeout,
+                args.min_idle, args.timeout, verified_files,
             )
             return result if result >= 0 else 128 - result
     except ScreenUnavailable as error:
@@ -235,7 +283,7 @@ def main():
         return 124
     except KeyboardInterrupt:
         return 130
-    except OSError as error:
+    except (OSError, ValueError) as error:
         print(error, file=sys.stderr)
         return 1
 

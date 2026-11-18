@@ -1,14 +1,20 @@
 """Headless checks for the local Chromium browser-test runner."""
 
+import io
 import os
 from pathlib import Path
 import signal
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from run_browser_tests import ScreenUnavailable, run_tests, screen_lock
+from run_browser_tests import (
+    APP_FRAMEWORK, HOST_ONLY_MARKER, TEST_FRAMEWORK, ScreenUnavailable,
+    file_identity, main,
+    require_host_only_image, require_host_only_runtime, run_tests, screen_lock,
+)
 
 
 class ScreenLockTests(unittest.TestCase):
@@ -49,6 +55,68 @@ class ScreenLockTests(unittest.TestCase):
         self.assertFalse((displaced / "pid").exists())
 
 
+class HostOnlyRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.checkout = Path(directory.name)
+        self.binary = self.checkout / "bark_browser_tests"
+        self.binary.write_bytes(b"test fixture")
+        self.binary.chmod(0o700)
+
+    def test_marker_must_be_in_the_factory_section(self):
+        marker = HOST_ONLY_MARKER.hex(" ")
+        with patch("run_browser_tests.subprocess.check_output", side_effect=[
+            "x86_64\n", f"demo:\nContents of (__TEXT,__cstring) section\n0010 {marker}\n",
+        ]):
+            with self.assertRaisesRegex(ValueError, "Missing the compiled"):
+                require_host_only_image(self.binary)
+
+    def test_exact_factory_marker_is_accepted(self):
+        marker = HOST_ONLY_MARKER.hex(" ")
+        with patch("run_browser_tests.subprocess.check_output", side_effect=[
+            "x86_64\n", f"demo:\nContents of (__TEXT,__barkhostonly) section\n0010 {marker}\n",
+        ]):
+            self.assertEqual((self.binary, file_identity(self.binary)),
+                             require_host_only_image(self.binary))
+
+    def test_fat_mixed_architecture_image_is_rejected(self):
+        with patch("run_browser_tests.subprocess.check_output", return_value="x86_64 arm64\n"):
+            with self.assertRaisesRegex(ValueError, "thin Intel"):
+                require_host_only_image(self.binary)
+
+    def test_new_runner_with_old_companion_framework_is_rejected(self):
+        with patch("run_browser_tests.require_host_only_image", side_effect=[
+            (self.binary, file_identity(self.binary)), ValueError("old framework"),
+        ]) as inspect:
+            with self.assertRaisesRegex(ValueError, "old framework"):
+                require_host_only_runtime(self.binary)
+        self.assertEqual(self.binary.parent / TEST_FRAMEWORK, inspect.call_args.args[0])
+
+    def test_old_product_framework_is_rejected_after_new_test_framework(self):
+        with patch("run_browser_tests.require_host_only_image", side_effect=[
+            Mock(), Mock(), ValueError("old product framework"),
+        ]) as inspect:
+            with self.assertRaisesRegex(ValueError, "old product framework"):
+                require_host_only_runtime(self.binary)
+        self.assertEqual(self.binary.parent / APP_FRAMEWORK, inspect.call_args.args[0])
+
+    def test_rejection_happens_before_screen_lock_or_test_execution(self):
+        chrome = self.checkout / "chrome"
+        chrome.mkdir()
+        (chrome / "VERSION").touch()
+        args = ["runner", "--checkout", str(self.checkout), "--binary", str(self.binary)]
+        with patch.object(sys, "argv", args), patch.object(sys, "platform", "darwin"), \
+                patch("run_browser_tests.require_host_only_runtime",
+                      side_effect=ValueError("Missing the compiled capability")), \
+                patch("run_browser_tests.screen_lock") as lock, \
+                patch("run_browser_tests.run_tests") as launch, \
+                patch("run_browser_tests.sys.stderr", new_callable=io.StringIO):
+            self.assertEqual(1, main())
+        lock.assert_not_called()
+        launch.assert_not_called()
+
+
 class BrowserTestProcessTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -64,6 +132,17 @@ class BrowserTestProcessTests(unittest.TestCase):
         with patch("run_browser_tests.subprocess.Popen") as launch:
             with self.assertRaisesRegex(ScreenUnavailable, "user is active"):
                 run_tests(["/usr/bin/true"], self.cwd, self.console, lambda: True, 20, 3)
+        launch.assert_not_called()
+
+    def test_replaced_binary_never_starts_the_test_process(self):
+        candidate = Path(self.cwd) / "candidate"
+        candidate.write_bytes(b"verified")
+        identity = file_identity(candidate)
+        candidate.write_bytes(b"replacement")
+        with patch("run_browser_tests.subprocess.Popen") as launch:
+            with self.assertRaisesRegex(ValueError, "changed before launch"):
+                run_tests([str(candidate)], self.cwd, self.console, lambda: True,
+                          20, 3, [(candidate, identity)])
         launch.assert_not_called()
 
     def test_lock_replacement_stops_launched_process(self):

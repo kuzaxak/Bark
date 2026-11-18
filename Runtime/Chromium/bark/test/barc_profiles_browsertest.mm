@@ -1,6 +1,7 @@
 #import <AppKit/AppKit.h>
 
 #include "bark/bridge/barc_profiles.h"
+#include "bark/browser/ui/bark_window_host.h"
 
 #include <atomic>
 #include <memory>
@@ -119,6 +120,7 @@ BrowserWindowInterface* Window(int32_t id) {
 class BarcProfilesBrowserTest : public InProcessBrowserTest {};
 
 IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, UUIDOwnershipAndInternalPages) {
+  ASSERT_NE(nullptr, bark::BarkWindowHost::ForBrowser(browser()));
   // Concurrent same-UUID requests exercise ProfileManager's own coalescing.
   Result first;
   Result second;
@@ -132,6 +134,8 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, UUIDOwnershipAndInternalPages) {
   auto* work_peer = Window(second.Get<1>());
   ASSERT_NE(nullptr, work);
   ASSERT_NE(nullptr, work_peer);
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(work));
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(work_peer));
   ASSERT_EQ(work->GetProfile(), work_peer->GetProfile());
   auto* manager = g_browser_process->profile_manager();
   const auto path =
@@ -145,6 +149,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, UUIDOwnershipAndInternalPages) {
   ASSERT_EQ(BARC_PROFILE_OK, third.Get<0>());
   auto* personal = Window(third.Get<1>());
   ASSERT_NE(nullptr, personal);
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(personal));
   EXPECT_NE(work->GetProfile(), personal->GetProfile());
   EXPECT_NE(path, personal->GetProfile()->GetPath());
   work->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowHomeButton, true);
@@ -230,6 +235,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, UUIDOwnershipAndInternalPages) {
 }
 
 IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, InvalidUUIDNeverFallsBack) {
+  ASSERT_NE(nullptr, bark::BarkWindowHost::ForBrowser(browser()));
   const size_t count = GlobalBrowserCollection::GetInstance()->GetSize();
   const char* const invalid[] = {nullptr, "", "../Default",
                                  "00000000-0000-0000-0000-000000000000",
@@ -254,6 +260,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest, InvalidUUIDNeverFallsBack) {
 
 IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
                        AsyncCreationFailureNeverFallsBack) {
+  ASSERT_NE(nullptr, bark::BarkWindowHost::ForBrowser(browser()));
   constexpr char kFailed[] = "6752d615-f78d-43ea-bd1a-a7aa0a2b8c97";
   auto* manager = g_browser_process->profile_manager();
   const auto root = manager->user_data_dir();
@@ -293,6 +300,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
 
 IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
                        PrivateSessionsOwnDataChildrenAndFinalDisposal) {
+  ASSERT_NE(nullptr, bark::BarkWindowHost::ForBrowser(browser()));
   ASSERT_TRUE(embedded_test_server()->Start());
   const GURL site = embedded_test_server()->GetURL("/title1.html");
   auto* manager = g_browser_process->profile_manager();
@@ -308,6 +316,8 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
   auto* second_window = Window(second_id);
   ASSERT_TRUE(first_window);
   ASSERT_TRUE(second_window);
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(first_window));
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(second_window));
   auto* first_profile = first_window->GetProfile();
   auto* second_profile = second_window->GetProfile();
   ASSERT_TRUE(first_profile->IsGuestSession());
@@ -391,6 +401,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
   auto* child = child_tab->GetBrowserWindowInterface();
   ASSERT_TRUE(child);
   ASSERT_NE(first_window, child);
+  EXPECT_NE(nullptr, bark::BarkWindowHost::ForBrowser(child));
   const int32_t child_id = child->GetSessionID().id();
   char child_session[37];
   EXPECT_EQ(37u, barc_window_private_session_uuid(child_id, child_session,

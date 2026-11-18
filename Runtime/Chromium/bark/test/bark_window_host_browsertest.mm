@@ -18,6 +18,7 @@
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
 #include "chrome/app/chrome_command_ids.h"
+#include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/browser_active_state_manager/browser_active_state_manager.h"
 #include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
@@ -63,6 +64,32 @@ namespace {
 BrowserWindowInterface* FindBrowser(int32_t id) {
   return GlobalBrowserCollection::GetInstance()->FindBrowserWithID(
       SessionID::FromSerializedValue(id));
+}
+
+void ExpectBarkWindow(BrowserWindowInterface* browser) {
+  ASSERT_NE(nullptr, browser);
+  EXPECT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(browser));
+  auto* host = bark::BarkWindowHost::ForBrowser(browser);
+  ASSERT_NE(nullptr, host);
+  ASSERT_TRUE(browser->GetWindow()->GetNativeWindow());
+  EXPECT_EQ(host, bark::BarkWindowHost::ForNativeWindow(
+                      browser->GetWindow()->GetNativeWindow()));
+}
+
+void ExpectRegularAndPrivateBarkWindows(BrowserWindowInterface* browser) {
+  ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(browser));
+  auto* profile = browser->GetProfile();
+  auto* normal = CreateBrowserWindow(BrowserWindowCreateParams(*profile, true));
+  ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(normal));
+  EXPECT_EQ(profile, normal->GetProfile());
+
+  auto* private_profile = profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_NE(nullptr, private_profile);
+  auto* private_window =
+      CreateBrowserWindow(BrowserWindowCreateParams(*private_profile, true));
+  ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(private_window));
+  EXPECT_EQ(private_profile, private_window->GetProfile());
+  EXPECT_TRUE(private_window->GetProfile()->IsOffTheRecord());
 }
 
 void CollectClassNames(views::View* view, std::set<std::string>* names) {
@@ -536,8 +563,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, NormalBrowserGetsHostWindow) {
-  EXPECT_NE(nullptr, BrowserView::GetBrowserViewForBrowser(browser()));
-  EXPECT_EQ(nullptr, bark::BarkBrowserWindow::FromBrowser(browser()));
+  ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(browser()));
 
   const int32_t peer = OpenHostWindow();
   auto* created = FindBrowser(peer);
@@ -718,12 +744,9 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, HiddenRequestIsNotReplayed) {
   EXPECT_FALSE(client->IsVisible());
 }
 
-IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, UnownedNormalKeepsBrowserView) {
-  auto* normal = CreateBrowserWindow(
-      BrowserWindowCreateParams(*browser()->GetProfile(), true));
-  ASSERT_NE(nullptr, normal);
-  EXPECT_NE(nullptr, BrowserView::GetBrowserViewForBrowser(normal));
-  EXPECT_EQ(nullptr, bark::BarkBrowserWindow::FromBrowser(normal));
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       StandaloneRegularAndPrivateUseBarkWindows) {
+  ASSERT_NO_FATAL_FAILURE(ExpectRegularAndPrivateBarkWindows(browser()));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
@@ -758,31 +781,32 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   EXPECT_EQ(1, barc_window_show(peer));
 }
 
-class BarkWindowHostOffBrowserTest : public InProcessBrowserTest {
+class BarkWindowHostDefaultBrowserTest : public InProcessBrowserTest {};
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostDefaultBrowserTest,
+                       InitialRegularAndPrivateUseBarkWithoutSwitch) {
+  EXPECT_FALSE(base::CommandLine::ForCurrentProcess()->HasSwitch("bark-window"));
+  ASSERT_NO_FATAL_FAILURE(ExpectRegularAndPrivateBarkWindows(browser()));
+  const int32_t peer = barc_window_new_peer(browser()->GetSessionID().id());
+  ASSERT_GT(peer, 0);
+  ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(FindBrowser(peer)));
+  EXPECT_EQ(1, barc_window_set_app_lifetime(peer));
+}
+
+class BarkWindowHostLegacySwitchBrowserTest
+    : public BarkWindowHostDefaultBrowserTest {
  public:
   void SetUpCommandLine(base::CommandLine* command_line) override {
-    InProcessBrowserTest::SetUpCommandLine(command_line);
-    command_line->AppendSwitch("barc-native-shell");
-    command_line->AppendSwitch("barc-shared-native-window");
+    BarkWindowHostDefaultBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitchASCII("bark-window", "legacy");
   }
 };
 
-IN_PROC_BROWSER_TEST_F(BarkWindowHostOffBrowserTest,
-                       OldPathUnchangedWithoutSwitch) {
-  EXPECT_FALSE(bark::IsHostWindowMode());
-  const int32_t peer = barc_window_new_peer(browser()->GetSessionID().id());
-  ASSERT_GT(peer, 0);
-  auto* created = FindBrowser(peer);
-  ASSERT_NE(nullptr, created);
-  auto* view = BrowserView::GetBrowserViewForBrowser(created);
-  ASSERT_NE(nullptr, view);
-  EXPECT_NE(nullptr, view->barc_native_shell());
-  EXPECT_EQ(nullptr, bark::BarkBrowserWindow::FromBrowser(created));
-  EXPECT_EQ(nullptr, bark::BarkWindowHost::ForBrowser(created));
-  NSView* sidebar = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-  EXPECT_EQ(1, barc_window_attach_native_shell(peer, (__bridge void*)sidebar));
-  EXPECT_EQ(1, barc_window_native_shell_is_owned(peer, (__bridge void*)sidebar));
-  EXPECT_EQ(1, barc_window_set_app_lifetime(peer));
+IN_PROC_BROWSER_TEST_F(BarkWindowHostLegacySwitchBrowserTest,
+                       InitialRegularAndPrivateUseBarkWithLegacySwitch) {
+  EXPECT_EQ("legacy", base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
+                          "bark-window"));
+  ASSERT_NO_FATAL_FAILURE(ExpectRegularAndPrivateBarkWindows(browser()));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest, PageViewVisibleWhenPlaced) {
