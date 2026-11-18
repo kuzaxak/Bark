@@ -1,0 +1,24 @@
+diff --git a/chrome/app/chrome_exe_main_mac.cc b/chrome/app/chrome_exe_main_mac.cc
+index 1b47647..63286de 100644
+--- a/chrome/app/chrome_exe_main_mac.cc
++++ b/chrome/app/chrome_exe_main_mac.cc
+@@ -28,6 +28,7 @@
+ #include "chrome/common/chrome_version.h"
+
+ #if defined(HELPER_EXECUTABLE)
++#include "bark/app/sdk_helper_role.h"  // nogncheck
+ #include "sandbox/mac/seatbelt_exec.h"  // nogncheck
+ #endif
+
+@@ -144,6 +145,11 @@ __attribute__((used)) const char kGrossPaddingForCrbug1300598[216 * 1024] = {};
+
+ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
+   partition_alloc::EarlyMallocZoneRegistration();
++#if defined(HELPER_EXECUTABLE)
++  if (!BarkHasHelperProcessRole(argc, argv)) {
++    return BarkRefuseUnownedHelperLaunch();
++  }
++#endif
+
+ #if defined(RENDERER_HELPER_EXECUTABLE)
+   SetLLVMProfileProcessType(ProfileProcessType::kRenderer);

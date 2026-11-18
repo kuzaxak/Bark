@@ -1,0 +1,27 @@
+diff --git a/chrome/app/chrome_exe_main_mac.c b/chrome/app/chrome_exe_main_mac.c
+index 6662bf5..c0fe30a 100644
+--- a/chrome/app/chrome_exe_main_mac.c
++++ b/chrome/app/chrome_exe_main_mac.c
+@@ -11,6 +11,10 @@
+ #include "build/build_config.h"
+ #include "content/public/app/aperitif_mac.h"
+
++#if defined(HELPER_EXECUTABLE)
++#include "bark/app/sdk_helper_role.h"  // nogncheck
++#endif
++
+ int ChromeMain(int, char**);
+
+ __attribute__((constructor)) static void CheckAperitif() {
+@@ -18,6 +22,11 @@ __attribute__((constructor)) static void CheckAperitif() {
+ }
+
+ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
++#if defined(HELPER_EXECUTABLE)
++  if (!BarkHasHelperProcessRole(argc, argv)) {
++    return BarkRefuseUnownedHelperLaunch();
++  }
++#endif
+   int rv = ChromeMain(argc, argv);
+
+   // exit, don't return from main, to avoid the apparent removal of main from
