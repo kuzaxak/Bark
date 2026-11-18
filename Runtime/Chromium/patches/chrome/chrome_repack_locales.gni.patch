@@ -1,0 +1,30 @@
+diff --git a/chrome/chrome_repack_locales.gni b/chrome/chrome_repack_locales.gni
+--- a/chrome/chrome_repack_locales.gni
++++ b/chrome/chrome_repack_locales.gni
+@@ -20,9 +20,16 @@
+   repack_locales(target_name) {
+     forward_variables_from(invoker, "*", [ "additional_source_patterns" ])
+ 
++    _branded_strings_path = "${root_gen_dir}/chrome/branded_strings_"
++    _branded_strings_target = "//chrome/app:branded_strings"
++    if (is_mac && !is_chrome_branded && !is_chrome_for_testing) {
++      _branded_strings_path = "${root_gen_dir}/bark/app/branded_strings_"
++      _branded_strings_target = "//bark/app:localized_product_labels"
++    }
++
+     # Each input pak file should also have a deps line.
+     source_patterns = [
+-      "${root_gen_dir}/chrome/branded_strings_",
++      _branded_strings_path,
+       "${root_gen_dir}/chrome/generated_resources_",
+       "${root_gen_dir}/chrome/locale_settings_",
+       "${root_gen_dir}/chrome/platform_locale_settings_",
+@@ -47,7 +54,7 @@
+       deps = []
+     }
+     deps += [
+-      "//chrome/app:branded_strings",
++      _branded_strings_target,
+       "//chrome/app:generated_resources",
+       "//chrome/app/resources:locale_settings",
+       "//chrome/app/resources:platform_locale_settings",

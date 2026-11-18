@@ -1,3 +1,5 @@
+import("//build/config/locales.gni")
+
 assert(is_mac)
 
 action("public_headers_sha256") {
@@ -13,4 +15,33 @@ source_set("app") {
     ":public_headers_sha256",
     "//base",
   ]
+}
+
+# Feed only the browser product messages through Bark's localized name pass.
+action("localized_product_labels") {
+  script = "rebrand_locales.py"
+  deps = [ "//chrome/app:branded_strings" ]
+  _source_dir = "$root_gen_dir/chrome"
+  _grit_pydeps = "//tools/grit/pak_util.pydeps"
+  inputs = [ _grit_pydeps ] +
+           filter_exclude(read_file(_grit_pydeps, "list lines"), [ "#*" ])
+  outputs = []
+  args = [
+    rebase_path(_source_dir, root_build_dir),
+    rebase_path(target_gen_dir, root_build_dir),
+  ]
+  foreach(locale, all_chrome_locales) {
+    foreach(gender, gender_suffixes) {
+      _name = "branded_strings_${locale}${gender}.pak"
+      inputs += [
+        "$_source_dir/$_name",
+        "$_source_dir/$_name.info",
+      ]
+      outputs += [
+        "$target_gen_dir/$_name",
+        "$target_gen_dir/$_name.info",
+      ]
+      args += [ _name ]
+    }
+  }
 }

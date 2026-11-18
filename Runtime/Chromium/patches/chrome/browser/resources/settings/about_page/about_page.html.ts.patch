@@ -1,0 +1,14 @@
+diff --git a/chrome/browser/resources/settings/about_page/about_page.html.ts b/chrome/browser/resources/settings/about_page/about_page.html.ts
+--- a/chrome/browser/resources/settings/about_page/about_page.html.ts
++++ b/chrome/browser/resources/settings/about_page/about_page.html.ts
+@@ -89,8 +89,10 @@
+     </div>
+   ` : ''}
+ </if>
++<if expr="not is_macosx or _google_chrome or _is_chrome_for_testing_branded">
+   <cr-link-row class="hr" id="help" @click="${this.onHelpClick_}"
+       label="$i18n{aboutGetHelpUsingChrome}" external></cr-link-row>
++</if>
+ <if expr="_google_chrome">
+   <cr-link-row class="hr" id="reportIssue" @click="${this.onReportIssueClick_}"
+       ?hidden="${!this.feedbackAllowedPref_?.value}"
