@@ -285,11 +285,13 @@ migration work and are excluded from current host-only qualification claims.
 
 | Existing fixture | Required Bark test port |
 | --- | --- |
-| `BarcNativePolicyBrowserTest` | Replace physical `BrowserWidget`, `BrowserFrameView` and stored Views focus assertions with `BarkWindowHost` capture policy, mounted page views and native responder checks. |
-| `BarcExtensionDialogBrowserTest` | Use host lifetime and anchors for owner destruction, queued uninstall refusal, and private dialog routing. Several tests still dereference the logical client's `BrowserView`. |
-| `BarcExtensionStorageBrowserTest` | Use the host's shared widget and mount the selected extension/settings page before testing visibility, controls and ownership at close. Retain the original per-profile worker and storage assertions. |
-| `BarcPrivateCommandBrowserTest` and `BarcPrivateMenuPolicyBrowserTest` | Replace initial native sidebar attachment with Bark root admission and verify command targets from the selected private page. |
+| `BarcExtensionStorageBrowserTest` presentation-specific cases | Verify selected extension/settings pages are mounted during prompt visibility, ownership and close checks. The shared host widget and per-profile worker and storage assertions remain. |
 | Legacy cases in `barc_bridge_browsertest.mm` | Replace sidebar and header attachment, `BrowserWidget` lifetime and modal anchors, and composed split and Peek views with Bark root, page placement and discovery assertions. Old peer-BrowserView, classic toolbar, and physical split-layout expectations describe retired implementations. |
+
+The updated host fixtures cover enterprise capture on selected and mounted
+pages, detached-pane focus, extension sheets and logical-owner lifetime,
+private command admission, and root lifetime. Check their results against the
+marked host-only binary. Pre-cutover runs qualify only the older runtime.
 
 These regressions encode transfer/draft/scroll/history, profile binding,
 shared-window selection/lifetime and native policy cases; their presence is not
@@ -393,18 +395,22 @@ still closes through `barc_window_close` of its last client, its close button or
 their prompts. `barc_tab_select` refuses bridge callbacks, because `TabStripModel::ActivateTab`
 CHECKs reentrancy in every build type and those callbacks can run inside a strip change.
 
-### Window host (`--bark-window=host`)
+### macOS browser windows
 
-With the switch, a normal window the app creates through `profile_open_window` or `window_new_peer`
-is a Bark window host (`bark/browser/ui/`): a `BrowserWindow` with no `BrowserView`, toolbar, tab
-strip or contents view, in an `NSWindow` of Bark's class whose only content is the root view the app
-sets with `window_set_root_view`. The app places each tab's page view (`tab_native_view`) in that root;
-a page is visible only while its view is in the window, and its view's frame is its size.
-`window_host_observe` reports a page view leaving the window and full-screen changes. Popups, DevTools,
-windows Chromium creates by itself and every window without the switch keep `BrowserView`. The old
-path's shell, header, page-hidden, Peek and split calls return 0 for a host window. The one factory hook
-is in `browser_window_factory.cc`; `sad_tab_controller.cc` returns no contents view instead of
-dereferencing a missing `BrowserView` when a page in a host window crashes.
+The macOS window factory in `browser_window_factory.cc` creates a `BarkBrowserWindow` for each
+admitted browser, including windows created by Chromium itself and by browser tests. Normal
+windows use the full Bark layout. Popups, installed app windows and undocked DevTools use a
+compact host. Bark private windows use a named ephemeral session. An unsupported window type
+or private identity is refused during creation.
+
+Bark mounts a Swift/AppKit root with `window_set_root_view`. That attachment replays any
+pending request to show the window, including the request to show it inactive. The app places
+each live Chromium page view in the root with `tab_native_view`. The host reports view retirement
+and full-screen changes through `window_host_observe`. The selected client and its exact
+mounted root identify the controls that may act on the page.
+
+The integrated app accepts the default window configuration or an explicit
+`--bark-window=host`. It rejects other values before starting Chromium.
 
 ### App-owned keys
 
@@ -681,14 +687,7 @@ new profile registry, or additional renderer is used. The seven maintained nativ
 cases still require execution in the matched candidate; syntax is not runtime
 qualification. ARM and performance remain unqualified.
 
-The stock-chrome hooks remove Chromium's tab strip, toolbar and
-bookmarks bar from every window that has a native shell: regular and private
-pages, splits, Peek, utility pages and compact minis. Nook's sidebar and optional
-header are the only browser chrome, so the page starts directly under the header,
-or at the window top without one. Those views still exist unlaid and hidden, so
-upstream commands, tab models and bubble anchors keep working. Hidden Views leave
-the accessibility tree by themselves; the toolbar is also pruned because a WebUI
-toolbar page keeps its own tree while hidden. Real popups, DevTools and extension
-windows keep stock chrome. Native application windows do not use immersive
-fullscreen: its overlay widgets have no content here, and an empty Mac overlay
-widget fails a size check on entry.
+Bark's sidebar, address bar and optional page header provide the browser controls. Chromium
+continues to own WebContents, browser profiles and page-bound services such as native dialogs.
+A separate video Picture-in-Picture overlay can present video controls. The engine currently
+declines creation of a document Picture-in-Picture browser window.
