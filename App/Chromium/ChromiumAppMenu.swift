@@ -6,6 +6,16 @@ import AppKit
 /// address commands to the sidebar, and adds Nook's own commands.
 @MainActor
 final class ChromiumAppMenu: NSObject {
+    static var aboutOptions: [NSApplication.AboutPanelOptionKey: Any] {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let credits = NSAttributedString(
+            string: "Bark is independently maintained and derives from Nook.\nChromium provides the browser engine.",
+            attributes: [.paragraphStyle: paragraph]
+        )
+        return [.applicationName: "Bark", .credits: credits]
+    }
+
     enum Command: Equatable {
         case about, settings, importBrowser, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
         case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes

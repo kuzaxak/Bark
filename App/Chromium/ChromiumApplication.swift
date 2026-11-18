@@ -370,7 +370,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }) { [weak self, weak manager, weak shortcuts, weak pageHost] command in
                 guard let manager, let shortcuts else { return }
                 switch command {
-                case .about: NSApp.orderFrontStandardAboutPanel(nil)
+                case .about: NSApp.orderFrontStandardAboutPanel(options: ChromiumAppMenu.aboutOptions)
                 case .barkHelp: self?.showBarkHelp()
                 case .checkForUpdates:
                     if self?.acceptsWindows == true { self?.updater?.checkForUpdates() }
