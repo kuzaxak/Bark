@@ -365,12 +365,14 @@ def build(checkout, depot_tools, env, args):
                 staged.replace(output_args)
     if args.official:
         pgo_target = "mac" if args.arch == "x64" else "mac-arm"
-        run([sys.executable, src / "tools/update_pgo_profiles.py", f"--target={pgo_target}",
-             "update", "--gs-url-base=chromium-optimization-profiles/pgo_profiles"], src, env, args.dry_run)
-        if not args.dry_run:
-            from official_provenance import verify_pgo_profile
+        command = [sys.executable, src / "tools/update_pgo_profiles.py", f"--target={pgo_target}",
+                   "update", "--gs-url-base=chromium-optimization-profiles/pgo_profiles"]
+        if args.dry_run:
+            run(command, src, env, True)
+        else:
+            from official_provenance import acquire_pgo_profile
 
-            verify_pgo_profile(src, pgo_target)
+            acquire_pgo_profile(src, pgo_target, lambda: run(command, src, env))
     run(["rustc", "--version"], src, env, args.dry_run)
     run(["cargo", "rustc", "--locked", "--release", "--jobs", args.jobs, "--target", rust_target,
          "--target-dir", rust_out, "--manifest-path", rust / "Cargo.toml", "--lib", "--crate-type", "cdylib", "--",

@@ -175,6 +175,9 @@ class BuildArchitectureTests(unittest.TestCase):
             checkout = Path(directory)
             out = checkout / "src/out/Barc-arm64-official"
             out.mkdir(parents=True)
+            selector = checkout / "src/chrome/build/mac-arm.pgo.txt"
+            selector.parent.mkdir(parents=True)
+            selector.write_text(build_engine.PINS["official_pgo_profiles"]["mac-arm"] + "\n")
             output_args = out / "args.gn"
             configured = build_engine.engine_args("arm64", True)
             previous = configured.replace(b'cc_wrapper = "./bark_official_pgo_cc_v1"\n',

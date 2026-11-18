@@ -132,6 +132,76 @@ class OfficialProvenanceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "PGO profile SHA-256 differs"):
             provenance.record(self.out, self.src, self.arch, {})
 
+    def test_bad_cached_profile_is_quarantined_for_one_verified_download(self):
+        bad = b"partial download at the pinned name"
+        self.profile.write_bytes(bad)
+        calls = []
+
+        def update():
+            calls.append(self.profile.exists())
+            if not self.profile.exists():
+                self.profile.write_bytes(b"pinned PGO")
+
+        self.assertEqual(provenance.acquire_pgo_profile(self.src, "mac", update), self.profile)
+        self.assertEqual(calls, [True, False])
+        rejected, = self.profile.parent.parent.glob(f".bark-rejected-pgo-*/{self.pin}")
+        self.assertEqual(rejected.read_bytes(), bad)
+
+        self.assertEqual(provenance.acquire_pgo_profile(self.src, "mac", update), self.profile)
+        self.assertEqual(calls, [True, False, True])
+        self.assertEqual(list(self.profile.parent.parent.glob(f".bark-rejected-pgo-*/{self.pin}")), [rejected])
+
+    def test_failed_replacement_preserves_quarantine_and_next_attempt_can_download(self):
+        self.profile.write_bytes(b"bad cached bytes")
+        calls = []
+
+        def interrupted():
+            calls.append(self.profile.exists())
+            if not self.profile.exists():
+                raise InterruptedError("download failed")
+
+        with self.assertRaisesRegex(InterruptedError, "download failed"):
+            provenance.acquire_pgo_profile(self.src, "mac", interrupted)
+        self.assertEqual(calls, [True, False])
+        self.assertFalse(self.profile.exists())
+        rejected, = self.profile.parent.parent.glob(f".bark-rejected-pgo-*/{self.pin}")
+        self.assertEqual(rejected.read_bytes(), b"bad cached bytes")
+        self.assertEqual(provenance.acquire_pgo_profile(
+            self.src, "mac", lambda: self.profile.write_bytes(b"pinned PGO")), self.profile)
+
+    def test_new_wrong_bytes_are_never_accepted_or_downloaded_repeatedly(self):
+        self.profile.unlink()
+        calls = []
+
+        def invalid_download():
+            calls.append(self.profile.exists())
+            self.profile.write_bytes(b"wrong replacement")
+
+        with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
+            provenance.acquire_pgo_profile(self.src, "mac", invalid_download)
+        self.assertEqual(calls, [False])
+        with self.assertRaisesRegex(ValueError, "SHA-256 differs"):
+            provenance.acquire_pgo_profile(self.src, "mac", invalid_download)
+        self.assertEqual(calls, [False, True, False])
+        self.assertEqual(self.profile.read_bytes(), b"wrong replacement")
+
+    def test_unexpected_cache_file_types_do_not_reach_updater(self):
+        self.profile.unlink()
+        self.profile.symlink_to(self.src / "missing")
+        update = lambda: self.fail("an unexpected cache entry reached the updater")
+        with self.assertRaisesRegex(ValueError, "regular PGO cache file"):
+            provenance.acquire_pgo_profile(self.src, "mac", update)
+        self.assertTrue(self.profile.is_symlink())
+        self.profile.unlink()
+        self.profile.mkdir()
+        with self.assertRaisesRegex(ValueError, "regular PGO cache file"):
+            provenance.acquire_pgo_profile(self.src, "mac", update)
+        self.assertTrue(self.profile.is_dir())
+        self.profile.rmdir()
+        self.profile.with_name(self.pin + ".lock").symlink_to(self.src / "missing")
+        with self.assertRaisesRegex(ValueError, "regular PGO cache file"):
+            provenance.acquire_pgo_profile(self.src, "mac", update)
+
     def test_source_receipt_matches_a_relocated_recipe_and_rejects_runtime_drift(self):
         paths = (
             "Runtime/Chromium/bark/tools/override_cc.c",

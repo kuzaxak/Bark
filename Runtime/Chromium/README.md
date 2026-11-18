@@ -74,9 +74,12 @@ macOS SDK matches `official_macos_sdk` in `PINS.json` (26.5, build 25F70
 for this Chromium revision). The recipe checks the SDK before building,
 fetches Chromium's pinned PGO profile for the target architecture, and checks
 the SHA-256 of the decompressed profile before enabling profile-guided
-optimization. A file already cached at that name must pass the same check. The dedicated
-`Barc-<arch>-official` and `BarkCargo-official` directories keep developer
-and official products independent.
+optimization. If bytes already cached at the pinned name fail verification,
+the recipe preserves the rejected regular file under
+`chrome/build/.bark-rejected-pgo-*/` and asks Chromium's updater to fetch a
+replacement once. The replacement must pass the same hash check. Unexpected
+cache paths such as symlinks are refused. The dedicated `Barc-<arch>-official`
+and `BarkCargo-official` directories keep developer and official products independent.
 
 After the link, the recipe records the framework hashes, Chromium and
 depot_tools revisions, SDK build, GN arguments and pinned PGO name and SHA-256

@@ -6,8 +6,10 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import stat
 import subprocess
 import sys
+import tempfile
 
 HERE = Path(__file__).resolve().parent
 PINS = json.loads((HERE / "PINS.json").read_text())
@@ -85,14 +87,63 @@ def recipe_inputs(arch):
     }
 
 
-def verify_pgo_profile(src, target):
+class PgoProfileDigestMismatch(ValueError):
+    pass
+
+
+def pgo_profile_path(src, target):
     name = PINS["official_pgo_profiles"][target]
-    if (src / "chrome/build" / f"{target}.pgo.txt").read_text().strip() != name:
+    data = src / "chrome/build"
+    if (data / f"{target}.pgo.txt").read_text().strip() != name:
         raise ValueError("The Chromium PGO selector does not match the Bark pin")
-    profile = src / "chrome/build/pgo_profiles" / name
+    cache = data / "pgo_profiles"
+    if cache.is_symlink() or (cache.exists() and not cache.is_dir()):
+        raise ValueError(f"Expected a local PGO profile cache directory: {cache}")
+    return cache / name
+
+
+def regular_cache_file(path):
+    try:
+        info = path.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISREG(info.st_mode):
+        raise ValueError(f"Expected a regular PGO cache file: {path}")
+    return True
+
+
+def verify_pgo_profile(src, target):
+    profile = pgo_profile_path(src, target)
+    if not regular_cache_file(profile):
+        raise ValueError(f"The pinned Chromium PGO profile is missing: {profile}")
     if digest(profile) != PINS["official_pgo_sha256"][target]:
-        raise ValueError(f"The Chromium PGO profile SHA-256 differs from the Bark pin: {profile}")
+        raise PgoProfileDigestMismatch(f"The Chromium PGO profile SHA-256 differs from the Bark pin: {profile}")
     return profile
+
+
+def acquire_pgo_profile(src, target, update):
+    """Fetch through Chromium, preserving a bad cached file before one retry."""
+    profile = pgo_profile_path(src, target)
+    was_cached = regular_cache_file(profile)
+    regular_cache_file(profile.with_name(profile.name + ".lock"))
+    update()
+    try:
+        return verify_pgo_profile(src, target)
+    except PgoProfileDigestMismatch:
+        if not was_cached:
+            raise
+
+    # Chromium prunes old entries in pgo_profiles, so keep rejected bytes
+    # outside that directory. The recipe already holds the checkout lock.
+    rejected = Path(tempfile.mkdtemp(prefix=".bark-rejected-pgo-", dir=profile.parent.parent))
+    try:
+        profile.rename(rejected / profile.name)
+    except OSError:
+        rejected.rmdir()
+        raise
+    print(f"Preserved the rejected PGO cache file in {rejected}", flush=True)
+    update()
+    return verify_pgo_profile(src, target)
 
 
 def verify_pgo_compile(out, src, profile, expected_hash, linked, env):
