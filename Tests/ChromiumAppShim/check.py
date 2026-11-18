@@ -635,11 +635,11 @@ def publisher_environment(build, siso=None):
     return {**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE_SISO_STATE': str(build / 'fake-siso-state.json')}
 
 
-def publish(build, package, siso=None, architecture='x86_64', replace=False):
+def publish(build, package, siso=None, architecture='x86_64', replace=False, publisher=PUBLISH):
     flags = ['--arch', architecture]
     if replace:
         flags.append('--replace')
-    return subprocess.run(['bash', str(PUBLISH), *flags, str(build), str(package)],
+    return subprocess.run(['bash', str(publisher), *flags, str(build), str(package)],
                           capture_output=True, text=True, env=publisher_environment(build, siso))
 
 
@@ -691,6 +691,108 @@ def additions_file(path, values):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(plistlib.dumps(values))
     return path
+
+
+def paired_publication_case(work, accepted):
+    # Keep the accepted pair in its original package. Each native builder
+    # takes the next source revision and publishes into an empty package.
+    receiver = work / 'paired-receiver'
+    scripts = receiver / 'scripts'
+    scripts.mkdir(parents=True)
+    for name in (PUBLISH.name, STAGE.name, 'publish_chromium_sdk.py', 'bark-check.py',
+                 'bark_release.py', 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
+        shutil.copy2(ROOT / 'scripts' / name, scripts / name)
+    chromium = receiver / 'Runtime/Chromium'
+    bridge = chromium / 'bark/bridge'
+    bridge.mkdir(parents=True)
+    (chromium / 'bark/app').mkdir()
+    shutil.copy2(ROOT / 'Runtime/Chromium/run_browser_tests.py', chromium)
+    shutil.copy2(ROOT / 'Runtime/Chromium/bark/app/barc_public_headers_sha256.py', chromium / 'bark/app')
+    shutil.copytree(SHIM, receiver / 'ChromiumApp')
+    header_name, = HEADER_NAMES
+    next_header = bridge / header_name
+    next_header.write_bytes((RUNTIME / header_name).read_bytes() + b'\n#define BARC_PAIRED_UPGRADE_FIXTURE 1\n')
+    next_digest = hashlib.sha256(f'{sha256(next_header)}  {header_name}\n'.encode()).hexdigest()
+
+    def metadata(package):
+        return package / XCFRAMEWORK.name / SLICE_NAME / 'Headers/BarcChromium'
+
+    arches = ('x86_64', 'arm64')
+    pins = [f'engine-artifact-{arch}.sha256' for arch in arches]
+    shared = [header_name, DIGEST_HEADER]
+    baseline = {name: (metadata(accepted) / name).read_bytes() for name in [*shared, *pins]}
+    next_packages = {}
+    for arch in arches:
+        framework = work / f'paired-next-{arch}.dylib'
+        fake_framework(framework, arch=('-arch', arch), digest=next_digest)
+        build = fake_engine_build(work / f'paired-next-{arch}', framework)
+        write_build_record(build, barc_bridge_api_h={
+            'digest': {'hash': sha256(next_header), 'size_bytes': next_header.stat().st_size},
+        })
+        publisher = scripts / PUBLISH.name
+        blocked = publish(build, accepted, architecture=arch, replace=True, publisher=publisher)
+        check('a one-architecture publication cannot replace an accepted ABI pair',
+              blocked.returncode != 0 and 'Public headers differ from the pinned' in blocked.stderr
+              and all((metadata(accepted) / name).read_bytes() == value for name, value in baseline.items()),
+              blocked.stderr)
+        package = work / f'paired-handoff-{arch}'
+        published = publish(build, package, architecture=arch, publisher=publisher)
+        check(f'the next {arch} SDK can publish to an empty package',
+              published.returncode == 0 and (metadata(package) / f'engine-artifact-{arch}.sha256').is_file(),
+              published.stderr)
+        if published.returncode:
+            return
+        next_packages[arch] = package
+
+    intel, arm = (metadata(next_packages[arch]) for arch in arches)
+    check('independent publishers agree on both generated shared headers',
+          all((intel / name).read_bytes() == (arm / name).read_bytes() != baseline[name] for name in shared)
+          and digest_in(intel / DIGEST_HEADER) == next_digest)
+
+    staged = metadata(receiver / 'Packages/BarkEngine')
+    staged.mkdir(parents=True)
+    for name in shared:
+        shutil.copy2(intel / name, staged)
+    for arch, pin in zip(arches, pins):
+        shutil.copy2(metadata(next_packages[arch]) / pin, staged)
+
+    # Verify with the four files from a committed receiver snapshot. The
+    # publisher's runtime directories and build records never enter it.
+    snapshots = work / 'paired-metadata.git'
+    subprocess.run(['git', 'init', '--bare', '-q', '--template=', snapshots], check=True)
+
+    def git(*args, **kwargs):
+        return subprocess.check_output(['git', '--git-dir', snapshots,
+                                        '-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.invalid',
+                                        '-c', 'commit.gpgsign=false', *args], **kwargs)
+
+    names = [*shared, *pins]
+    blobs = [git('hash-object', '-w', staged / name).decode().strip() for name in names]
+    entries = ''.join(f'100644 blob {blob}\t{name}\n' for name, blob in zip(names, blobs))
+    tree = git('mktree', input=entries.encode()).decode().strip()
+    revision = git('commit-tree', tree, '-m', 'Paired SDK fixture').decode().strip()
+    shutil.rmtree(staged)
+    archive = git('archive', f'--prefix={staged.relative_to(receiver)}/', revision)
+    subprocess.run(['tar', '-x', '-C', receiver], input=archive, check=True)
+
+    def verify(arch, artifact, *flags):
+        return subprocess.run([sys.executable, '-B', scripts / 'bark-check.py', 'engine',
+                               '--arch', arch, '--engine', artifact, *flags],
+                              capture_output=True, text=True)
+
+    for arch in arches:
+        archive = work / f'paired-handoff-{arch}.tar.gz'
+        packed = verify(arch, artifact_of(next_packages[arch], arch), '--archive', archive)
+        received = verify(arch, archive) if packed.returncode == 0 else packed
+        check(f'the receiver metadata admits the coordinated {arch} SDK archive',
+              received.returncode == 0, received.stderr)
+
+    # An old pin cannot remain next to shared metadata from the second epoch.
+    (staged / pins[1]).write_bytes(baseline[pins[1]])
+    mixed = verify('arm64', artifact_of(accepted, 'arm64'))
+    check('a receiver rejects an old matching pin beside the new shared headers',
+          mixed.returncode != 0 and 'compiled against another barc_bridge_api.h' in mixed.stderr,
+          mixed.stderr)
 
 
 def publish_cases(work, framework_lib):
@@ -832,6 +934,8 @@ publication.publish(Path(sys.argv[1]), "x86_64", True, sys.argv[2], sys.argv[3])
           all(result.returncode == 0 for result in results)
           and all((artifact_of(concurrent, arch) / 'SHA256SUMS').is_file()
                   for arch in ['x86_64', 'arm64']), [result.stderr for result in results])
+    if all(result.returncode == 0 for result in results):
+        paired_publication_case(work, concurrent)
 
     legacy = work / 'publish-legacy'
     legacy_slice = legacy / 'BarkEngine.xcframework/macos-x86_64'

@@ -280,6 +280,45 @@ digest of the header it compiled that `//bark/app:public_headers_sha256` compute
 `barc_public_headers_sha256.h` beside the published header, and `main.cc` aborts before the
 shell loads when the engine's digest differs from the one it was compiled with.
 
+#### Upgrade a bridge shared by two pinned architectures
+
+Build the new bridge from the same source revision on both native Macs. Keep
+the accepted package headers and pins available until you have verified the
+next pair. On each builder, publish into its own empty package directory:
+
+```fish
+set -l arch (python3 scripts/chromium_sdk_layout.py native-arch)
+set -l gn_cpu (python3 scripts/chromium_sdk_layout.py native-arch --gn)
+set -l handoff (mktemp -d /private/tmp/bark-sdk-pair.XXXXXXXX)
+set -l package "$handoff/Package"
+bash scripts/publish-chromium-engine.sh --arch "$arch" --require-official \
+    "$engine_checkout/src/out/Barc-$gn_cpu-official" "$package"
+python3 scripts/chromium_sdk_layout.py headers "$package" "$arch"
+python3 scripts/chromium_sdk_layout.py artifact "$package" "$arch"
+```
+
+The publisher populates the empty package. Exchange the metadata from both
+builders and compare `barc_bridge_api.h` and `barc_public_headers_sha256.h`
+byte for byte. In a private copy of the next app source, put one copy of the
+matching headers and both new architecture pins into the universal header
+directory printed for `Packages/BarkEngine`. Keep all four files together.
+
+Send this staged metadata to both builders. From that source snapshot, each
+builder can write its archive using the Engine path printed above.
+
+```fish
+set -l engine (python3 scripts/chromium_sdk_layout.py artifact "$package" "$arch")
+set -l archive "$handoff/BarkSDK-$arch.tar.gz"
+python3 scripts/bark-check.py engine --require-official --arch "$arch" \
+    --engine "$engine" --archive "$archive"
+```
+
+A receiver with the staged metadata verifies each archive with
+`python3 scripts/bark-check.py engine --require-official --arch "$arch"
+--engine "$archive"`. Perform native signed qualification for each
+architecture before committing the two headers and both pins together. One architecture can still be published independently
+when its public headers already match the other accepted architecture.
+
 The app target copies its outer resources from `ChromiumApp/Resources`. Bark owns
 its display name, declared app and document artwork, and localized bundle identity.
 The SDK publisher checks the scripting definition, policy manifest, copyright and
