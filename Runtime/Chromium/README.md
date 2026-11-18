@@ -66,6 +66,18 @@ from `src/out/BarkCargo/<target>/release/`. Each target has its own library
 and its own Chromium output directory. The app SDK pin currently qualifies
 the Intel engine.
 
+For an official optimized engine, select an Xcode installation whose default
+macOS SDK matches `official_macos_sdk` in `PINS.json` (26.5, build 25F70
+for this Chromium revision). The recipe checks the SDK before building,
+fetches Chromium's pinned PGO profile for the target architecture, and enables
+official compilation and profile-guided optimization. The dedicated
+`Barc-<arch>-official` and `BarkCargo-official` directories keep developer
+and official products independent.
+
+```fish
+python3 "$recipe" build --checkout "$engine_checkout" --arch x64 --official --jobs 8
+```
+
 This checkout holds Chromium's downloaded sources and incremental compiler output.
 Keeping it outside the application worktree lets you clear the app's `build/`
 directory or retire a worktree without losing a running engine build.
@@ -82,8 +94,8 @@ that checkout for inspection and use a new directory when you need a pristine ru
 checkout or compiling.
 
 `build` validates the prepared checkout again. It builds the Rust matcher and
-compiler override tool, generates GN, then builds the Intel engine, macOS
-packaging and Bark browser tests in `src/out/Barc-x64`. Repeat the same command
+compiler override tool, generates GN, then builds the selected engine, macOS
+packaging and Bark browser tests. The default output is `src/out/Barc-x64`. Repeat the same command
 to resume an interrupted build. The recipe refuses an output with different
 GN arguments, so give experimental arguments their own output. Wait for any
 build started outside the recipe to finish before reusing its checkout or

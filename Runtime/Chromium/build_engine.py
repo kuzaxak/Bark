@@ -5,6 +5,7 @@ import fcntl
 from hashlib import sha256
 import os
 from pathlib import Path
+import plistlib
 import shlex
 import shutil
 import subprocess
@@ -271,27 +272,57 @@ def install_generated(source, destination):
         staged.replace(destination)
 
 
+def official_sdk():
+    """Require the selected Xcode's default macOS SDK for both GN and Cargo."""
+    path = Path(subprocess.check_output(["xcrun", "--sdk", "macosx", "--show-sdk-path"],
+                                        text=True).strip())
+    with (path / "System/Library/CoreServices/SystemVersion.plist").open("rb") as info:
+        installed = plistlib.load(info)
+    required = PINS["official_macos_sdk"]
+    version, build_id = installed.get("ProductVersion"), installed.get("ProductBuildVersion")
+    if (version, build_id) != (required["version"], required["build"]):
+        raise ValueError(f"Official Bark builds require the macOS {required['version']} SDK "
+                         f"({required['build']}). Selected Xcode provides {version} ({build_id}) at {path}")
+    return path
+
+
+def engine_args(arch, official):
+    contents = (HERE / f"args-{arch}.gn").read_bytes()
+    if not official:
+        return contents
+    developer_mode = b"is_official_build = false\n"
+    if contents.splitlines(keepends=True).count(developer_mode) != 1:
+        raise ValueError(f"args-{arch}.gn: missing developer build setting")
+    version = PINS["official_macos_sdk"]["version"]
+    return contents.replace(developer_mode, (
+        'is_official_build = true\nchrome_pgo_phase = 2\nuse_system_xcode = true\n'
+        f'mac_sdk_min = "{version}"\n').encode())
+
+
 def build(checkout, depot_tools, env, args):
     verify_gclient(checkout)
     src = checkout / "src"
     repository(src, "chromium", create=False, dry_run=args.dry_run)
     repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
+    if args.official and not args.dry_run:
+        env = {**env, "SDKROOT": str(official_sdk())}
     replay(src)
-    argfile = HERE / f"args-{args.arch}.gn"
-    out = src / "out" / f"Barc-{args.arch}"
+    configured_args = engine_args(args.arch, args.official)
+    suffix = "-official" if args.official else ""
+    out = src / "out" / f"Barc-{args.arch}{suffix}"
     output_args = out / "args.gn"
     if out.parent.is_symlink() or out.is_symlink() or output_args.is_symlink():
         raise ValueError(f"{out}: symlinked build output or args.gn")
     if output_args.is_file():
-        if output_args.read_bytes() != argfile.read_bytes():
-            raise ValueError(f"{output_args}: differs from {argfile}. Use a separate output or checkout")
+        if output_args.read_bytes() != configured_args:
+            raise ValueError(f"{output_args}: differs from the requested recipe. Use a separate checkout")
     elif out.exists() and (not out.is_dir() or any(out.iterdir())):
         raise ValueError(f"{out}: nonempty output without recipe args.gn")
 
     rust = REPO / "Nook/ThirdParty/AdblockRustFFI"
     rust_target, macho_arch = {"x64": ("x86_64-apple-darwin", "x86_64"),
                              "arm64": ("aarch64-apple-darwin", "arm64")}[args.arch]
-    rust_out = src / "out" / "BarkCargo"
+    rust_out = src / "out" / f"BarkCargo{suffix}"
     matcher = rust_out / rust_target / "release/libnook_adblock.dylib"
     wrapper = out / "bark_override_cc"
     if wrapper.is_symlink() or any(path.is_symlink() for path in
@@ -299,7 +330,15 @@ def build(checkout, depot_tools, env, args):
         raise ValueError(f"{out}: expected local wrapper and Rust build paths")
     if not args.dry_run:
         out.mkdir(parents=True, exist_ok=True)
-        install_generated(argfile, output_args)
+        if not output_args.is_file():
+            with tempfile.TemporaryDirectory(dir=out) as scratch:
+                staged = Path(scratch) / "args.gn"
+                staged.write_bytes(configured_args)
+                staged.replace(output_args)
+    if args.official:
+        pgo_target = "mac" if args.arch == "x64" else "mac-arm"
+        run([sys.executable, src / "tools/update_pgo_profiles.py", f"--target={pgo_target}",
+             "update", "--gs-url-base=chromium-optimization-profiles/pgo_profiles"], src, env, args.dry_run)
     run(["rustc", "--version"], src, env, args.dry_run)
     run(["cargo", "rustc", "--locked", "--release", "--jobs", args.jobs, "--target", rust_target,
          "--target-dir", rust_out, "--manifest-path", rust / "Cargo.toml", "--lib", "--crate-type", "cdylib", "--",
@@ -328,13 +367,14 @@ def main():
     parser.add_argument("action", choices=("prepare", "check", "build"))
     parser.add_argument("--checkout", type=Path, required=True, help="gclient root containing src/")
     parser.add_argument("--depot-tools", type=Path, help="defaults to depot_tools beside the gclient root")
+    parser.add_argument("--official", action="store_true", help="build with the pinned macOS SDK and Chromium PGO profile")
     parser.add_argument("--arch", choices=("x64", "arm64"), help="build architecture (default: x64)")
     parser.add_argument("--jobs", type=int, choices=range(1, 9), default=8, metavar="1..8")
     parser.add_argument("--resume", action="store_true", help="allow an existing pinned checkout during prepare")
     parser.add_argument("--dry-run", action="store_true", help="check existing inputs and print commands without writing")
     args = parser.parse_args()
-    if args.arch is not None and args.action != "build":
-        parser.error("--arch selects the architecture for build")
+    if (args.arch is not None or args.official) and args.action != "build":
+        parser.error("--arch and --official select the configuration for build")
     args.arch = args.arch or "x64"
     if args.resume and args.action != "prepare":
         parser.error("--resume is for prepare. Repeating build resumes the same output")

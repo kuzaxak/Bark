@@ -1,5 +1,6 @@
 """Exercise interrupted engine recipe preparation with tiny Git fixtures."""
 import argparse
+import plistlib
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -115,7 +116,7 @@ class BuildArchitectureTests(unittest.TestCase):
                     out = src / "out" / f"Barc-{arch}"
                     out.mkdir(parents=True)
                     shutil.copy(build_engine.HERE / f"args-{arch}.gn", out / "args.gn")
-                    args = argparse.Namespace(arch=arch, dry_run=True, jobs=2)
+                    args = argparse.Namespace(arch=arch, official=False, dry_run=True, jobs=2)
                     output = StringIO()
                     with mock.patch.object(build_engine, "verify_gclient"), mock.patch.object(
                         build_engine, "repository"
@@ -127,6 +128,45 @@ class BuildArchitectureTests(unittest.TestCase):
                     self.assertIn(f"autoninja -C out/Barc-{arch}", commands)
                     self.assertFalse((src / "bark").exists())
                     self.assertFalse((src / "out/BarkCargo").exists())
+
+
+    def test_official_build_uses_target_profile_and_a_separate_gn_and_cargo_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            checkout = Path(directory)
+            for arch, pgo in (("x64", "mac"), ("arm64", "mac-arm")):
+                with self.subTest(arch=arch):
+                    args = argparse.Namespace(arch=arch, official=True, dry_run=True, jobs=3)
+                    output = StringIO()
+                    with mock.patch.object(build_engine, "verify_gclient"), mock.patch.object(
+                        build_engine, "repository"
+                    ), mock.patch.object(build_engine, "replay"), redirect_stdout(output):
+                        build_engine.build(checkout, checkout / "tools", {}, args)
+                    self.assertIn(f"update_pgo_profiles.py --target={pgo} update", output.getvalue())
+                    self.assertIn("BarkCargo-official", output.getvalue())
+                    self.assertIn(f"gn gen out/Barc-{arch}-official", output.getvalue())
+                    gn = build_engine.engine_args(arch, True).decode().splitlines()
+                    self.assertIn("is_official_build = true", gn)
+                    self.assertIn("chrome_pgo_phase = 2", gn)
+                    self.assertIn(f'target_cpu = "{arch}"', gn)
+                    self.assertIn('mac_sdk_min = "26.5"', gn)
+                    self.assertNotIn("is_official_build = false", gn)
+                    self.assertFalse((checkout / "src/out").exists())
+
+    def test_official_build_checks_sdk_version_and_build_id(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            info = path / "System/Library/CoreServices/SystemVersion.plist"
+            info.parent.mkdir(parents=True)
+            with mock.patch.object(build_engine.subprocess, "check_output", return_value=str(path)):
+                for version, build, matches in (("26.2", "25C58", False), ("26.5", "other", False),
+                                                ("26.5", "25F70", True)):
+                    with self.subTest(version=version, build=build):
+                        info.write_bytes(plistlib.dumps({"ProductVersion": version, "ProductBuildVersion": build}))
+                        if matches:
+                            self.assertEqual(build_engine.official_sdk(), path)
+                        else:
+                            with self.assertRaisesRegex(ValueError, "Official Bark builds require"):
+                                build_engine.official_sdk()
 
 
 if __name__ == "__main__":
