@@ -57,15 +57,18 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Check catalog and initial window activation
-        run: python3 scripts/bark-check.py catalog
-
-      - name: Build the checked-out Bark app
+      - name: Build Bark from an empty output directory
         if: vars.BARK_SIGN_IDENTITY != ''
         env:
           BARK_SIGN_IDENTITY: ${{ vars.BARK_SIGN_IDENTITY }}
           BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
-        run: python3 scripts/bark-check.py build
+        run: |
+          test ! -e build
+          python3 scripts/bark-check.py build
+          python3 -c 'from pathlib import Path; assert set(Path("build").iterdir()) == {Path("build/Bark.app")}'
+
+      - name: Check catalog and initial window activation
+        run: python3 scripts/bark-check.py catalog
 
       - name: Verify and launch the signed candidate
         env:
