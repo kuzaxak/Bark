@@ -57,6 +57,15 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 4.5 Implement surface attach/detach and native focus routing; run window-transfer, two-to-four-pane splits across regular profiles, Peek promotion and popup-opener checks on both architectures. Verify pane-specific permission/extension ownership, capture protection for every displayed pane, and superseded saved-layout restoration.
 - [x] 4.6 Handle process failures and diagnostics; terminate a renderer in a maintained integration test and verify recoverable affected tabs plus usable unrelated windows. The integrated Intel candidate passed `RendererFailurePreservesOtherProfileDocument`: the targeted renderer exited, its tab recovered through native navigation, and the other profile retained its renderer, live closure, draft and window ownership. ARM qualification remains in 9.1.
 
+## 4a. Bark window and SDK cutover
+
+- [x] Build the Intel app from a checkout with an absent output directory, using locked dependencies, tracked signing inputs and an SDK matching the checked-in pin. Verify the signature, embedded engine and final output.
+- [x] Exercise a real modified link in a signed Bark window. Verify Escape restores source input and promotion to split preserves the preview document and its draft.
+- [ ] Qualify compact external-link windows and site popups on the same candidate. Exercise requested viewport size, opener messaging, page close and Open in Space with a live draft.
+- [ ] Complete host ownership of engine-created normal and private windows, extension UI and vault/passkey prompts. Exercise commands and close against the exact physical window and page.
+- [ ] Complete the app-owned menu and delegate routing. Retire the legacy browser-window path and its upstream patches once the signed app passes the window and interaction suite.
+- [ ] Qualify the official optimized engine and both SDK slices. Verify successful first input, return to parked tabs, signed installation and installed updates on native Intel and Apple Silicon Macs.
+
 ## 5. Profile extensions and settings (G3)
 
 - [ ] 5.1 Replace global extension ownership with a profile registry; test separate installation, enablement, storage and permissions for the same extension in two profiles.

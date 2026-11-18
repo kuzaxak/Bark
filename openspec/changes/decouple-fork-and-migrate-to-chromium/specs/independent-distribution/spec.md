@@ -43,3 +43,19 @@ Existing supported installations SHALL have a verified signed update path to the
 #### Scenario: Transition payload is untrusted
 - **WHEN** the transition feed supplies a payload with an invalid update signature
 - **THEN** the installation rejects it without replacing the installed application
+
+### Requirement: Clean contributor build
+
+The project SHALL let a contributor with the matching SDK, supported toolchain and signing identity build a verified local app from a clean checkout.
+
+#### Scenario: Build after deleting generated outputs
+
+- **GIVEN** a checkout with no previous build directory and the matching SDK available
+- **WHEN** the contributor runs the documented local app build
+- **THEN** it produces a signed app containing the engine identified by the checkout
+
+#### Scenario: Rebuild with an incompatible SDK
+
+- **GIVEN** a previously verified local app and an SDK with a different artifact digest
+- **WHEN** the contributor attempts to replace the app using that SDK
+- **THEN** the command reports the mismatch and the previous app remains usable

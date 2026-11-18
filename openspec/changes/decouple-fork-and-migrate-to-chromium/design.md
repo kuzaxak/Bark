@@ -246,6 +246,14 @@ Prefer establishing the chosen standalone destination while retaining the old re
 
 The [repository transition runbook](repository-transition.md) gives the preparation, destination staging and update-feed sequence. Git restore evidence does not complete metadata recovery or authorize the external operation.
 
+### SDK inversion and window cutover
+
+The Swift/AppKit application owns the outer bundle, window layout, menu presentation and page selection. Pinned Chromium supplies the signed framework, browser profiles and live web contents. The entry point and versioned C table in the SDK isolate the shell from Chromium's C++ implementation. The space-switch result identifies the final client, focused pane and disposition of outgoing document interactions. Discovery remains the way to admit Chromium-created windows and recover the model after startup.
+
+The cutover proceeds from normal windows and split panes to cross-profile spaces, Peek, and compact windows. Peek temporarily presents a live page of the source client. Its source keeps its identity while the card is active, and promotion adopts that same document. A compact app window or a page popup needs a native root, correct opener and profile, and a close path that preserves the opener. Private windows, extension-created windows, vault and passkey interactions must also work through their intended host before removing the legacy window implementation. DevTools and other Chromium utility windows retain their own window types.
+
+A contributor can regenerate the engine from the tracked Chromium and depot_tools pins, the patch recipe, the Rust lockfile and the mounted Bark sources. The app consumes the resulting SDK through its committed public headers and artifact digest. Build commands, development fixtures and regression runners live with the source. An installed SDK can be shared by digest across checkouts. Each locally signed app build has one verified output. See the [engine recipe](../../../Runtime/Chromium/README.md) and [contributor commands](../../../CONTRIBUTING.md).
+
 ## Limited local spike: 2026-11-06
 
 The user authorized this bounded experiment after the plans were prepared. It ran in `/tmp/barc-chromium-spike`, outside the application checkout, with isolated synthetic profiles. No application source, live user data, cloud configuration or repository hosting was changed. This is integration evidence and a source of optimization hypotheses, not completion of G0/G1 or product release qualification.
