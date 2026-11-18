@@ -14,7 +14,6 @@ int main(int argc, char* argv[]) {
   if (!BarkHasHelperProcessRole(argc, argv)) {
     return BarkRefuseUnownedHelperLaunch();
   }
-  puts("continue to subprocess");
   return 0;
 }
 """
@@ -37,7 +36,7 @@ def check(binary, arguments, admitted):
     result = subprocess.run([binary, *arguments], capture_output=True,
                             text=True, timeout=5)
     if admitted:
-        expected = (0, "continue to subprocess\n", "")
+        expected = (0, "", "")
     else:
         expected = (
             69, "",
@@ -55,7 +54,7 @@ def main():
         for language in ("c", "c++"):
             binary = path / f"probe-{language}"
             subprocess.run(
-                ["xcrun", "clang", "-x", language, "-Wall", "-Wextra", "-Werror",
+                ["xcrun", "clang", "-x", language, "-Wall", "-Wextra", "-Werror", "-Wunsafe-buffer-usage",
                  "-I", ROOT / "Runtime/Chromium/bark/app", source, "-o", binary],
                 check=True,
             )

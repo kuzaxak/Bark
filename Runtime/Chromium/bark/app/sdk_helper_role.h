@@ -12,6 +12,9 @@
 
 // The helpers run before the Chromium framework is loaded. Recognize its
 // macOS switch syntax without linking base::CommandLine to these executables.
+// argv entries are NUL-terminated by main's contract. Check argc before reading
+// an entry and its measured length before comparing the key and value.
+#pragma clang unsafe_buffer_usage begin
 static inline bool BarkHasHelperProcessRole(int argc, char* argv[]) {
   const char* const whitespace = " \t\n\r\f\v";
   bool has_role = false;
@@ -60,10 +63,14 @@ static inline bool BarkHasHelperProcessRole(int argc, char* argv[]) {
   }
   return has_role;
 }
+#pragma clang unsafe_buffer_usage end
 
 static inline int BarkRefuseUnownedHelperLaunch(void) {
+  // The diagnostic is a NUL-terminated string literal.
+#pragma clang unsafe_buffer_usage begin
   fputs("Bark Helper requires a Chromium subprocess role. Launch the signed Bark app.\n",
         stderr);
+#pragma clang unsafe_buffer_usage end
   return EX_UNAVAILABLE;
 }
 
