@@ -590,6 +590,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         bridge.runtime_complete_startup(window)
         guard window > 0, acceptsWindows,
               let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
+        admission?.reflectInitialActivation(row)
         didPresentInitialWindow = true
         if let manager = browserManager { spaceFiles.ready { [weak manager] in manager?.importSpaceFile(at: $0) } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in

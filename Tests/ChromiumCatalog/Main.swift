@@ -93,6 +93,7 @@ import NookWeb
     static var restoring = false
     static var restoredURLs: [String] = []
     static var profileOpens: [(String, barc_profile_destination)] = []
+    static var onCompleteStartup: ((Int32) -> Void)?
     static var onShow: ((Int32) -> Int32)?
     static var onCloseWindow: ((Int32) -> Int32)?
     static var onSelectWindow: ((Int32) -> Int32)?
@@ -175,6 +176,9 @@ import NookWeb
         } }
         bridge.window_private_session_uuid = { window, output, capacity in MainActor.assumeIsolated {
             Native.copyPrivateID(window, output, capacity)
+        } }
+        bridge.runtime_complete_startup = { window in MainActor.assumeIsolated {
+            Native.onCompleteStartup?(window)
         } }
         bridge.window_show = { window in MainActor.assumeIsolated {
             precondition((Native.shells[window] != nil || Native.hostWindows.contains(window)) && Native.windows[window]?.selected_client == window)
@@ -1016,6 +1020,50 @@ private struct NoTokens: KagiTokenStore {
         Native.tabs.append(Native.tab(id * 10, window: id, flags: 2))
     }
     Native.restoring = true; defer { Native.restoring = false }
+    do {
+        let initialRegistry = WindowRegistry()
+        let initialRoot = root.appendingPathComponent("activation")
+        let initialStore = TabStore(directory: initialRoot); initialStore.save(tree, device); initialStore.flush()
+        let initialTabs = TabsController(settings: settings, windowRegistry: initialRegistry,
+            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: initialRoot)
+        let initialHost = ChromiumNativePageHost(bridge: Native.bridge)
+        initialTabs.nativePageHost = initialHost
+        let initialAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: initialHost, tabs: initialTabs,
+            registry: initialRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+        let initial = initialAdmission.prepareInitialWindow()!
+        let native: Int32 = 1090
+        factory(native, profile: Native.work)
+        precondition(initialAdmission.admitRestoredWindow(initial, native: native, profile: Native.work,
+            show: false, canPresent: { true }))
+        let catalog = ChromiumWindowCatalog(bridge: Native.bridge)
+        catalog.onSnapshot = { initialAdmission.apply($0) }
+        precondition(catalog.start())
+        Native.publish()
+        defer {
+            Native.onCompleteStartup = nil
+            Native.end(native)
+            catalog.stop()
+        }
+
+        var focusChanges = 0
+        initialRegistry.onActiveWindowChange = { _ in focusChanges += 1 }
+        defer { initialRegistry.onActiveWindowChange = nil }
+        Native.onCompleteStartup = { shown in
+            precondition(shown == native)
+            Native.windows[shown]?.flags |= UInt32(BARC_DISCOVERY_PHYSICAL_ACTIVE.rawValue)
+            // No discovery delivery after Chromium makes the startup window key.
+        }
+        precondition(initialRegistry.activeWindow == nil)
+        Native.bridge.runtime_complete_startup(native)
+        let row = Native.bridge.windowState(native)!
+        initialAdmission.reflectInitialActivation(row)
+        precondition(initialRegistry.activeWindow === initial && focusChanges == 1,
+                     "Completing startup must reflect the now-active window without a discovery delivery")
+        Native.publish()
+        precondition(focusChanges == 1, "The next discovery pass must not deliver the same focus twice")
+    }
+
     // Real concrete host and native rows, with only delivery of an already
     // created background pane held back. Pending admission must not close/show.
     for mode in ["sync", "delayed", "refused", "closed", "new-selection"] {

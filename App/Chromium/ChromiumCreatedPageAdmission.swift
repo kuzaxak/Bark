@@ -49,6 +49,16 @@ final class ChromiumCreatedPageAdmission {
         self.coveredByPeek = coveredByPeek
     }
 
+    func reflectInitialActivation(_ row: BarcDiscoveryWindow) {
+        // Chromium can make the initial window key without another discovery pass.
+        guard row.selected_client == row.window, row.kind == BARC_DISCOVERY_NORMAL.rawValue,
+              row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
+              row.flags & BARC_DISCOVERY_PHYSICAL_ACTIVE.rawValue != 0,
+              !isUtility(row.window), let state = products[row.physical_group]?.state,
+              registry.windows[state.id] === state, registry.activeWindowId != state.id else { return }
+        registry.setActive(state)
+    }
+
     func registerInitial(_ product: ChromiumProductWindow, nativeWindow: Int32) -> Bool {
         guard let row = bridge.windowState(nativeWindow), row.physical_group != 0,
               products[row.physical_group] == nil else { return false }
