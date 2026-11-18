@@ -334,8 +334,13 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   ASSERT_TRUE(other);
   ASSERT_EQ(extension->id(), other->id());
 
-  content::TestDevToolsProtocolClient cdp;
+  class ProtocolClient : public content::TestDevToolsProtocolClient {
+   public:
+    using TestDevToolsProtocolClient::error;
+  } cdp;
   cdp.AttachToBrowserTarget();
+  base::ScopedClosureRunner detach(base::BindOnce(
+      &ProtocolClient::DetachProtocolClient, base::Unretained(&cdp)));
   auto run_action = [&](BrowserWindowInterface* owner) {
     auto* page = owner->GetTabStripModel()->GetActiveWebContents();
     auto target = content::DevToolsAgentHost::GetOrCreateForTab(page);
@@ -372,7 +377,6 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   run_action(personal);
   ASSERT_FALSE(cdp.error());
   EXPECT_TRUE(personal_clicked.WaitUntilSatisfied());
-  cdp.DetachProtocolClient();
 }
 
 IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
