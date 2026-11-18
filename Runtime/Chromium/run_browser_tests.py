@@ -47,6 +47,7 @@ def screen_lock(path, wait):
             return False
         return stat.S_ISDIR(current.st_mode) and directory_identity(current) == identity
 
+    owner = None
     try:
         owner = os.open(
             "pid", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
@@ -54,15 +55,17 @@ def screen_lock(path, wait):
         )
         with os.fdopen(owner, "w") as record:
             record.write(f"{os.getpid()}\n")
-        try:
-            yield owned
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                os.unlink("pid", dir_fd=directory)
+        yield owned
     finally:
-        os.close(directory)
-        if owned():
-            path.rmdir()
+        try:
+            if owner is not None:
+                with contextlib.suppress(FileNotFoundError):
+                    os.unlink("pid", dir_fd=directory)
+            if owned():
+                with contextlib.suppress(FileNotFoundError):
+                    path.rmdir()
+        finally:
+            os.close(directory)
 
 
 class QuartzConsole:
