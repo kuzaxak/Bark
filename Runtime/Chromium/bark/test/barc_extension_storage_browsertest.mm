@@ -279,9 +279,12 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   auto* personal_hosts =
       extensions::ExtensionHostRegistry::Get(personal->GetProfile());
   ASSERT_EQ(base::Value("shown"), invoke(work, work_id));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    const auto opened = work_hosts->GetHostsForExtension(extension->id());
+    return opened.size() == 1 && opened[0]->has_loaded_once();
+  }));
   const auto opened = work_hosts->GetHostsForExtension(extension->id());
   ASSERT_EQ(1u, opened.size());
-  ASSERT_TRUE(opened[0]->has_loaded_once());
   auto* popup = opened[0]->host_contents();
   ASSERT_TRUE(popup);
   EXPECT_EQ(work->GetProfile(), popup->GetBrowserContext());
