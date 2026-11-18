@@ -246,7 +246,7 @@ def prepare_feed(server, feed, key):
     server.feeds = {"bad": payload.replace(good_signature.encode(), wrong_signature), "valid": payload}
 
 
-def exercise(check, installed, newer, root, versions, arch, server, output):
+def exercise(check, installed, newer, root, versions, arch, server, output, *, engine):
     import ApplicationServices as ax
     import Quartz
     from AppKit import NSRunningApplication
@@ -421,8 +421,9 @@ def exercise(check, installed, newer, root, versions, arch, server, output):
                 if any(final.get(key) != val for key, val in new.items()):
                     raise RuntimeError("The installed and relaunched app is not the sealed new version")
                 verify_installed_replacement(installed, newer)
-                check["verify_signed_shell"](installed, arch)
-                record("Sparkle installed the exact signed v101, relaunched it at the same path and restored the draft")
+                check["verify_candidate"](installed, engine, root.parent, arch, release_info=new)
+                record("Sparkle installed the exact signed v101 with the pinned SDK, relaunched it at the same path "
+                       "and restored the draft")
 
                 app = ax.AXUIElementCreateApplication(new_pid)
                 final_screen = wait_for("The updated app is not frontmost on an idle console",
@@ -483,7 +484,7 @@ def main():
             installed, newer, root, settings = versions(check, args.derived_data.resolve(), engine,
                                                          args.identity, arch, work, server, output)
             (output / "candidate.json").write_text(json.dumps(qualification) + "\n")
-            exercise(check, installed, newer, root, settings, arch, server, output)
+            exercise(check, installed, newer, root, settings, arch, server, output, engine=engine)
     print("Installed update rehearsal passed.", flush=True)
 
 
