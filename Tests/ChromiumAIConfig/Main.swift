@@ -49,9 +49,15 @@ struct URLCitation: Equatable, Codable { let url: String; let title: String?; le
     @MainActor static func main() throws {
         let files = FileManager.default
         let home = ProcessInfo.processInfo.environment["CFFIXED_USER_HOME"] ?? ""
+        let synthetic = URL(fileURLWithPath: home).resolvingSymlinksInPath()
+        let scratch = synthetic.deletingLastPathComponent()
+        let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
         let defaultURL = AIConfigService.defaultConfigURL
-        guard home.hasSuffix("/build/ai-config/check/home"),
-              defaultURL.resolvingSymlinksInPath().path.hasPrefix(URL(fileURLWithPath: home).resolvingSymlinksInPath().path + "/") else {
+        guard !home.isEmpty, synthetic.lastPathComponent == "home",
+              scratch.lastPathComponent.hasPrefix("bark-ai-config-"),
+              executable.lastPathComponent == scratch.lastPathComponent,
+              executable.deletingLastPathComponent().path == scratch.path,
+              defaultURL.resolvingSymlinksInPath().path.hasPrefix(synthetic.path + "/") else {
             fatalError("refusing to run outside the synthetic home")
         }
         let webKitService = "com.nook.aiProvider", fakeKey = "fake-key-not-a-secret"
