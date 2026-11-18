@@ -29,8 +29,8 @@ The candidate enables the open codec libraries for H.264/AAC using
 `proprietary_codecs = true` and `ffmpeg_branding = "Chrome"`, while Chromium
 product branding remains unbranded. Inherited macOS HEVC/HLS options still need
 real playback, hardware and distribution qualification. No CDM is included.
-Apply candidate options to an actual output only after its current baseline
-build terminates; never regenerate an output with an active compile. `args-arm64.gn`
+Wait for any active compile to finish before changing build arguments.
+`args-arm64.gn`
 keeps the same candidate settings with only `target_cpu` changed to `arm64`.
 GN-only checks use separate `out/Barc-media-args-check` and
 `out/Barc-arm64-args-check` directories; configuration generation does not
@@ -38,59 +38,56 @@ establish an ARM build or native execution.
 
 ## Checkout and build
 
-Run these fish commands from the Barc repository root. Engine sources, profiles,
-logs and outputs belong under ignored `build/chromium-engine/`; do not copy them
-into the app repository. Allow 100–250 GB and several hours. Check free space
-before every stage and during long builds; stop if available space drops below
-150 GB. Build locally with at most eight jobs. Do not disable the sandbox.
+Use the checked-in recipe from the Bark repository root on macOS. It takes an
+explicit gclient checkout root, containing `src/`, and works inside or outside
+the Bark repository. Its default depot_tools path is the `depot_tools` sibling
+of that root. Pass `--depot-tools PATH` to use a different directory. The source
+commits are pinned in `PINS.json`. Chromium's `DEPS` pins the downloaded inputs.
+
+Use Python 3.9 or newer, Git, the selected Xcode SDK, and Rust/Cargo with the
+`x86_64-apple-darwin` target installed. Cargo uses the checked-in lockfile and the
+selected local Rust compiler. The build prints its version. Allow several hours
+and at least 150 GB of available space. Use at most eight jobs. Keep the sandbox
+enabled.
 
 ```fish
-set engine "$PWD/build/chromium-engine"
-mkdir -p "$engine/checkout/src"
-git clone --depth=1 https://chromium.googlesource.com/chromium/tools/depot_tools.git "$engine/depot_tools"
-git -C "$engine/depot_tools" fetch --depth=1 origin 500126d6e351e4f0834b70f71b454ce5c3733c54
-git -C "$engine/depot_tools" checkout --detach 500126d6e351e4f0834b70f71b454ce5c3733c54
-git -C "$engine/checkout/src" init
-git -C "$engine/checkout/src" remote add origin https://chromium.googlesource.com/chromium/src.git
-git -C "$engine/checkout/src" -c protocol.version=2 fetch --depth=1 --no-tags origin fb096c0011f9d50f0a264a9376420cdea9c421e3
-git -C "$engine/checkout/src" checkout --detach fb096c0011f9d50f0a264a9376420cdea9c421e3
-cp Runtime/Chromium/checkout.gclient "$engine/checkout/.gclient"
-set -gx DEPOT_TOOLS_UPDATE 0
-set -gx PATH "$engine/depot_tools" $PATH
-# Use the system CA bundle if the host Python has no configured trust store.
-set -gx SSL_CERT_FILE /etc/ssl/cert.pem
-"$engine/depot_tools/ensure_bootstrap"
-cd "$engine/checkout"
-gclient sync --no-history --nohooks --revision src@fb096c0011f9d50f0a264a9376420cdea9c421e3 --jobs 8
-gclient runhooks
-cd src
-mkdir -p out/Barc-x64
-# Establish the initial baseline with upstream codec/branding defaults.
-sed -E '/^(is_chrome_branded|proprietary_codecs|ffmpeg_branding) =/d; /^# Candidate /d' ../../../../Runtime/Chromium/args-x64.gn > out/Barc-x64/args.gn
-gn gen out/Barc-x64 --fail-on-unused-args
-autoninja -C out/Barc-x64 -j 8 chrome
+set barc_repo "$PWD"
+set engine_checkout "$barc_repo/build/chromium-engine/checkout"
+set recipe "$barc_repo/Runtime/Chromium/build_engine.py"
+
+python3 "$recipe" prepare --checkout "$engine_checkout" --jobs 8
+python3 "$recipe" check --checkout "$engine_checkout"
+python3 "$recipe" build --checkout "$engine_checkout" --jobs 8
 ```
 
-Resume an interrupted dependency sync or build with the same final commands;
-retain the checkout, output directory and running process rather than starting
-a second build. A tool observation timeout does not mean its process exited.
-Verify the source/depot_tools `git rev-parse HEAD`, `chrome/VERSION`, downloaded
-Clang version, SDK selected by GN and `args.gn` before attributing build results.
+`prepare` creates the pinned Git checkouts, runs gclient dependency sync and
+hooks, mounts the Bark trees and applies the patches. Use `prepare --resume`
+after an interrupted checkout or dependency sync. It accepts a pristine pinned
+checkout or one that already passes the exact recipe replay. It refuses a
+mismatched pin, altered gclient configuration, nonmatching Bark changes, or
+partial patch state. Keep that checkout for inspection and use a new directory
+when you need a pristine run. The recipe never asks Git to reset or clean.
+`--dry-run` prints the plan and validates available inputs without creating the
+checkout or compiling.
 
-The initial `chrome` target establishes the unmodified browser-layer baseline.
-It omits the candidate's three explicit codec/branding arguments above; the
-candidate build below restores the complete checked-in arguments.
-It does not establish a native SwiftUI bridge, profile isolation, extension
-compatibility, signed distribution or either architecture's release qualification.
+`build` validates the prepared checkout again. It builds the Rust matcher and
+compiler override tool, generates GN, then builds the Intel engine, macOS
+packaging and Bark browser tests in `src/out/Barc-x64`. Repeat the same command
+to resume an interrupted build. The recipe refuses an output with different
+GN arguments, so give experimental arguments their own output. Wait for any
+build started outside the recipe to finish before reusing its checkout or
+output.
+
+Engine binaries, profiles, logs and outputs are local artifacts. The recipe
+compiles the inputs to the publishing step below. The bytes depend on the local
+SDK and Rust compiler versions.
 
 Upstream instructions: [Chromium macOS build](https://chromium.googlesource.com/chromium/src/+/fb096c0011f9d50f0a264a9376420cdea9c421e3/docs/mac_build_instructions.md).
 
 ## Bark's tree and the patches
 
-Keep the unmodified browser-layer baseline distinct from this patched candidate.
-First wait for the baseline build to terminate and capture its artifact, source/
-toolchain/argument provenance and result. Then reuse `out/Barc-x64` for the next
-candidate; do not modify sources or arguments under a running build.
+Use a separate pristine checkout and output when establishing an unmodified
+Chromium baseline. The tracked recipe builds the Bark candidate directly.
 
 The recipe has three parts, all in this directory:
 
@@ -100,14 +97,13 @@ The recipe has three parts, all in this directory:
   resources (`bark/resources/`), the browser tests (`bark/test/`) and the override tool
   (`bark/tools/`). The GN arg `root_extra_deps = [ "//bark" ]` loads it, so no upstream
   `BUILD.gn` names a Bark test or tool; the chrome framework links `//bark:engine`. Resource
-  files that other packages own are symlinks into those packages, so the mount copies with
-  `-L`.
+  files that other packages own are symlinks into those packages. The recipe copies
+  their contents into the mount.
 - `chromium_src/`: overrides, mounted at `src/chromium_src`; its `README.md` holds the rules
   for writing one. The args set upstream's GN arg `cc_wrapper` to the redirect tool
   `bark/tools/override_cc.c`, which the recipe builds into the output directory. The tool puts
   `chromium_src` first on every compile's include path and compiles `chromium_src/<path>`
-  instead of `<path>` when that exists. It adds 2.4 ms to a compile, 0.07% of a build
-  (`build/native-slice1-v1/logs/override-microbench.txt`). Setting or clearing `cc_wrapper`
+  instead of `<path>` when that exists. Setting or clearing `cc_wrapper`
   changes every compile command, so either costs one full rebuild.
 - `patches/`: one patch per upstream file, at `patches/<upstream path>.patch`. A patch only
   adds hooks to upstream files; it never creates, deletes or renames a file, and patches do
@@ -119,45 +115,19 @@ files, hunks, added lines, override files and files under `ui/views`, `content/`
 `budget.py --check` fails above any cap, so raising one is a reviewed change.
 `CHROMIUM_VERSION` names the pinned version the patches apply to.
 
-From `build/chromium-engine/checkout/src`, starting from the pinned unmodified source:
+The build compiles `libnook_adblock.dylib` from
+`Nook/ThirdParty/AdblockRustFFI/`, using the tracked exports list and the engine's
+macOS deployment floor. The installer target produces `Bark Packaging/` with
+the signer and per-process entitlements from the pinned engine source.
+
+`build_engine.py check` uses `replay_gate.py` to replay the pinned upstream tree,
+Bark mounts and patches in a throwaway Git index. It fails if the checkout
+differs, apart from the generated Rust matcher. You can also run the replay
+directly against the source root when depot_tools is elsewhere:
 
 ```fish
-set barc_repo (realpath ../../../..)
-set runtime "$barc_repo/Runtime/Chromium"
-python3 "$runtime/budget.py" --check; and \
-    cp -RL "$runtime/bark" bark; and \
-    cp -RL "$runtime/chromium_src" chromium_src; and \
-    for patch in (find "$runtime/patches" -name '*.patch' | sort)
-        git apply --check "$patch"; and git apply "$patch"; or break
-    end
-# Isolate the pinned Rust runtime behind its fixed C ABI.
-set -l blocker_target "$barc_repo/build/native-adblock-x64"
-env MACOSX_DEPLOYMENT_TARGET=13.0 cargo rustc --locked --release \
-    --target x86_64-apple-darwin --target-dir "$blocker_target" \
-    --manifest-path "$barc_repo/Nook/ThirdParty/AdblockRustFFI/Cargo.toml" \
-    --lib --crate-type cdylib -- \
-    -C 'link-arg=-Wl,-install_name,@loader_path/Libraries/libnook_adblock.dylib' \
-    -C "link-arg=-Wl,-exported_symbols_list,$barc_repo/Nook/ThirdParty/AdblockRustFFI/nook_adblock.exports"; and \
-    cp "$blocker_target/x86_64-apple-darwin/release/libnook_adblock.dylib" \
-        bark/browser/content_blocking/nook_adblock/libnook_adblock.dylib; and \
-    cp "$runtime/args-x64.gn" out/Barc-x64/args.gn; and \
-    xcrun clang -O2 -Wall -Wextra -Werror -o out/Barc-x64/bark_override_cc bark/tools/override_cc.c; and \
-    gn gen out/Barc-x64 --fail-on-unused-args; and \
-    autoninja -C out/Barc-x64 -j 8 chrome chrome/installer/mac bark_browser_tests
+python3 "$barc_repo/Runtime/Chromium/replay_gate.py" "$engine_checkout/src"
 ```
-
-On failure, stop and inspect the checkout; this is not an idempotent resume
-command. While changing Bark's own files, sync them into the checkout without
-keeping their old times, or the build keeps stale objects:
-`rsync -rlpc --copy-links --delete --exclude 'libnook_adblock.*' "$runtime/bark/" bark/`, and
-the same for `chromium_src`. Keep separate scratch outputs for GN-only configuration checks, not
-duplicate complete engines. The installer target generates `Bark Packaging/` from the same
-source and build properties, including the pinned signer and per-process entitlements.
-Compilation does not sign or notarize the app.
-
-The replay gate proves the checkout is the recipe: `python3 "$runtime/replay_gate.py" "$PWD"`
-runs the budget check, replays pristine source plus `bark/`, `chromium_src/` and `patches/`
-into a throwaway index, and fails on any difference but the Rust matcher it builds.
 
 ### Native application
 

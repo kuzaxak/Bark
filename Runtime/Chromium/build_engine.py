@@ -1,0 +1,262 @@
+#!/usr/bin/env python3
+"""Prepare, verify or build the pinned Bark Chromium engine."""
+import argparse
+import fcntl
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import tempfile
+
+sys.dont_write_bytecode = True
+from replay_gate import HERE, MOUNTS, PATCHES, PINS, check_pin
+
+REPO = HERE.parents[1]
+ORIGINS = {
+    "chromium": "https://chromium.googlesource.com/chromium/src.git",
+    "depot_tools": "https://chromium.googlesource.com/chromium/tools/depot_tools.git",
+}
+TARGETS = ("chrome", "chrome/installer/mac", "bark_browser_tests")
+
+
+def run(command, cwd=REPO, env=None, dry_run=False):
+    command = list(map(str, command))
+    print(f"{cwd}: {shlex.join(command)}", flush=True)
+    if not dry_run:
+        subprocess.run(command, cwd=cwd, env=env, check=True)
+
+
+def git(path, *args, required=True):
+    result = subprocess.run(
+        ["git", "-C", str(path), *args], capture_output=True, text=True,
+        env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+    )
+    if result.returncode and required:
+        raise ValueError(f"{path}: {result.stderr.strip()}")
+    return result.stdout.strip() if not result.returncode else None
+
+
+def repository(path, name, create, dry_run):
+    pin = PINS[name]
+    if path.is_dir() and git(path, "rev-parse", "--show-toplevel", required=False) == str(path):
+        head = git(path, "rev-parse", "--verify", "HEAD", required=False)
+        if head:
+            if head != pin:
+                raise ValueError(f"{path}: {name} HEAD is {head}, expected {pin}")
+            if name == "depot_tools" and git(path, "status", "--porcelain"):
+                raise ValueError(f"{path}: depot_tools has working-tree changes")
+            return True
+        origin = git(path, "remote", "get-url", "origin", required=False)
+        if set(p.name for p in path.iterdir()) != {".git"} or origin not in (None, ORIGINS[name]):
+            raise ValueError(f"{path}: unfinished repository is not empty or has another origin")
+    else:
+        origin = None
+        if path.exists() and (not path.is_dir() or any(path.iterdir())):
+            raise ValueError(f"{path}: expected an empty directory or the pinned {name} Git checkout")
+        if create:
+            run(["git", "init", path], dry_run=dry_run)
+    if not create:
+        raise ValueError(f"{path}: missing pinned {name} checkout. Run prepare first")
+    if origin is None:
+        run(["git", "-C", path, "remote", "add", "origin", ORIGINS[name]], dry_run=dry_run)
+    run(["git", "-C", path, "-c", "protocol.version=2", "fetch", "--depth=1",
+         "--no-tags", "origin", pin], dry_run=dry_run)
+    run(["git", "-C", path, "checkout", "--detach", pin], dry_run=dry_run)
+    return not dry_run
+
+
+def budget():
+    run([sys.executable, HERE / "budget.py", "--check"])
+
+
+def patches(src, *options, dry_run=False):
+    inputs = sorted(PATCHES.rglob("*.patch"))
+    mode = "check" if "--check" in options else "apply"
+    print(f"{src}: {mode} {len(inputs)} tracked Chromium patches", flush=True)
+    if not dry_run:
+        result = subprocess.run(["git", "apply", *options, *inputs], cwd=src)
+        if result.returncode:
+            raise ValueError(f"{src}: could not {mode} Chromium patches (see Git diagnostics above)")
+
+
+def replay(src):
+    run([sys.executable, HERE / "replay_gate.py", src])
+
+
+def pristine(src):
+    return not git(src, "status", "--porcelain", "--untracked-files=normal") and not any(
+        (src / mount).exists() or (src / mount).is_symlink() for mount in MOUNTS
+    )
+
+
+def apply_recipe(src):
+    patches(src, "--check", "--index")
+    for mount, source in MOUNTS.items():
+        shutil.copytree(source, src / mount)
+    patches(src)
+    replay(src)
+
+
+def engine_env(depot_tools, jobs):
+    return {
+        **os.environ,
+        "DEPOT_TOOLS_UPDATE": "0",
+        "PATH": os.pathsep.join((str(depot_tools), os.environ["PATH"])),
+        "SSL_CERT_FILE": os.environ.get("SSL_CERT_FILE", "/etc/ssl/cert.pem"),
+        "CARGO_BUILD_JOBS": str(jobs),
+    }
+
+
+def verify_gclient(checkout, required=True):
+    config = checkout / ".gclient"
+    if config.is_symlink() or (config.exists() and config.read_bytes() != (HERE / "checkout.gclient").read_bytes()):
+        raise ValueError(f"{config}: differs from the checked-in gclient configuration")
+    if required and not config.is_file():
+        raise ValueError(f"{config}: missing from prepared checkout")
+    return config
+
+
+def prepare(checkout, depot_tools, env, args):
+    src = checkout / "src"
+    gclient = verify_gclient(checkout, required=False)
+    if not args.resume and any(p.exists() or p.is_symlink() for p in (src, gclient, depot_tools)):
+        raise ValueError("prepare expects a new checkout and depot_tools. Use --resume for existing paths")
+    budget()
+    if repository(src, "chromium", create=True, dry_run=args.dry_run):
+        check_pin(src)
+        if not pristine(src):
+            print("Checking existing Bark changes before resuming", flush=True)
+            replay(src)
+            repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
+            verify_gclient(checkout)
+            return
+        patches(src, "--check", "--index")
+    repository(depot_tools, "depot_tools", create=True, dry_run=args.dry_run)
+    if not args.dry_run:
+        if not gclient.exists():
+            install_generated(HERE / "checkout.gclient", gclient)
+    run([depot_tools / "ensure_bootstrap"], checkout, env, args.dry_run)
+    run([depot_tools / "gclient", "sync", "--no-history", "--nohooks",
+         "--revision", f"src@{PINS['chromium']}", "--jobs", args.jobs], checkout, env, args.dry_run)
+    run([depot_tools / "gclient", "runhooks", "--jobs", args.jobs], checkout, env, args.dry_run)
+    if args.dry_run:
+        patches(src, "--check", "--index", dry_run=True)
+        print("Then copy Bark's trees, apply the patches and verify the replay.")
+        return
+    check_pin(src)
+    if not pristine(src):
+        raise ValueError(f"{src}: dependency setup left working-tree changes")
+    apply_recipe(src)
+
+
+def install_generated(source, destination):
+    if destination.is_symlink():
+        raise ValueError(f"{destination}: expected a regular file")
+    if destination.exists() and source.read_bytes() == destination.read_bytes():
+        return
+    # Leave an existing usable input in place if the copy is interrupted.
+    with tempfile.TemporaryDirectory(dir=destination.parent) as scratch:
+        staged = Path(scratch) / destination.name
+        shutil.copy2(source, staged)
+        staged.replace(destination)
+
+
+def build(checkout, depot_tools, env, args):
+    verify_gclient(checkout)
+    src = checkout / "src"
+    repository(src, "chromium", create=False, dry_run=args.dry_run)
+    repository(depot_tools, "depot_tools", create=False, dry_run=args.dry_run)
+    replay(src)
+    argfile = HERE / "args-x64.gn"
+    out = src / "out" / "Barc-x64"
+    output_args = out / "args.gn"
+    if out.parent.is_symlink() or out.is_symlink() or output_args.is_symlink():
+        raise ValueError(f"{out}: symlinked build output or args.gn")
+    if output_args.is_file():
+        if output_args.read_bytes() != argfile.read_bytes():
+            raise ValueError(f"{output_args}: differs from {argfile}. Use a separate output or checkout")
+    elif out.exists() and (not out.is_dir() or any(out.iterdir())):
+        raise ValueError(f"{out}: nonempty output without recipe args.gn")
+
+    rust = REPO / "Nook/ThirdParty/AdblockRustFFI"
+    rust_target = "x86_64-apple-darwin"
+    rust_out = out / "nook-adblock"
+    matcher = src / "bark/browser/content_blocking/nook_adblock/libnook_adblock.dylib"
+    if matcher.is_symlink():
+        raise ValueError(f"{matcher}: expected a generated regular file")
+    wrapper = out / "bark_override_cc"
+    if wrapper.is_symlink() or rust_out.is_symlink():
+        raise ValueError(f"{out}: expected local wrapper and Rust build paths")
+    if not args.dry_run:
+        out.mkdir(parents=True, exist_ok=True)
+        install_generated(argfile, output_args)
+    run(["rustc", "--version"], src, env, args.dry_run)
+    run(["cargo", "rustc", "--locked", "--release", "--jobs", args.jobs, "--target", rust_target,
+         "--target-dir", rust_out, "--manifest-path", rust / "Cargo.toml", "--lib", "--crate-type", "cdylib", "--",
+         "-C", "link-arg=-Wl,-install_name,@loader_path/Libraries/libnook_adblock.dylib",
+         "-C", f"link-arg=-Wl,-exported_symbols_list,{rust / 'nook_adblock.exports'}"],
+        src, {**env, "MACOSX_DEPLOYMENT_TARGET": "13.0"}, args.dry_run)
+    if args.dry_run:
+        run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror",
+             "-o", wrapper, src / "bark/tools/override_cc.c"], src, env, True)
+    else:
+        install_generated(rust_out / rust_target / "release/libnook_adblock.dylib", matcher)
+        with tempfile.TemporaryDirectory(dir=out) as scratch:
+            compiled = Path(scratch) / wrapper.name
+            run(["xcrun", "clang", "-O2", "-Wall", "-Wextra", "-Werror",
+                 "-o", compiled, src / "bark/tools/override_cc.c"], src, env)
+            install_generated(compiled, wrapper)
+    run([depot_tools / "gn", "gen", out.relative_to(src), "--fail-on-unused-args"], src, env, args.dry_run)
+    run([depot_tools / "autoninja", "-C", out.relative_to(src), "-j", args.jobs, *TARGETS],
+        src, {**env, "NINJA_SUMMARIZE_BUILD": "1"}, args.dry_run)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("action", choices=("prepare", "check", "build"))
+    parser.add_argument("--checkout", type=Path, required=True, help="gclient root containing src/")
+    parser.add_argument("--depot-tools", type=Path, help="defaults to depot_tools beside the gclient root")
+    parser.add_argument("--jobs", type=int, choices=range(1, 9), default=8, metavar="1..8")
+    parser.add_argument("--resume", action="store_true", help="allow an existing pinned checkout during prepare")
+    parser.add_argument("--dry-run", action="store_true", help="check existing inputs and print commands without writing")
+    args = parser.parse_args()
+    if args.resume and args.action != "prepare":
+        parser.error("--resume is for prepare. Repeating build resumes the same output")
+    checkout = args.checkout.expanduser().resolve()
+    depot_tools = (args.depot_tools or checkout.parent / "depot_tools").expanduser().resolve()
+    if checkout == depot_tools or checkout in depot_tools.parents or depot_tools in checkout.parents:
+        parser.error("checkout and depot_tools must be separate directories")
+    env = engine_env(depot_tools, args.jobs)
+
+    if args.action == "check":
+        verify_gclient(checkout)
+        repository(checkout / "src", "chromium", create=False, dry_run=True)
+        repository(depot_tools, "depot_tools", create=False, dry_run=True)
+        replay(checkout / "src")
+        return
+    action = {"prepare": prepare, "build": build}[args.action]
+    if args.dry_run:
+        action(checkout, depot_tools, env, args)
+        return
+    if sys.platform != "darwin":
+        raise ValueError("preparing and building the macOS engine requires macOS")
+    if args.action == "prepare":
+        checkout.mkdir(parents=True, exist_ok=True)
+    lock_path = checkout / ".bark-engine.lock"
+    if lock_path.is_symlink():
+        raise ValueError(f"{lock_path}: expected a local lock file")
+    with lock_path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise ValueError(f"{checkout}: another recipe process holds the engine lock") from error
+        action(checkout, depot_tools, env, args)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        sys.exit(f"build_engine: {error}")
