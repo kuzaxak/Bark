@@ -45,7 +45,7 @@ python3 scripts/bark-check.py interaction
 
 The regression compiles the shipped command-routing code and checks it against real AppKit windows and a sheet. CI runs it after the Swift package tests.
 
-On Intel, run the catalog, startup focus, page ownership and extension action regressions against the Debug shell. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
+Run the catalog, startup focus, page ownership and extension action regressions against the Debug shell on the host architecture. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
 
 ```fish
 python3 scripts/bark-check.py catalog
@@ -68,9 +68,12 @@ python3 scripts/bark-check.py launch build/Bark.app
 
 To verify an existing signed app, use `python3 scripts/bark-check.py verify /path/to/Bark.app`.
 
-`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Engine/` directory next to the committed Bark SDK headers. The install command keeps a verified copy under `~/Library/Caches/BarkSDK/<pin>/Engine`. A fresh checkout can then build using that pin. The verifier compares the signed app’s embedded files with the selected SDK.
+`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Packages/BarkEngine/RuntimeArtifacts/<architecture>/Engine/` directory.
+Existing Intel artifacts in the former `macos-x86_64/Engine/` location remain usable. The install command keeps a verified copy under `~/Library/Caches/BarkSDK/<pin>/Engine`. A fresh checkout can then build using that pin. The verifier compares the signed app’s embedded files with the selected SDK.
+The SDK headers build on Intel and Apple Silicon. Artifact commands keep Intel as the default and
+accept `--arch arm64` once the separately qualified ARM64 pin is available.
 
-`smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
+`smoke` and `launch` require a pinned engine matching the host’s native architecture. `smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 
 For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label and `BARK_ENGINE_SOURCE` to the matching directory or archive source. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
 

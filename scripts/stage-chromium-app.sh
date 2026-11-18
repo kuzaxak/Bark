@@ -1,5 +1,5 @@
 #!/bin/bash
-# Stage an Intel candidate: the app target's Bark.app with the published engine framework inside it, and
+# Stage an architecture-specific candidate: the app target's Bark.app with the published engine framework inside it, and
 # the engine's Bark Packaging beside it. The app's Info.plist keys and entitlements beyond the engine's are
 # declared in ChromiumApp/Additions.plist and merged here, into the staged Info.plist and the staged
 # packaging's app-entitlements.plist.
@@ -9,8 +9,19 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEFAULT_ADDITIONS="$REPO/ChromiumApp/Additions.plist"
-ENGINE_SLICE="$REPO/Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64"
+PACKAGE="$REPO/Packages/BarkEngine"
+LAYOUT="$REPO/scripts/chromium_sdk_layout.py"
+ARCH=x86_64
+if [[ ${1:-} == --arch ]]; then
+  ARCH=${2:-}
+  [[ $ARCH == x86_64 || $ARCH == arm64 ]] || { echo 'Expected --arch x86_64 or arm64' >&2; exit 2; }
+  shift 2
+fi
+ENGINE_HEADERS=$(python3 -B "$LAYOUT" headers "$PACKAGE" "$ARCH")
 refuse() { echo "$1" >&2; exit 1; }
+require_architecture() {
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" --image "$1"
+}
 # Chromium's signing covers only the Mach-O files its config names, and codesign --verify --deep --strict
 # still passes with an unsigned extra one, so the bundle is walked file by file.
 check_bundle() {
@@ -33,12 +44,18 @@ sys.exit('\n'.join(problems) or None)
 PY
 }
 check_engine() {
-  local artifact="$1" headers="$2" listed present digest header
+  local artifact="$1" headers="$2" listed present digest header pin
   [[ -d "$artifact/Bark Framework.framework" ]] || refuse 'Missing Bark framework'
   [[ -f "$artifact/Bark Packaging/app-entitlements.plist" ]] || refuse "Missing the engine's app entitlements: $artifact"
   digest=$(/usr/bin/shasum -a 256 "$artifact/SHA256SUMS" | /usr/bin/cut -d' ' -f1) ||
     refuse "Missing engine artifact manifest: $artifact"
-  [[ -f "$headers/engine-artifact.sha256" && $(<"$headers/engine-artifact.sha256") == "$digest" ]] ||
+  if [[ $headers == "$ENGINE_HEADERS" ]]; then
+    pin=$(python3 -B "$LAYOUT" digest "$PACKAGE" "$ARCH") || exit 1
+  else
+    pin=$(python3 -B "$LAYOUT" digest "$PACKAGE" "$ARCH" "$headers") ||
+      refuse 'App was built against another engine artifact'
+  fi
+  [[ $pin == "$digest" ]] ||
     refuse 'App was built against another engine artifact'
   listed=$(/usr/bin/awk '{ sub(/^[0-9a-f]+  /, ""); print }' "$artifact/SHA256SUMS" | /usr/bin/sort)
   present=$(cd "$artifact" && /usr/bin/find . -type f ! -name SHA256SUMS | /usr/bin/sort)
@@ -48,7 +65,7 @@ check_engine() {
     /usr/bin/cmp -s "$artifact/Headers/$header" "$headers/$header" ||
       refuse "App was compiled against another $header than the engine's: $artifact/Headers/$header"
   done
-  python3 -B "$REPO/scripts/check-chromium-architectures.py" "$artifact/Bark Framework.framework"
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" "$artifact/Bark Framework.framework"
   check_bundle "$artifact/Bark Framework.framework" unsigned
 }
 # ChromiumApp/Additions.plist: an Info dictionary, whose keys the engine's Info.plist lacks or whose arrays
@@ -111,25 +128,29 @@ elif mode == 'signed':
 PY
 }
 if [[ $# == 2 && $1 == --check-engine ]]; then
-  check_engine "$2" "$ENGINE_SLICE/Headers/BarcChromium"
+  check_engine "$2" "$ENGINE_HEADERS"
   printf 'Verified engine against the checkout pin: %s\n' "$2"
   exit 0
 fi
 if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   ADDITIONS="${3:-$DEFAULT_ADDITIONS}"
-  ENGINE_ENTITLEMENTS="${4:-$ENGINE_SLICE/Engine}/Bark Packaging/app-entitlements.plist"
+  engine=${4:-$(python3 -B "$LAYOUT" local-engine "$PACKAGE" "$ARCH")}
+  ENGINE_ENTITLEMENTS="$engine/Bark Packaging/app-entitlements.plist"
   [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
   [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
-  python3 -B "$REPO/scripts/check-chromium-architectures.py" "$2/Contents/Frameworks/Bark Framework.framework"
+  require_architecture "$2/Contents/MacOS/Bark"
+  require_architecture "$2/Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell"
+  require_architecture "$2/Contents/Frameworks/Bark Framework.framework/Versions/Current/Bark Framework"
+  python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" "$2/Contents/Frameworks/Bark Framework.framework"
   check_bundle "$2" signed
   additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
   echo "One libnook_adblock.dylib, every Mach-O signed, and the engine's entitlements plus the declared additions: $2"
   exit 0
 fi
 if [[ $# != 4 && $# != 5 ]]; then
-  echo 'usage: bash scripts/stage-chromium-app.sh <app-target Bark.app> <engine artifact directory> <native-products-directory> <new-output.app> [<Additions.plist>]' >&2
-  echo '       bash scripts/stage-chromium-app.sh --check-engine <engine artifact directory>' >&2
-  echo '       bash scripts/stage-chromium-app.sh --check-signed <signed Bark.app> [<Additions.plist> [<engine artifact directory>]]' >&2
+  echo 'usage: bash scripts/stage-chromium-app.sh [--arch x86_64|arm64] <app-target Bark.app> <engine artifact directory> <native-products-directory> <new-output.app> [<Additions.plist>]' >&2
+  echo '       bash scripts/stage-chromium-app.sh [--arch x86_64|arm64] --check-engine <engine artifact directory>' >&2
+  echo '       bash scripts/stage-chromium-app.sh [--arch x86_64|arm64] --check-signed <signed Bark.app> [<Additions.plist> [<engine artifact directory>]]' >&2
   exit 2
 fi
 APP="$1"
@@ -139,7 +160,6 @@ OUTPUT="$4"
 ADDITIONS="${5:-$DEFAULT_ADDITIONS}"
 PACKAGING="$(dirname "$OUTPUT")/Bark Packaging"
 plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true; }
-archs_are_x86_64() { [[ $(/usr/bin/lipo -archs "$1" 2>/dev/null || true) == x86_64 ]] || refuse "Binary must be exactly x86_64: $1"; }
 zone_names() { /usr/bin/strings -a "$1" | /usr/bin/grep -xE '[A-Za-z]*Delegating[A-Za-z]*Zone[A-Za-z]*' | /usr/bin/sort -u || true; }
 ENGINE_FRAMEWORK_NAME='Bark Framework.framework'
 ENGINE_FRAMEWORK="$ARTIFACT/$ENGINE_FRAMEWORK_NAME"
@@ -198,9 +218,9 @@ ENGINE_BINARY="$ENGINE_FRAMEWORK/Versions/$ENGINE_VERSION/Bark Framework"
 # The zone registration in main must run before any other library can start a thread.
 [[ $(/usr/bin/otool -L "$APP_MAIN" | /usr/bin/tail -n +2 | /usr/bin/awk '{print $1}') == /usr/lib/libSystem.B.dylib ]] ||
   refuse 'App executable must link only libSystem'
-archs_are_x86_64 "$APP_MAIN"
-archs_are_x86_64 "$NATIVE"
-archs_are_x86_64 "$ENGINE_BINARY"
+require_architecture "$APP_MAIN"
+require_architecture "$NATIVE"
+require_architecture "$ENGINE_BINARY"
 /usr/bin/otool -hv "$NATIVE" | /usr/bin/grep -q DYLIB || refuse 'Native shell must be a dylib, not an executable'
 # A framework that does not recognize main's zone falls into its later, racy registration without an error.
 MAIN_ZONE=$(zone_names "$APP_MAIN")

@@ -10,7 +10,7 @@ with tempfile.TemporaryDirectory(prefix='bark-shortcuts-') as directory:
     (out / 'ChromiumPageCommands.swift').write_text(commands[:commands.index('extension ChromiumPageNavigation')])
     binary = out / 'chromium-shortcuts-check'
     c = ['swiftc', '-swift-version', '5', '-target', platform.machine() + '-apple-macosx15.5', '-parse-as-library',
-         '-I', str(root / 'Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Headers'),
+         '-I', str(root / 'Packages/BarkEngine/BarkEngine.xcframework/macos-arm64_x86_64/Headers'),
          str(root / 'Nook/Models/KeyboardShortcut/KeyboardShortcut.swift'), str(root / 'Nook/Managers/BrowserManager/FrontPage.swift'),
          str(root / 'Nook/Managers/KeyboardShortcutManager/CommandWindow.swift'),
          str(out / 'ChromiumPageCommands.swift'), str(root / 'Tests/ChromiumShortcuts/Main.swift'), '-o', str(binary)]

@@ -27,9 +27,16 @@ from urllib.parse import urlsplit
 from urllib.request import urlopen
 from uuid import uuid4
 
+# Keep contributor commands and signed walkers from writing into the checkout.
+sys.dont_write_bytecode = True
+# The signed walkers load this file with runpy rather than importing it.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from chromium_sdk_layout import ARCHITECTURES, local_engine, read_pin
+
 REPO = Path(__file__).resolve().parents[1]
 STAGE = REPO / "scripts/stage-chromium-app.sh"
-DEFAULT_ENGINE = REPO / "Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Engine"
+PACKAGE = REPO / "Packages/BarkEngine"
+MACH_CPU_TYPES = {"x86_64": 0x01000007, "arm64": 0x0100000c}
 FRAMEWORK = "Bark Framework.framework"
 MACH64 = b"\xcf\xfa\xed\xfe"
 CODESIGN_LINKEDIT_ALIGNMENT = 16 * 1024
@@ -42,23 +49,26 @@ def run(*args):
 def check_native_harness(command):
     # Xcode resolves the shell's real package graph and the headers in its SDK.
     # The harness supplies its own bridge table, so it runs without an Engine.
-    if platform.machine() != "x86_64":
-        raise ValueError("The native shell regression needs the Intel slice of the Bark SDK.")
+    architecture = native_architecture()
+    if architecture not in ARCHITECTURES:
+        raise ValueError(f"Unsupported macOS architecture: {architecture}")
     checkout = hashlib.sha256(os.fsencode(REPO)).hexdigest()[:16]
-    derived = Path.home() / "Library/Caches/BarkSDK/native-checks" / checkout
+    # Keep the existing warm Intel cache and isolate the Silicon build products.
+    cache_key = checkout if architecture == "x86_64" else f"{checkout}-{architecture}"
+    derived = Path.home() / "Library/Caches/BarkSDK/native-checks" / cache_key
     packages = derived / "SourcePackages"
     products = derived / "Build/Products/Debug"
     run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "BarkNativeChecks",
         "-configuration", "Debug", "-destination", "generic/platform=macOS",
         "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
-        "-onlyUsePackageVersionsFromResolvedFile", "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO",
+        "-onlyUsePackageVersionsFromResolvedFile", f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO",
         "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-jobs", "1", "build")
     maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
     # SwiftPM bundle lookup uses the executable directory for command-line tools.
     suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
              "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions"}[command]
     binary = products / f"bark-{command}-check"
-    run("xcrun", "swiftc", "-swift-version", "5", "-target", "x86_64-apple-macosx15.5",
+    run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
         "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
         "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
         "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
@@ -67,37 +77,41 @@ def check_native_harness(command):
     run(binary)
 
 
-def cached_engine():
-    pin = (DEFAULT_ENGINE.parent / "Headers/BarcChromium/engine-artifact.sha256").read_text().strip()
-    if len(pin) != 64 or any(c not in "0123456789abcdef" for c in pin):
-        raise ValueError("Invalid SDK artifact digest in the checked-in headers.")
-    return Path.home() / "Library/Caches/BarkSDK" / pin / "Engine"
+def native_architecture():
+    # Unlike uname, this reports the hardware on translated Python as well.
+    arm64 = subprocess.run(["/usr/sbin/sysctl", "-n", "hw.optional.arm64"],
+                           capture_output=True, text=True)
+    return "arm64" if arm64.stdout.strip() == "1" else platform.machine()
 
 
-def install_engine(engine):
-    destination = cached_engine()
+def cached_engine(architecture):
+    return Path.home() / "Library/Caches/BarkSDK" / read_pin(PACKAGE, architecture) / "Engine"
+
+
+def install_engine(engine, architecture):
+    destination = cached_engine(architecture)
     if not destination.is_dir():
         cache = destination.parent.parent
         cache.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(dir=cache) as stage:
             copy = Path(stage) / "Engine"
             run("/usr/bin/ditto", engine, copy)
-            run("/bin/bash", STAGE, "--check-engine", copy)
+            run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", copy)
             try:
                 # Keep the read-only SDK intact and publish its writable parent.
                 Path(stage).rename(destination.parent)
             except OSError as error:
                 if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
                     raise
-    run("/bin/bash", STAGE, "--check-engine", destination)
+    run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", destination)
     print(f"Installed pinned SDK at {destination}")
 
 
 @contextmanager
-def pinned_engine(source, working):
+def pinned_engine(source, working, architecture):
+    installed = cached_engine(architecture)
     if not source:
-        installed = cached_engine()
-        source = str(installed if installed.is_dir() else DEFAULT_ENGINE)
+        source = str(installed if installed.is_dir() else local_engine(PACKAGE, architecture))
         if not Path(source).is_dir():
             raise ValueError("The pinned SDK is missing. Install it with bark-check.py engine --install "
                              "--engine PATH, or build it using Runtime/Chromium/README.md.")
@@ -117,7 +131,7 @@ def pinned_engine(source, working):
             package.extractall(unpacked, filter="data")
         path = unpacked if (unpacked / "SHA256SUMS").is_file() else unpacked / "Engine"
     path = path.resolve(strict=True)
-    run("/bin/bash", STAGE, "--check-engine", path)
+    run("/bin/bash", STAGE, "--arch", architecture, "--check-engine", path)
     yield path
 
 
@@ -128,7 +142,43 @@ def framework_files(directory):
             and entry.relative_to(directory).parts[-2:] != ("_CodeSignature", "CodeResources")}
 
 
-def unsigned_mach_digest(path, payload_size, original_vmsize=None, signed_size=None):
+def mach_has_signature(path):
+    with path.open("rb") as binary:
+        magic, _, _, _, count, size, _, _ = struct.unpack("<IIIIIIII", binary.read(32))
+        if magic != 0xfeedfacf:
+            raise ValueError(f"Expected a thin Mach-O: {path}")
+        commands = binary.read(size)
+    offset = 0
+    for _ in range(count):
+        command, length = struct.unpack_from("<II", commands, offset)
+        if length < 8 or offset + length > len(commands):
+            raise ValueError(f"Invalid Mach-O load command: {path}")
+        if command == 0x1d:
+            return True
+        offset += length
+    return False
+
+
+def remove_signature(source, destination):
+    shutil.copyfile(source, destination)
+    run("/usr/bin/codesign", "--remove-signature", destination)
+
+
+def signed_mach_matches(original, signed, working, architecture):
+    # arm64 ld can supply an ad-hoc signature on the published input.
+    baseline = original
+    if mach_has_signature(original):
+        baseline = working / "unsigned-original"
+        remove_signature(original, baseline)
+    unsigned = working / "unsigned"
+    remove_signature(signed, unsigned)
+    payload_size = baseline.stat().st_size
+    digest, vmsize = unsigned_mach_digest(baseline, payload_size, architecture)
+    stripped_digest, _ = unsigned_mach_digest(unsigned, payload_size, architecture, vmsize, signed.stat().st_size)
+    return digest == stripped_digest
+
+
+def unsigned_mach_digest(path, payload_size, architecture, original_vmsize=None, signed_size=None):
     """Return the unsigned Mach-O digest and its original linkedit mapping size."""
     file_size = path.stat().st_size
     padded_size = (payload_size + 15) & ~15
@@ -137,8 +187,8 @@ def unsigned_mach_digest(path, payload_size, original_vmsize=None, signed_size=N
     with path.open("rb") as binary:
         header = binary.read(32)
         magic, cpu, _, _, count, size, _, _ = struct.unpack("<IIIIIIII", header)
-        if magic != 0xfeedfacf or cpu != 0x1000007:
-            raise ValueError(f"Expected a thin x86_64 Mach-O: {path}")
+        if magic != 0xfeedfacf or cpu != MACH_CPU_TYPES[architecture]:
+            raise ValueError(f"Expected a thin {architecture} Mach-O: {path}")
         commands = bytearray(binary.read(size))
         offset = 0
         linkedit = False
@@ -181,16 +231,23 @@ def unsigned_mach_digest(path, payload_size, original_vmsize=None, signed_size=N
         return digest.digest(), vmsize
 
 
-def verify_signed_shell(app):
+def verify_signed_shell(app, architecture=None):
+    architecture = architecture or native_architecture()
     sys.path.insert(0, str(REPO / "Runtime/Chromium"))
     from run_browser_tests import TEST_FRAMEWORK, require_host_only_image
+    engine = app / "Contents/Frameworks" / TEST_FRAMEWORK
+    for image in (app / "Contents/MacOS/Bark",
+                  app / "Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell",
+                  engine):
+        run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
+            "--arch", architecture, "--image", image)
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)
-    return require_host_only_image(app / "Contents/Frameworks" / TEST_FRAMEWORK)
+    return require_host_only_image(engine, architecture)
 
 
-def verify_candidate(app, engine, working):
-    verify_signed_shell(app)
-    run("/bin/bash", STAGE, "--check-signed", app, REPO / "ChromiumApp/Additions.plist", engine)
+def verify_candidate(app, engine, working, architecture):
+    verify_signed_shell(app, architecture)
+    run("/bin/bash", STAGE, "--arch", architecture, "--check-signed", app, REPO / "ChromiumApp/Additions.plist", engine)
     expected = framework_files(engine / FRAMEWORK)
     embedded = framework_files(app / "Contents/Frameworks" / FRAMEWORK)
     if expected.keys() != embedded.keys():
@@ -206,15 +263,7 @@ def verify_candidate(app, engine, working):
             with original.open("rb") as binary:
                 if binary.read(4) != MACH64:
                     raise ValueError(f"Candidate engine resource differs from the pin: {relative}")
-            # Strip the signature on a disposable copy. Apple codesign may align the
-            # linkedit segment and the tail differently after removing the signature.
-            unsigned = working / "unsigned"
-            shutil.copyfile(signed, unsigned)
-            run("/usr/bin/codesign", "--remove-signature", unsigned)
-            payload_size = original.stat().st_size
-            digest, vmsize = unsigned_mach_digest(original, payload_size)
-            stripped_digest, _ = unsigned_mach_digest(unsigned, payload_size, vmsize, signed.stat().st_size)
-            same = digest == stripped_digest
+            same = signed_mach_matches(original, signed, working, architecture)
         if not same:
             raise ValueError(f"Candidate engine differs from the pin: {relative}")
     print("Signed candidate contains the pinned engine's files.", flush=True)
@@ -345,9 +394,7 @@ def install_local_build(app, output):
         os.close(parent)
 
 
-def build_candidate(engine, output, identity):
-    if platform.machine() != "x86_64":
-        raise ValueError("The pinned Bark engine currently supports native Intel builds.")
+def build_candidate(engine, output, identity, architecture):
     if not identity:
         raise ValueError("Supply --identity or BARK_SIGN_IDENTITY for local Developer ID signing.")
     if output.name != "Bark.app":
@@ -365,14 +412,14 @@ def build_candidate(engine, output, identity):
             run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "NookNativeShell",
                 "-configuration", "Release", "-destination", "generic/platform=macOS",
                 "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
-                "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=$(inherited) -j4",
+                f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=$(inherited) -j4",
                 "-jobs", "2", "build")
-            run("/bin/bash", STAGE, unsigned, engine, products, stage / "Bark.app",
+            run("/bin/bash", STAGE, "--arch", architecture, unsigned, engine, products, stage / "Bark.app",
                 REPO / "ChromiumApp/Additions.plist")
             signed = work / "signed"
             run(sys.executable, REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed)
             app = signed / "stable/Bark.app"
-            verify_candidate(app, engine, work)
+            verify_candidate(app, engine, work, architecture)
             install_local_build(app, output)
         finally:
             # Xcode registers its intermediate app with Launch Services.
@@ -387,12 +434,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("interaction", help="run the native command-window regression")
-    commands.add_parser("catalog", help="run catalog and initial-window activation regressions on Intel")
-    commands.add_parser("page-host", help="check page ownership, transfer and close on Intel")
-    commands.add_parser("profile-pages", help="check profile utility window ownership on Intel")
-    commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership on Intel")
+    commands.add_parser("catalog", help="run catalog and initial-window activation regressions")
+    commands.add_parser("page-host", help="check page ownership, transfer and close")
+    commands.add_parser("profile-pages", help="check profile utility window ownership")
+    commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
     for command in ("engine", "build", "verify", "smoke", "launch"):
         sub = commands.add_parser(command)
+        sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
         if command == "engine":
@@ -412,19 +460,22 @@ def main():
     if args.command in ("catalog", "page-host", "profile-pages", "extension-actions"):
         check_native_harness(args.command)
         return
+    launching = args.command in ("smoke", "launch")
+    native = native_architecture() if launching else None
+    architecture = args.arch or native or "x86_64"
+    if launching and architecture != native:
+        parser.error(f"Launching signed Bark requires the native {native} runtime.")
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
         working = Path(work)
-        with pinned_engine(args.engine, working) as engine:
+        with pinned_engine(args.engine, working, architecture) as engine:
             if args.command == "engine" and args.install:
-                install_engine(engine)
+                install_engine(engine, architecture)
             elif args.command == "build":
-                build_candidate(engine, args.output, args.identity)
+                build_candidate(engine, args.output, args.identity, architecture)
             elif args.command != "engine":
                 app = args.app.resolve(strict=True)
-                verify_candidate(app, engine, working)
-                if args.command in ("smoke", "launch"):
-                    if platform.machine() != "x86_64":
-                        parser.error("Launching signed Bark requires the Intel runtime.")
+                verify_candidate(app, engine, working, architecture)
+                if launching:
                     launch_candidate(app, working, interactive=args.command == "launch")
 
 

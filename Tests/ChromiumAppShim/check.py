@@ -10,6 +10,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import runpy
 
 ROOT = Path(__file__).resolve().parents[2]
 SHIM = ROOT / 'ChromiumApp'
@@ -19,7 +20,7 @@ PUBLISH = ROOT / 'scripts/publish-chromium-engine.sh'
 RUNTIME = ROOT / 'Runtime/Chromium/bark/bridge'
 PACKAGE = ROOT / 'Packages/BarkEngine'
 XCFRAMEWORK = PACKAGE / 'BarkEngine.xcframework'
-SLICE_NAME = 'macos-x86_64'
+SLICE_NAME = 'macos-arm64_x86_64'
 SLICE = XCFRAMEWORK / SLICE_NAME
 PUBLIC_HEADERS = SLICE / 'Headers'
 MODULE = PUBLIC_HEADERS / 'BarcChromium'
@@ -147,7 +148,8 @@ def check(name, ok, detail=''):
 def compile_c(source, output, *extra):
     source_file = output.with_suffix('.c')
     source_file.write_text(source)
-    subprocess.run(['xcrun', 'clang', '-arch', 'x86_64', str(source_file), '-o', str(output), *extra], check=True)
+    subprocess.run(['xcrun', 'clang', *([] if '-arch' in extra else ['-arch', 'x86_64']),
+                    str(source_file), '-o', str(output), *extra], check=True)
 
 
 def headers_digest():
@@ -387,17 +389,39 @@ def package_cases(work):
           [('BarkEngine', 'binary', 'BarkEngine.xcframework')], targets)
     info = read_plist(XCFRAMEWORK / 'Info.plist')
     libraries = info['AvailableLibraries']
-    check('the xcframework has one x86_64 macOS library slice',
+    check('the XCFramework defines one universal macOS library',
           [(l['LibraryIdentifier'], l['SupportedPlatform'], l['SupportedArchitectures'], l.get('HeadersPath')) for l in libraries] ==
-          [(SLICE_NAME, 'macos', ['x86_64'], 'Headers')], libraries)
+          [(SLICE_NAME, 'macos', ['arm64', 'x86_64'], 'Headers')], libraries)
     stub = SLICE / libraries[0]['LibraryPath']
-    defined = subprocess.run(['nm', '-gjU', str(stub)], capture_output=True, text=True).stdout
-    check('the slice library defines no symbols', stub.is_file() and not [l for l in defined.splitlines() if l.startswith('_')], defined)
-    probe = work / 'probe.c'
-    probe.write_text('int main(void) { return 0; }\n')
-    subprocess.run(['xcrun', 'clang', '-arch', 'x86_64', str(probe), str(stub), '-o', str(work / 'probe')], check=True)
-    linked = [l.split()[0] for l in subprocess.check_output(['otool', '-L', str(work / 'probe')], text=True).splitlines()[1:]]
-    check('linking the package adds no library', linked == ['/usr/lib/libSystem.B.dylib'], linked)
+    for arch in ('x86_64', 'arm64'):
+        defined = subprocess.run(['nm', '-arch', arch, '-gjU', str(stub)], capture_output=True, text=True)
+        check(f'the {arch} archive defines no symbols', defined.returncode == 0 and all(line.endswith(':') for line in defined.stdout.strip().splitlines()),
+              (defined.stdout, defined.stderr))
+        probe = work / f'probe-{arch}.swift'
+        binary = work / f'probe-{arch}'
+        probe.write_text('import BarcChromium\nprecondition(BARC_BRIDGE_VERSION > 0)\n')
+        subprocess.run(['xcrun', 'swiftc', '-target', f'{arch}-apple-macosx15.5', '-I', str(PUBLIC_HEADERS),
+                        str(probe), '-Xlinker', '-force_load', '-Xlinker', str(stub), '-o', str(binary)], check=True)
+        architectures = subprocess.check_output(['/usr/bin/lipo', '-archs', binary], text=True).strip()
+        linked = subprocess.check_output(['/usr/bin/otool', '-L', binary], text=True)
+        check(f'the {arch} stub imports and links without the engine',
+              architectures == arch and 'Bark Framework' not in linked, linked)
+
+    legacy = work / 'legacy-sdk'
+    legacy_slice = legacy / 'BarkEngine.xcframework/macos-x86_64'
+    legacy_headers = legacy_slice / 'Headers/BarcChromium'
+    legacy_headers.mkdir(parents=True)
+    expected = (MODULE / 'engine-artifact-x86_64.sha256').read_text().strip()
+    (legacy_headers / 'engine-artifact.sha256').write_text(expected + '\n')
+    (legacy_slice / 'Engine').mkdir()
+    layout = ['python3', '-B', str(ROOT / 'scripts/chromium_sdk_layout.py')]
+    digest = subprocess.check_output([*layout, 'digest', legacy, 'x86_64'], text=True).strip()
+    local = subprocess.check_output([*layout, 'local-engine', legacy, 'x86_64'], text=True).strip()
+    check('the layout still accepts the legacy Intel pin and local runtime',
+          digest == expected and local == str(legacy_slice / 'Engine'), (digest, local))
+    absent = subprocess.run([*layout, 'digest', legacy, 'arm64'], capture_output=True, text=True)
+    check('ARM64 cannot borrow a legacy Intel pin',
+          absent.returncode != 0 and 'No pinned Bark engine for arm64' in absent.stderr, absent.stderr)
 
 
 def historical_shim(output, version, revision):
@@ -409,7 +433,7 @@ def historical_shim(output, version, revision):
         return subprocess.run(['git', '-C', str(ROOT), 'show', f'{revision}:{path}'], capture_output=True, check=True).stdout
     for name in ['main.cc', 'early_zone_registration_apple.cc', 'early_zone_registration_apple.h', 'early_zone_registration_utils_apple.h']:
         (tree / name).write_bytes(show(f'ChromiumApp/{name}'))
-    headers = f'Packages/BarkEngine/BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium'
+    headers = 'Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Headers/BarcChromium'
     for name in ['barc_bridge_api.h', 'barc_public_headers_sha256.h']:
         (module / name).write_bytes(show(f'{headers}/{name}'))
     subprocess.run(['xcrun', 'clang++', '-arch', 'x86_64', '-std=c++20', '-fno-exceptions', '-fno-rtti', '-nostdlib++', '-O2',
@@ -521,8 +545,8 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib):
     check('main links only libSystem', linked == ['/usr/lib/libSystem.B.dylib'], linked)
 
 
-def artifact_of(package):
-    return package / f'BarkEngine.xcframework/{SLICE_NAME}/Engine'
+def artifact_of(package, architecture='x86_64'):
+    return package / 'RuntimeArtifacts' / architecture / 'Engine'
 
 
 def seal(artifact, products):
@@ -531,7 +555,7 @@ def seal(artifact, products):
     run = subprocess.run(['shasum', '-a', '256', *['./' + str(p.relative_to(artifact)) for p in files]], cwd=artifact, capture_output=True, text=True, check=True)
     (artifact / 'SHA256SUMS').write_text(run.stdout)
     pin = subprocess.check_output(['shasum', '-a', '256', 'SHA256SUMS'], cwd=artifact, text=True).split()[0]
-    (products / 'include/BarcChromium/engine-artifact.sha256').write_text(pin + '\n')
+    (products / 'include/BarcChromium/engine-artifact-x86_64.sha256').write_text(pin + '\n')
 
 
 def sha256(path):
@@ -577,10 +601,10 @@ def fake_engine_build(root, framework_lib):
     return build
 
 
-def publish(build, package, siso=None):
+def publish(build, package, siso=None, architecture=None):
     fake = FAKE_SISO if siso is None else siso
     env = {**os.environ, 'PATH': f'{fake}:{os.environ["PATH"]}', 'FAKE_SISO_STATE': str(build / 'fake-siso-state.json')}
-    return subprocess.run(['bash', str(PUBLISH), str(build), str(package)], capture_output=True, text=True, env=env)
+    return subprocess.run(['bash', str(PUBLISH), *(['--arch', architecture] if architecture else []), str(build), str(package)], capture_output=True, text=True, env=env)
 
 
 def same_text(a, b):
@@ -591,13 +615,13 @@ def make_writable(path):
     subprocess.run(['chmod', '-R', 'u+w', str(path)], check=True)
 
 
-def make_inputs(root, shim, framework_lib, shell_lib, writable=True):
+def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architecture=None):
     root.mkdir()
     build = fake_engine_build(root, framework_lib)
     package = root / 'package'
-    run = publish(build, package)
+    run = publish(build, package, architecture=architecture)
     assert run.returncode == 0, run.stderr
-    artifact = artifact_of(package)
+    artifact = artifact_of(package, architecture or 'x86_64')
     if writable:
         make_writable(artifact)
 
@@ -622,8 +646,8 @@ def make_inputs(root, shim, framework_lib, shell_lib, writable=True):
     return root / 'app/Bark.app', artifact, products
 
 
-def stage(app, artifact, products, output, additions=None):
-    return subprocess.run(['bash', str(STAGE), str(app), str(artifact), str(products), str(output),
+def stage(app, artifact, products, output, additions=None, architecture=None):
+    return subprocess.run(['bash', str(STAGE), *(['--arch', architecture] if architecture else []), str(app), str(artifact), str(products), str(output),
                            *([str(additions)] if additions else [])], capture_output=True, text=True)
 
 
@@ -661,7 +685,7 @@ def publish_cases(work, framework_lib):
     published = package / f'BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium'
     check('publishing copies the public headers', all((published / n).read_text() == (RUNTIME / n).read_text() for n in HEADER_NAMES))
     pin = subprocess.check_output(['shasum', '-a', '256', 'SHA256SUMS'], cwd=artifact, text=True).split()[0]
-    check('the pin is the checksum list\'s SHA', (published / 'engine-artifact.sha256').read_text().strip() == pin)
+    check('the pin is the checksum list\'s SHA', (published / 'engine-artifact-x86_64.sha256').read_text().strip() == pin)
     listed = (artifact / 'SHA256SUMS').read_text()
     check('checksums cover the versioned framework executable', f'{FRAMEWORK}/Versions/{VERSION}/Bark Framework' in listed, listed)
     check('checksums cover the public headers', all(f'./Headers/{n}' in listed for n in HEADER_NAMES), listed)
@@ -726,7 +750,7 @@ def publish_cases(work, framework_lib):
     check('a source tree changed after the build does not refuse an engine built from Runtime/Chromium', run.returncode == 0, run.stderr)
     published = package / f'BarkEngine.xcframework/{SLICE_NAME}'
     check('it publishes the headers the engine was built from, not the changed tree\'s',
-          run.returncode == 0 and all(same_text(published / 'Engine/Headers' / n, RUNTIME / n) and
+          run.returncode == 0 and all(same_text(artifact_of(package) / 'Headers' / n, RUNTIME / n) and
                                       same_text(published / 'Headers/BarcChromium' / n, RUNTIME / n) for n in HEADER_NAMES))
 
 
@@ -838,10 +862,10 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('no-checksums', 'an artifact without its checksums', 'Missing engine artifact manifest:',
             lambda a, e, p: (e / 'SHA256SUMS').unlink(), sealed=False)
     def other_pin(a, e, p):
-        (p / 'include/BarcChromium/engine-artifact.sha256').write_text('0' * 64 + '\n')
+        (p / 'include/BarcChromium/engine-artifact-x86_64.sha256').write_text('0' * 64 + '\n')
     refused('other-pin', 'an app built against another engine artifact', 'built against another engine artifact', other_pin, sealed=False)
     refused('no-pin', 'app products without an engine pin', 'built against another engine artifact',
-            lambda a, e, p: (p / 'include/BarcChromium/engine-artifact.sha256').unlink(), sealed=False)
+            lambda a, e, p: (p / 'include/BarcChromium/engine-artifact-x86_64.sha256').unlink(), sealed=False)
     for name in HEADER_NAMES + [DIGEST_HEADER]:
         reason = f'App was compiled against another {name} than the engine\'s'
         refused('app-header-' + name, f'an app compiled against another {name}', reason,
@@ -1001,6 +1025,57 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('blocker-two', 'an engine with a second blocker library', 'holds 2 copies of libnook_adblock.dylib', second_library)
 
 
+def arm_artifact_cases(work):
+    fixture = work / 'arm64-fixtures'
+    fixture.mkdir()
+    arch = ('-arch', 'arm64')
+    framework = fixture / 'arm-framework.dylib'
+    shell = fixture / 'arm-shell.dylib'
+    shim = fixture / 'arm-main'
+    compile_shim(shim, extra=('-arch', 'arm64'))
+    fake_shell(shell, arch=arch)
+    fake_framework(framework, arch=arch)
+    app, artifact, products = make_inputs(fixture / 'candidate', shim, framework, shell, architecture='arm64')
+    out = fixture / 'staged/Bark.app'
+    out.parent.mkdir()
+    result = stage(app, artifact, products, out, architecture='arm64')
+    check('a real thin ARM64 shell, main and engine stage with the ARM64 pin',
+          result.returncode == 0, result.stderr)
+    if result.returncode:
+        return
+    result = stage(app, artifact, products, fixture / 'mislabelled/Bark.app')
+    check('the ARM64 SDK cannot stage as Intel',
+          result.returncode != 0 and 'another engine artifact' in result.stderr, result.stderr)
+
+    for relative in (
+        'MacOS/Bark',
+        'Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell',
+        f'Frameworks/{FRAMEWORK}/Versions/{VERSION}/Bark Framework',
+    ):
+        image = out / 'Contents' / relative
+        command = ['codesign', '--force', '--sign', '-']
+        if relative == 'MacOS/Bark':
+            command += ['--entitlements', out.parent / 'Bark Packaging/app-entitlements.plist']
+        signed_image = fixture / image.name
+        shutil.copy2(image, signed_image)
+        subprocess.run([*command, signed_image], capture_output=True, check=True)
+        shutil.copy2(signed_image, image)
+    command = ['bash', str(STAGE), '--arch', 'arm64', '--check-signed', str(out), str(SHIPPED_ADDITIONS), str(artifact)]
+    result = subprocess.run(command, capture_output=True, text=True)
+    check('the signed ARM64 fixture passes the selected-architecture gate', result.returncode == 0, result.stderr)
+    command[3] = 'x86_64'
+    result = subprocess.run(command, capture_output=True, text=True)
+    check('signed ARM64 binaries cannot satisfy Intel verification',
+          result.returncode != 0 and 'must be exactly x86_64 and thin:' in result.stderr, result.stderr)
+
+    contributor = runpy.run_path(str(ROOT / 'scripts/bark-check.py'))
+    signed = fixture / 'arm-resigned.dylib'
+    shutil.copyfile(shell, signed)
+    subprocess.run(['codesign', '--force', '--sign', '-', signed], capture_output=True, check=True)
+    check('real ARM64 signing preserves the SDK payload even with an ad-hoc source signature',
+          contributor['signed_mach_matches'](shell, signed, fixture, 'arm64'))
+
+
 def signed_cases(work, mach_o):
     """`--check-signed` on a signed candidate: one blocker library, no Mach-O left unsigned, and the engine's
     entitlements and the declared additions, nothing else."""
@@ -1013,6 +1088,10 @@ def signed_cases(work, mach_o):
     listed_entitlements = {**ENGINE_ENTITLEMENTS, CALENDAR: True}
     main_binary = work / 'signed-main'
     compile_c('int main(void) { return 0; }\n', main_binary)
+    engine_binary = work / 'signed-framework.dylib'
+    fake_framework(engine_binary)
+    native_binary = work / 'signed-native.dylib'
+    fake_shell(native_binary)
 
     def check_signed(name, mutate=None, info=listed_info, entitlements=listed_entitlements):
         app = work / name / 'Bark.app'
@@ -1023,17 +1102,20 @@ def signed_cases(work, mach_o):
         # codesign refuses a bundle whose fake framework is not a framework, so the app is signed before it is added.
         subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(work / name / 'entitlements.plist'), str(app)],
                        capture_output=True, check=True)
-        (app / libraries).mkdir(parents=True)
+        engine = versioned_framework(app / 'Contents/Frameworks', engine_binary)
+        shell = shell_framework(app / 'Contents/Frameworks', native_binary)
+        versioned = engine / f'Versions/{VERSION}/Bark Framework'
+        native = shell / 'Versions/A/NookNativeShell'
         shutil.copy2(mach_o, app / libraries / 'libnook_adblock.dylib')
         shutil.copy2(mach_o, app / 'Contents/Frameworks/signed.dylib')
-        for path in [app / libraries / 'libnook_adblock.dylib', app / 'Contents/Frameworks/signed.dylib']:
+        for path in [versioned, native, app / libraries / 'libnook_adblock.dylib', app / 'Contents/Frameworks/signed.dylib']:
             subprocess.run(['codesign', '--force', '--sign', '-', str(path)], capture_output=True, check=True)
         if mutate:
             mutate(app)
         return subprocess.run(['bash', str(STAGE), '--check-signed', str(app), str(additions), str(artifact)], capture_output=True, text=True)
 
     universal = work / 'signed-Sparkle'
-    compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'arm64')
+    compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'x86_64', '-arch', 'arm64')
 
     def add_signed_sparkle(app):
         sparkle = app / 'Contents/Frameworks/Sparkle.framework/Versions/B/Sparkle'
@@ -1118,6 +1200,7 @@ def main():
             launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib)
             publish_cases(work, framework_lib)
             stage_cases(work, shim, framework_lib, shell_lib)
+        arm_artifact_cases(work)
         signed_cases(work, shell_lib)
         make_writable(work)
     print(f'{len(failures)} failed')

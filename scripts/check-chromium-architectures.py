@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 # Licensed under GPL-3.0. See LICENSE.
-"""Check every Mach-O image in the Intel Bark engine framework."""
+"""Check every Mach-O image in the architecture-specific Bark engine framework."""
 
 import argparse
 from pathlib import Path
 import subprocess
 import sys
+
+from chromium_sdk_layout import ARCHITECTURES
 
 THIN_64 = b"\xcf\xfa\xed\xfe"
 MACH_O = {
@@ -14,7 +16,21 @@ MACH_O = {
 }
 
 
-def check_framework(framework):
+def image_magic(path):
+    with path.open("rb") as handle:
+        return handle.read(4)
+
+
+def check_image(path, architecture, magic):
+    result = subprocess.run(
+        ["/usr/bin/lipo", "-archs", path], capture_output=True, text=True, check=False
+    )
+    archs = result.stdout.strip() if result.returncode == 0 else "unreadable"
+    if magic != THIN_64 or archs != architecture:
+        raise ValueError(f"Engine Mach-O must be exactly {architecture} and thin: {path} (found {archs})")
+
+
+def check_framework(framework, architecture):
     if not framework.is_dir():
         raise ValueError(f"Missing Bark framework: {framework}")
     framework = framework.resolve()
@@ -26,24 +42,22 @@ def check_framework(framework):
             continue
         if not path.is_file():
             continue
-        with path.open("rb") as handle:
-            magic = handle.read(4)
-        if magic not in MACH_O:
-            continue
-        result = subprocess.run(
-            ["/usr/bin/lipo", "-archs", path], capture_output=True, text=True, check=False
-        )
-        archs = result.stdout.strip() if result.returncode == 0 else "unreadable"
-        if magic != THIN_64 or archs != "x86_64":
-            raise ValueError(f"Engine Mach-O must be exactly x86_64 and thin: {path} (found {archs})")
+        magic = image_magic(path)
+        if magic in MACH_O:
+            check_image(path, architecture, magic)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("framework", type=Path)
+    parser.add_argument("path", type=Path)
+    parser.add_argument("--image", action="store_true", help="require a specific Mach-O executable or dylib")
+    parser.add_argument("--arch", choices=ARCHITECTURES, default="x86_64")
     args = parser.parse_args()
     try:
-        check_framework(args.framework)
+        if args.image:
+            check_image(args.path, args.arch, image_magic(args.path))
+        else:
+            check_framework(args.path, args.arch)
     except (OSError, ValueError) as error:
         sys.exit(str(error))
 

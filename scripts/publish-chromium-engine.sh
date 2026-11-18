@@ -5,8 +5,14 @@
 # framework: main opens it after registering the malloc zone, and staging copies it from here. The
 # headers and the SHA are committed; the artifact stays local until uploads exist. Needs depot_tools on PATH.
 set -euo pipefail
+ARCH=x86_64
+if [[ ${1:-} == --arch ]]; then
+  ARCH=${2:-}
+  [[ $ARCH == x86_64 || $ARCH == arm64 ]] || { echo 'Expected --arch x86_64 or arm64' >&2; exit 2; }
+  shift 2
+fi
 if [[ $# != 2 ]]; then
-  echo 'usage: bash scripts/publish-chromium-engine.sh <engine build directory> <BarkEngine package directory>' >&2
+  echo 'usage: bash scripts/publish-chromium-engine.sh [--arch x86_64|arm64] <engine build directory> <BarkEngine package directory>' >&2
   exit 2
 fi
 BUILD="$1"
@@ -19,8 +25,12 @@ ENGINE_APP="$BUILD/Bark.app"
 INTEGRATED_APP_INFO="$BUILD/gen/chrome/chrome_integrated_app_info_plist.plist"
 FRAMEWORK_NAME='Bark Framework.framework'
 FRAMEWORK="$ENGINE_APP/Contents/Frameworks/$FRAMEWORK_NAME"
-SLICE="$PACKAGE/BarkEngine.xcframework/macos-x86_64"
-ARTIFACT="$SLICE/Engine"
+LAYOUT="$ROOT/scripts/chromium_sdk_layout.py"
+HEADERS=$(python3 -B "$LAYOUT" headers "$PACKAGE" "$ARCH")
+ARTIFACT=$(python3 -B "$LAYOUT" artifact "$PACKAGE" "$ARCH")
+PIN="$HEADERS/engine-artifact-$ARCH.sha256"
+OTHER_ARCH=x86_64
+[[ $ARCH == x86_64 ]] && OTHER_ARCH=arm64
 [[ ! -e "$ARTIFACT" ]] || refuse "Engine artifact already published, read-only: chmod -R u+w and remove it first: $ARTIFACT"
 [[ -d "$FRAMEWORK" ]] || refuse 'Missing Bark framework'
 [[ -d "$BUILD/Bark Packaging" ]] || refuse 'Missing Bark Packaging'
@@ -28,21 +38,21 @@ ARTIFACT="$SLICE/Engine"
 VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INTEGRATED_APP_INFO")
 BINARY="$FRAMEWORK/Versions/$VERSION/Bark Framework"
 [[ -f "$BINARY" ]] || refuse 'Missing versioned engine executable'
-[[ $(/usr/bin/lipo -archs "$BINARY") == x86_64 ]] || refuse "Engine must be exactly x86_64: $BINARY"
-python3 -B "$ROOT/scripts/check-chromium-architectures.py" "$FRAMEWORK"
+[[ $(/usr/bin/lipo -archs "$BINARY") == "$ARCH" ]] || refuse "Engine must be exactly $ARCH: $BINARY"
+python3 -B "$ROOT/scripts/check-chromium-architectures.py" --arch "$ARCH" "$FRAMEWORK"
 ENTRY=$(/usr/bin/sed -nE 's/^#define BARC_ENGINE_MAIN_SYMBOL "(.*)"$/\1/p' "$BRIDGE/barc_bridge_api.h")
 TABLE=$(/usr/bin/sed -nE 's/^#define BARC_BRIDGE_SYMBOL "(.*)"$/\1/p' "$BRIDGE/barc_bridge_api.h")
 EXPORTS=$(/usr/bin/nm -gjU "$BINARY")
 /usr/bin/grep -x "_$ENTRY" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $ENTRY"
 /usr/bin/grep -x "_$TABLE" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $TABLE"
 /usr/bin/grep -x _barc_public_headers_sha256 <<<"$EXPORTS" > /dev/null || refuse 'Engine does not export barc_public_headers_sha256'
-python3 -B - "$ROOT/Runtime/Chromium" "$BINARY" <<'PYTHON' || exit 1
+python3 -B - "$ROOT/Runtime/Chromium" "$BINARY" "$ARCH" <<'PYTHON' || exit 1
 from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[1])
 from run_browser_tests import require_host_only_image
 try:
-    require_host_only_image(Path(sys.argv[2]))
+    require_host_only_image(Path(sys.argv[2]), sys.argv[3])
 except ValueError as error:
     sys.exit(str(error))
 PYTHON
@@ -69,18 +79,29 @@ for name, directory in directories.items():
 PY
 /usr/bin/diff -r "$ENGINE_APP/Contents/Resources" "$ROOT/ChromiumApp/Resources" >&2 ||
   refuse 'Engine outer resources differ from ChromiumApp/Resources: review the difference and update the app'
-/bin/mkdir -p "$ARTIFACT/Headers" "$SLICE/Headers/BarcChromium"
+# A second architecture may publish a different runtime, but it must use the same
+# public interface as the existing pin, including a legacy Intel pin.
+OTHER_PIN=$(python3 -B "$LAYOUT" pin-file "$PACKAGE" "$OTHER_ARCH")
+if [[ -f "$OTHER_PIN" ]]; then
+  python3 -B "$LAYOUT" digest "$PACKAGE" "$OTHER_ARCH" >/dev/null
+  for header in "${PUBLIC_HEADERS[@]}"; do
+    /usr/bin/cmp -s "$HEADERS/$header" "$BRIDGE/$header" ||
+      refuse "Public headers differ from the pinned $OTHER_ARCH SDK: $header"
+  done
+fi
+/bin/mkdir -p "$ARTIFACT/Headers" "$HEADERS"
 /usr/bin/ditto "$FRAMEWORK" "$ARTIFACT/$FRAMEWORK_NAME"
 /usr/bin/ditto "$BUILD/Bark Packaging" "$ARTIFACT/Bark Packaging"
 /bin/cp "$INTEGRATED_APP_INFO" "$ARTIFACT/engine-Info.plist"
 for header in "${PUBLIC_HEADERS[@]}"; do
   /bin/cp "$BRIDGE/$header" "$ARTIFACT/Headers/$header"
-  /bin/cp "$BRIDGE/$header" "$SLICE/Headers/BarcChromium/$header"
+  /usr/bin/cmp -s "$BRIDGE/$header" "$HEADERS/$header" || /bin/cp "$BRIDGE/$header" "$HEADERS/$header"
 done
 python3 "$ROOT/Runtime/Chromium/bark/app/barc_public_headers_sha256.py" "$ARTIFACT/Headers/barc_public_headers_sha256.h" "${PUBLIC_HEADERS[@]/#/$BRIDGE/}"
-/bin/cp "$ARTIFACT/Headers/barc_public_headers_sha256.h" "$SLICE/Headers/BarcChromium/barc_public_headers_sha256.h"
+/usr/bin/cmp -s "$ARTIFACT/Headers/barc_public_headers_sha256.h" "$HEADERS/barc_public_headers_sha256.h" ||
+  /bin/cp "$ARTIFACT/Headers/barc_public_headers_sha256.h" "$HEADERS/barc_public_headers_sha256.h"
 (cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS -print0 | /usr/bin/sort -z | /usr/bin/xargs -0 /usr/bin/shasum -a 256 > SHA256SUMS)
-(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1) > "$SLICE/Headers/BarcChromium/engine-artifact.sha256"
+(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1) > "$PIN"
 # Python writes bytecode beside the signing tools, and any new file fails the checksums at the next staging.
 /bin/chmod -R a-w "$ARTIFACT"
-printf '%s\n' "Published engine $VERSION: $ARTIFACT" "Artifact SHA: $(cat "$SLICE/Headers/BarcChromium/engine-artifact.sha256")"
+printf '%s\n' "Published engine $VERSION: $ARTIFACT" "Artifact SHA: $(cat "$PIN")"

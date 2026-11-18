@@ -187,15 +187,21 @@ direct launch and both property lists without opening a window.
 
 ### Publishing the engine
 
-The app builds without this checkout. It compiles against the `Packages/BarkEngine`
-binary target and never links the engine: `main` opens the framework after registering
-the malloc zone and finds the bridge table. So the `BarkEngine.xcframework` slice is a library
-slice whose static library defines no symbols. Its one public C header, `barc_bridge_api.h`
-(from `bark/bridge/`), and `engine-artifact.sha256` are committed. The engine itself sits in
-the same slice under the ignored `Engine/` directory: the framework, `Bark Packaging`, the
-engine's `Info.plist`, a copy of that header and `SHA256SUMS`. The engine's own declarations
-stay in `barc_bridge_functions.h`, `barc_bridge.h` and `barc_runtime_startup.h`, which the
-engine alone includes. x86_64 only for now.
+The app compiles against the `Packages/BarkEngine` binary target. At runtime, `main`
+opens the selected engine framework after registering the malloc zone and finds the bridge table.
+The `BarkEngine.xcframework/macos-arm64_x86_64` slice contains one universal static library
+with no exported symbols and one copy of the public C header `barc_bridge_api.h` from
+`bark/bridge/`. The architecture-specific digests live beside it as
+`engine-artifact-x86_64.sha256` and, once qualified, `engine-artifact-arm64.sha256`.
+The separate, ignored `Packages/BarkEngine/RuntimeArtifacts/<architecture>/Engine/` directory
+holds the exact framework, `Bark Packaging`, engine `Info.plist`, public header and
+`SHA256SUMS`. The shared public header is identical for both architectures.
+
+The Intel pin is available. The universal header target can build on either architecture,
+and a signed ARM64 build requires a separately published and qualified ARM64 runtime pin.
+The existing Intel SDK cache at `~/Library/Caches/BarkSDK/<digest>/Engine` is unchanged.
+The resolver also accepts an existing local Intel `Engine/` directory and legacy Intel
+digest under `BarkEngine.xcframework/macos-x86_64/`.
 
 The framework exports three Bark symbols: the entry, the table and the header digest. The
 table, `struct BarcBridge`, holds every call the app makes; Swift takes each member's type from
@@ -219,8 +225,11 @@ the engine, then publish again.
 
 `Engine/` is read-only, because Python writes bytecode beside the signing tools and any new
 file fails its checksums at the next staging. From the engine source root, with depot_tools
-on `PATH`, after a successful build. If there is an earlier `Engine/`, run `chmod -R u+w` on it
-and remove it, then commit the changed headers and SHA:
+on `PATH`, publish the architecture you built. The default is `x86_64`. The publisher checks
+each Mach-O in the framework and writes only the selected architecture’s artifact and pin.
+If the other architecture already has a pin, the public header must match it. To replace
+an earlier artifact, remove its read-only `Engine/` directory after making it writable.
+Commit the public headers and matching pin after validation:
 
 ```fish
 bash "$barc_repo/scripts/publish-chromium-engine.sh" "$PWD/out/Barc-x64" "$barc_repo/Packages/BarkEngine"
@@ -228,7 +237,7 @@ bash "$barc_repo/scripts/publish-chromium-engine.sh" "$PWD/out/Barc-x64" "$barc_
 
 ### Building the app
 
-From the app repository root, point the contributor command at a verified Intel SDK and select a Developer ID Application identity installed on the Mac. The Swift shell and app target compile against the checked-in public headers. The build uses the matching SDK's signing tools and the app's tracked `ChromiumApp/Additions.plist` to sign the complete bundle.
+From the app repository root, point the contributor command at a verified SDK and select a Developer ID Application identity installed on the Mac. The Swift shell and app target compile against the checked-in public headers. The build uses the matching SDK's signing tools and the app's tracked `ChromiumApp/Additions.plist` to sign the complete bundle.
 
 ```fish
 set -lx BARK_ENGINE_SOURCE /path/to/Engine
@@ -236,7 +245,9 @@ set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
 python3 scripts/bark-check.py build
 ```
 
-The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. A successful rebuild replaces the previous app at the same path. Keep build inputs in Git and the verified SDK in the versioned cache. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
+The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. A successful rebuild replaces the previous app at the same path. `engine`, `build`, and `verify` select Intel by default and accept `--arch arm64`
+once the ARM64 pin is available. `smoke` and `launch` require the native hardware architecture.
+Keep build inputs in Git and the verified SDK in the versioned cache. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
 
 Do not sign or launch a partially staged bundle. The framework requires its
 standard FMWK Info.plist, `ee.qdo.nook.NativeShell` identity, version-A executable,
