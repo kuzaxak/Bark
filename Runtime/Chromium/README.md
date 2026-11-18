@@ -83,9 +83,52 @@ SDK build, GN arguments and the PGO profile used by the browser target in
 the receipt in the pinned manifest. A consumer can verify an installed official
 SDK without the Chromium checkout using `bark-check.py engine --require-official`.
 
+#### Prepare the first official SDK on its native Mac
+
+Start from the clean app revision to be qualified. After `prepare` and
+`check`, build and publish from the official output. Publication verifies
+that output’s provenance before writing the local pin. A first architecture
+can do this before it has a committed pin. The release workflow consumes a
+committed official pin after this qualification.
+
 ```fish
-python3 "$recipe" build --checkout "$engine_checkout" --arch x64 --official --jobs 8
+set arch (python3 "$barc_repo/scripts/chromium_sdk_layout.py" native-arch)
+set gn_cpu (python3 "$barc_repo/scripts/chromium_sdk_layout.py" native-arch --gn)
+set -lx PATH (dirname "$engine_checkout")/depot_tools $PATH
+python3 "$recipe" build --checkout "$engine_checkout" --arch "$gn_cpu" --official --jobs 8
+bash "$barc_repo/scripts/publish-chromium-engine.sh" --arch "$arch" --require-official --replace \
+    "$engine_checkout/src/out/Barc-$gn_cpu-official" "$barc_repo/Packages/BarkEngine"
 ```
+
+`--replace` replaces a previous local publication for this architecture, if
+present. The shared SDK headers must still match the other architecture’s
+pinned headers. Check the resulting metadata change before adopting the pin.
+
+To hand off a candidate privately, send the exact source revision, the generated
+pin, the verified SDK archive and a locally signed copy of the app. Run these
+commands from `$barc_repo` with `BARK_SIGN_IDENTITY` set to a local Developer ID
+Application identity.
+
+```fish
+set -l handoff (mktemp -d /private/tmp/bark-official-handoff.XXXXXXXX)
+set -l headers (python3 scripts/chromium_sdk_layout.py headers Packages/BarkEngine "$arch")
+set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
+set -l archive "$handoff/BarkSDK-$arch-$pin.tar.gz"
+cp "$headers/engine-artifact-$arch.sha256" "$handoff/"
+git rev-parse HEAD > "$handoff/source-revision"
+env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py engine --arch "$arch" --require-official \
+    --archive "$archive"
+python3 scripts/bark-check.py build --arch "$arch" --require-official --engine "$archive" \
+    --output "$handoff/Bark.app"
+ditto -c -k --keepParent "$handoff/Bark.app" "$handoff/Bark-$arch.zip"
+```
+
+On the receiving native Mac, check out that revision, review and place the
+generated pin beside the matching SDK headers, then verify and install the
+archive with `bark-check.py engine --arch "$arch" --require-official --install
+--engine "$archive"`. Unpack the signed app and run `bark-check.py verify` and
+the native smoke and guarded walks against that app. The candidate workflow
+still requires a committed pin and independent release approval.
 
 This checkout holds Chromium's downloaded sources and incremental compiler output.
 Keeping it outside the application worktree lets you clear the app's `build/`

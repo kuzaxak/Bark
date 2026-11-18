@@ -180,7 +180,7 @@ def check_other_architecture(package, architecture, engine):
             raise ValueError(f"Public headers differ from the pinned {other} SDK: {name}")
 
 
-def publish(package, architecture, replace, build, script):
+def publish(package, architecture, replace, build, script, *, require_official=False):
     package.mkdir(parents=True, exist_ok=True)
     package = package.resolve()
     lock = os.open(package, os.O_RDONLY)
@@ -212,8 +212,9 @@ def publish(package, architecture, replace, build, script):
             prepared = candidate / "Engine"
             # If this process is killed during preparation, Bash retains the
             # same flock until its last copying or checksum process exits.
-            subprocess.run(["/bin/bash", script, "--prepare", work, prepared, "--arch", architecture, build, package],
-                           check=True, pass_fds=(lock,))
+            flags = ["--require-official"] if require_official else []
+            subprocess.run(["/bin/bash", script, "--prepare", work, prepared, "--arch", architecture,
+                            *flags, build, package], check=True, pass_fds=(lock,))
             digest = verified_digest(prepared)
             check_other_architecture(package, architecture, prepared)
             if engine.exists():
@@ -248,9 +249,10 @@ def publish(package, architecture, replace, build, script):
 
 
 if __name__ == "__main__":
-    package, architecture, replace, build, script = sys.argv[1:]
+    package, architecture, replace, build, script, require_official = sys.argv[1:]
     try:
-        publish(Path(package), architecture, replace == "true", build, script)
+        publish(Path(package), architecture, replace == "true", build, script,
+                require_official=require_official == "true")
     except subprocess.CalledProcessError as error:
         sys.exit(error.returncode)
     except (OSError, ValueError, KeyError) as error:

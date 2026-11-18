@@ -7,6 +7,7 @@
 set -euo pipefail
 ARCH=
 REPLACE=false
+REQUIRE_OFFICIAL=false
 WORK=
 if [[ ${1:-} == --prepare ]]; then
   WORK=$2
@@ -20,22 +21,31 @@ while [[ $# -gt 0 ]]; do
       [[ $ARCH == x86_64 || $ARCH == arm64 ]] || { echo 'Expected --arch x86_64 or arm64' >&2; exit 2; }
       shift 2 ;;
     --replace) REPLACE=true; shift ;;
+    --require-official) REQUIRE_OFFICIAL=true; shift ;;
     *) break ;;
   esac
 done
 if [[ $# != 2 ]]; then
-  echo 'usage: bash scripts/publish-chromium-engine.sh [--arch x86_64|arm64] [--replace] <engine build directory> <BarkEngine package directory>' >&2
+  echo 'usage: bash scripts/publish-chromium-engine.sh [--arch x86_64|arm64] [--replace] [--require-official] <engine build directory> <BarkEngine package directory>' >&2
   exit 2
 fi
 BUILD="$1"
 PACKAGE="$2"
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 ARCH=${ARCH:-$(python3 -B "$ROOT/scripts/chromium_sdk_layout.py" native-arch)}
+refuse() { echo "$1" >&2; exit 1; }
+OFFICIAL_RECEIPT="$BUILD/official-build.json"
+if [[ $REQUIRE_OFFICIAL == true && ( ! -f "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_RECEIPT" ) ]]; then
+  refuse "No official Bark SDK build receipt: $OFFICIAL_RECEIPT. Build with --official and publish its -official output."
+fi
 if [[ -z $WORK ]]; then
-  exec python3 -B "$ROOT/scripts/publish_chromium_sdk.py" "$PACKAGE" "$ARCH" "$REPLACE" "$BUILD" "$ROOT/scripts/publish-chromium-engine.sh"
+  if [[ $REQUIRE_OFFICIAL == true ]]; then
+    # This must precede publication recovery, which can write a pending pin.
+    python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
+  fi
+  exec python3 -B "$ROOT/scripts/publish_chromium_sdk.py" "$PACKAGE" "$ARCH" "$REPLACE" "$BUILD" "$ROOT/scripts/publish-chromium-engine.sh" "$REQUIRE_OFFICIAL"
 fi
 BRIDGE="$ROOT/Runtime/Chromium/bark/bridge"
-refuse() { echo "$1" >&2; exit 1; }
 PUBLIC_HEADERS=(barc_bridge_api.h)
 ENGINE_APP="$BUILD/Bark.app"
 INTEGRATED_APP_INFO="$BUILD/gen/chrome/chrome_integrated_app_info_plist.plist"
@@ -189,7 +199,6 @@ PYTHON
 then
   refuse 'Engine outer resources differ from ChromiumApp/Resources: review the difference and update the app'
 fi
-OFFICIAL_RECEIPT="$BUILD/official-build.json"
 if [[ -e "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_RECEIPT" ]]; then
   python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
 fi
