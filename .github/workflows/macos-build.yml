@@ -48,7 +48,7 @@ jobs:
       github.ref_name == github.event.repository.default_branch &&
       vars.BARK_SMOKE_RUNNER != '' &&
       vars.BARK_ENGINE_SOURCE != '' &&
-      vars.BARK_SMOKE_CANDIDATE != ''
+      (vars.BARK_SIGN_IDENTITY != '' || vars.BARK_SMOKE_CANDIDATE != '')
     runs-on: [self-hosted, macOS, x64, "${{ vars.BARK_SMOKE_RUNNER }}"]
     timeout-minutes: 45
     steps:
@@ -60,8 +60,15 @@ jobs:
       - name: Check catalog and initial window activation
         run: python3 scripts/bark-check.py catalog
 
+      - name: Build the checked-out Bark app
+        if: vars.BARK_SIGN_IDENTITY != ''
+        env:
+          BARK_SIGN_IDENTITY: ${{ vars.BARK_SIGN_IDENTITY }}
+          BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
+        run: python3 scripts/bark-check.py build
+
       - name: Verify and launch the signed candidate
         env:
           BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
-          BARK_SMOKE_CANDIDATE: ${{ vars.BARK_SMOKE_CANDIDATE }}
+          BARK_SMOKE_CANDIDATE: ${{ vars.BARK_SIGN_IDENTITY != '' && 'build/Bark.app' || vars.BARK_SMOKE_CANDIDATE }}
         run: python3 scripts/bark-check.py smoke "$BARK_SMOKE_CANDIDATE"

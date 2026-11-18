@@ -62,20 +62,25 @@ On Intel, run the catalog and startup-focus regressions against the Debug shell.
 python3 scripts/bark-check.py catalog
 ```
 
-Get the exact engine artifact from a maintainer's existing build, or produce it using [Publishing the engine](Runtime/Chromium/README.md#publishing-the-engine). Use a trusted, already signed Bark candidate staged from that pin using [Building the app](Runtime/Chromium/README.md#building-the-app) and [Installed signing proof](Runtime/Chromium/README.md#installed-signing-proof). Both launch commands use a disposable browser profile and require a logged-in Intel macOS session.
+On an Intel Mac with Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
 
 ```fish
-python3 scripts/bark-check.py engine --engine /path/to/Engine
-python3 scripts/bark-check.py verify /path/to/signed/Bark.app --engine /path/to/Engine
-python3 scripts/bark-check.py smoke /path/to/signed/Bark.app --engine /path/to/Engine
-python3 scripts/bark-check.py launch /path/to/signed/Bark.app --engine /path/to/Engine
+set -lx BARK_ENGINE_SOURCE /path/to/Engine
+set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
+python3 scripts/bark-check.py build
+python3 scripts/bark-check.py smoke build/Bark.app
+python3 scripts/bark-check.py launch build/Bark.app
 ```
+
+`build` creates its output directory, compiles the Release shell, stages the pinned engine and signs the app locally. A successful rebuild replaces `build/Bark.app` after verification. Quit that copy before replacing it. Temporary compilation, staging and signing files are removed at the end of each build. Use `--output /path/to/Bark.app` to choose a different destination. Local signing leaves notarization to the distribution workflow.
+
+To verify an existing signed app, use `python3 scripts/bark-check.py verify /path/to/Bark.app`.
 
 `--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Engine/` directory next to the committed Bark SDK headers. The check verifies the manifest against the checkout pin and compares the signed bundle's embedded engine files against that artifact.
 
 `smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 
-For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label, `BARK_SMOKE_CANDIDATE` to the trusted signed bundle's absolute path on that runner, and `BARK_ENGINE_SOURCE` to the matching directory or archive source. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
+For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label and `BARK_ENGINE_SOURCE` to the matching directory or archive source. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
 
 ## Code Style & Standards
 

@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 # Licensed under GPL-3.0. See LICENSE.
-"""Run contributor checks or launch a verified signed Bark candidate."""
+"""Build, verify and run the signed Bark app or its native regression checks."""
 
 import argparse
 from contextlib import contextmanager
+import ctypes
+import fcntl
 import filecmp
 import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -11,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import plistlib
 import shutil
 import signal
 import struct
@@ -280,16 +283,84 @@ def launch_candidate(app, working, *, interactive):
         print("Signed Bark rendered the loopback fixture with an isolated profile.")
 
 
+def install_local_build(app, output):
+    # Work and destination share a volume. Swap complete bundles in one
+    # operation so readers see a verified app even if a rebuild is interrupted.
+    parent = os.open(output.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(parent, fcntl.LOCK_EX)
+        if output.is_symlink():
+            raise ValueError(f"Choose a local output directory instead of a symlink: {output}")
+        if not output.exists():
+            app.rename(output)
+            return
+        info = output / "Contents/Info.plist"
+        if not info.is_file() or plistlib.loads(info.read_bytes()).get("CFBundleIdentifier") != "ee.qdo.bark":
+            raise ValueError(f"Output already exists and is not a Bark bundle: {output}")
+        processes = subprocess.check_output(["/bin/ps", "-axo", "comm="], text=True)
+        if any(path.strip().startswith(str(output) + "/") for path in processes.splitlines()):
+            raise ValueError(f"Quit the running copy before rebuilding {output}")
+        rename = ctypes.CDLL(None, use_errno=True).renamex_np
+        rename.argtypes = (ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint)
+        if rename(os.fsencode(app), os.fsencode(output), 0x00000002):  # RENAME_SWAP on macOS
+            error = ctypes.get_errno()
+            raise OSError(error, os.strerror(error), output)
+    finally:
+        os.close(parent)
+
+
+def build_candidate(engine, output, identity):
+    if platform.machine() != "x86_64":
+        raise ValueError("The pinned Bark engine currently supports native Intel builds.")
+    if not identity:
+        raise ValueError("Supply --identity or BARK_SIGN_IDENTITY for local Developer ID signing.")
+    if output.name != "Bark.app":
+        raise ValueError("The build output must be named Bark.app.")
+    output = output.parent.expanduser().resolve() / output.name
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".bark-build-", dir=output.parent) as directory:
+        work = Path(directory)
+        derived = work / "DerivedData"
+        products = derived / "Build/Products/Release"
+        stage = work / "stage"
+        stage.mkdir()
+        unsigned = products / "Bark.app"
+        try:
+            run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "NookNativeShell",
+                "-configuration", "Release", "-destination", "generic/platform=macOS",
+                "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
+                "ARCHS=x86_64", "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=$(inherited) -j4",
+                "-jobs", "2", "build")
+            run("/bin/bash", STAGE, unsigned, engine, products, stage / "Bark.app",
+                REPO / "ChromiumApp/Additions.plist")
+            signed = work / "signed"
+            run(sys.executable, REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed)
+            app = signed / "stable/Bark.app"
+            verify_candidate(app, engine, work)
+            install_local_build(app, output)
+        finally:
+            # Xcode registers its intermediate app with Launch Services.
+            if unsigned.exists():
+                subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
+                                "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister",
+                                "-u", str(unsigned)], capture_output=True)
+    print(f"Built and verified {output}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("interaction", help="run the native command-window regression")
     commands.add_parser("catalog", help="run catalog and initial-window activation regressions on Intel")
-    for command in ("engine", "verify", "smoke", "launch"):
+    for command in ("engine", "build", "verify", "smoke", "launch"):
         sub = commands.add_parser(command)
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE", str(DEFAULT_ENGINE)),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
-        if command != "engine":
+        if command == "build":
+            sub.add_argument("--output", type=Path, default=REPO / "build/Bark.app")
+            sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"),
+                             help="local Developer ID Application signing identity")
+        elif command != "engine":
             sub.add_argument("app", type=Path, help="path to a signed Bark.app")
     args = parser.parse_args()
     if platform.system() != "Darwin":
@@ -303,7 +374,9 @@ def main():
     with TemporaryDirectory(prefix="nook-bark-check-", dir="/private/tmp") as work:
         working = Path(work)
         with pinned_engine(args.engine, working) as engine:
-            if args.command != "engine":
+            if args.command == "build":
+                build_candidate(engine, args.output, args.identity)
+            elif args.command != "engine":
                 app = args.app.resolve(strict=True)
                 verify_candidate(app, engine, working)
                 if args.command in ("smoke", "launch"):

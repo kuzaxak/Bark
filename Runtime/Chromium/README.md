@@ -227,34 +227,15 @@ bash "$barc_repo/scripts/publish-chromium-engine.sh" "$PWD/out/Barc-x64" "$barc_
 
 ### Building the app
 
-Build the Intel app target and native framework from the same reviewed app revision,
-using their existing source/package/resource references. The scheme builds both:
+From the app repository root, point the contributor command at a verified Intel SDK and select a Developer ID Application identity installed on the Mac. The Swift shell and app target compile against the checked-in public headers. The build uses the matching SDK's signing tools and the app's tracked `ChromiumApp/Additions.plist` to sign the complete bundle.
 
 ```fish
-set native_derived "$barc_repo/build/native-derived"
-xcodebuild -project "$barc_repo/Nook.xcodeproj" -scheme NookNativeShell \
-    -configuration Release -destination 'generic/platform=macOS' \
-    -derivedDataPath "$native_derived" ARCHS=x86_64 ONLY_ACTIVE_ARCH=YES \
-    CODE_SIGNING_ALLOWED=NO -jobs 4 build
+set -lx BARK_ENGINE_SOURCE /path/to/Engine
+set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
+python3 scripts/bark-check.py build
 ```
 
-Stage only after both builds succeed, preserving engine inputs and using a new
-output directory. The staging script starts from the app target's `Bark.app` and
-adds the complete versioned engine framework from the published artifact, Sparkle
-and SPM resource bundles. It refuses an artifact that fails its checksums or isn't the
-one the app was built against, and any mismatch between the app and engine it can see.
-Do not copy a loose native dylib, Assets.car or metallib into Chromium resources.
-
-```fish
-set engine_artifact "$barc_repo/Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Engine"
-set staging_input "$barc_repo/build/native-signing-input"
-mkdir "$staging_input"; and \
-    bash "$barc_repo/scripts/stage-chromium-app.sh" \
-        "$native_derived/Build/Products/Release/Bark.app" "$engine_artifact" \
-        "$native_derived/Build/Products/Release" "$staging_input/Bark.app"; and \
-    ditto "$engine_artifact/Bark Packaging" "$staging_input/Bark Packaging"; and \
-    chmod -R u+w "$staging_input/Bark Packaging"
-```
+The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
 
 Do not sign or launch a partially staged bundle. The framework requires its
 standard FMWK Info.plist, `ee.qdo.nook.NativeShell` identity, version-A executable,
@@ -277,7 +258,7 @@ not establish native interaction, media, profile isolation or release readiness.
 
 ### Regression scope and remaining qualification
 
-The maintained `bark_browser_tests` target, in `bark/test/BUILD.gn`, has six sources, including
+The maintained `bark_browser_tests` target in `bark/test/BUILD.gn` includes
 `BarcBridgeBrowserTest`, `BarcSharedNativeWindowBrowserTest` and
 `BarcFourPaneBrowserTest` in
 `barc_bridge_browsertest.mm`, `BarcProfilesBrowserTest` in
@@ -286,15 +267,17 @@ The maintained `bark_browser_tests` target, in `bark/test/BUILD.gn`, has six sou
 `barc_extension_focus_browsertest.mm`, plus `BarcExtensionDialogBrowserTest` in
 `barc_extension_dialog_browsertest.mm`, and `BarcExtensionStorageBrowserTest` in
 `barc_extension_storage_browsertest.mm`. Derived fixtures also cover startup,
-discovery, private commands and site data. It uses Chromium's existing
+discovery, private commands and site data. `bark_host_peek_browsertest.mm` covers link
+entry points, same-client admission and promotion, focus and hidden audio in
+the Bark-owned window. The target uses Chromium's existing
 `browser_tests_runner`, `test_support` and `test_support_ui`, with no custom
 runner or registration in monolithic `browser_tests`. Inspect the generated
 graph/incremental estimate and compile added objects before committing to its
-separate build. Its ordinary launcher filter is:
+separate build. Run the suite on an unlocked console:
 
 ```fish
-out/Barc-x64/bark_browser_tests --gtest_filter='Barc*' --gtest_list_tests
-out/Barc-x64/bark_browser_tests --test-launcher-jobs=1 --test-launcher-retry-limit=0 --gtest_filter='Barc*'
+out/Barc-x64/bark_browser_tests --gtest_list_tests
+out/Barc-x64/bark_browser_tests --test-launcher-jobs=1 --test-launcher-retry-limit=0 --use-mock-keychain
 ```
 
 These regressions encode transfer/draft/scroll/history, profile binding,
