@@ -73,10 +73,12 @@ struct URLBarView: View {
             guard visible == true else { return }
             if usesNativeEditor, let palette = windowState.commandPalette,
                palette.shouldNavigateCurrentTab, palette.addSplit == nil {
+                guard nativeAddressIsAvailable else { return }
                 let text = palette.prefilledText
                 let page = browserManager.frontPage(in: windowState)
                 palette.close()
                 guard page?.url.absoluteString == text || (page == nil && text.isEmpty) else { return }
+                if !nativeTopBar, !windowState.isSidebarVisible { hoverManager.isOverlayVisible = true }
                 beginEditing(text)
             } else { cancelEditing() }
         }
@@ -189,17 +191,23 @@ struct URLBarView: View {
                                     .foregroundStyle(.secondary)
                             }
                             VStack(alignment: .leading, spacing: 0) {
-                                // Two texts so a narrow sidebar cuts the path first and then the
-                                // host's head: `accounts.google.com.x.evil.tld` must keep `evil.tld`.
-                                HStack(spacing: 0) {
-                                    Text(displayHost(for: session)).foregroundStyle(.secondary)
-                                        .truncationMode(.head)
-                                        .layoutPriority(1)
-                                    Text(displayPath(for: session)).foregroundStyle(.tertiary)
-                                        .truncationMode(.tail)
+                                if showsDeveloperAddress, let session {
+                                    Text(session.url.absoluteString)
+                                        .font(NookDesign.Font.mono)
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                } else {
+                                    // Keep the end of the host when the available width is small.
+                                    HStack(spacing: 0) {
+                                        Text(displayHost(for: session)).foregroundStyle(.secondary)
+                                            .truncationMode(.head)
+                                            .layoutPriority(1)
+                                        Text(displayPath(for: session)).foregroundStyle(.tertiary)
+                                            .truncationMode(.tail)
+                                    }
+                                    .font(NookDesign.Font.bodyRegular)
+                                    .lineLimit(1)
                                 }
-                                .font(NookDesign.Font.bodyRegular)
-                                .lineLimit(1)
                                 if let session, session.translationOffer != nil, !session.isTranslated {
                                     Button("Translation Available") { session.toggleTranslation() }
                                         .buttonStyle(.plain)
@@ -268,7 +276,7 @@ struct URLBarView: View {
 
                 // Pinned extension buttons + library button
                 if !isEditing, browserManager.engine == .chromium {
-                    let shown = isHovering || windowState.isExtensionLibraryVisible
+                    let shown = nativeTopBar || isHovering || windowState.isExtensionLibraryVisible
                     ExtensionLibraryButton()
                         .disabled(session == nil)
                         .opacity(shown ? 1 : 0)
@@ -298,8 +306,20 @@ struct URLBarView: View {
             .padding(.trailing, NookDesign.Spacing.sm)
     }
 
+    private var showsDeveloperAddress: Bool {
+        nativeTopBar && browserManager.showsDeveloperBar(in: windowState)
+    }
+
     private var controlHeight: CGFloat {
-        splitItemID == nil ? NookDesign.Size.chromeControl : NookDesign.Size.navRow
+        if nativeTopBar { return TopBarMetrics.height - 2 * TopBarMetrics.verticalPadding }
+        return splitItemID == nil ? NookDesign.Size.chromeControl : NookDesign.Size.navRow
+    }
+
+    private var nativeAddressIsAvailable: Bool {
+        let host = browserManager.tabs.nativePageHost as? ChromiumNativePageHost
+        return host?.isPageFullscreen(in: windowState) != true &&
+            nativeTopBar == browserManager.showsTopBar(in: windowState) &&
+            (nativeTopBar || (windowState.spaceDraftTheme == nil && !windowState.isSidebarAIChatVisible))
     }
 
     private var isComposingAddress: Bool {
@@ -486,7 +506,7 @@ struct URLBarView: View {
 
     private func beginEditing(_ address: String) {
         if usesNativeEditor {
-            guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
+            guard nativeAddressIsAvailable, let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
                   browserManager.windowRegistry?.windows[windowState.id] === windowState,
                   browserManager.windowRegistry?.activeWindow === windowState else { return }
             let page = browserManager.frontPage(in: windowState)

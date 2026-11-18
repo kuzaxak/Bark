@@ -203,8 +203,17 @@ private final class PageView: NSView {
             Engine.send(kind: BARC_WINDOW_HOST_FULLSCREEN_CHANGED, tab: 0, fullscreen: BARC_FULLSCREEN_NONE)
             precondition(!bar.isHidden && inRoot(bar, root) == CGRect(x: 247, y: 10, width: 943, height: 40)
                          && inRoot(second, root) == CGRect(x: 247, y: 50, width: 943, height: 740), "leaving full screen brings the bar back")
-            precondition(root.panelContainer(for: .window) === root && root.panelContainer(for: .page) === second.superview!.superview
-                         && root.panelContainer(for: .fitted) === second.superview!.superview, "panels go into the page frame, window panels over everything")
+            let pagePanels = root.panelContainer(for: .page)
+            precondition(root.panelContainer(for: .window) === root && root.panelContainer(for: .fitted) === pagePanels)
+            let emptySpacePanel = NSView(frame: pagePanels.bounds)
+            pagePanels.addSubview(emptySpacePanel)
+            precondition(inRoot(emptySpacePanel, root) == inRoot(second, root),
+                         "a full-page panel stays below the toolbar when an empty space is selected")
+            let insideToolbar = CGPoint(x: bar.bounds.midX, y: bar.bounds.midY)
+            let barPoint = root.convert(insideToolbar, from: bar)
+            precondition(root.hitTest(root.convert(barPoint, to: root.superview)) === bar,
+                         "the address bar receives clicks above a full-page overlay")
+            emptySpacePanel.removeFromSuperview()
             precondition(!root.setHeader(nil, replacing: NSView(), height: 0), "another caller's bar is not removed")
             precondition(root.setHeader(nil, replacing: bar, height: 0) && bar.superview == nil && inRoot(second, root) == shown,
                          "removing the bar gives the page its height back")

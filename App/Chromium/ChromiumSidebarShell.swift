@@ -252,6 +252,10 @@ struct ChromiumSidebarShell: View {
             }
         }
         .onDisappear { browserManager.downloadManager.dismissPreview(in: window) }
+        .onChange(of: browserManager.showsTopBar(in: window)) { _, _ in
+            window.isExtensionLibraryVisible = false
+            siteControlsAnchor.source = .address
+        }
         .onChange(of: window.spaceID) { _, _ in
             dismissPagePanels()
             browserManager.windowSpaceChanged(window)
@@ -281,14 +285,17 @@ struct ChromiumSidebarShell: View {
     }
 
     private var headerHeight: Int32 {
-        if browserManager.showsDeveloperBar(in: window) { return Int32(DeveloperBar.height) }
-        return browserManager.showsTopBar(in: window) ? Int32(TopBarMetrics.height) : 0
+        let toolbarHeight = browserManager.showsTopBar(in: window) ? TopBarMetrics.height : 0
+        let developerHeight = browserManager.showsDeveloperBar(in: window) ? DeveloperBar.height : 0
+        return Int32(toolbarHeight + developerHeight)
     }
     private var headerContent: some View {
-        Group {
+        let showsToolbar = browserManager.showsTopBar(in: window)
+        return VStack(spacing: 0) {
+            if showsToolbar { TopBarView() }
             if browserManager.showsDeveloperBar(in: window), let page = browserManager.frontPage(in: window) {
-                DeveloperBar(session: page).id(page.itemID)
-            } else if browserManager.showsTopBar(in: window) { TopBarView() }
+                DeveloperBar(session: page, showsAddress: !showsToolbar).id(page.itemID)
+            }
         }
         .environmentObject(browserManager)
         .environmentObject(browserManager.gradientColorManager)

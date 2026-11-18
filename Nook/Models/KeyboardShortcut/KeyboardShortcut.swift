@@ -155,7 +155,7 @@ enum ShortcutAction: String, CaseIterable, Hashable, Codable {
         case .toggleDarkMode: return "Toggle Dark Mode"
         case .toggleDeveloperMode: return "Toggle Developer Mode for Site"
         case .toggleBookmark: return "Bookmark Tab"
-        case .toggleTopBarAddressView: return "Toggle Top Bar Address View"
+        case .toggleTopBarAddressView: return "Toggle Toolbar"
         case .nextSpace: return "Next Space"
         case .previousSpace: return "Previous Space"
         case .goToSpace1: return "Go to Space 1"

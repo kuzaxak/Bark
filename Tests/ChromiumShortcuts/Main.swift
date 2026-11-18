@@ -12,7 +12,7 @@ enum Check {
         }
         precondition(offeredButIdle.isEmpty, "offered on Chromium but not run: \(offeredButIdle)")
 
-        for action in [ShortcutAction.newWindow, .closeWindow, .toggleFullScreen, .capturePortrait, .toggleBookmark] {
+        for action in [ShortcutAction.newWindow, .closeWindow, .toggleFullScreen, .capturePortrait, .toggleBookmark, .toggleTopBarAddressView] {
             let key = KeyCombination(key: "j", modifiers: [.command, .control])
             precondition(action.takesKeyInChromium(key), "\(action) must take its rebound key")
         }
@@ -54,6 +54,8 @@ enum Check {
         precondition(shared.isEmpty, "Defaults sharing a key, where the later one silently wins: \(shared)")
         let commandShift = { (key: String) in bound.first { $0.keyCombination == KeyCombination(key: key, modifiers: [.command, .shift]) }?.action }
         precondition(commandShift("p") == .togglePictureInPicture, "Command-Shift-P toggles picture in picture, as on develop")
+        precondition(commandShift("d") == .toggleTopBarAddressView, "Command-Shift-D toggles the toolbar")
+        precondition(ShortcutAction.toggleTopBarAddressView.rawValue == "toggle_top_bar_address_view", "The stored toolbar binding keeps its identifier")
         precondition(commandShift("e") == .manageExtensions,
                      "Command-Shift-E opens the Extensions page, where Chromium installs extensions, for develop's Install Extension")
         let library = commandShift("l")

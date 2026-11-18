@@ -12,10 +12,12 @@ import NookUI
 struct ExtensionLibraryButton: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(BrowserWindowState.self) private var windowState
+    @Environment(\.chromiumSiteControlsAnchor) private var siteControlsAnchor
 
     var body: some View {
         // Arc's site controls button; the panel springs out of it.
         Button("Site Controls", systemImage: "slider.horizontal.2.square") {
+            siteControlsAnchor?.source = .address
             withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
                 windowState.isExtensionLibraryVisible.toggle()
             }

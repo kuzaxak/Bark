@@ -54,10 +54,14 @@ enum Check {
         let main = stockMenu()
         var privateWindow = false
         var canResize = false
+        var toolbarShown = false
         let installer = ChromiumAppMenu(isOffered: {
             if $0 == .resizeSplitPanes { return canResize }
             return $0 != .manageExtensions || !privateWindow
-        }) { ran.append($0) }
+        }, isToolbarShown: { toolbarShown }) { command in
+            ran.append(command)
+            if command == .toggleToolbar { toolbarShown.toggle() }
+        }
         installer.install(in: main)
 
         // Chromium looks these menus up by tag at runtime, so they stay in the menu, hidden.
@@ -111,7 +115,8 @@ enum Check {
         func press(_ key: String, _ modifiers: NSEvent.ModifierFlags) -> [ChromiumAppMenu.Command] {
             ran = []
             let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: 0, context: nil,
-                                         characters: key, charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)!
+                                         characters: modifiers.contains(.shift) ? key.uppercased() : key,
+                                         charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0)!
             _ = main.performKeyEquivalent(with: event)
             return ran
         }
@@ -134,6 +139,24 @@ enum Check {
         }
         let view = main.item(withTag: 57327)!.submenu
         precondition(added("Toggle Sidebar", in: view) == .toggleSidebar)
+        let toolbar = view!.items[1]
+        precondition(view!.items[0].title == "Toggle Sidebar" && toolbar.title == "Show Toolbar")
+        precondition(added("Show Toolbar", in: view) == .toggleToolbar && ran == [.toggleToolbar] && toolbarShown)
+        view!.update()
+        precondition(toolbar.title == "Hide Toolbar")
+        toolbarShown = false // Settings can also change the toolbar visibility.
+        view!.update()
+        precondition(toolbar.title == "Show Toolbar")
+
+        installer.showKeys([.toggleToolbar: .init(equivalent: "d", modifiers: [.command, .shift])])
+        precondition(toolbar.keyEquivalent == "d" && toolbar.keyEquivalentModifierMask == [.command, .shift])
+        precondition(press("d", [.command, .shift]) == [.toggleToolbar] && toolbarShown)
+        installer.showKeys([.toggleToolbar: .init(equivalent: "j", modifiers: [.command, .control])])
+        precondition(press("d", [.command, .shift]).isEmpty)
+        precondition(press("j", [.command, .control]) == [.toggleToolbar] && !toolbarShown)
+        installer.showKeys([.toggleToolbar: .init(equivalent: "", modifiers: [])])
+        precondition(toolbar.keyEquivalent.isEmpty && press("j", [.command, .control]).isEmpty)
+
         precondition(added("Toggle AI Assistant", in: view) == .toggleAIAssistant)
         precondition(added("Open Command Bar", in: view) == .commandBar)
         precondition(added("Add Split View", in: view) == .addSplitView)
@@ -161,6 +184,7 @@ enum Check {
         let count = main.items.count
         installer.install(in: main)
         precondition(main.items.count == count && view!.items.filter { $0.title == "Toggle Sidebar" }.count == 1, "install must not duplicate items")
+        precondition(view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleToolbar }.count == 1)
 
         let empty = NSMenu()
         ChromiumAppMenu { _ in }.install(in: empty)

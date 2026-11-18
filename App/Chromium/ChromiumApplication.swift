@@ -377,6 +377,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 if command == .resizeSplitPanes { return pageHost?.splitResizeRoot(in: NSApp.keyWindow) != nil }
                 return command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
                     chromium: true, privateWindow: manager?.windowRegistry?.activeWindow?.isIncognito == true)
+            }, isToolbarShown: { [weak manager] in
+                manager?.nookSettings?.topBarAddressView == true
             }) { [weak manager, weak shortcuts, weak pageHost] command in
                 guard let manager, let shortcuts else { return }
                 switch command {
@@ -390,6 +392,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 case .history: manager.showHistory()
                 case .downloads: manager.showDownloads()
                 case .toggleSidebar: manager.toggleSidebar()
+                case .toggleToolbar: shortcuts.perform(.toggleTopBarAddressView)
                 case .toggleAIAssistant: manager.toggleAISidebar()
                 case .commandBar: shortcuts.perform(.openCommandPalette)
                 case .addSplitView: shortcuts.perform(.addSplitView)
@@ -403,7 +406,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             self.appMenu = appMenu
             let menuShortcuts: [ChromiumAppMenu.Command: ShortcutAction] = [
                 .quit: .closeBrowser, .newTab: .newTab, .focusAddress: .focusAddressBar, .closeTab: .closeTab,
-                .history: .viewHistory, .downloads: .viewDownloads,
+                .history: .viewHistory, .downloads: .viewDownloads, .toggleToolbar: .toggleTopBarAddressView,
             ]
             let showMenuKeys = { [weak appMenu, weak shortcuts] in
                 guard let appMenu, let shortcuts else { return }

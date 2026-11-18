@@ -38,7 +38,8 @@ public struct SettingsAppearanceTab: View {
                         }
                     }
                 }
-                Toggle("Show URL bar in the web view", isOn: $settings.topBarAddressView)
+                Toggle(tabs.profileEngine == .chromium ? "Show Toolbar" : "Show URL bar in the web view",
+                       isOn: $settings.topBarAddressView)
                 if shows(.linkStatusPreview) {
                     Toggle("Preview link URL on hover", isOn: $settings.showLinkStatusBar)
                 }

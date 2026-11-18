@@ -8,7 +8,7 @@ import AppKit
 final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
         case about, settings, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
-        case toggleSidebar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
+        case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
         case nextSpace, previousSpace, manageExtensions
     }
 
@@ -38,11 +38,16 @@ final class ChromiumAppMenu: NSObject {
     private static let addedIdentifier = NSUserInterfaceItemIdentifier("ee.qdo.nook.menu")
     private let perform: (Command) -> Void
     private let isOffered: (Command) -> Bool
+    private let isToolbarShown: () -> Bool
 
-    init(isOffered: @escaping (Command) -> Bool = { _ in true }, perform: @escaping (Command) -> Void) {
+    init(isOffered: @escaping (Command) -> Bool = { _ in true }, isToolbarShown: @escaping () -> Bool = { false },
+         perform: @escaping (Command) -> Void) {
         self.isOffered = isOffered
+        self.isToolbarShown = isToolbarShown
         self.perform = perform
     }
+
+    private var toolbarTitle: String { isToolbarShown() ? "Hide Toolbar" : "Show Toolbar" }
 
     func install(in main: NSMenu) {
         guard let view = main.item(withTag: Tag.viewMenu)?.submenu else { return }
@@ -82,11 +87,14 @@ final class ChromiumAppMenu: NSObject {
             routedItems[route.command] = item
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
-        let viewItems = [("Toggle Sidebar", Command.toggleSidebar), ("Toggle AI Assistant", .toggleAIAssistant),
+        let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
+                         ("Toggle AI Assistant", .toggleAIAssistant),
                          ("Open Command Bar", .commandBar), ("Add Split View", .addSplitView),
                          ("Resize Split Panes", .resizeSplitPanes)]
         for (index, entry) in viewItems.enumerated() {
-            view.insertItem(make(entry.0, entry.1), at: index)
+            let item = make(entry.0, entry.1)
+            if entry.1 == .toggleToolbar { routedItems[entry.1] = item }
+            view.insertItem(item, at: index)
         }
         view.insertItem(.separator(), at: viewItems.count)
         let before = main.item(withTag: Tag.windowMenu).map { main.index(of: $0) } ?? main.numberOfItems
@@ -142,6 +150,7 @@ final class ChromiumAppMenu: NSObject {
 extension ChromiumAppMenu: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let command = item.representedObject as? Command else { return true }
+        if command == .toggleToolbar { item.title = toolbarTitle }
         return isOffered(command)
     }
 }

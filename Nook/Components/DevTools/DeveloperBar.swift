@@ -58,10 +58,9 @@ extension BrowserManager {
         }
     }
 
-    /// The address bar over the page. The Developer Mode bar takes its place, as in Arc, and
-    /// back, forward and the address return to the sidebar.
+    /// Chromium keeps the selected address placement when the developer tools are visible.
     func showsTopBar(in windowState: BrowserWindowState) -> Bool {
-        nookSettings?.topBarAddressView == true && !showsDeveloperBar(in: windowState)
+        nookSettings?.topBarAddressView == true && (engine == .chromium || !showsDeveloperBar(in: windowState))
     }
 
     /// Runs a developer tool. WebKit pages capture for these tools only with Developer Mode on
@@ -117,7 +116,9 @@ extension BrowserManager {
 struct DeveloperBar: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(BrowserWindowState.self) private var windowState
+    @Environment(\.chromiumSiteControlsAnchor) private var siteControlsAnchor
     let session: PageSession
+    var showsAddress = true
 
     @State private var copied = false
 
@@ -125,25 +126,33 @@ struct DeveloperBar: View {
 
     var body: some View {
         HStack(spacing: NookDesign.Spacing.md) {
-            // Arc's lock opens the site's controls, as the sidebar's site controls button does.
-            Button {
-                withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
-                    windowState.isExtensionLibraryVisible = true
+            if showsAddress {
+                Button {
+                    siteControlsAnchor?.source = .developer
+                    withAnimation(.interpolatingSpring(Spring(response: 0.3, dampingRatio: 0.86))) {
+                        windowState.isExtensionLibraryVisible = true
+                    }
+                } label: {
+                    Image(systemName: session.url.scheme == "https" ? "lock.fill" : "lock.open.fill")
+                        .font(NookDesign.Font.caption)
+                        .foregroundStyle(.secondary)
+                        .frame(width: NookDesign.Size.rowButton, height: NookDesign.Size.rowButton)
+                        .contentShape(Rectangle())
                 }
-            } label: {
-                Image(systemName: session.url.scheme == "https" ? "lock.fill" : "lock.open.fill")
-                    .font(NookDesign.Font.caption)
-                    .foregroundStyle(.secondary)
-                    .frame(width: NookDesign.Size.rowButton, height: NookDesign.Size.rowButton)
-                    .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .help("Site Controls")
+                .background {
+                    if let siteControlsAnchor {
+                        ChromiumSiteControlsButtonProbe(anchor: siteControlsAnchor, source: .developer)
+                    }
+                }
+
+                Text(session.url.absoluteString)
+                    .font(NookDesign.Font.mono)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
             }
-            .buttonStyle(.plain)
-            .help("Site Controls")
-            Text(session.url.absoluteString)
-                .font(NookDesign.Font.mono)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .textSelection(.enabled)
             Spacer(minLength: NookDesign.Spacing.lg)
 
             HStack(spacing: NookDesign.Spacing.xxs) {

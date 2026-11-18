@@ -844,6 +844,12 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         return current() && attached && owns && presenter.showPage(page.nativeTabID, of: target)
     }
 
+    func isPageFullscreen(in window: BrowserWindowState) -> Bool {
+        guard let mount = mounts[window.id], mount.model === window,
+              let presenter = mount.presenter as? ChromiumHostPresenter else { return false }
+        return presenter.root.pageFullscreen
+    }
+
     /// Header view ownership only; the existing sidebar is the physical-group
     /// authority. Native attachment carries this exact pair through Peek/moves.
     func setPageHeader(_ header: NSView?, replacing expected: NSView?, height: Int32,

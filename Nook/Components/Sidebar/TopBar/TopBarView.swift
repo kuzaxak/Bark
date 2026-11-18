@@ -8,7 +8,6 @@
 
 import AppKit
 import SwiftUI
-import WebKit
 import NookDesign
 import NookWeb
 import NookUI
@@ -35,10 +34,17 @@ struct TopBarView: View {
             // Main content
             ZStack {
                 HStack(spacing: 8) {
-                    navigationControls
+                    if browserManager.engine == .chromium, !windowState.isSidebarVisible {
+                        Button("Toggle Sidebar", systemImage: "sidebar.left") {
+                            browserManager.toggleSidebar(for: windowState)
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(NookIconButtonStyle())
+                    }
+                    SidebarHistoryButtons(atTop: true)
 
                     if browserManager.engine == .chromium {
-                        URLBarView(isSidebarHovered: isHovering, nativeTopBar: true)
+                        URLBarView(isSidebarHovered: false, nativeTopBar: true)
                     } else {
                         urlBar
                     }
@@ -105,41 +111,6 @@ struct TopBarView: View {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
                 previousTabId = newId
             }
-        }
-    }
-
-    private var navigationControls: some View {
-        HStack(spacing: 4) {
-            Button("Go Back", systemImage: "chevron.backward", action: goBack)
-                .labelStyle(.iconOnly)
-                .buttonStyle(NookIconButtonStyle())
-                .disabled(!(session?.canGoBackOrReturn ?? false))
-                .opacity((session?.canGoBackOrReturn ?? false) ? 1.0 : 0.4)
-                .overlay(NavigationHistoryMenu(direction: .back, windowState: windowState))
-
-            Button(
-                "Go Forward",
-                systemImage: "chevron.right",
-                action: goForward
-            )
-            .labelStyle(.iconOnly)
-            .buttonStyle(NookIconButtonStyle())
-            .disabled(!(session?.canGoForward ?? false))
-            .opacity((session?.canGoForward ?? false) ? 1.0 : 0.4)
-            .overlay(NavigationHistoryMenu(direction: .forward, windowState: windowState))
-
-            Button {
-                if session?.isLoading == true {
-                    session?.stop()
-                } else {
-                    refreshCurrentTab()
-                }
-            } label: {
-                Image(systemName: session?.isLoading == true ? "xmark" : "arrow.clockwise")
-                    .contentTransition(.symbolEffect(.replace))
-            }
-            .labelStyle(.iconOnly)
-            .buttonStyle(NookIconButtonStyle())
         }
     }
 
@@ -219,36 +190,6 @@ struct TopBarView: View {
         }
     }
 
-    /// Nil while another window holds the page: its controls stay inert until Move Here.
-    private var session: PageSession? {
-        browserManager.engine == .chromium
-            ? browserManager.frontPage(in: windowState)
-            : browserManager.tabs.controllableSession(in: windowState)
-    }
-
-    /// This window's own view of the page, so a clone navigates in its window.
-    private var windowWebView: WKWebView? {
-        session.flatMap { browserManager.webViewCoordinator?.getWebView(for: $0.itemID, in: windowState.id) }
-    }
-
-    private func goBack() {
-        if browserManager.engine == .chromium {
-            if let session { _ = browserManager.performNativePageCommand(.goBack, in: windowState, page: session) }
-        } else { session?.goBack(in: windowWebView) }
-    }
-
-    private func goForward() {
-        if browserManager.engine == .chromium {
-            if let session { _ = browserManager.performNativePageCommand(.goForward, in: windowState, page: session) }
-        } else if let webView = windowWebView { webView.goForward() } else { session?.goForward() }
-    }
-
-    private func refreshCurrentTab() {
-        if browserManager.engine == .chromium {
-            if let session { _ = browserManager.performNativePageCommand(.reload, in: windowState, page: session) }
-        } else { session?.refresh() }
-    }
-
     // Determine if we should animate color changes (within same tab) or snap (tab switch)
     private var shouldAnimateColorChange: Bool {
         let selectedItemID = browserManager.tabs.selectedSession(in: windowState)?.id
@@ -257,7 +198,9 @@ struct TopBarView: View {
 
     /// The colour the page reports for its top edge, else its background; nil before it loads.
     private var pageColor: NSColor? {
-        let session = browserManager.tabs.selectedSession(in: windowState)
+        let session = browserManager.engine == .chromium
+            ? browserManager.frontPage(in: windowState)
+            : browserManager.tabs.selectedSession(in: windowState)
         return session?.topBarBackgroundColor ?? session?.pageBackgroundColor
     }
 

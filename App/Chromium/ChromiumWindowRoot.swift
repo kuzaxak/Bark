@@ -131,7 +131,8 @@ final class ChromiumWindowRoot: NSView {
     private var slots: [Slot] = []
     private var observation: UInt64 = 0
     private let pageFrame = Container()
-    private let dividerLayer = DividerLayer()
+    private let dividerLayer = ControlLayer()
+    private let pagePanels = ControlLayer()
     private let libraryDismissal = LibraryDismissal()
     private let sidebarColumn = Container()
     private let overlayLayer = Overlay()
@@ -319,6 +320,7 @@ final class ChromiumWindowRoot: NSView {
         pageFrame.autoresizingMask = [.width, .height]
         addSubview(pageFrame)
         pageFrame.addSubview(dividerLayer)
+        pageFrame.addSubview(pagePanels)
         libraryDismissal.isHidden = true
         addSubview(libraryDismissal)
         sidebarColumn.wantsLayer = true
@@ -537,6 +539,7 @@ final class ChromiumWindowRoot: NSView {
 
     private func layoutPageArea() {
         let area = pageArea
+        pagePanels.frame = area
         header?.isHidden = pageFullscreen
         header?.frame = CGRect(x: 0, y: 0, width: pageFrame.bounds.width, height: barHeight)
         let panes = split.map { split in
@@ -703,8 +706,8 @@ final class ChromiumWindowRoot: NSView {
         }
     }
 
-    /// Over the page area, unflipped as the dividers expect; it takes only the clicks on a divider.
-    private final class DividerLayer: NSView {
+    /// Dividers and page panels use unflipped containers that only receive input on their children.
+    private final class ControlLayer: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? {
             let hit = super.hitTest(point)
             return hit === self ? nil : hit
@@ -751,5 +754,5 @@ final class ChromiumWindowRoot: NSView {
 }
 
 extension ChromiumWindowRoot: ChromiumPanelHost {
-    func panelContainer(for fill: ChromiumPanelFill) -> NSView { fill == .window ? self : pageFrame }
+    func panelContainer(for fill: ChromiumPanelFill) -> NSView { fill == .window ? self : pagePanels }
 }

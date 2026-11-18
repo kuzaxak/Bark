@@ -24,12 +24,17 @@ enum ChromiumSiteControlsPlacement {
 /// The address bar's Site Controls button. The popover is a separate host above the page, so it
 /// reads where the button is when it shows.
 @MainActor final class ChromiumSiteControlsAnchor {
-    weak var button: NSView?
+    enum Source { case address, developer }
+
+    var source: Source = .address
+    weak var addressButton: NSView?
+    weak var developerButton: NSView?
     weak var card: NSView?
     private let controls = NSHashTable<NSView>.weakObjects()
 
     /// In the window's content view, with a top-left origin.
     var buttonFrame: CGRect? {
+        let button = source == .address ? addressButton : developerButton
         guard let button, !button.isHiddenOrHasHiddenAncestor, let root = button.window?.contentView else { return nil }
         var frame = root.convert(button.bounds, from: button)
         if !root.isFlipped { frame.origin.y = root.bounds.height - frame.maxY }
@@ -61,6 +66,7 @@ extension EnvironmentValues {
 /// Makes the view it backs the button the Site Controls popover hangs from.
 struct ChromiumSiteControlsButtonProbe: NSViewRepresentable {
     let anchor: ChromiumSiteControlsAnchor
+    var source: ChromiumSiteControlsAnchor.Source = .address
 
     final class Probe: NSView {
         override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -68,11 +74,16 @@ struct ChromiumSiteControlsButtonProbe: NSViewRepresentable {
 
     func makeNSView(context: Context) -> Probe {
         let probe = Probe()
-        anchor.button = probe
+        updateNSView(probe, context: context)
         return probe
     }
 
-    func updateNSView(_ probe: Probe, context: Context) { anchor.button = probe }
+    func updateNSView(_ probe: Probe, context: Context) {
+        switch source {
+        case .address: anchor.addressButton = probe
+        case .developer: anchor.developerButton = probe
+        }
+    }
 }
 
 /// The panel's real window-space bounds, including when the anchor button is
@@ -138,7 +149,7 @@ struct ChromiumSiteControls: View {
     let anchor: ChromiumSiteControlsAnchor
 
     private var opensFromTopBar: Bool {
-        browserManager.showsTopBar(in: window) || browserManager.showsDeveloperBar(in: window)
+        browserManager.showsTopBar(in: window) || anchor.source == .developer
     }
 
     private var sidebarLeads: Bool { settings.sidebarPosition == .left }
