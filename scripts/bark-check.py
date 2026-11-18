@@ -102,7 +102,8 @@ def install_engine(engine):
 @contextmanager
 def pinned_engine(source, working):
     if not source:
-        source = str(DEFAULT_ENGINE if DEFAULT_ENGINE.is_dir() else cached_engine())
+        installed = cached_engine()
+        source = str(installed if installed.is_dir() else DEFAULT_ENGINE)
         if not Path(source).is_dir():
             raise ValueError("The pinned SDK is missing. Install it with bark-check.py engine --install "
                              "--engine PATH, or build it using Runtime/Chromium/README.md.")
