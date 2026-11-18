@@ -1334,6 +1334,20 @@ final class ChromiumNativePageHost: NativePageHost {
         return isCurrent() && hostShowsSplit(record, navigations: navigations, activeItemID: activeItemID, in: window)
     }
 
+    func splitResizeRoot(in keyWindow: NSWindow?) -> ChromiumWindowRoot? {
+        guard let keyWindow else { return nil }
+        return mounts.values.lazy.compactMap { ($0.presenter as? ChromiumHostPresenter)?.root }
+            .first { $0.window === keyWindow && $0.canResizeSplit }
+    }
+
+    func moveSplitDivider(_ index: Int, to position: CGFloat, length: CGFloat, in window: BrowserWindowState) {
+        guard laysOutSplits(in: window), var record = window.split, length > 0 else { return }
+        record.moveDivider(index, to: Double(position),
+                           minimum: SplitRecord.minimumPaneFraction(count: record.itemIDs.count, length: Double(length)))
+        window.split = record
+        _ = showSplitDividers(record, in: window)
+    }
+
     /// A divider moved: the root re-frames the panes it shows, in the same turn.
     func showSplitDividers(_ record: SplitRecord, in window: BrowserWindowState) -> Bool {
         guard let mount = mounts[window.id], mount.model === window, let client = mount.presenter.onlyClient,

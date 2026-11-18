@@ -53,7 +53,11 @@ enum Check {
         var ran: [ChromiumAppMenu.Command] = []
         let main = stockMenu()
         var privateWindow = false
-        let installer = ChromiumAppMenu(isOffered: { $0 != .manageExtensions || !privateWindow }) { ran.append($0) }
+        var canResize = false
+        let installer = ChromiumAppMenu(isOffered: {
+            if $0 == .resizeSplitPanes { return canResize }
+            return $0 != .manageExtensions || !privateWindow
+        }) { ran.append($0) }
         installer.install(in: main)
 
         // Chromium looks these menus up by tag at runtime, so they stay in the menu, hidden.
@@ -133,6 +137,12 @@ enum Check {
         precondition(added("Toggle AI Assistant", in: view) == .toggleAIAssistant)
         precondition(added("Open Command Bar", in: view) == .commandBar)
         precondition(added("Add Split View", in: view) == .addSplitView)
+        let resize = view!.items.first { $0.title == "Resize Split Panes" }!
+        view!.update()
+        precondition(!resize.isEnabled)
+        canResize = true
+        view!.update()
+        precondition(resize.isEnabled && added("Resize Split Panes", in: view) == .resizeSplitPanes)
         let spaces = main.items.first { $0.title == "Spaces" }?.submenu
         precondition(added("Next Space", in: spaces) == .nextSpace)
         precondition(added("Previous Space", in: spaces) == .previousSpace)

@@ -291,13 +291,18 @@ private enum Native {
     let profile = Profile(id: Native.first, engine: .chromium)
     Native.hostWindows = [80]
     Native.profiles[80] = Native.first; Native.tabs[80] = [800]; Native.groups[80] = 80; Native.selected = 80
-    let page800 = NSView(), page801 = NSView()
+    let page800 = FocusableHostPage(), page801 = FocusableHostPage()
     Native.pageViews = [800: page800, 801: page801]
     let attachments = Native.attachmentCalls
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     let window = BrowserWindowState(), shell = NSView()
     precondition(host.registerWindow(window, nativeOwner: 80, shell: shell, initialBlankTab: 800))
     let root = shell.superview?.superview as? ChromiumWindowRoot
+    _ = NSApplication.shared
+    let frame = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 800),
+                         styleMask: [.titled], backing: .buffered, defer: false)
+    frame.contentView = root
+    defer { frame.contentView = nil }
     precondition(root?.holdsSidebar(shell) == true, "A host window's root view holds the sidebar")
     var page: ChromiumPageNavigation!
     _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
@@ -344,6 +349,16 @@ private enum Native {
     print("Chromium host window checks PASS")
 }
 
+private final class FocusableHostPage: NSView {
+    override var acceptsFirstResponder: Bool { true }
+}
+
+@MainActor private func dividerKey(_ characters: String, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+    NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: 0,
+                     context: nil, characters: characters, charactersIgnoringModifiers: characters,
+                     isARepeat: false, keyCode: 0)!
+}
+
 /// A Bark window lays out a split's panes itself from the model's record: no call reaches Chromium's
 /// own split, the panes are the window's page views, and the record's focus is Chromium's selection.
 @MainActor private func hostWindowSplits(host: ChromiumNativePageHost, window: BrowserWindowState, root: ChromiumWindowRoot,
@@ -377,6 +392,36 @@ private enum Native {
                  "other dividers are not")
     precondition(!host.hostShowsSplit(nil, navigations: navigations, activeItemID: ids[0], in: window), "and no split is not")
 
+    window.split = record
+    var finished = 0
+    root.dividerMoved = { index, position, length in
+        host.moveSplitDivider(index, to: position, length: length, in: window)
+    }
+    root.dividerReleased = { finished += 1 }
+    defer {
+        root.dividerMoved = nil
+        root.dividerReleased = nil
+    }
+    let frame = root.window!
+    let horizontal = root.splitDividers[0]
+    precondition(host.splitResizeRoot(in: frame) === root)
+    precondition(horizontal.isAccessibilityElement() && horizontal.accessibilityRole() == .splitter)
+    precondition(horizontal.isAccessibilitySelectorAllowed(#selector(NSView.accessibilityPerformIncrement)))
+    precondition(horizontal.isAccessibilitySelectorAllowed(#selector(NSView.accessibilityPerformDecrement)))
+    precondition(horizontal.accessibilityOrientation() == .vertical)
+    precondition(horizontal.accessibilityValue() as? Double == 40)
+    precondition((horizontal.accessibilityMinValue() as! Double) < 40 && (horizontal.accessibilityMaxValue() as! Double) > 40)
+    root.focusSplitDivider()
+    precondition(frame.firstResponder === horizontal)
+    let leftWidth = views[0].frame.width
+    horizontal.keyDown(with: dividerKey(String(UnicodeScalar(NSRightArrowFunctionKey)!)))
+    precondition(window.split!.dividers[0] > 0.4 && views[0].frame.width > leftWidth && finished == 1)
+    precondition(frame.firstResponder === horizontal && root.split?.focused == pages[0].nativeTabID)
+    precondition(horizontal.accessibilityPerformDecrement() && finished == 2)
+    precondition(abs(window.split!.dividers[0] - 0.4) < 0.0001)
+    horizontal.keyDown(with: dividerKey("\u{1b}"))
+    precondition(frame.firstResponder === views[0], "Escape returns focus to the selected page")
+
     let containers = views.prefix(2).map { $0.superview }
     precondition(host.applyHostSplit(record, navigations: navigations, activeItemID: ids[1], in: window, isCurrent: { true })
                  && root.split?.focused == pages[1].nativeTabID && Native.activeTabs[80] == pages[1].nativeTabID
@@ -389,6 +434,23 @@ private enum Native {
     precondition(host.applyHostSplit(three, navigations: navigations, activeItemID: ids[2], in: window, isCurrent: { true })
                  && root.split?.panes.count == 3 && root.split?.vertical == true && root.split?.focused == thirdTab
                  && views.allSatisfy { $0.isDescendant(of: root) }, "a third pane, stacked")
+
+    window.split = three
+    let stacked = root.splitDividers
+    precondition(stacked.count == 2 && stacked[0].accessibilityOrientation() == .horizontal)
+    root.focusSplitDivider()
+    stacked[0].keyDown(with: dividerKey("\t"))
+    precondition(frame.firstResponder === stacked[1], "Tab focuses the next divider")
+    stacked[1].keyDown(with: dividerKey("\t", modifiers: .shift))
+    precondition(frame.firstResponder === stacked[0], "Shift-Tab focuses the previous divider")
+    let topHeight = views[0].frame.height
+    stacked[0].keyDown(with: dividerKey(String(UnicodeScalar(NSDownArrowFunctionKey)!)))
+    precondition(window.split!.dividers[0] > three.dividers[0] && views[0].frame.height > topHeight && finished == 3)
+    precondition(root.split?.focused == thirdTab && Native.activeTabs[80] == thirdTab)
+    let max = stacked[0].accessibilityMaxValue() as! Double
+    for _ in 0..<20 { _ = stacked[0].accessibilityPerformIncrement() }
+    precondition(abs((stacked[0].accessibilityValue() as! Double) - max) < 0.0001)
+    precondition(!stacked[0].accessibilityPerformIncrement(), "Increment is unavailable at the upper bound")
 
     host.showModelSplit([ids[0], ids[1], ids[2], nil], vertical: true, dividers: [0.25, 0.5, 0.75], focused: ids[2],
                         page: { navigations[$0] }, in: window)

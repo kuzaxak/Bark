@@ -8,7 +8,7 @@ import AppKit
 final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
         case about, settings, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
-        case toggleSidebar, toggleAIAssistant, commandBar, addSplitView
+        case toggleSidebar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
         case nextSpace, previousSpace, manageExtensions
     }
 
@@ -83,7 +83,8 @@ final class ChromiumAppMenu: NSObject {
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
         let viewItems = [("Toggle Sidebar", Command.toggleSidebar), ("Toggle AI Assistant", .toggleAIAssistant),
-                         ("Open Command Bar", .commandBar), ("Add Split View", .addSplitView)]
+                         ("Open Command Bar", .commandBar), ("Add Split View", .addSplitView),
+                         ("Resize Split Panes", .resizeSplitPanes)]
         for (index, entry) in viewItems.enumerated() {
             view.insertItem(make(entry.0, entry.1), at: index)
         }

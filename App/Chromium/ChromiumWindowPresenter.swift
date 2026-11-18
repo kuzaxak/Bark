@@ -1,5 +1,6 @@
 import AppKit
 import BarcChromium
+import NookTabsCore
 
 /// Puts one window's sidebar and selected page on screen. On the old path Chromium's window lays
 /// them out around the sidebar it was given (`--bark-window=legacy`); in the Bark window, the default, the app's
@@ -99,7 +100,11 @@ final class ChromiumHostPresenter: ChromiumWindowPresenter {
     private weak var sidebar: NSView?
 
     init?(bridge: BarcBridge, client: Int32, sidebar: NSView) {
-        root = ChromiumWindowRoot(bridge: bridge, nativeWindow: client)
+        root = ChromiumWindowRoot(bridge: bridge, nativeWindow: client) { index, positions, length in
+            let minimum = SplitRecord.minimumPaneFraction(count: positions.count + 1, length: Double(length))
+            let range = SplitRecord.dividerRange(at: index, in: positions.map { Double($0) }, minimum: minimum)
+            return range.map { CGFloat($0.lowerBound)...CGFloat($0.upperBound) }
+        }
         guard root.attach() else { return nil }
         root.setSidebar(sidebar)
         self.sidebar = sidebar

@@ -373,10 +373,11 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
-            let appMenu = ChromiumAppMenu(isOffered: { [weak manager] command in
-                command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
+            let appMenu = ChromiumAppMenu(isOffered: { [weak manager, weak pageHost] command in
+                if command == .resizeSplitPanes { return pageHost?.splitResizeRoot(in: NSApp.keyWindow) != nil }
+                return command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
                     chromium: true, privateWindow: manager?.windowRegistry?.activeWindow?.isIncognito == true)
-            }) { [weak manager, weak shortcuts] command in
+            }) { [weak manager, weak shortcuts, weak pageHost] command in
                 guard let manager, let shortcuts else { return }
                 switch command {
                 case .about: NSApp.orderFrontStandardAboutPanel(nil)
@@ -392,6 +393,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 case .toggleAIAssistant: manager.toggleAISidebar()
                 case .commandBar: shortcuts.perform(.openCommandPalette)
                 case .addSplitView: shortcuts.perform(.addSplitView)
+                case .resizeSplitPanes: pageHost?.splitResizeRoot(in: NSApp.keyWindow)?.focusSplitDivider()
                 case .nextSpace: shortcuts.perform(.nextSpace)
                 case .previousSpace: shortcuts.perform(.previousSpace)
                 case .manageExtensions: manager.manageExtensions()

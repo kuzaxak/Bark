@@ -121,6 +121,7 @@ final class ChromiumWindowRoot: NSView {
     }
 
     private let bridge: BarcBridge
+    private let dividerRange: (Int, [CGFloat], CGFloat) -> ClosedRange<CGFloat>?
     let nativeWindow: Int32
     /// The page with the keys: the one page shown, or the focused pane of a split.
     private(set) var shownTab: Int32 = 0
@@ -296,9 +297,11 @@ final class ChromiumWindowRoot: NSView {
     /// The focused page; nil once another root took it.
     private var heldPage: NSView? { slots.first { $0.pane?.tab == shownTab }?.heldView }
 
-    init(bridge: BarcBridge, nativeWindow: Int32) {
+    init(bridge: BarcBridge, nativeWindow: Int32,
+         dividerRange: @escaping (Int, [CGFloat], CGFloat) -> ClosedRange<CGFloat>? = { _, _, _ in nil }) {
         self.bridge = bridge
         self.nativeWindow = nativeWindow
+        self.dividerRange = dividerRange
         super.init(frame: .zero)
         wantsLayer = true
         let frameDrag = WindowFrameInteractionView()
@@ -538,6 +541,25 @@ final class ChromiumWindowRoot: NSView {
         layoutDividers(panes.flatMap { pageFullscreen || split?.panes.contains(nil) == true ? nil : $0 } ?? [], in: area)
     }
 
+    var canResizeSplit: Bool {
+        !pageHidden && !pageFullscreen && dividerMoved != nil && splitDividers.first?.acceptsFirstResponder == true
+    }
+
+    func focusSplitDivider() {
+        guard canResizeSplit, let divider = splitDividers.first else { return }
+        window?.makeFirstResponder(divider)
+    }
+
+    private func focusAdjacentDivider(to index: Int, backwards: Bool) {
+        let dividers = splitDividers
+        let next = index + (backwards ? -1 : 1)
+        if dividers.indices.contains(next) {
+            window?.makeFirstResponder(dividers[next])
+        } else {
+            focusPage()
+        }
+    }
+
     /// One divider in each gap between two panes, the gap itself being where it is dragged.
     private func layoutDividers(_ panes: [CGRect], in area: CGRect) {
         dividerLayer.frame = area
@@ -547,18 +569,31 @@ final class ChromiumWindowRoot: NSView {
                      : CGRect(x: before.maxX, y: area.minY, width: after.minX - before.maxX, height: area.height)
         }
         var dividers = splitDividers
-        while dividers.count > gaps.count { dividers.removeLast().removeFromSuperview() }
+        var removedFocus = false
+        while dividers.count > gaps.count {
+            let divider = dividers.removeLast()
+            removedFocus = removedFocus || window?.firstResponder === divider
+            divider.removeFromSuperview()
+        }
+        if removedFocus { focusPage() }
         while dividers.count < gaps.count {
             let divider = SplitDividerView()
             dividerLayer.addSubview(divider)
             dividers.append(divider)
         }
+        guard !dividers.isEmpty, let split else { return }
+        let length = vertical ? area.height : area.width
         for (index, divider) in dividers.enumerated() {
             divider.frame = dividerLayer.convert(gaps[index], from: pageFrame)
             divider.vertical = vertical
-            divider.position = split?.dividers[index] ?? 0.5
+            divider.position = split.dividers[index]
             divider.onResize = { [weak self] position, length in self?.dividerMoved?(index, position, length) }
             divider.onResizeEnded = { [weak self] in self?.dividerReleased?() }
+            divider.onLeave = { [weak self] in self?.focusPage() }
+            divider.onTab = { [weak self] backwards in self?.focusAdjacentDivider(to: index, backwards: backwards) }
+            if let range = dividerRange(index, split.dividers, length) {
+                divider.configureAccessibility(index: index, count: dividers.count, range: range)
+            }
             divider.window?.invalidateCursorRects(for: divider)
         }
     }

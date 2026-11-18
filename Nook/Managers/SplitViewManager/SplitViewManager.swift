@@ -179,12 +179,14 @@ final class SplitViewManager: ObservableObject {
 
     /// Divider `index` dragged to `position`, a fraction of the page's width or height.
     func moveDivider(_ index: Int, to position: CGFloat, length: CGFloat, in window: BrowserWindowState) {
-        let host = tabs?.nativePageHost as? ChromiumNativePageHost
-        let appLaysOutPanes = tabs?.profileEngine != .chromium || host?.laysOutSplits(in: window) == true
-        guard appLaysOutPanes, var record = window.split, length > 0 else { return }
-        record.moveDivider(index, to: Double(position), minimum: min(0.9 / Double(record.itemIDs.count), 160 / Double(length)))
+        if tabs?.profileEngine == .chromium {
+            (tabs?.nativePageHost as? ChromiumNativePageHost)?.moveSplitDivider(index, to: position, length: length, in: window)
+            return
+        }
+        guard var record = window.split, length > 0 else { return }
+        record.moveDivider(index, to: Double(position),
+                           minimum: SplitRecord.minimumPaneFraction(count: record.itemIDs.count, length: Double(length)))
         window.split = record
-        _ = host?.showSplitDividers(record, in: window)
     }
 
     /// A divider let go: the window record keeps where it was left.

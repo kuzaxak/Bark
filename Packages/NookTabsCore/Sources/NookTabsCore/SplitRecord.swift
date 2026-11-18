@@ -97,11 +97,22 @@ public struct SplitRecord: Hashable, Sendable {
     /// Moves divider `index` toward `position`, leaving both panes beside it at least `minimum` of
     /// the page, or as much as they have between them.
     public mutating func moveDivider(_ index: Int, to position: Double, minimum: Double) {
-        guard dividers.indices.contains(index) else { return }
+        guard let range = Self.dividerRange(at: index, in: dividers, minimum: minimum) else { return }
+        dividers[index] = min(range.upperBound, max(range.lowerBound, position))
+    }
+
+    public static func minimumPaneFraction(count: Int, length: Double) -> Double {
+        min(0.9 / Double(count), 160 / length)
+    }
+
+    public static func dividerRange(at index: Int, in dividers: [Double], minimum: Double) -> ClosedRange<Double>? {
+        guard dividers.indices.contains(index) else { return nil }
         let previous = index == 0 ? 0 : dividers[index - 1]
         let next = index == dividers.count - 1 ? 1 : dividers[index + 1]
-        let room = min(minimum, (next - previous) / 2)
-        dividers[index] = min(next - room, max(previous + room, position))
+        let middle = (previous + next) / 2
+        let lower = min(middle, previous + minimum)
+        let upper = max(middle, next - minimum)
+        return lower...upper
     }
 }
 
