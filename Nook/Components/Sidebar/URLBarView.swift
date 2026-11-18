@@ -310,8 +310,9 @@ struct URLBarView: View {
         let typed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
         if typed.isEmpty || addressText == prefilledAddress { return initialLocalSuggestions }
         let primary = SearchManager.SearchSuggestion(text: typed, type: isLikelyURL(typed) ? .url : .search)
-        let found = searchManager.suggestions.filter {
-            $0.text.caseInsensitiveCompare(typed) != .orderedSame
+        let found = searchManager.suggestions.filter { suggestion in
+            if case .folder = suggestion.type { return true }
+            return suggestion.text.caseInsensitiveCompare(typed) != .orderedSame
         }
         return [primary] + found.prefix(5)
     }
@@ -421,25 +422,30 @@ struct URLBarView: View {
                     HStack(spacing: 12) {
                         AddressSuggestionFavicon(suggestion: suggestion, useLegacyCache: browserManager.engine == .webKit)
                             .frame(width: 20, height: 20)
-                        HStack(spacing: 6) {
-                            Text(suggestionTitle(suggestion))
-                                .font(NookDesign.Font.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.tail)
-                                .layoutPriority(1)
-                            if let host = suggestionURL(suggestion)?.host {
-                                Text("— " + host)
-                                    .font(NookDesign.Font.caption)
-                                    .foregroundStyle(.secondary)
+                        if case .folder(let folder) = suggestion.type {
+                            SuggestionLines(title: folder.title, detail: folder.path, detailLineLimit: nil)
+                                .fixedSize(horizontal: false, vertical: true)
+                        } else {
+                            HStack(spacing: 6) {
+                                Text(suggestionTitle(suggestion))
+                                    .font(NookDesign.Font.secondary)
                                     .lineLimit(1)
-                                    .truncationMode(.head)
+                                    .truncationMode(.tail)
+                                    .layoutPriority(1)
+                                if let host = suggestionURL(suggestion)?.host {
+                                    Text("— " + host)
+                                        .font(NookDesign.Font.caption)
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                        .truncationMode(.head)
+                                }
                             }
                         }
                         Spacer(minLength: 0)
                     }
                     .foregroundStyle(.primary)
                     .padding(.horizontal, 12)
-                    .frame(maxWidth: .infinity, minHeight: 45, maxHeight: 45, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 45, alignment: .leading)
                     .background(index == selectedSuggestionIndex ? NookDesign.Surface.fillPressed : .clear)
                     .clipShape(RoundedRectangle(cornerRadius: 7))
                     .contentShape(Rectangle())
