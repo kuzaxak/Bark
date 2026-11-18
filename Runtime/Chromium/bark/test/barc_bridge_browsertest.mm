@@ -4992,6 +4992,39 @@ IN_PROC_BROWSER_TEST_F(BarcEarlyPostedReturnBrowserTest,
 - (void)openStartupUrls;
 @end
 
+namespace {
+
+void MountApplicationLaunchPage(BrowserWindowInterface* browser) {
+  CHECK(browser);
+  auto* host = bark::BarkWindowHost::ForBrowser(browser);
+  CHECK(host);
+  NSView* root = host->root_view().GetNativeNSView();
+  const bool needs_root = !root;
+  if (needs_root) {
+    root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  }
+  const int32_t id = browser->GetSessionID().id();
+  auto* tabs = browser->GetTabStripModel();
+  if (auto* active = tabs->GetActiveTab()) {
+    NSView* page = (__bridge NSView*)barc_tab_native_view(
+        id, active->GetHandle().raw_value());
+    CHECK(page);
+    if (page.superview != root) {
+      for (NSView* mounted in root.subviews) {
+        [mounted removeFromSuperview];
+      }
+      page.frame = root.bounds;
+      page.autoresizingMask = NSViewWidthSizable | NSViewHeightSizable;
+      [root addSubview:page];
+    }
+  }
+  if (needs_root) {
+    CHECK(barc_window_set_root_view(id, (__bridge void*)root));
+  }
+}
+
+}  // namespace
+
 class BarcApplicationLaunchBrowserTest
     : public BarcSharedNativeWindowBrowserTest {
  public:
@@ -5013,6 +5046,11 @@ class BarcApplicationLaunchBrowserTest
             self->pending_window = pending_window;
             self->pending_tab = pending_tab;
             if (self->hold_admission) return int32_t{-1};
+            auto* browser = SharedWindow(pending_window);
+            auto* host = bark::BarkWindowHost::ForBrowser(browser);
+            if (host && host->root_view().GetNativeNSView()) {
+              MountApplicationLaunchPage(browser);
+            }
             output->presentation = self->mini ? BARC_APPLICATION_MINI : BARC_APPLICATION_CURRENT_SPACE;
             output->window = pending_window;
             return int32_t{1};
@@ -5041,12 +5079,7 @@ class BarcApplicationLaunchBrowserTest
           // URLs must go into the real Barc Work profile created below.
           GlobalBrowserCollection::GetInstance()->ForEach(
               [](BrowserWindowInterface* browser) {
-                NSView* header =
-                    [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-                CHECK(barc_window_attach_native_shell(
-                    browser->GetSessionID().id(), (__bridge void*)header));
-                CHECK(barc_window_admit_discovered(browser->GetSessionID().id(),
-                                                   (__bridge void*)header));
+                MountApplicationLaunchPage(browser);
                 return true;
               });
           barc_profile_open_window(
@@ -5056,10 +5089,7 @@ class BarcApplicationLaunchBrowserTest
                     static_cast<BarcApplicationLaunchBrowserTest*>(pointer);
                 CHECK_EQ(BARC_PROFILE_OK, status);
                 self->target = window;
-                NSView* header =
-                    [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-                CHECK(barc_window_attach_native_shell(window,
-                                                      (__bridge void*)header));
+                MountApplicationLaunchPage(SharedWindow(window));
                 // This exact C-factory blank is excluded from discovery
                 // admission. The fixture binds its target before explicit
                 // startup presentation.
@@ -5126,17 +5156,8 @@ class BarcApplicationLaunchBrowserTest
         std::make_unique<EarlyURL>());
   }
   void Admit(int32_t window) {
-    NSView* header = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-    ASSERT_EQ(1,
-              barc_window_attach_native_shell(window, (__bridge void*)header));
-    BarcDiscoveryWindow row{sizeof(BarcDiscoveryWindow)};
-    ASSERT_EQ(1, barc_window_discovery_state(window, &row));
-    if (row.flags & BARC_DISCOVERY_WINDOW_APP_FACTORY) {
-      ASSERT_EQ(1, barc_window_show(window));
-    } else {
-      ASSERT_EQ(1,
-                barc_window_admit_discovered(window, (__bridge void*)header));
-    }
+    MountApplicationLaunchPage(SharedWindow(window));
+    ASSERT_EQ(1, barc_window_show(window));
   }
   int CountURL(const GURL& url) {
     auto* browser = SharedWindow(target);
@@ -5204,7 +5225,12 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
   ASSERT_TRUE(base::test::RunUntil([&] {
     return contents->GetLastCommittedURL() == first && !contents->IsLoading();
   }));
-  ExpectNoStockChrome(BrowserView::GetBrowserViewForBrowser(native));
+  EXPECT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(native));
+  auto* host = bark::BarkWindowHost::ForBrowser(native);
+  ASSERT_TRUE(host);
+  NSView* page = (__bridge NSView*)barc_tab_native_view(popup, tab);
+  ASSERT_NE(nil, page);
+  EXPECT_EQ(host->root_view().GetNativeNSView(), page.superview);
   EXPECT_EQ(contents, SharedWindow(popup)->GetTabStripModel()->GetActiveWebContents());
   EXPECT_EQ(1, starts);
   EXPECT_EQ(1, first_requests.load());
@@ -5237,9 +5263,11 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
   Admit(destination);
   auto* source = SharedWindow(target);
   ASSERT_TRUE(source);
-  auto* view = BrowserView::GetBrowserViewForBrowser(source);
-  ASSERT_TRUE(view);
-  view->GetWidget()->Hide();
+  EXPECT_EQ(nullptr, BrowserView::GetBrowserViewForBrowser(source));
+  auto* host = bark::BarkWindowHost::ForBrowser(source);
+  ASSERT_TRUE(host);
+  source->GetWindow()->Hide();
+  ASSERT_FALSE(host->widget()->IsVisible());
   class TransferOnShow : public views::WidgetObserver {
    public:
     TransferOnShow(views::Widget* widget, int32_t source, int32_t destination)
@@ -5263,7 +5291,7 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
    private:
     const int32_t source_, destination_;
     base::ScopedObservation<views::Widget, views::WidgetObserver> observation_{this};
-  } transfer(view->GetWidget(), target, destination);
+  } transfer(host->widget(), target, destination);
   BarcApplicationTarget policy{};
   policy.window = target;
   const auto result = barc::CreateApplicationPage(source->GetProfile(), source, policy, 9901);
@@ -5346,9 +5374,14 @@ IN_PROC_BROWSER_TEST_F(BarcApplicationLaunchBrowserTest,
   after.Read();
   EXPECT_EQ(before.windows.size(), after.windows.size());
   // Dock reopen shows the owner the app names and asks for no window.
+  auto* owner = SharedWindow(target);
+  ASSERT_TRUE(owner);
+  owner->GetWindow()->Hide();
+  ASSERT_FALSE(owner->GetWindow()->IsVisible());
   [AppController.sharedController applicationShouldHandleReopen:NSApp
                                               hasVisibleWindows:NO];
   base::RunLoop().RunUntilIdle();
+  EXPECT_TRUE(owner->GetWindow()->IsVisible());
   EXPECT_EQ(2u, window_requests.size());
   // With only a regular profile named, Dock reopen asks the app for New Window.
   target = 0;
@@ -5396,12 +5429,7 @@ class BarcCancelledApplicationLaunchBrowserTest
     void PostBrowserStart() override {
       GlobalBrowserCollection::GetInstance()->ForEach(
           [](BrowserWindowInterface* browser) {
-            NSView* header =
-                [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 240, 600)];
-            CHECK(barc_window_attach_native_shell(browser->GetSessionID().id(),
-                                                  (__bridge void*)header));
-            CHECK(barc_window_admit_discovered(browser->GetSessionID().id(),
-                                               (__bridge void*)header));
+            MountApplicationLaunchPage(browser);
             return true;
           });
       [AppController.sharedController
