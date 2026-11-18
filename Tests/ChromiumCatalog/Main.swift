@@ -1,3 +1,6 @@
+#if BARK_CATALOG_FRAMEWORK
+@testable import NookNativeShell
+#endif
 import AppKit
 import BarcChromium
 import Foundation

@@ -14,7 +14,7 @@ Please be respectful to maintainers and disclose AI assistance.
 
 ## Development Setup
 
-You need an Apple Silicon Mac and Xcode 26 or later.
+You need a Mac and Xcode 26 or later. The package tests and native command-routing check run on Apple Silicon or Intel. The pinned Bark engine and signed-app smoke currently require Intel.
 
 1. **Clone the repository**
    ```bash
@@ -45,6 +45,37 @@ You need an Apple Silicon Mac and Xcode 26 or later.
    Space sync's record types live in `scripts/cloudkit/schema.ckdb`. CloudKit refuses a save that carries a field the Production environment lacks, so before every release run `scripts/cloudkit/check-production-schema.sh path/to/management-token` (a CloudKit management token from CloudKit Console → Settings → Tokens & Keys). It lists what Production lacks and fails; then import the schema with `scripts/cloudkit/import-schema.sh path/to/management-token`, deploy it to Production in CloudKit Console, and run the check again.
 
 There is no app test target. Logic with its own checks lives in `Checks/` folders beside each package's sources and in `scripts/tests/`; each file says how to run it. Every package with a `Tests/` folder has a `swift test` suite, and CI runs them on each pull request.
+
+### Native command routing and signed Bark
+
+From a clean checkout, run the native command-window regression without an engine artifact.
+
+```fish
+python3 scripts/bark-check.py interaction
+```
+
+The regression compiles the shipped command-routing code and checks it against real AppKit windows and a sheet. CI runs it after the Swift package tests.
+
+On Intel, run the catalog and startup-focus regressions against the Debug shell. This command uses the SDK headers in the checkout and the package versions in Xcode’s lockfile. Its test bridge supplies the engine calls.
+
+```fish
+python3 scripts/bark-check.py catalog
+```
+
+Get the exact engine artifact from a maintainer's existing build, or produce it using [Publishing the engine](Runtime/Chromium/README.md#publishing-the-engine). Use a trusted, already signed Bark candidate staged from that pin using [Building the app](Runtime/Chromium/README.md#building-the-app) and [Installed signing proof](Runtime/Chromium/README.md#installed-signing-proof). Both launch commands use a disposable browser profile and require a logged-in Intel macOS session.
+
+```fish
+python3 scripts/bark-check.py engine --engine /path/to/Engine
+python3 scripts/bark-check.py verify /path/to/signed/Bark.app --engine /path/to/Engine
+python3 scripts/bark-check.py smoke /path/to/signed/Bark.app --engine /path/to/Engine
+python3 scripts/bark-check.py launch /path/to/signed/Bark.app --engine /path/to/Engine
+```
+
+`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Engine/` directory next to the committed Bark SDK headers. The check verifies the manifest against the checkout pin and compares the signed bundle's embedded engine files against that artifact.
+
+`smoke` opens a loopback fixture, waits for the renderer to acknowledge it, then stops Bark. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
+
+For the optional CI smoke, configure a trusted self-hosted Intel macOS runner with a logged-in desktop session and set repository variables `BARK_SMOKE_RUNNER` to its custom label, `BARK_SMOKE_CANDIDATE` to the trusted signed bundle's absolute path on that runner, and `BARK_ENGINE_SOURCE` to the matching directory or archive source. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
 
 ## Code Style & Standards
 

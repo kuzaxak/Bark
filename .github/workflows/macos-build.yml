@@ -24,7 +24,7 @@ jobs:
         with:
           persist-credentials: false
 
-      # The app needs the published Chromium engine, which CI does not have.
+      # The package checks run on the hosted macOS runner.
       - name: Test each package
         run: |
           for package in Packages/*/; do
@@ -37,3 +37,31 @@ jobs:
             fi
             echo "::endgroup::"
           done
+
+      - name: Check native command routing
+        run: python3 scripts/bark-check.py interaction
+
+  signed-smoke:
+    name: Smoke-test the pinned signed Bark candidate
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref_name == github.event.repository.default_branch &&
+      vars.BARK_SMOKE_RUNNER != '' &&
+      vars.BARK_ENGINE_SOURCE != '' &&
+      vars.BARK_SMOKE_CANDIDATE != ''
+    runs-on: [self-hosted, macOS, x64, "${{ vars.BARK_SMOKE_RUNNER }}"]
+    timeout-minutes: 45
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Check catalog and initial window activation
+        run: python3 scripts/bark-check.py catalog
+
+      - name: Verify and launch the signed candidate
+        env:
+          BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
+          BARK_SMOKE_CANDIDATE: ${{ vars.BARK_SMOKE_CANDIDATE }}
+        run: python3 scripts/bark-check.py smoke "$BARK_SMOKE_CANDIDATE"

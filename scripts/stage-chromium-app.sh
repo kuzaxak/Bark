@@ -9,6 +9,7 @@
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEFAULT_ADDITIONS="$REPO/ChromiumApp/Additions.plist"
+ENGINE_SLICE="$REPO/Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64"
 refuse() { echo "$1" >&2; exit 1; }
 # Chromium's signing covers only the Mach-O files its config names, and codesign --verify --deep --strict
 # still passes with an unsigned extra one, so the bundle is walked file by file.
@@ -30,6 +31,24 @@ if mode == 'signed':
             problems.append(f'Unsigned Mach-O: {os.path.relpath(path, bundle)}')
 sys.exit('\n'.join(problems) or None)
 PY
+}
+check_engine() {
+  local artifact="$1" headers="$2" listed present digest header
+  [[ -d "$artifact/Bark Framework.framework" ]] || refuse 'Missing Bark framework'
+  [[ -f "$artifact/Bark Packaging/app-entitlements.plist" ]] || refuse "Missing the engine's app entitlements: $artifact"
+  digest=$(/usr/bin/shasum -a 256 "$artifact/SHA256SUMS" | /usr/bin/cut -d' ' -f1) ||
+    refuse "Missing engine artifact manifest: $artifact"
+  [[ -f "$headers/engine-artifact.sha256" && $(<"$headers/engine-artifact.sha256") == "$digest" ]] ||
+    refuse 'App was built against another engine artifact'
+  listed=$(/usr/bin/awk '{ sub(/^[0-9a-f]+  /, ""); print }' "$artifact/SHA256SUMS" | /usr/bin/sort)
+  present=$(cd "$artifact" && /usr/bin/find . -type f ! -name SHA256SUMS | /usr/bin/sort)
+  { [[ -n "$listed" && "$listed" == "$present" ]] && (cd "$artifact" && /usr/bin/shasum -a 256 --check --quiet SHA256SUMS >/dev/null 2>&1); } ||
+    refuse "Engine artifact does not match its SHA256SUMS: $artifact"
+  for header in barc_bridge_api.h barc_public_headers_sha256.h; do
+    /usr/bin/cmp -s "$artifact/Headers/$header" "$headers/$header" ||
+      refuse "App was compiled against another $header than the engine's: $artifact/Headers/$header"
+  done
+  check_bundle "$artifact/Bark Framework.framework" unsigned
 }
 # ChromiumApp/Additions.plist: an Info dictionary, whose keys the engine's Info.plist lacks or whose arrays
 # add entries to the engine's, and an Entitlements dictionary of entitlements the engine does not grant.
@@ -90,9 +109,14 @@ elif mode == 'signed':
     sys.exit('\n'.join(problems) or None)
 PY
 }
+if [[ $# == 2 && $1 == --check-engine ]]; then
+  check_engine "$2" "$ENGINE_SLICE/Headers/BarcChromium"
+  printf 'Verified engine against the checkout pin: %s\n' "$2"
+  exit 0
+fi
 if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   ADDITIONS="${3:-$DEFAULT_ADDITIONS}"
-  ENGINE_ENTITLEMENTS="${4:-$REPO/Packages/BarkEngine/BarkEngine.xcframework/macos-x86_64/Engine}/Bark Packaging/app-entitlements.plist"
+  ENGINE_ENTITLEMENTS="${4:-$ENGINE_SLICE/Engine}/Bark Packaging/app-entitlements.plist"
   [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
   [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
   check_bundle "$2" signed
@@ -102,6 +126,7 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
 fi
 if [[ $# != 4 && $# != 5 ]]; then
   echo 'usage: bash scripts/stage-chromium-app.sh <app-target Bark.app> <engine artifact directory> <native-products-directory> <new-output.app> [<Additions.plist>]' >&2
+  echo '       bash scripts/stage-chromium-app.sh --check-engine <engine artifact directory>' >&2
   echo '       bash scripts/stage-chromium-app.sh --check-signed <signed Bark.app> [<Additions.plist> [<engine artifact directory>]]' >&2
   exit 2
 fi
@@ -117,7 +142,6 @@ zone_names() { /usr/bin/strings -a "$1" | /usr/bin/grep -xE '[A-Za-z]*Delegating
 ENGINE_FRAMEWORK_NAME='Bark Framework.framework'
 ENGINE_FRAMEWORK="$ARTIFACT/$ENGINE_FRAMEWORK_NAME"
 ENGINE_INFO="$ARTIFACT/engine-Info.plist"
-ENGINE_PIN="$PRODUCTS/include/BarcChromium/engine-artifact.sha256"
 APP_INFO="$APP/Contents/Info.plist"
 APP_MAIN="$APP/Contents/MacOS/Bark"
 APP_RESOURCES="$APP/Contents/Resources"
@@ -127,21 +151,8 @@ NATIVE="$NATIVE_FRAMEWORK/Versions/A/NookNativeShell"
 [[ ! -e "$PACKAGING" ]] || refuse 'Packaging output already exists; refusing replacement'
 [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
 
-[[ -d "$ENGINE_FRAMEWORK" ]] || refuse 'Missing Bark framework'
-check_bundle "$ENGINE_FRAMEWORK" unsigned
-LISTED=$(/usr/bin/awk '{ sub(/^[0-9a-f]+  /, ""); print }' "$ARTIFACT/SHA256SUMS" 2>/dev/null | /usr/bin/sort || true)
-PRESENT=$(cd "$ARTIFACT" && /usr/bin/find . -type f ! -name SHA256SUMS | /usr/bin/sort)
-{ [[ -n "$LISTED" && "$LISTED" == "$PRESENT" ]] && (cd "$ARTIFACT" && /usr/bin/shasum -a 256 --check --quiet SHA256SUMS >/dev/null 2>&1); } ||
-  refuse "Engine artifact does not match its SHA256SUMS: $ARTIFACT"
-ARTIFACT_SHA=$(cd "$ARTIFACT" && /usr/bin/shasum -a 256 SHA256SUMS | /usr/bin/cut -d' ' -f1)
+check_engine "$ARTIFACT" "$PRODUCTS/include/BarcChromium"
 ENGINE_ENTITLEMENTS="$ARTIFACT/Bark Packaging/app-entitlements.plist"
-[[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
-[[ -f "$ENGINE_PIN" && $(<"$ENGINE_PIN") == "$ARTIFACT_SHA" ]] || refuse 'App was built against another engine artifact'
-# main makes the same check at launch, against the digest the engine exports.
-for header in barc_bridge_api.h barc_public_headers_sha256.h; do
-  /usr/bin/cmp -s "$ARTIFACT/Headers/$header" "$PRODUCTS/include/BarcChromium/$header" ||
-    refuse "App was compiled against another $header than the engine's: $ARTIFACT/Headers/$header"
-done
 
 [[ -f "$APP_MAIN" && $(plist "$APP_INFO" CFBundleExecutable) == Bark ]] || refuse 'Missing app target executable'
 [[ ! -e "$APP/Contents/_CodeSignature" ]] || refuse 'App already has a code signature: build it with CODE_SIGNING_ALLOWED=NO'
