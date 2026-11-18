@@ -67,7 +67,7 @@ class UpdateBuildInputTest(unittest.TestCase):
             def build_shell(check, derived, arch, evidence):
                 self.assertEqual(check, tools)
                 self.assertEqual(arch, "x86_64")
-                self.assertEqual(evidence, output)
+                self.assertEqual(evidence, output.resolve())
                 self.assertEqual(derived.name, "DerivedData")
                 derived.mkdir()
 
