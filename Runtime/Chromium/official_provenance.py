@@ -14,6 +14,8 @@ PINS = json.loads((HERE / "PINS.json").read_text())
 CHROMIUM_VERSION = (HERE / "CHROMIUM_VERSION").read_text().strip()
 RECEIPT = "official-build.json"
 FRAMEWORK = "Bark Framework.framework"
+RAW_FRAMEWORK_IMAGE = Path("obj/chrome/chrome_framework_shared_library/Bark Framework")
+BROWSER_OBJECT = Path("obj/chrome/browser/core/browser_process_impl.o")
 ARCHES = {"x86_64": ("x64", "mac"), "arm64": ("arm64", "mac-arm")}
 
 
@@ -75,28 +77,42 @@ def verify_pgo_profile(src, target):
     return profile
 
 
+def verify_pgo_compile(out, src, profile, expected_hash, linked, env):
+    flags = subprocess.check_output(["gn", "desc", str(out), "//chrome/browser:core", "cflags"],
+                                    cwd=src, env=env, text=True).splitlines()
+    paths = [line.strip().removeprefix("-fprofile-use=") for line in flags
+             if line.strip().startswith("-fprofile-use=")]
+    if len(paths) != 1 or (out / paths[0]).resolve() != profile:
+        raise ValueError("The Chromium browser core does not use the pinned PGO profile")
+    state = subprocess.check_output(["siso", "fs", "export", "-C", out], cwd=src, env=env)
+    entries = {entry["name"]: entry for entry in json.loads(state)["entries"]}
+    profile_entry = entries.get(str(profile), {})
+    if profile_entry.get("digest", {}).get("hash") != expected_hash:
+        raise ValueError("The official build has no matching Siso input record for the pinned PGO profile")
+    browser_object = out / BROWSER_OBJECT
+    compiled = entries.get(str(browser_object), {})
+    compiled_time = int(compiled.get("id", {}).get("mod_time", 0))
+    profile_time = int(profile_entry.get("id", {}).get("mod_time", 0))
+    if (not compiled.get("cmd_hash") or not compiled.get("edge_hash") or
+            not 0 < profile_time <= compiled_time <= linked.stat().st_mtime_ns or
+            not browser_object.is_file() or
+            compiled.get("digest", {}).get("hash") != digest(browser_object)):
+        raise ValueError("The official build has no matching Siso browser compile before the framework link")
+
+
 def record(out, src, arch, env):
     expected = recipe_inputs(arch)
     _, target = ARCHES[arch]
     profile = verify_pgo_profile(src, target)
-    flags = subprocess.check_output(["gn", "desc", str(out), "//chrome/browser:browser", "cflags"],
-                                    cwd=src, env=env, text=True).splitlines()
-    if not any(flag.startswith("-fprofile-use=") and
-               (out / flag.removeprefix("-fprofile-use=")).resolve() == profile for flag in flags):
-        raise ValueError("The generated Chromium browser target does not use the pinned PGO profile")
-    framework = out / "Bark.app/Contents/Frameworks" / FRAMEWORK
-    linked = (framework / "Versions/Current/Bark Framework").stat().st_mtime_ns
-    # Siso retains the digest of the profile input it actually read.
-    state = subprocess.check_output(["siso", "fs", "export", "-C", out], cwd=src, env=env)
-    for entry in json.loads(state)["entries"]:
-        if (entry.get("name") == str(profile) and entry.get("digest", {}).get("hash") == expected["pgo_sha256"]
-                and int(entry.get("id", {}).get("mod_time", linked + 1)) <= linked):
-            break
-    else:
-        raise ValueError("The official build has no matching Siso input record for the pinned PGO profile")
     if digest(out / "args.gn") != expected["gn_args_sha256"]:
         raise ValueError("The actual GN arguments do not match the official recipe")
-    return {**expected, **framework_inputs(framework, arch)}
+    linked = out / RAW_FRAMEWORK_IMAGE
+    verify_pgo_compile(out, src, profile, expected["pgo_sha256"], linked, env)
+    framework = out / "Bark.app/Contents/Frameworks" / FRAMEWORK
+    packaged = framework_inputs(framework, arch)
+    if digest(linked) != packaged["framework_sha256"]:
+        raise ValueError("The packaged official framework differs from the raw linked image")
+    return {**expected, **packaged}
 
 
 def verify(receipt, framework, arch):

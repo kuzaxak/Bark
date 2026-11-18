@@ -80,9 +80,14 @@ and official products independent.
 
 After the link, the recipe records the framework hashes, Chromium revision,
 SDK build, GN arguments and the pinned PGO name and SHA-256 in
-`official-build.json`. The receipt requires Siso evidence that the target read
-those exact PGO bytes. SDK publication rechecks the build outputs and includes
-the receipt in the pinned manifest. A consumer can verify an installed official
+`official-build.json`. For official builds, Bark's Siso handler retains the
+digest of the profile explicitly passed to the browser-core compile. The
+receipt checks that compile before the raw framework link and matches the
+raw and packaged framework bytes. The versioned official compiler wrapper
+keeps this compile distinct from previous, unwitnessed build actions. Use a
+fresh official output directory if an older output has different GN arguments.
+SDK publication rechecks the build outputs and includes the receipt in the
+pinned manifest. A consumer can verify an installed official
 SDK without the Chromium checkout using `bark-check.py engine --require-official`.
 
 #### Prepare the first official SDK on its native Mac

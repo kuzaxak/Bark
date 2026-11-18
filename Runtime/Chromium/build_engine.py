@@ -290,6 +290,9 @@ def official_sdk():
     return path
 
 
+OFFICIAL_CC_WRAPPER = "bark_official_pgo_cc_v1"
+
+
 def engine_args(arch, official):
     contents = (HERE / f"args-{arch}.gn").read_bytes()
     if not official:
@@ -297,6 +300,11 @@ def engine_args(arch, official):
     developer_mode = b"is_official_build = false\n"
     if contents.splitlines(keepends=True).count(developer_mode) != 1:
         raise ValueError(f"args-{arch}.gn: missing developer build setting")
+    developer_wrapper = b'cc_wrapper = "./bark_override_cc"\n'
+    if contents.splitlines(keepends=True).count(developer_wrapper) != 1:
+        raise ValueError(f"args-{arch}.gn: missing developer compiler wrapper")
+    # Keep the witnessed compile distinct from previous, unwitnessed Siso actions.
+    contents = contents.replace(developer_wrapper, f'cc_wrapper = "./{OFFICIAL_CC_WRAPPER}"\n'.encode())
     version = PINS["official_macos_sdk"]["version"]
     return contents.replace(developer_mode, (
         'is_official_build = true\nchrome_pgo_phase = 2\nuse_system_xcode = true\n'
@@ -328,7 +336,7 @@ def build(checkout, depot_tools, env, args):
                              "arm64": ("aarch64-apple-darwin", "arm64")}[args.arch]
     rust_out = src / "out" / f"BarkCargo{suffix}"
     matcher = rust_out / rust_target / "release/libnook_adblock.dylib"
-    wrapper = out / "bark_override_cc"
+    wrapper = out / (OFFICIAL_CC_WRAPPER if args.official else "bark_override_cc")
     if wrapper.is_symlink() or any(path.is_symlink() for path in
                                    (rust_out, rust_out / rust_target, matcher.parent, matcher)):
         raise ValueError(f"{out}: expected local wrapper and Rust build paths")
@@ -366,8 +374,24 @@ def build(checkout, depot_tools, env, args):
                  "-o", compiled, src / "bark/tools/override_cc.c"], src, env)
             install_generated(compiled, wrapper)
     run([depot_tools / "gn", "gen", out.relative_to(src), "--fail-on-unused-args"], src, env, args.dry_run)
-    run([depot_tools / "autoninja", "-C", out.relative_to(src), "-j", args.jobs, *TARGETS],
-        src, {**env, "NINJA_SUMMARIZE_BUILD": "1"}, args.dry_run)
+    ninja = [depot_tools / "autoninja", "-C", out.relative_to(src), "-j", args.jobs]
+    ninja_env = {**env, "NINJA_SUMMARIZE_BUILD": "1"}
+    if args.official:
+        # Delegate to Chromium's standard Siso config and add Bark's
+        # official-only compiler handler in a private config directory.
+        if args.dry_run:
+            run([*ninja, "-config_repo_dir", (out / ".official-siso/siso").relative_to(src),
+                 "-load", "@config//official_pgo.star", *TARGETS], src, ninja_env, True)
+        else:
+            with tempfile.TemporaryDirectory(prefix=".official-siso-", dir=out) as scratch:
+                config = Path(scratch) / "siso"
+                shutil.copytree(src / "build/config/siso", config)
+                shutil.copy2(HERE / "official_pgo.star", config)
+                run([*ninja, "-config_repo_dir", config.relative_to(src),
+                     "-load", "@config//official_pgo.star", *TARGETS],
+                    src, ninja_env)
+    else:
+        run([*ninja, *TARGETS], src, ninja_env, args.dry_run)
     if args.official and not args.dry_run:
         from official_provenance import RECEIPT, record
 

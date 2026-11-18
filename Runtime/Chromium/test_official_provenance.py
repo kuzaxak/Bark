@@ -1,5 +1,6 @@
 """Test the official SDK receipt binding without an official toolchain."""
 import json
+import os
 from pathlib import Path
 import plistlib
 import tempfile
@@ -43,6 +44,14 @@ class OfficialProvenanceTests(unittest.TestCase):
         pins.start()
         self.addCleanup(pins.stop)
         self.recorded_time = self.image.stat().st_mtime_ns
+        self.browser_object = self.out / provenance.BROWSER_OBJECT
+        self.browser_object.parent.mkdir(parents=True)
+        self.browser_object.write_bytes(b"profiled browser object")
+        self.linked = self.out / provenance.RAW_FRAMEWORK_IMAGE
+        self.linked.parent.mkdir(parents=True)
+        self.linked.write_bytes(self.image.read_bytes())
+        self.browser_time = self.browser_object.stat().st_mtime_ns
+        self.include_browser_compile = True
         mock = patch.object(provenance.subprocess, "check_output", side_effect=self.tools)
         mock.start()
         self.addCleanup(mock.stop)
@@ -52,8 +61,12 @@ class OfficialProvenanceTests(unittest.TestCase):
         if tool == "gn":
             return self.profile_flag
         if tool == "siso":
-            return json.dumps({"entries": [{"name": str(self.profile), "digest": {"hash": self.recorded_hash},
-                                           "id": {"mod_time": self.recorded_time}}]})
+            entries = [{"name": str(self.profile), "digest": {"hash": self.recorded_hash},
+                        "id": {"mod_time": self.recorded_time}}]
+            if self.include_browser_compile:
+                entries.append({"name": str(self.browser_object), "digest": {"hash": provenance.digest(self.browser_object)},
+                                "id": {"mod_time": self.browser_time}, "cmd_hash": "command", "edge_hash": "edge"})
+            return json.dumps({"entries": entries})
         if tool == "lipo":
             return self.arch + "\n"
         sdk = provenance.PINS["official_macos_sdk"]["version"]
@@ -124,6 +137,20 @@ class OfficialProvenanceTests(unittest.TestCase):
         (self.artifact / "SHA256SUMS").write_text(f"{provenance.digest(receipt)}  ./{provenance.RECEIPT}\n")
         with self.assertRaisesRegex(ValueError, "does not match"):
             provenance.verify_cached(self.artifact, self.arch)
+
+    def test_browser_compile_must_exist_and_predate_raw_link(self):
+        self.include_browser_compile = False
+        with self.assertRaisesRegex(ValueError, "no matching Siso browser compile"):
+            provenance.record(self.out, self.src, self.arch, {})
+        self.include_browser_compile = True
+        os.utime(self.linked, ns=(self.browser_time - 1, self.browser_time - 1))
+        with self.assertRaisesRegex(ValueError, "no matching Siso browser compile"):
+            provenance.record(self.out, self.src, self.arch, {})
+
+    def test_packaged_framework_must_match_raw_link(self):
+        self.linked.write_bytes(b"another linked image")
+        with self.assertRaisesRegex(ValueError, "differs from the raw linked image"):
+            provenance.record(self.out, self.src, self.arch, {})
 
     def test_unrecorded_or_unconfigured_pgo_is_refused(self):
         self.recorded_hash = "0" * 64

@@ -99,11 +99,15 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
         self.tool("gn", "printf '%s\\n' " + shlex.quote(f"-fprofile-use={profile}"))
         state_file = self.build / "fake-siso-state.json"
         state = json.loads(state_file.read_text())
-        state["entries"].append({
-            "name": str(profile),
-            "digest": {"hash": hashlib.sha256(profile.read_bytes()).hexdigest()},
-            "id": {"mod_time": 0},
-        })
+        browser = self.build / "obj/chrome/browser/core/browser_process_impl.o"
+        browser.parent.mkdir(parents=True)
+        browser.write_bytes(b"profiled browser object fixture")
+        state["entries"].extend([
+            {"name": str(profile), "digest": {"hash": hashlib.sha256(profile.read_bytes()).hexdigest()},
+             "id": {"mod_time": profile.stat().st_mtime_ns}},
+            {"name": str(browser), "digest": {"hash": hashlib.sha256(browser.read_bytes()).hexdigest()},
+             "id": {"mod_time": browser.stat().st_mtime_ns}, "cmd_hash": "command", "edge_hash": "edge"},
+        ])
         state_file.write_text(json.dumps(state))
         framework = self.build / "Bark.app/Contents/Frameworks/Bark Framework.framework"
         versioned = framework / "Versions/Current"
@@ -121,6 +125,9 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
             f"-Wl,-platform_version,macos,15.5,{sdk['version']}",
         ))
         shutil.copyfile(linked, versioned / "Bark Framework")
+        raw_image = self.build / "obj/chrome/chrome_framework_shared_library/Bark Framework"
+        raw_image.parent.mkdir(parents=True)
+        shutil.copyfile(linked, raw_image)
         env = self.fixture["publisher_environment"](self.build, self.siso)
         subprocess.run([
             sys.executable, "-B", "-c", """

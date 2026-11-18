@@ -154,9 +154,17 @@ class BuildArchitectureTests(unittest.TestCase):
                     self.assertIn(f"update_pgo_profiles.py --target={pgo} update", output.getvalue())
                     self.assertIn("BarkCargo-official", output.getvalue())
                     self.assertIn(f"gn gen out/Barc-{arch}-official", output.getvalue())
+                    self.assertIn("-load @config//official_pgo.star", output.getvalue())
                     gn = build_engine.engine_args(arch, True).decode().splitlines()
                     self.assertIn("is_official_build = true", gn)
                     self.assertIn("chrome_pgo_phase = 2", gn)
+                    wrapper = build_engine.OFFICIAL_CC_WRAPPER
+                    self.assertIn(f'cc_wrapper = "./{wrapper}"', gn)
+                    self.assertIn(f"/{wrapper} ", output.getvalue())
+                    self.assertIn(f'"command_prefix": "./{wrapper} "',
+                                  (build_engine.HERE / "official_pgo.star").read_text())
+                    self.assertIn(b'cc_wrapper = "./bark_override_cc"\n',
+                                  build_engine.engine_args(arch, False))
                     self.assertIn(f'target_cpu = "{arch}"', gn)
                     self.assertIn('mac_sdk_min = "26.5"', gn)
                     self.assertNotIn("is_official_build = false", gn)
