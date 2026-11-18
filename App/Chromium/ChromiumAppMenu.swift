@@ -24,7 +24,7 @@ final class ChromiumAppMenu: NSObject {
 
     // Values from the pinned chrome/app/chrome_command_ids.h.
     private enum Tag {
-        static let appMenu = 57325, fileMenu = 57326, viewMenu = 57327, historyMenu = 57324, helpMenu = 57330
+        static let appMenu = 57325, fileMenu = 57326, viewMenu = 57327, historyMenu = 57324
         static let windowMenu = 57321, bookmarksMenu = 57333, profilesMenu = 57322, tabMenu = 57323
         static let about = 40018, settings = 40015, quit = 34031, newTab = 34014, reopenClosedTab = 34028, focusAddress = 39001
         static let closeTab = 34015, history = 40010, downloads = 40012
@@ -103,7 +103,9 @@ final class ChromiumAppMenu: NSObject {
             let index = app.item(withTag: Tag.about).map { app.index(of: $0) + 1 } ?? 0
             app.insertItem(make("Check for Updates…", .checkForUpdates), at: index)
         }
-        if let help = main.item(withTag: Tag.helpMenu)?.submenu,
+        // Chromium assigns NSApp.helpMenu to an untagged submenu. Its original
+        // Help command identifies that submenu in the menu tree being installed.
+        if let help = Self.item(withTag: Tag.help, in: main)?.menu,
            !help.items.contains(where: { $0.representedObject as? Command == .barkHelp }) {
             help.insertItem(make("Bark Help", .barkHelp), at: 0)
         }

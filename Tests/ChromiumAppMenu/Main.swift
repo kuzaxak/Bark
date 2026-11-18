@@ -40,7 +40,8 @@ enum Check {
         top(57322, "Profiles", [])
         top(57323, "Tab", [(34016, "Next Tab")])
         top(57321, "Window", [(40012, "Downloads")])
-        top(57330, "Help", [(40020, "Chromium Help")])
+        // Chromium tags the Help command, but leaves the owning top-level item untagged.
+        top(0, "Help", [(40020, "Chromium Help")])
         return main
     }
 
@@ -73,9 +74,9 @@ enum Check {
         for tag in [40009, 40250, 40259, 40251, 40282, 40299, 40296, 34058, 34061, 35011] {
             precondition(item(main, 57327, tag).isHidden, "View item \(tag) must be hidden")
         }
-        for (top, tag) in [(57324, 33003), (57330, 40020)] {
-            precondition(item(main, top, tag).isHidden, "item \(tag) must be hidden")
-        }
+        let help = main.items.first { $0.title == "Help" }!.submenu!
+        precondition(item(main, 57324, 33003).isHidden)
+        precondition(help.item(withTag: 40020)!.isHidden)
         precondition(main.item(withTag: 57343)!.submenu!.items.last!.submenu!.item(withTag: 39002)!.isHidden, "Search the Web must be hidden")
         let warn = main.item(withTag: 57325)!.submenu!.items.first { $0.title == "Warn Before Quitting" }!
         precondition(warn.isHidden, "Chromium's Warn Before Quitting must be hidden; Nook asks before quitting itself")
@@ -155,7 +156,6 @@ enum Check {
         precondition(application.items.filter { $0.title == "Check for Updates…" }.count == 1)
 
         let view = main.item(withTag: 57327)!.submenu
-        let help = main.item(withTag: 57330)!.submenu!
         precondition(help.items.filter { !$0.isHidden }.map(\.title) == ["Bark Help"])
         precondition(added("Bark Help", in: help) == .barkHelp)
         precondition(added("Toggle Sidebar", in: view) == .toggleSidebar)
