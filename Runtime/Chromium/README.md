@@ -52,13 +52,17 @@ enabled.
 
 ```fish
 set barc_repo "$PWD"
-set engine_checkout "$barc_repo/build/chromium-engine/checkout"
+set engine_checkout "$HOME/Library/Caches/BarkSDK/chromium/checkout"
 set recipe "$barc_repo/Runtime/Chromium/build_engine.py"
 
 python3 "$recipe" prepare --checkout "$engine_checkout" --jobs 8
 python3 "$recipe" check --checkout "$engine_checkout"
 python3 "$recipe" build --checkout "$engine_checkout" --jobs 8
 ```
+
+This checkout holds Chromium's downloaded sources and incremental compiler output.
+Keeping it outside the application worktree lets you clear the app's `build/`
+directory or retire a worktree without losing a running engine build.
 
 `prepare` creates the pinned Git checkouts, runs gclient dependency sync and
 hooks, mounts the Bark trees and applies the patches. Use `prepare --resume`
@@ -206,7 +210,7 @@ set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
 python3 scripts/bark-check.py build
 ```
 
-The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
+The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. A successful rebuild replaces the previous app at the same path. Keep build inputs in Git and the verified SDK in the versioned cache. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
 
 Do not sign or launch a partially staged bundle. The framework requires its
 standard FMWK Info.plist, `ee.qdo.nook.NativeShell` identity, version-A executable,
