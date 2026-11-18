@@ -2,6 +2,7 @@
 // not qualify ordinary install/update or Chrome Web Store flows.
 #include "bark/bridge/barc_bridge.h"
 #include "bark/bridge/barc_profiles.h"
+#include "bark/browser/ui/bark_window_host.h"
 
 #include <array>
 #include <memory>
@@ -26,7 +27,6 @@
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
-#include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/common/chrome_paths.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "components/sessions/core/session_id.h"
@@ -61,6 +61,11 @@
 #include "url/gurl.h"
 
 namespace {
+views::Widget* WidgetFor(BrowserWindowInterface* browser) {
+  auto* host = bark::BarkWindowHost::ForBrowser(browser);
+  return host ? host->widget() : nullptr;
+}
+
 constexpr char kWork[] = "487b52fa-b56a-4df1-ad84-11508a148957";
 constexpr char kPersonal[] = "19f3fcde-3a09-467e-b995-5abb4ab69a2c";
 using OpenResult = base::test::TestFuture<barc_profile_status, int32_t>;
@@ -151,8 +156,8 @@ class BarcExtensionStorageBrowserTest : public InProcessBrowserTest {
     ASSERT_TRUE(first);
     ASSERT_TRUE(second);
     ASSERT_NE(first->GetProfile(), second->GetProfile());
-    ASSERT_EQ(BrowserView::GetBrowserViewForBrowser(first)->GetWidget(),
-              BrowserView::GetBrowserViewForBrowser(second)->GetWidget());
+    ASSERT_NE(nullptr, WidgetFor(first));
+    ASSERT_EQ(WidgetFor(first), WidgetFor(second));
     std::array<char, 37> uuid{};
     EXPECT_EQ(uuid.size(),
               barc_window_profile_uuid(work_id, uuid.data(), uuid.size()));
@@ -544,9 +549,8 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(closing_view);
   EXPECT_EQ(work_window,
             closing_view->GetShowParamsForTesting()->GetBrowserOwner());
-  const auto widget_alive = BrowserView::GetBrowserViewForBrowser(work_window)
-                                ->GetWidget()
-                                ->GetWeakPtr();
+  ASSERT_NE(nullptr, WidgetFor(work_window));
+  const auto widget_alive = WidgetFor(work_window)->GetWeakPtr();
   const auto owner_alive = work_window->GetWeakPtr();
   EXPECT_EQ(1, barc_window_close(work_id));
   EXPECT_EQ(ExtensionInstallPrompt::Result::USER_CANCELED, closed.Get().result);
@@ -556,10 +560,10 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(Window(peer_id));
   EXPECT_EQ(
       widget_alive.get(),
-      BrowserView::GetBrowserViewForBrowser(Window(personal_id))->GetWidget());
+      WidgetFor(Window(personal_id)));
   EXPECT_EQ(
       widget_alive.get(),
-      BrowserView::GetBrowserViewForBrowser(Window(peer_id))->GetWidget());
+      WidgetFor(Window(peer_id)));
   EXPECT_TRUE(registry->disabled_extensions().Contains(extension_id));
   EXPECT_FALSE(
       prefs->GetGrantedPermissions(extension_id)
@@ -747,8 +751,8 @@ IN_PROC_BROWSER_TEST_F(BarcExtensionStorageBrowserTest,
   const int32_t peer_id = peer_result.Get<1>();
   ASSERT_EQ(work, Window(peer_id)->GetProfile());
   ASSERT_EQ(
-      BrowserView::GetBrowserViewForBrowser(work_window)->GetWidget(),
-      BrowserView::GetBrowserViewForBrowser(Window(peer_id))->GetWidget());
+      WidgetFor(work_window),
+      WidgetFor(Window(peer_id)));
   ASSERT_EQ(1, barc_window_select(peer_id));
   ASSERT_FALSE(work_window->IsSelectedForNativeWindow());
   ASSERT_TRUE(Window(peer_id)->IsSelectedForNativeWindow());

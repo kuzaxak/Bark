@@ -83,13 +83,26 @@ void ExpectRegularAndPrivateBarkWindows(BrowserWindowInterface* browser) {
   ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(normal));
   EXPECT_EQ(profile, normal->GetProfile());
 
-  auto* private_profile = profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
-  ASSERT_NE(nullptr, private_profile);
-  auto* private_window =
-      CreateBrowserWindow(BrowserWindowCreateParams(*private_profile, true));
+  auto* unbound_otr = profile->GetPrimaryOTRProfile(/*create_if_needed=*/true);
+  ASSERT_NE(nullptr, unbound_otr);
+  EXPECT_EQ(nullptr,
+            CreateBrowserWindow(BrowserWindowCreateParams(*unbound_otr, true)));
+
+  using Result = base::test::TestFuture<barc_profile_status, int32_t>;
+  Result opened;
+  barc_private_session_open_window(
+      [](barc_profile_status status, int32_t id, void* data) {
+        static_cast<Result*>(data)->SetValue(status, id);
+      },
+      &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t private_id = opened.Get<1>();
+  auto* private_window = FindBrowser(private_id);
   ASSERT_NO_FATAL_FAILURE(ExpectBarkWindow(private_window));
-  EXPECT_EQ(private_profile, private_window->GetProfile());
+  EXPECT_TRUE(private_window->GetProfile()->IsGuestSession());
   EXPECT_TRUE(private_window->GetProfile()->IsOffTheRecord());
+  EXPECT_NE(unbound_otr, private_window->GetProfile());
+  EXPECT_EQ(37u, barc_window_private_session_uuid(private_id, nullptr, 0));
 }
 
 void CollectClassNames(views::View* view, std::set<std::string>* names) {
