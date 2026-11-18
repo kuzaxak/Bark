@@ -16,7 +16,7 @@ Please be respectful to maintainers and disclose AI assistance.
 
 You need a Mac and Xcode 26 or later. The package tests and native command-routing check run on Apple Silicon or Intel. Intel has a verified runtime pin and signed-app smoke. The native Apple Silicon runtime pin is pending.
 
-1. **Check out the Bark revision you want to build.** Run the commands below from the repository directory containing `Nook.xcodeproj` and `scripts/bark-check.py`.
+1. **Check out the Bark revision you want to build.** Run the commands below from the repository directory containing `Bark.xcodeproj` and `scripts/bark-check.py`.
 
 2. **Install the Metal Toolchain** for the app’s shader
    ```bash
@@ -25,9 +25,9 @@ You need a Mac and Xcode 26 or later. The package tests and native command-routi
 
 3. **Open in Xcode**
    ```bash
-   open Nook.xcodeproj
+   open Bark.xcodeproj
    ```
-   Swift packages resolve on their own the first time the project opens.
+   Choose the shared **Bark** scheme. Xcode resolves the Swift packages the first time the project opens.
 
 4. **Build and run Bark.** Install the pinned SDK for your Mac and use the signed build command below. It builds the Swift shell and outer app from the tracked sources, verifies the embedded engine, and places the finished app at `build/Bark.app`. The output directory can start empty. [Native command routing and signed Bark](#native-command-routing-and-signed-bark)
 

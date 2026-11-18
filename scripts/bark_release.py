@@ -182,8 +182,8 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         raise ValueError(f"Choose a new distribution output directory: {output_directory}")
     if sparkle_bin is None:
         packages = working / "SourcePackages"
-        subprocess.run(["xcodebuild", "-resolvePackageDependencies", "-project", REPO / "Nook.xcodeproj",
-                        "-scheme", "NookNativeShell", "-onlyUsePackageVersionsFromResolvedFile",
+        subprocess.run(["xcodebuild", "-resolvePackageDependencies", "-project", REPO / "Bark.xcodeproj",
+                        "-scheme", "Bark", "-onlyUsePackageVersionsFromResolvedFile",
                         "-derivedDataPath", working / "DerivedData", "-clonedSourcePackagesDirPath", packages],
                        check=True)
         sparkle_bin = packages / "artifacts/sparkle/Sparkle/bin"

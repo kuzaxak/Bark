@@ -8,7 +8,7 @@ The [UI walk setup](../../CONTRIBUTING.md#run-the-signed-ui-walks) installs the 
 set -l bark_arch (python3 scripts/chromium_sdk_layout.py native-arch)
 python3 scripts/bark-check.py engine --arch "$bark_arch" --install --engine /path/to/matching/Engine
 set -l derived (mktemp -d /private/tmp/bark-update-build.XXXXXX)
-xcodebuild -project Nook.xcodeproj -scheme NookNativeShell -configuration Release -destination generic/platform=macOS \
+xcodebuild -project Bark.xcodeproj -scheme Bark -configuration Release -destination generic/platform=macOS \
   -derivedDataPath "$derived" -onlyUsePackageVersionsFromResolvedFile ARCHS="$bark_arch" CODE_SIGNING_ALLOWED=NO \
   'OTHER_SWIFT_FLAGS=$(inherited) -j3' -jobs 1 build
 set -l lsregister /System/Library/Frameworks/CoreServices.framework/Versions/Current/Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister

@@ -21,7 +21,7 @@ P12="${1:?usage: scripts/setup-release-secrets.sh path/to/devid.p12}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 PACKAGES="$WORK/SourcePackages"
-xcodebuild -resolvePackageDependencies -project Nook.xcodeproj -scheme NookNativeShell \
+xcodebuild -resolvePackageDependencies -project Bark.xcodeproj -scheme Bark \
   -onlyUsePackageVersionsFromResolvedFile -derivedDataPath "$WORK/DerivedData" \
   -clonedSourcePackagesDirPath "$PACKAGES"
 GENERATE_KEYS="$PACKAGES/artifacts/sparkle/Sparkle/bin/generate_keys"

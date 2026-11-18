@@ -164,7 +164,7 @@ python3 "$barc_repo/Runtime/Chromium/replay_gate.py" "$engine_checkout/src"
 
 ### Native application
 
-`Bark.app` is the outer bundle: the `NookChromiumApp` target owns its executable
+`Bark.app` is the outer bundle: the `BarkApp` target owns its executable
 and `Info.plist`, and `Bark Framework.framework` is nested inside it. `BRANDING`
 sets the product name, the integrated app and framework bundle identifier
 `ee.qdo.bark`, and the helper names. Its patch is

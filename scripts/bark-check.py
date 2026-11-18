@@ -60,7 +60,7 @@ def check_native_harness(command):
     derived = Path.home() / "Library/Caches/BarkSDK/native-checks" / cache_key
     packages = derived / "SourcePackages"
     products = derived / "Build/Products/Debug"
-    run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "BarkNativeChecks",
+    run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "BarkNativeChecks",
         "-configuration", "Debug", "-destination", "generic/platform=macOS",
         "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
         "-onlyUsePackageVersionsFromResolvedFile", f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO",
@@ -452,7 +452,7 @@ def build_candidate(engine, output, identity, architecture, release_info=None):
         stage.mkdir()
         unsigned = products / "Bark.app"
         try:
-            run("xcodebuild", "-project", REPO / "Nook.xcodeproj", "-scheme", "NookNativeShell",
+            run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "Bark",
                 "-configuration", "Release", "-destination", "generic/platform=macOS",
                 "-derivedDataPath", derived, "-onlyUsePackageVersionsFromResolvedFile",
                 f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO", "OTHER_SWIFT_FLAGS=$(inherited) -j4",
