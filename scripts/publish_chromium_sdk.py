@@ -6,16 +6,20 @@ import fcntl
 import hashlib
 import json
 import os
+import re
+import shutil
 from pathlib import Path
 import stat
 import subprocess
 import sys
-from tempfile import mkdtemp
+from tempfile import TemporaryDirectory, mkdtemp
 from uuid import UUID, uuid4
 
 from chromium_sdk_layout import (ARCHITECTURES, artifact_directory, directory_id, headers_directory,
                                  pin_file, read_pin, remove_work, swap)
 
+CHROMIUM = Path(__file__).resolve().parents[1] / "Runtime/Chromium"
+sys.path.insert(0, str(CHROMIUM))
 HEADERS = ("barc_bridge_api.h", "barc_public_headers_sha256.h")
 
 
@@ -27,7 +31,7 @@ def file_digest(path):
     return digest.hexdigest()
 
 
-def verified_digest(engine):
+def sdk_manifest(engine):
     manifest = engine / "SHA256SUMS"
     if manifest.is_symlink():
         raise ValueError(f"Unexpected symlink at SDK manifest: {manifest}")
@@ -35,9 +39,15 @@ def verified_digest(engine):
     checksums = {}
     for line in content.decode().splitlines():
         digest, delimiter, name = line.partition("  ./")
-        if not delimiter or name in checksums:
+        if not delimiter or not re.fullmatch(r"[0-9a-f]{64}", digest) or name in checksums:
             raise ValueError(f"Malformed SDK manifest: {manifest}")
         checksums[name] = digest
+    return hashlib.sha256(content).hexdigest(), checksums
+
+
+def verified_digest(engine):
+    digest, checksums = sdk_manifest(engine)
+    manifest = engine / "SHA256SUMS"
     actual = {}
     for path in engine.rglob("*"):
         if path.is_symlink():
@@ -48,7 +58,7 @@ def verified_digest(engine):
             actual[path.relative_to(engine).as_posix()] = file_digest(path)
     if not actual or checksums != actual or engine.stat().st_mode & 0o222:
         raise ValueError(f"Unsealed SDK or checksums differ: {engine}")
-    return hashlib.sha256(content).hexdigest()
+    return digest
 
 
 def tree_layout(engine):
@@ -103,10 +113,79 @@ def is_publication_slot(name):
 
 
 def verify_official_sdk(engine, architecture):
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Runtime/Chromium"))
     from official_provenance import verify_cached
 
     verify_cached(engine, architecture)
+
+
+def pair_metadata(engine, architecture):
+    """Read the transfer metadata subset of an already published official SDK."""
+    from official_provenance import CHROMIUM_VERSION, FRAMEWORK, RECEIPT, recipe_inputs
+
+    pin, manifest = sdk_manifest(engine)
+    def read_entry(name):
+        path = engine / name
+        if path.is_symlink() or not path.is_file():
+            raise ValueError(f"Missing regular {architecture} SDK metadata: {path}")
+        data = path.read_bytes()
+        if manifest.get(name) != hashlib.sha256(data).hexdigest():
+            raise ValueError(f"{architecture} metadata differs from its SDK manifest: {name}")
+        return data
+
+    receipt = json.loads(read_entry(RECEIPT))
+    headers = {name: read_entry("Headers/" + name) for name in HEADERS}
+    versioned = f"{FRAMEWORK}/Versions/{CHROMIUM_VERSION}"
+    expected = recipe_inputs(architecture)
+    for field, name in (("framework_sha256", "Bark Framework"), ("framework_info_sha256", "Resources/Info.plist")):
+        value = manifest.get(f"{versioned}/{name}")
+        if value is None:
+            raise ValueError(f"Missing {architecture} SDK framework digest: {name}")
+        expected[field] = value
+    if receipt != expected:
+        raise ValueError(f"The {architecture} receipt differs from the selected source recipe or SDK manifest")
+    if headers[HEADERS[0]] != (CHROMIUM / "bark/bridge" / HEADERS[0]).read_bytes():
+        raise ValueError(f"The {architecture} SDK public API differs from the selected source")
+    return headers, pin
+
+
+def stage_sdk_pair(package, intel, arm):
+    """Install the two pins and their shared headers as one receiver-side change."""
+    contents = {}
+    for arch, source in (("x86_64", intel), ("arm64", arm)):
+        shared, pin = pair_metadata(source, arch)
+        if any(name in contents and contents[name] != data for name, data in shared.items()):
+            raise ValueError("The Intel and ARM64 SDKs have different public headers")
+        contents.update(shared)
+        contents[f"engine-artifact-{arch}.sha256"] = (pin + "\n").encode()
+
+    package = package.resolve(strict=True)
+    headers = headers_directory(package)
+    if not headers.resolve().is_relative_to(package) or directory_id(headers) is None:
+        raise ValueError(f"Expected an existing receiver's universal headers directory: {headers}")
+    lock = os.open(package, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        state = package / "RuntimeArtifacts/.publication"
+        if not state.resolve().is_relative_to(package):
+            raise ValueError(f"SDK publication state must be inside its package: {state}")
+        if (state / "pending").exists():
+            raise ValueError("Finish the interrupted SDK publication before staging a pair")
+        state.mkdir(parents=True, exist_ok=True)
+        with TemporaryDirectory(prefix="work-pair-", dir=state) as tmp:
+            work = Path(tmp)
+            replacement = work / headers.name
+            shutil.copytree(headers, replacement, symlinks=True)
+            for name, data in contents.items():
+                write_atomic(work, replacement / name, data)
+            generator = CHROMIUM / "bark/app/barc_public_headers_sha256.py"
+            generated = work / "expected-digest.h"
+            subprocess.run([sys.executable, "-B", generator, generated, replacement / HEADERS[0]], check=True)
+            if generated.read_bytes() != contents[HEADERS[1]]:
+                raise ValueError("The shared SDK digest header does not describe the public API")
+            swap(replacement, headers)
+    finally:
+        os.close(lock)
+    print(f"Staged Intel and ARM64 SDK metadata in {headers}")
 
 
 def finish(package, pending, *, recovering):

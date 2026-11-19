@@ -574,6 +574,10 @@ def main():
     commands.add_parser("page-host", help="check page ownership, transfer and close")
     commands.add_parser("profile-pages", help="check profile utility window ownership")
     commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
+    pair = commands.add_parser("pair-sdk", help="stage matching Intel and ARM64 official SDK metadata together")
+    pair.add_argument("--x86-64", type=Path, required=True, help="published Intel Engine or its transfer metadata directory")
+    pair.add_argument("--arm64", type=Path, required=True, help="published ARM64 Engine or its transfer metadata directory")
+    pair.add_argument("--package", type=Path, required=True, help="receiver checkout's Packages/BarkEngine")
     shell = commands.add_parser("shell", help="build and check the unsigned Bark Release shell")
     shell.add_argument("--arch", required=True, choices=ARCHITECTURES)
     for command in ("engine", "build", "verify", "smoke", "launch", "package"):
@@ -604,6 +608,11 @@ def main():
     args = parser.parse_args()
     if platform.system() != "Darwin":
         parser.error("Bark contributor checks require macOS.")
+    if args.command == "pair-sdk":
+        from publish_chromium_sdk import stage_sdk_pair
+
+        stage_sdk_pair(args.package, args.x86_64, args.arm64)
+        return
     if args.command == "interaction":
         run(sys.executable, REPO / "Tests/ChromiumShortcuts/check.py")
         return

@@ -458,11 +458,24 @@ python3 scripts/chromium_sdk_layout.py headers "$package" "$arch"
 python3 scripts/chromium_sdk_layout.py artifact "$package" "$arch"
 ```
 
-The publisher populates the empty package. Exchange the metadata from both
-builders and compare `barc_bridge_api.h` and `barc_public_headers_sha256.h`
-byte for byte. In a private copy of the next app source, put one copy of the
-matching headers and both new architecture pins into the universal header
-directory printed for `Packages/BarkEngine`. Keep all four files together.
+The publisher writes a sealed `Engine` directory. From each builder, copy
+`SHA256SUMS`, `official-build.json` and the `Headers/` directory from that
+Engine into a separate transfer directory. These files are enough to stage
+the two pins. A complete Engine directory works as input too.
+
+From a private checkout of the new app and engine source, run:
+
+```fish
+python3 scripts/bark-check.py pair-sdk \
+    --x86-64 /path/to/intel-transfer --arm64 /path/to/arm64-transfer \
+    --package Packages/BarkEngine
+```
+
+This checks each receipt against the target architecture, current engine
+recipe and framework hashes recorded in its manifest. It checks the API and
+generated digest header and installs both pins and headers together. The
+pins are calculated from the original manifests. Full SDK verification on
+each receiving Mac follows below.
 
 Send this staged metadata to both builders. From that source snapshot, each
 builder can write its archive using the Engine path printed above.

@@ -35,7 +35,8 @@ class FirstOfficialPublicationTests(unittest.TestCase):
         (self.repo / "ChromiumApp").symlink_to(ROOT / "ChromiumApp", target_is_directory=True)
         pins_path = self.chromium / "PINS.json"
         pins = json.loads(pins_path.read_text())
-        pins["official_pgo_sha256"]["mac-arm"] = hashlib.sha256(PGO_FIXTURE).hexdigest()
+        for target in ("mac", "mac-arm"):
+            pins["official_pgo_sha256"][target] = hashlib.sha256(PGO_FIXTURE).hexdigest()
         pins_path.write_text(json.dumps(pins))
         self.publisher = self.repo / "scripts/publish-chromium-engine.sh"
         self.package = self.work / "package"
@@ -89,25 +90,29 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
             f"Headers/BarcChromium/engine-artifact-{arch}.sha256"
         )
 
-    def make_official(self):
+    def make_official(self, arch="arm64", v8_template=None):
         chromium = self.chromium
         pins_path = chromium / "PINS.json"
         pins = json.loads(pins_path.read_text())
         source = self.build.parent.parent
         v8 = source / "v8"
-        v8.mkdir()
-        subprocess.run(["git", "-C", v8, "init", "-q"], check=True)
-        subprocess.run(["git", "-C", v8, "-c", "core.hooksPath=/dev/null",
-                        "-c", "user.name=V8 fixture", "-c", "user.email=fixture@example.invalid",
-                        "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Synthetic V8"], check=True)
+        if v8_template is None:
+            v8.mkdir()
+            subprocess.run(["git", "-C", v8, "init", "-q"], check=True)
+            subprocess.run(["git", "-C", v8, "-c", "core.hooksPath=/dev/null",
+                            "-c", "user.name=V8 fixture", "-c", "user.email=fixture@example.invalid",
+                            "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Synthetic V8"], check=True)
+        else:
+            subprocess.run(["git", "clone", "-q", "--local", v8_template, v8], check=True)
         revision = subprocess.check_output(["git", "-C", v8, "rev-parse", "HEAD"], text=True).strip()
         v8_profile = v8 / "tools/builtins-pgo/profiles/x64.profile"
         v8_profile.parent.mkdir(parents=True)
         v8_profile.write_bytes(V8_FIXTURE)
         pins["official_v8_builtins"].update(revision=revision, sha256=hashlib.sha256(V8_FIXTURE).hexdigest())
         pins_path.write_text(json.dumps(pins))
-        profile_name = pins["official_pgo_profiles"]["mac-arm"]
-        selector = source / "chrome/build/mac-arm.pgo.txt"
+        target = "mac-arm" if arch == "arm64" else "mac"
+        profile_name = pins["official_pgo_profiles"][target]
+        selector = source / f"chrome/build/{target}.pgo.txt"
         selector.parent.mkdir(parents=True)
         selector.write_text(profile_name + "\n")
         profile = selector.parent / "pgo_profiles" / profile_name
@@ -133,11 +138,10 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
             DTSDKBuild=sdk["build"], SCMRevision=pins["chromium"],
             CFBundleShortVersionString=(chromium / "CHROMIUM_VERSION").read_text().strip(),
         )
-        # Link a thin ARM fixture with the SDK version the receipt verifier
-        # expects. It is inspected on Intel without running the ARM code.
-        linked = self.work / "official-arm64.dylib"
+        # The receiver inspects both architectures without executing their code.
+        linked = self.work / f"official-{arch}.dylib"
         self.fixture["fake_framework"](linked, arch=(
-            "-arch", "arm64", "-mmacosx-version-min=15.5",
+            "-arch", arch, "-mmacosx-version-min=15.5",
             f"-Wl,-platform_version,macos,15.5,{sdk['version']}",
         ))
         shutil.copyfile(linked, versioned / "Bark Framework")
@@ -158,10 +162,86 @@ sys.path.insert(0, sys.argv[1])
 from build_engine import engine_args
 from official_provenance import RECEIPT, record
 out = Path(sys.argv[2])
-(out / 'args.gn').write_bytes(engine_args('arm64', True))
-(out / RECEIPT).write_text(json.dumps(record(out, out.parent.parent, 'arm64', os.environ)))
-""", chromium, self.build,
+(out / 'args.gn').write_bytes(engine_args('arm64' if sys.argv[3] == 'arm64' else 'x64', True))
+(out / RECEIPT).write_text(json.dumps(record(out, out.parent.parent, sys.argv[3], os.environ)))
+""", chromium, self.build, arch,
         ], env=env, check=True)
+
+    def test_pair_published_sdk_metadata_and_verify_both_receiver_artifacts(self):
+        v8_template = None
+        for arch in ("arm64", "x86_64"):
+            if arch == "x86_64":
+                self.build = self.make_build(arch)
+            self.make_official(arch, v8_template)
+            v8_template = self.build.parent.parent / "v8"
+            published = self.publish("--require-official", arch=arch)
+            self.assertEqual(published.returncode, 0, published.stderr)
+
+        receiver = self.repo / "Packages/BarkEngine"
+        dest = receiver / "BarkEngine.xcframework" / self.fixture["SLICE_NAME"] / "Headers/BarcChromium"
+        dest.mkdir(parents=True)
+        module_map = dest / "module.modulemap"
+        module_map.write_bytes(b"existing receiver module map")
+        (dest / "engine-artifact-x86_64.sha256").write_text("old pin")
+        sources = {}
+        for arch in ("arm64", "x86_64"):
+            artifact = self.package / "RuntimeArtifacts" / arch / "Engine"
+            sources[arch] = self.work / ("transfer-" + arch)
+            shutil.copytree(artifact / "Headers", sources[arch] / "Headers")
+            (sources[arch] / "Headers").chmod(0o755)
+            for name in ("SHA256SUMS", "official-build.json"):
+                shutil.copy2(artifact / name, sources[arch] / name)
+
+        cli = [sys.executable, "-B", self.repo / "scripts/bark-check.py"]
+        def pair(intel, arm):
+            return subprocess.run([*cli, "pair-sdk", "--x86-64", intel, "--arm64", arm,
+                                   "--package", receiver], capture_output=True, text=True)
+        def snapshot():
+            return {p.name: p.read_bytes() for p in dest.iterdir()}
+
+        before = snapshot()
+        wrong = pair(sources["arm64"], sources["arm64"])
+        self.assertNotEqual(wrong.returncode, 0)
+        self.assertIn("x86_64 receipt", wrong.stderr)
+        self.assertEqual(snapshot(), before)
+        for _ in range(2):
+            accepted = pair(sources["x86_64"], sources["arm64"])
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertEqual(module_map.read_bytes(), before[module_map.name])
+        for arch in sources:
+            artifact = self.package / "RuntimeArtifacts" / arch / "Engine"
+            self.assertEqual((dest / self.pin(arch).name).read_bytes(), self.pin(arch).read_bytes())
+            verified = subprocess.run([*cli, "engine", "--arch", arch, "--engine", artifact,
+                                       "--require-official"], capture_output=True, text=True)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
+        accepted = snapshot()
+        digest_header = sources["arm64"] / "Headers/barc_public_headers_sha256.h"
+        digest_header.chmod(0o644)
+        digest_header.write_text("incomplete transfer")
+        interrupted = pair(sources["x86_64"], sources["arm64"])
+        self.assertNotEqual(interrupted.returncode, 0)
+        self.assertIn("differs from its SDK manifest", interrupted.stderr)
+        self.assertEqual(snapshot(), accepted)
+
+        # Even two intact manifests must bind the same generated digest to the API.
+        for arch in ("arm64", "x86_64"):
+            inputs = sources[arch]
+            header = inputs / "Headers/barc_public_headers_sha256.h"
+            header.chmod(0o644)
+            header.write_text("another bridge digest")
+            manifest = inputs / "SHA256SUMS"
+            rows = manifest.read_text().splitlines()
+            name = "  ./Headers/barc_public_headers_sha256.h"
+            updated = [hashlib.sha256(header.read_bytes()).hexdigest() + name
+                       if line.endswith(name) else line for line in rows]
+            manifest.chmod(0o644)
+            manifest.write_text("\n".join(updated) + "\n")
+            refused = pair(sources["x86_64"], sources["arm64"])
+            self.assertNotEqual(refused.returncode, 0)
+            self.assertIn("different public headers" if arch == "arm64" else "does not describe", refused.stderr)
+            self.assertEqual(snapshot(), accepted)
+
 
     def test_missing_receipt_cannot_create_or_replace_the_first_arm_pin(self):
         pin = self.pin("arm64")
