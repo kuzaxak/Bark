@@ -1,0 +1,39 @@
+<script>
+    // The callback always re-enqueues itself. Neither document.hidden nor a
+    // hidden-page timer can stop the probe and manufacture a zero result.
+    {
+        const graceMs = 250;
+        let frames = 0;
+        let hiddenAt = null;
+        let hiddenFrames = 0;
+        let lateFrames = 0;
+        let period = 0;
+
+        document.addEventListener("visibilitychange", () => {
+            const now = performance.now();
+            if (document.hidden) {
+                hiddenAt = now;
+                hiddenFrames = lateFrames = 0;
+                report("animation-hidden", {frames, period: ++period});
+            } else if (hiddenAt !== null) {
+                report("animation-returned", {
+                    frames, period, hiddenFrames, lateFrames, graceMs, durationMs: now - hiddenAt
+                });
+                hiddenAt = null;
+            }
+        });
+
+        function frame() {
+            frames++;
+            if (hiddenAt !== null) {
+                hiddenFrames++;
+                if (performance.now() - hiddenAt >= graceMs) lateFrames++;
+            }
+            if (!document.hidden && frames % 12 === 0) {
+                report("animation-visible", {frames, period});
+            }
+            requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+    }
+</script>
