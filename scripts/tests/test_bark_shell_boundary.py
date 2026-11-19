@@ -1,7 +1,9 @@
 # Licensed under GPL-3.0. See LICENSE.
-"""Check the app-owned WebKit source boundary without building Bark."""
+"""Check Bark’s source and linked framework boundaries without building the app."""
 
 from pathlib import Path
+import platform
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -34,6 +36,26 @@ class ShellBoundaryTests(unittest.TestCase):
             with self.assertRaises(ValueError) as caught:
                 verify_shell_boundary(root)
             self.assertEqual(str(caught.exception).count("Handler.swift:1:"), 3)
+
+    @unittest.skipUnless(sys.platform == "darwin", "requires macOS Mach-O tools")
+    def test_linked_webkit_is_rejected_even_when_sources_have_no_swift_import(self):
+        checker = Path(__file__).resolve().parents[1] / "check-chromium-architectures.py"
+        architecture = platform.machine()
+        with tempfile.TemporaryDirectory() as directory:
+            # Link only. The test never starts a browser or calls a WebKit function.
+            for framework in ("Foundation", "WebKit"):
+                with self.subTest(framework=framework):
+                    image = Path(directory) / f"Test{framework}.dylib"
+                    subprocess.run(["xcrun", "clang", "-arch", architecture, "-dynamiclib",
+                                    "-x", "c", "-", f"-Wl,-needed_framework,{framework}", "-o", image],
+                                   input="int fixture(void) { return 0; }", text=True, check=True)
+                    result = subprocess.run([sys.executable, "-B", checker, "--arch", architecture,
+                                             "--shell-image", image], capture_output=True, text=True)
+                    if framework == "Foundation":
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("WebKit.framework", result.stderr)
 
     def test_allows_read_only_import_paths(self):
         with tempfile.TemporaryDirectory() as directory:
