@@ -136,6 +136,13 @@ The two-profile walk opens the same inbox in Work and Personal. It checks
 which tab receives typed input and which page receives the decision on a
 pending location request. [Run the two-profile walk](Tests/ChromiumProfilePages/README.md)
 
+The folder walk searches for two folders with the same name, selects one by its
+full path, and collapses and reopens it in the sidebar.
+
+```fish
+python3 Tests/ChromiumOrganizeTabs/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/folders
+```
+
 The shipping address walk submits two forms, accepts one save prompt, declines
 the other, and checks what Chromium retained after quit.
 [Run the address walk](Tests/ChromiumAddressSave/README.md)
