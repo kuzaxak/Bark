@@ -9,7 +9,7 @@
 ## 2. Signed Pawl client
 
 - [x] 2.1 Admit the signed Bark identifier on the authorized Apple team alongside the legacy Nook client. Derive consent labels from the verified peer. Check signed Bark and Nook acceptance, same-team wrong identifiers, and ad hoc client rejection.
-  Pawl companion commit `60d7f873` checks the socket peer’s audit token and uses the verified identity in consent. A live socket test admitted exact signed Bark and Nook clients and refused three other same-team identifiers and an ad hoc Bark client. The focused Catalyst test target compiled. Installed Pawl 0.1.2 (7) still uses the legacy requirement. Shipped-app pairing remains in 2.2.
+  Pawl companion commit `60d7f873` checks the socket peer’s audit token and uses the verified identity in consent. A live socket test admitted exact signed Bark and Nook clients and refused three other same-team identifiers and an ad hoc Bark client. The focused Catalyst test target compiled. Companion regression `683fb4bd` also verified that two open Unix sockets from the same process cannot exchange a write ticket. An ad hoc peer failed the production signature check before owner authentication. Installed Pawl 0.1.2 (7) still uses the legacy requirement. Shipped-app pairing remains in 2.2.
 - [ ] 2.2 Verify the shipped sandbox and socket with a separately signed Bark and Pawl using a disposable database. Exercise a locked vault and denied owner approval.
 
 ## 3. Chromium passwords
@@ -19,7 +19,7 @@
 - [ ] 3.2 Preserve native field, frame, origin and profile checks. Verify scripted focus alone cannot open the chooser, genuine keyboard and mouse input can, and a stale pane or private session cannot receive a late write.
   The Intel engine tests passed for typed password and OTP fields, blur and navigation, picker cancellation, and cross-frame ownership. The signed connected fixture also filled the selected account after a trusted click and verified an approved update in a fresh document. Signed companion and complete multi-window coverage remain open.
 - [ ] 3.3 Add a safely targeted password update with owner approval and explicit old-provider handling. Verify two matching usernames, a concurrent edit and a redirect, and check both stores after cancellation and success.
-  Bark implements conditional creates and updates after consent. A v1 companion offers manual management for new and existing accounts. The in-memory provider exercises expiry, conflicts and replay. Signed companion persistence and the joint two-store qualification remain open.
+  Bark implements conditional creates and updates after consent. A v1 companion offers manual management for new and existing accounts. The in-memory provider exercises expiry, conflicts and replay. Companion commit `b4f98b20` passed checked creation and update against a real disposable local KDBX file, including a competing edit, duplicate account and late write failure. The headless run used a viewer shim. Signed companion persistence and the joint two-store qualification remain open.
 - [ ] 3.4 Prove stock mode still works and unrelated address and payment Autofill retain their behavior in both modes. Run the pinned engine browser tests and a signed shell walk.
 
 - [ ] 3.5 Route direct password-manager URLs and any remaining context-menu actions to the running provider. Verify an existing Chromium login cannot be offered through those entry points.
