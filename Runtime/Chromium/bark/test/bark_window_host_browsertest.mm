@@ -1092,11 +1092,13 @@ class BarkWindowHostLegacySwitchBrowserTest
   void SetUpCommandLine(base::CommandLine* command_line) override {
     BarkWindowHostDefaultBrowserTest::SetUpCommandLine(command_line);
     command_line->AppendSwitchASCII("bark-window", "legacy");
+    command_line->AppendSwitch("barc-native-shell");
   }
 };
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostLegacySwitchBrowserTest,
                        InitialRegularAndPrivateUseBarkWithLegacySwitch) {
+  EXPECT_EQ(Nil, NSClassFromString(@"BarcNativeShell"));
   EXPECT_EQ("legacy", base::CommandLine::ForCurrentProcess()->GetSwitchValueASCII(
                           "bark-window"));
   ASSERT_NO_FATAL_FAILURE(ExpectRegularAndPrivateBarkWindows(browser()));

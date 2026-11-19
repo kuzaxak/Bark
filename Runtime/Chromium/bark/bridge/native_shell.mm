@@ -1,7 +1,6 @@
 #import <AppKit/AppKit.h>
 
 #include <algorithm>
-#include <array>
 #include <cmath>
 #include <map>
 #include <limits>
@@ -19,7 +18,6 @@
 #include "components/search_engines/template_url.h"
 #include "services/network/public/cpp/resource_request_body.h"
 
-#include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/files/scoped_file.h"
 #include "base/uuid.h"
@@ -84,7 +82,6 @@
 #include "components/password_manager/core/browser/password_form.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
-#include "base/strings/utf_string_conversions.h"
 #include "base/strings/string_util.h"
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
@@ -110,9 +107,7 @@
 #include "chrome/browser/ui/browser_window/public/create_browser_window.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/tab_muted_utils.h"
-#include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/tabs/tab_model.h"
-#include "chrome/browser/ui/tabs/tab_strip_model_observer.h"
 #include "chrome/browser/ui/unload_controller.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "bark/bridge/barc_runtime_startup.h"
@@ -155,145 +150,6 @@
 #include "bark/bridge/bridge_internal.h"
 
 using namespace barc::internal;
-
-@class BarcNativeShell;
-namespace {
-class ShellObserver final : public TabStripModelObserver {
- public:
-  explicit ShellObserver(BarcNativeShell* shell, TabStripModel* strip);
-  ~ShellObserver() override;
-  void OnTabStripModelChanged(TabStripModel*,
-                              const TabStripModelChange&,
-                              const TabStripSelectionChange&) override;
-  void OnTabChangedAt(tabs::TabInterface*, TabChangeType) override;
-  void OnTabStripModelDestroyed(TabStripModel*) override;
-
- private:
-  __weak BarcNativeShell* shell_;
-  raw_ptr<TabStripModel> strip_;
-};
-}  // namespace
-
-@interface BarcNativeShell : NSView {
-  int32_t window_id_;
-  NSPopUpButton* tabs_;
-  NSTextField* address_;
-  std::unique_ptr<ShellObserver> observer_;
-}
-- (instancetype)initWithBrowser:(BrowserWindowInterface*)browser;
-- (void)refreshTabs;
-@end
-
-@implementation BarcNativeShell
-- (BOOL)isFlipped {
-  return YES;
-}
-- (instancetype)initWithBrowser:(BrowserWindowInterface*)browser {
-  if ((self = [super initWithFrame:NSMakeRect(0, 0, 240, 600)])) {
-    window_id_ = browser->GetSessionID().id();
-    NSTextField* label = [NSTextField labelWithString:@"Barc native shell"];
-    label.frame = NSMakeRect(12, 16, 216, 24);
-    [self addSubview:label];
-    address_ = [[NSTextField alloc] initWithFrame:NSMakeRect(12, 52, 216, 26)];
-    address_.placeholderString = @"URL";
-    address_.target = self;
-    address_.action = @selector(navigate:);
-    [self addSubview:address_];
-    tabs_ = [[NSPopUpButton alloc] initWithFrame:NSMakeRect(12, 92, 216, 26)
-                                       pullsDown:NO];
-    tabs_.target = self;
-    tabs_.action = @selector(selectTab:);
-    [self addSubview:tabs_];
-    NSArray<NSString*>* labels = @[
-      @"New tab", @"Chromium Settings", @"Extensions", @"Move tab to new window"
-    ];
-    const std::array<SEL, 4> actions = {
-        @selector(newTab:), @selector(settings:), @selector(extensions:),
-        @selector(moveTab:)};
-    for (NSUInteger index = 0; index < labels.count; ++index) {
-      NSButton* button = [NSButton buttonWithTitle:labels[index]
-                                            target:self
-                                            action:actions[index]];
-      button.frame = NSMakeRect(12, 138 + index * 40, 216, 30);
-      [self addSubview:button];
-    }
-    observer_ =
-        std::make_unique<ShellObserver>(self, browser->GetTabStripModel());
-    [self refreshTabs];
-  }
-  return self;
-}
-- (void)refreshTabs {
-  auto* browser = Window(window_id_);
-  [tabs_ removeAllItems];
-  if (!browser)
-    return;
-  auto* strip = browser->GetTabStripModel();
-  for (int i = 0; i < strip->count(); ++i) {
-    auto* tab = strip->GetTabAtIndex(i);
-    NSString* title = [NSString
-        stringWithUTF8String:base::UTF16ToUTF8(tab->GetContents()->GetTitle())
-                                 .c_str()];
-    NSMenuItem* item =
-        [[NSMenuItem alloc] initWithTitle:title.length ? title : @"Untitled"
-                                   action:nil
-                            keyEquivalent:@""];
-    item.representedObject = @(tab->GetHandle().raw_value());
-    [tabs_.menu addItem:item];
-  }
-  if (strip->active_index() >= 0)
-    [tabs_ selectItemAtIndex:strip->active_index()];
-}
-- (int32_t)selectedTab {
-  return [tabs_.selectedItem.representedObject intValue];
-}
-- (void)selectTab:(id)sender {
-  barc_tab_select(window_id_, [self selectedTab]);
-}
-- (void)navigate:(id)sender {
-  barc_tab_navigate(window_id_, [self selectedTab],
-                    address_.stringValue.UTF8String);
-}
-- (void)newTab:(id)sender {
-  barc_tab_create(window_id_, "about:blank", 1);
-}
-- (void)settings:(id)sender {
-  barc_tab_create(window_id_, "chrome://settings/", 1);
-}
-- (void)extensions:(id)sender {
-  barc_tab_create(window_id_, "chrome://extensions/", 1);
-}
-- (void)moveTab:(id)sender {
-  const int32_t tab = [self selectedTab];
-  if (!tab)
-    return;
-  const int32_t peer = barc_window_new_peer(window_id_);
-  if (peer && !barc_tab_transfer(window_id_, tab, peer))
-    barc_window_close(peer);
-}
-@end
-
-namespace {
-ShellObserver::ShellObserver(BarcNativeShell* shell, TabStripModel* strip)
-    : shell_(shell), strip_(strip) {
-  strip_->AddObserver(this);
-}
-ShellObserver::~ShellObserver() {
-  if (strip_)
-    strip_->RemoveObserver(this);
-}
-void ShellObserver::OnTabStripModelChanged(TabStripModel*,
-                                           const TabStripModelChange&,
-                                           const TabStripSelectionChange&) {
-  [shell_ refreshTabs];
-}
-void ShellObserver::OnTabChangedAt(tabs::TabInterface*, TabChangeType) {
-  [shell_ refreshTabs];
-}
-void ShellObserver::OnTabStripModelDestroyed(TabStripModel*) {
-  strip_ = nullptr;
-}
-}  // namespace
 
 namespace barc {
 int NativeShellWidth(const BrowserView* browser_view) {
@@ -358,28 +214,18 @@ class PeekUnloadHandler final : public UnloadController::TabUnloadHandler {
 };
 }  // namespace
 views::NativeViewHost* CreateNativeShell(BrowserView* browser_view) {
-  const bool registered = IsNativeApplicationRegistered();
-  if ((!registered &&
-       !base::CommandLine::ForCurrentProcess()->HasSwitch("barc-native-shell")) ||
+  if (!IsNativeApplicationRegistered() ||
       (browser_view->browser()->GetType() != BrowserWindowInterface::TYPE_NORMAL &&
        !browser_view->barc_compact_shell()))
     return nullptr;
-  if (registered) {
-    UnloadController::From(browser_view->browser())->AddTabUnloadHandler(
-        std::make_unique<PeekUnloadHandler>(browser_view->browser()));
-  }
+  UnloadController::From(browser_view->browser())->AddTabUnloadHandler(
+      std::make_unique<PeekUnloadHandler>(browser_view->browser()));
   // A WebUI toolbar page stays in the accessibility tree while its view is
   // hidden, so the hidden toolbar's subtree is cut off explicitly.
   browser_view->toolbar()->GetViewAccessibility().SetIsLeaf(true);
   auto* host =
       browser_view->AddChildView(std::make_unique<views::NativeViewHost>());
-  if (registered) {
-    host->SetVisible(false);
-    return host;
-  }
-  BarcNativeShell* shell =
-      [[BarcNativeShell alloc] initWithBrowser:browser_view->browser()];
-  host->Attach(gfx::NativeView(shell));
+  host->SetVisible(false);
   return host;
 }
 void LayoutNativeShell(views::NativeViewHost* shell,
