@@ -36,13 +36,13 @@ struct FilterPreprocessorCheck {
         let kept = FilterPreprocessor.apply(quickFixes).split(separator: "\n").map(String.init)
         precondition(kept == [
             "www.youtube.com##+js(trusted-replace-fetch-response, '\"adSlots\"', '\"no_ads\"', player?)",
-            "/^https:\\/\\/[a-f0-9][a-f0-9]\\./$doc",
+            "/^https:\\/\\/[a-f0-9]{2}\\./$doc",
             "||always.example^",
         ], "unexpected lines: \(kept)")
 
         precondition(FilterPreprocessor.evaluate("ext_ublock && !ext_ubol"))
-        precondition(!FilterPreprocessor.evaluate("env_chromium || env_firefox"))
-        precondition(FilterPreprocessor.evaluate("env_mobile || env_safari"))
+        precondition(FilterPreprocessor.evaluate("env_chromium && !env_firefox"))
+        precondition(!FilterPreprocessor.evaluate("env_mobile || env_safari || env_mv3"))
         precondition(!FilterPreprocessor.evaluate("unknown_token"))
         precondition(!FilterPreprocessor.evaluate("!(env_safari)"))
 

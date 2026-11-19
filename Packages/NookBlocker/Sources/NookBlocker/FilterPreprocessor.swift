@@ -11,18 +11,18 @@
 import Foundation
 
 enum FilterPreprocessor {
-    /// Nook compiles to WebKit content rules (Safari's regex variants) and runs uBO's
-    /// scriptlets. Every other token (env_firefox, env_chromium, env_mv3, env_mobile,
-    /// ext_ubol, cap_html_filtering, cap_ipaddress, adguard...) is false, as in uBO.
-    static let environment: Set<String> = ["env_safari", "ext_ublock"]
+    /// Bark runs desktop Chromium and understands uBO scriptlet syntax. Neither
+    /// the host CPU nor Chromium itself implies a mobile or extension environment,
+    /// or support for HTML response filtering or IP-address rules.
+    static let chromiumDesktop: Set<String> = ["env_chromium", "ext_ublock"]
 
-    static func apply(_ text: String) -> String {
+    static func apply(_ text: String, environment: Set<String> = chromiumDesktop) -> String {
         guard text.contains("!#if") else { return text }
         var branches: [Bool] = []
         var kept: [Substring] = []
         for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
             if line.hasPrefix("!#if ") {
-                branches.append(evaluate(line.dropFirst(5)))
+                branches.append(evaluate(line.dropFirst(5), environment: environment))
             } else if line.hasPrefix("!#else") {
                 if !branches.isEmpty { branches[branches.count - 1].toggle() }
             } else if line.hasPrefix("!#endif") {
@@ -35,7 +35,7 @@ enum FilterPreprocessor {
     }
 
     // ponytail: no parentheses; a parenthesised condition drops its block. None of the lists use one.
-    static func evaluate(_ expression: Substring) -> Bool {
+    static func evaluate(_ expression: Substring, environment: Set<String> = chromiumDesktop) -> Bool {
         let expression = expression.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !expression.contains("(") else { return false }
         return expression.components(separatedBy: "||").contains { clause in
