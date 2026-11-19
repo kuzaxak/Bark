@@ -353,6 +353,51 @@ final class Persistence {
     }
 }
 
+/// Automatic warming starts with the first native presentation. While active
+/// it can follow its owner to a new space or profile. Preference changes are
+/// an explicit request to re-evaluate the current window.
+struct NativeStartupWarmTrigger {
+    enum Event { case presented, contextChanged, preferencesChanged }
+
+    struct Context: Equatable {
+        let window: UUID
+        let space: UUID?
+        let profile: UUID?
+    }
+
+    struct Attempt {
+        let id = UUID()
+        let context: Context
+    }
+
+    private var hasPresented = false
+    private(set) var attempt: Attempt?
+
+    mutating func shouldReplace(for event: Event, context: Context?) -> Bool {
+        switch event {
+        case .presented:
+            guard !hasPresented, context != nil else { return false }
+            hasPresented = true
+            return true
+        case .contextChanged:
+            guard let attempt, let context else { return false }
+            return attempt.context.window == context.window && attempt.context != context
+        case .preferencesChanged:
+            return hasPresented
+        }
+    }
+
+    mutating func begin(_ context: Context) -> Attempt {
+        let next = Attempt(context: context)
+        attempt = next
+        return next
+    }
+
+    mutating func finish(_ id: UUID? = nil) {
+        if id == nil || attempt?.id == id { attempt = nil }
+    }
+}
+
 @MainActor
 class BrowserManager: ObservableObject {
     // Legacy global state - kept for backward compatibility during transition
@@ -542,36 +587,41 @@ class BrowserManager: ObservableObject {
 
     // MARK: - Startup Loading
 
-    private var startupWarmTasks: [UUID: Task<Void, Never>] = [:]
-    private var nativeWarmAttempt: UUID?
+    private var nativeWarmTrigger = NativeStartupWarmTrigger()
+    private var startupWarmTask: Task<Void, Never>?
 
     func cancelNativeStartupWarming() {
-        guard engine == .chromium else { return }
-        // Every close affects the global displayed-page barrier, even when
-        // the optional task belongs to a different window.
-        nativeWarmAttempt = nil
-        let tasks = startupWarmTasks.values
-        startupWarmTasks.removeAll()
-        for task in tasks { task.cancel() }
+        nativeWarmTrigger.finish()
+        startupWarmTask?.cancel()
+        startupWarmTask = nil
     }
 
     func nativeStartupWindowPresented(_ window: BrowserWindowState) {
-        guard engine == .chromium, startupWarmTasks.isEmpty, !window.isIncognito,
-              windowRegistry?.windows[window.id] === window,
-              tabs.settings.startupLoadMode != .nothing else { return }
-        let attempt = UUID()
-        nativeWarmAttempt = attempt
+        updateNativeStartupWarming(.presented, in: window)
+    }
+
+    private func updateNativeStartupWarming(_ event: NativeStartupWarmTrigger.Event, in window: BrowserWindowState?) {
+        guard engine == .chromium else { return }
+        let context: NativeStartupWarmTrigger.Context? = window.flatMap { window in
+            guard !window.isIncognito, windowRegistry?.windows[window.id] === window else { return nil }
+            return .init(window: window.id, space: window.spaceID,
+                         profile: window.spaceID.flatMap { self.tabs.tree.dataStoreID(for: $0) })
+        }
+        guard nativeWarmTrigger.shouldReplace(for: event, context: context) else { return }
+        cancelNativeStartupWarming()
+        guard let window, let context, tabs.settings.startupLoadMode != .nothing else { return }
+        let attempt = nativeWarmTrigger.begin(context)
         let tabs = self.tabs
-        startupWarmTasks[window.id] = Task { @MainActor [weak self, weak window] in
-            guard let window else { return }
+        startupWarmTask = Task { @MainActor [weak self, weak window] in
             defer {
-                if self?.nativeWarmAttempt == attempt {
-                    self?.nativeWarmAttempt = nil
-                    self?.startupWarmTasks[window.id] = nil
+                if self?.nativeWarmTrigger.attempt?.id == attempt.id {
+                    self?.nativeWarmTrigger.finish(attempt.id)
+                    self?.startupWarmTask = nil
                 }
             }
+            guard let window else { return }
             await tabs.warmNativeStartupPages(in: window, while: { [weak self] in
-                self?.nativeWarmAttempt == attempt
+                self?.nativeWarmTrigger.attempt?.id == attempt.id
             })
         }
     }
@@ -579,10 +629,7 @@ class BrowserManager: ObservableObject {
 
     /// App-owned history follows the active window’s profile. Chromium owns its site data.
     func windowSpaceChanged(_ windowState: BrowserWindowState) {
-        if engine == .chromium {
-            cancelNativeStartupWarming()
-            nativeStartupWindowPresented(windowState)
-        }
+        updateNativeStartupWarming(.contextChanged, in: windowState)
         guard !windowState.isIncognito else { return }
         guard windowRegistry?.activeWindow == nil || windowRegistry?.activeWindow?.id == windowState.id else { return }
         guard let spaceID = windowState.spaceID, let profile = tabs.profile(forSpace: spaceID),
@@ -861,12 +908,11 @@ class BrowserManager: ObservableObject {
 
     @objc private func handleTabManagementModeChange(_ notification: Notification) {
         guard notification.object as? NookSettingsService === tabs.settings else { return }
-        cancelNativeStartupWarming()
-        if let window = windowRegistry?.activeWindow { nativeStartupWindowPresented(window) }
+        updateNativeStartupWarming(.preferencesChanged, in: windowRegistry?.activeWindow)
     }
 
     deinit {
-        for task in startupWarmTasks.values { task.cancel() }
+        startupWarmTask?.cancel()
         NotificationCenter.default.removeObserver(self)
     }
 

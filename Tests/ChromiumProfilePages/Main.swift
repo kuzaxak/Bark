@@ -159,6 +159,35 @@ private struct NoHistoryFixtureToken: KagiTokenStore {
     func save(_ token: String?) {}
 }
 
+private func checkNativeStartupWarmTriggers() {
+    let owner = UUID(), profile = UUID()
+    let original = NativeStartupWarmTrigger.Context(window: owner, space: UUID(), profile: profile)
+    let follow = NativeStartupWarmTrigger.Context(window: owner, space: UUID(), profile: profile)
+    let other = NativeStartupWarmTrigger.Context(window: UUID(), space: UUID(), profile: profile)
+    var warming = NativeStartupWarmTrigger()
+    precondition(!warming.shouldReplace(for: .contextChanged, context: original))
+    precondition(!warming.shouldReplace(for: .preferencesChanged, context: original))
+    precondition(warming.shouldReplace(for: .presented, context: original))
+    let first = warming.begin(original)
+    precondition(!warming.shouldReplace(for: .presented, context: other))
+    precondition(!warming.shouldReplace(for: .contextChanged, context: original))
+    precondition(!warming.shouldReplace(for: .contextChanged, context: other))
+    precondition(warming.shouldReplace(for: .contextChanged, context: follow))
+    let replacement = warming.begin(follow)
+    warming.finish(first.id)
+    precondition(warming.attempt?.id == replacement.id)
+    precondition(!warming.shouldReplace(for: .contextChanged, context: follow))
+
+    warming.finish(replacement.id)
+    precondition(!warming.shouldReplace(for: .contextChanged, context: original))
+    precondition(!warming.shouldReplace(for: .presented, context: other))
+    precondition(warming.shouldReplace(for: .preferencesChanged, context: other))
+    _ = warming.begin(other)
+    warming.finish()
+    precondition(warming.attempt == nil && !warming.shouldReplace(for: .presented, context: other))
+    print("Startup warming coalesces owner updates, stops on close, and restarts only for an explicit preference change")
+}
+
 @MainActor
 private func checkScopedHistoryClear() async throws {
     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("BarkProfileHistory-" + UUID().uuidString)
@@ -645,6 +674,7 @@ private enum ProfileChecks {
             guard case .failure(.presentationUnavailable) = result else { preconditionFailure() }
         }
         precondition(Native.observers.isEmpty)
+        checkNativeStartupWarmTriggers()
         try await checkScopedHistoryClear()
         checkPasswordManagementCommand()
         try checkPasswordManagementLanding()
