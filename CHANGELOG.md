@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Moving from Nook to Bark on macOS
+
+Bark starts with its own iCloud data. Existing bookmarks, shared spaces and invitations stay in Nook. To bring a space across, export it as a `.nookspace` file and import it in Bark. In a Bark build with iCloud support, choose **Settings → Spaces → iCloud Sync → Enable Sync** on each Mac, then choose which spaces to sync. Until you enable sync, your bookmarks stay on that Mac.
+
 ### Added
 
 - Google Calendar favorites show your next meeting from macOS Calendar, as in Arc: "now" under the icon while one runs, and "in 5m" when the next starts within the hour. Resting the pointer on the favorite shows a timeline from the current hour through the next six hours, side by side where events overlap, with a + for a new event; clicking an event opens its day in the favorite. Nook never asks for Calendar access on its own: the first card offers Connect Calendar, and says where to allow it in System Settings if it was turned down. Declined and all-day events never count as the next meeting

@@ -17,7 +17,7 @@ The user accepted fresh local/cloud state under a new Bark App ID and CloudKit c
 - [x] 2.4 Initialize fresh zones, subscriptions, account binding and sync state; test that old `Sync/spaces.json`, tokens, shares and device metadata are never loaded.
 - [ ] 2.5 Handle first versus subsequent Bark devices and account changes; test that joining an existing Bark account fetches its records without wiping or duplicating the dataset.
 - [ ] 2.6 Update sharing validation and invitation UX; test old-link rejection plus new owner/participant invitations across two accounts using the new container.
-- [ ] 2.7 Document the reset and old/new-client separation in onboarding and release notes; verify sync remains opt-in and the notice precedes enabling it. The notice is present before opt-in in Spaces settings and in the user guide. Release notes remain pending.
+- [ ] 2.7 Document the reset and old/new-client separation in onboarding and release notes; verify sync remains opt-in and the notice precedes enabling it. The notice appears in Spaces settings before opt-in, in the user guide and in the unreleased changelog. First-run onboarding verification remains open.
 
 ## 3. Local fresh start and integrations (B1)
 
