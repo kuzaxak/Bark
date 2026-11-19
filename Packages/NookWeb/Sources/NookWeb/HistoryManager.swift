@@ -30,6 +30,13 @@ public struct HistoryVisit: Sendable {
 public final class HistoryManager {
     @ObservationIgnored private let storeTask: Task<HistoryStore, Never>
     @ObservationIgnored private var pendingWrite: Task<Void, Never>?
+    @ObservationIgnored private var startup: Task<Void, Never>?
+    private let includesUnassigned: Bool
+
+    public enum ProfileOwnership {
+        case legacyCompatible
+        case isolated(migrateUnassignedTo: UUID?)
+    }
     /// Visited pages' text for the command palette. Nil leaves the feature out entirely.
     @ObservationIgnored private let pageText: HistoryTextIndex?
     /// Every visited page ranked by frecency, for the command palette. Nil, or unavailable,
@@ -45,19 +52,42 @@ public final class HistoryManager {
 
     public init(
         context: ModelContext, profileId: UUID? = nil, pageTextURL: URL? = nil, indexURL: URL? = nil,
-        halfLifeDays: Int = 10, wordStops: Set<Character> = PaletteText.defaultStops
+        halfLifeDays: Int = 10, wordStops: Set<Character> = PaletteText.defaultStops,
+        profileOwnership: ProfileOwnership = .legacyCompatible
     ) {
+        let migrationProfile: UUID?
+        switch profileOwnership {
+        case .legacyCompatible:
+            includesUnassigned = true
+            migrationProfile = nil
+        case .isolated(let owner):
+            includesUnassigned = false
+            migrationProfile = owner
+        }
         currentProfileId = profileId
         self.wordStops = wordStops
         pageText = pageTextURL.map(HistoryTextIndex.init(fileURL:))
-        index = indexURL.map { HistoryIndex(fileURL: $0, halfLife: TimeInterval(halfLifeDays) * 86_400, wordStops: wordStops) }
+        let includesUnassigned = self.includesUnassigned
+        let index = indexURL.map {
+            HistoryIndex(fileURL: $0, halfLife: TimeInterval(halfLifeDays) * 86_400, wordStops: wordStops,
+                         includesUnassigned: includesUnassigned)
+        }
+        self.index = index
         let container = context.container
         // Construct the model executor off the main actor as well as calling it there.
-        storeTask = Task.detached { HistoryStore(modelContainer: container) }
-        if let index {
+        storeTask = Task.detached {
+            let store = HistoryStore(modelContainer: container)
+            await store.setIncludesUnassigned(includesUnassigned)
+            return store
+        }
+        if migrationProfile != nil || index != nil {
             enqueue { store in
-                if await index.needsMigration() { await index.migrate(await store.seeds()) }
+                if let migrationProfile, await store.assignUnscoped(to: migrationProfile) {
+                    await index?.assignUnscoped(to: migrationProfile)
+                }
+                if let index, await index.needsMigration() { await index.migrate(await store.seeds()) }
             }
+            startup = pendingWrite
         }
         // Every space's rows, not only the launch space's. The index keeps them past this, so
         // old pages stay findable from the palette.
@@ -100,7 +130,10 @@ public final class HistoryManager {
     }
 
     private func enqueueVisits(_ visits: [HistoryVisit], claimUnscopedRows: Bool) {
+        let visits = includesUnassigned ? visits : visits.filter { $0.profileId != nil }
+        guard !visits.isEmpty else { return }
         let index = index
+        let claimUnscopedRows = claimUnscopedRows && includesUnassigned
         enqueue { store in
             await store.addVisits(visits, claimUnscopedRows: claimUnscopedRows)
             guard let index else { return }
@@ -122,6 +155,7 @@ public final class HistoryManager {
     /// Paged by offset, so a caller that deleted rows it already shows asks for exactly the next ones.
     public func getHistory(days: Int = 7, offset: Int = 0, limit: Int = 50, profile: UUID? = nil) async -> (entries: [HistoryEntry], hasMore: Bool) {
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return ([], false) }
         await pendingWrite?.value
         return await storeTask.value.history(days: days, profile: profile, offset: offset, limit: limit)
     }
@@ -132,6 +166,7 @@ public final class HistoryManager {
 
     public func searchHistory(query: String, offset: Int = 0, limit: Int = 50, profile: UUID? = nil) async -> (entries: [HistoryEntry], hasMore: Bool) {
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return ([], false) }
         await pendingWrite?.value
         guard !Task.isCancelled else { return ([], false) }
         return await storeTask.value.search(query: query, profile: profile, offset: offset, limit: limit)
@@ -142,6 +177,8 @@ public final class HistoryManager {
     /// host that is one visit stale autofills the same either way.
     public func autofillHost(prefix: String, minVisits: Int = 2, profile: UUID? = nil) async -> String? {
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return nil }
+        await startup?.value
         guard !Task.isCancelled else { return nil }
         return await storeTask.value.autofillHost(prefix: prefix, profile: profile, minVisits: minVisits)
     }
@@ -183,10 +220,13 @@ public final class HistoryManager {
     }
 
     public func deleteHistoryEntry(_ entryId: UUID) {
+        let profile = currentProfileId
+        guard includesUnassigned || profile != nil else { return }
+        let requiredProfile = includesUnassigned ? nil : profile
         let pageText = pageText
         let index = index
         enqueue { store in
-            guard let row = await store.delete(entryId) else { return }
+            guard let row = await store.delete(entryId, requiring: requiredProfile) else { return }
             if let profile = row.profile { await pageText?.delete(url: row.url, profile: profile) }
             await index?.delete(url: row.url, profile: row.profile)
         }
@@ -197,6 +237,7 @@ public final class HistoryManager {
         let pageText = pageText
         let index = index
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return }
         let key = url.absoluteString
         enqueue { store in
             await store.delete(url: key, profile: profile)
@@ -212,6 +253,7 @@ public final class HistoryManager {
     public func searchIndex(query: String, limit: Int, profile: UUID? = nil, isOpen: @escaping (String) -> Bool) async -> [HistoryEntry]? {
         guard let index else { return nil }
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return [] }
         await pendingWrite?.value
         guard !Task.isCancelled, let rows = await index.search(query, profile: profile) else { return nil }
         let picks = await index.picks(profile: profile)
@@ -223,6 +265,9 @@ public final class HistoryManager {
     public func indexRows(matching query: String, profile: UUID? = nil) async -> [IndexedVisit]? {
         guard let index else { return nil }
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return [] }
+        await startup?.value
+        guard !Task.isCancelled else { return nil }
         return await index.search(query, profile: profile)
     }
 
@@ -231,6 +276,7 @@ public final class HistoryManager {
     public func recordPick(prefix: String, url: URL, fromPrivateWindow: Bool, profile: UUID? = nil) {
         guard !fromPrivateWindow, let index else { return }
         let profile = profile ?? currentProfileId
+        guard includesUnassigned || profile != nil else { return }
         let key = HistoryIndex.cleanURL(url).absoluteString
         let date = Date()
         enqueue { _ in await index.recordPick(prefix: prefix, url: key, profile: profile, at: date) }
@@ -279,17 +325,54 @@ actor HistoryStore {
         /// Folds a visit in, when this index covers that profile. The test mirrors what
         /// `visible(to:)` selects: an all-profiles index covers every visit, and a per-profile
         /// index also covers the profile-less rows it would have fetched.
-        mutating func record(url: String, profile visitProfile: UUID?, at date: Date) {
-            guard profile == nil || visitProfile == nil || profile == visitProfile else { return }
+        mutating func record(url: String, profile visitProfile: UUID?, at date: Date, includesUnassigned: Bool) {
+            guard profile == nil || profile == visitProfile || (includesUnassigned && visitProfile == nil) else { return }
             AutofillRanking.add(url: url, visits: 1, at: date, to: &hosts)
         }
     }
 
     private var autofillCache: AutofillIndex?
+    private var includesUnassigned = true
+
+    func setIncludesUnassigned(_ includesUnassigned: Bool) {
+        self.includesUnassigned = includesUnassigned
+    }
+
+    func assignUnscoped(to profile: UUID) -> Bool {
+        do {
+            let rows = try modelContext.fetch(FetchDescriptor<HistoryEntity>(predicate: #Predicate { $0.profileId == nil }))
+            guard !rows.isEmpty else { return true }
+            var destinations: [String: HistoryEntity] = [:]
+            for row in rows {
+                if let existing = try destinations[row.url] ?? exactURL(row.url, profile: profile) {
+                    existing.visitCount += row.visitCount
+                    existing.visitDate = min(row.visitDate, existing.visitDate)
+                    if row.lastVisited > existing.lastVisited {
+                        existing.lastVisited = row.lastVisited
+                        existing.title = row.title
+                        existing.tabId = row.tabId
+                    }
+                    destinations[row.url] = existing
+                    modelContext.delete(row)
+                } else {
+                    row.profileId = profile
+                    destinations[row.url] = row
+                }
+            }
+            try modelContext.save()
+            autofillCache = nil
+            return true
+        } catch {
+            modelContext.rollback()
+            Self.logger.error("History ownership migration failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
 
     private func visible(to profile: UUID?) -> Predicate<HistoryEntity> {
         guard let profile else { return #Predicate { _ in true } }
-        return #Predicate { $0.profileId == profile || $0.profileId == nil }
+        if includesUnassigned { return #Predicate { $0.profileId == profile || $0.profileId == nil } }
+        return #Predicate { $0.profileId == profile }
     }
 
     private func exactURL(_ url: String, profile: UUID?) throws -> HistoryEntity? {
@@ -326,7 +409,7 @@ actor HistoryStore {
                     modelContext.insert(HistoryEntity(url: url, title: visit.title.isEmpty ? (visit.url.host ?? "Unknown") : visit.title,
                         visitDate: visit.timestamp, tabId: visit.tabId, lastVisited: visit.timestamp, profileId: visit.profileId))
                 }
-                autofillCache?.record(url: url, profile: visit.profileId, at: visit.timestamp)
+                autofillCache?.record(url: url, profile: visit.profileId, at: visit.timestamp, includesUnassigned: includesUnassigned)
                 // Bound each transaction while avoiding a disk save for every imported row.
                 if (index + 1).isMultiple(of: 500) { try modelContext.save() }
             }
@@ -343,7 +426,8 @@ actor HistoryStore {
         let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: Date()) ?? Date()
         let predicate: Predicate<HistoryEntity>
         if let profile {
-            predicate = #Predicate { $0.lastVisited >= cutoff && ($0.profileId == profile || $0.profileId == nil) }
+            let includesUnassigned = includesUnassigned
+            predicate = #Predicate { $0.lastVisited >= cutoff && ($0.profileId == profile || (includesUnassigned && $0.profileId == nil)) }
         } else {
             predicate = #Predicate { $0.lastVisited >= cutoff }
         }
@@ -426,9 +510,8 @@ actor HistoryStore {
     func clear(before cutoff: Date, profile: UUID?) {
         do {
             if let profile {
-                // Same rows `visible(to:)` shows: untagged legacy rows appear in every space,
-                // so clearing one space has to take them too.
-                try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.lastVisited < cutoff && ($0.profileId == profile || $0.profileId == nil) })
+                let includesUnassigned = includesUnassigned
+                try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.lastVisited < cutoff && ($0.profileId == profile || (includesUnassigned && $0.profileId == nil)) })
             } else {
                 try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.lastVisited < cutoff })
             }
@@ -439,15 +522,17 @@ actor HistoryStore {
 
     /// Deletes one row and returns its URL and profile.
     @discardableResult
-    func delete(_ id: UUID) -> (url: String, profile: UUID?)? {
+    func delete(_ id: UUID, requiring requiredProfile: UUID?) -> (url: String, profile: UUID?)? {
         do {
             var descriptor = FetchDescriptor<HistoryEntity>(predicate: #Predicate { $0.id == id })
             descriptor.fetchLimit = 1
-            let row = try modelContext.fetch(descriptor).first.map { ($0.url, $0.profileId) }
-            try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.id == id })
+            guard let row = try modelContext.fetch(descriptor).first,
+                  requiredProfile == nil || row.profileId == requiredProfile else { return nil }
+            let deleted = (url: row.url, profile: row.profileId)
+            modelContext.delete(row)
             try modelContext.save()
             autofillCache = nil
-            return row.map { (url: $0.0, profile: $0.1) }
+            return deleted
         } catch {
             Self.logger.error("History deletion failed: \(error.localizedDescription, privacy: .public)")
             return nil
@@ -469,7 +554,8 @@ actor HistoryStore {
     func delete(url: String, profile: UUID?) {
         do {
             if let profile {
-                try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.url == url && ($0.profileId == profile || $0.profileId == nil) })
+                let includesUnassigned = includesUnassigned
+                try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.url == url && ($0.profileId == profile || (includesUnassigned && $0.profileId == nil)) })
             } else {
                 try modelContext.delete(model: HistoryEntity.self, where: #Predicate { $0.url == url })
             }

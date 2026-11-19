@@ -62,11 +62,14 @@ public actor HistoryIndex {
     /// The command bar's word stops; the FTS table and queries split words at the same characters.
     private var wordStops: Set<Character>
     private var db: OpaquePointer?
+    private let includesUnassigned: Bool
     /// Set when FTS5 is missing or the file cannot be opened; callers fall back to the history store.
     private var unavailable = false
 
-    public init(fileURL: URL, halfLife: TimeInterval, wordStops: Set<Character> = PaletteText.defaultStops) {
+    public init(fileURL: URL, halfLife: TimeInterval, wordStops: Set<Character> = PaletteText.defaultStops,
+                includesUnassigned: Bool = true) {
         self.fileURL = fileURL
+        self.includesUnassigned = includesUnassigned
         self.halfLife = halfLife
         self.wordStops = wordStops
     }
@@ -155,6 +158,57 @@ public actor HistoryIndex {
     }
 
     // MARK: - Writes
+
+    private func hasUnscopedRows(_ db: OpaquePointer) -> Bool? {
+        var statement: OpaquePointer?
+        let sql = """
+            SELECT EXISTS(SELECT 1 FROM visits WHERE profile = '')
+                OR EXISTS(SELECT 1 FROM picks WHERE profile = '')
+            """
+        guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return nil }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        return sqlite3_column_int(statement, 0) != 0
+    }
+
+    /// Moves only untagged rows, preserving both sides' visit and pick counts.
+    func assignUnscoped(to profile: UUID) {
+        guard let db = open(create: true), hasUnscopedRows(db) == true,
+              sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil) == SQLITE_OK else { return }
+        var committed = false
+        defer { if !committed { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
+        // The largest existing frecency key preserves the strongest prior rank.
+        let statements = [
+            """
+            INSERT INTO visits(url, profile, title, host, key, typed, visitCount, lastVisited)
+            SELECT url, ?, title, host, key, typed, visitCount, lastVisited FROM visits WHERE profile = ''
+            ON CONFLICT(url, profile) DO UPDATE SET
+                title = CASE WHEN excluded.lastVisited > visits.lastVisited THEN excluded.title ELSE visits.title END,
+                key = max(visits.key, excluded.key), typed = visits.typed + excluded.typed,
+                visitCount = visits.visitCount + excluded.visitCount,
+                lastVisited = max(visits.lastVisited, excluded.lastVisited)
+            """,
+            """
+            INSERT INTO picks(profile, prefix, url, n, lastPicked)
+            SELECT ?, prefix, url, n, lastPicked FROM picks WHERE profile = ''
+            ON CONFLICT(profile, prefix, url) DO UPDATE SET n = picks.n + excluded.n,
+                lastPicked = max(picks.lastPicked, excluded.lastPicked)
+            """,
+        ]
+        for (table, sql) in zip(["visits", "picks"], statements) {
+            var statement: OpaquePointer?
+            guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK, let statement else { return }
+            Self.bindProfile(statement, 1, profile)
+            let result = sqlite3_step(statement)
+            sqlite3_finalize(statement)
+            guard result == SQLITE_DONE else { return }
+            let moved = sqlite3_changes64(db)
+            guard sqlite3_exec(db, "DELETE FROM \(table) WHERE profile = ''", nil, nil, nil) == SQLITE_OK,
+                  sqlite3_changes64(db) == moved else { return }
+        }
+        guard hasUnscopedRows(db) == false else { return }
+        committed = sqlite3_exec(db, "COMMIT", nil, nil, nil) == SQLITE_OK
+    }
 
     /// Whether the history store still has to be copied in.
     public func needsMigration() -> Bool {
@@ -275,7 +329,7 @@ public actor HistoryIndex {
     /// Removes rows last visited before `date`: `profile`'s and untagged ones, or all when nil.
     public func clear(before date: Date, profile: UUID?) {
         guard let db = open(create: false) else { return }
-        run(db, "DELETE FROM visits WHERE lastVisited < ?1 AND (?2 IS NULL OR profile IN (?2, ''))") { stmt in
+        run(db, "DELETE FROM visits WHERE lastVisited < ?1 AND (?2 IS NULL OR \(profilePredicate("profile", parameter: "?2")))") { stmt in
             sqlite3_bind_double(stmt, 1, date.timeIntervalSince1970)
             Self.bindProfile(stmt, 2, profile)
         }
@@ -340,7 +394,7 @@ public actor HistoryIndex {
         let sql = """
             SELECT v.url, v.title, v.visitCount, v.lastVisited, v.key
             FROM visits_fts JOIN visits v ON v.rowid = visits_fts.rowid
-            WHERE visits_fts MATCH ?1 AND (?2 IS NULL OR v.profile IN (?2, ''))
+            WHERE visits_fts MATCH ?1 AND (?2 IS NULL OR \(profilePredicate("v.profile", parameter: "?2")))
             ORDER BY v.key DESC LIMIT ?3
             """
         var results: [IndexedVisit] = []
@@ -365,7 +419,7 @@ public actor HistoryIndex {
             guard top.count < limit else { return }
             if let profileKey {
                 let rowProfile = Self.text(stmt, 5)
-                guard rowProfile == profileKey || rowProfile.isEmpty else { return }
+                guard rowProfile == profileKey || (includesUnassigned && rowProfile.isEmpty) else { return }
             }
             let title = Self.text(stmt, 1), url = Self.text(stmt, 0)
             var haystack = (title + " " + url).lowercased()
@@ -386,7 +440,7 @@ public actor HistoryIndex {
     public func picks(profile: UUID?) -> [HistoryPick] {
         guard let db = open(create: false) else { return [] }
         var picks: [HistoryPick] = []
-        run(db, "SELECT prefix, url, n FROM picks WHERE ?1 IS NULL OR profile IN (?1, '')", bind: { stmt in
+        run(db, "SELECT prefix, url, n FROM picks WHERE ?1 IS NULL OR \(profilePredicate("profile", parameter: "?1"))", bind: { stmt in
             Self.bindProfile(stmt, 1, profile)
         }, row: { stmt in
             picks.append(HistoryPick(prefix: Self.text(stmt, 0), url: Self.text(stmt, 1), n: Int(sqlite3_column_int64(stmt, 2))))
@@ -507,6 +561,10 @@ public actor HistoryIndex {
         var version: Int32 = 0
         run(db, "PRAGMA user_version", bind: { _ in }, row: { version = sqlite3_column_int($0, 0) })
         return version
+    }
+
+    private func profilePredicate(_ column: String, parameter: String) -> String {
+        includesUnassigned ? "\(column) IN (\(parameter), '')" : "\(column) = \(parameter)"
     }
 
     private static func profileKey(_ profile: UUID?) -> String { profile?.uuidString ?? "" }

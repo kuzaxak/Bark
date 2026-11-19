@@ -191,6 +191,7 @@ class BrowserManager: ObservableObject {
         // The first space's data store is the one the app starts on.
         let initialProfile = tabs.orderedSpaces.first.flatMap { tabs.profile(forSpace: $0.id) }
         self.currentProfileSubject = CurrentValueSubject(initialProfile)
+        let historyOwner = Self.legacyHistoryOwner(in: tabs, initialProfile: initialProfile?.id, defaults: userDefaults)
 
         self.dialogManager = DialogManager()
         self.downloadManager = downloadManager
@@ -202,7 +203,8 @@ class BrowserManager: ObservableObject {
             indexURL: tabsDirectory.deletingLastPathComponent()
                 .appendingPathComponent("History/history-index.sqlite"),
             halfLifeDays: settings.historyHalfLifeDays,
-            wordStops: PaletteText.stops(from: settings.paletteWordStops))
+            wordStops: PaletteText.stops(from: settings.paletteWordStops),
+            profileOwnership: .isolated(migrateUnassignedTo: historyOwner))
         self.splitManager = SplitViewManager()
         self.gradientColorManager = GradientColorManager()
         self.importManager = importManager
@@ -235,8 +237,6 @@ class BrowserManager: ObservableObject {
         self.contentBlockerManager.attach(host: self)
         self.contentBlockerManager.prepareLinkCleaning()
         self.peekManager.attach(browserManager: self)
-        // Migrate legacy history entries (with nil profile) to default profile to avoid cross-profile leakage
-        self.migrateUnassignedDataToDefaultProfile()
         loadSidebarSettings()
         NotificationCenter.default.addObserver(
             self,
@@ -562,32 +562,22 @@ class BrowserManager: ObservableObject {
         NotificationCenter.default.removeObserver(self)
     }
 
-    /// History written before entries carried a space belongs to the first space.
-    func migrateUnassignedDataToDefaultProfile() {
-        guard let firstSpace = tabs.orderedSpaces.first?.id else { return }
-        assignDefaultProfileToExistingData(firstSpace)
-    }
-
-    func assignDefaultProfileToExistingData(_ profileId: UUID) {
-        do {
-            let predicate = #Predicate<HistoryEntity> { $0.profileId == nil }
-            let descriptor = FetchDescriptor<HistoryEntity>(predicate: predicate)
-            let entities = try modelContext.fetch(descriptor)
-            var updated = 0
-            for entity in entities {
-                entity.profileId = profileId
-                updated += 1
+    /// Pin the first resolved profile as the migration destination, so a
+    /// restart between the history save and SQLite commit cannot move the
+    /// index rows to a different profile after the first space is reordered.
+    private static func legacyHistoryOwner(in tabs: TabsController, initialProfile: UUID?,
+                                           defaults: UserDefaults) -> UUID? {
+        if case .readOnly = tabs.loadOutcome { return nil }
+        let key = "BarkLegacyHistoryOwner"
+        if let recorded = defaults.object(forKey: key) {
+            guard let id = (recorded as? String).flatMap(UUID.init(uuidString:)), tabs.isProfileAvailable(id) else {
+                return nil
             }
-            try modelContext.save()
-            #if DEBUG
-            print(
-                "🔧 [BrowserManager] Assigned default profile to \(updated) legacy history entries")
-            #endif
-        } catch {
-            #if DEBUG
-            print("⚠️ [BrowserManager] Failed to assign default profile to existing data: \(error)")
-            #endif
+            return id
         }
+        guard let initialProfile else { return nil }
+        defaults.set(initialProfile.uuidString, forKey: key)
+        return initialProfile
     }
 
     // MARK: - Extension Management

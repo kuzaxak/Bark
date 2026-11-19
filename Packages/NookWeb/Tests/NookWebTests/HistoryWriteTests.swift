@@ -1,5 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 import Foundation
+import NookTabsCore
+import SQLite3
 import SwiftData
 import Testing
 @testable import NookWeb
@@ -23,6 +25,86 @@ struct HistoryWriteTests {
         private var raised = false
         func raise() { lock.withLock { raised = true } }
         var isRaised: Bool { lock.withLock { raised } }
+    }
+
+    @Test func legacyHistoryAndItsExistingIndexAreScopedToTheFirstSpacesProfile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("HistoryOwner-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(for: HistoryEntity.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let space = UUID(), other = UUID()
+        var tree = TabTree.firstLaunch(spaceID: space, homeURL: URL(string: "about:blank")!)
+        try tree.setProfile(space, to: nil, name: "Different profile")
+        let owner = try #require(tree.orderedSpaces.first.flatMap { tree.dataStoreID(for: $0.id) })
+        #expect(owner != space)
+        let indexURL = root.appendingPathComponent("Index.sqlite")
+        let legacy = HistoryManager(context: container.mainContext, indexURL: indexURL)
+        let url = URL(string: "https://unassigned.test/synthetic")!
+        let now = Date()
+        let yesterday = now.addingTimeInterval(-86_400)
+        await legacy.importVisitsAndWait([
+            HistoryVisit(url: url, title: "Legacy unassigned", timestamp: now, tabId: nil, profileId: nil),
+            HistoryVisit(url: url, title: "Explicit owner", timestamp: yesterday, tabId: nil, profileId: owner),
+            HistoryVisit(url: url, title: "Other owner", timestamp: yesterday, tabId: nil, profileId: other),
+            HistoryVisit(url: URL(string: "https://ambiguous.test")!, title: "Ambiguous",
+                         timestamp: now, tabId: nil, profileId: space),
+        ], claimUnscopedRows: false)
+        let explicit = try #require(await legacy.getHistory(profile: owner).entries.first { $0.title == "Explicit owner" })
+        legacy.recordPick(prefix: "un", url: url, fromPrivateWindow: false)
+        legacy.recordPick(prefix: "un", url: url, fromPrivateWindow: false, profile: owner)
+        legacy.recordPick(prefix: "un", url: url, fromPrivateWindow: false, profile: other)
+        _ = await legacy.getHistory()
+
+        // Simulate a write that reports success without moving the eligible row.
+        var rawDB: OpaquePointer?
+        try #require(sqlite3_open(indexURL.path, &rawDB) == SQLITE_OK)
+        defer { sqlite3_close(rawDB) }
+        try #require(sqlite3_exec(rawDB, """
+            CREATE TRIGGER reject_history_claim BEFORE UPDATE ON visits
+            WHEN old.profile <> '' BEGIN SELECT RAISE(IGNORE); END
+            """, nil, nil, nil) == SQLITE_OK)
+        let interrupted = HistoryManager(context: container.mainContext, profileId: other, indexURL: indexURL,
+                                         profileOwnership: .isolated(migrateUnassignedTo: owner))
+        #expect(await interrupted.indexRows(matching: "unassigned", profile: owner)?.map(\.visitCount) == [1])
+        #expect(await interrupted.indexRows(matching: "unassigned", profile: other)?.map(\.visitCount) == [1])
+        try #require(sqlite3_exec(rawDB, "DROP TRIGGER reject_history_claim", nil, nil, nil) == SQLITE_OK)
+
+        let history = HistoryManager(context: container.mainContext, profileId: owner, indexURL: indexURL,
+                                     profileOwnership: .isolated(migrateUnassignedTo: owner))
+        let ownerRows = await history.getHistory(profile: owner).entries
+        #expect(ownerRows.map(\.title) == ["Legacy unassigned"])
+        #expect(ownerRows.map(\.id) == [explicit.id])
+        #expect(ownerRows.map(\.visitCount) == [2])
+        #expect(ownerRows.map(\.lastVisited) == [now])
+        #expect(await history.getHistory(profile: other).entries.map(\.title) == ["Other owner"])
+        let indexed = try #require(await history.indexRows(matching: "unassigned", profile: owner)?.first)
+        #expect(indexed.visitCount == 2)
+        #expect(abs(indexed.lastVisited.timeIntervalSince(now)) < 0.001)
+        #expect(await history.indexRows(matching: "unassigned", profile: other)?.map(\.visitCount) == [1])
+        let reader = HistoryIndex(fileURL: indexURL, halfLife: 7 * 86_400)
+        #expect(await reader.picks(profile: owner).map(\.n) == [2])
+        #expect(await reader.picks(profile: other).map(\.n) == [1])
+        history.switchProfile(nil)
+        history.addVisit(url: URL(string: "https://ownerless.test")!, title: "Ownerless", tabId: nil)
+        #expect(await history.getHistory().entries.isEmpty)
+        #expect(await history.indexRows(matching: "unassigned")?.isEmpty == true)
+        let restarted = HistoryManager(context: container.mainContext, profileId: owner, indexURL: indexURL,
+                                       profileOwnership: .isolated(migrateUnassignedTo: owner))
+        #expect(await restarted.indexRows(matching: "unassigned", profile: owner)?.map(\.visitCount) == [2])
+        #expect(await restarted.indexRows(matching: "ownerless", profile: owner)?.isEmpty == true)
+
+        history.forget(url)
+        history.deleteHistoryEntry(explicit.id)
+        history.switchProfile(other)
+        history.deleteHistoryEntry(explicit.id)
+        #expect(await history.getHistory(profile: owner).entries.map(\.id) == [explicit.id])
+        #expect(await history.searchIndex(query: "unassigned", limit: 10, profile: other, isOpen: { _ in false })?.count == 1)
+        history.forget(url)
+        #expect(await history.getHistory(profile: owner).entries.map(\.id) == [explicit.id])
+        #expect(await history.getHistory(profile: other).entries.isEmpty)
+        #expect(await history.searchIndex(query: "unassigned", limit: 10, profile: owner, isOpen: { _ in false })?.count == 1)
+        #expect(await history.searchIndex(query: "unassigned", limit: 10, profile: other, isOpen: { _ in false })?.isEmpty == true)
+        #expect(await history.getHistory(profile: space).entries.map(\.title) == ["Ambiguous"])
     }
 
     @Test func pageTextForTheSameURLFollowsItsCapturingProfileAndDeletion() async throws {
