@@ -2,7 +2,7 @@
 import Foundation
 import Observation
 
-/// AppKit can deliver an invitation before the first window, sync opt-in, or
+/// An invitation can arrive before the first window, sync opt-in, or
 /// account lookup. Keep it in memory until Settings and the account are ready.
 @MainActor final class ChromiumCloudShareInbox<Invitation> {
     enum Readiness { case ready, waiting, needsSettings }
@@ -16,10 +16,12 @@ import Observation
     private var showedSettings = false
     private var stopped = false
 
-    func receive(_ invitation: Invitation) {
-        guard !stopped, pending.count < 16 else { return }
+    @discardableResult
+    func receive(_ invitation: Invitation) -> Bool {
+        guard !stopped, pending.count < 16 else { return false }
         pending.append(invitation)
         drain()
+        return true
     }
 
     func ready(when readiness: @escaping () -> Readiness, showSettings: @escaping () -> Void,

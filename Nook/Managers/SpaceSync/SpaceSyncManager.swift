@@ -293,7 +293,16 @@ final class SpaceSyncManager: SpaceSyncControls {
         let dataset = datasetID
         Task {
             do {
-                if let metadata = try await container.shareMetadatas(for: [url])[url]?.get(), dataset == datasetID { accept(metadata) }
+                let metadata = try await container.shareMetadatas(for: [url])[url]?.get()
+                guard dataset == datasetID else { return }
+                if isJoiningSharedSync {
+                    state.lastError = "Another invitation is being handled. Try this link again after it finishes."
+                    publish()
+                } else if let metadata {
+                    accept(metadata)
+                } else {
+                    notifyMissingShare(url)
+                }
             } catch let error as CKError where error.code == .unknownItem {
                 if dataset == datasetID { notifyMissingShare(url) }
             } catch {
@@ -342,7 +351,7 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// the recipient before presenting consent. A changed account or a pending
     /// join leaves the invitation in the window's delivery queue.
     func acceptSystemInvitation(_ metadata: CKShare.Metadata, canPresent: () -> Bool) async -> Bool {
-        guard canPresent() else { return true }
+        guard canPresent() else { return false }
         guard let container, status.availability == .available, let account = state.account,
               !isJoiningSharedSync else { return false }
         if metadata.share.currentUserParticipant?.userIdentity.userRecordID?.recordName == account {
@@ -354,7 +363,8 @@ final class SpaceSyncManager: SpaceSyncControls {
         if let url = metadata.share.url {
             verified = try? await container.shareMetadatas(for: [url])[url]?.get()
         }
-        guard !Task.isCancelled, canPresent() else { return true }
+        guard !Task.isCancelled else { return true }
+        guard canPresent() else { return false }
         guard datasetID == dataset, state.account == account, !isJoiningSharedSync else { return false }
         guard let verified, verified.containerIdentifier == metadata.containerIdentifier,
               verified.share.recordID == metadata.share.recordID else {
@@ -495,27 +505,35 @@ final class SpaceSyncManager: SpaceSyncControls {
             joinAdmission.owns(claim, dataset: datasetID, account: state.account)
     }
 
-    /// An iCloud sharing link opened from another app while Bark is the default browser. A share of
-    /// these spaces goes to the prompt to join, and one this account is not invited to says so;
-    /// any other link is left to `open` as a page. False when it is no sharing link at all.
-    func openShareLink(_ url: URL, otherwise open: @escaping () -> Void) -> Bool {
-        guard SpaceSyncShareLink.parse(url.absoluteString) != nil else { return false }
-        guard let container else {
-            open()
-            return true
-        }
+    /// Resolve a browser-open invitation when the inbox can present it. Retry
+    /// under the current account if a lookup was made obsolete while suspended.
+    func acceptExternalShareLink(_ url: URL, fallback: () -> Void, canPresent: () -> Bool) async -> Bool {
+        guard !Task.isCancelled else { return true }
+        guard canPresent() else { return false }
+        guard let container, status.availability == .available, let account = state.account,
+              !isJoiningSharedSync else { return false }
         let dataset = datasetID
-        Task {
-            do {
-                let metadata = try await container.shareMetadatas(for: [url])[url]?.get()
-                guard dataset == datasetID else { return }
-                guard let metadata, [SpaceSyncAvailability.containerID, "iCloud.ee.qdo.nook"].contains(metadata.containerIdentifier) else { return open() }
+        let result: Result<CKShare.Metadata?, Error>
+        do {
+            result = .success(try await container.shareMetadatas(for: [url])[url]?.get())
+        } catch {
+            result = .failure(error)
+        }
+        guard !Task.isCancelled else { return true }
+        guard canPresent() else { return false }
+        guard dataset == datasetID, state.account == account, status.availability == .available,
+              !isJoiningSharedSync else { return false }
+        switch result {
+        case .success(let metadata?):
+            if [SpaceSyncAvailability.containerID, "iCloud.ee.qdo.nook"].contains(metadata.containerIdentifier) {
                 accept(metadata)
-            } catch let error as CKError where error.code == .unknownItem && (SpaceSyncShareLink.isBarkSpaces(url) || url.fragment == "Nook_Spaces") {
-                if dataset == datasetID { notifyMissingShare(url) }
-            } catch {
-                if dataset == datasetID { open() }
+            } else {
+                fallback()
             }
+        case .failure(let error as CKError) where error.code == .unknownItem:
+            notifyMissingShare(url)
+        default:
+            fallback()
         }
         return true
     }

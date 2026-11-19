@@ -47,7 +47,12 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var mouseButtons: ChromiumMouseButtons?
     private let spaceFiles = ChromiumSpaceFiles()
     private let shareLinkReplay = ChromiumShareLinkReplay()
-    private let cloudShareInbox = ChromiumCloudShareInbox<CKShare.Metadata>()
+    private enum CloudShareInvitation {
+        case system(CKShare.Metadata)
+        case link(URL, fallback: () -> Void)
+    }
+
+    private let cloudShareInbox = ChromiumCloudShareInbox<CloudShareInvitation>()
     private var cloudShareObserver: NSObjectProtocol?
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
@@ -159,7 +164,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 let record = metadata.share.recordID
                 guard Self.isSystemSpacesShare(container: metadata.containerIdentifier,
                     zone: record.zoneID.zoneName, record: record.recordName) else { return }
-                self.cloudShareInbox.receive(metadata)
+                self.cloudShareInbox.receive(.system(metadata))
             }
         }
     }
@@ -230,15 +235,25 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
     }
 
-    private func takeExternalShareLink(_ url: URL, manager: BrowserManager) -> Bool {
-        guard !configuration.isVerification, registry.activeWindow?.isIncognito != true,
-              manager.spaceSync?.isSyncEnabled == true,
-              url.user == nil, url.password == nil, url.port == nil,
-              let invitation = SpaceSyncShareLink.parse(url.absoluteString),
-              SpaceSyncShareLink.isBarkSpaces(invitation) || invitation.fragment == "Nook_Spaces",
+    static func isExternalSpacesShareLink(_ url: URL, syncEnabled: Bool) -> Bool {
+        guard url.user == nil, url.password == nil, url.port == nil,
+              let invitation = SpaceSyncShareLink.parse(url.absoluteString) else { return false }
+        return SpaceSyncShareLink.isBarkSpaces(invitation) || (syncEnabled && invitation.fragment == "Nook_Spaces")
+    }
+
+    private var canPresentCloudShare: Bool {
+        acceptsWindows && registry.activeWindow?.isIncognito != true
+    }
+
+    private func takeExternalShareLink(_ url: URL) -> Bool {
+        guard !configuration.isVerification, canPresentCloudShare,
+              Self.isExternalSpacesShareLink(url, syncEnabled: browserManager?.spaceSyncManager.isSyncEnabled == true),
+              SpaceSyncManager.isEntitled,
               let delegate = NSApp.delegate,
               delegate.responds(to: #selector(NSApplicationDelegate.application(_:open:))) else { return false }
-        return shareLinkReplay.take(url, lookup: manager.spaceSyncManager.openShareLink) { [weak self, weak delegate] url in
+        return shareLinkReplay.take(url, lookup: { url, fallback in
+            cloudShareInbox.receive(.link(url, fallback: fallback))
+        }) { [weak self, weak delegate] url in
             // Chromium must finish removing the consumed entry before its
             // own validated external queue receives the fallback.
             Task { @MainActor in
@@ -262,6 +277,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 let app = Unmanaged<ChromiumApplication>.fromOpaque(pointer).takeUnretainedValue()
                 if kind == BARC_APPLICATION_TARGET_URL.rawValue, app.acceptsWindows, let url,
                    let incoming = URL(string: String(cString: url)), app.spaceFiles.take(incoming) { return refused }
+                if kind == BARC_APPLICATION_TARGET_URL.rawValue, let url,
+                   let incoming = URL(string: String(cString: url)),
+                   app.takeExternalShareLink(incoming) { return refused }
                 guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return refused }
                 guard app.pageTweaks?.isReady == true else { return ordinaryWindow }
                 if kind == BARC_APPLICATION_TARGET_PENDING_PAGE.rawValue {
@@ -312,7 +330,6 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     return found
                 }
                 if kind == BARC_APPLICATION_TARGET_URL.rawValue, let url, let validatedURL = URL(string: String(cString: url)) {
-                    if app.takeExternalShareLink(validatedURL, manager: manager) { return refused }
                     let rule = manager.siteRoutingManager.resolve(url: validatedURL)
                     guard let target = admission.incomingTarget(ruleSpace: rule?.targetSpaceId,
                         mini: manager.nookSettings?.externalLinkDestination != .currentSpace,
@@ -731,20 +748,27 @@ final class ChromiumApplication: ChromiumStartupBridge {
         admission?.reflectInitialActivation(row)
         didPresentInitialWindow = true
         if let manager = browserManager {
-            cloudShareInbox.ready(when: { [weak manager] in
-                guard let sync = manager?.spaceSyncManager else { return .waiting }
+            cloudShareInbox.ready(when: { [weak self, weak manager] in
+                guard self?.canPresentCloudShare == true, let sync = manager?.spaceSyncManager else { return .waiting }
                 switch sync.status.availability {
                 case .available: return sync.isJoiningSharedSync ? .waiting : .ready
                 case .checking: return .waiting
                 default: return .needsSettings
                 }
             }, showSettings: { [weak self, weak manager] in
-                guard self?.acceptsWindows == true else { return }
+                guard self?.canPresentCloudShare == true else { return }
                 manager?.openSettings(tab: .spaces)
-            }, accept: { [weak self, weak manager] metadata in
+            }, accept: { [weak self, weak manager] invitation in
                 guard let manager else { return true }
-                return await manager.spaceSyncManager.acceptSystemInvitation(metadata) {
-                    self?.acceptsWindows == true
+                switch invitation {
+                case .system(let metadata):
+                    return await manager.spaceSyncManager.acceptSystemInvitation(metadata) {
+                        self?.canPresentCloudShare == true
+                    }
+                case .link(let url, let fallback):
+                    return await manager.spaceSyncManager.acceptExternalShareLink(url, fallback: fallback) {
+                        self?.canPresentCloudShare == true
+                    }
                 }
             })
         }

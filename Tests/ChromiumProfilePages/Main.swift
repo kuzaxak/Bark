@@ -16,6 +16,9 @@ import SwiftData
 @MainActor @Observable
 private final class ShareDeliveryGate {
     var state: ChromiumCloudShareInbox<String>.Readiness = .needsSettings
+    var privateWindow = true
+
+    var readiness: ChromiumCloudShareInbox<String>.Readiness { privateWindow ? .waiting : state }
 }
 
 @MainActor
@@ -657,27 +660,60 @@ private enum ProfileChecks {
         precondition(!ChromiumApplication.isSystemSpacesShare(container: container, zone: "other", record: share))
         precondition(!ChromiumApplication.isSystemSpacesShare(container: container, zone: zone, record: "record-share"))
 
+        let link = URL(string: "https://www.icloud.com/share/test#Bark_Spaces")!
+        let legacy = URL(string: "https://www.icloud.com/share/test#Nook_Spaces")!
+        precondition(ChromiumApplication.isExternalSpacesShareLink(link, syncEnabled: false))
+        precondition(!ChromiumApplication.isExternalSpacesShareLink(legacy, syncEnabled: false))
+        precondition(ChromiumApplication.isExternalSpacesShareLink(legacy, syncEnabled: true))
+        for raw in ["https://www.icloud.com/share/test#Other",
+                    "https://www.icloud.com:443/share/test#Bark_Spaces",
+                    "https://user@www.icloud.com/share/test#Bark_Spaces",
+                    "https://example.test/share/test#Bark_Spaces"] {
+            precondition(!ChromiumApplication.isExternalSpacesShareLink(URL(string: raw)!, syncEnabled: true))
+        }
+
+        let replay = ChromiumShareLinkReplay()
+        var fallback: (() -> Void)?
+        var reopened: [URL] = []
+        precondition(replay.take(link, lookup: { _, reopen in
+            fallback = reopen
+            return true
+        }, reopen: { reopened.append($0) }))
+        fallback?()
+        fallback?()
+        precondition(reopened == [link])
+        precondition(!replay.take(link, lookup: { _, _ in preconditionFailure("Recursive invitation lookup") },
+                                 reopen: { _ in preconditionFailure() }))
+        replay.reachedPendingPage(link)
+
         let inbox = ChromiumCloudShareInbox<String>()
         var delivered: [String] = []
-        inbox.receive("cold")
+        precondition(inbox.receive(link.absoluteString))
         await Task.yield()
         precondition(delivered.isEmpty)
         let gate = ShareDeliveryGate()
         var settingsOpened = 0
         var lookups = 0
-        inbox.ready(when: { gate.state }, showSettings: { settingsOpened += 1 }) { invitation in
+        inbox.ready(when: { gate.readiness }, showSettings: { settingsOpened += 1 }) { invitation in
             if invitation == "next" {
                 lookups += 1
                 if lookups == 1 {
+                    gate.privateWindow = true
+                    return false
+                }
+                if lookups == 2 {
                     gate.state = .waiting
                     return false
                 }
             }
             delivered.append(invitation)
-            if invitation == "cold" { gate.state = .waiting }
+            if invitation == link.absoluteString { gate.state = .waiting }
             return true
         }
         precondition(delivered.isEmpty, "Acceptance must run outside the AppKit callback")
+        for _ in 0..<10 { await Task.yield() }
+        precondition(settingsOpened == 0, "The inbox cannot present Settings over a private window")
+        gate.privateWindow = false
         for _ in 0..<100 where settingsOpened == 0 { await Task.yield() }
         precondition(delivered.isEmpty && settingsOpened == 1)
         inbox.receive("next")
@@ -686,21 +722,24 @@ private enum ProfileChecks {
         precondition(delivered.isEmpty && settingsOpened == 1)
         gate.state = .ready
         for _ in 0..<100 where delivered.isEmpty { await Task.yield() }
-        precondition(delivered == ["cold"], "A join in progress keeps the next invitation queued")
+        precondition(delivered == [link.absoluteString], "A join in progress keeps the next invitation queued")
         gate.state = .ready
         for _ in 0..<100 where lookups == 0 { await Task.yield() }
-        precondition(lookups == 1 && delivered == ["cold"], "Account changes retain the pending invitation")
+        precondition(lookups == 1 && delivered == [link.absoluteString], "Entering a private window retains the pending invitation")
+        gate.privateWindow = false
+        for _ in 0..<100 where lookups < 2 { await Task.yield() }
+        precondition(lookups == 2 && delivered == [link.absoluteString], "An account change retains the pending invitation")
         gate.state = .ready
         for _ in 0..<100 where delivered.count < 2 { await Task.yield() }
-        precondition(delivered == ["cold", "next"] && settingsOpened == 1)
+        precondition(delivered == [link.absoluteString, "next"] && lookups == 3 && settingsOpened == 1)
         gate.state = .waiting
         inbox.receive("cancelled")
         await Task.yield()
         inbox.stop()
         gate.state = .ready
-        inbox.receive("after shutdown")
+        precondition(!inbox.receive("after shutdown"))
         await Task.yield()
-        precondition(delivered == ["cold", "next"])
-        print("System shares survive startup and opt-in, wait for the current join, and clear on quit")
+        precondition(delivered == [link.absoluteString, "next"])
+        print("Share links and system invitations survive startup and opt-in, wait for the current join, and clear on quit")
     }
 }
