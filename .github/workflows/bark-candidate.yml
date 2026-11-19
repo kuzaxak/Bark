@@ -142,7 +142,9 @@ jobs:
           if [[ "$status" != 0 ]]; then
             exit "$status"
           fi
-          test -f "$evidence/qualification.json"
+          "$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py check-release-receipt \
+            --receipt "$evidence/qualification.json" --image "$image" \
+            --app "$BARK_RELEASE_WORK/Bark.app" --arch "$BARK_ARCH"
 
       - name: Upload the native qualification receipt
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

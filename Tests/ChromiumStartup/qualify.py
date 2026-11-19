@@ -21,6 +21,10 @@ from signed_walk import bundle_cdhash, verify_official_sdk
 from run_browser_tests import SCREEN_UNAVAILABLE, ScreenUnavailable
 import bark_release
 from publish_chromium_sdk import file_digest
+from chromium_sdk_layout import read_pin
+
+
+MEASUREMENTS = ("launch_to_pointer_ms", "switch_back_to_key_ms", "observed_hidden_ms")
 
 
 def walk(script, arguments, output):
@@ -44,15 +48,19 @@ def checked_measurements(observations, candidate):
         if not result["document_id"] or result["document_id"] in documents:
             raise ValueError("Each startup sample must use a fresh document.")
         documents.add(result["document_id"])
-        sample = {key: result[key] for key in
-                  ("launch_to_pointer_ms", "switch_back_to_key_ms", "observed_hidden_ms")}
-        if not all(isinstance(value, (float, int)) and not isinstance(value, bool)
-                   and math.isfinite(value) and value > 0 for value in sample.values()):
-            raise ValueError("A startup or parked-tab measurement is missing.")
-        samples.append(sample)
-    if len(samples) != 3:
-        raise ValueError("Three successful native startup samples are required.")
+        samples.append({key: result[key] for key in MEASUREMENTS})
+    validate_samples(samples)
     return samples
+
+
+def validate_samples(samples):
+    if not isinstance(samples, list) or len(samples) != 3:
+        raise ValueError("Three successful native startup samples are required.")
+    for sample in samples:
+        for key in MEASUREMENTS:
+            value = sample.get(key) if isinstance(sample, dict) else None
+            if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
+                raise ValueError("A startup or parked-tab measurement is missing.")
 
 
 def check_update(update, candidate):
@@ -60,6 +68,10 @@ def check_update(update, candidate):
             or update.get("shell_source") != "signed-candidate"
             or update.get("source_bundle_cdhash") != candidate["bundle_cdhash"]):
         raise ValueError("The installed update used a different source app or SDK.")
+    return checked_update_identities(update)
+
+
+def checked_update_identities(update):
     original = update["original_bundle_cdhash"]
     replacement = update["replacement_bundle_cdhash"]
     if original == replacement or any(not re.fullmatch(r"[0-9a-f]{40}", value) for value in (original, replacement)):
@@ -96,6 +108,7 @@ def qualify(app, image, identity, output):
     if info.get("CFBundleIdentifier") != "ee.qdo.bark":
         raise ValueError("Select the signed Bark application.")
     result = {"candidate": candidate, "version": info["CFBundleShortVersionString"],
+              "installation": "notarized-dmg" if image else "signed-app",
               "build": info["CFBundleVersion"]}
 
     def exercise(installed):
@@ -131,10 +144,48 @@ def qualify(app, image, identity, output):
     temporary = output / "qualification.tmp"
     temporary.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n")
     temporary.replace(path)
-    print(f"Qualified {architecture} Bark build {result['build']}. Receipt: {path}", flush=True)
+    print(f"Qualified {architecture} Bark build {result['build']} ({result['installation']}). "
+          f"Receipt: {path}", flush=True)
+
+
+def check_release_receipt(receipt, image, architecture, app):
+    result = json.loads(receipt.read_text())
+    if result.get("installation") != "notarized-dmg":
+        raise ValueError("Release qualification requires a notarized DMG installation.")
+    candidate = result["candidate"]
+    if candidate["architecture"] != architecture or candidate["official"] is not True:
+        raise ValueError("The release receipt requires the official SDK for the release architecture.")
+    if candidate["bundle_cdhash"] != bundle_cdhash(app):
+        raise ValueError("The release app does not match the app in the qualification receipt.")
+    if result["image_sha256"] != file_digest(image):
+        raise ValueError("The release DMG does not match the image in the qualification receipt.")
+    if candidate.get("sdk_pin") != read_pin(REPO / "Packages/BarkEngine", architecture):
+        raise ValueError("The release receipt belongs to a different SDK pin.")
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    if (result.get("build"), result.get("version")) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
+        raise ValueError("The release receipt belongs to a different Bark build.")
+    validate_samples(result.get("startup"))
+    checked_update_identities(result["installed_update"])
+
+
+def release_receipt_main(argv):
+    parser = argparse.ArgumentParser(description="Check a native qualification receipt before release transfer.")
+    parser.add_argument("--receipt", type=Path, required=True)
+    parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument("--app", type=Path, required=True)
+    parser.add_argument("--arch", choices=("x86_64", "arm64"), required=True)
+    args = parser.parse_args(argv)
+    try:
+        check_release_receipt(args.receipt, args.image, args.arch, args.app)
+    except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as error:
+        print(error, file=sys.stderr)
+        return 1
+    return 0
 
 
 def main():
+    if sys.argv[1:2] == ["check-release-receipt"]:
+        return release_receipt_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True, help="Signed app built with the checkout's official SDK")
     parser.add_argument("--image", type=Path, help="Assess and run the copy installed from this notarized release DMG")

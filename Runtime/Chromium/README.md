@@ -503,7 +503,11 @@ fresh launches, first input, and typing in the original draft on return.
 It then installs and updates disposable versions of that signed candidate
 using a local Sparkle feed. A successful run writes `qualification.json`
 with the architecture, SDK pin, candidate CDHash, timings and signed
-update identities. Its `size_bytes` records the installed app payload, the
+update identities. App-only runs record `installation: signed-app`. Runs with
+a notarized disk image record `installation: notarized-dmg` and the exact
+image’s SHA-256. The release workflow checks the DMG-backed receipt against
+the release architecture, disk image, and signed app before uploading artifacts.
+Its `size_bytes` records the installed app payload, the
 Chromium framework's share, and the downloadable DMG when supplied. Installed
 sizes count each regular file once and skip framework symlinks. Compare
 receipts for the same architecture and build configuration. The release

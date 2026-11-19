@@ -12,7 +12,7 @@ import qualify
 
 
 class OfficialQualificationTests(unittest.TestCase):
-    def run_candidate(self, root, *, mismatch=None, busy=False):
+    def run_candidate(self, root, *, mismatch=None, busy=False, install_image=True):
         app = root / "Bark.app"
         (app / "Contents").mkdir(parents=True)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
@@ -20,10 +20,10 @@ class OfficialQualificationTests(unittest.TestCase):
         }))
         image = root / "candidate.dmg"
         image.write_bytes(b"fixture image")
-        installed = root / "private install/Bark.app"
+        installed = root / "private install/Bark.app" if install_image else app
         framework = installed / "Contents/Frameworks/Bark Framework.framework"
         version = framework / "Versions/1"
-        version.mkdir(parents=True)
+        version.mkdir(parents=True, exist_ok=True)
         (version / "Bark Framework").write_bytes(b"engine")
         (framework / "Versions/Current").symlink_to("1", target_is_directory=True)
         (framework / "Bark Framework").symlink_to("Versions/Current/Bark Framework")
@@ -72,7 +72,7 @@ class OfficialQualificationTests(unittest.TestCase):
                 patch.object(qualify.subprocess, "run"), patch.object(qualify.time, "sleep"), \
                 patch.object(qualify.bark_release, "verify_installed_image", side_effect=exercise_image), \
                 patch.object(qualify, "walk", side_effect=walk):
-            qualify.qualify(app, image, "Test identity", output)
+            qualify.qualify(app, image if install_image else None, "Test identity", output)
         self.assertEqual(len(runs), 4)
         return json.loads((output / "qualification.json").read_text())
 
@@ -82,9 +82,52 @@ class OfficialQualificationTests(unittest.TestCase):
             self.assertEqual(len(result["startup"]), 3)
             self.assertTrue(result["candidate"]["official"])
             self.assertEqual(result["installed_update"]["replacement_bundle_cdhash"], "d" * 40)
+            self.assertEqual(result["installation"], "notarized-dmg")
             self.assertEqual(len(result["image_sha256"]), 64)
             self.assertEqual(result["size_bytes"], {"installed_app": 9, "chromium_framework": 6,
                                                      "download_dmg": len(b"fixture image")})
+
+    def test_app_only_qualifies_without_admitting_a_release_receipt(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            result = self.run_candidate(root, install_image=False)
+            self.assertEqual(result["installation"], "signed-app")
+            self.assertNotIn("image_sha256", result)
+            self.assertNotIn("download_dmg", result["size_bytes"])
+            with self.assertRaisesRegex(ValueError, "requires a notarized DMG"):
+                qualify.check_release_receipt(root / "evidence/qualification.json",
+                                              root / "candidate.dmg", "arm64", root / "Bark.app")
+
+    def test_release_receipt_checks_exact_architecture_image_and_app(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            result = self.run_candidate(root)
+            receipt, image, app = (root / "evidence/qualification.json",
+                                   root / "candidate.dmg", root / "Bark.app")
+            with patch.object(qualify, "bundle_cdhash", return_value=result["candidate"]["bundle_cdhash"]), \
+                    patch.object(qualify, "read_pin", return_value=result["candidate"]["sdk_pin"]):
+                qualify.check_release_receipt(receipt, image, "arm64", app)
+                with self.assertRaisesRegex(ValueError, "release architecture"):
+                    qualify.check_release_receipt(receipt, image, "x86_64", app)
+                for field, bad_value, reason in (
+                    ("startup", [], "Three successful"),
+                    ("startup", [{}, {}, {}], "measurement is missing"),
+                    ("installed_update", {"original_bundle_cdhash": "a" * 40,
+                                          "replacement_bundle_cdhash": "a" * 40}, "distinct signed"),
+                    ("candidate", {**result["candidate"], "sdk_pin": "f" * 64}, "SDK pin"),
+                    ("build", "119", "Bark build"),
+                ):
+                    with self.subTest(field=field, reason=reason):
+                        receipt.write_text(json.dumps({**result, field: bad_value}))
+                        with self.assertRaisesRegex(ValueError, reason):
+                            qualify.check_release_receipt(receipt, image, "arm64", app)
+                receipt.write_text(json.dumps(result))
+                image.write_bytes(b"another fixture image")
+                with self.assertRaisesRegex(ValueError, "release DMG does not match"):
+                    qualify.check_release_receipt(receipt, image, "arm64", app)
+            with patch.object(qualify, "bundle_cdhash", return_value="0" * 40):
+                with self.assertRaisesRegex(ValueError, "release app does not match"):
+                    qualify.check_release_receipt(receipt, image, "arm64", app)
 
     def test_mismatched_evidence_never_writes_a_qualification_receipt(self):
         for reason in ("startup", "profile", "update", "sdk"):
