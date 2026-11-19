@@ -841,7 +841,7 @@ struct CommandPaletteView: View {
         }
         switch press.key {
         case .return:
-            if modifiers.contains(.command) || commandHeld { openTargetInBackground() }
+            if modifiers.contains(.command) { openTargetInBackground() }
             else if modifiers.contains(.shift) { openTargetInSplit() }
             else { handleReturn() }
             return .handled
