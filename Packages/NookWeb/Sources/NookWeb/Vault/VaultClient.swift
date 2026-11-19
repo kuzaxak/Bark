@@ -10,6 +10,7 @@
 //
 
 #if os(macOS)
+import AppKit
 import Foundation
 import Security
 
@@ -97,6 +98,22 @@ public actor VaultClient {
         }
         socketFD = fd
         lines = VaultLineBuffer()
+    }
+
+    /// Open only a verified installed Pawl Vault app. Multiple installed
+    /// editions make it ambiguous which one owns the current database.
+    @MainActor
+    static func openInstalledPawl() -> Bool {
+        let identifiers = ["com.kuzaxak.pawlvault", "com.kuzaxak.pawlvault.pro", "com.kuzaxak.pawlvault.org"]
+        let workspace = NSWorkspace.shared
+        let urls = Set(identifiers.compactMap { workspace.urlForApplication(withBundleIdentifier: $0) })
+        guard urls.count == 1, let url = urls.first else { return false }
+        var code: SecStaticCode?
+        var requirement: SecRequirement?
+        guard SecStaticCodeCreateWithPath(url as CFURL, [], &code) == errSecSuccess, let code,
+              SecRequirementCreateWithString(serverRequirement as CFString, [], &requirement) == errSecSuccess,
+              let requirement, SecStaticCodeCheckValidity(code, [], requirement) == errSecSuccess else { return false }
+        return workspace.open(url)
     }
 
     /// The peer's audit token, resolved to its code and checked against the vault's requirement.

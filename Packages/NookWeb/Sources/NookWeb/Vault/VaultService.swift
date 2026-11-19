@@ -103,6 +103,7 @@ public final class VaultService {
     @ObservationIgnored public weak var presenter: VaultPresenter?
     @ObservationIgnored public weak var securityKeyPresenter: SecurityKeyPresenter?
     @ObservationIgnored let client: any VaultRequests
+    @ObservationIgnored private let openPawlApplication: @MainActor () -> Bool
     @ObservationIgnored fileprivate let passkeyKeyWindow: @MainActor () -> NSWindow?
     @ObservationIgnored private let settings: NookSettingsService
     @ObservationIgnored private var lastNavigationRefresh: ContinuousClock.Instant?
@@ -119,14 +120,17 @@ public final class VaultService {
     public let pawlEnabledAtLaunch: Bool?
 
     public convenience init(settings: NookSettingsService, pawlEnabledAtLaunch: Bool? = nil) {
-        self.init(settings: settings, client: VaultClient(), pawlEnabledAtLaunch: pawlEnabledAtLaunch)
+        self.init(settings: settings, client: VaultClient(), pawlEnabledAtLaunch: pawlEnabledAtLaunch,
+                  openPawlApplication: VaultClient.openInstalledPawl)
     }
 
     init(settings: NookSettingsService, client: any VaultRequests, pawlEnabledAtLaunch: Bool? = nil,
-         passkeyKeyWindow: @escaping @MainActor () -> NSWindow? = { NSApp?.keyWindow }) {
+         passkeyKeyWindow: @escaping @MainActor () -> NSWindow? = { NSApp?.keyWindow },
+         openPawlApplication: @escaping @MainActor () -> Bool = { false }) {
         self.settings = settings
         self.client = client
         self.passkeyKeyWindow = passkeyKeyWindow
+        self.openPawlApplication = openPawlApplication
         self.pawlEnabledAtLaunch = pawlEnabledAtLaunch
         if pawlEnabledAtLaunch == nil {
             settingObserver = NotificationCenter.default.addObserver(
@@ -144,6 +148,9 @@ public final class VaultService {
     }
 
     public var isEnabled: Bool { pawlEnabledAtLaunch ?? settings.pawlVaultEnabled }
+
+    /// Opens the installed vault at the person's request.
+    public func openPawlVault() -> Bool { isEnabled && openPawlApplication() }
 
     public var securityKeysEnabled: Bool { settings.securityKeysEnabled }
 
@@ -547,8 +554,8 @@ private final class NativeVaultAttachment {
     }
     private func saveCurrent(_ offer: VaultNativeSubmission, _ generation: UInt64) -> Bool {
         guard !stopped, saveGeneration == generation, submission?.token == offer.token,
-              let service, service.isEnabled, let page, let session,
-              !session.isAgentPage, !session.nativeIsEnding,
+              let service, service.isConnected, let page, let session,
+              !session.isAgentPage, !session.isPrivate, session.profile?.isEphemeral == false, !session.nativeIsEnding,
               session.navigation === page as AnyObject,
               session.profile?.id == page.vaultProfileID, page.vaultProfileID != nil,
               let view = offer.view, let window = offer.window, view.window === window,
@@ -575,6 +582,10 @@ private final class NativeVaultAttachment {
         guard let offer, let service, let session, let view = offer.view,
               let url = URL(string:offer.origin), WebAuthnPolicy.isAllowedOrigin(scheme:url.scheme ?? "",host:url.host ?? ""),
               !offer.username.isEmpty, !offer.password.isEmpty else { return }
+        guard !session.isAgentPage, !session.isPrivate, session.profile?.isEphemeral == false else {
+            page?.cancelVaultSave(offer.token)
+            return
+        }
         submission = offer
         let generation = saveGeneration
         guard saveCurrent(offer,generation) else { cancelSave(); return }
@@ -584,10 +595,19 @@ private final class NativeVaultAttachment {
             do {
                 let logins = try await service.send(VaultLogins(origin:offer.origin,profile:profile)).logins
                 guard let self, self.requireCurrentSave(offer,generation) else { return }
-                guard !logins.contains(where: { $0.username == offer.username }), let presenter = service.presenter else {
-                    self.cancelSave(); return
-                }
+                guard let presenter = service.presenter else { self.cancelSave(); return }
                 self.saveView = view
+                if logins.contains(where: { $0.username == offer.username }) {
+                    presenter.offerNativeManualUpdate(host: url.host ?? "", username: VaultPrompt.displayText(offer.username),
+                                                      itemID: itemID, in: view) { [weak self, weak session] open in
+                        guard let self, self.requireCurrentSave(offer, generation) else { return }
+                        if open, !service.openPawlVault(), self.saveCurrent(offer, generation) {
+                            session?.nativeVaultNotice = "Open Pawl Vault directly to update this password."
+                        }
+                        if self.saveGeneration == generation { self.cancelSave() }
+                    }
+                    return
+                }
                 presenter.offerNativeSave(host:url.host ?? "",username:VaultPrompt.displayText(offer.username),
                     itemID:itemID,in:view) { [weak self] accepted in
                     guard let self, self.requireCurrentSave(offer,generation) else { return }

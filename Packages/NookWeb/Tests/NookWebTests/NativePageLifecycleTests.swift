@@ -4004,6 +4004,67 @@ struct NativeVaultFormTests {
         #expect(saves.first?.3 == native.profileID?.uuidString)
     }
 
+    @Test func vaultLauncherUsesEffectiveProvider() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let transport = SyntheticVaultRequests()
+        var launches = 0
+        let launch: @MainActor () -> Bool = { launches += 1; return true }
+        f.tabs.settings.pawlVaultEnabled = true
+        let disabled = VaultService(settings: f.tabs.settings, client: transport, pawlEnabledAtLaunch: false,
+                                    openPawlApplication: launch)
+        #expect(!disabled.openPawlVault() && launches == 0)
+        f.tabs.settings.pawlVaultEnabled = false
+        let enabled = VaultService(settings: f.tabs.settings, client: transport, pawlEnabledAtLaunch: true,
+                                   openPawlApplication: launch)
+        #expect(enabled.openPawlVault() && launches == 1)
+    }
+
+    @Test(arguments: ["open", "decline", "stale", "private", "ephemeral", "unavailable"])
+    func existingNativeLoginCanOnlyOpenPawlForManualUpdate(action: String) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        var launches = 0
+        let vault = VaultService(settings: f.tabs.settings, client: transport, openPawlApplication: {
+            launches += 1
+            return action != "unavailable"
+        })
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native: NativeTestPage
+        if action == "private" {
+            let window = f.privateWindow()
+            _ = try #require(f.tabs.open(url: URL(string: "https://vault.synthetic.invalid")!,
+                                          in: window, placement: .newTab))
+            native = f.host.finishCreate(f.host.creates.count - 1)
+        } else {
+            native = f.host.finishCreate(0)
+        }
+        if action == "ephemeral" { f.tabs.selectedSession(in: f.window)?.profile?.isEphemeral = true }
+        native.submitVault(username: "synthetic-user")
+        await agentCallbacks()
+        if action == "private" || action == "ephemeral" {
+            #expect(!presenter.manualPasswordUpdate && presenter.saveCompletion == nil)
+            #expect(!(await transport.methods).contains("logins"))
+        } else {
+            #expect(presenter.manualPasswordUpdate && launches == 0)
+            let answer = try #require(presenter.saveCompletion)
+            if action == "stale" {
+                native.vaultSaveValid = false
+                native.vaultSave?(nil)
+            }
+            answer(action != "decline")
+            answer(true)
+        }
+        #expect(!native.vaultSaveValid)
+        #expect(launches == (action == "open" || action == "unavailable" ? 1 : 0))
+        #expect(await transport.saves.isEmpty)
+        #expect(!(await transport.methods).contains("password"))
+        if action == "unavailable" {
+            #expect(f.tabs.selectedSession(in: f.window)?.nativeVaultNotice ==
+                    "Open Pawl Vault directly to update this password.")
+        }
+    }
+
     @Test(arguments:["decline", "replacement", "owner", "profile", "disable", "disconnect", "window"])
     func endedSaveCannotWriteOrDismissNewerOffer(change:String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
@@ -4364,10 +4425,16 @@ private final class SyntheticVaultPresenter: VaultPresenter {
         let done = creationConsent; creationConsent = nil; creationView = nil; done?(false)
     }
     var saveCompletion: ((Bool)->Void)?
+    var manualPasswordUpdate = false
     weak var saveView: NSView?
     func offerNativeSave(host:String,username:String,itemID:UUID,in view:NSView,completion:@escaping(Bool)->Void) {
         let old = saveCompletion; saveCompletion = nil; old?(false)
         saveView = view; saveCompletion = completion
+    }
+    func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
+                                 completion: @escaping (Bool) -> Void) {
+        manualPasswordUpdate = true
+        offerNativeSave(host: host, username: username, itemID: itemID, in: view, completion: completion)
     }
     func dismissSave(in view:NSView) {
         guard saveView === view else { return }
@@ -4734,11 +4801,11 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
     }
     func vaultSaveIsCurrent(_ token: UInt64) -> Bool { vaultSaveValid && token == vaultSaveSerial }
     func cancelVaultSave(_ token: UInt64) { if token == vaultSaveSerial { vaultSaveValid = false } }
-    func submitVault() {
+    func submitVault(username: String = "new-synthetic-user") {
         mountVaultView()
         vaultSaveSerial += 1; vaultSaveValid = true
         vaultSave?(VaultNativeSubmission(token:vaultSaveSerial,origin:"https://vault.synthetic.invalid",
-            username:"new-synthetic-user",password:"typed-synthetic-password",view:vaultView))
+            username:username,password:"typed-synthetic-password",view:vaultView))
     }
     var vaultProfileOverride: UUID?
     var vaultProfileID: UUID? { vaultProfileOverride ?? profileID }

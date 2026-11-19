@@ -27,6 +27,14 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 - External links can open in a compact window. Choose **Open in Space** to move
   the page into the main window with its draft intact.
 
+### Website passwords
+
+Open **Settings → Privacy → Passwords** to see the Pawl Vault connection status.
+The pinned Chromium build supports Pawl alongside its built-in manager. Pawl
+Vault build 7 accepts the legacy Nook signing identity and refuses Bark. Using
+Pawl as the sole manager requires a compatible Pawl release and a newer Bark engine.
+[Provider integration design](openspec/changes/select-pawl-vault-provider/design.md)
+
 ### Sync bookmarks between Macs
 
 In a Bark build with iCloud support, open **Settings → Spaces → iCloud Sync**

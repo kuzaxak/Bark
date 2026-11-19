@@ -17,6 +17,7 @@ import NookWeb
 private struct PrivacyPreferenceSections: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(\.nookSettings) var nookSettings
+    @State private var showVaultOpenFailure = false
 
     var body: some View {
         @Bindable var settings = nookSettings
@@ -82,6 +83,16 @@ private struct PrivacyPreferenceSections: View {
                     while !Task.isCancelled {
                         await vault.refresh()
                         try? await Task.sleep(for: .seconds(3))
+                    }
+                }
+                if vault.status == .locked || vault.status == .notRunning {
+                    Button("Open Pawl Vault") {
+                        showVaultOpenFailure = !vault.openPawlVault()
+                    }
+                    .alert("Open Pawl Vault from Applications", isPresented: $showVaultOpenFailure) {
+                        Button("OK") {}
+                    } message: {
+                        Text("Bark couldn’t open a verified copy of Pawl Vault. Open the edition that holds your database, then return here to check its status.")
                     }
                 }
             }

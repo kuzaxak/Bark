@@ -76,6 +76,9 @@ public protocol VaultPresenter: AnyObject {
     /// Exact model page identity for a Chromium-owned submission (no WK view cast).
     func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
                          completion: @escaping (Bool) -> Void)
+    /// A matching login requires manual management when a targeted update is unavailable.
+    func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
+                                 completion: @escaping (Bool) -> Void)
     func dismissSave(in view: NSView)
     /// Request-owned native creation consent; cancellation ends only this view's sheet/picker.
     func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView,
@@ -96,6 +99,8 @@ extension VaultPresenter {
     public func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool { false }
     public func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
                                 completion: @escaping (Bool) -> Void) { completion(false) }
+    public func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
+                                        completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissSave(in view: NSView) {}
     public func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
                                     validateSelection: @escaping @MainActor () -> Bool,

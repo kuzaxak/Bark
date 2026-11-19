@@ -18,7 +18,7 @@ struct VaultSaveOfferView: View {
     var body: some View {
         HStack(spacing: NookDesign.Spacing.md) {
             VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                Text("Save password to Pawl Vault?")
+                Text(offer.manualUpdate ? "This login is already in Pawl Vault" : "Save password to Pawl Vault?")
                     .font(NookDesign.Font.body)
                     .foregroundStyle(.primary)
                 Text("\(offer.username) on \(offer.host)")
@@ -30,7 +30,7 @@ struct VaultSaveOfferView: View {
             .padding(.leading, NookDesign.Spacing.sm)
             HStack(spacing: NookDesign.Spacing.xxs) {
                 Button("Not Now") { answer(false) }
-                Button("Save") { answer(true) }
+                Button(offer.manualUpdate ? "Open Pawl Vault" : "Save") { answer(true) }
             }
             .buttonStyle(RectNavButtonStyle())
             .controlSize(.small)
