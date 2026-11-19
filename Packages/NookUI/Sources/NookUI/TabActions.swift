@@ -60,8 +60,9 @@ extension TabActions {
 extension InactiveUnloadResult {
     public var presentationSummary: String {
         let unknown = retained[.unknownNativeActivity, default: 0]
-        let counts = "Unloaded: \(unloaded). Kept open: \(kept)."
-        return unknown == 0 ? counts : "\(counts) Activity unknown: \(unknown)."
+        if unloaded == 0 && kept == 0 { return "No loaded tabs to unload." }
+        let counts = "Unloaded \(unloaded) \(unloaded == 1 ? "tab" : "tabs"). Kept \(kept) open."
+        return unknown == 0 ? counts : "\(counts) Couldn’t verify activity in \(unknown) \(unknown == 1 ? "tab" : "tabs")."
     }
 }
 

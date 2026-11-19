@@ -44,7 +44,7 @@ def exercise(screen, process, events, output):
         settings = wait_for("Missing native General settings",
                             lambda: access.owner("Unload All Inactive Tabs", ("AXButton",)), process)
         access.press(access.control("Unload All Inactive Tabs", ("AXButton",), root=settings))
-        summary = "Unloaded: 0. Kept open: 2. Activity unknown: 1."
+        summary = "Unloaded 0 tabs. Kept 2 open. Couldn’t verify activity in 1 tab."
         access.control(summary, ("AXStaticText",), root=settings)
         screen.screenshot(output / "bulk-result.png", include_owned_windows=True)
         close = access.attribute(settings, "AXCloseButton")
