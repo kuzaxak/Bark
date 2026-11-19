@@ -417,10 +417,56 @@ private func checkPasswordManagementLanding() throws {
     precondition(preservedLegacy == original, "Neither path may change the earlier installation")
 }
 
+/// Exercise ownership selection through the same BrowserManager initializer used at launch.
+@MainActor private func checkStartupHistoryOwner() async throws {
+    let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+        .appendingPathComponent("BarkStartupHistory-\(UUID())", isDirectory: true)
+    let space = UUID(), profile = UUID(), personal = UUID()
+    let configuration = try ChromiumStartupConfiguration(arguments: [
+        "Bark", "--barc-app-data-dir=\(root.path)", "--barc-app-profile=\(profile.uuidString)"
+    ])
+    try configuration.prepare()
+    let storage = try ChromiumAppStorage(configuration: configuration)
+    defer {
+        storage.defaults.removePersistentDomain(forName: configuration.preferencesDomain)
+        try? FileManager.default.removeItem(at: root)
+    }
+
+    var tree = TabTree()
+    tree.createSpace(id: space, name: "Office", icon: "briefcase", accentHex: "#334455", after: nil)
+    tree.createSpace(id: personal, name: "Personal", icon: "house", accentHex: "#554433", after: space)
+    _ = try tree.setProfile(space, to: profile, name: "Work")
+    var device = DeviceState()
+    device.firstLaunchCompleted = true
+    let store = TabStore(directory: storage.tabsDirectory)
+    store.save(tree, device)
+    store.flush()
+
+    let context = storage.persistence.container.mainContext
+    let visitID = UUID()
+    context.insert(HistoryEntity(id: visitID, url: "https://fixture.invalid/legacy", title: "Legacy visit"))
+    try context.save()
+    let registry = WindowRegistry()
+    let manager = BrowserManager(settings: storage.settings, windowRegistry: registry,
+        importManager: ImportManager(configuration: configuration), persistence: storage.persistence,
+        userDefaults: storage.defaults, downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
+        vault: storage.vault)
+    let workRows = await manager.historyManager.getHistory(profile: profile).entries
+    let personalRows = await manager.historyManager.getHistory(profile: personal).entries
+    let spaceRows = await manager.historyManager.getHistory(profile: space).entries
+    let workResults = await manager.historyManager.indexRows(matching: "legacy", profile: profile)
+    let personalResults = await manager.historyManager.indexRows(matching: "legacy", profile: personal)
+    precondition(workRows.map(\.id) == [visitID] && personalRows.isEmpty && spaceRows.isEmpty,
+                 "Startup must migrate an unassigned visit to the first space’s Chromium profile")
+    precondition(workResults?.map(\.url) == ["https://fixture.invalid/legacy"] && personalResults?.isEmpty == true,
+                 "The command bar must use the same history owner on the first launch")
+}
+
 @main
 private enum ProfileChecks {
     @MainActor static func main() async throws {
         try checkPersistentAppStore()
+        try await checkStartupHistoryOwner()
         var tree = TabTree()
         let space = UUID()
         tree.createSpace(id: space, name: "Work", icon: "briefcase", accentHex: "#000000", after: nil)
