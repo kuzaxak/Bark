@@ -137,7 +137,7 @@ final class ChromiumPageNavigation: PageNavigation {
     }
 
     private static func observeLoadProgress(_ bridge: BarcBridge, _ token: UInt64,
-        _ callback: @escaping @convention(c) (UnsafeMutableRawPointer?, UInt64, Double, Int32) -> Void) -> Int32 {
+        _ callback: @escaping BarkLoadProgressCallback) -> Int32 {
         withUnsafePointer(to: bridge) { BarkObserveTabLoadProgress($0, token, callback) }
     }
 
