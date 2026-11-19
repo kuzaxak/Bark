@@ -330,6 +330,34 @@ extension TabsController {
                 settings.tabManagementMode == mode
         }
         func count() -> Int { sessions.reduce(0) { $0 + ($1.navigation != nil ? 1 : 0) } }
+        func foregroundBarrier() -> (waiting: Bool, unavailable: Bool) {
+            // The window map itself is not observable.
+            _ = windowRegistry.registrationRevision
+            var waiting = false, unavailable = false
+            for displayedWindow in windowRegistry.windows.values {
+                if displayedWindow.nativePresentationIsPreparing {
+                    waiting = true
+                    _ = displayedWindow.nativeSelectionSession?.loadingState
+                }
+                let selected = displayedWindow.selectedItemID
+                let displayed = displayedWindow.split.flatMap { split in
+                    selected.map(split.contains) == true ? split.itemIDs : nil
+                } ?? selected.map { [$0] } ?? []
+                for id in displayed {
+                    guard let page = session(for: id) else { waiting = true; continue }
+                    _ = page.loadingState
+                    if page.navigation == nil {
+                        if page.nativeCreation != nil { waiting = true }
+                        else { unavailable = true }
+                    } else if let navigation = page.navigation {
+                        if nativePageHost?.canAdoptPage(navigation, in: displayedWindow) != true {
+                            unavailable = true
+                        } else if !page.nativeStartupNavigationHasSettled { waiting = true }
+                    }
+                }
+            }
+            return (waiting, unavailable)
+        }
         func eligible(_ id: UUID) -> Bool {
             guard let url = nativeStartupTarget(for: id), let scheme = url.scheme?.lowercased(),
                   scheme == "http" || scheme == "https", !isInAgentSpace(id),
@@ -343,34 +371,13 @@ extension TabsController {
             let facts = withObservationTracking {
                 let valid = current()
                 let admitted = count()
-                var waiting = false, unavailable = false
+                let foreground = foregroundBarrier()
+                var waiting = foreground.waiting, unavailable = foreground.unavailable
                 // The existing creation owns the sole background reservation;
                 // another task cannot race a cancelled task's deferred cleanup.
                 for page in sessions where page.nativeCreation?.backgroundAdmission != nil {
                     _ = page.loadingState
                     if !pending || loadingPage !== page { waiting = true }
-                }
-                for displayedWindow in windowRegistry.windows.values {
-                    if displayedWindow.nativePresentationIsPreparing {
-                        waiting = true
-                        _ = displayedWindow.nativeSelectionSession?.loadingState
-                    }
-                    let selected = displayedWindow.selectedItemID
-                    let displayed = displayedWindow.split.flatMap { split in
-                        selected.map(split.contains) == true ? split.itemIDs : nil
-                    } ?? selected.map { [$0] } ?? []
-                    for id in displayed {
-                        guard let page = session(for: id) else { waiting = true; continue }
-                        _ = page.loadingState
-                        if page.navigation == nil {
-                            if page.nativeCreation != nil { waiting = true }
-                            else { unavailable = true }
-                        } else if let navigation = page.navigation {
-                            if nativePageHost?.canAdoptPage(navigation, in: displayedWindow) != true {
-                                unavailable = true
-                            } else if !page.nativeStartupNavigationHasSettled { waiting = true }
-                        }
-                    }
                 }
                 if let page = loadingPage, !pending {
                     _ = page.loadingState
@@ -398,7 +405,12 @@ extension TabsController {
             guard let id = candidate else { return }
             pending = true
             let cancel = prepareNativeStartupPage(id, in: window, canAdmit: {
-                current() && eligible(id) && count() < mode.startupWarmLimit
+                // User selection or another window may start restoring while
+                // this optional factory is in flight. Refuse its late result
+                // until foreground preparation settles.
+                guard current(), eligible(id), count() < mode.startupWarmLimit else { return false }
+                let foreground = foregroundBarrier()
+                return !foreground.waiting && !foreground.unavailable
             }) { prepared in
                 pending = false
                 cancelPreparation = nil

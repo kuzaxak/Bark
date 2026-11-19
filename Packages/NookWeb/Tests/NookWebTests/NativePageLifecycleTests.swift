@@ -944,35 +944,54 @@ struct NativePageLifecycleTests {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.startupLoadMode = .favoritesAndSpace
         f.tabs.settings.tabManagementMode = mode
-        let selected = try #require(f.tabs.selectedSession(in: f.window))
+        let selectedID = try #require(f.window.selectedItemID)
+        var savedIDs = [selectedID]
+        for index in 0..<49 {
+            savedIDs.append(try #require(f.tabs.open(url: URL(string: "https://warm.test/\(index)")!,
+                                                    in: f.window, placement: .background)))
+        }
+        f.tabs.saveNow()
+
+        let tabs = f.restored(at: f.directory.appendingPathComponent("Tabs"))
+        let window = BrowserWindowState()
+        tabs.windowRegistry.register(window)
+        tabs.attach(window: window)
+        #expect(window.selectedItemID == selectedID)
+        #expect(Set(tabs.displayOrder(in: window)) == Set(savedIDs))
+        #expect(tabs.sessions.isEmpty)
+
+        let host = ControlledNativeHost()
+        tabs.nativePageHost = host
+        let selected = try #require(tabs.selectedSession(in: window))
+        let profile = try #require(selected.profile?.id)
         let target = URL(string: "https://selected.test/")!
         selected.load(target)
-        for index in 0..<40 {
-            _ = f.tabs.open(url: URL(string: "https://warm.test/\(index)")!, in: f.window, placement: .background)
-        }
-        let task = Task { await f.tabs.warmNativeStartupPages(in: f.window, while: { true }) }
+        let task = Task { await tabs.warmNativeStartupPages(in: window, while: { true }) }
         defer { task.cancel() }
         await settleWarmingCallbacks()
-        #expect(f.host.creates.count == 1)
-        let initial = f.host.finishCreate(0)
+        #expect(host.creates.count == 1)
+        let initial = host.finishCreate(0)
         await settleWarmingCallbacks()
         #expect(initial.loaded == [target])
-        #expect(f.host.creates.count == 1) // Seeded blank is not requested-page completion.
+        #expect(host.creates.count == 1) // Seeded blank is not requested-page completion.
         initial.onStateChanged?(PageNavigationState(url: target, isLoading: false, canGoBack: false, canGoForward: false))
         await settleWarmingCallbacks()
-        #expect(f.host.creates.count == 1)
+        #expect(host.creates.count == 1)
         initial.onEvent?(.finished(target, title: nil, isReload: false))
         for index in 1..<mode.startupWarmLimit {
             await settleWarmingCallbacks()
-            #expect(f.host.creates.count == index + 1)
-            guard f.host.creates.count > index else { return }
-            let native = f.host.finishCreate(index)
+            try #require(host.creates.count == index + 1)
+            let native = host.finishCreate(index)
             native.onEvent?(.finished(native.loaded.last, title: nil, isReload: false))
         }
         await settleWarmingCallbacks()
-        #expect(f.host.creates.count == mode.startupWarmLimit)
-        #expect(f.tabs.sessions.filter { $0.navigation != nil }.count == mode.startupWarmLimit)
-        #expect(f.host.closes.isEmpty)
+        #expect(host.creates.count == mode.startupWarmLimit)
+        #expect(host.creates.allSatisfy { $0.profileID == profile })
+        let live = tabs.sessions.filter { $0.navigation != nil }
+        #expect(live.count == mode.startupWarmLimit)
+        #expect(live.allSatisfy { savedIDs.contains($0.itemID) && tabs.isNativePageOwner($0, in: window) })
+        #expect(savedIDs.filter { tabs.session(for: $0)?.navigation == nil }.count == 50 - mode.startupWarmLimit)
+        #expect(host.closes.isEmpty)
         await task.value
     }
 
@@ -1017,6 +1036,38 @@ struct NativePageLifecycleTests {
         } else {
             #expect(late.loaded.isEmpty && f.host.closes.count == 1)
         }
+    }
+
+    @Test func nativeWarmingDiscardsLateSpeculationWhileDifferentSelectionRestores() async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let initial = f.host.finishCreate(0)
+        initial.onEvent?(.finished(initial.loaded.last, title: nil, isReload: false))
+        let candidates = try ["first", "second"].map { name in
+            try #require(f.tabs.open(url: URL(string: "https://candidate.test/\(name)")!, in: f.window, placement: .background))
+        }
+        let ordered = f.tabs.displayOrder(in: f.window).filter(candidates.contains)
+        try #require(ordered.count == 2)
+        let warm = ordered[0], foreground = ordered[1]
+        let selectedURL = try #require(f.tabs.tree.item(foreground)?.url)
+        let task = Task { await f.tabs.warmNativeStartupPages(in: f.window, while: { true }) }
+        defer { task.cancel() }
+        await settleWarmingCallbacks()
+        try #require(f.host.creates.count == 2)
+        try #require(f.tabs.session(for: warm)?.nativeCreation != nil)
+        f.tabs.select(foreground, in: f.window)
+        try #require(f.host.creates.count == 3)
+
+        let late = f.host.finishCreate(1)
+        #expect(late.loaded.isEmpty)
+        #expect(f.tabs.session(for: warm)?.navigation == nil)
+        #expect(f.host.closes.count == 1)
+        let selected = f.host.finishCreate(2)
+        #expect(selected.loaded == [selectedURL])
+        #expect(f.window.selectedItemID == foreground)
+        let session = try #require(f.tabs.session(for: foreground))
+        #expect(f.tabs.isNativePageOwner(session, in: f.window))
+        task.cancel()
+        await task.value
     }
 
     @Test(arguments: ["mode", "space", "profile", "window"])
