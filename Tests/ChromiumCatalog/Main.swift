@@ -592,6 +592,7 @@ private struct NoTokens: KagiTokenStore {
         try checkMiniPagesAdmitOrClose()
         try checkMixedProfileSplitAdmission()
         try checkSavedSplitInBarkWindow()
+        try checkPeekWithoutAnEngineDocument()
         try checkNativePeekAdmission()
         try checkPeekInBarkWindow(promoteToSplit: false)
         try checkPeekInBarkWindow(promoteToSplit: true)
@@ -2637,6 +2638,35 @@ private struct NoTokens: KagiTokenStore {
     Native.end(7001); Native.end(7002)
 }
 
+
+@MainActor private func checkPeekWithoutAnEngineDocument() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarkPeekWithoutDocument-\(UUID())")
+    let defaults = UserDefaults(suiteName: root.lastPathComponent)!
+    defer {
+        defaults.removePersistentDomain(forName: root.lastPathComponent)
+    }
+    let registry = WindowRegistry()
+    let manager = BrowserManager(
+        settings: NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults,
+                                      boostStore: BoostStore(fileURL: root.appendingPathComponent("Boosts.json"))),
+        windowRegistry: registry,
+        importManager: ImportManager(sources: .fixtures(in: root), workDirectory: root),
+        persistence: try Persistence(directory: root), userDefaults: defaults,
+        downloadManager: DownloadManager(historyFileURL: root.appendingPathComponent("Downloads.json"), usesNativeDownloads: true),
+        tabsDirectory: root.appendingPathComponent("Tabs"))
+    let window = BrowserWindowState()
+    registry.register(window)
+    registry.setActive(window)
+    manager.tabs.attach(window: window, restoringSavedState: false)
+    window.spaceID = manager.tabs.orderedSpaces.first!.id
+    let url = URL(string: "https://fixture.invalid/source")!
+    let tab = manager.tabs.open(url: url, in: window, placement: .newTab)!
+    let source = manager.tabs.ensureSession(for: tab)!
+    precondition(source.navigation == nil && source.profile != nil)
+    manager.presentPeek(url: URL(string: "https://fixture.invalid/preview")!, from: source)
+    precondition(manager.peekManager.page(tab: tab, window: window.id) == nil,
+                 "A page without a live Chromium document created a Peek")
+}
 
 /// Existing-bound Peek documents use the same adapter/session for promotion and
 /// external moves; same-owner admission is the sole role-clearing authority.

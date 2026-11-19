@@ -91,7 +91,12 @@ def check_native_harness(command):
                     "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
                     "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
                     REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
-                run(binary)
+                if command == "catalog":
+                    # Background model tasks may hold the disposable database until exit.
+                    with TemporaryDirectory(prefix="bark-catalog-") as scratch:
+                        run("/usr/bin/env", f"TMPDIR={scratch}/", binary)
+                else:
+                    run(binary)
             finally:
                 binary.unlink(missing_ok=True)
     finally:
