@@ -34,17 +34,15 @@ struct WebKitUIDelegateAdapterTests {
     }
 
     #if os(macOS)
-    @Test func preservesWebKitPrivateUISelectorsAndUnownedCompletion() throws {
+    @Test func preservesWebKitUISelectorsAndUnownedWindowFrameCompletion() throws {
         let session = PageSession(itemID: UUID(), url: try #require(URL(string: "about:blank")),
                                   title: "Popup", isPrivate: true, controller: nil)
         let adapter = session.webKitDelegate
         for selector in [
             "webViewDidClose:",
             "_webView:getWindowFrameWithCompletionHandler:",
-            "_webView:saveDataToFile:suggestedFilename:mimeType:originatingURL:",
             "_webViewFullscreenMayReturnToInline:",
             "_webView:didNotHandleWheelEvent:",
-            "_webView:printFrame:pdfFirstPageSize:completionHandler:",
         ] {
             #expect(adapter.responds(to: NSSelectorFromString(selector)), "Missing \(selector)")
         }
@@ -56,10 +54,16 @@ struct WebKitUIDelegateAdapterTests {
         var sizes: [CGRect] = []
         adapter.webView(view, getWindowFrameWithCompletionHandler: { sizes.append($0) })
         #expect(sizes == [view.bounds])
+    }
 
-        var printCompletions = 0
-        adapter.webView(view, printFrame: NSObject(), pdfFirstPageSize: .zero) { printCompletions += 1 }
-        #expect(printCompletions == 1)
+    @Test func doesNotRegisterLegacyPrintOrPDFSaveSelectors() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
+                                  title: "PDF", isPrivate: true, controller: nil)
+        let adapter = session.webKitDelegate
+        #expect(!adapter.responds(to: NSSelectorFromString(
+            "_webView:printFrame:pdfFirstPageSize:completionHandler:")))
+        #expect(!adapter.responds(to: NSSelectorFromString(
+            "_webView:saveDataToFile:suggestedFilename:mimeType:originatingURL:")))
     }
     #endif
 }

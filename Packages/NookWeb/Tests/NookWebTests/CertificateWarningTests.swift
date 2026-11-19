@@ -456,7 +456,6 @@ final class RecordingCertificateDelegate: WebKitPageSessionDelegate {
     func navigateAcrossWindows(_ itemID: UUID, to url: URL) {}
     func windowSpaceChanged(_ window: BrowserWindowState) { onSpaceChanged?(window) }
     func addDownload(_ download: WKDownload, originalURL: URL, suggestedFilename: String) {}
-    func saveFile(_ data: Data, suggestedFilename: String, originalURL: URL, from webView: WKWebView) {}
     func toggleFullScreen(for webView: WKWebView) -> Bool { false }
     func presentPeek(url: URL, from session: PageSession) { onPeek?(url, session) }
     func presentPopupWindow(_ session: PageSession) {}
