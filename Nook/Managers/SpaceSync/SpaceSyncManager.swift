@@ -7,7 +7,7 @@
 //  database, or in another iCloud account's zone through the shared database once this Mac joins
 //  that account's share. NookTabsCore's SpaceSyncState decides what each record holds, how fetched
 //  records merge and which zone to use; this moves records to and from CloudKit, shares the zone,
-//  follows the iCloud account, and keeps the sync state in Sync/spaces.json beside the tabs. A
+//  follows the iCloud account, and keeps the sync state in Bark's container-specific store. A
 //  build without the iCloud entitlement never makes a CKContainer.
 //
 
@@ -25,12 +25,16 @@ import Security
 @Observable
 final class SpaceSyncManager: SpaceSyncControls {
     private(set) var status: SpaceSyncStatus
+    private(set) var isSyncEnabled = false
     private(set) var cloudSpaces: [SpaceSyncCloudSpace] = []
     private(set) var cloudDevices: [String] = []
     private var levels: [UUID: SpaceSyncLevel] = [:]
 
     @ObservationIgnored private let tabs: TabsController
-    @ObservationIgnored private let fileURL: URL
+    @ObservationIgnored private let store: SpaceSyncStore
+    @ObservationIgnored private var accountObserver: NSObjectProtocol?
+    @ObservationIgnored private var datasetID = UUID()
+    @ObservationIgnored private var accountCheck: Task<Void, Never>?
     @ObservationIgnored private var state = SpaceSyncState()
     @ObservationIgnored private var container: CKContainer?
     @ObservationIgnored private var engine: CKSyncEngine?
@@ -43,18 +47,17 @@ final class SpaceSyncManager: SpaceSyncControls {
     @ObservationIgnored private var lookedUpOwners: Set<String> = []
     /// A zone fetch in the current fetch failed, so a fetch of everything is not complete yet.
     @ObservationIgnored private var fetchFailed = false
+    @ObservationIgnored private var deferredChromiumInbox = false
     /// Items already reported as too large for iCloud.
     @ObservationIgnored private var reportedTooLarge: Set<UUID> = []
-    @ObservationIgnored private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "SpaceSync")
+    @ObservationIgnored private let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "ee.qdo.bark", category: "SpaceSync")
     /// This Mac's kind, such as "iMac" or "MacBook Pro", which every save carries.
     @ObservationIgnored private let deviceName = SpaceSyncDevice.name(productName: SpaceSyncManager.productName, model: SpaceSyncManager.model)
 
-    init(tabs: TabsController, enabled: Bool = true) {
+    init(tabs: TabsController, enabled: Bool) {
         self.tabs = tabs
-        fileURL = tabs.directory.deletingLastPathComponent()
-            .appendingPathComponent("Sync", isDirectory: true)
-            .appendingPathComponent("spaces.json")
-        guard enabled else {
+        store = SpaceSyncStore(tabsDirectory: tabs.directory)
+        guard enabled, tabs.profileEngine == .chromium else {
             status = SpaceSyncStatus(availability: .disabled)
             return
         }
@@ -66,16 +69,68 @@ final class SpaceSyncManager: SpaceSyncControls {
             status = SpaceSyncStatus(availability: .readOnlyTabs)
             return
         }
-        state = Self.load(fileURL)
+        status = SpaceSyncStatus(availability: .notEnabled)
+        do {
+            if let snapshot = try store.read(), snapshot.enabled {
+                activate(snapshot.state)
+            }
+        } catch {
+            status.lastError = error.localizedDescription
+        }
+    }
+
+    func enableSync() {
+        guard status.availability == .notEnabled else { return }
+        do {
+            let restored = try store.read()?.state ?? SpaceSyncState()
+            try store.write(restored, enabled: true)
+            activate(restored)
+        } catch {
+            status.lastError = error.localizedDescription
+        }
+    }
+
+    private func activate(_ restored: SpaceSyncState) {
+        isSyncEnabled = true
+        state = restored
         if tabs.loadOutcome != .loaded { state.startOver() }
         status = SpaceSyncStatus(availability: .checking, lastSync: state.lastSync, lastError: state.lastError)
         levels = state.levels
         container = CKContainer(identifier: SpaceSyncAvailability.containerID)
         tabs.onTreeChanged = { [weak self] in self?.scheduleQueue() }
-        _ = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
-            MainActor.assumeIsolated { self?.checkAccount() }
+        tabs.onNativeSyncAdmissionChanged = { [weak self] in self?.retryDeferredInbox() }
+        accountObserver = NotificationCenter.default.addObserver(forName: .CKAccountChanged, object: nil, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.accountMayHaveChanged() }
         }
         checkAccount()
+    }
+
+    func disableSync() {
+        guard isSyncEnabled else { return }
+        do {
+            try store.write(state, enabled: false)
+        } catch {
+            status.lastError = error.localizedDescription
+            return
+        }
+        isSyncEnabled = false
+        datasetID = UUID()
+        if let accountObserver { NotificationCenter.default.removeObserver(accountObserver) }
+        accountObserver = nil
+        accountCheck?.cancel()
+        queueTask?.cancel()
+        saveTask?.cancel()
+        saveTask = nil
+        tabs.onTreeChanged = nil
+        tabs.onNativeSyncAdmissionChanged = nil
+        dropEngine()
+        container = nil
+        state = SpaceSyncState()
+        lookedUpOwners.removeAll()
+        reportedTooLarge.removeAll()
+        leaving = false
+        status = SpaceSyncStatus(availability: .notEnabled)
+        publish()
     }
 
     private static var isEntitled: Bool {
@@ -129,8 +184,9 @@ final class SpaceSyncManager: SpaceSyncControls {
         guard let code = SpaceSyncInviteCode.parse(text) else {
             return .failed(message: "That is not an invite code. Copy it again from the Mac you are inviting.")
         }
+        let dataset = datasetID
         func interrupted() -> SpaceSyncInviteResult? {
-            if state.account != account {
+            if dataset != datasetID || state.account != account {
                 return .failed(message: "The iCloud account changed before the invite finished. Invite again.")
             }
             return state.database == .private ? nil : .failed(message: Self.leaveBeforeInviting)
@@ -141,6 +197,7 @@ final class SpaceSyncManager: SpaceSyncControls {
                 if let interrupted = interrupted() { return interrupted }
                 share = try await onlyInvited(existing, in: container)
             }
+            if let interrupted = interrupted() { return interrupted }
             let participants = share?.participants.map {
                 (recordName: $0.userIdentity.userRecordID?.recordName, status: Self.status($0.acceptanceStatus))
             } ?? []
@@ -208,13 +265,17 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     func stopSharing() {
         guard let container, state.database == .private, state.sharing?.participants != nil else { return }
+        let dataset = datasetID
         Task {
+            guard dataset == datasetID else { return }
             do {
                 _ = try await container.privateCloudDatabase.deleteRecord(withID: state.shareRecordID)
             } catch let error as CKError where error.code == .unknownItem {
             } catch {
-                return note(error)
+                if dataset == datasetID { note(error) }
+                return
             }
+            guard dataset == datasetID else { return }
             state.stoppedSharing()
             publish()
             scheduleSave()
@@ -227,13 +288,14 @@ final class SpaceSyncManager: SpaceSyncControls {
             state.lastError = "That is not an iCloud sharing link."
             return publish()
         }
+        let dataset = datasetID
         Task {
             do {
-                if let metadata = try await container.shareMetadatas(for: [url])[url]?.get() { accept(metadata) }
+                if let metadata = try await container.shareMetadatas(for: [url])[url]?.get(), dataset == datasetID { accept(metadata) }
             } catch let error as CKError where error.code == .unknownItem {
-                tellNotInvited()
+                if dataset == datasetID { notifyMissingShare(url) }
             } catch {
-                note(error)
+                if dataset == datasetID { note(error) }
             }
         }
     }
@@ -242,6 +304,12 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// Settings. Nothing is accepted or sent before the person agrees.
     func accept(_ metadata: CKShare.Metadata) {
         guard let container else { return }
+        if metadata.containerIdentifier == "iCloud.ee.qdo.nook" {
+            state.lastError = Self.legacyShareNotice
+            publish()
+            return
+        }
+        let dataset = datasetID
         let zone = metadata.share.recordID.zoneID
         switch state.acceptance(containerID: metadata.containerIdentifier, zoneName: zone.zoneName, zoneOwner: zone.ownerName,
                                 isOwner: metadata.participantRole == .owner,
@@ -251,13 +319,15 @@ final class SpaceSyncManager: SpaceSyncControls {
             let ownerName = metadata.ownerIdentity.nameComponents.flatMap(Self.name)
             guard let moving = askToJoin(ownerName: ownerName) else { return }
             Task {
+                guard dataset == datasetID else { return }
                 do {
                     if metadata.participantStatus != .accepted {
                         _ = try await container.accept([metadata])[metadata]?.get()
                     }
+                    guard dataset == datasetID else { return }
                     try await join(owner: owner, ownerName: ownerName, moving: moving, in: container)
                 } catch {
-                    note(error)
+                    if dataset == datasetID { note(error) }
                 }
             }
             return
@@ -278,14 +348,18 @@ final class SpaceSyncManager: SpaceSyncControls {
     func leaveSharedSync() {
         guard let container, state.database == .shared, !leaving else { return }
         leaving = true
+        let dataset = datasetID
         Task {
-            defer { leaving = false }
+            guard dataset == datasetID else { return }
+            defer { if dataset == datasetID { leaving = false } }
             do {
                 _ = try await container.sharedCloudDatabase.deleteRecord(withID: state.shareRecordID)
             } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
             } catch {
-                return note(error)
+                if dataset == datasetID { note(error) }
+                return
             }
+            guard dataset == datasetID else { return }
             endSharedSync(message: nil)
         }
     }
@@ -294,6 +368,8 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// away comes first.
     private func endSharedSync(message: String?) {
         guard state.database == .shared else { return }
+        datasetID = UUID()
+        leaving = false
         state.leaveSharedZone(in: tabs.tree)
         state.lastError = message
         restartEngine()
@@ -332,11 +408,14 @@ final class SpaceSyncManager: SpaceSyncControls {
         guard let container, state.database == .shared else { return }
         let ids = state.oldCopyRecords
         guard !ids.isEmpty else { return }
+        let dataset = datasetID
         let zone = CKRecordZone.ID(zoneName: SpaceSyncAvailability.zoneName, ownerName: CKCurrentUserDefaultName)
         Task {
+            guard dataset == datasetID else { return }
             do {
                 let results = try await container.privateCloudDatabase.modifyRecords(
                     saving: [], deleting: ids.map { CKRecord.ID(recordName: $0.uuidString, zoneID: zone) }, atomically: false).deleteResults
+                guard dataset == datasetID else { return }
                 var removed: Set<UUID> = []
                 for (recordID, result) in results {
                     guard let id = UUID(uuidString: recordID.recordName) else { continue }
@@ -351,8 +430,10 @@ final class SpaceSyncManager: SpaceSyncControls {
                 }
                 state.removedOldCopies(removed)
             } catch let error as CKError where error.code == .zoneNotFound {
+                guard dataset == datasetID else { return }
                 state.removedOldCopies(ids)
             } catch {
+                guard dataset == datasetID else { return }
                 note(error)
             }
             publish()
@@ -364,16 +445,18 @@ final class SpaceSyncManager: SpaceSyncControls {
     func joinOffer(_ owner: String) {
         guard let container, let offer = state.joinOffers.first(where: { $0.owner == owner }),
               let moving = askToJoin(ownerName: offer.name) else { return }
+        let dataset = datasetID
         Task {
+            guard dataset == datasetID else { return }
             do {
                 try await join(owner: owner, ownerName: offer.name, moving: moving, in: container)
             } catch {
-                note(error)
+                if dataset == datasetID { note(error) }
             }
         }
     }
 
-    /// An iCloud sharing link opened from another app, Nook being the default browser. A share of
+    /// An iCloud sharing link opened from another app while Bark is the default browser. A share of
     /// these spaces goes to the prompt to join, and one this account is not invited to says so;
     /// any other link is left to `open` as a page. False when it is no sharing link at all.
     func openShareLink(_ url: URL, otherwise open: @escaping () -> Void) -> Bool {
@@ -382,22 +465,33 @@ final class SpaceSyncManager: SpaceSyncControls {
             open()
             return true
         }
+        let dataset = datasetID
         Task {
             do {
-                guard let metadata = try await container.shareMetadatas(for: [url])[url]?.get(),
-                      metadata.containerIdentifier == SpaceSyncAvailability.containerID else { return open() }
+                let metadata = try await container.shareMetadatas(for: [url])[url]?.get()
+                guard dataset == datasetID else { return }
+                guard let metadata, [SpaceSyncAvailability.containerID, "iCloud.ee.qdo.nook"].contains(metadata.containerIdentifier) else { return open() }
                 accept(metadata)
-            } catch let error as CKError where error.code == .unknownItem && SpaceSyncShareLink.isNookSpaces(url) {
-                tellNotInvited()
+            } catch let error as CKError where error.code == .unknownItem && (SpaceSyncShareLink.isBarkSpaces(url) || url.fragment == "Nook_Spaces") {
+                if dataset == datasetID { notifyMissingShare(url) }
             } catch {
-                open()
+                if dataset == datasetID { open() }
             }
         }
         return true
     }
 
-    /// Says this Mac's account is not invited to the link opened or pasted, with its invite code
-    /// to copy while it has one.
+    private static let legacyShareNotice = "This invitation belongs to Nook. Ask the owner to send a new invitation from Bark."
+
+    private func notifyMissingShare(_ url: URL) {
+        if url.fragment == "Nook_Spaces" {
+            state.lastError = Self.legacyShareNotice
+            publish()
+        } else {
+            tellNotInvited()
+        }
+    }
+
     private func tellNotInvited() {
         let alert = NSAlert()
         alert.messageText = "This Mac Is Not Invited"
@@ -443,6 +537,13 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// with this account's engine stopped so it cannot fetch those marks and turn the spaces
     /// Off here before they move.
     private func join(owner: String, ownerName: String?, moving: Bool, in container: CKContainer) async throws {
+        applyInbox()
+        guard !deferredChromiumInbox else {
+            throw CocoaError(.userCancelled, userInfo: [
+                NSLocalizedDescriptionKey: "Close the affected tabs before joining another iCloud sync.",
+            ])
+        }
+        let dataset = datasetID
         let running = engine != nil
         if moving {
             let marked = state.markedOnMove(in: tabs.tree)
@@ -450,13 +551,25 @@ final class SpaceSyncManager: SpaceSyncControls {
             do {
                 try await markMoved(marked, to: owner, in: container)
             } catch {
-                if running, let account = state.account { start(account: account) }
+                if dataset == datasetID, running, let account = state.account { start(account: account) }
                 throw error
             }
         }
-        apply(state.join(owner: owner, ownerName: ownerName, moving: moving, tree: tabs.tree, kept: tabs.device.keptProfiles ?? []))
+        guard dataset == datasetID else { return }
+        var joined = state
+        let inbound = joined.join(owner: owner, ownerName: ownerName, moving: moving,
+                                  tree: tabs.tree, kept: tabs.device.keptProfiles ?? [])
+        if !inbound.isEmpty && !tabs.applyNativeSpaceSync(inbound) {
+            if running, engine == nil, let account = state.account { start(account: account) }
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSLocalizedDescriptionKey: "Bark could not save the pending tab changes before joining shared sync.",
+            ])
+        }
+        datasetID = UUID()
+        state = joined
         dropEngine()
         if running, let account = state.account { start(account: account) }
+        publish()
         scheduleSave()
     }
 
@@ -464,12 +577,13 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// to join it.
     private func lookUpOffers() {
         guard let container else { return }
+        let dataset = datasetID
         for owner in state.ownersToOffer.subtracting(lookedUpOwners) {
             lookedUpOwners.insert(owner)
             let shareID = CKRecord.ID(recordName: CKRecordNameZoneWideShare,
                                       zoneID: CKRecordZone.ID(zoneName: SpaceSyncAvailability.zoneName, ownerName: owner))
             Task {
-                guard let share = try? await container.sharedCloudDatabase.record(for: shareID) as? CKShare else { return }
+                guard let share = try? await container.sharedCloudDatabase.record(for: shareID) as? CKShare, dataset == datasetID else { return }
                 state.offered(owner: owner, name: share.owner.userIdentity.nameComponents.flatMap(Self.name))
                 publish()
                 scheduleSave()
@@ -481,6 +595,7 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// into, so this account's other Macs turn the space Off and keep it.
     private func markMoved(_ ids: Set<UUID>, to owner: String, in container: CKContainer) async throws {
         guard !ids.isEmpty else { return }
+        let dataset = datasetID
         let database = container.privateCloudDatabase
         let zone = CKRecordZone.ID(zoneName: SpaceSyncAvailability.zoneName, ownerName: CKCurrentUserDefaultName)
         var marked: [CKRecord] = []
@@ -495,6 +610,7 @@ final class SpaceSyncManager: SpaceSyncControls {
                 throw error
             }
         }
+        guard dataset == datasetID else { throw CancellationError() }
         for (_, result) in try await database.modifyRecords(saving: marked, deleting: [], atomically: false).saveResults {
             _ = try result.get()
         }
@@ -563,23 +679,10 @@ final class SpaceSyncManager: SpaceSyncControls {
         Task {
             do {
                 try await engine.fetchChanges()
+                guard self.engine === engine else { return }
                 try await engine.sendChanges()
             } catch {
-                note(error)
-            }
-        }
-    }
-
-    // MARK: - App
-
-    /// A push for the private database's subscription: fetch now rather than at the next poll.
-    func remoteNotification(_ userInfo: [AnyHashable: Any]) {
-        guard let engine, CKNotification(fromRemoteNotificationDictionary: userInfo) != nil else { return }
-        Task {
-            do {
-                try await engine.fetchChanges()
-            } catch {
-                note(error)
+                if self.engine === engine { note(error) }
             }
         }
     }
@@ -592,13 +695,29 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     // MARK: - Account
 
+    /// Invalidate outstanding requests before CloudKit resolves the new account.
+    /// Keep its cursor on disk so a transient account outage can resume safely.
+    private func accountMayHaveChanged() {
+        guard isSyncEnabled else { return }
+        datasetID = UUID()
+        leaving = false
+        dropEngine()
+        status.availability = .checking
+        checkAccount()
+    }
+
     private func checkAccount() {
         guard let container else { return }
-        Task {
+        accountCheck?.cancel()
+        accountCheck = Task {
             do {
-                switch try await container.accountStatus() {
+                let availability = try await container.accountStatus()
+                guard !Task.isCancelled, self.container === container else { return }
+                switch availability {
                 case .available:
-                    start(account: try await container.userRecordID().recordName)
+                    let account = try await container.userRecordID().recordName
+                    guard !Task.isCancelled, self.container === container else { return }
+                    start(account: account)
                 case .noAccount:
                     stop(.noAccount)
                 case .restricted:
@@ -607,6 +726,7 @@ final class SpaceSyncManager: SpaceSyncControls {
                     status.availability = .unavailable
                 }
             } catch {
+                guard !Task.isCancelled, self.container === container else { return }
                 note(error)
                 status.availability = .unavailable
             }
@@ -615,6 +735,10 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     private func start(account: String) {
         if let previous = state.account, previous != account {
+            datasetID = UUID()
+            leaving = false
+            lookedUpOwners.removeAll()
+            reportedTooLarge.removeAll()
             state.reset(account: account)
             dropEngine()
         }
@@ -627,8 +751,10 @@ final class SpaceSyncManager: SpaceSyncControls {
         guard engine == nil, let container else { return publish() }
         let serialization = state.catalog == nil ? nil
             : state.engine.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
-        let engine = CKSyncEngine(CKSyncEngine.Configuration(
-            database: container.database(with: state.databaseScope), stateSerialization: serialization, delegate: self))
+        var configuration = CKSyncEngine.Configuration(
+            database: container.database(with: state.databaseScope), stateSerialization: serialization, delegate: self)
+        configuration.subscriptionID = "ee.qdo.bark.spaces.\(state.database.rawValue)"
+        let engine = CKSyncEngine(configuration)
         if serialization == nil {
             state.beginRefetch()
             if state.database == .private {
@@ -643,6 +769,10 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     /// Signed out or restricted: the old account's sync state goes, and the spaces stay.
     private func stop(_ availability: SpaceSyncAvailability) {
+        datasetID = UUID()
+        leaving = false
+        lookedUpOwners.removeAll()
+        reportedTooLarge.removeAll()
         if state.account != nil {
             state.reset(account: nil)
             scheduleSave()
@@ -655,6 +785,8 @@ final class SpaceSyncManager: SpaceSyncControls {
     private func dropEngine() {
         let old = engine
         engine = nil
+        status.isSyncing = false
+        deferredChromiumInbox = false
         Task { await old?.cancelOperations() }
     }
 
@@ -677,13 +809,19 @@ final class SpaceSyncManager: SpaceSyncControls {
         queueTask = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))
             guard !Task.isCancelled else { return }
-            self?.queuePending()
+            guard let self else { return }
+            if self.deferredChromiumInbox {
+                self.retryDeferredInbox()
+            } else {
+                self.queuePending()
+            }
         }
     }
 
     /// Tells the engine what differs from iCloud, and takes back what no longer does. `only`
     /// limits additions to those records.
     private func queuePending(only ids: Set<UUID>? = nil) {
+        guard !deferredChromiumInbox else { return }
         state.prune(against: tabs.tree)
         let tooLarge = state.tooLarge(in: tabs.tree)
         if !tooLarge.isSubset(of: reportedTooLarge) {
@@ -713,19 +851,34 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// Merges fetched records into the tree, then writes the tree before the sync state, so the
     /// state on disk is never ahead of the tabs.
     private func applyInbox() {
-        guard !state.inbox.isEmpty else { return }
-        apply(state.receive(into: tabs.tree, kept: tabs.device.keptProfiles ?? []))
-    }
-
-    private func apply(_ inbound: SpaceSyncInbound) {
-        if !inbound.change.isEmpty { tabs.apply(inbound.change) }
-        for id in inbound.deletedSpaces {
-            tabs.deleteSpace(id, keepingLeftProfile: true)
-            if tabs.tree.space(id) != nil { state.setLevel(.off, for: id) }
+        guard !state.inbox.isEmpty else {
+            deferredChromiumInbox = false
+            return
         }
-        tabs.saveNow()
+        // receive mutates the cloud shadow and consumes the persisted inbox.
+        // Keep the old inbox until native ownership and durable tabs agree.
+        var next = state
+        let inbound = next.receive(into: tabs.tree, kept: tabs.device.keptProfiles ?? [])
+        // A prior disk failure may leave the in-memory tree current on
+        // this retry. Flush it even if the remerge produces no changes.
+        guard tabs.applyNativeSpaceSync(inbound) else {
+            deferredChromiumInbox = true
+            saveState()
+            return
+        }
+        for id in inbound.deletedSpaces where tabs.tree.space(id) != nil {
+            next.setLevel(.off, for: id)
+        }
+        state = next
+        deferredChromiumInbox = false
         saveState()
         publish()
+    }
+
+    func retryDeferredInbox() {
+        guard engine != nil, deferredChromiumInbox else { return }
+        applyInbox()
+        if !deferredChromiumInbox { queuePending() }
     }
 
     private func didSend(_ sent: CKSyncEngine.Event.SentRecordZoneChanges) {
@@ -841,13 +994,6 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     // MARK: - Storage
 
-    private static func load(_ url: URL) -> SpaceSyncState {
-        guard let data = try? Data(contentsOf: url), let state = try? JSONDecoder().decode(SpaceSyncState.self, from: data) else {
-            return SpaceSyncState()
-        }
-        return state
-    }
-
     private func scheduleSave() {
         guard saveTask == nil else { return }
         saveTask = Task { [weak self] in
@@ -860,9 +1006,9 @@ final class SpaceSyncManager: SpaceSyncControls {
     private func saveState() {
         saveTask?.cancel()
         saveTask = nil
+        guard isSyncEnabled else { return }
         do {
-            try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(state).write(to: fileURL, options: .atomic)
+            try store.write(state, enabled: true)
         } catch {
             log.error("Space sync state not saved: \(String(describing: error), privacy: .public)")
         }
@@ -877,6 +1023,7 @@ extension SpaceSyncManager: CKSyncEngineDelegate {
             state.engine = try? JSONEncoder().encode(update.stateSerialization)
             scheduleSave()
         case .accountChange(let change):
+            accountCheck?.cancel()
             switch change.changeType {
             case .signIn(let user), .switchAccounts(_, let user):
                 start(account: user.recordName)
@@ -931,7 +1078,7 @@ extension SpaceSyncManager: CKSyncEngineDelegate {
     }
 
     func nextRecordZoneChangeBatch(_ context: CKSyncEngine.SendChangesContext, syncEngine: CKSyncEngine) async -> CKSyncEngine.RecordZoneChangeBatch? {
-        guard syncEngine === engine else { return nil }
+        guard syncEngine === engine, !deferredChromiumInbox else { return nil }
         let changes = syncEngine.state.pendingRecordZoneChanges.filter { context.options.scope.contains($0) }
         guard !changes.isEmpty else { return nil }
         let ids = Set(changes.compactMap { change -> UUID? in
@@ -953,6 +1100,7 @@ extension SpaceSyncManager: CKSyncEngineDelegate {
             return batch[recordID.recordName] != nil
         }
         var next = await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: sending) { batch[$0.recordName] }
+        guard syncEngine === engine, !deferredChromiumInbox else { return nil }
         if next?.recordsToSave.contains(where: { $0.recordType == SyncRecord.RecordType.space.rawValue }) == true {
             next?.atomicByZone = true
         }

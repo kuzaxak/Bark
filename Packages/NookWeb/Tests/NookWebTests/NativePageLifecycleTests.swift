@@ -29,6 +29,76 @@ private func cornerPNG(topRight: [UInt8], rest: [UInt8]) throws -> Data {
 
 @MainActor
 struct NativePageLifecycleTests {
+    @Test func syncedDeletionWaitsForNativeOwnerAndThenPersists() async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let native = f.host.finishCreate(0)
+        let item = try #require(f.window.selectedItemID)
+        var inbound = SpaceSyncInbound()
+        inbound.change.items[item] = .some(nil)
+
+        #expect(!f.tabs.applyNativeSpaceSync(inbound))
+        #expect(f.tabs.tree.item(item) != nil)
+        #expect(f.tabs.session(for: item)?.navigation === native)
+        #expect(f.host.closes.isEmpty)
+
+        var retried: Bool?
+        f.tabs.onNativeSyncAdmissionChanged = { retried = f.tabs.applyNativeSpaceSync(inbound) }
+        native.onEvent?(.ownerEnded)
+        for _ in 0..<50 where retried == nil { await Task.yield() }
+        #expect(retried == true)
+        #expect(f.tabs.tree.item(item) == nil)
+        #expect(f.restored(at: f.tabs.directory).tree.item(item) == nil)
+        f.tabs.onNativeSyncAdmissionChanged = nil
+    }
+
+    @Test func syncedFolderMovesAndDeletesUnloadedTabs() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let native = f.host.finishCreate(0)
+        let home = try #require(f.window.spaceID)
+        let homeTab = try #require(f.window.selectedItemID)
+        let work = try #require(f.tabs.createSpace(name: "Work", icon: "", accentHex: "#000000",
+                                                 after: nil, profileName: "Work profile"))
+        let folder = UUID()
+        let tab = UUID()
+        var projected = f.tabs.tree
+        try projected.createFolder(id: folder, title: "Projects", in: .pinned(spaceID: home), after: nil)
+        try projected.createTab(id: tab, url: URL(string: "https://example.invalid/project")!, title: "Project",
+                                in: .folder(itemID: folder), after: nil)
+        var added = SpaceSyncInbound()
+        added.change.items[folder] = .some(projected.item(folder))
+        added.change.items[tab] = .some(projected.item(tab))
+        #expect(f.tabs.applyNativeSpaceSync(added))
+
+        try projected.move(folder, to: .pinned(spaceID: work), after: nil)
+        var moved = SpaceSyncInbound()
+        moved.change.items[folder] = .some(projected.item(folder))
+        #expect(f.tabs.applyNativeSpaceSync(moved))
+        #expect(f.tabs.tree.spaceID(of: tab) == work)
+
+        var removed = SpaceSyncInbound()
+        removed.change.items[folder] = .some(nil)
+        removed.change.items[tab] = .some(nil)
+        #expect(f.tabs.applyNativeSpaceSync(removed))
+        #expect(f.tabs.tree.item(folder) == nil)
+        #expect(f.tabs.tree.item(tab) == nil)
+        #expect(f.tabs.session(for: homeTab)?.navigation === native)
+        #expect(f.host.closes.isEmpty)
+    }
+
+    @Test func syncedSpaceDeletionKeepsLocalProfileAndLastSpace() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let home = try #require(f.window.spaceID)
+        let work = try #require(f.tabs.createSpace(name: "Work", icon: "", accentHex: "#000000",
+                                                 after: nil, profileName: "Work profile"))
+        let profile = try #require(f.tabs.tree.dataStoreID(for: work))
+        var inbound = SpaceSyncInbound()
+        inbound.deletedSpaces = [work, home]
+        #expect(f.tabs.applyNativeSpaceSync(inbound))
+        #expect(f.tabs.tree.space(work) == nil)
+        #expect(f.tabs.tree.space(home) != nil)
+        #expect(f.tabs.device.keptProfiles?.contains { $0.id == profile } == true)
+    }
+
     @Test func nativeTopBarColorSamplesThePageOncePerDomain() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let native = f.host.finishCreate(0)

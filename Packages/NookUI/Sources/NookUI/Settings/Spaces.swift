@@ -285,12 +285,22 @@ public struct SpacesSettingsView: View {
                 if status.isSyncing {
                     ProgressView().controlSize(.small)
                 }
-                if status.availability != .needsSignedBuild {
+                if status.availability == .notEnabled {
+                    Button("Enable Sync") { actions?.spaceSync?.enableSync() }
+                } else if status.availability != .needsSignedBuild {
                     Button("Sync Now") { actions?.spaceSync?.syncNow() }
-                        .disabled(status.availability != .available)
+                        .disabled(status.availability != .available && status.availability != .unavailable)
                 }
             }
-            if status.availability != .needsSignedBuild {
+            if let controls = actions?.spaceSync, controls.isSyncEnabled {
+                Button("Turn Off iCloud Sync on This Mac") { controls.disableSync() }
+            }
+            if tabs.profileEngine == .chromium {
+                Text("Bark does not transfer your old Nook iCloud data or invitations. Macs still using Nook do not sync with Bark.")
+                    .font(NookDesign.Font.caption)
+                    .foregroundStyle(.secondary)
+            }
+            if status.availability != .needsSignedBuild && status.availability != .notEnabled {
                 Text(Self.hint(status.mode))
                     .font(NookDesign.Font.caption)
                     .foregroundStyle(.secondary)
@@ -554,7 +564,8 @@ public struct SpacesSettingsView: View {
     private static func describe(_ availability: SpaceSyncAvailability) -> String {
         switch availability {
         case .disabled: return "Sync is disabled in this runtime"
-        case .needsSignedBuild: return "Sync needs a signed build"
+        case .notEnabled: return "iCloud Sync is off"
+        case .needsSignedBuild: return "This build does not include iCloud Sync"
         case .readOnlyTabs: return "Sync is paused: \(ProductDisplayName.current) could not read its tabs"
         case .checking: return "Checking iCloud…"
         case .noAccount: return "Sign in to iCloud in System Settings to sync spaces"

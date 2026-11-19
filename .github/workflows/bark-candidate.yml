@@ -11,9 +11,9 @@ on:
         options: [x86_64, arm64]
         required: true
       icloud:
-        description: Enable production CloudKit with the configured Bark profile
+        description: Include production iCloud sync using the configured Bark profile
         type: boolean
-        default: false
+        default: true
       release_version:
         description: Bark marketing version
         type: string

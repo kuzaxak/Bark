@@ -285,6 +285,7 @@ extension PageSession {
             // Observation-only invalidation is safe now: the host confirmed
             // actual resource destruction. Never issue another stop/close.
             page?.invalidate()
+            if !isPrivate && !isDetached { controller?.nativeSyncAdmissionChanged() }
         } else {
             nativeIsEnding = false
         }

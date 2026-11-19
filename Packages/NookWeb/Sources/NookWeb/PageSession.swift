@@ -791,6 +791,7 @@ public final class PageSession: NSObject, Identifiable {
             loadingState = .idle
             onClose?()
             if !isDetached { controller?.close(itemID) }
+            if !isPrivate && !isDetached { controller?.nativeSyncAdmissionChanged() }
         }
     }
 
@@ -1717,5 +1718,6 @@ extension PageSession {
         nativePreparationWindow = nil
         cancelNativeCreation()
         nativeIsEnding = false
+        if !isPrivate && !isDetached { controller?.nativeSyncAdmissionChanged() }
     }
 }

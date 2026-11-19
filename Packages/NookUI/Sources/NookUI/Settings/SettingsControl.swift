@@ -25,9 +25,7 @@ public enum SettingsControl: CaseIterable {
         case .renamePinnedTabs, .linkPreviews, .tidyDownloads: return false
         // Website shortcuts are detected in WebKit pages only.
         case .websiteShortcutDetection: return false
-        // The Chromium app is not signed for iCloud.
-        case .iCloudSync: return false
-        case .quit, .tabs, .peekOnShiftClick, .performance, .search, .siteSearch, .urlShortcuts, .wordStops: return true
+        case .quit, .iCloudSync, .tabs, .peekOnShiftClick, .performance, .search, .siteSearch, .urlShortcuts, .wordStops: return true
         }
     }
 }

@@ -157,6 +157,45 @@ struct SpaceSyncTests {
             .map { "\($0.displayTitle) in \($0.parent) at \($0.order)" }.sorted()
     }
 
+    @Test func pinnedFoldersReconcileChangesFromBothMacs() throws {
+        var (a, b, work, cloud) = try pair(.pinned)
+        let pinned = Parent.pinned(spaceID: work.space)
+        let inbox = UUID(), projects = UUID(), project = UUID()
+        try a.tree.createFolder(id: inbox, title: "Inbox", in: pinned, after: work.wiki, now: later(1))
+        try a.tree.createFolder(id: projects, title: "Projects", in: pinned, after: inbox, now: later(1))
+        try a.tree.createTab(id: project, url: url("project"), title: "Project",
+                             in: .folder(itemID: projects), after: nil, now: later(1))
+        a.sync(&cloud, now: later(2))
+        b.sync(&cloud, now: later(3))
+        #expect(b.tree.children(of: pinned).map(\.id) == [work.docs, work.wiki, inbox, projects])
+        #expect(b.tree.children(of: .folder(itemID: projects)).map(\.id) == [project])
+
+        try b.tree.rename(projects, customTitle: "Current Projects", now: later(4))
+        try b.tree.move(projects, to: .folder(itemID: inbox), after: nil, now: later(4))
+        b.sync(&cloud, now: later(5))
+        a.sync(&cloud, now: later(6))
+        #expect(a.tree.item(projects)?.displayTitle == "Current Projects")
+        #expect(a.tree.item(projects)?.parent == .folder(itemID: inbox))
+        #expect(a.tree.children(of: .folder(itemID: projects)).map(\.id) == [project])
+
+        try a.tree.move(inbox, to: pinned, after: nil, now: later(7))
+        a.sync(&cloud, now: later(8))
+        b.sync(&cloud, now: later(9))
+        #expect(b.tree.children(of: pinned).map(\.id) == [inbox, work.docs, work.wiki])
+
+        _ = try b.tree.close(inbox, now: later(10))
+        b.sync(&cloud, now: later(11))
+        a.sync(&cloud, now: later(12))
+        for id in [inbox, projects, project] {
+            #expect(a.tree.item(id) == nil)
+            #expect(b.tree.item(id) == nil)
+            #expect(cloud.records[id] == nil)
+        }
+        #expect(layout(a.tree, work.space, openTabs: false) == layout(b.tree, work.space, openTabs: false))
+        #expect(a.tree.item(work.search) != nil)
+        #expect(b.tree.item(work.search) == nil)
+    }
+
     // MARK: - Records
 
     @Test func favoritesAndPinnedSendsTheSpaceItsFavoritesPinnedTabsAndFolders() throws {
@@ -553,6 +592,8 @@ struct SpaceSyncTests {
 
     @Test func syncRunsOnlyInABuildSignedForTheContainer() {
         let container = SpaceSyncAvailability.containerID
+        #expect(container == "iCloud.ee.qdo.bark")
+        #expect(!SpaceSyncAvailability.isEntitled(containers: ["iCloud.ee.qdo.nook"], services: ["CloudKit"]))
         #expect(!SpaceSyncAvailability.isEntitled(containers: nil, services: nil))
         #expect(!SpaceSyncAvailability.isEntitled(containers: [container], services: nil))
         #expect(!SpaceSyncAvailability.isEntitled(containers: ["iCloud.other"], services: ["CloudKit"]))

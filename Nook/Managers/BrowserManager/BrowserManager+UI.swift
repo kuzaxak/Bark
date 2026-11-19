@@ -16,7 +16,13 @@ import NookUI
 import NookWeb
 
 extension BrowserManager: TabActions {
-    var spaceSync: (any SpaceSyncControls)? { spaceSyncManager }
+    var spaceSync: (any SpaceSyncControls)? {
+        if engine == .chromium {
+            guard nookSettings?.didFinishOnboarding == true,
+                  spaceSyncManager.status.availability != .disabled else { return nil }
+        }
+        return spaceSyncManager
+    }
 
     func enterSplit(with itemID: UUID, placeOnRight: Bool, in window: BrowserWindowState) {
         splitManager.enterSplit(with: itemID, placeOn: placeOnRight ? .trailing : .leading, in: window)

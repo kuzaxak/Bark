@@ -27,6 +27,19 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 - External links can open in a compact window. Choose **Open in Space** to move
   the page into the main window with its draft intact.
 
+### Sync bookmarks between Macs
+
+In a Bark build with iCloud support, open **Settings → Spaces → iCloud Sync**
+and choose **Enable Sync** on each Mac. Both Macs can use the same iCloud
+account. Choose **Favorites & Pinned** for a space to sync its bookmarks,
+folders and their order. **Everything** also syncs its open tabs. **Off**
+keeps a space local to that Mac if it has never been uploaded.
+
+Bark starts with a fresh iCloud dataset. Existing Nook cloud bookmarks and
+invitations stay in Nook. Turning sync off on a Mac keeps its local bookmarks.
+You can still import a legacy `.nookspace` file and choose whether to sync the
+imported space.
+
 ## Build and run
 
 This branch builds a signed Intel developer app for macOS 15.5 and later.

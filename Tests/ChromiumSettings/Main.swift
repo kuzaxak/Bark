@@ -5,7 +5,7 @@ import Foundation
 @main struct Main {
     static func main() {
         let shown = Set(SettingsControl.allCases.filter { $0.isShown(chromium: true) })
-        let expected: Set<SettingsControl> = [.quit, .tabs, .peekOnShiftClick, .performance, .search, .siteSearch, .urlShortcuts, .wordStops]
+        let expected: Set<SettingsControl> = [.quit, .iCloudSync, .tabs, .peekOnShiftClick, .performance, .search, .siteSearch, .urlShortcuts, .wordStops]
         precondition(shown == expected, "Chromium shows \(shown.subtracting(expected)) and hides \(expected.subtracting(shown))")
         precondition(SettingsControl.allCases.allSatisfy { $0.isShown(chromium: false) }, "WebKit keeps every part")
         print("Settings: Chromium shows only parts that act there; WebKit keeps all")

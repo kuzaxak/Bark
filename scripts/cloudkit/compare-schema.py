@@ -59,6 +59,8 @@ def differences(required, available):
                 yield f"{record}.{name}: missing {modifier}"
         for privilege, principal in sorted(required_grants - grants):
             yield f'{record}: missing GRANT {privilege} TO "{principal}"'
+        for privilege, principal in sorted(grants - required_grants):
+            yield f'{record}: unexpected GRANT {privilege} TO "{principal}"'
 
 
 def main():

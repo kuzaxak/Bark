@@ -129,6 +129,9 @@ public final class TabsController {
     @ObservationIgnored public var onPageLoadedInBackground: ((PageSession) -> Void)?
     /// The main tree changed; space sync reads it to find what to send.
     @ObservationIgnored public var onTreeChanged: (() -> Void)?
+    /// A released native owner may allow an inbound sync edit to be retried.
+    @ObservationIgnored public var onNativeSyncAdmissionChanged: (() -> Void)?
+
     /// App-owned profile presentation; absent presenters report unavailability.
     @ObservationIgnored public var onOpenProfilePage: ProfilePageAction?
     @ObservationIgnored public var onProfileSearch: ProfileSearchAction?
@@ -244,6 +247,20 @@ public final class TabsController {
     public func saveNow() {
         store.save(tree, device)
         store.flush()
+    }
+
+
+    func nativeSyncAdmissionChanged() {
+        Task { @MainActor [weak self] in
+            guard let self, !self.isTerminating else { return }
+            self.onNativeSyncAdmissionChanged?()
+        }
+    }
+
+    func persistSyncedTree() -> Bool {
+        guard !isReadOnly else { return false }
+        saveNow()
+        return store.lastError == nil
     }
 
     /// Writes now, with every regular window's current frame. Called at quit; windows closing

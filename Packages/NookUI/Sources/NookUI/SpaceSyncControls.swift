@@ -12,6 +12,9 @@ import NookTabsCore
 
 @MainActor public protocol SpaceSyncControls: AnyObject {
     var status: SpaceSyncStatus { get }
+    var isSyncEnabled: Bool { get }
+    func enableSync()
+    func disableSync()
     func level(of spaceID: UUID) -> SpaceSyncLevel
     func setLevel(_ level: SpaceSyncLevel, for spaceID: UUID)
     func syncNow()

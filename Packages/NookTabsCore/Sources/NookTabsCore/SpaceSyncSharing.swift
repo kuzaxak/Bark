@@ -133,12 +133,11 @@ public enum SpaceSyncShareLink {
         return url
     }
 
-    /// The title Nook gives its share of the spaces.
-    public static let title = "Nook Spaces"
+    public static let title = "Bark Spaces"
 
-    /// Whether the link is to Nook's share of the spaces: CloudKit ends a share's link with its
-    /// title, spaces turned to underscores, as in `#Nook_Spaces`.
-    public static func isNookSpaces(_ url: URL) -> Bool {
+    /// Whether the link carries Bark's invitation title. CloudKit ends the link with its
+    /// title, spaces turned to underscores, as in `#Bark_Spaces`.
+    public static func isBarkSpaces(_ url: URL) -> Bool {
         url.fragment == title.replacingOccurrences(of: " ", with: "_")
     }
 }

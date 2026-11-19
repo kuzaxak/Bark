@@ -237,6 +237,8 @@ public enum SpaceSyncErrorText {
 public enum SpaceSyncAvailability: Equatable, Sendable {
     /// This runtime explicitly disables cloud services.
     case disabled
+    /// The build can sync, but the person has not enabled it on this Mac.
+    case notEnabled
     /// An unsigned build, or one signed without the iCloud container. CloudKit is never touched.
     case needsSignedBuild
     /// Nook could not read its tabs this session, so nothing it has may reach iCloud.
@@ -248,12 +250,12 @@ public enum SpaceSyncAvailability: Equatable, Sendable {
     case unavailable
     case available
 
-    public static let containerID = "iCloud.ee.qdo.nook"
+    public static let containerID = "iCloud.ee.qdo.bark"
     /// The zone that holds the spaces, in the owner's private database.
     public static let zoneName = "Spaces"
 
     /// Whether levels can be set: not in an unsigned build, nor while the tabs are read-only.
-    public var takesLevels: Bool { self != .disabled && self != .needsSignedBuild && self != .readOnlyTabs }
+    public var takesLevels: Bool { self != .disabled && self != .notEnabled && self != .needsSignedBuild && self != .readOnlyTabs }
 
     /// Whether the app's signature grants the container and CloudKit: the values of
     /// `com.apple.developer.icloud-container-identifiers` and `com.apple.developer.icloud-services`.

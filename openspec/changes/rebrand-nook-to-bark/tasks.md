@@ -1,23 +1,23 @@
 # Implementation tasks
 
-Planning only. The user accepted fresh local/cloud state under a new Bark App ID and CloudKit container. Do not implement old-cloud record migration, share migration, a custom local-data importer, or deletion of old data. Keep this release separate from the Chromium engine cutover.
+The user accepted fresh local/cloud state under a new Bark App ID and CloudKit container. Do not implement old-cloud record migration, share migration, a custom local-data importer, or deletion of old data. The Chromium shell uses the new sync identity.
 
 ## 1. Identity and provisioning (B0)
 
 - [ ] 1.1 Confirm registration of the `ee.qdo.bark` bundle ID and the `iCloud.ee.qdo.bark` container, developer-team access and existing App Store records; deliver an identity map identifying any required new store record instead of an invalid in-place ID change.
-- [ ] 1.2 Register the new explicit App ID and container with required CloudKit/push capabilities; verify their association in the developer account without attaching the old container as a fallback.
+- [x] 1.2 Register the new explicit App ID and container with required CloudKit/push capabilities; verify their association in the developer account without attaching the old container as a fallback. The issued Developer ID profile contains the Bark container and production push.
 - [ ] 1.3 Generate new development/release provisioning and update the intended target IDs/entitlements; verify the signed app and issued profile agree on application prefix, bundle ID, cloud container and environment.
 - [ ] 1.4 Update `scripts/sign-app.sh`, configuration and provisioning-secret references; run signing validation for native Intel and Apple Silicon builds and document the new setup without secret values.
 
 ## 2. Fresh CloudKit service (B0-B1)
 
-- [ ] 2.1 Configure maintained schema tooling for the new container; verify development record types, fields, indexes and roles match the sync implementation.
-- [ ] 2.2 Deploy the schema to the new production container; run the production-schema checks and verify no old-container user records were copied.
-- [ ] 2.3 Update `SpaceSyncAvailability`, runtime container selection and entitlement checks; add tests that accept the new identity and reject old-container fallback.
-- [ ] 2.4 Initialize fresh zones, subscriptions, account binding and sync state; test that old `Sync/spaces.json`, tokens, shares and device metadata are never loaded.
+- [x] 2.1 Configure maintained schema tooling for the new container; verify development record types, fields, indexes and roles match the sync implementation.
+- [x] 2.2 Deploy the schema to the new production container; run the production-schema checks and verify no old-container user records were copied. The production export matched the development export after deploying only the schema.
+- [x] 2.3 Update `SpaceSyncAvailability`, runtime container selection and entitlement checks; add tests that accept the new identity and reject old-container fallback.
+- [x] 2.4 Initialize fresh zones, subscriptions, account binding and sync state; test that old `Sync/spaces.json`, tokens, shares and device metadata are never loaded.
 - [ ] 2.5 Handle first versus subsequent Bark devices and account changes; test that joining an existing Bark account fetches its records without wiping or duplicating the dataset.
 - [ ] 2.6 Update sharing validation and invitation UX; test old-link rejection plus new owner/participant invitations across two accounts using the new container.
-- [ ] 2.7 Document the reset and old/new-client separation in onboarding and release notes; verify sync remains opt-in and the notice precedes enabling it.
+- [ ] 2.7 Document the reset and old/new-client separation in onboarding and release notes; verify sync remains opt-in and the notice precedes enabling it. The notice is present before opt-in in Spaces settings and in the user guide. Release notes remain pending.
 
 ## 3. Local fresh start and integrations (B1)
 
@@ -54,7 +54,7 @@ Planning only. The user accepted fresh local/cloud state under a new Bark App ID
 
 ## Workflow follow-up
 
-- Publish standalone planning artifacts under this change directory when requested; no App IDs, containers, artwork or code are changed by this plan.
+- Publish standalone planning artifacts under this change directory when requested; keep Apple-issued profiles outside the repository.
 - Synchronize current specs and archive the implemented change on the feature branch before publishing/updating the solution PR; use scoped changes if slices ship independently.
 - Coordinate repository rename/detachment with the independence workstream after its transition preparation is reviewable.
 - Track production merge, release, rollout and live sync/update verification in tickets. Ship the identity/reset release before the Chromium cutover.

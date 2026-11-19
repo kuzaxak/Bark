@@ -1162,6 +1162,10 @@ extension TabsController {
     /// unless another space shares it, or kept in Profiles with `keepingLeftProfile`. Chromium
     /// keeps the profile of a last space, as Arc does. Windows showing it move to another space.
     public func deleteSpace(_ spaceID: UUID, keepingLeftProfile: Bool = false) {
+        deleteSpace(spaceID, keepingLeftProfile: keepingLeftProfile, admitsLiveClose: true)
+    }
+
+    private func deleteSpace(_ spaceID: UUID, keepingLeftProfile: Bool, admitsLiveClose: Bool) {
         guard let owner = owner(ofSpace: spaceID) else { return }
         if case .main = owner, profileEngine == .chromium, let refusal = nativeSpaceDeletionRefusal(spaceID) {
             onSpaceDeletionNotice?(refusal)
@@ -1174,9 +1178,13 @@ extension TabsController {
                            + source.children(of: .pinned(spaceID: spaceID))
                            + source.children(of: .tabs(spaceID: spaceID)))
                 .flatMap { source.subtree(of: $0.id) }
-            if releaseNativePagesBeforeMutation(closing, then: { [weak self] in
-                self?.deleteSpace(spaceID, keepingLeftProfile: keepingLeftProfile)
-            }) { return }
+            if admitsLiveClose {
+                if releaseNativePagesBeforeMutation(closing, then: { [weak self] in
+                    self?.deleteSpace(spaceID, keepingLeftProfile: keepingLeftProfile)
+                }) { return }
+            } else if closing.contains(where: { session(for: $0)?.requiresNativeResourceRelease == true }) {
+                return
+            }
         }
         // Favorites other spaces still show move to one of them instead of closing.
         if let heir = tree(owner).favoriteSpaces(sharedWith: spaceID).first(where: { $0 != spaceID }) {
@@ -1299,8 +1307,56 @@ extension TabsController {
 
     // MARK: - External Undo
 
+    /// Apply remote metadata only when no live Chromium resource would be
+    /// closed or moved to another profile. A normal local close can unblock it.
+    public func applyNativeSpaceSync(_ inbound: SpaceSyncInbound) -> Bool {
+        guard profileEngine == .chromium, !isReadOnly, !isTerminating else { return false }
+        if inbound.isEmpty { return persistSyncedTree() }
+        var proposed = tree
+        let changed = proposed.apply(inbound.change)
+        guard profileDeletionAllows(proposed, changed: changed) else { return false }
+
+        var deleting: [UUID] = []
+        for id in inbound.deletedSpaces {
+            guard proposed.space(id) != nil else { continue }
+            // A remote deletion cannot remove this Mac's final regular space.
+            guard proposed.orderedSpaces.contains(where: { $0.id != id && !$0.isAgent }) else { continue }
+            guard !profileChangeHolds(id) else { return false }
+            if let heir = proposed.favoriteSpaces(sharedWith: id).first(where: { $0 != id }) {
+                do {
+                    for favorite in proposed.children(of: .favorites(spaceID: id)) {
+                        try proposed.move(favorite.id, to: .favorites(spaceID: heir),
+                                          after: proposed.children(of: .favorites(spaceID: heir)).last?.id)
+                    }
+                } catch { return false }
+            }
+            do {
+                let deletion = try proposed.deleteSpace(id)
+                guard profileDeletionAllows(proposed, changed: deletion.change) else { return false }
+            } catch { return false }
+            deleting.append(id)
+        }
+        guard nativeEditIsAdmissible(proposed, owner: .main) else { return false }
+
+        if !inbound.change.isEmpty {
+            let departing = Set(tree.items.keys.filter {
+                tree.item($0) != nil && tree.spaceID(of: $0) != proposed.spaceID(of: $0)
+            })
+            applyExternalChange(inbound.change, movingSelectionOff: departing)
+            guard inbound.change.spaces.allSatisfy({ tree.spaces[$0.key] == $0.value }),
+                  inbound.change.items.allSatisfy({ tree.items[$0.key] == $0.value }) else { return false }
+        }
+        for id in deleting { deleteSpace(id, keepingLeftProfile: true, admitsLiveClose: false) }
+        guard deleting.allSatisfy({ tree.space($0) == nil }) else { return false }
+        return persistSyncedTree()
+    }
+
     /// Applies a change built elsewhere (the tab organizer's undo) to the main tree.
     public func apply(_ change: Change) {
+        applyExternalChange(change)
+    }
+
+    private func applyExternalChange(_ change: Change, movingSelectionOff departing: Set<UUID> = []) {
         if profileEngine == .chromium {
             var proposed = tree
             let touched = proposed.apply(change)
@@ -1308,7 +1364,9 @@ extension TabsController {
             guard !nativeOwnershipChanged(by: touched, in: proposed) || nativeEditIsAdmissible(proposed, owner: .main) else { return }
         }
         let before = Set(tree.items.keys.filter { tree.item($0) != nil })
-        moveSelectionOff(Set(change.items.compactMap { id, value in value == nil || value?.deletedAt != nil ? id : nil }))
+        moveSelectionOff(departing.union(change.items.compactMap { id, value in
+            value == nil || value?.deletedAt != nil ? id : nil
+        }))
         guard perform(.main, "apply", undoable: false, { tree in tree.apply(change) }) != nil else { return }
         for id in before where tree.item(id) == nil { endSession(id) }
         // Items the change brought back must not also reopen from the history.

@@ -2,6 +2,7 @@ import AppKit
 import BarcChromium
 import Darwin
 import NookSettings
+import enum NookTabsCore.SpaceSyncShareLink
 import class NookTabsCore.TabStore
 import NookWeb
 import Observation
@@ -29,6 +30,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var devMCPSettingsGeneration: UInt64 = 0
     private var settingsWindow: NSWindow?
     private var settingsCloseObserver: NSObjectProtocol?
+    private var syncActivationObserver: NSObjectProtocol?
     private var storage: ChromiumAppStorage?
     private var appearance: ChromiumAppearance?
     private var quitSave: ChromiumQuitSave?
@@ -39,6 +41,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private let updater: ChromiumAppUpdater?
     private var mouseButtons: ChromiumMouseButtons?
     private let spaceFiles = ChromiumSpaceFiles()
+    private let shareLinkReplay = ChromiumShareLinkReplay()
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
     private var ready: (@MainActor () -> Void)?
@@ -98,6 +101,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 let code = app.engineMain(Int32(engineArguments.count), &argv)
                 // An OS logout ends the runtime without the close manager's accepted callback.
                 app.quitSave?.save()
+                if let observer = app.syncActivationObserver { NotificationCenter.default.removeObserver(observer) }
                 app.acceptsWindows = false
                 app.blocker?.stop()
                 app.pageTweaks?.stop()
@@ -178,6 +182,24 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
     }
 
+    private func takeExternalShareLink(_ url: URL, manager: BrowserManager) -> Bool {
+        guard !configuration.isVerification, registry.activeWindow?.isIncognito != true,
+              manager.spaceSync?.isSyncEnabled == true,
+              url.user == nil, url.password == nil, url.port == nil,
+              let invitation = SpaceSyncShareLink.parse(url.absoluteString),
+              SpaceSyncShareLink.isBarkSpaces(invitation) || invitation.fragment == "Nook_Spaces",
+              let delegate = NSApp.delegate,
+              delegate.responds(to: #selector(NSApplicationDelegate.application(_:open:))) else { return false }
+        return shareLinkReplay.take(url, lookup: manager.spaceSyncManager.openShareLink) { [weak self, weak delegate] url in
+            // Chromium must finish removing the consumed entry before its
+            // own validated external queue receives the fallback.
+            Task { @MainActor in
+                guard let self, self.acceptsWindows, let delegate, NSApp.delegate === delegate else { return }
+                delegate.application?(NSApp, open: [url])
+            }
+        }
+    }
+
     func registerReady(_ callback: @escaping @MainActor () -> Void) {
         ready = callback
         bridge.set_runtime_browser_target_callback({ kind, url, pendingWindow, pendingTab, output, pointer in
@@ -195,6 +217,9 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 guard app.acceptsWindows, let manager = app.browserManager, let admission = app.admission else { return refused }
                 guard app.pageTweaks?.isReady == true else { return ordinaryWindow }
                 if kind == BARC_APPLICATION_TARGET_PENDING_PAGE.rawValue {
+                    if let url, let incoming = URL(string: String(cString: url)) {
+                        app.shareLinkReplay.reachedPendingPage(incoming)
+                    }
                     guard let row = app.bridge.windowState(pendingWindow),
                           row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0,
                           app.bridge.tab_application_pending(pendingWindow, pendingTab) == 1,
@@ -239,6 +264,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     return found
                 }
                 if kind == BARC_APPLICATION_TARGET_URL.rawValue, let url, let validatedURL = URL(string: String(cString: url)) {
+                    if app.takeExternalShareLink(validatedURL, manager: manager) { return refused }
                     let rule = manager.siteRoutingManager.resolve(url: validatedURL)
                     guard let target = admission.incomingTarget(ruleSpace: rule?.targetSpaceId,
                         mini: manager.nookSettings?.externalLinkDestination != .currentSpace,
@@ -351,7 +377,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 importManager: ImportManager(configuration: configuration),
                 persistence: storage.persistence, userDefaults: storage.defaults,
                 downloadManager: storage.downloads, tabsDirectory: storage.tabsDirectory,
-                cloudSyncEnabled: false, vault: storage.vault)
+                cloudSyncEnabled: !configuration.isVerification, vault: storage.vault)
             appearance?.onEffectiveChange = { [weak manager, registry] in
                 guard let manager else { return }
                 manager.tabs.sessions.forEach { $0.resetNativeTopBarSample() }
@@ -444,8 +470,17 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }
             self.storage = storage
             browserManager = manager
-            quitSave = ChromiumQuitSave(flushTabs: { [weak manager] in manager?.tabs.flushSync() },
-                                        flushBoosts: { [settings = storage.settings] in settings.flushBoosts() },
+            if !configuration.isVerification {
+                syncActivationObserver = NotificationCenter.default.addObserver(
+                    forName: NSApplication.didBecomeActiveNotification, object: NSApp, queue: .main
+                ) { [weak manager] _ in
+                    MainActor.assumeIsolated { manager?.spaceSyncManager.syncNow() }
+                }
+            }
+            quitSave = ChromiumQuitSave(flushTabs: { [weak manager] in
+                                            manager?.tabs.flushSync()
+                                            manager?.spaceSyncManager.flush()
+                                        }, flushBoosts: { [settings = storage.settings] in settings.flushBoosts() },
                                         saveContext: { [weak manager] in try manager?.modelContext.save() })
             guard DevMCPServer.shared.setConfiguration(storage.devMCP) else { completion(nil); return }
             DevMCPServer.shared.configure(browserManager: manager, enabled: false)

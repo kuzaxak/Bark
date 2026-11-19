@@ -22,6 +22,9 @@ import SwiftUI
 @MainActor @Observable
 private final class Sync: SpaceSyncControls {
     var status = SpaceSyncStatus(availability: .available)
+    var isSyncEnabled = true
+    func enableSync() { isSyncEnabled = true }
+    func disableSync() { isSyncEnabled = false }
     var levels: [UUID: SpaceSyncLevel] = [:]
     var chosen: [SpaceSyncLevel] = []
 

@@ -36,7 +36,8 @@ status=0
 [[ "$status" == 1 ]]
 for diagnostic in 'Space.name: expected ENCRYPTED STRING, found STRING' \
   'Item.url: expected ENCRYPTED STRING, found ENCRYPTED BYTES' \
-  'Space.___recordID: missing QUERYABLE' 'Item: missing GRANT CREATE TO "_icloud"'; do
+  'Space.___recordID: missing QUERYABLE' 'Item: missing GRANT CREATE TO "_icloud"' \
+  'Item: unexpected GRANT CREATE TO "_creator"'; do
   grep -Fxq "  $diagnostic" "$test_dir/out" || { echo "FAIL: missing $diagnostic"; cat "$test_dir/out"; exit 1; }
 done
 

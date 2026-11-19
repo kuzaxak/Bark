@@ -556,7 +556,7 @@ Build and signed verification check the embedded profile, certificate and outer
 app entitlements. The native shell runs in that app process. This verifies the
 local signing prerequisites. A live sync also needs the production CloudKit
 schema and a signed-in iCloud account. For the manual
-**Prepare Bark Candidate** workflow, enable the `icloud` input and set the
+**Prepare Bark Candidate** workflow, the `icloud` input defaults to enabled. Set the
 `BARK_ICLOUD_PROFILE` configuration variable in the architecture’s protected
 Actions environment to the profile’s absolute path on the trusted runner. The workflow fails without that file when iCloud is
 requested.

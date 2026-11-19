@@ -369,7 +369,7 @@ struct SpaceSyncSharingTests {
     // MARK: - Accepting
 
     @Test func aSharingLinkIsReadFromWhatThePersonPastes() {
-        let link = "https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw#Nook_Spaces"
+        let link = "https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw#Bark_Spaces"
         #expect(SpaceSyncShareLink.parse(link)?.absoluteString == link)
         #expect(SpaceSyncShareLink.parse("  \(link)\n")?.absoluteString == link)
         #expect(SpaceSyncShareLink.parse("www.icloud.com/share/0aBcD")?.absoluteString == "https://www.icloud.com/share/0aBcD")
@@ -381,11 +381,11 @@ struct SpaceSyncSharingTests {
     }
 
     @Test func nooksOwnLinksAreToldFromOtherSharingLinksByTheShareTitle() throws {
-        let link = try #require(URL(string: "https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw#Nook_Spaces"))
-        #expect(SpaceSyncShareLink.isNookSpaces(link))
+        let link = try #require(URL(string: "https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw#Bark_Spaces"))
+        #expect(SpaceSyncShareLink.isBarkSpaces(link))
         for other in ["https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw", "https://www.icloud.com/share/0aBcD#Shopping_List",
-                      "https://www.icloud.com/share/0aBcD#Nook_Spaces_2", "https://www.icloud.com/share/0aBcD#Nook"] {
-            #expect(!SpaceSyncShareLink.isNookSpaces(try #require(URL(string: other))), "took \(other) for Nook's")
+                      "https://www.icloud.com/share/0aBcD#Bark_Spaces_2", "https://www.icloud.com/share/0aBcD#Nook"] {
+            #expect(!SpaceSyncShareLink.isBarkSpaces(try #require(URL(string: other))), "took \(other) for Bark's")
         }
     }
 
@@ -410,6 +410,9 @@ struct SpaceSyncSharingTests {
         let container = SpaceSyncAvailability.containerID, zone = SpaceSyncAvailability.zoneName
 
         #expect(owner.state.acceptance(containerID: container, zoneName: zone, zoneOwner: Self.ownerAccount, isOwner: true, zoneWide: true, readWrite: true) == .ownShare)
+        #expect(guest.state.acceptance(containerID: "iCloud.ee.qdo.nook", zoneName: zone,
+                                       zoneOwner: Self.ownerAccount, isOwner: false,
+                                       zoneWide: true, readWrite: true) == .notASpacesShare)
         #expect(guest.state.acceptance(containerID: "iCloud.other", zoneName: zone, zoneOwner: Self.ownerAccount, isOwner: false, zoneWide: true, readWrite: true) == .notASpacesShare)
         #expect(guest.state.acceptance(containerID: container, zoneName: "Other", zoneOwner: Self.ownerAccount, isOwner: false, zoneWide: true, readWrite: true) == .notASpacesShare)
         #expect(owner.state.acceptance(containerID: container, zoneName: zone, zoneOwner: Self.guestAccount, isOwner: false, zoneWide: true, readWrite: true) == .sharingOwnZone)
@@ -433,7 +436,7 @@ struct SpaceSyncSharingTests {
         for bad in ["", "_", "c2e85d", "__12ae184189470032bbd84b751bc2e85d", "_12ae184189470032bbd84b751bc2e85",
                     "_12ae184189470032bbd84b751bc2e85d0", "_12ae184189470032bbd84b751bc2e85g", "_12ae1841 89470032bbd84b751bc2e85d",
                     "-12ae184189470032bbd84b751bc2e85d", "_１2ae184189470032bbd84b751bc2e85d", "__defaultOwner__",
-                    "https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw#Nook_Spaces"] {
+                    "https://www.icloud.com/share/0aBcD_eFgHiJkLmNoPqRsTuVw#Bark_Spaces"] {
             #expect(SpaceSyncInviteCode.parse(bad) == nil, "accepted \(bad)")
         }
     }

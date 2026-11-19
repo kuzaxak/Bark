@@ -37,6 +37,25 @@ Bark SHALL start synchronization in the new container without reusing the previo
 - **WHEN** a second Bark device signs in to the same account
 - **THEN** it joins the existing Bark dataset without resetting or deleting that dataset
 
+### Requirement: Opt-in Chromium bookmark synchronization
+Bark SHALL let a user enable iCloud sync on each Mac and choose the content synchronized for each regular space.
+
+#### Scenario: Sync nested folders across Macs
+- **GIVEN** two Macs have enabled sync for the same Bark space with Favorites & Pinned
+- **WHEN** a bookmark or folder is created, renamed, reordered, moved into another folder or deleted on either Mac
+- **THEN** both Macs converge on the same names, folder contents and ordering
+- **AND** open tabs stay local unless the user selects Everything
+
+#### Scenario: Turn off sync on this Mac
+- **WHEN** the user turns off sync on a Mac and relaunches Bark
+- **THEN** its bookmarks remain available locally
+- **AND** subsequent bookmark edits stay on that Mac until the user enables sync again
+
+#### Scenario: Incoming change affects a live Chromium page
+- **WHEN** applying a remote change would discard a page that the user still has open or transfer it to another profile
+- **THEN** Bark preserves the open page and its profile
+- **AND** the remote change remains pending until Bark can apply and save it
+
 ### Requirement: Fresh local setup
 Bark SHALL start with fresh local application state under the new identity without automatically migrating Nook data.
 

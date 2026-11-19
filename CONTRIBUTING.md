@@ -31,7 +31,19 @@ You need a Mac and Xcode 26 or later. The package tests and native command-routi
 
 4. **Build and run Bark.** Install the pinned SDK for your Mac and use the signed build command below. It builds the Swift shell and outer app from the tracked sources, verifies the embedded engine, and places the finished app at `build/Bark.app`. The output directory can start empty. [Native command routing and signed Bark](#native-command-routing-and-signed-bark)
 
-   Space sync's record types live in `scripts/cloudkit/schema.ckdb`. CloudKit refuses a save that carries a field the Production environment lacks, so before every release run `scripts/cloudkit/check-production-schema.sh path/to/management-token` (a CloudKit management token from CloudKit Console → Settings → Tokens & Keys). It lists what Production lacks and fails; then import the schema with `scripts/cloudkit/import-schema.sh path/to/management-token`, deploy it to Production in CloudKit Console, and run the check again.
+   For an iCloud-enabled build, supply a Developer ID provisioning profile for
+   `ee.qdo.bark` with `build --icloud-profile /path/to/Bark.provisionprofile`.
+   A normal launch offers sync after onboarding. Disposable verification
+   launches keep it disabled. [CloudKit signing](Runtime/Chromium/README.md#opt-in-to-bark-icloud-signing)
+
+   Before releasing a change to `scripts/cloudkit/schema.ckdb`, run
+   `scripts/cloudkit/check-production-schema.sh` with a locally saved CloudKit
+   management token. You can also export the schema for `iCloud.ee.qdo.bark`
+   from CloudKit Console’s **Production** environment and check it offline with
+   `scripts/cloudkit/check-production-schema.sh --compare /path/to/export.ckdb`.
+   The check covers field types, encryption, indexes and grants. To update the
+   service, import the tracked schema into **Development**, review the changes
+   in CloudKit Console, deploy them to **Production**, and check a fresh export.
 
 There is no app test target. Logic with its own checks lives in `Checks/` folders beside each package's sources and in `scripts/tests/`; each file says how to run it. Every package with a `Tests/` folder has a `swift test` suite, and CI runs them on each pull request.
 
