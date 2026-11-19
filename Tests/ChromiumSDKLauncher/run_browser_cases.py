@@ -8,7 +8,10 @@ import re
 import subprocess
 import sys
 
-RUNNER = Path(__file__).resolve().parents[2] / "Runtime/Chromium/run_browser_tests.py"
+REPO = Path(__file__).resolve().parents[2]
+RUNNER = REPO / "Runtime/Chromium/run_browser_tests.py"
+sys.path.insert(0, str(REPO / "scripts"))
+from chromium_test_runtime import verify_manifest
 EXACT_TEST = re.compile(r"[A-Za-z0-9_/]+\.[A-Za-z0-9_/]+")
 
 
@@ -37,12 +40,14 @@ def main(argv=None):
     parser.add_argument("--checkout", required=True, type=Path)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--summary", required=True, type=Path)
+    parser.add_argument("--fixture-source", type=Path, help="require the archived fixture hash to match this source")
     parser.add_argument("tests", nargs="+", metavar="Suite.Case")
     args = parser.parse_args(argv)
     if len(set(args.tests)) != len(args.tests) or any(not EXACT_TEST.fullmatch(name) for name in args.tests):
         parser.error("provide distinct exact gtest names in Suite.Case form")
 
     try:
+        verify_manifest(args.binary, args.fixture_source)
         result = subprocess.run([
             sys.executable, "-B", RUNNER, "--checkout", args.checkout,
             "--binary", args.binary, "--summary", args.summary,
