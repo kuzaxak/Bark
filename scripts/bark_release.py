@@ -23,6 +23,8 @@ HANDLER_KEYS = ("CFBundleURLTypes", "CFBundleDocumentTypes", "NSUserActivityType
                 "UTExportedTypeDeclarations", "UTImportedTypeDeclarations", SHARE_ACTIVATION)
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 TEAM = "538SB59LX4"
+# Public Ed25519 update key shipped with Nook 1.5.4. Bark retains that signing trust.
+SPARKLE_PUBLIC_KEY = "/N2VzxLtsQDeGW3FF8XwXYSnCia7qYYC3pSlmsXtp40="
 
 
 def feed_name(architecture):
@@ -55,12 +57,10 @@ def production_settings(version, build, feed_base, architecture):
         raise ValueError("Supply an HTTPS directory URL with --feed-base-url.")
     # Nook and Bark releases share the owner's update signing identity. Each
     # Bark architecture follows its own appcast, including across engine bumps.
-    with (REPO / "Nook/Info.plist").open("rb") as file:
-        public_key = plistlib.load(file)["SUPublicEDKey"]
     return {
         "CFBundleShortVersionString": version,
         "CFBundleVersion": build,
-        "SUPublicEDKey": public_key,
+        "SUPublicEDKey": SPARKLE_PUBLIC_KEY,
         "SUFeedURL": feed_base.rstrip("/") + "/" + feed_name(architecture),
         "SUVerifyUpdateBeforeExtraction": True,
         "SUEnableAutomaticChecks": True,

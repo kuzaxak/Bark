@@ -312,9 +312,19 @@ enum Check {
         precondition(ChromiumUpdateConfiguration(info: wrongArchitecture, isVerification: false,
                                                  isRehearsal: false) == nil, "Reject the other CPU's update feed")
         precondition(ChromiumUpdateConfiguration(info: production, isVerification: false, isRehearsal: false) != nil)
-        var custom = production
-        custom["SUFeedURL"] = "https://updates.synthetic.invalid/bark.xml"
-        precondition(ChromiumUpdateConfiguration(info: custom, isVerification: false, isRehearsal: false) != nil)
+        let feeds = [
+            ("https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml", false),
+            ("https://github.com/kuzaxak/Nook/releases/download/v1.5.4/appcast.xml", false),
+            ("https://github.com/kuzaxak/Nook/releases/latest/download" + feedPath, true),
+            ("https://updates.synthetic.invalid/appcast.xml", true),
+            ("https://updates.synthetic.invalid/bark.xml", true),
+        ]
+        for (url, accepted) in feeds {
+            var settings = production
+            settings["SUFeedURL"] = url
+            let update = ChromiumUpdateConfiguration(info: settings, isVerification: false, isRehearsal: false)
+            precondition((update != nil) == accepted, "Unexpected update eligibility for " + url)
+        }
         precondition(ChromiumUpdateConfiguration(info: production, isVerification: true, isRehearsal: false) == nil)
         precondition(ChromiumUpdateConfiguration(info: production, isVerification: true, isRehearsal: true) == nil)
         precondition(ChromiumUpdateConfiguration(info: ["SUFeedURL": production["SUFeedURL"]!],

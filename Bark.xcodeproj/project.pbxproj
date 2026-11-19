@@ -47,7 +47,6 @@
 		C1A000000000000000000014 /* Exceptions for "Nook" folder in "BarkNativeShell" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				Info.plist,
 				"Managers/ExtensionManager/README-URLSchemeHandler.md",
 				ThirdParty/AdblockRustFFI/Cargo.lock,
 				ThirdParty/AdblockRustFFI/Cargo.toml,

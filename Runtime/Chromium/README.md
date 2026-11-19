@@ -675,8 +675,17 @@ These commands and the [manual preparation workflow](../../CONTRIBUTING.md#prepa
 prepare files for review. Before publication, verify the installed app and an
 update from the previous release on the matching native Mac. If approved for
 publication, make the DMG available at the appcast’s enclosure URL before
-making that appcast available on the Bark feed. The public Nook transition feed
-continues on its existing URL.
+making that appcast available on the Bark feed.
+
+Existing Nook installations request `kuzaxak/Nook/releases/latest/download/appcast.xml`.
+Keep that asset and its signed Nook download available at the existing endpoint.
+A Bark-only release marked latest in that repository would displace the feed.
+Sparkle 2.8.1 looks for an app with the installed name or bundle ID. An archive
+containing `Bark.app` with ID `ee.qdo.bark` cannot update `Nook.app` in place.
+Renaming the archive member to `Nook.app` would overwrite the existing installation.
+For manual testing, install the signed Bark DMG alongside Nook and open Bark
+from Applications. The signed transition and subsequent update on both native
+architectures still require release qualification.
 
 ### Regression scope and remaining qualification
 

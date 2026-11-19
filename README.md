@@ -15,8 +15,10 @@ check that your session persists. On a Mac where you have only used Arc, Chrome
 or the older WebKit-based Nook, Bark creates its own profile. To bring over
 bookmarks and history from Arc or Chrome, choose **Bark → Import from Another
 Browser…** and select the source. Sign in to websites again after importing.
-The developer commands `bark-check.py smoke` and `bark-check.py launch` use
-temporary profiles for testing.
+You can keep **Nook.app** installed alongside **Bark.app**. To bring a space
+you exported from Nook into Bark, choose **Settings → Spaces → Import Space**
+and select the destination profile. The developer commands `bark-check.py smoke`
+and `bark-check.py launch` use temporary profiles for testing.
 
 This branch builds separate signed developer apps for Intel and Apple Silicon
 on macOS 15.5 and later. Both have rendered a test page on native hardware.

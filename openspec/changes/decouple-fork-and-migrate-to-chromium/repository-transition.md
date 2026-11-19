@@ -1,8 +1,7 @@
 # Repository transition runbook
 
-Preparation only. The source is `kuzaxak/Nook`; the proposed standalone
-destination is `kuzaxak/Barc`. Confirm the destination and its ownership before
-execution. Retain the source repository and its releases through the update
+The source repository is `kuzaxak/Nook`. Confirm the standalone Bark
+repository name and its ownership before execution. Retain the source repository and its releases through the update
 transition. This runbook does not authorize creating, detaching, deleting,
 renaming or publishing a repository.
 
@@ -50,11 +49,13 @@ After explicit authorization for the concrete destination and operation:
    upstream acknowledgements. Set the reviewed default branch and retain the
    source repository until the transition is qualified.
 4. Update release/source/support destinations in `scripts/release.sh`,
-   `.github/workflows/release.yml`, `Nook/Info.plist` and the renamed equivalents.
+   `.github/workflows/release.yml` on the Nook release branch and in Bark’s
+   `scripts/bark_release.py` and `.github/workflows/bark-candidate.yml`.
+   Installed Nook releases retain the feed embedded in their signed Info.plist.
    Review every release-upload, tag check and appcast URL. Configure runner
    access and signing/provisioning for the new repository only after those
    destinations are correct. Reuse the trusted Sparkle key; changing repositories
-   does not justify key rotation. The Barc identity plan owns new App ID,
+   does not justify key rotation. The Bark identity plan owns new App ID,
    CloudKit and provisioning changes.
 
 ## Keep installed clients updateable
@@ -65,7 +66,7 @@ Keep that endpoint and its referenced assets reachable. The `latest` endpoint
 changes when a release becomes latest, so drafts or staging artifacts must not
 replace the production feed accidentally.
 
-Before changing either public feed, rehearse the signed Nook → Barc → next Barc
+Before changing either public feed, rehearse the signed Nook → Bark → next Bark
 sequence and interrupted installation on native Intel and Apple Silicon. Verify
 the real bundle-ID transition, Sparkle trust, destination feed, architecture
 selection and data recovery against the rebrand plan. Only publish the reviewed
@@ -73,7 +74,7 @@ transition after these checks pass. An unsigned build or reachable URL alone
 does not qualify the update path.
 
 Rollback retains the previous signed releases and old feed; it must also retain
-new Barc data without copying it into the old Nook namespace. Do not retire the
+new Bark data without copying it into the old Nook namespace. Do not retire the
 source or detach its fork network as a cleanup step. If detachment is chosen
 instead of the separate destination, obtain approval for its specific metadata
 loss and permanent separation after reviewing the refreshed backup and

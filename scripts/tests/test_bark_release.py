@@ -1,5 +1,7 @@
 """Check update trust, per-architecture routing, and release version independence."""
 
+import base64
+import hashlib
 import plistlib
 import shutil
 import subprocess
@@ -156,7 +158,11 @@ class ReleaseTests(unittest.TestCase):
         self.assertIsNone(production_settings(None, None, None, "arm64"))
         arm = production_settings("1.4.0.2", "102", "https://update.example/bark", "arm64")
         self.assertTrue(arm["SUFeedURL"].endswith("/bark-macos-arm64.xml"))
-        self.assertEqual(arm["SUPublicEDKey"], self.release["SUPublicEDKey"])
+        # SHA-256 of the decoded public key from the Nook v1.5.4 release tag.
+        for settings in (arm, self.release):
+            key = base64.b64decode(settings["SUPublicEDKey"], validate=True)
+            self.assertEqual(hashlib.sha256(key).hexdigest(),
+                             "f46c966e34a796e0a015f6758d9dae06da33a12511108c690567ca8985291ecb")
         for url in ("https://example.com:unknown", "https://example.com:65536",
                     "https://updates.example/a b", "https://updates.example/a?channel=old"):
             with self.subTest(url=url), self.assertRaises(ValueError):
