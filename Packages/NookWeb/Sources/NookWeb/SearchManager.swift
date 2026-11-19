@@ -76,6 +76,38 @@ public class SearchManager {
     private weak var window: BrowserWindowState?
     private weak var historyManager: HistoryManager?
     private var currentSpaceId: UUID?
+    private var resultProfileID: UUID?
+
+    /// A regular editor can belong to a different profile from its window's space.
+    /// A closed, private or superseded editor has no persistent suggestion source.
+    private var suggestionProfileID: UUID? {
+        guard let tabs, let window, !window.isIncognito,
+              tabs.windowRegistry.windows[window.id] === window else { return nil }
+        let profile: UUID?
+        if tabs.profileEngine == .chromium, let target = webSuggestionTarget {
+            guard let page = target.page, target.isCurrent(),
+                  webSuggestionTarget === target, !page.isPrivate,
+                  page.profile?.id == target.profileID else { return nil }
+            profile = target.profileID
+        } else {
+            profile = window.spaceID.flatMap { tabs.tree.dataStoreID(for: $0) }
+        }
+        guard let profile, tabs.isProfileAvailable(profile) else { return nil }
+        return profile
+    }
+
+    @discardableResult
+    public func recordPick(prefix: String, url: URL) -> Bool {
+        guard let profile = suggestionProfileID, profile == resultProfileID, let historyManager else { return false }
+        historyManager.recordPick(prefix: prefix, url: url, fromPrivateWindow: false, profile: profile)
+        return true
+    }
+
+    public func forgetHistory(_ url: URL) -> Bool {
+        guard let profile = suggestionProfileID, profile == resultProfileID, let historyManager else { return false }
+        historyManager.forget(url, profile: profile)
+        return true
+    }
     
     /// What a query searches: everything, or one kind of row (`t `, `h ` or Ctrl+R, a folder chip).
     public enum Scope: Equatable {
@@ -197,10 +229,15 @@ public class SearchManager {
     }
 
     @MainActor public func updateSpaceContext() {
+        let profile = suggestionProfileID
+        if currentSpaceId != window?.spaceID || resultProfileID != profile { clearSuggestions() }
         currentSpaceId = window?.spaceID
+        resultProfileID = profile
     }
     
     @MainActor public func searchSuggestions(for query: String, scope: Scope = .all, includeWebSuggestions: Bool = true) {
+        updateSpaceContext()
+        let profile = resultProfileID
         searchTask?.cancel()
         historyTask?.cancel()
         let generation = UUID()
@@ -214,10 +251,9 @@ public class SearchManager {
             (lowercaseInput.hasPrefix("chrome:") || lowercaseInput.hasPrefix("about:"))
         let requestWebSuggestions = includeWebSuggestions && !internalAddress
         if !requestWebSuggestions { webRows = [] }
-        updateSpaceContext()
         let space = currentSpaceId
         if scope != .all {
-            searchScope(scope, query: query, generation: generation, space: space)
+            searchScope(scope, query: query, generation: generation, profile: profile)
             return
         }
         guard !input.isEmpty else {
@@ -234,10 +270,10 @@ public class SearchManager {
         // Runs outside searchTask's debounce: the inline completion has to keep pace with typing.
         autofillTask?.cancel()
         autofillTask = Task { [weak self] in
-            guard let self, let historyManager = self.historyManager else { return }
-            let host = await historyManager.autofillHost(prefix: query.trimmingCharacters(in: .whitespacesAndNewlines))
+            guard let self, let profile, let historyManager = self.historyManager else { return }
+            let host = await historyManager.autofillHost(prefix: query.trimmingCharacters(in: .whitespacesAndNewlines), profile: profile)
             guard !Task.isCancelled, self.searchGeneration == generation,
-                  self.window?.spaceID == space else { return }
+                  self.window?.spaceID == space, self.suggestionProfileID == profile else { return }
             self.autofillHost = host
         }
 
@@ -256,42 +292,43 @@ public class SearchManager {
         // History is a local lookup, so it runs on this keystroke rather than waiting for a pause
         // in typing. Only the network request is debounced.
         historyTask = Task { [weak self] in
-            guard let self else { return }
+            guard let self, let profile else { return }
             // Spare rows, for when the first three turn out to be open tabs.
-            let history = Array(await self.searchHistory(for: query).prefix(6))
+            let history = Array(await self.searchHistory(for: query, profile: profile).prefix(6))
             guard !Task.isCancelled, self.searchGeneration == generation,
-                  self.window?.spaceID == space else { return }
+                  self.window?.spaceID == space, self.suggestionProfileID == profile else { return }
+            let local = await self.searchLocalServers(for: query, profile: profile)
+            guard !Task.isCancelled, self.searchGeneration == generation, self.suggestionProfileID == profile else { return }
             self.historyRows = history
-            self.localRows = await self.searchLocalServers(for: query)
-            guard !Task.isCancelled, self.searchGeneration == generation else { return }
+            self.localRows = local
             self.compose(tabs: tabs)
             // Page text second, so title and URL matches paint without waiting on it.
-            let text = await self.searchPageText(for: query)
+            let text = await self.searchPageText(for: query, profile: profile)
             guard !Task.isCancelled, self.searchGeneration == generation,
-                  self.window?.spaceID == space else { return }
+                  self.window?.spaceID == space, self.suggestionProfileID == profile else { return }
             self.textRows = text
             self.compose(tabs: tabs)
         }
 
         // Inline address editing may request local history only. In particular, a
         // complete URL must not be sent to the remote suggestion provider.
-        guard requestWebSuggestions else { return }
+        guard requestWebSuggestions, let profile else { return }
         isLoading = true
         searchTask = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(125)) } catch { return }
             guard let self, !Task.isCancelled else { return }
-            let webSuggestions = await self.fetchWebSuggestions(for: query)
-            guard !Task.isCancelled, self.searchGeneration == generation,
-                  self.window?.spaceID == space else { return }
+            let webSuggestions = await self.fetchWebSuggestions(for: query, profileID: profile)
+            guard !Task.isCancelled, self.searchGeneration == generation else { return }
+            self.isLoading = false
+            guard self.window?.spaceID == space, self.suggestionProfileID == profile else { return }
             self.webRows = webSuggestions
             self.compose(tabs: tabs)
-            self.isLoading = false
         }
     }
 
     /// One kind of row, up to `scopedLimit`: tabs grouped by space, history by rank, or a
     /// folder's contents (its sub-folders, then links) and, once typing, every link under it.
-    @MainActor private func searchScope(_ scope: Scope, query: String, generation: UUID, space: UUID?) {
+    @MainActor private func searchScope(_ scope: Scope, query: String, generation: UUID, profile: UUID?) {
         autofillTask?.cancel()
         autofillHost = nil
         historyRows = []
@@ -306,17 +343,18 @@ public class SearchManager {
         case .folder(let folderID):
             updateSuggestionsIfNeeded(folderRows(folderID, query: query))
         case .history:
+            guard profile != nil else { updateSuggestionsIfNeeded([]); return }
             historyTask = Task { [weak self] in
-                guard let self, let historyManager = self.historyManager else { return }
+                guard let self, let profile, let historyManager = self.historyManager else { return }
                 let rows: [SearchSuggestion]
                 if query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    rows = await historyManager.getHistory(days: 7, limit: Self.scopedLimit).entries.map {
+                    rows = await historyManager.getHistory(days: 7, limit: Self.scopedLimit, profile: profile).entries.map {
                         SearchSuggestion(text: $0.displayTitle, type: .history($0), section: "History")
                     }
                 } else {
-                    rows = await self.searchHistory(for: query)
+                    rows = await self.searchHistory(for: query, profile: profile)
                 }
-                guard !Task.isCancelled, self.searchGeneration == generation, self.window?.spaceID == space else { return }
+                guard !Task.isCancelled, self.searchGeneration == generation, self.suggestionProfileID == profile else { return }
                 self.updateSuggestionsIfNeeded(Array(rows.prefix(Self.scopedLimit)))
             }
         }
@@ -347,21 +385,21 @@ public class SearchManager {
 
     /// One row per local server origin the query asks for, ranked by how often and how
     /// recently each port was used.
-    @MainActor private func searchLocalServers(for query: String) async -> [SearchSuggestion] {
+    @MainActor private func searchLocalServers(for query: String, profile: UUID) async -> [SearchSuggestion] {
         guard let historyManager, PaletteText.isLocalServerQuery(query) else { return [] }
         let family = query.trimmingCharacters(in: .whitespaces).hasPrefix("1") ? "127.0.0.1" : "localhost"
-        let rows = await historyManager.indexRows(matching: family) ?? []
+        let rows = await historyManager.indexRows(matching: family, profile: profile) ?? []
         return PaletteText.localOrigins(rows.map { ($0.url, $0.key) }, typed: query).prefix(3).map {
             SearchSuggestion(text: $0, type: .url, section: "Local Servers")
         }
     }
 
     /// History rows found by words in the page's text, when that setting is on.
-    @MainActor private func searchPageText(for query: String) async -> [SearchSuggestion] {
+    @MainActor private func searchPageText(for query: String, profile: UUID) async -> [SearchSuggestion] {
         guard let historyManager, tabs?.settings.searchPageTextInHistory == true,
               query.trimmingCharacters(in: .whitespacesAndNewlines).count >= 3 else { return [] }
         // Spare rows for the ones the dedupe in compose drops.
-        return await historyManager.searchPageText(query: query, limit: 8).map {
+        return await historyManager.searchPageText(query: query, limit: 8, profile: profile).map {
             SearchSuggestion(text: $0.displayTitle, type: .history($0), section: "Page Text")
         }
     }
@@ -504,10 +542,10 @@ public class SearchManager {
         return ranked.prefix(Self.scopedLimit).map(\.element.row)
     }
 
-    @MainActor private func searchHistory(for query: String) async -> [SearchSuggestion] {
+    @MainActor private func searchHistory(for query: String, profile: UUID) async -> [SearchSuggestion] {
         guard let historyManager = historyManager else { return [] }
         let open = Set(tabs?.sessions.map { Self.pageKey($0.url) } ?? [])
-        if let ranked = await historyManager.searchIndex(query: query, limit: 30, isOpen: { url in
+        if let ranked = await historyManager.searchIndex(query: query, limit: 30, profile: profile, isOpen: { url in
             URL(string: url).map { open.contains(Self.pageKey($0)) } ?? false
         }) {
             return ranked.map { SearchSuggestion(text: $0.displayTitle, type: .history($0), section: "History") }
@@ -515,7 +553,7 @@ public class SearchManager {
 
         let words = Self.words(of: query)
         // Enough matches that the sort below, not recency alone, picks the rows shown.
-        let historyEntries = await historyManager.searchHistory(query: query, offset: 0, limit: 100)
+        let historyEntries = await historyManager.searchHistory(query: query, offset: 0, limit: 100, profile: profile)
         
         let matchingHistory = historyEntries.entries.map {
             SearchSuggestion(text: $0.displayTitle, type: .history($0), section: "History")
@@ -547,34 +585,10 @@ public class SearchManager {
         return sortedHistory
     }
     
-    private func fetchWebSuggestions(for query: String) async -> [SearchSuggestion] {
-        // Every keystroke goes to the endpoint, so a private window sends none, and an engine
-        // only hears from people who chose it. Unknown window or settings: send nothing. Kagi's
-        // endpoint answers without the session token, so the token never leaves for it.
-        guard let window, !window.isIncognito, let tabs else { return [] }
-        let spaceID = window.spaceID
-        let target = tabs.profileEngine == .chromium ? webSuggestionTarget : nil
-        let profileID: UUID
-        if let target {
-            guard let captured = target.profileID else { return [] }
-            profileID = captured
-        } else {
-            guard let spaceID, let captured = tabs.tree.dataStoreID(for: spaceID) else { return [] }
-            profileID = captured
-        }
-        func current() -> Bool {
-            guard !Task.isCancelled, self.window === window, !window.isIncognito,
-                  self.tabs === tabs, tabs.isProfileAvailable(profileID) else { return false }
-            if let target {
-                guard self.webSuggestionTarget === target, let page = target.page,
-                      !page.isPrivate, page.profile?.id == profileID else { return false }
-                return target.isCurrent() && self.webSuggestionTarget === target &&
-                    target.page === page && !page.isPrivate && page.profile?.id == profileID && !Task.isCancelled
-            }
-            return self.webSuggestionTarget == nil && window.spaceID == spaceID &&
-                window.spaceID.flatMap({ tabs.tree.dataStoreID(for: $0) }) == profileID
-        }
-        guard tabs.profileEngine != .chromium || current() else { return [] }
+    private func fetchWebSuggestions(for query: String, profileID: UUID) async -> [SearchSuggestion] {
+        guard let window, let tabs else { return [] }
+        func current() -> Bool { !Task.isCancelled && suggestionProfileID == profileID }
+        guard current() else { return [] }
         func effective() async -> ProfileSearchState? {
             await withCheckedContinuation { continuation in
                 tabs.profileSearchState(profileID: profileID, includeChoices: false) { continuation.resume(returning: try? $0.get()) }

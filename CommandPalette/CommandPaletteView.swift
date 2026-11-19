@@ -35,6 +35,15 @@ extension AddressEditTarget {
 }
 
 struct CommandPaletteView: View {
+    private enum Presentation: Equatable {
+        case closed
+        case open(addressEditID: UUID?)
+    }
+
+    private var presentation: Presentation {
+        commandPalette.isVisible ? .open(addressEditID: commandPalette.addressEdit?.id) : .closed
+    }
+
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(BrowserWindowState.self) private var windowState
     @Environment(CommandPalette.self) private var commandPalette
@@ -320,11 +329,16 @@ struct CommandPaletteView: View {
         .allowsHitTesting(isVisible)
         .opacity(isVisible ? 1.0 : 0.0)
         .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
-        .onChange(of: commandPalette.isVisible, initial: isNative) { oldVisible, newVisible in
-            if newVisible {
+        .onChange(of: presentation, initial: isNative) { previous, current in
+            if current != .closed {
                 pickedTabFocus = nil
                 searchManager.setTabs(browserManager.tabs, window: windowState)
                 searchManager.setHistoryManager(browserManager.historyManager)
+                if isNative, let editor = commandPalette.addressEdit, let page = browserManager.frontPage(in: windowState) {
+                    searchManager.setWebSuggestionTarget(for: page) { editor.isCurrent }
+                } else {
+                    searchManager.clearWebSuggestionTarget()
+                }
                 searchManager.updateSpaceContext()
 
                 text = commandPalette.prefilledText
@@ -344,13 +358,13 @@ struct CommandPaletteView: View {
             } else {
                 isSearchFocused = false
                 // Without this the field editor keeps first responder and Space no longer scrolls the page.
-                if oldVisible, pickedTabFocus == nil, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
+                if previous != .closed, pickedTabFocus == nil, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
                    let page = browserManager.frontPage(in: windowState),
                    let native = page.navigation as? ChromiumPageNavigation,
                    browserManager.tabs.nativePageHost?.isNativeSelection(native, in: windowState) == true {
                     _ = native.selectNativePage()
                 }
-                searchManager.clearSuggestions()
+                searchManager.clearWebSuggestionTarget()
                 text = ""
                 activeSiteSearch = nil
                 scope = nil
@@ -744,7 +758,7 @@ struct CommandPaletteView: View {
         case .folder(let folder):
             browserManager.tabs.reveal(folder.itemID, in: windowState)
         case .history(let historyEntry):
-            browserManager.historyManager.recordPick(prefix: text, url: historyEntry.url, fromPrivateWindow: windowState.isIncognito)
+            guard searchManager.recordPick(prefix: text, url: historyEntry.url) else { return }
             open(historyEntry.url)
         case .url, .search:
             if isNative, browserManager.openPasswordManagementCommand(
@@ -1027,7 +1041,7 @@ struct CommandPaletteView: View {
             return
         }
         if let url = URL(string: "nook-action:\(action.rawValue)") {
-            browserManager.historyManager.recordPick(prefix: text, url: url, fromPrivateWindow: windowState.isIncognito)
+            searchManager.recordPick(prefix: text, url: url)
         }
         let tabs = browserManager.tabs
         let selected = windowState.selectedItemID
@@ -1145,7 +1159,7 @@ struct CommandPaletteView: View {
             selectSuggestion(row)
             return
         }
-        if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url, fromPrivateWindow: windowState.isIncognito) }
+        if case .history = row.type, !searchManager.recordPick(prefix: text, url: url) { return }
         browserManager.tabs.open(url: url, in: windowState, placement: .background)
     }
 
@@ -1160,7 +1174,7 @@ struct CommandPaletteView: View {
         } else if let query = nativeSearchQuery(for: row) {
             itemID = browserManager.tabs.openSearch(query, in: windowState, placement: .background)
         } else if let url = url(for: row) {
-            if case .history = row.type { browserManager.historyManager.recordPick(prefix: text, url: url, fromPrivateWindow: windowState.isIncognito) }
+            if case .history = row.type, !searchManager.recordPick(prefix: text, url: url) { return }
             itemID = browserManager.tabs.open(url: url, in: windowState, placement: .background)
         } else {
             itemID = nil
@@ -1241,8 +1255,7 @@ struct CommandPaletteView: View {
 
     /// Shift-Delete on a history row forgets that page and puts the typed text back.
     private func removeSelectedHistoryRow() -> Bool {
-        guard case .history(let entry) = highlightedRow?.type else { return false }
-        browserManager.historyManager.forget(entry.url)
+        guard case .history(let entry) = highlightedRow?.type, searchManager.forgetHistory(entry.url) else { return false }
         selectedSuggestionIndex = -1
         search(text)
         return true

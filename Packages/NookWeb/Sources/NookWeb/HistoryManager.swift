@@ -120,8 +120,8 @@ public final class HistoryManager {
     }
 
     /// Paged by offset, so a caller that deleted rows it already shows asks for exactly the next ones.
-    public func getHistory(days: Int = 7, offset: Int = 0, limit: Int = 50) async -> (entries: [HistoryEntry], hasMore: Bool) {
-        let profile = currentProfileId
+    public func getHistory(days: Int = 7, offset: Int = 0, limit: Int = 50, profile: UUID? = nil) async -> (entries: [HistoryEntry], hasMore: Bool) {
+        let profile = profile ?? currentProfileId
         await pendingWrite?.value
         return await storeTask.value.history(days: days, profile: profile, offset: offset, limit: limit)
     }
@@ -130,8 +130,8 @@ public final class HistoryManager {
         await searchHistory(query: query, offset: 0, limit: 1000).entries
     }
 
-    public func searchHistory(query: String, offset: Int = 0, limit: Int = 50) async -> (entries: [HistoryEntry], hasMore: Bool) {
-        let profile = currentProfileId
+    public func searchHistory(query: String, offset: Int = 0, limit: Int = 50, profile: UUID? = nil) async -> (entries: [HistoryEntry], hasMore: Bool) {
+        let profile = profile ?? currentProfileId
         await pendingWrite?.value
         guard !Task.isCancelled else { return ([], false) }
         return await storeTask.value.search(query: query, profile: profile, offset: offset, limit: limit)
@@ -140,8 +140,8 @@ public final class HistoryManager {
     /// Bare host for omnibox inline autofill, e.g. `facebo` -> `facebook.com`. Nil when nothing qualifies.
     /// Skips the pending-write await the other reads take: a keystroke-rate query wants speed, and a
     /// host that is one visit stale autofills the same either way.
-    public func autofillHost(prefix: String, minVisits: Int = 2) async -> String? {
-        let profile = currentProfileId
+    public func autofillHost(prefix: String, minVisits: Int = 2, profile: UUID? = nil) async -> String? {
+        let profile = profile ?? currentProfileId
         guard !Task.isCancelled else { return nil }
         return await storeTask.value.autofillHost(prefix: prefix, profile: profile, minVisits: minVisits)
     }
@@ -193,10 +193,10 @@ public final class HistoryManager {
     }
 
     /// Forgets a page this space sees, from the history store and the index alike.
-    public func forget(_ url: URL) {
+    public func forget(_ url: URL, profile: UUID? = nil) {
         let pageText = pageText
         let index = index
-        let profile = currentProfileId
+        let profile = profile ?? currentProfileId
         let key = url.absoluteString
         enqueue { store in
             await store.delete(url: key, profile: profile)
@@ -209,9 +209,9 @@ public final class HistoryManager {
 
     /// Pages matching every word of `query` as a prefix, ranked by frecency, match quality,
     /// open tabs (`isOpen`) and past picks. Nil when the index is unavailable.
-    public func searchIndex(query: String, limit: Int, isOpen: @escaping (String) -> Bool) async -> [HistoryEntry]? {
+    public func searchIndex(query: String, limit: Int, profile: UUID? = nil, isOpen: @escaping (String) -> Bool) async -> [HistoryEntry]? {
         guard let index else { return nil }
-        let profile = currentProfileId
+        let profile = profile ?? currentProfileId
         await pendingWrite?.value
         guard !Task.isCancelled, let rows = await index.search(query, profile: profile) else { return nil }
         let picks = await index.picks(profile: profile)
@@ -220,17 +220,17 @@ public final class HistoryManager {
     }
 
     /// Index rows matching `query`, highest key first, before ranking. Nil when the index is unavailable.
-    public func indexRows(matching query: String) async -> [IndexedVisit]? {
+    public func indexRows(matching query: String, profile: UUID? = nil) async -> [IndexedVisit]? {
         guard let index else { return nil }
-        let profile = currentProfileId
+        let profile = profile ?? currentProfileId
         return await index.search(query, profile: profile)
     }
 
     /// Remembers that `url` was chosen in the palette after typing `prefix`. A private window's
     /// typing is not kept.
-    public func recordPick(prefix: String, url: URL, fromPrivateWindow: Bool) {
+    public func recordPick(prefix: String, url: URL, fromPrivateWindow: Bool, profile: UUID? = nil) {
         guard !fromPrivateWindow, let index else { return }
-        let profile = currentProfileId
+        let profile = profile ?? currentProfileId
         let key = HistoryIndex.cleanURL(url).absoluteString
         let date = Date()
         enqueue { _ in await index.recordPick(prefix: prefix, url: key, profile: profile, at: date) }

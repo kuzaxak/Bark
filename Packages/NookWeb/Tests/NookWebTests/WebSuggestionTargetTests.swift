@@ -1,6 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 import Foundation
 import Observation
+import SwiftData
 import Testing
 import NookBlocker
 import NookSettings
@@ -130,6 +131,69 @@ private struct SuggestionNoTokens: KagiTokenStore {
 @Suite(.serialized)
 @MainActor
 struct WebSuggestionTargetTests {
+    @Test(.timeLimit(.minutes(1)), arguments: [true, false])
+    func paletteHistoryUsesTheEditingProfileAcrossWindows(indexed: Bool) async throws {
+        let f = try SuggestionFixture()
+        defer { f.close() }
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let indexURL = directory.appendingPathComponent("HistoryIndex.sqlite")
+        let container = try ModelContainer(for: HistoryEntity.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let history = HistoryManager(context: container.mainContext, profileId: f.workProfile, indexURL: indexed ? indexURL : nil)
+        f.manager.setHistoryManager(history)
+        let url = URL(string: "https://inbox.invalid/history")!
+        await history.importVisitsAndWait([
+            HistoryVisit(url: url, title: "Inbox Work", timestamp: Date(), tabId: nil, profileId: f.workProfile),
+            HistoryVisit(url: url, title: "Inbox Personal", timestamp: Date(), tabId: nil, profileId: f.personalProfile)
+        ])
+
+        func result(query: String) async -> [String] {
+            f.manager.clearSuggestions()
+            f.manager.searchSuggestions(for: query, scope: .history, includeWebSuggestions: false)
+            return await withCheckedContinuation { continuation in
+                @MainActor func readResults() {
+                    let rows = f.manager.suggestions.map(\.text)
+                    guard rows.isEmpty else { continuation.resume(returning: rows); return }
+                    withObservationTracking {
+                        _ = f.manager.suggestions
+                    } onChange: {
+                        Task { @MainActor in readResults() }
+                    }
+                }
+                readResults()
+            }
+        }
+        #expect(await result(query: "inbox") == ["Inbox Personal"])
+        #expect(await result(query: "") == ["Inbox Personal"])
+        history.switchProfile(f.personalProfile)
+        var stillEditing = true
+        f.manager.setWebSuggestionTarget(for: f.workPage) { stillEditing }
+        #expect(await result(query: "inbox") == ["Inbox Work"])
+        #expect(f.manager.recordPick(prefix: "inbox", url: url))
+        _ = await history.getHistory()
+        if indexed {
+            let reader = HistoryIndex(fileURL: indexURL, halfLife: 86_400)
+            #expect(await reader.picks(profile: f.workProfile).map(\.prefix) == ["inbox"])
+            #expect(await reader.picks(profile: f.personalProfile).isEmpty)
+        }
+        stillEditing = false
+        #expect(!f.manager.forgetHistory(url))
+        #expect(!f.manager.recordPick(prefix: "stale", url: url))
+        f.manager.searchSuggestions(for: "inbox", scope: .history)
+        #expect(f.manager.suggestions.isEmpty)
+
+        f.manager.clearWebSuggestionTarget()
+        history.switchProfile(f.workProfile)
+        #expect(await result(query: "inbox") == ["Inbox Personal"])
+        #expect(f.manager.forgetHistory(url))
+        #expect(await history.getHistory(profile: f.personalProfile).entries.isEmpty)
+        #expect(await history.getHistory(profile: f.workProfile).entries.map(\.title) == ["Inbox Work"])
+        f.window.isIncognito = true
+        f.manager.searchSuggestions(for: "inbox", scope: .history)
+        #expect(f.manager.suggestions.isEmpty && !f.manager.forgetHistory(url))
+    }
+
     @Test(.timeLimit(.minutes(1))) func browserManagementAddressesStayOutOfRemoteSuggestions() async throws {
         let f = try SuggestionFixture(); defer { f.close() }
         _ = await f.nextRequest { f.manager.searchSuggestions(for: "ordinary query") }
