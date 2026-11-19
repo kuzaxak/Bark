@@ -248,6 +248,25 @@ ten-second shutdown flush and checks the exit status and remaining helpers.
 python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)/quit
 ```
 
+The bulk unload walk edits a disposable form, switches tabs, and invokes
+**Unload All Inactive Tabs** in Settings. It checks the reported counts and
+returns to the same editable document. The Build Information walk checks the
+native Help dialog against the signed app, its framework and the checkout’s
+architecture-specific SDK pin.
+
+```fish
+python3 Tests/ChromiumInactiveUnload/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/unload
+python3 Tests/ChromiumAppMenu/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/build-info
+```
+
+The animation walk counts frames before parking, while a different tab is
+visible, and after returning to the same edited document. Add `--split` to
+keep two other panes visible and check that both continue to animate.
+
+```fish
+python3 Tests/ChromiumAnimation/walk.py --split --verify-sdk --app build/Bark.app --output (mktemp -d)/animation
+```
+
 The sidebar startup walk holds the first page response open until the sidebar
 hides. It sends Command-S on a fresh launch, then clicks the sidebar button
 as the first input on relaunch. Each launch restores the sidebar and measures

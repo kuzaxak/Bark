@@ -45,12 +45,14 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 ## 3a. Shared smart-tab policy (after G2, before G4 completion)
 
 - [ ] 3a.1 Unify automatic and bulk resource actions behind one eligibility policy; test muted screen sharing, camera/mic, audio, PiP/mini-player, unsaved edits, uploads, unknown work state and explicit keep-active preferences.
+  Signed Intel Bark reproduced the loss of a hidden edited document on bulk unload. The fixed action retained the original document, editability and draft, and reported the tab with unknown activity. The model tests also cover muted capture and known media.
 - [ ] 3a.2 Implement lazy session restoration and a bounded eligible warm set; verify a large session does not create all live pages at startup and selected-tab restoration outranks queued warming.
 - [ ] 3a.3 Add serialized freeze/discard/restore transitions and cancellation; verify teardown completion, no leaked page/view owners, profile/history continuity, restoration when returning to an inactive space without another tab click, and no late callback reviving a closed page.
 - [ ] 3a.4 Separate pin/favorite placement from residency preferences and expose lifecycle reasons; verify protected over-budget cases remain active and are reported without recording page content.
 - [ ] 3a.5 Adapt the policy to WebKit first and coordinate Chromium memory-saver ownership in the Chromium adapter; verify automatic and bulk engine decisions cannot bypass protected activity, inactive spaces' last selected pages remain subject to the background budget, and disabling optional policies cancels their pending actions.
 - [ ] 3a.6 Compare the existing and candidate policies on matched 1/10/50-tab workloads on both architectures; report aggregate footprint, CPU, restoration latency and media/capture continuity together before changing defaults.
 - [ ] 3a.7 Propagate actual presentation visibility at page creation, selection, navigation and window transfer; verify zero continuing animation-frame callbacks in hidden documents, live resumption without lost drafts, and continued animation for pages still displayed elsewhere.
+  Signed Intel Bark stopped hidden animation, resumed the same editable document and kept both visible split panes animating. Hidden navigation and transfers between windows remain to be qualified.
 - [ ] 3a.8 Expose persistent controls for optional resource optimizations through the existing performance settings; verify live policy changes, relaunch persistence, disabled optional actions and unchanged protection/visibility guarantees.
 
 ## 4. Chromium pages and profiles (G3)
@@ -127,6 +129,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 8.4 Extend inside-out signing, provisioning validation and notarization for runtime helpers; verify installed launch, sandbox and Gatekeeper acceptance on both architectures.
 - [ ] 8.5 Exercise a signed application update and recovery with realistic profile data; verify the correct architecture receives a compatible package.
 - [ ] 8.6 Add version/provenance diagnostics, license notices and an engine-update runbook; rehearse one engine bump through the smoke and extension gates.
+  Signed Intel Bark’s Help menu reports the app build, Chromium version, architecture and verified engine manifest digest. The target-specific packaging tests cover both architectures.
 
 ## 9. Integrated qualification (G6)
 

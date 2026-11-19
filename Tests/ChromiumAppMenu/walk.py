@@ -41,6 +41,7 @@ def main():
             copy = access.control("Copy", ("AXButton",), root=window)
             if not access.attribute(copy, "AXEnabled"):
                 raise RuntimeError("Build Information cannot be copied")
+            screen.screenshot(output / "build-information.png", include_owned_windows=True)
             (output / "build-information.txt").write_text("\n".join(expected) + "\n")
             access.press(done)
             wait_for("Build Information did not close", lambda: access.find("Done", ("AXButton",)) is None, process)
