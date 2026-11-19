@@ -14,7 +14,8 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   defer {defaults.removePersistentDomain(forName:name);try? FileManager.default.removeItem(at:root)}
   let settings=NookSettingsService(kagiTokenStore:NoToken(),userDefaults:defaults,boostStore:BoostStore(fileURL:root.appendingPathComponent("Boosts.json")))
   let registry=WindowRegistry()
-  let tabs=TabsController(settings:settings,windowRegistry:registry,blocker:ContentBlockerManager(settings:settings),
+  let blocker = ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker"))
+  let tabs=TabsController(settings:settings,windowRegistry:registry,blocker:blocker,
    siteRouting:SiteRoutingManager(settings:settings),directory:root.appendingPathComponent("Tabs"))
   let work=tabs.tree.orderedSpaces.first!.id
   let personal=tabs.createSpace(name:"Personal",icon:"",accentHex:"#123456",after:work)!
