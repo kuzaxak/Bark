@@ -214,11 +214,17 @@ The walk also exercises the connected provider’s management button.
 A second run selects a legacy provider. It submits
 both logins and dismisses both manual management cards,
 then checks that the browser attempted no password writes.
+Both walks also inspect Chromium’s profile and account login databases in the
+disposable directory after quit. They record only database and row counts.
 
 ```fish
 python3 Tests/ChromiumVaultSave/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/vault
 python3 Tests/ChromiumVaultSave/walk.py --legacy-provider --verify-sdk --app build/Bark.app --output (mktemp -d)/legacy-vault
 ```
+
+For a provider-capable SDK, add `--require-exclusive` to require that Bark
+selected Pawl before the first page opened. The release option
+`--require-official` includes this check and verifies the SDK provenance.
 
 The extension walk installs a local fixture, opens its pinned action from
 both toolbar positions, and exercises Cancel and Remove in Manage Extensions.

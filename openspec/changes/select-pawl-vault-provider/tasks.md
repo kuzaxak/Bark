@@ -15,6 +15,7 @@
 ## 3. Chromium passwords
 
 - [ ] 3.1 Separate parsing and validated submissions from stock credential delivery. Seed distinct synthetic matching logins and verify only the selected manager fills, auto-signs in, suggests, generates or writes, including when Pawl is closed and before a tab is attached.
+  Both signed Intel walks on the pinned SDK inspected Chromium's profile and account login databases after quit. The conditional provider created and updated an account, and the legacy provider offered manual management. All Chromium login stores had zero rows in both disposable runs. The seeded Chromium credential and disconnected-provider checks still require the exclusive engine.
 - [ ] 3.2 Preserve native field, frame, origin and profile checks. Verify scripted focus alone cannot open the chooser, genuine keyboard and mouse input can, and a stale pane or private session cannot receive a late write.
   The engine candidate binds mouse or Tab focus to the document and field. A native Down Arrow on that field reopens the picker. The gesture and cross-frame regressions still need a run with that engine.
 - [ ] 3.3 Add a safely targeted password update with owner approval and explicit old-provider handling. Verify two matching usernames, a concurrent edit and a redirect, and check both stores after cancellation and success.

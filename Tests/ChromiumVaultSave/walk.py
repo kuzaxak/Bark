@@ -3,11 +3,12 @@
 
 from base64 import b64decode, urlsafe_b64encode
 from binascii import Error as Base64Error
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
 import plistlib
+import sqlite3
 import subprocess
 import sys
 from threading import Thread
@@ -596,12 +597,36 @@ def prepare_fixture(root, origin, app, profile, *, legacy_provider):
     (engine_profile / "Preferences").write_text(json.dumps({
         "profile": {"password_manager_leak_detection": False},
     }) + "\n")
+    return engine_profile
+
+
+def check_chromium_stores(engine_profile, output):
+    # Web Data is created by Chromium Autofill in the profile the walk used.
+    # Login stores can legitimately be absent when the external provider owns them.
+    engine = engine_profile.parent
+    if not (engine / "Local State").is_file() or not (engine_profile / "Web Data").is_file():
+        raise RuntimeError("Could not identify the Chromium profile used by the vault walk")
+    counts = {}
+    for name in ("Login Data", "Login Data For Account"):
+        databases = sorted(engine.glob(f"*/{name}"))
+        rows = 0
+        for path in databases:
+            if not path.resolve().is_relative_to(engine.resolve()):
+                raise RuntimeError("A login store is outside the disposable Chromium directory")
+            with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True)) as db:
+                rows += db.execute("SELECT COUNT(*) FROM logins").fetchone()[0]
+        counts[name] = {"databases": len(databases), "login_rows": rows}
+    (output / "chromium-logins.json").write_text(json.dumps(counts, indent=2) + "\n")
+    if any(store["login_rows"] for store in counts.values()):
+        raise RuntimeError("Chromium stored a login during the disposable Pawl walk")
+    print("Verified zero saved rows in Chromium’s profile and account login stores", flush=True)
 
 
 def main():
     legacy_provider = False
     require_exclusive = False
     server = None
+    engine_profile = None
 
     @contextmanager
     def serve_candidate():
@@ -622,13 +647,17 @@ def main():
         return options
 
     def prepare(root, origin, app, profile):
-        prepare_fixture(root, origin, app, profile, legacy_provider=legacy_provider)
+        nonlocal engine_profile
+        engine_profile = prepare_fixture(root, origin, app, profile, legacy_provider=legacy_provider)
 
     def run(screen, process, events, output):
         if not legacy_provider:
             server.assertion_log = output / "app.log"
         exercise(screen, process, events, output, legacy_provider=legacy_provider,
                  require_exclusive=require_exclusive)
+        if process.wait(timeout=30) != 0:
+            raise RuntimeError("Bark did not quit cleanly before the Chromium store check")
+        check_chromium_stores(engine_profile, output)
 
     return run_walk(
         "Signed Pawl password and code fill, save, update and passkey assertion", "vault", serve_candidate, run,
