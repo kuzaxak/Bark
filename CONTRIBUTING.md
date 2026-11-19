@@ -164,6 +164,15 @@ ten-second shutdown flush and checks the exit status and remaining helpers.
 python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)/quit
 ```
 
+The sidebar startup walk holds the first page response open until the sidebar
+hides. It sends Command-S on a fresh launch, then clicks the sidebar button
+as the first input on relaunch. Each launch restores the sidebar and measures
+the change in width of the same page.
+
+```fish
+python3 Tests/ChromiumStartup/sidebar_walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/sidebar
+```
+
 To measure first input and return to a parked tab on an official candidate,
 install its pinned native SDK and run the startup walk on the same Mac.
 Grant Screen Recording access to the process running the walk, in addition
