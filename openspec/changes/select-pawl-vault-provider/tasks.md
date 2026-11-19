@@ -4,6 +4,7 @@
 
 - [x] 1.1 Route Profiles password management to the running provider and distinguish refusal, lock and unavailability in Privacy. Exercise both profile routes and a pending provider change.
 - [ ] 1.2 Publish the saved choice before Chromium starts and hold it for the process lifetime in the native vault service. Verify against both the pinned consumer SDK and a provider-capable engine, including a disposable verification launch.
+  The signed vault walk requires the launch-time selection and connected Pawl status for official qualification. The signed Intel app on the older SDK showed the compatibility notice and failed this check as expected. A run with the provider-capable SDK remains pending.
 
 ## 2. Signed Pawl client
 

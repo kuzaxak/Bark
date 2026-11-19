@@ -254,7 +254,37 @@ class CandidateControls:
         (output / "accessibility.json").write_text(json.dumps(labels, indent=2))
 
 
-def exercise(screen, process, events, output, *, legacy_provider):
+def open_password_settings(controls):
+    controls.screen.keys[","] = 43
+    controls.screen.key(",", controls.screen.command)
+    general = controls.require("General", ("AXWindow",))
+    controls.press("Privacy", root=general)
+    settings = controls.require("Privacy", ("AXWindow",))
+    controls.require("Connected", root=settings, partial=True)
+    return settings
+
+
+def close_settings(controls, settings):
+    close = controls.attribute(settings, "AXCloseButton")
+    if close is None:
+        raise RuntimeError("Missing native Settings window close button")
+    controls.screen.press_button(close)
+    wait_for("Privacy settings stayed open after Close",
+             lambda: not controls.find("Privacy", ("AXWindow",)), controls.process)
+
+
+def require_exclusive_pawl(controls, settings, output):
+    if controls.find("Pawl Vault works alongside Chromium", (), partial=True, root=settings):
+        raise RuntimeError("This signed Bark uses Pawl alongside Chromium. Exclusive provider selection requires a newer SDK.")
+    # The relaunch notice requires an engine-selected provider, and Connected
+    # appears only when Pawl is the active provider for this session.
+    controls.require("Quit and reopen Bark to change password providers.", root=settings, partial=True)
+    controls.require("Connected", root=settings)
+    controls.screen.screenshot(output / "pawl-provider-at-launch.png", include_owned_windows=True)
+    print("Verified that the signed app selected Pawl at engine startup", flush=True)
+
+
+def exercise(screen, process, events, output, *, legacy_provider, require_exclusive):
     controls = CandidateControls(screen, process)
     log = output / "app.log"
 
@@ -304,6 +334,10 @@ def exercise(screen, process, events, output, *, legacy_provider):
         expected_mode = (0, 1) if legacy_provider else (1, 0)
         if (method("conditional login writes"), method("legacy login writes")) != expected_mode:
             raise RuntimeError("The signed fixture selected the wrong login-write mode")
+        if require_exclusive:
+            settings = open_password_settings(controls)
+            require_exclusive_pawl(controls, settings, output)
+            close_settings(controls, settings)
         controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
         picker = controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
         time.sleep(0.5)
@@ -496,12 +530,7 @@ def exercise(screen, process, events, output, *, legacy_provider):
         if "leak_detection_request" in log.read_text(errors="replace"):
             raise RuntimeError("Chromium attempted a password leak check in the disposable fixture")
 
-        screen.keys[","] = 43
-        screen.key(",", screen.command)
-        general = controls.require("General", ("AXWindow",))
-        controls.press("Privacy", root=general)
-        settings = controls.require("Privacy", ("AXWindow",))
-        controls.require("Connected", root=settings, partial=True)
+        settings = open_password_settings(controls)
         manage = controls.require("Open Pawl Vault", ("AXButton",), root=settings)
         if not controls.attribute(manage, "AXEnabled"):
             raise RuntimeError("A connected vault could not be opened from Passwords settings")
@@ -511,11 +540,7 @@ def exercise(screen, process, events, output, *, legacy_provider):
         controls.require("Open Pawl Vault from Applications")
         controls.press("OK")
         print("Used the connected vault’s management action and verified its fallback in the disposable app", flush=True)
-        close_settings = controls.attribute(settings, "AXCloseButton")
-        if close_settings is None:
-            raise RuntimeError("Missing native Settings window close button")
-        screen.press_button(close_settings)
-        wait_for("Privacy settings stayed open after Close", lambda: not controls.find("Privacy", ("AXWindow",)), process)
+        close_settings(controls, settings)
         quit_app()
     except Exception:
         controls.dump(output)
@@ -557,6 +582,7 @@ def prepare_fixture(root, origin, app, profile, *, legacy_provider):
 
 def main():
     legacy_provider = False
+    require_exclusive = False
     server = None
 
     @contextmanager
@@ -567,11 +593,14 @@ def main():
             yield running
 
     def parse_options(parser):
-        nonlocal legacy_provider
+        nonlocal legacy_provider, require_exclusive
         parser.add_argument("--legacy-provider", action="store_true",
                             help="exercise manual login management with a legacy Pawl transport")
+        parser.add_argument("--require-exclusive", action="store_true",
+                            help="require Pawl to be the launch-time provider (included in --require-official)")
         options = parser.parse_args()
         legacy_provider = options.legacy_provider
+        require_exclusive = options.require_exclusive or options.require_official
         return options
 
     def prepare(root, origin, app, profile):
@@ -580,7 +609,8 @@ def main():
     def run(screen, process, events, output):
         if not legacy_provider:
             server.assertion_log = output / "app.log"
-        exercise(screen, process, events, output, legacy_provider=legacy_provider)
+        exercise(screen, process, events, output, legacy_provider=legacy_provider,
+                 require_exclusive=require_exclusive)
 
     return run_walk(
         "Signed Pawl password and code fill, save, update and passkey assertion", "vault", serve_candidate, run,
