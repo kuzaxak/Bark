@@ -8,17 +8,11 @@
 //  from the page world afterwards.
 //
 
-import WebKit
+import Foundation
 
 enum DevPickerScript {
     static let handlerName = "nookDevPicker"
     static let marker = "// Nook Dev Picker"
-    static let world = WKContentWorld.world(name: "NookDevPicker")
-
-    // ponytail: main frame only; reaching iframes needs per-frame calls through the _frames SPI.
-    static var userScript: WKUserScript {
-        WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world)
-    }
 
     /// Reads what only the page world sees on the picked element.
     static let hintsSource = """

@@ -20,7 +20,6 @@ struct SettingsDeveloperTab: View {
             Section {
                 Toggle("Developer Mode", isOn: $settings.developerModeEnabled)
                     .onChange(of: settings.developerModeEnabled) { _, on in
-                        browserManager.tabs.setDeveloperMode(on)
                         DevMCPServer.shared.applyEnabledSetting(on && settings.browserControlServerEnabled)
                         if !on {
                             browserManager.closeDeveloperTools(in: browserManager.windowRegistry?.allWindows ?? [], developerMode: true)

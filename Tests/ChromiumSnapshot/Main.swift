@@ -71,7 +71,7 @@ import Foundation
     var nookSettings: Settings? = Settings()
     var handedOff: [DevPick] = []
     func frontPage(in window: BrowserWindowState) -> PageSession? { tabs.page }
-    func handOff(_ pick: DevPick, from page: PageSession?) { handedOff.append(pick) }
+    func handOff(_ pick: DevPick) { handedOff.append(pick) }
     func showDevToast(_ text: String) {}
 }
 @main struct Main {

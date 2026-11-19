@@ -9,6 +9,15 @@
 
 import WebKit
 
+// The WebKit adapter installs the shared picker source in its dedicated world.
+extension DevPickerScript {
+    static let world = WKContentWorld.world(name: "NookDevPicker")
+
+    static var userScript: WKUserScript {
+        WKUserScript(source: source, injectionTime: .atDocumentEnd, forMainFrameOnly: true, in: world)
+    }
+}
+
 enum DevCaptureScript {
     static let handlerName = "nookDevCapture"
     static let marker = "// Nook Dev Capture"

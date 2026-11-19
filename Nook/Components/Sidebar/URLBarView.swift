@@ -214,19 +214,6 @@ struct URLBarView: View {
                                         .help(browserManager.help("Translate Page", shortcut: .translatePage))
                                 }
                             }
-                            if let errors = devErrorCount(for: session) {
-                                Button {
-                                    browserManager.toggleDevPanel(.console)
-                                } label: {
-                                    Text("\(errors)")
-                                        .font(NookDesign.Font.micro.monospacedDigit())
-                                        .foregroundStyle(.white)
-                                        .padding(.horizontal, NookDesign.Spacing.xs)
-                                        .background(Capsule().fill(.red))
-                                }
-                                .buttonStyle(.plain)
-                                .help("Console")
-                            }
                         }
                     } else {
                         HStack(spacing: NookDesign.Spacing.xs) {
@@ -637,13 +624,6 @@ struct URLBarView: View {
         guard let session, browserManager.nookSettings?.developerModeEnabled == true else { return false }
         return DevHosts.isDevHost(session.url)
     }
-
-    /// Errors since load on a developer's own server, for the badge; nil hides it.
-    private func devErrorCount(for session: PageSession?) -> Int? {
-        guard isDevPage(session), let count = session?.devCapture?.errorCount, count > 0 else { return nil }
-        return count
-    }
-
 
         private func formatURL(_ url: URL) -> String {
             guard let host = url.host else {

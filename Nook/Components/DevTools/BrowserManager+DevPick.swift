@@ -56,14 +56,13 @@ extension BrowserManager {
         guard current() else { return nil }
         let pick = DevPick(markdown: DevHandoff.markdown(element: element, errors: [], failed: [], imagePath: nil))
         navigation.lastDeveloperPick = (window.id, owner, profile, serial, pick)
-        handOff(pick, from: page)
+        handOff(pick)
         showDevToast("Element copied")
         return pick
     }
 
     /// Clipboard, DevMCP `selection`, and the Agent tab's compose box.
-    func handOff(_ pick: DevPick, from session: PageSession?) {
-        session?.devCapture?.lastPick = pick
+    private func handOff(_ pick: DevPick) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(pick.markdown, forType: .string)
         guard let windowState = windowRegistry?.activeWindow else { return }

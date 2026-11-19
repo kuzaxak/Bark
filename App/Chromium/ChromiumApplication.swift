@@ -184,7 +184,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     private func observeDevMCPSettings() {
-        guard acceptsWindows, let storage, let manager = browserManager else { return }
+        guard acceptsWindows, let storage, browserManager != nil else { return }
         devMCPSettingsGeneration &+= 1
         let expected = devMCPSettingsGeneration
         let enabled = withObservationTracking {
@@ -196,7 +196,6 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 self.observeDevMCPSettings()
             }
         }
-        manager.tabs.setDeveloperMode(storage.settings.developerModeEnabled)
         DevMCPServer.shared.applyEnabledSetting(enabled)
     }
 

@@ -32,14 +32,17 @@ with TemporaryDirectory(prefix='bark-snapshot-') as directory:
 '''+facade+'}\n'
     (out/'Snapshot.swift').write_text(fixture)
     picker=root/'Packages/NookWeb/Sources/NookWeb/DevTools/DevPickerScript.swift'
-    args=['swiftc','-swift-version','5','-parse-as-library',str(out/'Snapshot.swift'),str(tools/'DevPick.swift'),str(tools/'DevEntries.swift'),str(tools/'DevLog.swift'),str(picker),str(root/'Tests/ChromiumSnapshot/Main.swift'),'-framework','WebKit','-o',str(out/'check')]
+    args=['swiftc','-swift-version','5','-parse-as-library',str(out/'Snapshot.swift'),str(tools/'DevPick.swift'),str(tools/'DevEntries.swift'),str(tools/'DevLog.swift'),str(picker),str(root/'Tests/ChromiumSnapshot/Main.swift'),'-o',str(out/'check')]
     (out/'command.json').write_text(json.dumps(args,indent=2))
     for i,c in enumerate([args,[str(out/'check')]]):
      p=subprocess.run(c,capture_output=True,text=True);(out/f'{i}.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr)
      if p.returncode:raise SystemExit(p.returncode)
+    linked = subprocess.check_output(['/usr/bin/otool', '-L', str(out/'check')], text=True)
+    if '/WebKit.framework/' in linked:
+        raise SystemExit('Chromium snapshot harness links WebKit')
     # Export the actual maintained Swift script source, not a separate JS copy.
     export=out/'Export.swift';export.write_text('import Foundation\n@main struct Export {static func main(){FileHandle.standardOutput.write(Data(DevPickerScript.source.utf8))}}\n')
-    cmd=['swiftc','-swift-version','5','-parse-as-library',str(picker),str(export),'-framework','WebKit','-o',str(out/'export')]
+    cmd=['swiftc','-swift-version','5','-parse-as-library',str(picker),str(export),'-o',str(out/'export')]
     p=subprocess.run(cmd,capture_output=True,text=True);(out/'export-compile.log').write_text(p.stdout+p.stderr)
     if p.returncode:print(p.stderr);raise SystemExit(p.returncode)
     p=subprocess.run([str(out/'export')],capture_output=True)
