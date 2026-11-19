@@ -11,7 +11,6 @@ import NookDesign
 import NookSettings
 import NookWeb
 
-/// The sections both engines share. Only WebKit pages read fingerprinting, link cleaning and the HTTP warning.
 private struct PrivacyPreferenceSections: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(\.nookSettings) var nookSettings
@@ -19,39 +18,6 @@ private struct PrivacyPreferenceSections: View {
 
     var body: some View {
         @Bindable var settings = nookSettings
-
-        if browserManager.engine == .webKit {
-            Section("Tracking") {
-                scopePicker(
-                    "Enhanced fingerprinting protection",
-                    detail: "Makes it harder for websites to recognize your Mac and follow you around the web. If a site breaks, turn it off in Site Controls until you leave that site.",
-                    selection: $settings.enhancedFingerprintingProtection
-                )
-                scopePicker(
-                    "Remove tracking from links",
-                    detail: "Removes tracking added to links, so advertisers can't see which link brought you to a site.",
-                    selection: $settings.removeTrackingFromLinks
-                )
-                .onChange(of: nookSettings.removeTrackingFromLinks) {
-                    browserManager.contentBlockerManager.prepareLinkCleaning()
-                }
-            }
-        }
-
-        if browserManager.engine == .webKit {
-            Section("Security") {
-                settingToggle(
-                    "Warn before opening a site over HTTP",
-                    detail: "\(ProductDisplayName.current) always tries HTTPS first. Ask before opening a site that only works over HTTP.",
-                    isOn: $settings.warnBeforeHTTP
-                )
-                settingToggle(
-                    "Security keys (USB)",
-                    detail: "Sign in and create passkeys with a hardware key, such as a YubiKey, plugged into this Mac.",
-                    isOn: $settings.securityKeysEnabled
-                )
-            }
-        }
 
         Section("Passwords") {
             let vault = browserManager.tabs.vault
@@ -68,7 +34,7 @@ private struct PrivacyPreferenceSections: View {
                      ? "Pawl Vault is the current provider until you reopen Bark."
                      : "Chromium’s password manager is the current provider until you reopen Bark.")
                     .foregroundStyle(.secondary)
-            } else if launchProvider == nil && browserManager.engine == .chromium {
+            } else if launchProvider == nil {
                 Text("In this version of Bark, Pawl Vault works alongside Chromium’s password manager.")
                     .foregroundStyle(.secondary)
             }
@@ -143,31 +109,6 @@ private struct PrivacyPreferenceSections: View {
         Toggle(isOn: isOn) {
             settingLabel(title, detail: detail)
         }
-    }
-
-    private func scopePicker(_ title: String, detail: String, selection: Binding<ProtectionScope>) -> some View {
-        LabeledContent {
-            // Hidden copies hold the widest option's width, so the text beside it doesn't reflow.
-            ZStack(alignment: .trailing) {
-                ForEach(ProtectionScope.allCases) { scope in
-                    scopeMenu(title, selection: .constant(scope))
-                        .hidden()
-                }
-                scopeMenu(title, selection: selection)
-            }
-            .fixedSize()
-        } label: {
-            settingLabel(title, detail: detail)
-        }
-    }
-
-    private func scopeMenu(_ title: String, selection: Binding<ProtectionScope>) -> some View {
-        Picker(title, selection: selection) {
-            ForEach(ProtectionScope.allCases) { scope in
-                Text(scope.displayName).tag(scope)
-            }
-        }
-        .labelsHidden()
     }
 
     private func settingLabel(_ title: String, detail: String) -> some View {

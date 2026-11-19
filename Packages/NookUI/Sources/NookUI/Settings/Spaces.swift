@@ -67,7 +67,7 @@ public struct SpacesSettingsView: View {
                     .settingsFooter()
             }
 
-            if let status = actions?.spaceSync?.status, SettingsControl.iCloudSync.isShown(chromium: tabs.profileEngine == .chromium) {
+            if let status = actions?.spaceSync?.status {
                 syncSection(status)
             }
             if let sync, sync.status.availability == .available {
@@ -295,11 +295,9 @@ public struct SpacesSettingsView: View {
             if let controls = actions?.spaceSync, controls.isSyncEnabled {
                 Button("Turn Off iCloud Sync on This Mac") { controls.disableSync() }
             }
-            if tabs.profileEngine == .chromium {
-                Text("Bark does not transfer your old Nook iCloud data or invitations. Macs still using Nook do not sync with Bark.")
-                    .font(NookDesign.Font.caption)
-                    .foregroundStyle(.secondary)
-            }
+            Text("Bark does not transfer your old Nook iCloud data or invitations. Macs still using Nook do not sync with Bark.")
+                .font(NookDesign.Font.caption)
+                .foregroundStyle(.secondary)
             if status.availability != .needsSignedBuild && status.availability != .notEnabled {
                 Text(Self.hint(status.mode))
                     .font(NookDesign.Font.caption)

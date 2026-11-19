@@ -337,22 +337,6 @@ struct SpacesSideBarView: View {
                 }
             }
 
-            if SettingsControl.sidebarPosition.isShown(chromium: browserManager.engine == .chromium) {
-                Divider()
-
-                Menu {
-                    ForEach(SidebarPosition.allCases) { position in
-                        Toggle(isOn: Binding(
-                            get: { nookSettings.sidebarPosition == position },
-                            set: { _ in nookSettings.sidebarPosition = position }
-                        )) {
-                            Label(position.displayName, systemImage: position.icon)
-                        }
-                    }
-                } label: {
-                    Label("Position", systemImage: nookSettings.sidebarPosition.icon)
-                }
-            }
         }
     }
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise signed Bark's Settings history using accessibility actions."""
+"""Exercise signed Bark's Settings history and native layout controls."""
 
 import json
 from pathlib import Path
@@ -48,6 +48,40 @@ def exercise(screen, process, events, output):
         access.control("Passwords", root=settings)
         return access.control("Use Pawl Vault for passwords and passkeys", root=settings)
 
+    def toolbar_toggle():
+        for element in access.tree(settings):
+            if access.attribute(element, "AXRole") not in ("AXCheckBox", "AXSwitch"):
+                continue
+            title = access.attribute(element, "AXTitleUIElement")
+            if "Show Toolbar" in access.names(element) + access.names(title):
+                return element
+        return None
+
+    def layout_controls():
+        access.press(access.control("Appearance", ("AXButton",), root=settings))
+        toggle = wait_for("Appearance did not offer Show Toolbar", toolbar_toggle, process)
+        if not access.attribute(toggle, "AXEnabled"):
+            raise RuntimeError("Show Toolbar is disabled")
+        previous = access.attribute(toggle, "AXValue")
+        if previous not in (0, 1):
+            raise RuntimeError(f"Unexpected initial toolbar value {previous!r}")
+
+        def press_and_wait(expected):
+            access.press(wait_for("No live toolbar toggle", toolbar_toggle, process))
+            wait_for("Show Toolbar did not update its bound state",
+                     lambda: access.attribute(toolbar_toggle(), "AXValue") == expected, process)
+
+        press_and_wait(1 - previous)
+        press_and_wait(previous)
+        retired = ("Sidebar Position", "Show URL bar in the web view",
+                   "Preview link URL on hover", "Show meetings and mail on favorites", "Hide border")
+        present = [label for label in retired if access.find(label, root=settings)]
+        if present:
+            raise RuntimeError(f"Retired Appearance controls are visible: {present}")
+        (output / "appearance-controls.json").write_text(json.dumps({
+            "toolbar_control": "Show Toolbar", "values": [previous, 1 - previous, previous],
+        }, indent=2) + "\n")
+
     try:
         history_buttons("General", back=False, forward=False)
         access.press(access.control("Privacy", ("AXButton",), root=settings))
@@ -63,7 +97,8 @@ def exercise(screen, process, events, output):
         access.control("Your Profiles", root=settings)
         history_buttons("After Forward", back=True, forward=False)
         screen.screenshot(output / "profiles-after-forward.png", include_owned_windows=True)
-        print("Settings exposes distinct Back and Forward buttons and they navigate between Privacy and Profiles.",
+        layout_controls()
+        print("Settings history navigates Privacy and Profiles, and Appearance changes the Show Toolbar setting.",
               flush=True)
         screen.key("q", screen.command)
         screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process))

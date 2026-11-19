@@ -3,8 +3,7 @@
 //  Profiles.swift
 //  Nook
 //
-//  Profiles, as Arc lays them out: the list beside the chosen profile's search engine, download
-//  location and website data. Which profile a space uses is set in Spaces.
+//  Profiles, as Arc lays them out: the list beside the chosen profile's search engine, site settings and browsing data. Which profile a space uses is set in Spaces.
 //
 
 import NookDesign
@@ -183,22 +182,13 @@ public struct ProfilesSettingsView: View {
 
     private func delete(_ profile: ProfileSummary) {
         guard let heir = heir(of: profile) else { return }
-        if tabs.profileEngine == .chromium {
-            tabs.deleteProfile(profile.id, surviving: heir.id) { result in
-                switch result {
-                case .success: selection = heir.id
-                case .failure(.cancelled): break
-                case .failure(let error): deletionError = error
-                }
+        tabs.deleteProfile(profile.id, surviving: heir.id) { result in
+            switch result {
+            case .success: selection = heir.id
+            case .failure(.cancelled): break
+            case .failure(let error): deletionError = error
             }
-            return
         }
-        if profile.spaceIDs.isEmpty {
-            tabs.deleteKeptProfile(profile.id)
-        } else {
-            for space in profile.spaceIDs { tabs.setProfile(space, to: heir.id) }
-        }
-        selection = heir.id
     }
 }
 
@@ -208,8 +198,6 @@ struct ProfileDetailForm: View {
     let openPawlSettings: (() -> Void)?
     @Environment(TabsController.self) private var tabs
     @Environment(NookSettingsService.self) private var nookSettings
-    @State private var dataSize: String?
-    @State private var confirmingClear = false
     @State private var nativeSearch: ProfileSearchState?
     @State private var searchRequestID = UUID()
     @State private var searchError: String?
@@ -234,11 +222,10 @@ struct ProfileDetailForm: View {
             }
 
             Section {
-                if tabs.profileEngine == .chromium {
-                    if let nativeSearch {
-                        if nativeSearch.selected.isEmpty {
-                            LabeledContent("Search engine", value: nativeSearch.name)
-                        } else {
+                if let nativeSearch {
+                    if nativeSearch.selected.isEmpty {
+                        LabeledContent("Search engine", value: nativeSearch.name)
+                    } else {
                         Picker("Search engine", selection: Binding(
                             get: { nativeSearch.selected },
                             set: { refreshSearch(selecting: $0) }
@@ -246,68 +233,48 @@ struct ProfileDetailForm: View {
                             ForEach(nativeSearch.providers) { Text($0.name).tag($0.id) }
                         }
                         .disabled(nativeSearch.controlled)
-                        }
-                        if nativeSearch.controlled {
-                            Text(nativeSearch.managed ? "Managed by your organization" : "Controlled by an extension")
-                                .foregroundStyle(.secondary)
-                        }
-                    } else { Text(searchError ?? "Loading search preferences…") }
-                } else { searchEnginePicker }
+                    }
+                    if nativeSearch.controlled {
+                        Text(nativeSearch.managed ? "Managed by your organization" : "Controlled by an extension")
+                            .foregroundStyle(.secondary)
+                    }
+                } else {
+                    Text(searchError ?? "Loading search preferences…")
+                }
             } footer: {
-                Text(tabs.profileEngine == .chromium
-                     ? "Uses this profile’s search preference. Choose Open Profile Settings to edit custom search engines."
-                     : "Default follows the search engine in General.")
+                Text("Uses this profile’s search preference. Choose Open Profile Settings to edit custom search engines.")
                     .settingsFooter()
             }
 
-            #if os(macOS)
-            if tabs.profileEngine == .webKit {
-                Section {
-                    downloadLocationPicker
-                }
-            }
-            #endif
-
-            if tabs.profileEngine == .chromium {
-                Section {
-                    ForEach(ProfilePageDestination.allCases, id: \.self) { destination in
-                        if destination == .passwords, passwordControl == .pawl, openPawlSettings == nil {
-                            Text("Manage passwords in Pawl Vault.")
-                        } else if destination == .passwords {
-                            Button(passwordControl.label) {
-                                passwordControl.open(
-                                    profileID: profile.id, pawlSettings: { openPawlSettings?() }
-                                ) { profileID in
-                                    openProfileControls(.passwords, profileID: profileID)
-                                }
-                            }
-                        } else {
-                            Button(destination.profileSettingsLabel) {
-                                openProfileControls(destination, profileID: profile.id)
+            Section {
+                ForEach(ProfilePageDestination.allCases, id: \.self) { destination in
+                    if destination == .passwords, passwordControl == .pawl, openPawlSettings == nil {
+                        Text("Manage passwords in Pawl Vault.")
+                    } else if destination == .passwords {
+                        Button(passwordControl.label) {
+                            passwordControl.open(
+                                profileID: profile.id, pawlSettings: { openPawlSettings?() }
+                            ) { profileID in
+                                openProfileControls(.passwords, profileID: profileID)
                             }
                         }
+                    } else {
+                        Button(destination.profileSettingsLabel) {
+                            openProfileControls(destination, profileID: profile.id)
+                        }
                     }
-                } header: {
-                    Text("Profile Controls")
-                } footer: {
-                    Text(passwordControl == .pawl
-                         ? "Opens controls for “\(profile.name)”. Pawl Vault uses the same unlocked vault across profiles."
-                         : "Opens controls for “\(profile.name)”.")
                 }
+            } header: {
+                Text("Profile Controls")
+            } footer: {
+                Text(passwordControl == .pawl
+                     ? "Opens controls for “\(profile.name)”. Pawl Vault uses the same unlocked vault across profiles."
+                     : "Opens controls for “\(profile.name)”.")
             }
 
             Section("Website Data") {
-                if tabs.profileEngine == .chromium {
-                    Text("Use Clear Browsing Data above to remove this profile’s cookies, cached files and other selected data.")
-                        .foregroundStyle(.secondary)
-                } else if supportsWebsiteData {
-                    LabeledContent(dataSize ?? "Checking…") {
-                        Button("Clear Website Data…") { confirmingClear = true }
-                    }
-                } else {
-                    Text("Website data controls are unavailable in this build.")
-                        .foregroundStyle(.secondary)
-                }
+                Text("Use Clear Browsing Data above to remove this profile’s cookies, cached files and other selected data.")
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
@@ -316,40 +283,15 @@ struct ProfileDetailForm: View {
         .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in refreshSearch() }
         #endif
         .onChange(of: scenePhase) { _, phase in if phase == .active { refreshSearch() } }
-        .task(id: profile.spaceIDs) { await refreshDataSize() }
-        .alert("Clear website data for \u{201C}\(profile.name)\u{201D}?", isPresented: $confirmingClear) {
-            Button("Clear", role: .destructive) { Task { await clearData() } }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Its spaces are signed out of every site, and their cookies and cached files are deleted.")
-        }
     }
 
     private func refreshSearch(selecting: String? = nil) {
-        guard tabs.profileEngine == .chromium else { return }
         let request = UUID(); searchRequestID = request
         tabs.profileSearchState(profileID: profile.id, selecting: selecting) { result in
             guard searchRequestID == request else { return }
             switch result {
             case .success(let state): nativeSearch = state; searchError = nil
             case .failure: searchError = "Search preferences are unavailable."; nativeSearch = nil
-            }
-        }
-    }
-
-    private var searchEnginePicker: some View {
-        let known = Set(SearchProvider.allCases.map(\.rawValue) + nookSettings.customSearchEngines.map(\.id.uuidString))
-        return Picker("Search engine", selection: Binding<String?>(
-            get: { profile.searchEngineId.flatMap { known.contains($0) ? $0 : nil } },
-            set: { tabs.setSearchEngine($0, forProfile: profile.id) }
-        )) {
-            Text("Default (\(nookSettings.searchEngineName(for: nookSettings.searchEngineId)))").tag(String?.none)
-            Divider()
-            ForEach(SearchProvider.allCases) { provider in
-                Text(provider.displayName).tag(String?.some(provider.rawValue))
-            }
-            ForEach(nookSettings.customSearchEngines) { engine in
-                Text(engine.name).tag(String?.some(engine.id.uuidString))
             }
         }
     }
@@ -367,73 +309,6 @@ struct ProfileDetailForm: View {
         tabs.openProfilePage(profileID: profileID, destination: destination) { result in
             if case .failure(let error) = result { profilePageError = error }
         }
-    }
-
-    #if os(macOS)
-    private enum LocationChoice: Hashable { case downloads, folder, ask, other }
-
-    private var downloadLocationPicker: some View {
-        let downloads = nookSettings.downloads(forProfile: profile.id)
-        return Picker("Download location", selection: Binding<LocationChoice>(
-            get: {
-                switch downloads.location {
-                case .downloads: .downloads
-                case .folder: .folder
-                case .ask: .ask
-                }
-            },
-            set: { choice in
-                switch choice {
-                case .downloads: setLocation(.downloads)
-                case .ask: setLocation(.ask)
-                // After the menu closes, not inside its tracking loop.
-                case .other: DispatchQueue.main.async { chooseFolder() }
-                case .folder: break
-                }
-            }
-        )) {
-            Label("Downloads", systemImage: "folder").tag(LocationChoice.downloads)
-            if case .folder(let path) = downloads.location {
-                Label(FileManager.default.displayName(atPath: path), systemImage: "folder").tag(LocationChoice.folder)
-            }
-            Text("Ask Every Time").tag(LocationChoice.ask)
-            Divider()
-            Text("Other…").tag(LocationChoice.other)
-        }
-    }
-
-    private func setLocation(_ location: DownloadLocation) {
-        var downloads = nookSettings.downloads(forProfile: profile.id)
-        downloads.location = location
-        nookSettings.setDownloads(downloads, forProfile: profile.id)
-    }
-
-    private func chooseFolder() {
-        let panel = NSOpenPanel()
-        panel.canChooseDirectories = true
-        panel.canChooseFiles = false
-        panel.canCreateDirectories = true
-        panel.prompt = "Choose"
-        panel.message = "Choose where downloads from \u{201C}\(profile.name)\u{201D} are saved."
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        setLocation(.folder(url.path))
-    }
-    #endif
-
-    private var supportsWebsiteData: Bool {
-        tabs.profile(forStore: profile.id)?.webKitStorage != nil
-    }
-
-    private func refreshDataSize() async {
-        guard let store = tabs.profile(forStore: profile.id), store.webKitStorage != nil else { return }
-        await store.refreshDataStoreStats()
-        dataSize = store.estimatedDataSize
-    }
-
-    private func clearData() async {
-        guard let store = tabs.profile(forStore: profile.id), store.webKitStorage != nil else { return }
-        await tabs.clearData(of: store)
-        dataSize = store.estimatedDataSize
     }
 }
 

@@ -62,9 +62,8 @@ struct SettingsDeveloperTab: View {
     }
 
     private var tokenPath: String {
-        let file = browserManager.engine == .chromium
-            ? (try? DevMCPConfiguration.native(appRoot: browserManager.tabs.directory.deletingLastPathComponent()))?.tokenFile
-            : DevMCPConfiguration.legacy().tokenFile
+        let appRoot = browserManager.tabs.directory.deletingLastPathComponent()
+        let file = (try? DevMCPConfiguration.native(appRoot: appRoot))?.tokenFile
         return ((file?.path ?? "") as NSString).abbreviatingWithTildeInPath
     }
 }

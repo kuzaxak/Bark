@@ -20,10 +20,6 @@ public struct SettingsGeneralTab: View {
     @State private var kagiSessionLink = ""
     @State private var newShortcutKeyword = ""
     @State private var newShortcutTemplate = ""
-    // Sparkle reads its update preferences from these keys in the app's defaults.
-    @AppStorage("SUEnableAutomaticChecks") private var checksForUpdates = true
-    @AppStorage("SUAutomaticallyUpdate") private var installsUpdates = true
-
     private let updateControls: AnyView?
 
     public init() { updateControls = nil }
@@ -36,7 +32,7 @@ public struct SettingsGeneralTab: View {
     @ViewBuilder
     private func searchEnginePicker(_ settings: NookSettingsService) -> some View {
         @Bindable var settings = settings
-        Picker(tabs.profileEngine == .chromium ? "Initial search engine for new profiles" : "Default search engine", selection: $settings.searchEngineId) {
+        Picker("Initial search engine for new profiles", selection: $settings.searchEngineId) {
             ForEach(SearchProvider.allCases) { provider in
                 Text(provider.displayName).tag(provider.rawValue)
             }
@@ -44,10 +40,6 @@ public struct SettingsGeneralTab: View {
                 Text(engine.name).tag(engine.id.uuidString)
             }
         }
-    }
-
-    private func shows(_ section: SettingsControl) -> Bool {
-        section.isShown(chromium: tabs.profileEngine == .chromium)
     }
 
     @ViewBuilder
@@ -64,14 +56,6 @@ public struct SettingsGeneralTab: View {
                     Text(mode.displayName).tag(mode)
                 }
             }
-            if tabs.profileEngine == .webKit {
-                #if os(macOS)
-                Toggle("Unload inactive tabs automatically", isOn: $settings.idleTabUnloadingEnabled)
-                Text("Tab Management sets the inactivity delay. Memory pressure and Power Saving limits still apply.")
-                    .font(NookDesign.Font.caption)
-                    .foregroundStyle(.secondary)
-                #endif
-            }
             Button("Unload All Inactive Tabs") {
                 inactiveUnloadResult = tabs.unloadAllHidden()
             }
@@ -82,17 +66,8 @@ public struct SettingsGeneralTab: View {
         } header: {
             Text("Performance")
         } footer: {
-            if tabs.profileEngine == .chromium {
-                Text("Selected tabs load first. On Startup permits background loading; Last Tab Only turns it off. Tab Management limits background loading without unloading tabs. Other tabs load when selected.")
-                    .settingsFooter()
-            } else {
-                VStack(alignment: .leading, spacing: NookDesign.Spacing.xs) {
-                    Label(nookSettings.tabManagementMode.description,
-                          systemImage: nookSettings.tabManagementMode.icon)
-                    Label(nookSettings.startupLoadMode.description, systemImage: "power")
-                }
+            Text("Selected tabs load first. On Startup permits background loading; Last Tab Only turns it off. Tab Management limits background loading without unloading tabs. Other tabs load when selected.")
                 .settingsFooter()
-            }
         }
     }
 
@@ -104,22 +79,7 @@ public struct SettingsGeneralTab: View {
             Section {
                 DefaultBrowserRow()
                 Toggle("Warn before quitting \(ProductDisplayName.current)", isOn: $settings.askBeforeQuit)
-                if let updateControls {
-                    updateControls
-                } else if shows(.updates) {
-                    Toggle("Check for updates automatically", isOn: $checksForUpdates)
-                    Toggle("Download and install updates automatically", isOn: $installsUpdates)
-                        .disabled(!checksForUpdates)
-                }
-            }
-
-            if shows(.sidebarVideo) {
-                Section {
-                    Toggle("Keep videos playing in the sidebar", isOn: $settings.autoPictureInPicture)
-                } footer: {
-                    Text("Leaving a tab with a playing video moves it into a small window above the sidebar media controls.")
-                        .settingsFooter()
-                }
+                if let updateControls { updateControls }
             }
             #endif
 
@@ -140,15 +100,6 @@ public struct SettingsGeneralTab: View {
 
             Section {
                 Toggle("Open a Peek window when clicking on links with Shift held", isOn: $settings.peekOnShiftClick)
-                if shows(.peekFromLinkTargets) {
-                    Toggle("Open a Peek window for links that open in a new tab", isOn: $settings.openNewTabLinksInPeek)
-                    VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                        Toggle("Open a Peek window when clicking on links to other sites", isOn: $settings.peekLinksToOtherSites)
-                        Text("Only affects favorites and pinned tabs.")
-                            .font(NookDesign.Font.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
             } header: {
                 Text("Peek")
             } footer: {
@@ -159,7 +110,7 @@ public struct SettingsGeneralTab: View {
             performanceSection
 
             Section {
-                LabeledContent(tabs.profileEngine == .chromium ? "Initial search engine for new profiles" : "Default search engine") {
+                LabeledContent("Initial search engine for new profiles") {
                     HStack(spacing: NookDesign.Spacing.md) {
                         searchEnginePicker(settings)
                             .labelsHidden()
@@ -174,34 +125,31 @@ public struct SettingsGeneralTab: View {
                     }
                 }
 
-                if tabs.profileEngine == .chromium || (nookSettings.searchEngineId == SearchProvider.kagi.rawValue
-                    || tabs.profiles.contains(where: { $0.searchEngineId == SearchProvider.kagi.rawValue })) {
-                    if nookSettings.kagiSessionToken != nil {
-                        LabeledContent("Kagi Session Link") {
-                            HStack(spacing: NookDesign.Spacing.md) {
-                                Text("Saved in the Keychain")
-                                    .foregroundStyle(.secondary)
-                                Button("Remove") { nookSettings.setKagiSession(nil) }
-                            }
+                if nookSettings.kagiSessionToken != nil {
+                    LabeledContent("Kagi Session Link") {
+                        HStack(spacing: NookDesign.Spacing.md) {
+                            Text("Saved in the Keychain")
+                                .foregroundStyle(.secondary)
+                            Button("Remove") { nookSettings.setKagiSession(nil) }
                         }
-                    } else {
-                        LabeledContent("Kagi Session Link") {
-                            HStack(spacing: NookDesign.Spacing.md) {
-                                SecureField("https://kagi.com/search?token=…", text: $kagiSessionLink)
-                                    .labelsHidden()
-                                    .textFieldStyle(.roundedBorder)
-                                    .frame(minWidth: NookDesign.Size.fieldWide)
-                                Button("Save") {
-                                    nookSettings.setKagiSession(kagiSessionLink)
-                                    kagiSessionLink = ""
-                                }
-                                .disabled(KagiSession.token(fromPasted: kagiSessionLink) == nil)
-                            }
-                        }
-                        Link("Find your Session Link in Kagi's account settings",
-                             destination: URL(string: "https://kagi.com/settings/user_details")!)
-                            .font(NookDesign.Font.caption)
                     }
+                } else {
+                    LabeledContent("Kagi Session Link") {
+                        HStack(spacing: NookDesign.Spacing.md) {
+                            SecureField("https://kagi.com/search?token=…", text: $kagiSessionLink)
+                                .labelsHidden()
+                                .textFieldStyle(.roundedBorder)
+                                .frame(minWidth: NookDesign.Size.fieldWide)
+                            Button("Save") {
+                                nookSettings.setKagiSession(kagiSessionLink)
+                                kagiSessionLink = ""
+                            }
+                            .disabled(KagiSession.token(fromPasted: kagiSessionLink) == nil)
+                        }
+                    }
+                    Link("Find your Session Link in Kagi's account settings",
+                         destination: URL(string: "https://kagi.com/settings/user_details")!)
+                        .font(NookDesign.Font.caption)
                 }
 
                 if let selected = nookSettings.customSearchEngines.first(where: { $0.id.uuidString == nookSettings.searchEngineId }) {
