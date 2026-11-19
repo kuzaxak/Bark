@@ -17,7 +17,7 @@ from replay_gate import HERE, MOUNTS, PATCHES, PINS, check_pin, temporary_index
 
 REPO = HERE.parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
-from chromium_sdk_layout import GN_CPU, native_architecture
+from chromium_sdk_layout import GN_CPU, download_https, native_architecture
 
 ORIGINS = {
     "chromium": "https://chromium.googlesource.com/chromium/src.git",
@@ -408,10 +408,12 @@ def build(checkout, depot_tools, env, args):
                    "update", "--gs-url-base=chromium-optimization-profiles/pgo_profiles"]
         if args.dry_run:
             run(command, src, env, True)
+            print(f"Check or fetch the pinned V8 {PINS['official_v8_builtins']['version']} builtins profile")
         else:
-            from official_provenance import acquire_pgo_profile
+            from official_provenance import acquire_pgo_profile, acquire_v8_builtins
 
             acquire_pgo_profile(src, pgo_target, lambda: run(command, src, env))
+            acquire_v8_builtins(src, download_https)
     run(["rustc", "--version"], src, env, args.dry_run)
     run(["cargo", "rustc", "--locked", "--release", "--jobs", args.jobs, "--target", rust_target,
          "--target-dir", rust_out, "--manifest-path", rust / "Cargo.toml", "--lib", "--crate-type", "cdylib", "--",

@@ -23,14 +23,13 @@ import tarfile
 from tempfile import TemporaryDirectory
 import time
 from urllib.parse import urlsplit
-from urllib.request import urlopen
 from uuid import uuid4
 
 # Keep contributor commands and signed walkers from writing into the checkout.
 sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chromium_sdk_layout import (ARCHITECTURES, directory_id, local_engine, native_architecture,
+from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, local_engine, native_architecture,
                                  read_pin, remove_work, swap)
 from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
 
@@ -155,10 +154,7 @@ def pinned_engine(source, working, architecture, require_official=False):
         archive = path
         if urlsplit(source).scheme == "https":
             archive = working / "engine.tar"
-            with urlopen(source, timeout=60) as response, archive.open("wb") as output:
-                if urlsplit(response.geturl()).scheme != "https":
-                    raise ValueError("The engine artifact must be served over HTTPS.")
-                shutil.copyfileobj(response, output)
+            download_https(source, archive)
         unpacked = working / "engine"
         with tarfile.open(archive, "r:*") as package:
             package.extractall(unpacked, filter="data")

@@ -97,6 +97,12 @@ replacement once. The replacement must pass the same hash check. Unexpected
 cache paths such as symlinks are refused. The dedicated `Barc-<arch>-official`
 and `BarkCargo-official` directories keep developer and official products independent.
 
+V8 also uses its versioned `x64.profile` to generate the startup snapshot for
+both Intel and Apple Silicon. The official recipe checks V8’s Git revision,
+fetches this one input from Google when needed, and verifies its SHA-256
+before replacing cached bytes. It records the profile pin in the receipt and
+checks it again before publication.
+
 After the link, the recipe records the framework hashes, Chromium and
 depot_tools revisions, SDK build, GN arguments and pinned PGO name and SHA-256
 in `official-build.json`. The receipt also records a path-independent digest

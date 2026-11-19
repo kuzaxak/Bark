@@ -18,6 +18,7 @@ RECEIPT = "official-build.json"
 FRAMEWORK = "Bark Framework.framework"
 RAW_FRAMEWORK_IMAGE = Path("obj/chrome/chrome_framework_shared_library/Bark Framework")
 BROWSER_OBJECT = Path("obj/chrome/browser/core/browser_process_impl.o")
+V8_BUILTINS_PROFILE = Path("v8/tools/builtins-pgo/profiles/x64.profile")
 ARCHES = {"x86_64": ("x64", "mac"), "arm64": ("arm64", "mac-arm")}
 
 
@@ -82,6 +83,7 @@ def recipe_inputs(arch):
         "engine_source_sha256": engine_source_digest(),
         "SDK": PINS["official_macos_sdk"],
         "gn_args_sha256": sha256(engine_args(gn_arch, True)).hexdigest(),
+        "v8_builtins": PINS["official_v8_builtins"],
         "pgo_profile": PINS["official_pgo_profiles"][target],
         "pgo_sha256": PINS["official_pgo_sha256"][target],
     }
@@ -110,6 +112,45 @@ def regular_cache_file(path):
     if not stat.S_ISREG(info.st_mode):
         raise ValueError(f"Expected a regular PGO cache file: {path}")
     return True
+
+
+def v8_builtins_path(src):
+    pin = PINS["official_v8_builtins"]
+    profile = src / V8_BUILTINS_PROFILE
+    expected_directory = src.resolve() / V8_BUILTINS_PROFILE.parent
+    if profile.parent.resolve(strict=True) != expected_directory:
+        raise ValueError(f"Expected a local V8 builtins profile directory: {profile.parent}")
+    revision = subprocess.check_output(["git", "-C", src / "v8", "rev-parse", "HEAD"], text=True).strip()
+    if revision != pin["revision"]:
+        raise ValueError(f"The V8 builtins profile requires revision {pin['revision']}, found {revision}")
+    return profile
+
+
+def verify_v8_builtins(src):
+    profile = v8_builtins_path(src)
+    if not regular_cache_file(profile) or digest(profile) != PINS["official_v8_builtins"]["sha256"]:
+        raise ValueError("The V8 builtins profile does not match the pinned SHA-256")
+
+
+def acquire_v8_builtins(src, download):
+    # Both macOS targets use V8's x64 hints when producing their snapshot.
+    profile = v8_builtins_path(src)
+    pin = PINS["official_v8_builtins"]
+    cached = regular_cache_file(profile)
+    if cached and digest(profile) == pin["sha256"]:
+        return
+    url = f"https://storage.googleapis.com/chromium-v8-builtins-pgo/by-version/{pin['version']}/{profile.name}"
+    print(f"Fetching the pinned V8 builtins profile from {url}", flush=True)
+    with tempfile.TemporaryDirectory(dir=profile.parent) as scratch:
+        staged = Path(scratch) / profile.name
+        download(url, staged)
+        if digest(staged) != pin["sha256"]:
+            raise ValueError("The downloaded V8 builtins profile does not match the pinned SHA-256")
+        if cached:
+            rejected = Path(tempfile.mkdtemp(prefix=".bark-rejected-v8-", dir=profile.parent.parent))
+            os.link(profile, rejected / profile.name)
+            print(f"Preserved the rejected V8 builtins profile in {rejected}", flush=True)
+        staged.replace(profile)
 
 
 def verify_pgo_profile(src, target):
@@ -180,6 +221,7 @@ def verify_pgo_compile(out, src, profile, expected_hash, linked, env):
 def record(out, src, arch, env):
     expected = recipe_inputs(arch)
     _, target = ARCHES[arch]
+    verify_v8_builtins(src)
     profile = verify_pgo_profile(src, target)
     if digest(out / "args.gn") != expected["gn_args_sha256"]:
         raise ValueError("The actual GN arguments do not match the official recipe")

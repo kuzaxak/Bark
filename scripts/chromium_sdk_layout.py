@@ -43,6 +43,14 @@ def remove_work(path):
     shutil.rmtree(path)
 
 
+def download_https(url, destination):
+    """Download a pinned build input using macOS's TLS trust configuration."""
+    subprocess.run(["/usr/bin/curl", "--disable", "--fail", "--location", "--silent", "--show-error",
+                    "--proto", "=https", "--proto-redir", "=https", "--globoff", "--connect-timeout", "60",
+                    "--speed-limit", "1", "--speed-time", "60", "--retry", "2",
+                    "--output", destination, "--", url], check=True)
+
+
 def native_architecture():
     machine = platform.machine()
     if sys.platform == "darwin" and machine == "x86_64":

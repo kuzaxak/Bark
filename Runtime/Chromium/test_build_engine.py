@@ -209,10 +209,12 @@ class BuildArchitectureTests(unittest.TestCase):
         with mock.patch.multiple(build_engine, verify_gclient=mock.DEFAULT,
                                  repository=mock.DEFAULT, replay=mock.DEFAULT,
                                  run=mock.DEFAULT) as commands, mock.patch.object(
-                build_engine, "official_sdk", wraps=build_engine.official_sdk) as resolve_sdk:
+                build_engine, "official_sdk", wraps=build_engine.official_sdk) as resolve_sdk, mock.patch(
+                    "official_provenance.acquire_v8_builtins") as acquire_v8:
             build_engine.build(checkout, checkout / "tools", {}, args)
             self.assertEqual(output_args.read_bytes(), previous)
             resolve_sdk.assert_not_called()
+            acquire_v8.assert_not_called()
 
             args.dry_run = False
             args.macos_sdk = sdk

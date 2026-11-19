@@ -8,7 +8,7 @@ import plistlib
 import shutil
 import tempfile
 import unittest
-from unittest.mock import DEFAULT, patch
+from unittest.mock import DEFAULT, Mock, patch
 
 import build_engine
 import official_provenance as provenance
@@ -43,7 +43,14 @@ class OfficialProvenanceTests(unittest.TestCase):
         self.profile.write_bytes(b"pinned PGO")
         self.profile_flag = f"-fprofile-use={self.profile}"
         self.recorded_hash = provenance.digest(self.profile)
-        pins = patch.dict(provenance.PINS, {"official_pgo_sha256": {"mac": self.recorded_hash}})
+        self.v8_profile = self.src / provenance.V8_BUILTINS_PROFILE
+        self.v8_profile.parent.mkdir(parents=True)
+        self.v8_profile.write_bytes(b"synthetic V8 builtins PGO")
+        self.v8_revision = provenance.PINS["official_v8_builtins"]["revision"]
+        v8_pin = {**provenance.PINS["official_v8_builtins"], "sha256": provenance.digest(self.v8_profile)}
+        pins = patch.dict(provenance.PINS, {
+            "official_pgo_sha256": {"mac": self.recorded_hash}, "official_v8_builtins": v8_pin,
+        })
         pins.start()
         self.addCleanup(pins.stop)
         self.recorded_time = self.image.stat().st_mtime_ns
@@ -76,6 +83,9 @@ class OfficialProvenanceTests(unittest.TestCase):
             if self.link_entry:
                 entries.append(self.link_entry)
             return json.dumps({"entries": entries})
+        if tool == "git":
+            self.assertEqual(command[1:], ["-C", self.src / "v8", "rev-parse", "HEAD"])
+            return self.v8_revision + "\n"
         if tool == "lipo":
             return self.arch + "\n"
         sdk = provenance.PINS["official_macos_sdk"]["version"]
@@ -300,6 +310,87 @@ class OfficialProvenanceTests(unittest.TestCase):
         (self.artifact / "SHA256SUMS").write_text(f"{provenance.digest(receipt)}  ./{provenance.RECEIPT}\n")
         with self.assertRaisesRegex(ValueError, "does not match"):
             provenance.verify_cached(self.artifact, self.arch)
+
+    def test_archive_receipt_requires_the_pinned_v8_builtins(self):
+        receipt = self.sealed_receipt()
+        data = json.loads(receipt.read_text())
+        self.assertEqual(data["v8_builtins"], provenance.PINS["official_v8_builtins"])
+        data["v8_builtins"]["sha256"] = "0" * 64
+        receipt.write_text(json.dumps(data))
+        (self.artifact / "SHA256SUMS").write_text(f"{provenance.digest(receipt)}  ./{provenance.RECEIPT}\n")
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            provenance.verify_cached(self.artifact, self.arch)
+
+    def test_official_build_requires_matching_v8_revision_and_bytes(self):
+        self.v8_profile.write_bytes(b"wrong V8 profile")
+        with self.assertRaisesRegex(ValueError, r"(?i)v8"):
+            provenance.record(self.out, self.src, self.arch, {})
+        self.v8_profile.write_bytes(b"synthetic V8 builtins PGO")
+        self.v8_revision = "0" * 40
+        with self.assertRaisesRegex(ValueError, r"(?i)v8.*revision"):
+            provenance.record(self.out, self.src, self.arch, {})
+
+    def test_acquire_v8_downloads_exact_version_then_reuses_valid_cache(self):
+        content = self.v8_profile.read_bytes()
+        self.v8_profile.unlink()
+        pin = provenance.PINS["official_v8_builtins"]
+        download = Mock(side_effect=lambda url, destination: destination.write_bytes(content))
+        provenance.acquire_v8_builtins(self.src, download)
+        provenance.acquire_v8_builtins(self.src, download)
+        self.assertEqual(self.v8_profile.read_bytes(), content)
+        self.assertEqual(provenance.digest(self.v8_profile), pin["sha256"])
+        self.assertEqual(download.call_count, 1)
+        url, staged_path = download.call_args.args
+        self.assertEqual(
+            url, f"https://storage.googleapis.com/chromium-v8-builtins-pgo/by-version/{pin['version']}/x64.profile")
+        self.assertNotEqual(staged_path, self.v8_profile)
+        self.assertFalse(staged_path.exists())
+
+    def test_acquire_v8_preserves_old_bytes_until_replacement_verifies(self):
+        content = self.v8_profile.read_bytes()
+        old = b"old V8 PGO"
+        self.v8_profile.write_bytes(old)
+
+        def interrupted(url, destination):
+            destination.write_bytes(b"partially downloaded")
+            raise OSError("connection interrupted")
+
+        def invalid(url, destination):
+            destination.write_bytes(b"bad download")
+
+        for download, error in ((interrupted, OSError), (invalid, ValueError)):
+            with self.subTest(download=download.__name__), self.assertRaises(error):
+                provenance.acquire_v8_builtins(self.src, download)
+            self.assertEqual(self.v8_profile.read_bytes(), old)
+            self.assertEqual(list(self.v8_profile.parent.parent.glob(".bark-rejected-v8-*")), [])
+
+        provenance.acquire_v8_builtins(self.src, lambda url, destination: destination.write_bytes(content))
+        self.assertEqual(self.v8_profile.read_bytes(), content)
+        rejected, = self.v8_profile.parent.parent.glob(".bark-rejected-v8-*/x64.profile")
+        self.assertEqual(rejected.read_bytes(), old)
+
+    def test_acquire_v8_refuses_cache_symlinks_before_download(self):
+        elsewhere = self.root / "outside.profile"
+        content = self.v8_profile.read_bytes()
+        elsewhere.write_bytes(content)
+        self.v8_profile.unlink()
+        self.v8_profile.symlink_to(elsewhere)
+        download = Mock()
+        with self.assertRaises(ValueError):
+            provenance.acquire_v8_builtins(self.src, download)
+        self.assertTrue(self.v8_profile.is_symlink())
+        self.v8_profile.unlink()
+
+        directory = self.root / "outside-profiles"
+        self.v8_profile.parent.rename(directory)
+        (directory / self.v8_profile.name).write_bytes(content)
+        self.v8_profile.parent.symlink_to(directory)
+        with self.assertRaises(ValueError):
+            provenance.acquire_v8_builtins(self.src, download)
+        self.assertTrue(self.v8_profile.parent.is_symlink())
+        self.assertEqual(self.v8_profile.read_bytes(), content)
+        self.assertEqual(elsewhere.read_bytes(), content)
+        download.assert_not_called()
 
     def test_browser_compile_must_exist_and_predate_raw_link(self):
         self.include_browser_compile = False

@@ -12,5 +12,10 @@
   "official_pgo_sha256": {
     "mac": "9acafe2a2140cc9751ac68c89bc76625c95950d6018892150913131cd06226e5",
     "mac-arm": "1acb662d07e224d2c38f2f8cb80b63c06b5b4c927ec90b79adde5843a26c5b88"
+  },
+  "official_v8_builtins": {
+    "version": "15.6.75.27",
+    "revision": "c9b3cfcab30ace06c21f9b48a0f0a34805e81e9d",
+    "sha256": "dee60b6c63ef4bfe4f2f0c0b0a1bf3edcab97a2b0297fcdcf7d5023c72cdc780"
   }
 }

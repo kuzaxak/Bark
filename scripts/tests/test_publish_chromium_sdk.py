@@ -14,6 +14,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 PGO_FIXTURE = b"synthetic PGO fixture"
+V8_FIXTURE = b"synthetic V8 builtins PGO"
 
 
 class FirstOfficialPublicationTests(unittest.TestCase):
@@ -90,8 +91,21 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
 
     def make_official(self):
         chromium = self.chromium
-        pins = json.loads((chromium / "PINS.json").read_text())
+        pins_path = chromium / "PINS.json"
+        pins = json.loads(pins_path.read_text())
         source = self.build.parent.parent
+        v8 = source / "v8"
+        v8.mkdir()
+        subprocess.run(["git", "-C", v8, "init", "-q"], check=True)
+        subprocess.run(["git", "-C", v8, "-c", "core.hooksPath=/dev/null",
+                        "-c", "user.name=V8 fixture", "-c", "user.email=fixture@example.invalid",
+                        "-c", "commit.gpgsign=false", "commit", "--allow-empty", "-qm", "Synthetic V8"], check=True)
+        revision = subprocess.check_output(["git", "-C", v8, "rev-parse", "HEAD"], text=True).strip()
+        v8_profile = v8 / "tools/builtins-pgo/profiles/x64.profile"
+        v8_profile.parent.mkdir(parents=True)
+        v8_profile.write_bytes(V8_FIXTURE)
+        pins["official_v8_builtins"].update(revision=revision, sha256=hashlib.sha256(V8_FIXTURE).hexdigest())
+        pins_path.write_text(json.dumps(pins))
         profile_name = pins["official_pgo_profiles"]["mac-arm"]
         selector = source / "chrome/build/mac-arm.pgo.txt"
         selector.parent.mkdir(parents=True)
@@ -163,9 +177,9 @@ out = Path(sys.argv[2])
         self.assertNotEqual(missing.returncode, 0)
         self.assertEqual(pin.read_bytes(), original)
 
+        self.make_official()
         (self.build / "official-build.json").write_text("{}")
         selector = self.build.parent.parent / "chrome/build/mac-arm.pgo.txt"
-        selector.parent.mkdir(parents=True)
         selector.write_text("an-unpinned-fixture-profile.profdata\n")
         invalid = self.publish("--require-official", "--replace")
         self.assertNotEqual(invalid.returncode, 0)
