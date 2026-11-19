@@ -162,11 +162,6 @@ final class FocusableWKWebView: WKWebView, SessionWebView {
         unsafeBitCast(method(for: selector), to: Setter.self)(self, selector, ignores)
     }
 
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        owningSession?.pointerMovedOverPage()
-    }
-
     override func mouseUp(with event: NSEvent) {
         // Reset Option key state after mouse up
         owningSession?.isOptionKeyDown = false

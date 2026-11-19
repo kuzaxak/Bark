@@ -31,7 +31,7 @@ extension PageSession: WKNavigationDelegate {
         guard acceptsNavigationCallbacks(from: webView) else { return }
         guard navigationChanged(.committed(webView.url), from: webView,
                                 navigation: navigation) else { return }
-        pdfLoadStateChanged(webView)
+        isDisplayingPDF = WebKitPageNavigation.isDisplayingPDF(in: webView)
         if let capture = devCapture {
             capture.reset()
             if let url = webView.url, controller?.blocker.isEnabled == true {
@@ -63,7 +63,7 @@ extension PageSession: WKNavigationDelegate {
         guard navigationChanged(.finished(webView.url, title: nil,
                                           isReload: mainFrameNavigationType == .reload),
                                 from: webView, navigation: navigation) else { return }
-        pdfLoadStateChanged(webView)
+        isDisplayingPDF = WebKitPageNavigation.isDisplayingPDF(in: webView)
 
         if let newURL = webView.url {
             // Extension diagnostics: check content scripts, background worker, and messaging

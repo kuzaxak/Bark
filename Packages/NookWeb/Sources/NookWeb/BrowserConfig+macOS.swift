@@ -19,8 +19,6 @@ extension BrowserConfiguration {
         setPrivatePreference("allowsInlineMediaPlayback", in: config.preferences)
         // Puts Inspect Element in the page's context menu; isInspectable covers Safari's remote inspector.
         setPrivatePreference("developerExtrasEnabled", in: config.preferences)
-        // WebKit's PDF bar is replaced by `PDFControlsView`; both would show otherwise.
-        setFeature("PDFPluginHUDEnabled", false, in: config.preferences)
         // Safari's default caps rendering at 60 fps; this lets ProMotion displays run at 120.
         setFeature("PreferPageRenderingUpdatesNear60FPSEnabled", false, in: config.preferences)
     }

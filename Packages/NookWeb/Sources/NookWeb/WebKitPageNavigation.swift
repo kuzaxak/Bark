@@ -62,6 +62,14 @@ final class WebKitPageNavigation: PageNavigation {
         return true
     }
 
+    /// This selector has no KVC property. A WebKit without it leaves PDF detection unavailable.
+    static func isDisplayingPDF(in view: WKWebView) -> Bool {
+        let selector = NSSelectorFromString("_isDisplayingPDF")
+        guard view.responds(to: selector) else { return false }
+        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
+        return unsafeBitCast(view.method(for: selector), to: Getter.self)(view, selector)
+    }
+
     func load(_ url: URL) {
         guard let webView else { return }
         stopped = false

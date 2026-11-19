@@ -121,8 +121,8 @@ public final class PageSession: NSObject, Identifiable {
     public var isLoading: Bool { loadingState.isLoading }
     public var canGoBack: Bool = false
     public var canGoForward: Bool = false
-    /// WebKit's own PDF viewer is showing the page, so Nook draws its controls over it.
-    public var isDisplayingPDF: Bool = false
+    /// Whether the current WebKit document is a PDF, for text capture and translation.
+    var isDisplayingPDF = false
     /// A small picture of the page taken as the window left it, for the Control-Tab switcher.
     public var switcherSnapshot: PlatformImage? {
         didSet { if switcherSnapshot == nil { switcherSnapshotGeneration &+= 1 } }
@@ -131,25 +131,6 @@ public final class PageSession: NSObject, Identifiable {
     @ObservationIgnored var switcherCaptureInFlight: UUID?
     /// The link under the pointer while Shift is held, for Link Previews; nil otherwise.
     public var linkPreview: LinkPreviewTarget?
-    /// Bumped whenever the PDF controls should show: a PDF loads, or the pointer moves over one.
-    public private(set) var pdfControlsReveal = 0
-    @ObservationIgnored private var lastPDFControlsReveal: ContinuousClock.Instant?
-
-    /// Called on every mouse move over the page. Cheap on an ordinary page, and on a PDF it
-    /// publishes at most four times a second, since each publish redraws the controls.
-    public func pointerMovedOverPage() {
-        guard isDisplayingPDF else { return }
-        let now = ContinuousClock.now
-        if let last = lastPDFControlsReveal, now - last < .milliseconds(250) { return }
-        lastPDFControlsReveal = now
-        pdfControlsReveal &+= 1
-    }
-
-    /// After a load: a reload keeps the controls' view, so without this they stayed hidden.
-    func pdfLoadStateChanged(_ webView: WKWebView) {
-        isDisplayingPDF = webView.nookIsDisplayingPDF
-        if isDisplayingPDF { pdfControlsReveal &+= 1 }
-    }
 
     // MARK: - Translation
 
@@ -358,6 +339,7 @@ public final class PageSession: NSObject, Identifiable {
         navigation?.stop()
         navigation?.invalidate()
         navigation = page
+        isDisplayingPDF = false
         if usesNativePageHost { nativeNavigationPendingStart = false }
         page.onEvent = { [weak self, weak page] event in
             guard let self, let page, self.navigation === page else { return }
@@ -1668,16 +1650,6 @@ public final class PageSession: NSObject, Identifiable {
 }
 
 private extension WKWebView {
-    /// `_isDisplayingPDF`, private since macOS 15 and iOS 18. Only a getter name exists, so KVC
-    /// on `_displayingPDF` throws. Shared by both platforms since navigation code is; only macOS
-    /// draws controls from it.
-    var nookIsDisplayingPDF: Bool {
-        let selector = NSSelectorFromString("_isDisplayingPDF")
-        guard responds(to: selector) else { return false }
-        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
-        return unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
-    }
-
     /// `_clearBackForwardCache`, private on both platforms.
     func nookClearBackForwardCache() -> Bool {
         let selector = NSSelectorFromString("_clearBackForwardCache")
