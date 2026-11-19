@@ -30,24 +30,54 @@ extension BrowserManager {
         showDevToast("Element copied")
     }
 
-    /// Chromium's picker returns the element's selector and the script bridge reads the rest. The
-    /// handoff has no screenshot and no console or network context: Chromium pages have no capture.
-    func pickNativeElement(on page: PageSession, navigation: ChromiumPageNavigation) async {
+    func nativeDeveloperPage(in window: BrowserWindowState) -> (PageSession, ChromiumPageNavigation)? {
+        guard nookSettings?.developerModeEnabled == true, !window.isIncognito,
+              windowRegistry?.windows[window.id] === window, windowRegistry?.activeWindow === window,
+              let owner = window.window, owner === NSApp.keyWindow, owner.attachedSheet == nil,
+              let page = frontPage(in: window), !page.isAgentPage,
+              let navigation = page.navigation as? ChromiumPageNavigation,
+              tabs.nativePageHost?.isNativeSelection(navigation, in: window) == true else { return nil }
+        return (page, navigation)
+    }
+
+    func currentNativeDeveloperPick(in window: BrowserWindowState) -> DevPick? {
+        guard let (page, navigation) = nativeDeveloperPage(in: window),
+              let selection = navigation.lastDeveloperPick, selection.window == window.id,
+              selection.owner == navigation.nativeWindowID, selection.profile == navigation.profileID,
+              selection.document == page.nativeNavigationSerial else {
+            return nil
+        }
+        return selection.pick
+    }
+
+    /// Chromium supplies the selector from the user's click and reads its own document.
+    @discardableResult
+    func pickNativeElement(on page: PageSession, navigation: ChromiumPageNavigation,
+                           in window: BrowserWindowState, while permitted: () -> Bool = { true }) async -> DevPick? {
         let serial = page.nativeNavigationSerial
-        func current() -> Bool { page.navigation === navigation && page.nativeNavigationSerial == serial && !navigation.isClosed }
-        guard let selector = await navigation.pickElement(), current(),
+        let owner = navigation.nativeWindowID, profile = navigation.profileID
+        func current() -> Bool {
+            guard !Task.isCancelled, permitted(), page.nativeNavigationSerial == serial,
+                  navigation.nativeWindowID == owner, navigation.profileID == profile, !navigation.isClosed,
+                  let (activePage, activeNavigation) = nativeDeveloperPage(in: window) else { return false }
+            return activePage === page && activeNavigation === navigation
+        }
+        guard current(), let selector = await navigation.pickElement(), current(),
               let describe = page.nativeDevPickScript(selector),
               let described = try? await navigation.evaluateScript(describe, mode: .asyncBody, world: .isolated), current(),
               let body = try? JSONSerialization.jsonObject(with: Data(described.json.utf8)),
-              var element = DevPickedElement(message: body) else { return }
+              var element = DevPickedElement(message: body) else { return nil }
         if element.source?.isEmpty == true { element.source = nil }
         if let hints = page.nativeDevHintsScript(selector),
            let read = try? await navigation.evaluateScript(hints, mode: .asyncBody, world: .page) {
             element.apply(hints: try? JSONSerialization.jsonObject(with: Data(read.json.utf8)))
         }
-        guard current() else { return }
-        handOff(DevPick(markdown: DevHandoff.markdown(element: element, errors: [], failed: [], imagePath: nil)), from: page)
+        guard current() else { return nil }
+        let pick = DevPick(markdown: DevHandoff.markdown(element: element, errors: [], failed: [], imagePath: nil))
+        navigation.lastDeveloperPick = (window.id, owner, profile, serial, pick)
+        handOff(pick, from: page)
         showDevToast("Element copied")
+        return pick
     }
 
     /// Clipboard, DevMCP `selection`, and the Agent tab's compose box.

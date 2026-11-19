@@ -796,6 +796,27 @@ final class DevMCPServer {
         return text(outline)
     }
 
+    private func nativeSelectionTool(_ name: String, browserManager bm: BrowserManager,
+                                     window: BrowserWindowState) async -> [String: Any] {
+        let generation = generation
+        guard isPermitted, listener != nil, !Task.isCancelled else {
+            return text("Tool request was cancelled", error: true)
+        }
+        if name == "selection" {
+            guard let pick = bm.currentNativeDeveloperPick(in: window) else {
+                return text("Nothing picked in the current page. Ask the person to pick an element.", error: true)
+            }
+            return text(pick.markdown)
+        }
+        guard let (page, navigation) = bm.nativeDeveloperPage(in: window),
+              let pick = await bm.pickNativeElement(on: page, navigation: navigation, in: window, while: {
+                  self.generation == generation && self.isPermitted && self.listener != nil
+              }) else {
+            return text("No element picked in the current page, or the request was cancelled.", error: true)
+        }
+        return text(pick.markdown)
+    }
+
     private func callTool(_ rawName: String, _ args: [String: Any]) async -> [String: Any] {
         guard isPermitted, listener != nil, !Task.isCancelled else { return text("Tool request was cancelled", error: true) }
         // The chat's executeJavaScript evaluates an expression, so `return` (which
@@ -809,6 +830,9 @@ final class DevMCPServer {
         guard let bm = browserManager,
               let window = forPerson ? active : (active?.privateTree == nil ? active : bm.tabs.regularWindows.first)
         else { return text("No browser window", error: true) }
+        if bm.engine == .chromium, forPerson {
+            return await nativeSelectionTool(name, browserManager: bm, window: window)
+        }
         if bm.engine == .chromium,
            let result = nativeBlockerTool(name, args, browserManager: bm, window: window) { return result }
         // Model-only tools never create an Agent space or materialize a page.

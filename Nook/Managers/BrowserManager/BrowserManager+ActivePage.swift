@@ -64,9 +64,9 @@ extension BrowserManager {
             return true
         }
         if command == .pickElement, native.supportsElementPicker {
-            withDeveloperCapture { [weak self, weak page, weak native] in
-                guard let self, let page, let native else { return }
-                Task { await self.pickNativeElement(on: page, navigation: native) }
+            withDeveloperCapture { [weak self, weak page, weak native, weak window] in
+                guard let self, let page, let native, let window else { return }
+                Task { await self.pickNativeElement(on: page, navigation: native, in: window) }
             }
             return true
         }

@@ -6,24 +6,33 @@ root=Path(__file__).resolve().parents[2]
 with TemporaryDirectory(prefix='bark-snapshot-') as directory:
     out = Path(directory)
     s=(root/'Nook/Managers/DevMCPServer/DevMCPServer.swift').read_text();a=s.index('    private struct StoredSnapshot');b=s.index('    private var token',a);cache=s[a:b]
-    a=s.index('    private func nativeScreenshot(');b=s.index('    private func callTool(',a);helper=s[a:b].replace('    private func nativeSnapshot','    func nativeSnapshot',1).replace('    private func nativeScreenshot','    func nativeScreenshot',1)
+    a=s.index('    private func nativeScreenshot(');b=s.index('    private func nativeSelectionTool(',a);helper=s[a:b].replace('    private func nativeSnapshot','    func nativeSnapshot',1).replace('    private func nativeScreenshot','    func nativeScreenshot',1)
+    a=s.index('    private func nativeSelectionTool(')
+    b=s.index('        if bm.engine == .chromium,\n           let result = nativeBlockerTool',a)
+    selection=s[a:b].replace('    private func callTool(', '    func callTool(',1)
+    selection+='        preconditionFailure("Chromium picker reached the legacy WebKit route")\n    }\n'
+    pickerSource=(root/'Nook/Components/DevTools/BrowserManager+DevPick.swift').read_text()
+    a=pickerSource.index('    func nativeDeveloperPage');b=pickerSource.index('    /// Clipboard',a)
+    developer=pickerSource[a:b]
     p=(root/'Packages/NookWeb/Sources/NookWeb/DevTools/PageSession+DevTools.swift').read_text();a=p.index('    public func nativeDevSnapshotScript(');b=p.index('    /// Accessibility outline',a);facade=p[a:b]
     a=s.index('    private static func wholeNumber(');b=s.index('    /// These operations',a);whole=s[a:b]
-    d=(root/'Packages/NookWeb/Sources/NookWeb/DevTools/DevPick.swift').read_text()
-    a=d.index('    public static func snapshotDiff(');b=d.index('    static func oneLine(',a);diff='enum DevHandoff {\n'+d[a:b]+'}\n'
+    tools=root/'Packages/NookWeb/Sources/NookWeb/DevTools'
     fixture='''import Foundation
 @MainActor final class SnapshotFixture {
  var isPermitted=true;var listener:Int?=1;var generation:UInt64=1
+ var humanWindow:BrowserWindowState?;var browserManager:BrowserManager?
+ static let humanTools:Set<String> = ["pick", "selection"]
  func text(_ text:String,error:Bool=false)->[String:Any] {["text":text,"isError":error]}
-'''+whole+cache+helper+''' func reset() {generation+=1;snapshots=[:]}
+'''+whole+cache+helper+selection+''' func reset() {generation+=1;snapshots=[:]}
  var cacheCount:Int {snapshots.count}
 }
+@MainActor extension BrowserManager {
+'''+developer+'''}
 @MainActor extension PageSession {
 '''+facade+'}\n'
     (out/'Snapshot.swift').write_text(fixture)
     picker=root/'Packages/NookWeb/Sources/NookWeb/DevTools/DevPickerScript.swift'
-    (out/'Diff.swift').write_text('import Foundation\n'+diff)
-    args=['swiftc','-swift-version','5','-parse-as-library',str(out/'Snapshot.swift'),str(out/'Diff.swift'),str(picker),str(root/'Tests/ChromiumSnapshot/Main.swift'),'-framework','WebKit','-o',str(out/'check')]
+    args=['swiftc','-swift-version','5','-parse-as-library',str(out/'Snapshot.swift'),str(tools/'DevPick.swift'),str(tools/'DevEntries.swift'),str(tools/'DevLog.swift'),str(picker),str(root/'Tests/ChromiumSnapshot/Main.swift'),'-framework','WebKit','-o',str(out/'check')]
     (out/'command.json').write_text(json.dumps(args,indent=2))
     for i,c in enumerate([args,[str(out/'check')]]):
      p=subprocess.run(c,capture_output=True,text=True);(out/f'{i}.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr)

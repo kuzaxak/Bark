@@ -523,6 +523,8 @@ final class ChromiumPageNavigation: PageNavigation {
         }
     }
 
+    var lastDeveloperPick: (window: UUID, owner: Int32, profile: UUID?, document: UInt64, pick: DevPick)?
+
     private var nextPickerRequest: UInt64 = 0
     private var pickerRequest: (id: UInt64, continuation: CheckedContinuation<String?, Never>)?
     var supportsElementPicker: Bool {

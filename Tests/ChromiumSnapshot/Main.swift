@@ -3,7 +3,7 @@
 // model/transport fakes. No server, browser, credentials or profile construction.
 import Foundation
 @MainActor final class ChromiumPageNavigation {
-    enum ScriptMode {case asyncBody};enum ScriptWorld {case isolated}
+    enum ScriptMode {case asyncBody};enum ScriptWorld {case isolated, page}
     struct Result {var isString=true;var text="- main\n  - button \"Save\"";var json=""}
     var nativeWindowID:Int32=10,nativeTabID:Int32=20
     var profileID:UUID?=UUID();var isClosed=false
@@ -11,6 +11,14 @@ import Foundation
     var screenshotWidths:[Double]=[]
     var screenshotHook:(()->Void)?
     var screenshotFailure=false
+    var lastDeveloperPick: (window: UUID, owner: Int32, profile: UUID?, document: UInt64, pick: DevPick)?
+    var pickerStarts = 0
+    var pickerHook: (() -> Void)?
+    func pickElement() async -> String? {
+        pickerStarts += 1
+        pickerHook?()
+        return "#save"
+    }
     func captureScreenshot(maxWidth:Double) async throws -> Data {
         screenshotWidths.append(maxWidth);screenshotHook?()
         if screenshotFailure {throw CancellationError()}
@@ -25,19 +33,47 @@ import Foundation
     var nativeNavigationSerial:UInt64=1
     var nativeAgentNavigationIsPending=false
     var developerModeOn=true,usesNativePageHost=true,nativeIsEnding=false
+    var isAgentPage = false
+    func nativeDevPickScript(_ selector: String) -> String? { selector }
+    func nativeDevHintsScript(_ selector: String) -> String? { nil }
     var waitHook:(()->Void)?
     func waitForNativeAgentNavigation(in window:BrowserWindowState,reload:Bool,while current:@MainActor()->Bool) async -> Bool {
         precondition(!reload);guard current() else{return false};waitHook?();nativeAgentNavigationIsPending=false;return current()
     }
 }
-@MainActor final class BrowserWindowState {let id=UUID();let selected=UUID();let space=UUID()}
-@MainActor final class Registry {var windows:[UUID:BrowserWindowState]=[:]}
+@MainActor final class FixtureWindow { var attachedSheet: FixtureWindow? }
+@MainActor enum NSApp { static var keyWindow: FixtureWindow? }
+@MainActor final class BrowserWindowState {
+    let id=UUID();let selected=UUID();let space=UUID()
+    var window: FixtureWindow? = FixtureWindow()
+    var isIncognito = false
+    var privateTree: Int? { isIncognito ? 1 : nil }
+}
+@MainActor final class Registry {
+    var windows:[UUID:BrowserWindowState]=[:]
+    var activeWindow: BrowserWindowState?
+}
 @MainActor final class Tabs {
     var page=PageSession(),available=true
+    var regularWindows: [BrowserWindowState] = []
+    var nativePageHost: Tabs? { self }
+    func isNativeSelection(_ navigation: ChromiumPageNavigation, in window: BrowserWindowState) -> Bool {
+        available && navigation === page.navigation
+    }
     func prepareNativeAgentPage(in window:BrowserWindowState) async -> PageSession? {available ? page:nil}
     func existingNativeAgentPage(in window:BrowserWindowState)->PageSession? {available && !page.nativeIsEnding ? page:nil}
 }
-@MainActor final class BrowserManager {let tabs=Tabs();var windowRegistry:Registry?=Registry()}
+@MainActor final class BrowserManager {
+    enum Engine { case chromium }
+    struct Settings { var developerModeEnabled = true }
+    let tabs=Tabs();var windowRegistry:Registry?=Registry()
+    let engine = Engine.chromium
+    var nookSettings: Settings? = Settings()
+    var handedOff: [DevPick] = []
+    func frontPage(in window: BrowserWindowState) -> PageSession? { tabs.page }
+    func handOff(_ pick: DevPick, from page: PageSession?) { handedOff.append(pick) }
+    func showDevToast(_ text: String) {}
+}
 @main struct Main {
     @MainActor static func main() async throws {
         let manager=BrowserManager(),window=BrowserWindowState(),server=SnapshotFixture()
@@ -148,5 +184,48 @@ import Foundation
         precondition(window.selected==originalSelection && window.space==originalSpace)
         print("Native screenshot helper: JPEG/last-rendered label,1200 default,bounds,Agent wait,authorization and stale ownership passed")
         print("Native snapshot: isolated dormant source, caps/diff, permission gates, exact ownership/stale cache and bounded navigation slots passed")
+        await checkNativePicker()
+    }
+
+    @MainActor static func checkNativePicker() async {
+        let manager = BrowserManager(), window = BrowserWindowState(), server = SnapshotFixture()
+        manager.windowRegistry!.windows[window.id] = window
+        manager.windowRegistry!.activeWindow = window
+        NSApp.keyWindow = window.window
+        server.humanWindow = window
+        server.browserManager = manager
+        let page = manager.tabs.page, navigation = page.navigation as! ChromiumPageNavigation
+        navigation.result.json = ##"{"url":"https://design.test","selector":"#save","tag":"button","rect":{}}"##
+        let passed = await server.callTool("pick", [:])
+        precondition(passed["isError"] as? Bool == false && (passed["text"] as? String)?.contains("#save") == true)
+        precondition(navigation.calls == ["#save"] && manager.handedOff.count == 1)
+        let selected = await server.callTool("selection", [:])
+        precondition(selected["text"] as? String == passed["text"] as? String)
+
+        page.nativeNavigationSerial += 1
+        let expired = await server.callTool("selection", [:])
+        precondition(expired["isError"] as? Bool == true)
+        for state in ["disabled", "permission", "inactive", "private", "sheet"] {
+            manager.nookSettings?.developerModeEnabled = state != "disabled"
+            server.isPermitted = state != "permission"
+            NSApp.keyWindow = state == "inactive" ? FixtureWindow() : window.window
+            window.isIncognito = state == "private"
+            window.window?.attachedSheet = state == "sheet" ? FixtureWindow() : nil
+            let refused = await server.callTool("pick", [:])
+            precondition(refused["isError"] as? Bool == true && navigation.pickerStarts == 1, state)
+        }
+        window.window?.attachedSheet = nil
+        navigation.pickerHook = { page.nativeNavigationSerial += 1 }
+        let stale = await server.callTool("pick", [:])
+        precondition(stale["isError"] as? Bool == true && navigation.calls.count == 1)
+        navigation.pickerHook = nil
+        navigation.hook = { server.reset() }
+        let stopped = await server.callTool("pick", [:])
+        precondition(stopped["isError"] as? Bool == true && manager.handedOff.count == 1)
+        navigation.hook = nil
+        navigation.pickerHook = { withUnsafeCurrentTask { $0?.cancel() } }
+        let cancelled = await Task { await server.callTool("pick", [:]) }.value
+        precondition(cancelled["isError"] as? Bool == true && manager.handedOff.count == 1)
+        print("Dev MCP Chromium pick and selection passed active-page routing, policy and stale reply checks")
     }
 }
