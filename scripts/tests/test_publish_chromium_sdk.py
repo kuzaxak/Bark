@@ -243,6 +243,34 @@ out = Path(sys.argv[2])
             self.assertEqual(snapshot(), accepted)
 
 
+    def test_only_verified_official_publication_can_omit_finder_pseudolocales(self):
+        source = self.build / "Bark.app/Contents/Resources"
+        # An official engine omits developer-only GRIT pseudolocales.
+        for name in ("ar_XB.lproj", "en_XA.lproj"):
+            shutil.rmtree(source / name)
+        refused = self.publish()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("ar_XB.lproj, en_XA.lproj", refused.stderr)
+        self.assertFalse(self.pin("arm64").exists())
+
+        self.make_official()
+        accepted = self.publish("--require-official")
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        pin = self.pin("arm64").read_bytes()
+
+        # Genuine localized files and additional pseudo-locale resources still
+        # require parity. Preserve the previous immutable publication on refusal.
+        (self.repo / "ChromiumApp/Resources/ar_XB.lproj/extra.txt").write_text("extra")
+        refused = self.publish("--require-official", "--replace")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("ar_XB.lproj", refused.stderr)
+        (self.repo / "ChromiumApp/Resources/ar_XB.lproj/extra.txt").unlink()
+        shutil.rmtree(source / "en.lproj")
+        refused = self.publish("--require-official", "--replace")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("en.lproj", refused.stderr)
+        self.assertEqual(self.pin("arm64").read_bytes(), pin)
+
     def test_missing_receipt_cannot_create_or_replace_the_first_arm_pin(self):
         pin = self.pin("arm64")
         absent = self.publish("--require-official")

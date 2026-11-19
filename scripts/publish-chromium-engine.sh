@@ -93,10 +93,15 @@ for name, directory in directories.items():
     if built_from != hashlib.sha256(open(f'{runtime}/{name}', 'rb').read()).hexdigest():
         sys.exit(f'Engine was built from another {name} than Runtime/Chromium/bark: rebuild it or update the recipe')
 PY
+VERIFIED_OFFICIAL=false
+if [[ -e "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_RECEIPT" ]]; then
+  python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
+  VERIFIED_OFFICIAL=true
+fi
 # The app target owns outer artwork and specific display text. Keep all other
 # localized values, scripting API declarations and resource bytes in parity.
 if ! python3 -B - "$ENGINE_APP/Contents/Resources" "$ROOT/ChromiumApp/Resources" \
-    "$INTEGRATED_APP_INFO" "$ROOT/ChromiumApp/Info.plist" "$ROOT/ChromiumApp/Additions.plist" <<'PYTHON'
+    "$INTEGRATED_APP_INFO" "$ROOT/ChromiumApp/Info.plist" "$ROOT/ChromiumApp/Additions.plist" "$VERIFIED_OFFICIAL" <<'PYTHON'
 from pathlib import Path
 import plistlib
 import subprocess
@@ -104,7 +109,8 @@ import sys
 
 engine, app = map(Path, sys.argv[1:3])
 policy_strings = app / "ee.qdo.bark.manifest/Contents/Resources/en.lproj/Localizable.strings"
-engine_info, app_info, additions = map(Path, sys.argv[3:])
+engine_info, app_info, additions = map(Path, sys.argv[3:6])
+official = sys.argv[6] == "true"
 visible_names = {"CFBundleName", "CFBundleDisplayName", "CFBundleGetInfoString"}
 
 
@@ -187,6 +193,15 @@ def compare_directory(source, destination, *, outer_artwork=None, locale=None):
         source_icons, destination_icons = outer_artwork
         names -= source_icons
         other_names -= destination_icons
+        if official:
+            # Chromium disables its two GRIT pseudolocales for official builds.
+            # The tracked outer app keeps their developer InfoPlist translations.
+            for name in {"ar_XB.lproj", "en_XA.lproj"} & (other_names - names):
+                folder = destination / name
+                translation = folder / "InfoPlist.strings"
+                if (folder.is_dir() and not folder.is_symlink() and translation.is_file()
+                        and not translation.is_symlink() and {entry.name for entry in folder.iterdir()} == {translation.name}):
+                    other_names.remove(name)
     mismatched = sorted(names ^ other_names)
     if mismatched:
         raise ValueError(f"Outer resources present only in one bundle at {destination}: {', '.join(mismatched)}")
@@ -217,9 +232,6 @@ except (OSError, ValueError, plistlib.InvalidFileException, subprocess.CalledPro
 PYTHON
 then
   refuse 'Engine outer resources differ from ChromiumApp/Resources: review the difference and update the app'
-fi
-if [[ -e "$OFFICIAL_RECEIPT" || -L "$OFFICIAL_RECEIPT" ]]; then
-  python3 -B "$ROOT/Runtime/Chromium/official_provenance.py" "$BUILD" "$ARCH"
 fi
 /bin/mkdir -p "$ARTIFACT/Headers"
 /usr/bin/ditto "$FRAMEWORK" "$ARTIFACT/$FRAMEWORK_NAME"
