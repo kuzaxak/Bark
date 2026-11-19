@@ -130,7 +130,10 @@ when they finish. `smoke` quits after Chromium renders its local test page.
 `launch` keeps the test window open until you quit. Sparkle update rehearsals
 use a separately identified test app.
 
-To give someone a signed copy for everyday testing, package that same app.
+For everyday testing with your saved Bark data, open the installed Bark app from
+Applications. A Finder launch uses your persistent profile under
+`~/Library/Application Support/NookChromium`. To give someone the same signed
+app, package it in a disk image.
 Select the architecture used to build it.
 
 ```fish
