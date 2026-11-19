@@ -601,10 +601,10 @@ the whole bundle and fails on any unsigned Mach-O file; `codesign --verify --dee
 passes with an unsigned library the signing config doesn't name.
 
 The native application supplies `--barc-native-shell` and
-`--barc-shared-native-window` through its validated startup configuration. Verify
-only with a fresh `/private/tmp` synthetic app root and explicit profile UUID;
-never use a real profile. Patch application, compilation and mechanical tests do
-not establish native interaction, media, profile isolation or release readiness.
+`--barc-shared-native-window` through its validated startup configuration.
+Open the installed Bark app from Finder for everyday browsing with persistent
+data. The automated walks pass a fresh temporary root and profile UUID so they
+can create and remove test data independently of your normal profile.
 
 ### Opt in to Bark iCloud signing
 
@@ -813,9 +813,11 @@ not permission to relax the compatibility matrix.
 
 Normal native startup uses `~/Library/Application Support/NookChromium/App` and
 `Engine`, with a separate `ee.qdo.nook.chromium` preferences domain. It does not
-import or reset legacy Nook stores. Explicit `--barc-app-data-dir` plus
-`--barc-app-profile` remains temporary-root verification with mock keychain and
-isolated preferences; neither mode enables cloud sync.
+import or reset legacy Nook stores on startup. In a build signed with the
+Bark iCloud profile, you can enable Spaces sync in Settings. The test launcher
+supplies `--barc-app-data-dir` and `--barc-app-profile` to select temporary
+storage, isolated preferences and a mock keychain. Cloud sync is disabled for
+that run.
 
 Normal startup requires bridge version 12 before ChromeMain. Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
