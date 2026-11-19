@@ -21,11 +21,11 @@ final class CountingKagiTokenStore: KagiTokenStore, @unchecked Sendable {
 @MainActor
 struct KagiTokenStoreTests {
     @Test func nativeNamespaceNeverSelectsLegacyKeychainItem() {
-        let native = KagiSession.baseQuery(service: "NookChromium Kagi Session Link")
-        let legacy = KagiSession.baseQuery()
+        let native = KagiSession.baseQuery()
+        let isolated = KagiSession.baseQuery(service: "synthetic.kagi")
         #expect(native[kSecAttrService as String] as? String == "NookChromium Kagi Session Link")
-        #expect(legacy[kSecAttrService as String] as? String == "Nook Kagi Session Link")
-        #expect(native[kSecAttrAccount as String] as? String == legacy[kSecAttrAccount as String] as? String)
+        #expect(isolated[kSecAttrService as String] as? String == "synthetic.kagi")
+        #expect(native[kSecAttrAccount as String] as? String == isolated[kSecAttrAccount as String] as? String)
         // Pure query construction: no Security/Keychain operation is executed.
     }
 
@@ -36,6 +36,32 @@ struct KagiTokenStoreTests {
         defer { defaults.removePersistentDomain(forName: suite) }
         _ = NookSettingsService(kagiTokenStore: store, userDefaults: defaults)
         #expect(store.loads == 0)
+    }
+
+    @Test func plaintextAICleanupOnlyAffectsExplicitlyOwnedSuite() {
+        let ownedName = "BarkSettingsOwnedAI-\(UUID())"
+        let unrelatedName = "BarkSettingsUnrelatedAI-\(UUID())"
+        let owned = UserDefaults(suiteName: ownedName)!
+        let unrelated = UserDefaults(suiteName: unrelatedName)!
+        defer {
+            owned.removePersistentDomain(forName: ownedName)
+            unrelated.removePersistentDomain(forName: unrelatedName)
+        }
+        let legacy = ["settings.geminiApiKey": "fake-gemini", "settings.openRouterApiKey": "fake-openrouter"]
+        for (key, value) in legacy {
+            owned.set(value, forKey: key)
+            unrelated.set(value, forKey: key)
+        }
+        owned.set("provider", forKey: "settings.aiProvider")
+
+        _ = NookSettingsService(kagiTokenStore: CountingKagiTokenStore(), userDefaults: unrelated)
+        NookSettingsService.removeObsoletePlaintextAIKeys(from: owned)
+
+        for (key, value) in legacy {
+            #expect(owned.object(forKey: key) == nil)
+            #expect(unrelated.string(forKey: key) == value)
+        }
+        #expect(owned.string(forKey: "settings.aiProvider") == "provider")
     }
 
     @Test func firstUseReadsOnceAndKeepsTheToken() {

@@ -17,15 +17,14 @@ public protocol KagiTokenStore: Sendable {
 
 public struct KeychainKagiTokenStore: KagiTokenStore {
     private let service: String?
-    /// Nil preserves the existing WebKit app namespace. Native startup supplies
-    /// its own service and never probes or falls back to the legacy item.
+    /// Uses Bark’s existing service unless a caller supplies its own service.
     public init(service: String? = nil) { self.service = service }
     public func load() -> String? { KagiSession.loadToken(service: service) }
     public func save(_ token: String?) { KagiSession.saveToken(token, service: service) }
 }
 
 public enum KagiSession {
-    private static let service = "Nook Kagi Session Link"
+    private static let service = "NookChromium Kagi Session Link"
     private static let account = "token"
 
     /// The token from a pasted Session Link (`https://kagi.com/search?token=…&q=%s`) or a bare token.

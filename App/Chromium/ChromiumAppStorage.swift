@@ -24,10 +24,11 @@ final class ChromiumAppStorage {
             throw StorageError.preferencesUnavailable
         }
         defaults = isolated
+        NookSettingsService.removeObsoletePlaintextAIKeys(from: isolated)
         let port = configuration.isVerification ? isolated.string(forKey: "NookDevMCPPort").flatMap(UInt16.init) : nil
         devMCP = try DevMCPConfiguration.native(appRoot: app, port: port ?? 47823)
         let tokens: any KagiTokenStore = configuration.isVerification
-            ? VerificationKagiTokenStore() : KeychainKagiTokenStore(service: "NookChromium Kagi Session Link")
+            ? VerificationKagiTokenStore() : KeychainKagiTokenStore()
         settings = NookSettingsService(kagiTokenStore: tokens, userDefaults: isolated,
                                        boostStore: BoostStore(fileURL: app.appendingPathComponent("Boosts.json")),
                                        keepsSidebarLeft: true)
@@ -41,8 +42,7 @@ final class ChromiumAppStorage {
         downloads = DownloadManager()
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)
         aiConfig = AIConfigService(configURL: configuration.aiConfigURL,
-                                   keychainService: configuration.aiKeychainService,
-                                   migratesLegacySettings: false)
+                                   keychainService: configuration.aiKeychainService)
     }
 
     enum StorageError: Error { case preferencesUnavailable, missingVerificationProfile }

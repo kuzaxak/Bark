@@ -52,30 +52,36 @@ struct URLCitation: Equatable, Codable { let url: String; let title: String?; le
         let synthetic = URL(fileURLWithPath: home).resolvingSymlinksInPath()
         let scratch = synthetic.deletingLastPathComponent()
         let executable = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-        let defaultURL = AIConfigService.defaultConfigURL
+        guard !home.isEmpty else { fatalError("missing synthetic home") }
+        let legacyURL = synthetic.appendingPathComponent("Library/Application Support/Nook/ai_config.json")
         guard !home.isEmpty, synthetic.lastPathComponent == "home",
               scratch.lastPathComponent.hasPrefix("bark-ai-config-"),
               executable.lastPathComponent == scratch.lastPathComponent,
-              executable.deletingLastPathComponent().path == scratch.path,
-              defaultURL.resolvingSymlinksInPath().path.hasPrefix(synthetic.path + "/") else {
+              executable.deletingLastPathComponent().path == scratch.path else {
             fatalError("refusing to run outside the synthetic home")
         }
-        let webKitService = "com.nook.aiProvider", fakeKey = "fake-key-not-a-secret"
+        let legacyKey = "com.nook.aiProvider|gemini", fakeKey = "fake-key-not-a-secret"
+        keychainItems[legacyKey] = Data("previous-value".utf8)
+        precondition(AIKeychainStorage.shared.apiKey(for: "gemini") == nil)
+        precondition(!AIKeychainStorage.shared.saveAPIKey(fakeKey, for: "gemini"))
+        precondition(!AIKeychainStorage.shared.deleteAPIKey(for: "gemini"))
+        precondition(keychainCalls.isEmpty, "unconfigured storage must not query Security")
         let migrated = "ai_config_migrated_v1"
         precondition(UserDefaults.standard.object(forKey: migrated) == nil)
-        UserDefaults.standard.register(defaults: [
+        let legacyDefaults = [
             "settings.geminiApiKey": "fake-legacy-key", "settings.aiProvider": "gemini", "settings.geminiModel": "legacy-model",
-        ])
+        ]
+        UserDefaults.standard.register(defaults: legacyDefaults)
 
         let roots = URL(fileURLWithPath: home).appendingPathComponent("roots", isDirectory: true)
         let injected = roots.appendingPathComponent("a/App/ai_config.json")
-        let first = AIConfigService(configURL: injected, keychainService: "synthetic.a", migratesLegacySettings: false)
+        let first = AIConfigService(configURL: injected, keychainService: "synthetic.a")
         precondition(files.fileExists(atPath: injected.path), "the injected file is written")
         let mode = try files.attributesOfItem(atPath: injected.path)[.posixPermissions] as? NSNumber
         precondition(mode?.intValue == 0o600, "owner-only like the default file")
         precondition(first.config.activeProviderId != "gemini" && first.config.activeModelId != "legacy-model", "nothing migrated")
         precondition(UserDefaults.standard.object(forKey: migrated) == nil, "no migration mark")
-        precondition(keychainItems.isEmpty, "no legacy key moved")
+        precondition(keychainItems == [legacyKey: Data("previous-value".utf8)], "no legacy key moved")
 
         let defaultPrompt = AIGenerationConfig.defaultSystemPrompt
         precondition(defaultPrompt.hasPrefix("You are the assistant in Bark,"))
@@ -85,7 +91,7 @@ struct URLCitation: Equatable, Codable { let url: String; let title: String?; le
             var config = first.generationConfig
             config.systemPrompt = prompt
             first.generationConfig = config
-            return AIConfigService(configURL: injected, keychainService: "synthetic.a", migratesLegacySettings: false)
+            return AIConfigService(configURL: injected, keychainService: "synthetic.a")
         }
         let upgraded = reopen(with: oldStockPrompt)
         precondition(upgraded.generationConfig.systemPrompt == defaultPrompt, "the exact previous default is renamed")
@@ -107,24 +113,21 @@ struct URLCitation: Equatable, Codable { let url: String; let title: String?; le
         let saved = try String(contentsOf: injected, encoding: .utf8)
         precondition(!saved.contains(fakeKey), "keys stay out of the file")
 
-        let reloaded = AIConfigService(configURL: injected, keychainService: "synthetic.a", migratesLegacySettings: false)
+        let reloaded = AIConfigService(configURL: injected, keychainService: "synthetic.a")
         precondition(reloaded.config.activeModelId == "synthetic-model" && reloaded.activeProvider?.id == "gemini")
         precondition(reloaded.activeProvider?.apiKey == fakeKey)
 
-        let second = AIConfigService(configURL: roots.appendingPathComponent("b/App/ai_config.json"), keychainService: "synthetic.b", migratesLegacySettings: false)
+        let second = AIConfigService(configURL: roots.appendingPathComponent("b/App/ai_config.json"), keychainService: "synthetic.b")
         precondition(second.providers.first { $0.id == "gemini" }?.apiKey == "", "another service sees no key")
         precondition(second.config.activeModelId == nil, "another file sees no model")
 
         precondition(!keychainCalls.isEmpty && keychainCalls.allSatisfy { $0.service.hasPrefix("synthetic.") }, "only the injected services")
-        precondition(!files.fileExists(atPath: defaultURL.deletingLastPathComponent().path), "the default location stays untouched")
-
-        keychainCalls.removeAll()
-        let webKit = AIConfigService()
-        precondition(files.fileExists(atPath: defaultURL.path), "the default still uses today's file")
-        precondition(webKit.config.activeProviderId == "gemini" && webKit.config.activeModelId == "legacy-model", "the default still migrates")
-        precondition(keychainItems[webKitService + "|gemini"] == Data("fake-legacy-key".utf8))
-        precondition(keychainCalls.allSatisfy { $0.service == webKitService }, "the default still uses today's service")
-        UserDefaults.standard.removeObject(forKey: migrated)
-        print("AI config: injected file and service isolated, no migration, defaults unchanged")
+        precondition(!files.fileExists(atPath: legacyURL.deletingLastPathComponent().path))
+        precondition(keychainItems[legacyKey] == Data("previous-value".utf8))
+        precondition(UserDefaults.standard.object(forKey: migrated) == nil)
+        for (key, value) in legacyDefaults {
+            precondition(UserDefaults.standard.string(forKey: key) == value)
+        }
+        print("AI config: existing file, custom settings and injected service preserved; legacy keys untouched")
     }
 }

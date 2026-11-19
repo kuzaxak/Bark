@@ -19,9 +19,7 @@ import Security
 /// Uses internal synchronization for thread safety
 final class AIKeychainStorage: @unchecked Sendable {
     static let shared = AIKeychainStorage()
-    static let defaultService = "com.nook.aiProvider"
-
-    private var service = AIKeychainStorage.defaultService
+    private var service: String?
     private let lock = NSLock()
 
     private init() {}
@@ -38,6 +36,8 @@ final class AIKeychainStorage: @unchecked Sendable {
 
         lock.lock()
         defer { lock.unlock() }
+
+        guard let service, !service.isEmpty else { return nil }
 
         #if canImport(Security)
         let query: [String: Any] = [
@@ -66,6 +66,8 @@ final class AIKeychainStorage: @unchecked Sendable {
 
         lock.lock()
         defer { lock.unlock() }
+
+        guard let service, !service.isEmpty else { return false }
 
         #if canImport(Security)
         guard let data = apiKey.data(using: .utf8) else { return false }
@@ -103,6 +105,8 @@ final class AIKeychainStorage: @unchecked Sendable {
 
         lock.lock()
         defer { lock.unlock() }
+
+        guard let service, !service.isEmpty else { return false }
 
         #if canImport(Security)
         let query: [String: Any] = [

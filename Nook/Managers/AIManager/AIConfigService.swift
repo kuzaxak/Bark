@@ -17,10 +17,6 @@ import OSLog
 class AIConfigService {
     private static let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "AIConfig")
 
-    nonisolated static let defaultConfigURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        .appendingPathComponent("Nook")
-        .appendingPathComponent("ai_config.json")
-
     private(set) var config: AIConfiguration
     private let configURL: URL
 
@@ -68,9 +64,7 @@ class AIConfigService {
     var anthropicModels: [AIModelConfig] = []
     var isFetchingModels: Bool = false
 
-    init(configURL: URL = AIConfigService.defaultConfigURL,
-         keychainService: String = AIKeychainStorage.defaultService,
-         migratesLegacySettings: Bool = true) {
+    init(configURL: URL, keychainService: String) {
         AIKeychainStorage.shared.useService(keychainService)
         self.configURL = configURL
 
@@ -81,8 +75,6 @@ class AIConfigService {
             self.config = AIConfigService.createDefaultConfig()
         }
 
-        // Migrate from UserDefaults if this is a fresh config
-        if migratesLegacySettings { migrateFromUserDefaultsIfNeeded() }
         if config.addMissingProviders([.openAI, .anthropic]) {
             save()
         }
@@ -505,72 +497,5 @@ class AIConfigService {
         guard Self.previousDefaultPromptHashes.contains(hash) else { return }
         config.generationConfig.systemPrompt = AIGenerationConfig.defaultSystemPrompt
         save()
-    }
-
-    // MARK: - Migration from UserDefaults
-
-    private func migrateFromUserDefaultsIfNeeded() {
-        let defaults = UserDefaults.standard
-        let migrationKey = "ai_config_migrated_v1"
-        guard !defaults.bool(forKey: migrationKey) else { return }
-
-        // Migrate API keys to Keychain and remove plaintext entries
-        if let geminiKey = defaults.string(forKey: "settings.geminiApiKey"), !geminiKey.isEmpty {
-            if AIKeychainStorage.shared.saveAPIKey(geminiKey, for: "gemini") {
-                defaults.removeObject(forKey: "settings.geminiApiKey")
-            }
-        }
-
-        if let openRouterKey = defaults.string(forKey: "settings.openRouterApiKey"), !openRouterKey.isEmpty {
-            if AIKeychainStorage.shared.saveAPIKey(openRouterKey, for: "openrouter") {
-                defaults.removeObject(forKey: "settings.openRouterApiKey")
-            }
-        }
-
-        if let ollamaEndpoint = defaults.string(forKey: "settings.ollamaEndpoint"), !ollamaEndpoint.isEmpty {
-            if let idx = config.providers.firstIndex(where: { $0.id == "ollama" }) {
-                config.providers[idx].baseURL = ollamaEndpoint
-            }
-        }
-
-        // Migrate active provider
-        if let providerRaw = defaults.string(forKey: "settings.aiProvider") {
-            switch providerRaw {
-            case "gemini":
-                config.activeProviderId = "gemini"
-                if let modelRaw = defaults.string(forKey: "settings.geminiModel") {
-                    config.activeModelId = modelRaw
-                }
-            case "openrouter":
-                config.activeProviderId = "openrouter"
-                if let modelRaw = defaults.string(forKey: "settings.openRouterModel") {
-                    config.activeModelId = modelRaw
-                }
-            case "ollama":
-                config.activeProviderId = "ollama"
-                if let modelRaw = defaults.string(forKey: "settings.ollamaModel"), !modelRaw.isEmpty {
-                    config.activeModelId = modelRaw
-                }
-            default:
-                break
-            }
-        }
-
-        // Migrate web search settings
-        config.generationConfig.webSearchEnabled = defaults.bool(forKey: "settings.webSearchEnabled")
-        if let engine = defaults.string(forKey: "settings.webSearchEngine") {
-            config.generationConfig.webSearchEngine = engine
-        }
-        let maxResults = defaults.integer(forKey: "settings.webSearchMaxResults")
-        if maxResults > 0 {
-            config.generationConfig.webSearchMaxResults = maxResults
-        }
-        if let contextSize = defaults.string(forKey: "settings.webSearchContextSize") {
-            config.generationConfig.webSearchContextSize = contextSize
-        }
-
-        defaults.set(true, forKey: migrationKey)
-        save()
-        Self.log.info("Migrated AI configuration from UserDefaults")
     }
 }

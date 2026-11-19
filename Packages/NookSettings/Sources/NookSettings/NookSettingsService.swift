@@ -33,13 +33,11 @@ public final class NookSettingsService {
     private let externalLinkDestinationKey = "settings.externalLinkDestination"
     private let topBarAddressViewKey = "settings.topBarAddressView"
 
-    private let geminiApiKeyKey = "settings.geminiApiKey"
     private let geminiModelKey = "settings.geminiModel"
     private let showAIAssistantKey = "settings.showAIAssistant"
     private let browserControlServerKey = "settings.browserControlServer"
     private let developerModeKey = "settings.developerMode"
     private let aiProviderKey = "settings.aiProvider"
-    private let openRouterApiKeyKey = "settings.openRouterApiKey"
     private let openRouterModelKey = "settings.openRouterModel"
     private let ollamaEndpointKey = "settings.ollamaEndpoint"
     private let ollamaModelKey = "settings.ollamaModel"
@@ -330,8 +328,6 @@ public final class NookSettingsService {
     }
 
 
-    public var geminiApiKey: String
-
     public var geminiModel: GeminiModel {
         didSet {
             userDefaults.set(geminiModel.rawValue, forKey: geminiModelKey)
@@ -365,8 +361,6 @@ public final class NookSettingsService {
             userDefaults.set(aiProvider.rawValue, forKey: aiProviderKey)
         }
     }
-
-    public var openRouterApiKey: String
 
     public var openRouterModel: OpenRouterModel {
         didSet {
@@ -852,7 +846,6 @@ public final class NookSettingsService {
         self.storedSidebarPosition = SidebarPosition(rawValue: userDefaults.string(forKey: sidebarPositionKey) ?? "left") ?? SidebarPosition.left
         self.externalLinkDestination = ExternalLinkDestination(stored: userDefaults.string(forKey: externalLinkDestinationKey))
         self.topBarAddressView = userDefaults.bool(forKey: topBarAddressViewKey)
-        self.geminiApiKey = ""  // In-memory only; persistent storage via AIKeychainStorage
         self.geminiModel = GeminiModel(rawValue: userDefaults.string(forKey: geminiModelKey) ?? GeminiModel.flash.rawValue) ?? .flash
         self.showAIAssistant = userDefaults.bool(forKey: showAIAssistantKey)
         let browserControlOn = userDefaults.bool(forKey: browserControlServerKey)
@@ -862,7 +855,6 @@ public final class NookSettingsService {
         // "Agent uses its own window" is gone: agents always browse in the Agent space now.
         userDefaults.removeObject(forKey: "settings.agentWindow")
         self.aiProvider = AIProvider(rawValue: userDefaults.string(forKey: aiProviderKey) ?? AIProvider.gemini.rawValue) ?? .gemini
-        self.openRouterApiKey = ""  // In-memory only; persistent storage via AIKeychainStorage
         self.openRouterModel = OpenRouterModel(rawValue: userDefaults.string(forKey: openRouterModelKey) ?? OpenRouterModel.gpt4o.rawValue) ?? .gpt4o
         self.ollamaEndpoint = userDefaults.string(forKey: ollamaEndpointKey) ?? "http://localhost:11434"
         self.ollamaModel = userDefaults.string(forKey: ollamaModelKey) ?? "llama3"
@@ -922,9 +914,12 @@ public final class NookSettingsService {
         } else {
             self.siteSearchEntries = SiteSearchEntry.defaultSites
         }
+    }
 
-        // Remove any leftover plaintext API keys from before Keychain migration
-        cleanupPlaintextApiKeys()
+    /// Removes obsolete plaintext AI keys from the preferences suite owned by the caller.
+    public static func removeObsoletePlaintextAIKeys(from ownedDefaults: UserDefaults) {
+        ownedDefaults.removeObject(forKey: "settings.geminiApiKey")
+        ownedDefaults.removeObject(forKey: "settings.openRouterApiKey")
     }
 
     /// Call once after ExtensionManager is ready on first launch to pin all existing extensions.
@@ -938,12 +933,6 @@ public final class NookSettingsService {
         if pinnedExtensionIDs.isEmpty {
             pinnedExtensionIDs = installedExtensionIDs
         }
-    }
-
-    /// Remove plaintext API keys that may exist from before Keychain migration
-    public func cleanupPlaintextApiKeys() {
-        userDefaults.removeObject(forKey: geminiApiKeyKey)
-        userDefaults.removeObject(forKey: openRouterApiKeyKey)
     }
 }
 
