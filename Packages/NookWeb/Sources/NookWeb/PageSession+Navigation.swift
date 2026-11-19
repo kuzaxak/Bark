@@ -269,7 +269,7 @@ extension PageSession: WKNavigationDelegate {
             applyProtection(to: preferences, for: url)
             mainFrameNavigationType = navigationAction.navigationType
         }
-        if let frame = navigationAction.targetFrame, webView === self.webView { noteMediaFrame(frame) }
+        if let frame = navigationAction.targetFrame, webView === primaryWebView { noteMediaFrame(frame) }
         self.webView(webView, decidePolicyFor: navigationAction) { decisionHandler($0, preferences) }
     }
 

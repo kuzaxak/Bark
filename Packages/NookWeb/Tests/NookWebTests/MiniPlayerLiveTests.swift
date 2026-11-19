@@ -19,7 +19,7 @@ struct MiniPlayerLiveTests {
         try await withLivePage { live in
             let tab = try live.open(script: LivePage.rewrittenPlayer)
             let page = try #require(live.host.tabs.session(for: tab))
-            let webView = try #require(page.webView)
+            let webView = try #require(page.primaryWebView)
             try await live.until("the page playing") { live.playing(webView) == true }
             live.leave()
 
@@ -34,7 +34,7 @@ struct MiniPlayerLiveTests {
         try await withLivePage { live in
             let tab = try live.open(script: LivePage.rewrittenPlayer)
             let page = try #require(live.host.tabs.session(for: tab))
-            let webView = try #require(page.webView)
+            let webView = try #require(page.primaryWebView)
             webView.removeObserver(page, forKeyPath: PageSession.isPlayingAudioKey)
             defer { webView.addObserver(page, forKeyPath: PageSession.isPlayingAudioKey, options: [.new], context: nil) }
             try await live.until("the page playing") { live.playing(webView) == true }
@@ -51,7 +51,7 @@ struct MiniPlayerLiveTests {
         try await withLivePage { live in
             let tab = try live.open(script: LivePage.rewrittenPlayer)
             let page = try #require(live.host.tabs.session(for: tab))
-            let webView = try #require(page.webView)
+            let webView = try #require(page.primaryWebView)
             try await live.until("playing") { page.media.isPlaying && page.hasAudioContent }
             live.leave()
 
@@ -70,7 +70,7 @@ struct MiniPlayerLiveTests {
         try await withLivePage { live in
             let tab = try live.open(script: "write(song); player.play();")
             let page = try #require(live.host.tabs.session(for: tab))
-            let webView = try #require(page.webView)
+            let webView = try #require(page.primaryWebView)
             try await live.until("playing") { page.media.isPlaying && page.hasAudioContent }
             live.leave()
 
@@ -165,7 +165,7 @@ final class LivePage {
             """.write(to: file, atomically: true, encoding: .utf8)
         let spaceID = try #require(host.window.spaceID)
         let tab = try #require(host.tabs.open(url: file, in: host.window, placement: .newTab, parent: .tabs(spaceID: spaceID)))
-        window.contentView = try #require(host.tabs.session(for: tab)?.webView)
+        window.contentView = try #require(host.tabs.session(for: tab)?.primaryWebView)
         return tab
     }
 

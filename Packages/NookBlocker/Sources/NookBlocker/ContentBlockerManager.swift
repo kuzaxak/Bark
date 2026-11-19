@@ -212,7 +212,7 @@ public final class ContentBlockerManager: NSObject {
             }
             return
         }
-        guard let wv = session.webView else { return }
+        guard let wv = webKitHost?.existingWebKitView(for: session) else { return }
         reconcile(wv, exempt: !shouldApplyBlocking(to: session))
         session.reloadForBlocking()
     }
@@ -673,9 +673,9 @@ public final class ContentBlockerManager: NSObject {
     /// A page that committed before blocking was ready can only be fixed by reloading it:
     /// rule lists are evaluated at navigation time and document-start scripts have already run.
     private func applyToExistingWebViews(reloadingPagesLoadedWithoutBlocking reloading: Bool = false) {
-        guard !nativeNetworkBlocking else { return }
-        for session in self.host?.blockablePages ?? [] {
-            guard let wv = session.webView else { continue }
+        guard let webKitHost else { return }
+        for session in webKitHost.blockablePages {
+            guard let wv = webKitHost.existingWebKitView(for: session) else { continue }
             // Exempt pages (allowlist, per-tab off, OAuth) loaded as intended; never reload them.
             guard shouldApplyBlocking(to: session) else { removeBlocking(from: wv); continue }
             applyBlocking(to: wv)
@@ -686,9 +686,11 @@ public final class ContentBlockerManager: NSObject {
 
     private func removeFromExistingWebViews() {
         guard !nativeNetworkBlocking else { return }
-        for session in self.host?.blockablePages ?? [] {
-            guard let wv = session.webView else { continue }
-            removeBlocking(from: wv)
+        if let webKitHost {
+            for session in webKitHost.blockablePages {
+                guard let wv = webKitHost.existingWebKitView(for: session) else { continue }
+                removeBlocking(from: wv)
+            }
         }
         exemptedWebViews.removeAllObjects()
     }

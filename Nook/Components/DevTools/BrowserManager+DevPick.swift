@@ -103,7 +103,7 @@ extension BrowserManager {
 
     /// The element's on-screen part as a PNG in Caches/DevPicks; picks older than a day are deleted.
     private func snapshot(of element: DevPickedElement, in session: PageSession) async -> String? {
-        guard let webView = session.webView else { return nil }
+        guard let webView = WebKitPageAccess.existingView(for: session) else { return nil }
         let scale = webView.pageZoom * webView.magnification
         let topInset: CGFloat
         if #available(macOS 26, *) {

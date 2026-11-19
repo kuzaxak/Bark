@@ -27,6 +27,23 @@ struct NativeBlockerModelTests {
         #expect(host.controllerHook != nil && host.controllerReads == 0)
     }
 
+    @Test func legacyExemptionReconcilesOnlyAnExistingWebKitView() throws {
+        let fixture = try NativeBlockerFixture(); defer { fixture.cleanup() }
+        let manager = ContentBlockerManager(settings: fixture.settings, storageDirectory: fixture.directory)
+        let host = WebKitBlockerHost()
+        manager.attach(host: host)
+        let first = NativeBlockerPage("https://ads.test/"), second = NativeBlockerPage("https://ads.test/")
+        host.blockablePages = [first, second]
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        host.views[first.itemID] = WKWebView(frame: .zero, configuration: configuration)
+
+        #expect(manager.allowDomain("ads.test", from: first))
+        #expect(host.viewLookups == [first.itemID, second.itemID])
+        #expect(first.reloads == 1 && second.reloads == 0)
+        #expect(first.policies.isEmpty && second.policies.isEmpty)
+    }
+
     @Test func persistedNativePolicySeedsFirstCompilationAndExport() async throws {
         let optional = try #require(FilterListManager.optionalLists.first)
         let whitelist = ["ADS.TEST", "allowed.test", "ads.test"]
@@ -394,7 +411,6 @@ private final class NativeBlockerPage: BlockablePage {
     var policyAtReload: ContentBlockerManager.NetworkPagePolicy?
     var acceptPolicy = true
     init(_ url: String) { blockingURL = URL(string: url)! }
-    var webView: WKWebView? { fatalError("Native policy must not query WebKit") }
     func applyNetworkBlockingPolicy(_ policy: ContentBlockerManager.NetworkPagePolicy) -> Bool {
         policies.append(policy); return acceptPolicy
     }
@@ -411,12 +427,18 @@ private final class NativeBlockerHost: ContentBlockerHost {
 
 @MainActor
 private final class WebKitBlockerHost: WebKitContentBlockerHost {
-    let blockablePages: [any BlockablePage] = []
+    var blockablePages: [any BlockablePage] = []
+    var views: [UUID: WKWebView] = [:]
+    private(set) var viewLookups: [UUID] = []
     var controllerHook: (@MainActor (WKUserContentController) -> Void)?
     private(set) var controllerReads = 0
     var sharedUserContentController: WKUserContentController {
         controllerReads += 1
         return WKUserContentController()
+    }
+    func existingWebKitView(for page: any BlockablePage) -> WKWebView? {
+        viewLookups.append(page.itemID)
+        return views[page.itemID]
     }
     func blockablePage(for webView: WKWebView) -> (any BlockablePage)? { nil }
     func onNewUserContentController(_ handler: @escaping @MainActor (WKUserContentController) -> Void) {

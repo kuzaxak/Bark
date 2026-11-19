@@ -1279,7 +1279,7 @@ struct NativePageLifecycleTests {
         page.onEvent?(.ownerEnded)
         stale?(.peekRequested(latest))
         for _ in 0..<10 { await Task.yield() }
-        #expect(links == [latest] && session.navigation == nil && session.webView == nil)
+        #expect(links == [latest] && session.navigation == nil && session.primaryWebView == nil)
         #expect(f.host.creates.count == 1 && f.host.closes.isEmpty)
     }
 
@@ -1326,7 +1326,7 @@ struct NativePageLifecycleTests {
         page.translations[1].completion(PageTranslationResult())
         oldSink?([.init(id: "late", text: "stale")])
         #expect(session.translationBacklog.isEmpty)
-        #expect(page.loaded.count == loadedBefore && session.webView == nil)
+        #expect(page.loaded.count == loadedBefore && session.primaryWebView == nil)
     }
 
     @Test(arguments: [false, true])
@@ -1433,7 +1433,7 @@ struct NativePageLifecycleTests {
         f.tabs.settings.boosts[0].css = "body { color: black; }"
         for _ in 0..<10 { await Task.yield() }
         #expect(page.styles.count == 6 && session.navigation == nil && page.invalidated)
-        #expect(f.host.creates.count == creates && session.webView == nil)
+        #expect(f.host.creates.count == creates && session.primaryWebView == nil)
     }
 
     @Test func savedNativeBoostCSSUpdatesRemovesAndSkipsSameDocumentDuplicates() async throws {
@@ -1456,7 +1456,7 @@ struct NativePageLifecycleTests {
         f.tabs.settings.boosts[0].isEnabled = false
         for _ in 0..<10 { await Task.yield() }
         #expect(native.styles.last?.css == "" && native.styles.count == 3)
-        #expect(f.tabs.selectedSession(in: f.window)?.webView == nil)
+        #expect(f.tabs.selectedSession(in: f.window)?.primaryWebView == nil)
         #expect(f.host.creates.count == 1)
     }
 
@@ -1576,7 +1576,7 @@ struct NativePageLifecycleTests {
         native.styles.last?.completion(true)
         f.tabs.settings.boosts[0].css = "body { color: black; }"
         for _ in 0..<10 { await Task.yield() }
-        #expect(native.styles.count == 2 && session.navigation == nil && session.webView == nil)
+        #expect(native.styles.count == 2 && session.navigation == nil && session.primaryWebView == nil)
     }
 
     @Test func savedBoostCSSUsesExactPrivateSessionAndOnlyExistingPages() async throws {
@@ -1674,7 +1674,7 @@ struct NativePageLifecycleTests {
                 "Metadata reapplied an old committed navigation snapshot")
         #expect(playbackChanges.withLock { $0 } == 1 && !session.media.isPlaying)
         session.togglePlayback()
-        #expect(native.playbackRequests == [true, false] && session.webView == nil)
+        #expect(native.playbackRequests == [true, false] && session.primaryWebView == nil)
         let late = native.onEvent
         session.nativeOwnerEnded()
         session.togglePlayback(); session.skipTrack(forward: true); session.toggleSound()
@@ -1689,11 +1689,11 @@ struct NativePageLifecycleTests {
         let session = try #require(f.tabs.selectedSession(in: f.window))
         #expect(session.navigation == nil)
         session.requestPictureInPicture()
-        #expect(delegate.pictureInPictureRequests == 0 && session.webView == nil && f.host.creates.count == 1)
+        #expect(delegate.pictureInPictureRequests == 0 && session.primaryWebView == nil && f.host.creates.count == 1)
         _ = f.host.finishCreate(0)
         session.nativeOwnerEnded()
         session.requestPictureInPicture()
-        #expect(delegate.pictureInPictureRequests == 0 && session.navigation == nil && session.webView == nil)
+        #expect(delegate.pictureInPictureRequests == 0 && session.navigation == nil && session.primaryWebView == nil)
     }
 
     @Test func nativePictureInPictureDispatchAndObservedKindsAvoidWebKit() throws {
@@ -1702,7 +1702,7 @@ struct NativePageLifecycleTests {
         let session = try #require(f.tabs.selectedSession(in: f.window))
         #expect(native.state.hasVideoPictureInPicture == nil && native.state.hasDocumentPictureInPicture == nil)
         session.requestPictureInPicture()
-        #expect(native.pipRequests == 1 && !session.hasPiPActive && session.webView == nil)
+        #expect(native.pipRequests == 1 && !session.hasPiPActive && session.primaryWebView == nil)
         native.allowsPiP = true
         session.requestPictureInPicture()
         #expect(native.pipRequests == 2 && !session.hasPiPActive)
@@ -1711,7 +1711,7 @@ struct NativePageLifecycleTests {
         #expect(session.hasPiPActive)
         native.state.hasVideoPictureInPicture = false; native.state.hasDocumentPictureInPicture = true
         native.onStateChanged?(native.state)
-        #expect(session.hasPiPActive && session.webView == nil)
+        #expect(session.hasPiPActive && session.primaryWebView == nil)
         // Unavailable observation must not overwrite a previously protected state.
         native.state.hasDocumentPictureInPicture = nil
         native.onStateChanged?(native.state)
@@ -1721,7 +1721,7 @@ struct NativePageLifecycleTests {
         #expect(!session.hasPiPActive && session.navigation == nil)
         late?(PageNavigationState(canGoBack: false, canGoForward: false,
             hasVideoPictureInPicture: true, hasDocumentPictureInPicture: false))
-        #expect(!session.hasPiPActive && session.webView == nil)
+        #expect(!session.hasPiPActive && session.primaryWebView == nil)
     }
 
     @Test func detachedNativePageUsesCloseOnlyOwnerWithoutLoadingOrPublishing() throws {
@@ -2091,7 +2091,7 @@ struct NativePageLifecycleTests {
         #expect(f.host.creates.count == 2 && f.host.creates[1].profileID == destination)
         let replacement = f.host.finishCreate(1)
         #expect(replacement !== old && replacement.loaded == [url])
-        #expect(session.navigation === replacement && session.webView == nil)
+        #expect(session.navigation === replacement && session.primaryWebView == nil)
         #expect(f.tabs.device.pendingProfileDeletion == nil)
     }
 
@@ -2844,7 +2844,7 @@ struct NativePageLifecycleTests {
         let url = URL(string: "https://fixture.invalid/native-only")!
         native.onEvent?(.committed(url, sameDocument: false))
         native.onEvent?(.finished(url, title: "Native page", isReload: false))
-        #expect(session.url == url && session.title == "Native page" && session.webView == nil)
+        #expect(session.url == url && session.title == "Native page" && session.primaryWebView == nil)
         let retired = native.onEvent
         fixture.tabs.close(adopted)
         #expect(fixture.tabs.tree.item(adopted) != nil && fixture.host.closes.count == 1)
@@ -3166,7 +3166,7 @@ struct NativePageLifecycleTests {
         let navigation = fixture.host.finishCreate(0)
         #expect(navigation.loaded == [target])
         #expect(navigation.profileID == page.profile?.id)
-        #expect(page.webView == nil)
+        #expect(page.primaryWebView == nil)
         fixture.tabs.select(id, in: fixture.window)
         #expect(fixture.host.creates.count == 1 && navigation.loaded == [target])
         let space = try #require(fixture.tabs.createSpace(name: "Personal", icon: "house",

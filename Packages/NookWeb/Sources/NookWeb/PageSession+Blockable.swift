@@ -3,8 +3,7 @@
 //  PageSession+Blockable.swift
 //  Nook
 //
-//  PageSession satisfies NookBlocker's page seam as-is: itemID, isOAuthFlow and
-//  webView are already its own stored properties. Task 6 moves this into NookWeb.
+//  Implement blocking operations for the page's current engine.
 //
 
 import Foundation
@@ -19,12 +18,12 @@ extension PageSession: BlockablePage {
     }
 
     public var blockingURL: URL? {
-        usesNativePageHost ? navigation?.state.url ?? url : primaryWebView?.url
+        usesNativePageHost ? navigation?.state.url ?? url : WebKitPageAccess.existingView(for: self)?.url
     }
 
     @discardableResult public func reloadForBlocking() -> Bool {
         if usesNativePageHost { return navigation?.reload() ?? false }
-        guard let primaryWebView else { return false }
+        guard let primaryWebView = WebKitPageAccess.existingView(for: self) else { return false }
         primaryWebView.reloadFromOrigin()
         return true
     }

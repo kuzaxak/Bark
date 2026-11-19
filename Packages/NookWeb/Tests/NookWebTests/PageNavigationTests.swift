@@ -6,6 +6,30 @@ import WebKit
 
 @MainActor
 struct PageNavigationTests {
+    @Test func explicitWebKitAccessOnlyReturnsExistingWebKitViews() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
+                                  title: "Test", isPrivate: true, controller: nil)
+        #expect(WebKitPageAccess.existingView(for: session) == nil)
+        #expect(WebKitPageAccess.assignedView(for: session) == nil)
+        #expect(session.isUnloaded)
+
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = RecordingWebView(frame: .zero, configuration: configuration)
+        session.primaryWebView = view
+        #expect(WebKitPageAccess.existingView(for: session) === view)
+        #expect(WebKitPageAccess.assignedView(for: session) == nil)
+        session.primaryWindowId = UUID()
+        #expect(WebKitPageAccess.assignedView(for: session) === view)
+
+        // A stale view/window assignment during a profile transition grants no
+        // access through this adapter to a Chromium-owned session.
+        session.detachedProfile = Profile(id: UUID(), engine: .chromium)
+        #expect(WebKitPageAccess.existingView(for: session) == nil)
+        #expect(WebKitPageAccess.assignedView(for: session) == nil)
+        #expect(session.primaryWebView === view)
+    }
+
     @Test func muteUsesObservedStateAndRefusalNeverChangesTheModel() {
         let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Audio", isPrivate: false, controller: nil)
         let page = RecordingNavigation(profileID: UUID())
@@ -23,7 +47,7 @@ struct PageNavigationTests {
         page.state.isAudioMuted = false; page.state.isAudible = false
         page.onStateChanged?(page.state)
         #expect(!session.isAudioMuted && !session.hasPlayingAudio && !session.hasAudioContent)
-        #expect(session.webView == nil && !page.invalidated)
+        #expect(session.primaryWebView == nil && !page.invalidated)
     }
 
     @Test func sessionCommandsUseInstalledEngineWithoutCreatingWebKit() {
@@ -34,9 +58,9 @@ struct PageNavigationTests {
         let page = RecordingNavigation(profileID: profile.id)
         session.installNavigation(page)
         #expect(!session.isUnloaded)
-        #expect(session.webView == nil)
+        #expect(session.primaryWebView == nil)
         session.loadWebViewIfNeeded()
-        #expect(session.webView == nil)
+        #expect(session.primaryWebView == nil)
         let url = URL(string: "about:blank#next")!
         session.load(url)
         #expect(page.loaded == [url])
@@ -100,7 +124,7 @@ struct PageNavigationTests {
         #expect(session.isUnloaded)
         let destination = URL(string: "about:blank#explicit")!
         session.load(destination)
-        let view = try #require(session.webView as? RecordingWebView)
+        let view = try #require(WebKitPageAccess.existingView(for: session) as? RecordingWebView)
         #expect(view.requested == [destination])
         session.unload()
     }

@@ -27,7 +27,7 @@ struct BackgroundLinkTabTests {
         #expect(host.window.selectedItemID == opener)
         let page = try #require(host.tabs.session(for: child))
         #expect(!page.isUnloaded)
-        #expect((page.webView as? RecordingWebView)?.requested == [link])
+        #expect((page.primaryWebView as? RecordingWebView)?.requested == [link])
         #expect(host.backgroundLoads == [child])
     }
 
@@ -45,7 +45,7 @@ struct BackgroundLinkTabTests {
         #expect(host.window.selectedItemID == opener)
         let page = try #require(host.tabs.session(for: child))
         #expect(page.isPrivate)
-        #expect((page.webView as? RecordingWebView)?.requested == [link])
+        #expect((page.primaryWebView as? RecordingWebView)?.requested == [link])
     }
 
     @Test func legacyWebKitObserverReceivesOpenTitleAndClose() throws {

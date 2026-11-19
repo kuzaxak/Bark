@@ -29,7 +29,7 @@ final class PiPManager: NSObject {
     /// Toggles picture-in-picture for the page's video, deciding from the video's own state.
     /// Only a displayed page has a view, so this never creates one.
     func requestPiP(for session: PageSession, webView: WKWebView? = nil) {
-        guard let webView = webView ?? session.assignedWebView else { return }
+        guard let webView = webView ?? WebKitPageAccess.assignedView(for: session) else { return }
         automaticItems.remove(session.itemID)
         webView.evaluateJavaScript(Self.presentationScript(nil))
     }
@@ -37,7 +37,7 @@ final class PiPManager: NSObject {
     /// `hasPiPActive` follows WebKit's own events (`pipStateChange`), not this request, since
     /// WebKit can decline it.
     func setPiP(_ on: Bool, for session: PageSession, webView: WKWebView? = nil) {
-        guard let webView = webView ?? session.assignedWebView else { return }
+        guard let webView = webView ?? WebKitPageAccess.assignedView(for: session) else { return }
         if !on { automaticItems.remove(session.itemID) }
         webView.evaluateJavaScript(Self.presentationScript(on))
     }

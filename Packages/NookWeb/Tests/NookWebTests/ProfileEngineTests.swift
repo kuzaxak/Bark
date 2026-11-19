@@ -397,7 +397,7 @@ struct ProfileEngineTests {
                                isPrivate: false, controller: tabs)
         #expect(page.faviconFetchAttempts == 0 && !page.faviconFetchInFlight)
         page.loadWebViewIfNeeded()
-        #expect(page.webView == nil && page.isUnloaded)
+        #expect(page.primaryWebView == nil && page.isUnloaded)
         page.ensureFaviconLoaded()
         await page.fetchAndSetFavicon(for: url)
         #expect(page.faviconFetchAttempts == 0 && !page.faviconFetchInFlight)

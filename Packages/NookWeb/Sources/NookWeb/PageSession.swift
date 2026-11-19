@@ -808,9 +808,6 @@ public final class PageSession: NSObject, Identifiable {
     /// Console and network log while Developer Mode is on; nil otherwise.
     public internal(set) var devCapture: DevCapture?
 
-    /// The existing web view. Never creates one.
-    public var webView: WKWebView? { primaryWebView }
-
     /// Drop cached history documents, preserving history and the current live page.
     /// Returns acceptance, not a cached-entry count or reclaimed-memory claim.
     @discardableResult public func clearPageCache() -> Bool {
@@ -828,11 +825,6 @@ public final class PageSession: NSObject, Identifiable {
             setupWebView()
         }
         return primaryWebView!
-    }
-
-    /// The web view only once a window displays it, so callers never create orphan views.
-    public var assignedWebView: WKWebView? {
-        primaryWindowId != nil ? primaryWebView : nil
     }
 
     // MARK: - Init
@@ -1490,7 +1482,7 @@ public final class PageSession: NSObject, Identifiable {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
         } else if keyPath == Self.isPlayingAudioKey, let webView = object as? WKWebView {
             let audible = webView.value(forKey: Self.isPlayingAudioKey) as? Bool
-            let applied = webView === self.webView && audible != nil
+            let applied = webView === primaryWebView && audible != nil
             mediaLog.info("""
                 media audio signal item=\(self.itemID, privacy: .public) \
                 value=\(audible.map(String.init) ?? "nil", privacy: .public) \

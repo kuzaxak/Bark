@@ -41,7 +41,7 @@ extension BrowserManager {
         guard let id = tabs.agentItem else { return nil }
         guard let session = tabs.ensureSession(for: id) else { throw AgentPageError.noPage }
         session.loadWebViewIfNeeded()
-        guard let view = session.webView else { throw AgentPageError.noPage }
+        guard let view = WebKitPageAccess.existingView(for: session) else { throw AgentPageError.noPage }
         agentParked = false
         hostAgentPage(session)
         scheduleAgentIdle()
@@ -52,7 +52,7 @@ extension BrowserManager {
     /// window that shows the Agent space takes it from there itself.
     func hostAgentPage(_ session: PageSession) {
         guard engine == .webKit else { return }
-        guard tabs.agentItem == session.itemID, let view = session.webView,
+        guard tabs.agentItem == session.itemID, let view = WebKitPageAccess.existingView(for: session),
               let window = ((windowRegistry?.activeWindow).flatMap { $0.isIncognito ? nil : $0 } ?? tabs.regularWindows.first)?.window,
               let content = window.contentView else { return }
         // Already in a window that is still open; a closed one no longer renders it.
@@ -82,7 +82,7 @@ extension BrowserManager {
                 try? await Task.sleep(for: Self.agentIdleDelay)
                 if Task.isCancelled { return }
             } while self?.tabs.agentCallsInFlight ?? 0 > 0
-            guard let self, let view = self.tabs.agentItem.flatMap(self.tabs.session(for:))?.webView,
+            guard let self, let view = self.tabs.agentItem.flatMap(self.tabs.session(for:)).flatMap(WebKitPageAccess.existingView(for:)),
                   view.superview is AgentPageHostView else { return }
             agentParked = true
             view.removeFromSuperview()

@@ -919,7 +919,7 @@ final class DevMCPServer {
             var webView: WKWebView? {
                 if !forPerson { return agentView }
                 guard let id = window.selectedItemID else { return nil }
-                return bm.getWebView(for: id, in: window.id) ?? bm.tabs.controllableSession(in: window)?.webView
+                return bm.getWebView(for: id, in: window.id) ?? bm.tabs.controllableSession(in: window).flatMap(WebKitPageAccess.existingView(for:))
             }
             var session: PageSession? {
                 guard !forPerson else { return bm.tabs.controllableSession(in: window) }
@@ -1190,7 +1190,7 @@ final class DevMCPServer {
                         "loaded": !page.isUnloaded,
                         "onScreen": bm.tabs.isOnScreen(page.itemID)
                     ]
-                    if let wv = page.webView {
+                    if let wv = WebKitPageAccess.existingView(for: page) {
                         entry["pid"] = wv.nookWebProcessIdentifier
                         entry["inWindow"] = wv.window != nil
                         entry["visibility"] = (try? await wv.evaluateJavaScript("document.visibilityState")) as? String ?? ""

@@ -92,7 +92,7 @@ extension PageSession {
     /// Asks the main frame and every subframe known from a report or a navigation for its state
     /// again. Asks made while one runs are folded into one more after it.
     public func refreshMediaReports() {
-        guard webView != nil, mediaReask.request() else { return }
+        guard primaryWebView != nil, mediaReask.request() else { return }
         Task { @MainActor [weak self] in await self?.reaskMediaFrames() }
     }
 
@@ -110,7 +110,7 @@ extension PageSession {
     /// A subframe that no longer answers is gone, or no longer runs the media script. The main frame
     /// fails only mid-navigation, and its commit clears what it had reported.
     private func reaskMediaFrame(_ frame: WKFrameInfo?, key: AnyHashable) async {
-        guard let webView else { return }
+        guard let webView = primaryWebView else { return }
         let state = try? await webView.callAsyncJavaScript(
             "return window.__nookMedia?.state() ?? null;", in: frame, contentWorld: .page)
         if let state = state as? [String: Any] {
@@ -124,7 +124,7 @@ extension PageSession {
     /// Runs one of `window.__nookMedia`'s controls in `frame` and takes the state it answers with,
     /// so the bar follows the change at once, then asks every frame again.
     private func runMediaControl(_ call: String, _ arguments: [String: Any], in frame: WKFrameInfo?) {
-        guard let webView else { return }
+        guard let webView = primaryWebView else { return }
         Task { @MainActor [weak self] in
             let state = try? await webView.callAsyncJavaScript(
                 "return (await window.__nookMedia?.\(call)) ?? null;", arguments: arguments, in: frame, contentWorld: .page)
@@ -156,7 +156,7 @@ extension PageSession {
         let play = !media.isPlaying
         let frames = play ? [mediaFrames.resumeTarget ?? nil] : mediaFrames.pauseTargets
         logMediaControl(play ? "play" : "pause", frames: frames.count, fallback: frames.isEmpty)
-        if frames.isEmpty, let webView {
+        if frames.isEmpty, let webView = primaryWebView {
             Task { @MainActor [weak self] in
                 await webView.pauseAllMediaPlayback()
                 self?.refreshMediaReports()

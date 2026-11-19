@@ -109,7 +109,7 @@ extension PageSession: WKUIDelegate {
             guard let popup = controller?.openDetachedPopup(configuration: popupConfiguration(), url: url, opener: self)
             else { return nil }
             delegate.presentPopupWindow(popup)
-            return popup.webView
+            return popup.primaryWebView
         }
 
         // Air Traffic Control: route popup URLs to designated spaces.

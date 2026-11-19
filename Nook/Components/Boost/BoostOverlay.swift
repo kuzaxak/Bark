@@ -46,7 +46,7 @@ struct BoostOverlay: View {
                 opensLibrary: windowState.boostPanelOpensLibrary,
                 onPreview: { draft in
                     if isNative { preview(draft, in: session, serial: serial, page: page) }
-                    else if let webView = session.webView {
+                    else if let webView = WebKitPageAccess.existingView(for: session) {
                         BoostTweaks.preview(for: session.url, in: webView, settings: settings, draft: draft)
                     }
                 },
@@ -56,7 +56,7 @@ struct BoostOverlay: View {
                               lease.serial == serial, lease.page == page else { return nil }
                         return await session.pickNativeBoostElement(token: lease.token)
                     }
-                    guard let webView = session.webView else { return nil }
+                    guard let webView = WebKitPageAccess.existingView(for: session) else { return nil }
                     return await BoostTweaks.pickElement(in: webView)
                 },
                 onCancelZap: {
@@ -64,7 +64,7 @@ struct BoostOverlay: View {
                         if let lease = nativePreview, lease.session === session, lease.serial == serial, lease.page == page {
                             session.cancelNativeBoostElementPicker(token: lease.token)
                         }
-                    } else { session.webView.map { BoostTweaks.cancelPick(in: $0) } }
+                    } else { WebKitPageAccess.existingView(for: session).map { BoostTweaks.cancelPick(in: $0) } }
                 },
                 onFinish: { close(session, serial: serial, page: page, settings) }
             )
@@ -123,7 +123,7 @@ struct BoostOverlay: View {
         if isNative {
             endNativePreview(session, serial: serial, page: page)
             BoostTweaks.syncZapList(settings: settings, blocker: browserManager.contentBlockerManager)
-        } else if let webView = session.webView {
+        } else if let webView = WebKitPageAccess.existingView(for: session) {
             BoostTweaks.preview(for: session.url, in: webView, settings: settings)
             BoostTweaks.syncZapList(settings: settings, blocker: browserManager.contentBlockerManager)
         }

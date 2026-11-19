@@ -25,8 +25,6 @@ public protocol BlockablePage: AnyObject {
     var isOAuthFlow: Bool { get }
     /// A private window's page. What it shows leaves no record.
     var isPrivate: Bool { get }
-    /// The page's web view, once it has one.
-    var webView: WKWebView? { get }
     /// Current engine-owned page URL; querying it must not create a web view.
     var blockingURL: URL? { get }
     /// Publish exceptions to this existing engine page before a reload/retry.
@@ -37,13 +35,7 @@ public protocol BlockablePage: AnyObject {
 }
 
 public extension BlockablePage {
-    var blockingURL: URL? { webView?.url }
     @discardableResult func applyNetworkBlockingPolicy(_ policy: ContentBlockerManager.NetworkPagePolicy) -> Bool { false }
-    @discardableResult func reloadForBlocking() -> Bool {
-        guard let webView else { return false }
-        webView.reloadFromOrigin()
-        return true
-    }
 }
 
 /// What the blocker needs from the app that hosts it.
@@ -55,6 +47,8 @@ public protocol ContentBlockerHost: AnyObject {
 
 @MainActor
 public protocol WebKitContentBlockerHost: ContentBlockerHost {
+    /// An existing WebKit view to reconcile, without creating a page.
+    func existingWebKitView(for page: any BlockablePage) -> WKWebView?
     /// The page that owns this web view, if any.
     func blockablePage(for webView: WKWebView) -> (any BlockablePage)?
     /// The user content controller shared by every web view configuration.

@@ -1152,7 +1152,7 @@ extension TabsController {
     /// Pages whose item now belongs to another space reload on that space's data store.
     private func unloadPagesOnWrongDataStore(_ ids: [UUID]) {
         for id in ids {
-            guard let page = session(for: id), let view = page.webView, let dataStore = page.profile?.webKitStorage?.dataStore,
+            guard let page = session(for: id), let view = page.primaryWebView, let dataStore = page.profile?.webKitStorage?.dataStore,
                   view.configuration.websiteDataStore !== dataStore else { continue }
             unload(id)
         }
@@ -1285,7 +1285,7 @@ extension TabsController {
         // Chromium's current bridge does not establish capture, uploads or unsaved work.
         if profileEngine == .chromium { return .unknownNativeActivity }
         var views = webViews?.allWebViews(for: page.itemID) ?? []
-        if let primary = page.webView { views.append(primary) }
+        if let primary = page.primaryWebView { views.append(primary) }
         for view in views {
             if view.cameraCaptureState != .none { return .camera }
             if view.microphoneCaptureState != .none { return .microphone }

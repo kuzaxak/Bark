@@ -14,7 +14,7 @@ struct InactiveUnloadTests {
         let microphone = try backgroundPage(host)
         let safe = try backgroundPage(host)
         // Muted capture is still a live call, independent of audible media.
-        (camera.webView as? CaptureView)?.cameraState = .muted
+        (camera.primaryWebView as? CaptureView)?.cameraState = .muted
         let secondary = CaptureView(frame: .zero, configuration: WKWebViewConfiguration())
         secondary.microphoneState = .muted
         views.additional[microphone.itemID] = [secondary]
@@ -28,7 +28,7 @@ struct InactiveUnloadTests {
         #expect(!microphone.isUnloaded)
         #expect(safe.isUnloaded)
 
-        (camera.webView as? CaptureView)?.cameraState = .none
+        (camera.primaryWebView as? CaptureView)?.cameraState = .none
         secondary.microphoneState = .none
         let afterCapture = host.tabs.unloadAllHidden()
         #expect(afterCapture.unloaded == 2 && afterCapture.kept == 0)

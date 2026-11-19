@@ -31,7 +31,7 @@ extension BrowserManager {
     /// `window`'s own view of its page in front.
     func frontWebView(in window: BrowserWindowState) -> WKWebView? {
         guard let page = frontPage(in: window) else { return nil }
-        return getWebView(for: page.itemID, in: window.id) ?? page.webView
+        return WebKitPageAccess.existingView(for: page)
     }
 
     /// Runs `command` on the active window's page in front.

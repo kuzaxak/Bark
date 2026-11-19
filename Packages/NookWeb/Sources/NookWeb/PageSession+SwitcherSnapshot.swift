@@ -44,7 +44,7 @@ extension PageSession {
             if !accepted, switcherCaptureInFlight == request { switcherCaptureInFlight = nil }
             return
         }
-        guard let webView, webView.window != nil, webView.bounds.width > 0 else { return }
+        guard let webView = primaryWebView, webView.window != nil, webView.bounds.width > 0 else { return }
         switcherCaptureInFlight = request
         let configuration = WKSnapshotConfiguration()
         configuration.snapshotWidth = NSNumber(value: Double(Self.switcherSnapshotWidth))

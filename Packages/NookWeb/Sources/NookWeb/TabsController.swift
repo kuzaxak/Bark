@@ -495,7 +495,7 @@ public final class TabsController {
     public func session(for webView: WKWebView) -> PageSession? {
         let coordinator = webViews
         return sessions.first { session in
-            session.webView === webView
+            session.primaryWebView === webView
                 || coordinator?.allWebViews(for: session.itemID).contains(where: { $0 === webView }) == true
         }
     }

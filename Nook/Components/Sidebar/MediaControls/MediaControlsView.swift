@@ -15,7 +15,6 @@ import NookUI
 /// its site's icon, which goes to the tab, then Previous, Play or Pause, Next and Mute.
 /// `MiniPlayer` decides which page it is; `TabsController` keeps it up to date.
 struct MediaControlsView: View {
-    @EnvironmentObject var browserManager: BrowserManager
     @Environment(TabsController.self) private var tabs
     @Environment(BrowserWindowState.self) private var windowState
     @State private var isHovering = false
@@ -137,7 +136,7 @@ struct MediaControlsView: View {
         // Private tabs never report leaving, and another window's tab or PiP would lose its view.
         guard let controller = windowState.sidebarPiPController, !page.isPrivate,
             !tabs.isOnScreen(page.itemID),
-            let webView = browserManager.getWebView(for: page.itemID, in: windowState.id) ?? page.assignedWebView
+            let webView = WebKitPageAccess.assignedView(for: page)
         else { return }
         guard windowState.isSidebarVisible else { return PiPManager.shared.setPiP(true, for: page, webView: webView) }
         if page.hasPiPActive { PiPManager.shared.setPiP(false, for: page, webView: webView) }

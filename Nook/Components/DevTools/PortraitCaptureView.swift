@@ -203,7 +203,7 @@ struct PortraitCaptureView: View {
             nativeCaptureIsCurrent = result.isCurrent
             page = result.image
         } else {
-            guard let webView = session.webView else { snapshotUnavailable = true; return }
+            guard let webView = WebKitPageAccess.existingView(for: session) else { snapshotUnavailable = true; return }
             let image = try? await webView.takeSnapshot(configuration: nil)
             guard !Task.isCancelled else { return }
             page = image
