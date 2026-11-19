@@ -104,6 +104,8 @@ def main():
             return visible_toggle() is None
 
         wait_for("The first input did not hide the sidebar while the page was pending", sidebar_hidden, process)
+        wait_for("The invisible sidebar still exposes its button to accessibility",
+                 lambda: access.find("Toggle Sidebar", ("AXButton",)) is None, process)
         allow_page.set()
         loaded = wait_for("The held page did not load after the first input",
                           lambda: next((e for e in events[start:] if e["event"] == "loaded"), None), process)
@@ -120,6 +122,24 @@ def main():
         hidden = wait_for("The page did not fill the restored window with its sidebar hidden",
                           hidden_viewport, process)
         hide_width = int(hidden["width"])
+        if not mouse:
+            bounds = screen.windows()[0]["kCGWindowBounds"]
+            y = bounds["Y"] + bounds["Height"] / 2
+            screen.hover((bounds["X"] + 2, y))
+            wait_for("Edge hover did not restore accessible sidebar controls", visible_toggle, process)
+            screen.hover((bounds["X"] + bounds["Width"] - 25, y))
+            wait_for("The dismissed hover sidebar still exposes its button to accessibility",
+                     lambda: access.find("Toggle Sidebar", ("AXButton",)) is None, process)
+
+            def palette_has_focus():
+                focus = access.attribute(access.application, "AXFocusedUIElement")
+                return access.attribute(focus, "AXRole") == "AXTextField"
+
+            screen.keys["t"] = 17
+            screen.key("t", screen.command)
+            wait_for("The command palette did not open with the sidebar hidden", palette_has_focus, process)
+            screen.key("Escape")
+            wait_for("Escape did not dismiss the command palette", lambda: not palette_has_focus(), process)
         before_restore = len(events)
         screen.key("s", screen.command)
         wait_for("Command-S did not restore the sidebar", visible_toggle, process)

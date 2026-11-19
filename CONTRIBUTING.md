@@ -167,7 +167,9 @@ python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)
 The sidebar startup walk holds the first page response open until the sidebar
 hides. It sends Command-S on a fresh launch, then clicks the sidebar button
 as the first input on relaunch. Each launch restores the sidebar and measures
-the change in width of the same page.
+the change in width of the same page. The fresh launch also checks that edge
+hover exposes the sidebar to accessibility and that Command-T still opens the
+palette after the sidebar hides again.
 
 ```fish
 python3 Tests/ChromiumStartup/sidebar_walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/sidebar

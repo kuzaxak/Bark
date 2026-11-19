@@ -100,6 +100,19 @@ class Screen:
         self.guard(point)
         self.point = point
 
+    def hover(self, point):
+        self.guard()
+        if not any(bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
+                   and bounds["Y"] <= point[1] < bounds["Y"] + bounds["Height"]
+                   for window in self.windows() if (bounds := window["kCGWindowBounds"])):
+            raise RuntimeError("The hover target is outside the disposable candidate")
+        q = self.quartz
+        event = q.CGEventCreateMouseEvent(self.source, q.kCGEventMouseMoved, point, 0)
+        q.CGEventPost(q.kCGHIDEventTap, event)
+        time.sleep(0.15)
+        self.guard(point)
+        self.point = point
+
     def key(self, name, flags=0, unicode=False):
         self.guard()
         q = self.quartz
@@ -214,18 +227,7 @@ class Accessibility:
         return (origin.x + size.width / 2, origin.y + size.height / 2)
 
     def hover(self, element):
-        point = self.center(element)
-        if not any(bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
-                   and bounds["Y"] <= point[1] < bounds["Y"] + bounds["Height"]
-                   for window in self.screen.windows()
-                   if (bounds := window["kCGWindowBounds"])):
-            raise RuntimeError("The address control is outside the disposable candidate")
-        quartz = self.screen.quartz
-        event = quartz.CGEventCreateMouseEvent(self.screen.source, quartz.kCGEventMouseMoved, point, 0)
-        quartz.CGEventPost(quartz.kCGHIDEventTap, event)
-        time.sleep(0.15)
-        self.screen.guard(point)
-        self.screen.point = point
+        self.screen.hover(self.center(element))
 
     def menu(self, label):
         menu = self.attribute(self.application, "AXMenuBar")

@@ -449,6 +449,7 @@ private struct ChromiumSidebarFade: ViewModifier {
         content
             .modifier(LibraryFade())
             .opacity(outOfWindow && progress > 0 ? 0 : 1)
+            .accessibilityHidden(outOfWindow || progress > 0)
     }
 }
 
