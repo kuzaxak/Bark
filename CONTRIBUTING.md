@@ -228,8 +228,17 @@ python3 Tests/ChromiumVaultSave/walk.py --legacy-provider --verify-sdk --app bui
 ```
 
 For a provider-capable SDK, add `--require-exclusive` to require that Bark
-selected Pawl before the first page opened. The release option
-`--require-official` includes this check and verifies the SDK provenance.
+selected Pawl before the first page opened. The separate disconnected walk
+starts Bark with the same preference and an unavailable disposable vault. It
+checks the Settings status, submits a login, and checks both Chromium stores.
+The engine regression also seeds a matching Chromium login before navigation.
+
+```fish
+python3 Tests/ChromiumVaultSave/disconnected_walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/disconnected
+```
+
+For release qualification, use `--require-official` to require exclusive Pawl
+and verify the SDK provenance.
 
 The extension walk installs a local fixture, opens its pinned action from
 both toolbar positions, and exercises Cancel and Remove in Manage Extensions.

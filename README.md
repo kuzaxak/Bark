@@ -38,6 +38,8 @@ The pinned Chromium build supports Pawl alongside its built-in manager. Pawl
 Vault 0.1.2 (build 7) accepts the legacy Nook signing identity and refuses Bark.
 Exclusive mode requires a Pawl release that accepts Bark and a provider-capable
 Chromium SDK. On that SDK, a provider change takes effect when Bark reopens.
+With Pawl selected, locking or closing it pauses saved-password fills and offers
+to save. Choosing Chromium again restores access to its existing logins.
 [Provider integration design](openspec/changes/select-pawl-vault-provider/design.md)
 
 ### Sync bookmarks between Macs
