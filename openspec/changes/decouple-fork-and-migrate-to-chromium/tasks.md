@@ -37,7 +37,8 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
   Chromium startup, Developer Mode and content blocking bypass WebKit configuration. ProfileEngineTests cover shared-profile spaces, private WebKit cookie isolation and Chromium profiles without a WebKit store. NativeBlockerModelTests cover the optional WebKit controller hook.
 - [x] 3.3 Adapt `PageSession`, `WebViewProvider`, and `PageSessionDelegate`; verify navigation, URL/title state and close behavior using existing package checks.
   Chromium’s host implements the shared page delegate. WebKit hosts opt into the view provider and WebKit callbacks. The adopted-page regression covers commit, title, acknowledged close and a late title event.
-- [ ] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
+- [x] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
+  Page-host checks retain the existing page adapter across a window transfer. The signed Intel mini-window transfer in section 4a preserved the document and draft. AppKit checks cover promotion while the source pane keeps focus and a late Peek request for the promoted sibling. The signed split walk restored typing to the original document, draft and scroll position, and delivered a click to the uncovered sibling.
 - [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.
 
 ## 3a. Shared smart-tab policy (after G2, before G4 completion)
