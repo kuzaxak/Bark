@@ -12,8 +12,8 @@ target = swift_target()
 with TemporaryDirectory(prefix='bark-mouse-buttons-check-') as directory:
     out = Path(directory)
     source = (root / 'App/Chromium/ChromiumMouseButtons.swift').read_text()
-    a = source.index('/// What an extra mouse button does')
-    (out / 'Shipped.swift').write_text('import AppKit\n\n' + source[a:source.index('// MARK: - Monitor')])
+    # The fixture supplies the app/model boundaries and compiles the actual event monitor and dispatcher.
+    (out / 'Shipped.swift').write_text(source.replace('import NookWeb\n', ''))
     binary = out / 'chromium-mouse-buttons-check'
     c = ['swiftc', '-swift-version', '5', '-target', target, '-parse-as-library',
          str(out / 'Shipped.swift'), str(root / 'Tests/ChromiumMouseButtons/Main.swift'), '-o', str(binary)]

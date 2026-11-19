@@ -400,8 +400,6 @@ struct NativeStartupWarmTrigger {
 @MainActor
 class BrowserManager: ObservableObject {
     // Legacy global state - kept for backward compatibility during transition
-    /// Tracks which pinned tab tile is hovered (for middle-click → reset to pinned URL)
-    @Published var hoveredPinnedTabId: UUID? = nil
     @Published var sidebarWidth: CGFloat = SidebarWidth.standard
     @Published var sidebarContentWidth: CGFloat = 234
     @Published var isSidebarVisible: Bool = true

@@ -228,8 +228,15 @@ private struct PinnedTile: View {
                     .environment(\.tabActions, browserManager)
             }
             .onHoverTracking { hovering in
-                browserManager.hoveredPinnedTabId = hovering ? item.id : nil
+                if hovering {
+                    windowState.hoveredFavoriteID = item.id
+                } else if windowState.hoveredFavoriteID == item.id {
+                    windowState.hoveredFavoriteID = nil
+                }
                 FavoritePreview.shared.tileHover(item, hovering: hovering, in: windowState, tabs: tabs)
+            }
+            .onDisappear {
+                if windowState.hoveredFavoriteID == item.id { windowState.hoveredFavoriteID = nil }
             }
             .onChange(of: session?.title) {
                 if let live { LiveFavorites.shared.titleChanged(item, kind: live) }

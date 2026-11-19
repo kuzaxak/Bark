@@ -10,8 +10,8 @@ enum ChromiumMouseButton: Equatable {
         guard !overPage else { return nil }
         switch button {
         case 2:
-            if let hoveredPinned { return .resetToHome(hoveredPinned) }
-            if let hoveredRow { return .close(hoveredRow) }
+            if overSidebar, let hoveredPinned { return .resetToHome(hoveredPinned) }
+            if overSidebar, let hoveredRow { return .close(hoveredRow) }
             return .openCommandBar
         case 3: return overSidebar ? .previousSpace : .goBack
         case 4: return overSidebar ? .nextSpace : .goForward
@@ -38,25 +38,43 @@ enum ChromiumMouseButton: Equatable {
 
     init(manager: BrowserManager, registry: WindowRegistry) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .otherMouseDown) { [weak manager, weak registry] event in
-            MainActor.assumeIsolated {
-                guard let manager, let registry,
-                      let window = registry.windows.values.first(where: { $0.window === event.window }) else { return event }
-                let hit = event.window?.contentView?.hitTest(event.locationInWindow)
-                let pinned = manager.hoveredPinnedTabId.flatMap { manager.tabs.item($0)?.url == nil ? nil : $0 }
-                guard let action = ChromiumMouseButton.action(button: event.buttonNumber, overPage: ChromiumMouseButton.isPage(hit),
-                    hoveredPinned: pinned, hoveredRow: window.hoveredItemID, overSidebar: window.isSidebarHovered) else { return event }
-                switch action {
-                case .resetToHome(let id): manager.tabs.resetToHome(id)
-                case .close(let id): manager.tabs.close(id)
-                case .openCommandBar: window.commandPalette?.open()
-                case .previousSpace: if !manager.tabs.selectPreviousSpace(in: window) { manager.perform(.goBack) }
-                case .nextSpace: if !manager.tabs.selectNextSpace(in: window) { manager.perform(.goForward) }
-                case .goBack: manager.perform(.goBack)
-                case .goForward: manager.perform(.goForward)
-                }
-                return nil
+            let handled = MainActor.assumeIsolated {
+                guard let manager, let registry, let eventWindow = event.window,
+                      let window = registry.windows.values.first(where: { $0.window === eventWindow }) else { return false }
+                let hit = eventWindow.contentView?.hitTest(event.locationInWindow)
+                return Self.handle(button: event.buttonNumber, hit: hit, in: window, manager: manager)
             }
+            return handled ? nil : event
         }
+    }
+
+    @discardableResult
+    static func handle(button: Int, hit: NSView?, in window: BrowserWindowState, manager: BrowserManager) -> Bool {
+        let pinned = window.hoveredFavoriteID.flatMap { manager.tabs.item($0)?.url == nil ? nil : $0 }
+        let row = window.hoveredItemID.flatMap { manager.tabs.item($0) == nil ? nil : $0 }
+        guard let action = ChromiumMouseButton.action(button: button, overPage: ChromiumMouseButton.isPage(hit),
+            hoveredPinned: pinned, hoveredRow: row, overSidebar: window.isSidebarHovered) else { return false }
+        switch action {
+        case .resetToHome(let id): manager.tabs.resetToHome(id)
+        case .close(let id): manager.tabs.close(id)
+        case .openCommandBar:
+            guard let palette = window.commandPalette else { return false }
+            palette.open()
+        case .previousSpace:
+            if !manager.tabs.selectPreviousSpace(in: window) { return history(.goBack, in: window, manager: manager) }
+        case .nextSpace:
+            if !manager.tabs.selectNextSpace(in: window) { return history(.goForward, in: window, manager: manager) }
+        case .goBack: return history(.goBack, in: window, manager: manager)
+        case .goForward: return history(.goForward, in: window, manager: manager)
+        }
+        return true
+    }
+
+    private static func history(_ command: PageCommand, in window: BrowserWindowState, manager: BrowserManager) -> Bool {
+        // Keep unresolved sidebar side presses from navigating the outgoing page.
+        if window.nativeSpaceSwitchIsPending || window.nativeSpaceSwitchIsUnresolved { return true }
+        guard let page = manager.frontPage(in: window) else { return false }
+        return manager.performNativePageCommand(command, in: window, page: page)
     }
 
     isolated deinit { monitor.map(NSEvent.removeMonitor) }

@@ -321,8 +321,8 @@ extension TabsController {
         guard !isTerminating, windowRegistry.windows[window.id] === window,
               let profile = profile(forSpace: spaceID), isProfileAvailable(profile.id) else { return }
         let generation = UUID()
-        window.nativeSpaceSwitchGeneration = generation
-        guard cancelNativeSplit(in: window), window.nativeSpaceSwitchGeneration == generation,
+        window.nativeSpaceSwitch = (generation, spaceID)
+        guard cancelNativeSplit(in: window), window.nativeSpaceSwitch?.generation == generation,
               windowRegistry.windows[window.id] === window else { return }
         let previous = window.nativeSelectionSession
         window.nativeSelectionGeneration = generation
@@ -414,6 +414,7 @@ extension TabsController {
                 window.nativeSpaceSwitchIsUnresolved = !presented
             }
             guard current() else { return }
+            window.nativeSpaceSwitch = nil
             window.nativeSelectionGeneration = nil
             window.nativeSelectionSession = nil
             if applied && presented, let selected, window.selectedItemID == selected.itemID {
@@ -485,7 +486,8 @@ extension TabsController {
 
     private func stepSpace(_ offset: Int, in window: BrowserWindowState) -> Bool {
         let spaces = userSpaces(for: window)
-        guard spaces.count > 1, let current = spaces.firstIndex(where: { $0.id == window.spaceID }) else { return false }
+        let pending = window.pendingNativeSpaceID.flatMap { id in spaces.firstIndex { $0.id == id } }
+        guard let current = pending ?? spaces.firstIndex(where: { $0.id == window.spaceID }) else { return false }
         let next = current + offset
         guard spaces.indices.contains(next) else { return false }
         setSpace(spaces[next].id, in: window)

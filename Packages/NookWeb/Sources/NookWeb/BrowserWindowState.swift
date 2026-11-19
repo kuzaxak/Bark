@@ -32,10 +32,13 @@ public class BrowserWindowState {
     /// a terminal notification, not presentation ownership or a retry scheduler.
     @ObservationIgnored public var nativePresentationDidSettle: (@MainActor (Bool) -> Void)?
     @ObservationIgnored var nativeSelectionGeneration: UUID?
-    @ObservationIgnored var nativeSpaceSwitchGeneration: UUID?
-    public var nativeSpaceSwitchIsPending: Bool {
-        nativeSpaceSwitchGeneration != nil && nativeSpaceSwitchGeneration == nativeSelectionGeneration
+    @ObservationIgnored var nativeSpaceSwitch: (generation: UUID, destination: UUID)?
+    /// Relative space commands follow the outstanding request until Chromium settles it.
+    var pendingNativeSpaceID: UUID? {
+        guard let nativeSpaceSwitch, nativeSpaceSwitch.generation == nativeSelectionGeneration else { return nil }
+        return nativeSpaceSwitch.destination
     }
+    public var nativeSpaceSwitchIsPending: Bool { pendingNativeSpaceID != nil }
     public internal(set) var nativeSpaceSwitchIsUnresolved = false
     @ObservationIgnored weak var nativeSelectionSession: PageSession?
     @ObservationIgnored var nativeSplitPreparation: NativeSplitPreparation?
@@ -133,6 +136,9 @@ public class BrowserWindowState {
     /// Observation-ignored on purpose: this changes on every hover and nothing
     /// renders from it, so tracking it would invalidate views for nothing.
     @ObservationIgnored public var hoveredItemID: UUID?
+
+    /// Favorite tile under the pointer for this window's middle-click behavior.
+    @ObservationIgnored public var hoveredFavoriteID: UUID?
 
     /// Sidebar views under the pointer, for the mouse back and forward buttons to switch spaces.
     /// A count, since the hover overlay and the docked sidebar briefly overlap when one replaces

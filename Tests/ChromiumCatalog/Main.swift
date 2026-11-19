@@ -886,6 +886,49 @@ private struct NoTokens: KagiTokenStore {
     assertCommands(work, in: window)
     precondition(window.spaceID == Native.work)
 
+    // A second relative shortcut can arrive before the first native reply.
+    // Keep the outgoing selection visible until Chromium names the winner.
+    var pending: [(BarcSpaceSwitchRequest, BarcSpaceSwitchCallback?, UnsafeMutableRawPointer?)] = []
+    Native.onSpaceSwitch = { request, callback, context in
+        pending.append((request, callback, context))
+        return 1
+    }
+    func reply(_ index: Int, status: BarcSpaceSwitchStatus, client: Int32, tab: Int32) {
+        let (request, callback, context) = pending[index]
+        Native.settle(request, group: group, status: status, client: client, tab: tab,
+                      callback: callback, context: context)
+    }
+    precondition(tabs.selectNextSpace(in: window) && tabs.selectNextSpace(in: window))
+    precondition(pending.map { $0.0.tab } == [6410, 6401], "Rapid Next Space must advance two spaces")
+    precondition(window.spaceID == Native.work && window.selectedItemID == work.itemID)
+    assertCommands(work, in: window)
+    Native.selectClient(640, tab: 6401)
+    reply(1, status: BARC_SPACE_SWITCH_APPLIED, client: 640, tab: 6401)
+    reply(0, status: BARC_SPACE_SWITCH_SUPERSEDED, client: 640, tab: 6401)
+    precondition(window.spaceID == researchSpace && !window.nativeSpaceSwitchIsPending)
+    assertCommands(research, in: window)
+    assertCommands(otherPage, in: other)
+
+    pending.removeAll()
+    precondition(tabs.selectPreviousSpace(in: window) && tabs.selectNextSpace(in: window))
+    precondition(pending.map { $0.0.tab } == [6410, 6401], "Reversing a pending switch returns to its origin")
+    reply(0, status: BARC_SPACE_SWITCH_SUPERSEDED, client: 640, tab: 6401)
+    precondition(window.nativeSpaceSwitchIsPending && window.spaceID == researchSpace)
+    reply(1, status: BARC_SPACE_SWITCH_APPLIED, client: 640, tab: 6401)
+    assertCommands(research, in: window)
+
+    pending.removeAll()
+    precondition(tabs.selectPreviousSpace(in: window))
+    reply(0, status: BARC_SPACE_SWITCH_REFUSED, client: 640, tab: 6401)
+    precondition(tabs.selectPreviousSpace(in: window))
+    precondition(pending.map { $0.0.tab } == [6410, 6410], "A refusal clears the requested destination")
+    Native.selectClient(641, tab: 6410)
+    reply(1, status: BARC_SPACE_SWITCH_APPLIED, client: 641, tab: 6410)
+    assertCommands(personal, in: window)
+    Native.onSpaceSwitch = nil
+    tabs.setSpace(Native.work, in: window)
+    assertCommands(work, in: window)
+
     // Two spaces may intentionally show the very same shared favorite.
     tabs.move(work.itemID, to: .favorites(spaceID: Native.work), after: nil)
     let favorites = tabs.createSpace(name: "Favorites", icon: "", accentHex: "#123456",
