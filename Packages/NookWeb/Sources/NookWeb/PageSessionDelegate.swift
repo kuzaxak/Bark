@@ -9,7 +9,6 @@ public protocol PageSessionDelegate: AnyObject {
     func windowSpaceChanged(_ window: BrowserWindowState)
     func presentPeek(url: URL, from session: PageSession)
     func cleanupZoom(for itemID: UUID)
-    func setMuteState(_ muted: Bool, for itemID: UUID)
 }
 
 /// What a window's picture-in-picture (`BrowserWindowState.sidebarPiPStorage`) shows, so the tab

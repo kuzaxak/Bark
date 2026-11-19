@@ -18,7 +18,6 @@ extension BrowserManager: PageSessionDelegate {
 
     func cleanupZoom(for itemID: UUID) {}
 
-    func setMuteState(_ muted: Bool, for itemID: UUID) {}
 }
 
 // MARK: - TabEventObserver

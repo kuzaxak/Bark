@@ -62,17 +62,6 @@ public struct PageMedia: Equatable, Sendable {
     }
 }
 
-/// What the mini player's mute button does next.
-public enum MuteAction: Equatable, Sendable {
-    case muteTab, unmuteTab, unmutePage
-
-    /// Nook's own tab mute is undone first, then the page's; with neither on, Nook mutes the tab.
-    public static func next(tabMuted: Bool, pageMuted: Bool) -> MuteAction {
-        if tabMuted { return .unmuteTab }
-        return pageMuted ? .unmutePage : .muteTab
-    }
-}
-
 /// The media reports of a page's frames, one entry per frame, combined into the page's, and the
 /// frame each control acts in. `Frame` is WebKit's `WKFrameInfo?` in the app, nil being the main
 /// frame; `key` tells frames apart, and `document` the documents a frame has shown, by the id each

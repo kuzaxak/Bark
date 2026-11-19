@@ -15,11 +15,9 @@ let package = Package(
         .package(path: "../NookTweaks"),
     ],
     targets: [
-        .target(name: "MuteableWKWebView", path: "Sources/MuteableWKWebView", publicHeadersPath: "include"),
         .target(
             name: "NookWeb",
             dependencies: [
-                "MuteableWKWebView",
                 .product(name: "NookTabsCore", package: "NookTabsCore"),
                 .product(name: "NookSettings", package: "NookSettings"),
                 .product(name: "NookBlocker", package: "NookBlocker"),

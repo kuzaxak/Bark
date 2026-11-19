@@ -43,6 +43,7 @@ private enum Native {
     static var onAttach: ((Int32) -> Int32)?
     static var observations: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var nextObservation: UInt64 = 1
+    static var onMute: ((Int32, Int32, Int32) -> Int32)?
     static var pageHidden: [Int32: Int32] = [:]
     static var blankSnapshots = false
     static var rejectsObservation = false
@@ -199,6 +200,9 @@ private enum Native {
         } }
         bridge.tab_unobserve = { token in MainActor.assumeIsolated { Native.observations[token] = nil } }
         bridge.tab_observe_media = { _, _ in 1 }
+        bridge.tab_set_muted = { window, tab, muted in MainActor.assumeIsolated {
+            Native.onMute?(window, tab, muted) ?? 0
+        } }
         bridge.tab_observe_vault = { _, _ in 1 }
         bridge.tab_observe_vault_save = { _, _ in 1 }
         bridge.tab_observe_vault_passkeys = { _, _ in 1 }
@@ -304,6 +308,30 @@ private enum Native {
     expect(nil, "A closed page must remain unknown even with its old profile and view present")
     precondition(viewQueries == 3, "Invalidated ownership must avoid bridge view reads")
     print("Chromium renderer resource diagnostics checks PASS")
+}
+
+@MainActor private func checkNativeTabMute() throws {
+    let window: Int32 = 10, tab: Int32 = 2091
+    let page = try ChromiumPageNavigation(profileID: Native.first, window: window, tab: tab, bridge: Native.bridge)
+    defer { page.invalidate(); Native.onMute = nil }
+    let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil)
+    session.installNavigation(page)
+    let observation = Native.observations.first { $0.value.3 == tab }!
+    var requests: [Int32] = []
+    Native.onMute = { client, target, muted in
+        precondition(client == window && target == tab)
+        requests.append(muted)
+        return 1
+    }
+
+    session.toggleMute()
+    precondition(requests == [1] && !session.isAudioMuted, "Muting waits for engine state")
+    observation.value.0?(observation.value.1, observation.key, Int32(BARC_TAB_STATE.rawValue),
+                         window, tab, nil, nil, 0, BARC_TAB_MUTED.rawValue)
+    precondition(session.isAudioMuted)
+    session.toggleSound()
+    precondition(requests == [1, 0] && session.isAudioMuted, "Mini player unmute uses the same native tab")
+    print("Chromium tab and mini player mute use the native owner and observed mute state")
 }
 
 @MainActor private func checkTabFavicon() throws {
@@ -842,6 +870,7 @@ private enum HostChecks {
     @MainActor static func main() throws {
         try checkResourceDiagnostics()
         try checkLoadProgress()
+        try checkNativeTabMute()
         try checkTabFavicon()
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         let window = BrowserWindowState()

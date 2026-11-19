@@ -5372,5 +5372,4 @@ private final class NativeOnlyPageDelegate: PageSessionDelegate {
     func windowSpaceChanged(_ window: BrowserWindowState) {}
     func presentPeek(url: URL, from session: PageSession) {}
     func cleanupZoom(for itemID: UUID) { cleanedZoom.append(itemID) }
-    func setMuteState(_ muted: Bool, for itemID: UUID) {}
 }

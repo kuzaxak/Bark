@@ -2,7 +2,6 @@
 import SwiftUI
 import WebKit
 
-@_exported import MuteableWKWebView
 import AppKit
 import CoreAudio
 

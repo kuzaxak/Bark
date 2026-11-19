@@ -125,11 +125,6 @@ extension PageSession {
             }
         }
 
-        // Apply mute state using MuteableWKWebView if the tab was previously muted
-        if isAudioMuted {
-            setMuted(true)
-        }
-        
         // Check for OAuth completion and auto-close if needed
         if isOAuthFlow, let currentURL = webView.url {
             checkOAuthCompletion(url: currentURL)

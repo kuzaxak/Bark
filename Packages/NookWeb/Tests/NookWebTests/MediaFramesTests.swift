@@ -53,7 +53,6 @@ struct MediaFramesTests {
         frames.report("podcast", document: "podcast", frame: "podcast", media: paused)
         #expect(!frames.media.isMuted)
         #expect(frames.mutedTargets.isEmpty)
-        #expect(MuteAction.next(tabMuted: false, pageMuted: frames.media.isMuted) == .muteTab)
     }
 
     @Test func unmuteActsWhereThePageMutedItsPlayer() {
@@ -144,12 +143,5 @@ struct MediaFramesTests {
                                        "isMuted": false, "hasVideo": true, "isPlayingVideo": false,
                                        "previousTrack": false, "nextTrack": true])
         #expect(media == PageMedia(hasMedia: true, isAudible: true, isPlaying: true, hasVideo: true, handlesNextTrack: true))
-    }
-
-    /// The bar's mute button: Nook's tab mute first, then the page's own, else Nook mutes the tab.
-    @Test func muteUndoesWhicheverMuteIsOn() {
-        #expect(MuteAction.next(tabMuted: true, pageMuted: true) == .unmuteTab)
-        #expect(MuteAction.next(tabMuted: false, pageMuted: true) == .unmutePage)
-        #expect(MuteAction.next(tabMuted: false, pageMuted: false) == .muteTab)
     }
 }

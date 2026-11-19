@@ -37,13 +37,11 @@ with TemporaryDirectory(prefix='bark-import-check-') as directory:
         raise SystemExit(1)
     scratch = out / 'nookweb'
     debug = build_package(root / 'Packages/NookWeb', scratch, target, jobs=4)
-    objects = sorted(o for target in ['MuteableWKWebView', 'NookBlocker', 'NookSettings', 'NookTabsCore', 'NookTweaks', 'NookWeb']
+    objects = sorted(o for target in ['NookBlocker', 'NookSettings', 'NookTabsCore', 'NookTweaks', 'NookWeb']
                      for o in glob.glob(str(debug / f'{target}.build/*.o')))
     sources = sorted(str(p) for p in (root / 'Nook/Managers/ImportManager').glob('*.swift'))
     binary = out / 'chromium-import-check'
     c = ['xcrun', 'swiftc', '-swift-version', '5', '-target', target, '-parse-as-library', '-I', str(debug / 'Modules'),
-         '-Xcc', '-fmodule-map-file=' + str(debug / 'MuteableWKWebView.build/module.modulemap'),
-         '-I', str(root / 'Packages/NookWeb/Sources/MuteableWKWebView/include'),
          '-I', str(root / 'Nook/ThirdParty/AdblockRustFFI/NookAdblock.xcframework/macos-arm64_x86_64/Headers'),
          *sources, str(root / 'App/Chromium/ChromiumStartup.swift'), *sorted(str(p) for p in (root / 'Tests/ChromiumImport').glob('*.swift')),
          *objects, str(debug / 'libnook_adblock.a'), '-framework', 'AppKit', '-framework', 'WebKit', '-framework', 'Security',

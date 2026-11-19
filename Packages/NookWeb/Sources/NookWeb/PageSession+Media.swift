@@ -180,42 +180,22 @@ extension PageSession {
         runMediaControl("skip(forward)", ["forward": forward], in: frame)
     }
 
-    /// The mini player's mute button: undoes Nook's tab mute, else the page's own, else mutes the tab.
+    /// Toggles the native tab mute, or unmutes a player that muted itself in a legacy WebKit page.
     public func toggleSound() {
         if let navigation, !(navigation is WebKitPageNavigation) {
             guard let muted = navigation.state.isAudioMuted else { return }
             _ = navigation.setAudioMuted(!muted)
             return
         }
-        guard !usesNativePageHost else { return }
-        let action = MuteAction.next(tabMuted: isAudioMuted, pageMuted: media.isMuted)
-        let frames = action == .unmutePage ? mediaFrames.mutedTargets : []
-        logMediaControl("\(action)", frames: frames.count, fallback: false)
-        switch action {
-        case .unmuteTab: setMuted(false)
-        case .muteTab: setMuted(true)
-        case .unmutePage:
-            for frame in frames { runMediaControl("unmute()", [:], in: frame) }
-        }
+        guard !usesNativePageHost, media.isMuted else { return }
+        let frames = mediaFrames.mutedTargets
+        logMediaControl("unmute", frames: frames.count, fallback: false)
+        for frame in frames { runMediaControl("unmute()", [:], in: frame) }
     }
 
     public func setMuted(_ muted: Bool) {
-        if let navigation, !(navigation is WebKitPageNavigation) {
-            _ = navigation.setAudioMuted(muted)
-            return
-        }
-        // A native page without a live resource has no mute command to apply.
-        if usesNativePageHost { return }
-        if let webView = primaryWebView {
-            // Set the mute state using MuteableWKWebView's muted property
-            webView.isMuted = muted
-        } else {
-        }
-
-        controller?.sessionDelegate?.setMuteState(muted, for: itemID)
-
-        // Update our internal state (already on main thread via @MainActor)
-        isAudioMuted = muted
+        guard let navigation, !(navigation is WebKitPageNavigation) else { return }
+        _ = navigation.setAudioMuted(muted)
     }
 
     // MARK: - Native Audio Monitoring

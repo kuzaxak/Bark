@@ -51,6 +51,21 @@ struct PageNavigationTests {
         #expect(session.primaryWebView === view)
     }
 
+    @Test func retainedWebKitViewDoesNotAdvertiseTabMute() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
+                                  title: "Audio", isPrivate: true, controller: nil)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = RecordingWebView(frame: .zero, configuration: configuration)
+        session.primaryWebView = view
+
+        session.setMuted(true)
+        session.toggleMute()
+
+        #expect(!session.isAudioMuted)
+        #expect(session.primaryWebView === view)
+    }
+
     @Test func muteUsesObservedStateAndRefusalNeverChangesTheModel() {
         let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Audio", isPrivate: false, controller: nil)
         let page = RecordingNavigation(profileID: UUID())

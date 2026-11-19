@@ -76,7 +76,6 @@ def check_native_harness(command):
             "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
             "-onlyUsePackageVersionsFromResolvedFile", f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO",
             "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-jobs", "1", "build")
-        maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
         # SwiftPM bundle lookup uses the executable directory for command-line tools.
         suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
                  "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
@@ -96,7 +95,6 @@ def check_native_harness(command):
                     run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
                         "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
                         "-I", products / "include",
-                        "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
                         "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
                         table, REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
                     if command == "catalog":

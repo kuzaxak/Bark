@@ -466,7 +466,6 @@ final class RecordingCertificateDelegate: WebKitPageSessionDelegate {
     ) -> Bool { false }
     func loadZoom(for itemID: UUID) {}
     func cleanupZoom(for itemID: UUID) {}
-    func setMuteState(_ muted: Bool, for itemID: UUID) {}
     func requestPictureInPicture(for session: PageSession, webView: WKWebView?) { pictureInPictureRequests += 1 }
     func configureShortcutDetection(in webView: WKWebView) {}
     func shortcutDetectorDidNavigate(to url: URL) {}
