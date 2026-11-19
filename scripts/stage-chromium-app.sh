@@ -6,6 +6,7 @@
 # Sign the staged bundle through Chromium's signing flow before execution.
 # With --check-signed, check a signed candidate instead: one blocker library, no unsigned Mach-O, and
 # the engine's entitlements plus the declared additions and any authorized iCloud grant.
+# With --apply-signing-entitlements, prepare an already copied engine signing template.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEFAULT_ADDITIONS="$REPO/ChromiumApp/Additions.plist"
@@ -183,8 +184,15 @@ if mode == 'validate':
     for key in entitlements:
         if key in engine_entitlements:
             sys.exit(f"ChromiumApp/Additions.plist would replace the engine's entitlement: {key}")
-elif mode == 'apply':
-    for target, added in ((sys.argv[3], info), (sys.argv[4], entitlements)):
+elif mode in ('apply', 'apply-entitlements'):
+    if mode == 'apply-entitlements':
+        existing = load(sys.argv[3])
+        if existing.keys() & entitlements.keys():
+            sys.exit("ChromiumApp/Additions.plist overlaps the engine's entitlements.")
+        targets = ((sys.argv[3], entitlements),)
+    else:
+        targets = ((sys.argv[3], info), (sys.argv[4], entitlements))
+    for target, added in targets:
         raw = open(target, 'rb').read() if os.path.exists(target) else b''
         try:
             result = merged(plistlib.loads(raw) if raw else {}, added)
@@ -223,6 +231,11 @@ elif mode == 'signed':
     sys.exit('\n'.join(problems) or None)
 PY
 }
+if [[ $# == 2 && $1 == --apply-signing-entitlements ]]; then
+  [[ -f "$2" ]] || refuse "Missing the staged entitlement template: $2"
+  additions apply-entitlements "$DEFAULT_ADDITIONS" "$2"
+  exit 0
+fi
 if [[ $# == 2 && $1 == --check-engine ]]; then
   check_engine "$2" "$ENGINE_HEADERS"
   printf 'Verified engine against the checkout pin: %s\n' "$2"

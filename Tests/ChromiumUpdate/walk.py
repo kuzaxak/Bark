@@ -27,6 +27,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
 sys.path[:0] = [str(REPO / folder) for folder in ("scripts", "Runtime/Chromium", "Tests/Shared")]
 import bark_release
+from bark_icloud_signing import PROFILE_NAME
 from run_browser_tests import (
     QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, ScreenUnavailable, require_idle_console, screen_lock,
 )
@@ -34,6 +35,8 @@ from signed_walk import Screen, crash_reports, processes, verify_pinned_sdk, wai
 
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
               "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister")
+SHELL_IMAGES = (Path("Contents/MacOS/Bark"),
+                Path("Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell"))
 DRAFT = "Bark test draft"
 PREPARATION_TIMEOUT = 300
 QUIT_TIMEOUT = 160
@@ -125,9 +128,8 @@ def outer_icon(app):
 def verify_installed_replacement(installed, newer, expected_cdhash):
     frameworks = Path("Contents/Frameworks")
     exact_files = [
-        Path("Contents/MacOS/Bark"),
+        *SHELL_IMAGES,
         Path("Contents/Info.plist"),
-        frameworks / "NookNativeShell.framework/Versions/A/NookNativeShell",
         frameworks / TEST_FRAMEWORK,
     ]
     if icon := outer_icon(newer):
@@ -156,11 +158,39 @@ def build_checkout_shell(check, derived, arch, output):
                 subprocess.run([LSREGISTER, "-u", str(unsigned)], capture_output=True)
 
 
-def versions(check, derived, engine, identity, arch, work, server, output):
-    products = derived / "Build/Products/Release"
-    sparkle = derived / "SourcePackages/artifacts/sparkle/Sparkle/bin"
-    if not (products / "Bark.app/Contents/MacOS/Bark").is_file() or not (sparkle / "sign_update").is_file():
-        raise ValueError(f"Build Release/unsigned Bark with the locked packages in {derived} first.")
+def stage_signed_candidate(check, candidate, stage, engine, work, arch, log):
+    app = stage / "Bark.app"
+    run("/usr/bin/ditto", candidate, app, stdout=log, stderr=subprocess.STDOUT)
+    check["verify_candidate"](app, engine, work, arch)
+    source_cdhash = bark_release.bundle_cdhash(app)
+    (app / "Contents" / PROFILE_NAME).unlink(missing_ok=True)
+
+    # The ordinary signer consumes the unsigned engine and its signing inputs.
+    # The copied engine was already verified against these exact SDK payloads.
+    framework = app / "Contents/Frameworks" / check["FRAMEWORK"]
+    shutil.rmtree(framework)
+    packaging = stage / "Bark Packaging"
+    for source, destination in ((engine / check["FRAMEWORK"], framework),
+                                (engine / "Bark Packaging", packaging)):
+        run("/usr/bin/ditto", source, destination, stdout=log, stderr=subprocess.STDOUT)
+        run("/bin/chmod", "-R", "u+w", destination, stdout=log, stderr=subprocess.STDOUT)
+
+    run("/bin/bash", check["STAGE"], "--arch", arch, "--apply-signing-entitlements",
+        packaging / "app-entitlements.plist", stdout=log, stderr=subprocess.STDOUT)
+    # Sparkle is already signed in the ordinary input, and the signer replaces
+    # those signatures itself while preserving Sparkle's entitlements.
+    for binary in SHELL_IMAGES:
+        run("/usr/bin/codesign", "--remove-signature", app / binary, stdout=log, stderr=subprocess.STDOUT)
+    return source_cdhash
+
+
+def versions(check, derived, engine, identity, arch, work, server, output, *, candidate_app=None, evidence=None):
+    sparkle = None
+    if candidate_app is None:
+        products = derived / "Build/Products/Release"
+        sparkle = derived / "SourcePackages/artifacts/sparkle/Sparkle/bin"
+        if not (products / "Bark.app/Contents/MacOS/Bark").is_file() or not (sparkle / "sign_update").is_file():
+            raise ValueError(f"Build Release/unsigned Bark with the locked packages in {derived} first.")
 
     root = work / "Profile"
     root.mkdir(mode=0o700)
@@ -194,10 +224,15 @@ print(key.rawRepresentation.base64EncodedString())
     with (output / "prepare.log").open("wb") as log, tempfile.NamedTemporaryFile(mode="w", dir=work) as key:
         key.write(keys[1] + "\n")
         key.flush()
-        run("/bin/bash", check["STAGE"], "--arch", arch, products / "Bark.app", engine, products, unsigned,
-            REPO / "ChromiumApp/Additions.plist", stdout=log, stderr=subprocess.STDOUT)
+        if candidate_app is None:
+            source = products / "Bark.app"
+            run("/bin/bash", check["STAGE"], "--arch", arch, source, engine, products, unsigned,
+                REPO / "ChromiumApp/Additions.plist", stdout=log, stderr=subprocess.STDOUT)
+        else:
+            evidence["source_bundle_cdhash"] = stage_signed_candidate(check, candidate_app, stage, engine,
+                                                                     work, arch, log)
+            source = unsigned
         base_info = info.read_bytes()
-        source = products / "Bark.app"
         icon = outer_icon(source)
         if icon:
             icon_bytes = (source / icon).read_bytes()
@@ -215,13 +250,17 @@ print(key.rawRepresentation.base64EncodedString())
             info.write_bytes(base_info)
             bark_release.configure_release(unsigned, expectation)
             signed = work / ("signed-" + build)
-            run(sys.executable, REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed,
+            run(sys.executable, "-B", REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed,
                 stdout=log, stderr=subprocess.STDOUT)
             app = signed / "stable/Bark.app"
             def verify(candidate):
                 check["verify_candidate"](candidate, engine=engine, working=work,
                                           architecture=arch, release_info=expectation)
                 verify_icon(candidate)
+                if candidate_app is not None:
+                    for binary in SHELL_IMAGES:
+                        if not check["signed_mach_matches"](source / binary, candidate / binary, work, arch):
+                            raise RuntimeError(f"The rehearsal shell differs from the verified source at {binary}")
 
             verify(app)
             if set(bark_release.HANDLER_KEYS).intersection(app_info(app)):
@@ -229,6 +268,8 @@ print(key.rawRepresentation.base64EncodedString())
             distribution = work / ("distribution-" + build)
             bark_release.make_distribution(app, distribution, arch, identity, server.origin, sparkle, key.name,
                                            work, verify_staged=verify)
+            if sparkle is None:
+                sparkle = work / "SourcePackages/artifacts/sparkle/Sparkle/bin"
             if build == "100":
                 image, = distribution.glob("*.dmg")
                 with tempfile.TemporaryDirectory(dir=work, prefix="mount-") as mount:
@@ -557,18 +598,22 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--derived-data", type=Path,
+    source = parser.add_mutually_exclusive_group()
+    source.add_argument("--candidate-app", type=Path,
+                        help="Rehearse with the shell and resources of this signed pinned Bark.app")
+    source.add_argument("--derived-data", type=Path,
                         help="Reuse existing unsigned Release Bark products (developer only)")
     parser.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"), help="Local Developer ID Application")
     parser.add_argument("--output", type=Path, required=True, help="New evidence-only directory")
     parser.add_argument("--require-official", action="store_true", help="verify the native official SDK before preparation")
     args = parser.parse_args(argv)
     if args.require_official and args.derived_data is not None:
-        parser.error("--require-official builds the checkout's shell. Omit --derived-data.")
+        parser.error("--require-official does not accept unsigned products. Omit --derived-data.")
     if not args.identity:
         parser.error("Pass --identity or set BARK_SIGN_IDENTITY.")
-    if args.output.resolve().is_relative_to(REPO):
-        parser.error("Choose a new evidence directory outside the repository.")
+    output = args.output.resolve()
+    if output.is_relative_to(REPO) or (args.candidate_app and output.is_relative_to(args.candidate_app.resolve())):
+        parser.error("Choose a new evidence directory outside the repository and source app.")
     return parser, args
 
 
@@ -584,17 +629,24 @@ def main():
     output.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix="bark-update-", dir="/private/tmp") as directory:
         work = Path(directory)
-        if args.derived_data is None:
+        if args.candidate_app is not None:
+            derived = None
+        elif args.derived_data is None:
             derived = work / "DerivedData"
             build_checkout_shell(check, derived, arch, output)
         else:
             derived = args.derived_data.resolve()
         with UpdateServer(bark_release.feed_name(arch)) as server:
+            source_options = {}
+            if args.candidate_app is not None:
+                qualification["shell_source"] = "signed-candidate"
+                source_options = {"candidate_app": args.candidate_app.resolve(strict=True), "evidence": qualification}
+            else:
+                qualification["shell_source"] = "checkout" if args.derived_data is None else "external-derived-data"
             installed, newer, root, settings = versions(check, derived, engine, args.identity,
-                                                         arch, work, server, output)
+                                                         arch, work, server, output, **source_options)
             replacement_cdhash = bark_release.bundle_cdhash(newer)
             qualification.update(
-                shell_source="checkout" if args.derived_data is None else "external-derived-data",
                 original_bundle_cdhash=bark_release.bundle_cdhash(installed),
                 replacement_bundle_cdhash=replacement_cdhash,
             )

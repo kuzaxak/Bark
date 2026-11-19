@@ -5,6 +5,7 @@ import json
 from io import StringIO
 from pathlib import Path
 import runpy
+import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -53,12 +54,93 @@ class UpdateBuildInputTest(unittest.TestCase):
         })
         self.assertEqual(exercise.call_args.kwargs["replacement_cdhash"], "replacement")
 
+    def test_evidence_directory_cannot_change_the_signed_source(self):
+        with tempfile.TemporaryDirectory() as folder:
+            source = Path(folder) / "Bark.app"
+            source.mkdir()
+            evidence = source / "Contents/Resources/evidence"
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+                walk.parse_args(["--candidate-app", str(source), "--output", str(evidence), "--identity", "Fixture"])
+            self.assertFalse(evidence.exists())
+
     def test_official_rehearsal_refuses_external_products(self):
         with self.assertRaises(SystemExit) as failure, contextlib.redirect_stderr(StringIO()) as error:
             walk.parse_args(["--require-official", "--derived-data", "/tmp/another-build",
                              "--output", "/tmp/evidence", "--identity", "Fixture"])
         self.assertEqual(failure.exception.code, 2)
         self.assertIn("Omit --derived-data", error.getvalue())
+
+    def test_signed_candidate_and_external_products_are_mutually_exclusive(self):
+        with self.assertRaises(SystemExit) as failure, contextlib.redirect_stderr(StringIO()) as error:
+            walk.parse_args(["--candidate-app", "/tmp/Bark.app", "--derived-data", "/tmp/products",
+                             "--output", "/tmp/evidence", "--identity", "Fixture"])
+        self.assertEqual(failure.exception.code, 2)
+        self.assertIn("not allowed with argument", error.getvalue())
+
+    def test_staging_signed_candidate_verifies_before_removing_profile(self):
+        with tempfile.TemporaryDirectory() as folder:
+            work = Path(folder)
+            stage, engine, candidate = (work / name for name in ("stage", "sdk", "source/Bark.app"))
+            framework = "Bark Framework.framework"
+            profile = candidate / "Contents" / walk.PROFILE_NAME
+            profile.parent.mkdir(parents=True)
+            profile.write_bytes(b"example signed provisioning profile")
+            (candidate / "Contents/Frameworks" / framework).mkdir(parents=True)
+            (engine / framework).mkdir(parents=True)
+            (engine / "Bark Packaging").mkdir()
+            stage.mkdir()
+
+            def verify(copied, sdk, scratch, architecture):
+                self.assertEqual((copied, sdk, scratch, architecture), (stage / "Bark.app", engine, work, "x86_64"))
+                self.assertEqual((copied / "Contents" / walk.PROFILE_NAME).read_bytes(), profile.read_bytes())
+
+            def run(executable, *args, **_):
+                if executable == "/usr/bin/ditto":
+                    shutil.copytree(*args)
+
+            with patch.object(walk, "run", side_effect=run) as command, \
+                    patch.object(walk.bark_release, "bundle_cdhash", return_value="verified-source"):
+                self.assertEqual(walk.stage_signed_candidate(
+                    {"verify_candidate": verify, "FRAMEWORK": framework, "STAGE": "staging-script"},
+                    candidate, stage, engine, work, "x86_64", None), "verified-source")
+            self.assertFalse((stage / "Bark.app/Contents" / walk.PROFILE_NAME).exists())
+            self.assertTrue(profile.is_file())
+            self.assertIn(("/bin/bash", "staging-script", "--arch", "x86_64", "--apply-signing-entitlements",
+                           stage / "Bark Packaging/app-entitlements.plist"), [call.args for call in command.call_args_list])
+
+    def test_signed_candidate_records_source_hash_with_no_shell_build(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            output = root / "evidence"
+            candidate = root / "Bark.app"
+            candidate.mkdir()
+            engine = root / "Engine"
+            engine.mkdir()
+            argv = ["walk.py", "--candidate-app", str(candidate), "--identity", "Fixture",
+                    "--output", str(output), "--require-official"]
+            tools = self.sdk_tools(engine)
+
+            def use_versions(check, derived, sdk, identity, arch, work, server, evidence_dir, *,
+                             candidate_app, evidence):
+                self.assertEqual((derived, sdk, candidate_app), (None, engine, candidate.resolve()))
+                evidence["source_bundle_cdhash"] = "verified-source"
+                return None, None, None, None
+
+            sdk_receipt = {"architecture": "x86_64", "sdk_pin": self.pin, "official": True}
+            with patch.object(walk.sys, "argv", argv), patch.object(walk.runpy, "run_path", return_value=tools), \
+                    patch.object(walk, "verify_pinned_sdk", return_value=(engine, sdk_receipt)) as verify, \
+                    patch.object(walk, "build_checkout_shell") as build, patch.object(walk, "UpdateServer"), \
+                    patch.object(walk, "versions", side_effect=use_versions), \
+                    patch.object(walk.bark_release, "bundle_cdhash", side_effect=["replacement", "original"]), \
+                    patch.object(walk, "exercise"), contextlib.redirect_stdout(StringIO()):
+                walk.main()
+            verify.assert_called_once_with(tools, "x86_64", require_official=True)
+            build.assert_not_called()
+            self.assertEqual(json.loads((output / "candidate.json").read_text()), {
+                "architecture": "x86_64", "sdk_pin": self.pin, "official": True,
+                "shell_source": "signed-candidate", "source_bundle_cdhash": "verified-source",
+                "original_bundle_cdhash": "original", "replacement_bundle_cdhash": "replacement",
+            })
 
     def test_developer_rehearsal_passes_supplied_products_without_building(self):
         with tempfile.TemporaryDirectory() as folder:
