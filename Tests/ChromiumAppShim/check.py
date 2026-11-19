@@ -491,11 +491,17 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
         resources.mkdir()
         receipt_path = resources / 'BarkEngineSDK.sha256'
         if receipt == "regular":
-            receipt_path.write_text("a" * 64 + "\n")
+            receipt_path.write_bytes(b"0123456789abcdef" * 4 + b"\n")
         elif receipt == "directory":
             receipt_path.mkdir()
         elif receipt == "fifo":
             os.mkfifo(receipt_path)
+        elif receipt == "symlink":
+            target = resources / 'regular-receipt'
+            target.write_bytes(b"a" * 64 + b"\n")
+            receipt_path.symlink_to(target.name)
+        elif isinstance(receipt, bytes):
+            receipt_path.write_bytes(receipt)
         shutil.copy2(main, contents / 'MacOS/Bark')
         if framework:
             versioned_framework(contents / 'Frameworks', framework)
@@ -521,6 +527,13 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
         ('unstaged-without-libraries', {'receipt': None, 'framework': None, 'shell': None}),
         ('unusable-receipt-directory', {'receipt': 'directory'}),
         ('unusable-receipt-fifo', {'receipt': 'fifo'}),
+        ('unusable-receipt-symlink', {'receipt': 'symlink'}),
+        ('unusable-receipt-empty', {'receipt': b''}),
+        ('unusable-receipt-truncated', {'receipt': b'a' * 63 + b'\n'}),
+        ('unusable-receipt-invalid-hex', {'receipt': b'a' * 63 + b'g\n'}),
+        ('unusable-receipt-uppercase', {'receipt': b'a' * 63 + b'F\n'}),
+        ('unusable-receipt-missing-newline', {'receipt': b'a' * 65}),
+        ('unusable-receipt-extra-byte', {'receipt': b'a' * 64 + b'\nx'}),
     ):
         run, lines = launch(name, **options)
         check(f'{name} exits before loading either library',

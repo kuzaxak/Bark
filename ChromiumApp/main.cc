@@ -51,6 +51,34 @@ char* JoinPath(const char* parent_dir, const char* relative_path) {
   return path;
 }
 
+bool HasStagingReceipt(const char* path) {
+  // A FIFO must not block an attempt to open an unstaged bundle.
+  const int receipt = open(path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+  if (receipt < 0) {
+    return false;
+  }
+
+  constexpr size_t kHexLength = 64;
+  char bytes[kHexLength + 2];
+  struct stat info;
+  const bool expected_format =
+      fstat(receipt, &info) == 0 && S_ISREG(info.st_mode) &&
+      info.st_size == kHexLength + 1 &&
+      read(receipt, bytes, sizeof(bytes)) == kHexLength + 1 &&
+      bytes[kHexLength] == '\n';
+  close(receipt);
+  if (!expected_format) {
+    return false;
+  }
+  for (size_t i = 0; i < kHexLength; ++i) {
+    const char digit = bytes[i];
+    if (!(digit >= '0' && digit <= '9') && !(digit >= 'a' && digit <= 'f')) {
+      return false;
+    }
+  }
+  return true;
+}
+
 }  // namespace
 
 __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
@@ -81,16 +109,8 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   }
 
   char* receipt_path = JoinPath(parent_dir, "../Resources/BarkEngineSDK.sha256");
-  // A FIFO must not block an attempt to open an unstaged bundle.
-  const int receipt = open(receipt_path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+  const bool staged = HasStagingReceipt(receipt_path);
   free(receipt_path);
-  struct stat receipt_info;
-  const bool staged =
-      receipt >= 0 && fstat(receipt, &receipt_info) == 0 &&
-      S_ISREG(receipt_info.st_mode);
-  if (receipt >= 0) {
-    close(receipt);
-  }
   if (!staged) {
     fputs("Bark requires staging: missing or unusable BarkEngineSDK.sha256.\n",
           stderr);
