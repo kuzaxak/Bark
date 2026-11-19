@@ -58,26 +58,35 @@ def install_extension(screen, access, fixture):
     if access.attribute(developer_mode, "AXValue") in (False, None, 0, "0"):
         access.press(developer_mode)
     access.press(access.control("Load unpacked", ("AXButton",)))
-    access.control("Select", ("AXButton",))
+    select = access.control("Select", ("AXButton",))
+    panel = select
+    while panel is not None and access.attribute(panel, "AXRole") not in ("AXSheet", "AXWindow"):
+        panel = access.attribute(panel, "AXParent")
+    if panel is None:
+        raise RuntimeError("Select is outside the open panel")
     screen.keys["g"] = 5
+    previous = access.attribute(access.application, "AXFocusedUIElement")
     screen.key("g", screen.command | screen.shift)
 
     def focused_folder_field():
-        for window in access.windows():
-            for element in access.tree(window):
-                if (access.attribute(element, "AXRole") in ("AXTextField", "AXComboBox")
-                        and access.attribute(element, "AXFocused")
-                        and not any("Find" in label for label in access.names(element))):
-                    return element
+        # AppKit can host the path field outside the presented sheet's AX children.
+        field = access.attribute(access.application, "AXFocusedUIElement")
+        if (field is not None and field != previous and
+                access.attribute(field, "AXRole") in ("AXTextField", "AXComboBox") and
+                access.attribute(field, "AXSubrole") != "AXSearchField"):
+            return field
         return None
 
-    field = wait_for("Missing Go to Folder input", focused_folder_field, access.process, timeout=5)
+    field = wait_for("Missing Go to Folder input", focused_folder_field, access.process)
     screen.guard()
-    path = str(fixture)
-    if access.ax.AXUIElementSetAttributeValue(field, "AXValue", path) != 0:
-        screen.key(path, unicode=True)
+    # Go to Folder resolves completions asynchronously. Deliver an edit event
+    # and wait for the resolved directory before confirming the path.
+    screen.keys["a"] = 0
+    screen.key("a", screen.command)
+    screen.key(str(fixture) + "/", unicode=True)
+    access.control(fixture.name, ("AXStaticText",), root=panel)
     screen.key("Return")
-    access.control(fixture.name, ("AXPopUpButton",))
+    access.control(fixture.name, ("AXPopUpButton",), root=panel)
 
     def enabled_select():
         select = access.find("Select", ("AXButton",))
@@ -191,7 +200,7 @@ def exercise(screen, process, events, output):
         screen.guard()
         access.ax.AXUIElementSetAttributeValue(access.application, "AXEnhancedUserInterface", True)
         source = wait_for("Missing source window", lambda: access.owner(SOURCE), process)
-        fixture = output / "fixture"
+        fixture = output / "Bark unpacked action fixture"
         shutil.copytree(HERE / "fixture", fixture)
         install_extension(screen, access, fixture)
         utility = wait_for("Missing extension utility window",
