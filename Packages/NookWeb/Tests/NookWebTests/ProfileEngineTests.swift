@@ -435,6 +435,34 @@ struct ProfileEngineTests {
         #expect(profile.webKitStorage == nil)
         page.unload()
     }
+    @Test func nativeAndUnownedPagesDoNotFallBackToWebKitAfterControllerRelease() throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        var tabs: TabsController? = fixture.makeTabs(engine: .chromium)
+        let url = URL(string: "about:blank")!
+        let page = PageSession(itemID: UUID(), url: url, title: "Native",
+                               isPrivate: false, controller: tabs)
+        tabs = nil
+        #expect(page.controller == nil)
+        #expect(page.usesNativePageHost)
+        page.loadWebViewIfNeeded()
+        #expect(page.primaryWebView == nil && !page.faviconFetchInFlight)
+
+        let orphan = PageSession(itemID: UUID(), url: url, title: "Unowned",
+                                 isPrivate: false, controller: nil)
+        orphan.loadWebViewIfNeeded()
+        #expect(orphan.primaryWebView == nil && !orphan.faviconFetchInFlight)
+        orphan.detachedProfile = Profile.createEphemeral(engine: .chromium)
+        orphan.detachedProfile = nil
+        #expect(orphan.usesNativePageHost)
+
+        let legacy = fixture.makeTabs(engine: .webKit)
+        page.controller = legacy
+        #expect(page.controller == nil && page.usesNativePageHost)
+        page.loadWebViewIfNeeded()
+        #expect(page.primaryWebView == nil && !page.faviconFetchInFlight)
+    }
+
     @Test func keptDeletionPersistsBeforeAdmissionAndCancellationPreservesEverything() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
@@ -642,12 +670,30 @@ struct ProfileEngineTests {
         #expect(configuration.websiteDataStore === store)
     }
 
-    @Test func defaultPrivateWebKitStorageStillOwnsAndClearsItsCookies() async throws {
-        let profile = Profile.createEphemeral()
+    @Test func defaultRegularAndPrivateProfilesUseChromiumWithoutOpeningAWebKitStore() throws {
+        let regular = Profile()
+        let incognito = Profile.createEphemeral()
+        #expect(regular.engine == .chromium && !regular.isEphemeral && regular.webKitStorage == nil)
+        #expect(incognito.engine == .chromium && incognito.isEphemeral && incognito.webKitStorage == nil)
+
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let settings = fixture.makeSettings()
+        let tabs = TabsController(settings: settings, windowRegistry: WindowRegistry(),
+            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings), directory: fixture.directory)
+        let space = try #require(tabs.orderedSpaces.first)
+        let profile = try #require(tabs.profile(forSpace: space.id))
+        #expect(tabs.profileEngine == .chromium && profile.engine == .chromium && profile.webKitStorage == nil)
+        #expect(tabs.sessions.isEmpty)
+    }
+
+    @Test func explicitPrivateWebKitStorageOwnsAndClearsItsCookies() async throws {
+        let profile = Profile.createEphemeral(engine: .webKit)
         let store = try #require(profile.webKitStorage?.dataStore)
         #expect(profile.engine == .webKit && profile.isEphemeral)
         #expect(!store.isPersistent && profile.webKitStorage?.dataStore === store)
-        let other = Profile.createEphemeral()
+        let other = Profile.createEphemeral(engine: .webKit)
         let otherStore = try #require(other.webKitStorage?.dataStore)
         #expect(other.id != profile.id && otherStore !== store)
         let configuration = try #require(BrowserConfiguration.webViewConfiguration(for: profile))
@@ -680,9 +726,12 @@ private final class ProfileFixture {
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     }
-    func makeTabs(engine: Profile.Engine) -> TabsController {
-        let settings = NookSettingsService(kagiTokenStore: NoTokenStore(), userDefaults: defaults,
+    func makeSettings() -> NookSettingsService {
+        NookSettingsService(kagiTokenStore: NoTokenStore(), userDefaults: defaults,
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
+    }
+    func makeTabs(engine: Profile.Engine) -> TabsController {
+        let settings = makeSettings()
         return TabsController(settings: settings, windowRegistry: WindowRegistry(),
             blocker: ContentBlockerManager(settings: settings),
             sponsorBlock: SponsorBlockManager(settings: settings),

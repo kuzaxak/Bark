@@ -97,10 +97,6 @@ struct NativePageRelease {
 }
 
 extension PageSession {
-    var usesNativePageHost: Bool {
-        (detachedProfile?.engine ?? controller?.profileEngine ?? .webKit) == .chromium
-    }
-
     var requiresNativeResourceRelease: Bool {
         usesNativePageHost && (navigation != nil || nativeCreation != nil)
     }

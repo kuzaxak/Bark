@@ -29,8 +29,27 @@ public final class PageSession: NSObject, Identifiable {
     /// A session in a private window: ephemeral profile, never saved, no extensions.
     public let isPrivate: Bool
 
+    // A session keeps the runtime of its first owner across detachment,
+    // including when ARC clears the weak controller without calling didSet.
+    @ObservationIgnored private var runtimeEngine: Profile.Engine?
+
+    var usesNativePageHost: Bool {
+        runtimeEngine == .chromium || detachedProfile?.engine == .chromium
+    }
+
+    private var usesWebKitPageHost: Bool {
+        runtimeEngine == .webKit && !usesNativePageHost && controller?.profileEngine == .webKit
+    }
+
     @ObservationIgnored public weak var controller: TabsController? {
         didSet {
+            if let engine = controller?.profileEngine {
+                if let runtimeEngine, runtimeEngine != engine {
+                    controller = oldValue
+                    return
+                }
+                runtimeEngine = engine
+            }
             if controller !== oldValue {
                 cancelNativePageTextCapture()
                 resetNativeBoostCSS()
@@ -48,7 +67,11 @@ public final class PageSession: NSObject, Identifiable {
 
     /// Set while the page is shown outside the tab tree, in Peek or a mini window: the data store
     /// it uses and the window it belongs to. Cleared when the page becomes a tab.
-    @ObservationIgnored public internal(set) var detachedProfile: Profile?
+    @ObservationIgnored public internal(set) var detachedProfile: Profile? {
+        didSet {
+            if runtimeEngine == nil { runtimeEngine = detachedProfile?.engine }
+        }
+    }
     @ObservationIgnored public internal(set) weak var detachedWindow: BrowserWindowState?
     /// Runs when the page calls `window.close()`, so Peek or the mini window can close.
     @ObservationIgnored public var onClose: (() -> Void)?
@@ -843,6 +866,7 @@ public final class PageSession: NSObject, Identifiable {
         self.title = title
         self.isPrivate = isPrivate
         self.controller = controller
+        self.runtimeEngine = controller?.profileEngine
         self.favicon = SwiftUI.Image(systemName: "globe")
         super.init()
         restoreFaviconFromCache()
@@ -883,15 +907,11 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     private func setupWebView(initialLoad: Bool = true) {
-        guard navigation == nil else { return }
+        guard usesWebKitPageHost, navigation == nil else { return }
         let interval = BrowserPerformance.signposter.beginInterval("WebViewCreation")
         defer { BrowserPerformance.signposter.endInterval("WebViewCreation", interval) }
         let resolvedProfile = profile
-        guard (resolvedProfile?.engine ?? controller?.profileEngine ?? .webKit) == .webKit else {
-            // The native host installs its page explicitly. Never satisfy a
-            // legacy lazy-load request with a fallback WK page/store.
-            return
-        }
+        guard resolvedProfile?.engine != .chromium else { return }
         let configuration: WKWebViewConfiguration
         if let resolvedProfile {
             guard let webConfiguration = BrowserConfiguration.webViewConfiguration(for: resolvedProfile) else { return }
@@ -1506,9 +1526,8 @@ public final class PageSession: NSObject, Identifiable {
     /// Chromium supplies its own icon; its pages must never use WebKit's
     /// process-wide URLSession/cache path, including during model construction.
     private var usesWebKitFavicon: Bool {
-        guard controller?.loadsWebKitFavicons != false else { return false }
-        if let navigation { return navigation is WebKitPageNavigation }
-        return (detachedProfile?.engine ?? controller?.profileEngine ?? .webKit) == .webKit
+        guard usesWebKitPageHost, controller?.loadsWebKitFavicons == true else { return false }
+        return navigation == nil || navigation is WebKitPageNavigation
     }
 
     /// Starts a favicon fetch when none has loaded yet, up to `maxFaviconRetries` failures.

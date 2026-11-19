@@ -45,7 +45,7 @@ public final class Profile: NSObject, Identifiable {
         id: UUID = UUID(),
         name: String = "Default Profile",
         icon: String = "person.crop.circle",
-        engine: Engine = .webKit
+        engine: Engine = .chromium
     ) {
         // Only WebKit opens a data store or reads the saved session cookies.
         self.init(id: id, name: name, icon: icon, engine: engine,
@@ -62,8 +62,8 @@ public final class Profile: NSObject, Identifiable {
     }
 
     // MARK: - Ephemeral Profile Factory
-    /// Create a new ephemeral/incognito profile with non-persistent data store
-    public static func createEphemeral(id: UUID = UUID(), engine: Engine = .webKit) -> Profile {
+    /// Create a private profile identity. The Chromium host opens the private session.
+    public static func createEphemeral(id: UUID = UUID(), engine: Engine = .chromium) -> Profile {
         let profile: Profile
         switch engine {
         case .webKit:

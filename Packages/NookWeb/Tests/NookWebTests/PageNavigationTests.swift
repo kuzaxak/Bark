@@ -74,9 +74,8 @@ struct PageNavigationTests {
     @Test func sessionCommandsUseInstalledEngineWithoutCreatingWebKit() {
         let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
                                   title: "Test", isPrivate: true, controller: nil)
-        let profile = Profile.createEphemeral()
-        session.detachedProfile = profile
-        let page = RecordingNavigation(profileID: profile.id)
+        // An independently installed navigation has no Chromium window or resource owner.
+        let page = RecordingNavigation(profileID: UUID())
         session.installNavigation(page)
         #expect(!session.isUnloaded)
         #expect(session.primaryWebView == nil)
@@ -254,7 +253,7 @@ struct PageNavigationTests {
         try "<title>Second</title><p>two</p>".write(to: second, atomically: true, encoding: .utf8)
         let session = PageSession(itemID: UUID(), url: first, title: "Test",
                                   isPrivate: true, controller: nil)
-        let profile = Profile.createEphemeral()
+        let profile = Profile.createEphemeral(engine: .webKit)
         session.detachedProfile = profile
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = try #require(profile.webKitStorage?.dataStore)

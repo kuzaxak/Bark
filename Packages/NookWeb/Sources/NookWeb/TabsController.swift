@@ -182,7 +182,7 @@ public final class TabsController {
         legacyProfiles: [(id: UUID, name: String)] = [],
         /// A tree built from a pre-1.1 store; asked for only on a first launch.
         legacyTree: () -> TabTree? = { nil },
-        profileEngine: Profile.Engine = .webKit,
+        profileEngine: Profile.Engine = .chromium,
         directory: URL = TabsController.defaultDirectory
     ) {
         self.profileEngine = profileEngine

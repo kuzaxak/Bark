@@ -265,7 +265,7 @@ struct MiniPlayerPagesTests {
         let host = try Host()
         let privateWindow = BrowserWindowState()
         privateWindow.isIncognito = true
-        privateWindow.ephemeralProfile = Profile.createEphemeral()
+        privateWindow.ephemeralProfile = Profile.createEphemeral(engine: host.tabs.profileEngine)
         host.registry.register(privateWindow)
         host.tabs.attach(window: privateWindow)
         let privateSpace = try #require(privateWindow.spaceID)
