@@ -31,7 +31,8 @@ Bark SHALL preserve the user's provider selection across disconnects, locks and 
 - **WHEN** the provider is locked, closed or refuses the signed Bark client
 - **THEN** Bark shows the applicable recovery action in Passwords settings
 - **AND** no Chromium suggestion, automatic fill or save substitutes for Pawl
-- **AND** after recovery a new user gesture can start a fresh request
+- **AND** after unlocking or reopening Pawl, a new field gesture on the same page can offer accounts and restore supported save and modal passkey actions without a reload or a visit to Settings
+- **AND** leaving the field during recovery leaves the former field untouched and its account chooser closed
 
 #### Scenario: Navigate before page attachment
 - **GIVEN** a Bark profile with Pawl selected and a Chromium password already stored

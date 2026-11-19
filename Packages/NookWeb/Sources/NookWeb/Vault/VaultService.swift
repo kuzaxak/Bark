@@ -306,6 +306,7 @@ private final class NativeVaultAttachment {
     private var generation: UInt64 = 0
     private var pickerView: NSView?
     private var stopped = false
+    private var focusObserving = false
     private var awaitingSecret = false
     private var submission: VaultNativeSubmission?
     private var saveGeneration: UInt64 = 0
@@ -358,11 +359,16 @@ private final class NativeVaultAttachment {
     }
     private func sync() {
         guard !stopped else { return }
-        cancel(showRetry: true)
-        if service?.isEnabled == true {
-            page?.observeVault { [weak self] focus in self?.focused(focus) }
-        } else {
-            page?.observeVault(nil)
+        if service?.isConnected != true { cancel(showRetry: true) }
+        let shouldObserveFocus = service?.isEnabled == true
+        if focusObserving != shouldObserveFocus {
+            // Reinstalling Chromium's field observer invalidates its current field token.
+            focusObserving = shouldObserveFocus
+            if shouldObserveFocus {
+                page?.observeVault { [weak self] focus in self?.focused(focus) }
+            } else {
+                page?.observeVault(nil)
+            }
         }
         let shouldObservePasskeys = service?.isConnected == true
         if passkeysObserving != shouldObservePasskeys {
@@ -798,7 +804,16 @@ private final class NativeVaultAttachment {
             return
         }
         Task { [weak self, weak service] in
-            guard let service else { return }
+            guard let service, self?.current(focus, generation) == true else { return }
+            if !service.isConnected {
+                // Pawl may have unlocked since the last navigation. Refresh its capabilities
+                // before looking up this site or enabling submission and passkey requests.
+                let status = await service.refresh(profile: profile)
+                guard status == .connected, self?.current(focus, generation) == true else {
+                    if let self, self.generation == generation { self.cancel() }
+                    return
+                }
+            }
             let logins: [VaultLogin]
             do { logins = try await service.selectableLogins(VaultLogins(origin: focus.origin, profile: profile)) }
             catch {

@@ -4068,7 +4068,7 @@ struct NativeVaultFormTests {
     }
 
     @Test(arguments:["notRunning", "locked"])
-    func enabledFieldDiscoveryRecoversOnRefocusWithoutStatusRefresh(initial:String) async throws {
+    func refocusingAfterVaultRecoveryRestoresFillSaveAndPasskeys(initial:String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
@@ -4077,19 +4077,29 @@ struct NativeVaultFormTests {
         vault.presenter = presenter; f.tabs.vault = vault
         _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        #expect(native.vaultFocus != nil)
+        #expect(native.vaultFocus != nil && native.vaultSave == nil && native.passkeyCallback == nil)
         native.focusVault(); await agentCallbacks()
         #expect(presenter.nativeCompletion == nil && native.vaultFills.isEmpty)
         let before = await transport.methods
-        #expect(before.contains("logins") && !before.contains("password") && !before.contains("code"))
-        // No timer, navigation, setting toggle, or hello refresh after recovery.
+        #expect(!before.contains("logins") && !before.contains("password") && !before.contains("code"))
+        // Stay on the same page. The next field gesture must discover the unlocked vault.
         await transport.availability("available")
         native.focusVault(); await agentCallbacks()
-        #expect(presenter.nativeCompletion != nil)
+        #expect(vault.isConnected && presenter.nativeCompletion != nil)
+        #expect(native.vaultSave != nil && native.passkeyCallback != nil)
         let metadataOnly = await transport.methods
         #expect(!metadataOnly.contains("password") && !metadataOnly.contains("code"))
         presenter.pick(); await agentCallbacks()
         #expect(native.vaultFills.count == 1 && native.vaultFills.first?.2 == "synthetic-password")
+        native.submitVault(); await agentCallbacks()
+        #expect(presenter.loginAction == .create && presenter.saveCompletion != nil)
+        #expect(await transport.saves.isEmpty)
+        presenter.saveCompletion?(false)
+        native.requestPasskey(operation: 1); await agentCallbacks()
+        #expect(presenter.nativeCompletion != nil && native.passkeyReplies.isEmpty)
+        presenter.pick(); await agentCallbacks()
+        #expect(await transport.assertedCredentials == ["AQ"])
+        #expect(native.passkeyReplies.count == 1 && native.passkeyReplies.first?.1 != nil)
     }
 
     @Test func nativeNavigationUsesExistingThrottledVaultStatusRefresh() async throws {
@@ -4110,6 +4120,30 @@ struct NativeVaultFormTests {
         await agentCallbacks()
         let twice = await transport.methods.filter { $0 == "hello" }.count
         #expect(twice == once)
+    }
+
+    @Test(.timeLimit(.minutes(1))) func leavingFieldDuringVaultRecoverySkipsSiteLookup() async throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        await transport.availability("locked")
+        let vault = VaultService(settings: fixture.tabs.settings, client: transport, pawlEnabledAtLaunch: true)
+        vault.presenter = presenter
+        fixture.tabs.vault = vault
+        #expect(await vault.refresh() == .locked)
+        let page = fixture.host.finishCreate(0)
+        await agentCallbacks()
+        await transport.availability("available")
+        await transport.holdNextHello()
+        page.focusVault()
+        for await _ in transport.helloStarted.stream { break }
+        page.vaultDocumentCurrent = false
+        await transport.resumeHello()
+        await agentCallbacks()
+        #expect(vault.isConnected && page.passkeyCallback != nil && page.vaultSave != nil)
+        #expect(presenter.nativeCompletion == nil && page.vaultFills.isEmpty)
+        let methods = await transport.methods
+        #expect(!methods.contains("logins") && !methods.contains("password"))
     }
 
     @Test func validatedSaveSurvivesRedirectAndRequiresConsent() async throws {
@@ -4669,6 +4703,11 @@ private final class SyntheticVaultPresenter: VaultPresenter {
 
 private actor SyntheticVaultRequests: VaultRequests {
     var methods: [String] = []
+    private var holdHello = false
+    private var pendingHello: CheckedContinuation<Void, Never>?
+    nonisolated let helloStarted = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingOldest(1))
+    func holdNextHello() { holdHello = true }
+    func resumeHello() { pendingHello?.resume(); pendingHello = nil }
     var conditionalWrites = true
     var writeScenario = "approved"
     func advertiseConditionalWrites(_ enabled: Bool) { conditionalWrites = enabled }
@@ -4723,6 +4762,13 @@ private actor SyntheticVaultRequests: VaultRequests {
     func releaseSecret() { held = false; pending?.resume(); pending = nil }
     func disconnect() { connected = false }
     func send<C:VaultCall>(_ call:C) async throws -> C.Reply {
+        if C.method == "hello", holdHello {
+            holdHello = false
+            await withCheckedContinuation { continuation in
+                pendingHello = continuation
+                helloStarted.continuation.yield(())
+            }
+        }
         if C.method == "logins", holdEarlier {
             holdEarlier = false; earlierPending = true; earlierStarted.continuation.yield(())
             await withCheckedContinuation { earlierContinuation = $0 }
@@ -5066,7 +5112,12 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
     func cancelVaultFocus(_ token: UInt64) { if token == vaultSerial { vaultDocumentCurrent = false; vaultCurrent = false } }
     var vaultFills: [(UInt64, String, String)] = []
     let vaultView = NSView(frame: CGRect(x:0,y:0,width:640,height:480))
-    func observeVault(_ callback: (@MainActor (VaultNativeFocus?) -> Void)?) { vaultFocus = callback }
+    func observeVault(_ callback: (@MainActor (VaultNativeFocus?) -> Void)?) {
+        // Chromium retires the existing field token when its observer is replaced.
+        vaultCurrent = false
+        vaultDocumentCurrent = false
+        vaultFocus = callback
+    }
     func vaultFocusIsCurrent(_ token: UInt64) -> Bool { vaultCurrent && vaultFieldIsCurrent(token) }
     func fillVault(_ token: UInt64, username: String, secret: String) -> Bool {
         guard vaultFocusIsCurrent(token) else { return false }
