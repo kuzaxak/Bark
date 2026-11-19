@@ -56,30 +56,36 @@ final class ChromiumAppMenu: NSObject {
         static let verticalTabs = 34058, verticalTabsCollapse = 34061
         static let importSettings = 40014, searchTheWeb = 39002, lensShortcut = 40282, aiModeButton = 40299
         static let searchTools = 40296, cast = 35011, home = 33003, help = 40020
-        static let openFile = 40000, clearBrowsingData = 40013
+        static let openFile = 40000, savePage = 35004, clearBrowsingData = 40013
     }
 
-    /// Items with no effect in Nook's windows: toolbar and omnibox options, Cast with no toolbar to
+    /// Items with no effect in Bark's windows: toolbar and omnibox options, Cast with no toolbar to
     /// anchor to, and home page.
     private static let hiddenItems = [Tag.bookmarkBar, Tag.fullscreenToolbar, Tag.fullURLs, Tag.touchBar, Tag.verticalTabs,
                                       Tag.verticalTabsCollapse, Tag.searchTheWeb, Tag.lensShortcut,
                                       Tag.aiModeButton, Tag.searchTools, Tag.cast, Tag.home]
-    /// Chromium's key for these never reaches it in Nook's windows; the items still work when clicked.
+    /// Chromium's key for these never reaches it in Bark's windows; the items still work when clicked.
     private static let keylessItems = [Tag.openFile, Tag.clearBrowsingData]
+    private var savePage: (item: NSMenuItem, key: Key)?
     private var keptHidden: [NSKeyValueObservation] = []
     private var routedItems: [Command: NSMenuItem] = [:]
 
     private static let addedIdentifier = NSUserInterfaceItemIdentifier("ee.qdo.nook.menu")
     private let perform: (Command) -> Void
     private let isOffered: (Command) -> Bool
+    private let sidebarVisibility: () -> Bool?
     private let isToolbarShown: () -> Bool
 
-    init(isOffered: @escaping (Command) -> Bool = { _ in true }, isToolbarShown: @escaping () -> Bool = { false },
+    init(isOffered: @escaping (Command) -> Bool = { _ in true },
+         sidebarVisibility: @escaping () -> Bool? = { nil }, isToolbarShown: @escaping () -> Bool = { false },
          perform: @escaping (Command) -> Void) {
         self.isOffered = isOffered
+        self.sidebarVisibility = sidebarVisibility
         self.isToolbarShown = isToolbarShown
         self.perform = perform
     }
+
+    private func sidebarTitle(visible: Bool?) -> String { visible == true ? "Hide Sidebar" : "Show Sidebar" }
 
     private var toolbarTitle: String { isToolbarShown() ? "Hide Toolbar" : "Show Toolbar" }
 
@@ -106,6 +112,10 @@ final class ChromiumAppMenu: NSObject {
         for item in Self.keylessItems.compactMap({ Self.item(withTag: $0, in: main) }) {
             item.keyEquivalent = ""
             item.keyEquivalentModifierMask = []
+        }
+        if let item = main.item(withTag: Tag.fileMenu)?.submenu?.item(withTag: Tag.savePage),
+           savePage?.item !== item {
+            savePage = (item, Key(equivalent: item.keyEquivalent, modifiers: item.keyEquivalentModifierMask))
         }
         let routed: [(menu: Int, tag: Int, command: Command)] = [
             (Tag.appMenu, Tag.about, .about), (Tag.appMenu, Tag.settings, .settings),
@@ -139,13 +149,13 @@ final class ChromiumAppMenu: NSObject {
             }
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
-        let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
+        let viewItems = [(sidebarTitle(visible: sidebarVisibility()), Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
                          ("Toggle AI Assistant", .toggleAIAssistant),
                          ("Open Command Bar", .commandBar), ("Add Split View", .addSplitView),
                          ("Resize Split Panes", .resizeSplitPanes)]
         for (index, entry) in viewItems.enumerated() {
             let item = make(entry.0, entry.1)
-            if entry.1 == .toggleToolbar { routedItems[entry.1] = item }
+            routedItems[entry.1] = item
             view.insertItem(item, at: index)
         }
         view.insertItem(.separator(), at: viewItems.count)
@@ -182,6 +192,15 @@ final class ChromiumAppMenu: NSObject {
             item.keyEquivalent = key.equivalent
             item.keyEquivalentModifierMask = key.modifiers
         }
+        // Save Page As and Hide Sidebar both default to Command-S. Keep Save Page
+        // available by menu, and give its key back when Bark's binding moves.
+        if let savePage, !savePage.key.equivalent.isEmpty {
+            let claimed = routedItems.values.contains {
+                $0.keyEquivalent == savePage.key.equivalent && $0.keyEquivalentModifierMask == savePage.key.modifiers
+            }
+            savePage.item.keyEquivalent = claimed ? "" : savePage.key.equivalent
+            savePage.item.keyEquivalentModifierMask = claimed ? [] : savePage.key.modifiers
+        }
     }
 
     @objc private func run(_ sender: NSMenuItem) {
@@ -202,6 +221,11 @@ final class ChromiumAppMenu: NSObject {
 extension ChromiumAppMenu: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let command = item.representedObject as? Command else { return true }
+        if command == .toggleSidebar {
+            let visible = sidebarVisibility()
+            item.title = sidebarTitle(visible: visible)
+            return visible != nil && isOffered(command)
+        }
         if command == .toggleToolbar { item.title = toolbarTitle }
         return isOffered(command)
     }

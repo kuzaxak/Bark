@@ -62,13 +62,15 @@ enum Check {
         var privateWindow = false
         var canResize = false
         var canUpdate = false
+        var sidebarVisible: Bool? = true
         var toolbarShown = false
         let installer = ChromiumAppMenu(isOffered: {
             if $0 == .checkForUpdates { return canUpdate }
             if $0 == .resizeSplitPanes { return canResize }
             return $0 != .manageExtensions || !privateWindow
-        }, isToolbarShown: { toolbarShown }) { command in
+        }, sidebarVisibility: { sidebarVisible }, isToolbarShown: { toolbarShown }) { command in
             ran.append(command)
+            if command == .toggleSidebar, let visible = sidebarVisible { sidebarVisible = !visible }
             if command == .toggleToolbar { toolbarShown.toggle() }
         }
         installer.install(in: main)
@@ -167,9 +169,35 @@ enum Check {
         precondition(press("?", [.command, .shift]) == [.barkHelp], "Command-Shift-/ opens Bark Help")
         precondition(added("Bark Help", in: help) == .barkHelp)
         precondition(added("Build Information…", in: help) == .buildInformation)
-        precondition(added("Toggle Sidebar", in: view) == .toggleSidebar)
+        // File precedes View in the real menu. Chromium assigns Command-S to Save Page As.
+        let file = main.item(withTag: 57326)!.submenu!
+        let save = NSMenuItem(title: "Save Page As…", action: #selector(SaveRecorder.save(_:)), keyEquivalent: "s")
+        let saveRecorder = SaveRecorder()
+        save.target = saveRecorder
+        save.tag = 35004
+        save.keyEquivalentModifierMask = .command
+        file.addItem(save)
+        installer.install(in: main)
+        let sidebar = view!.items[0]
+        precondition(added("Hide Sidebar", in: view) == .toggleSidebar && sidebarVisible == false)
+        view!.update()
+        precondition(sidebar.title == "Show Sidebar" && sidebar.isEnabled)
+        sidebarVisible = nil // Settings or an open sheet owns the keys.
+        view!.update()
+        precondition(!sidebar.isEnabled)
+        sidebarVisible = true
+        view!.update()
+        precondition(sidebar.title == "Hide Sidebar" && sidebar.isEnabled)
+        installer.showKeys([.toggleSidebar: .init(equivalent: "s", modifiers: .command)])
+        precondition(save.keyEquivalent.isEmpty, "File and View both claim Command-S")
+        precondition(sidebar.keyEquivalent == "s" && press("s", .command) == [.toggleSidebar] && sidebarVisible == false)
+        precondition(saveRecorder.invocations == 0)
+        installer.showKeys([.toggleSidebar: .init(equivalent: "", modifiers: [])])
+        precondition(save.keyEquivalent == "s" && save.keyEquivalentModifierMask == .command)
+        precondition(sidebar.keyEquivalent.isEmpty && press("s", .command).isEmpty && saveRecorder.invocations == 1)
+        view!.update()
         let toolbar = view!.items[1]
-        precondition(view!.items[0].title == "Toggle Sidebar" && toolbar.title == "Show Toolbar")
+        precondition(sidebar.title == "Show Sidebar" && toolbar.title == "Show Toolbar")
         precondition(added("Show Toolbar", in: view) == .toggleToolbar && ran == [.toggleToolbar] && toolbarShown)
         view!.update()
         precondition(toolbar.title == "Hide Toolbar")
@@ -212,7 +240,7 @@ enum Check {
 
         let count = main.items.count
         installer.install(in: main)
-        precondition(main.items.count == count && view!.items.filter { $0.title == "Toggle Sidebar" }.count == 1, "install must not duplicate items")
+        precondition(main.items.count == count && view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleSidebar }.count == 1, "install must not duplicate items")
         precondition(help.items.count == 2 && help.items.first === originalHelp)
         precondition(press("?", [.command, .shift]) == [.barkHelp], "reinstall preserves Help shortcut")
         precondition(view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleToolbar }.count == 1)
@@ -281,4 +309,9 @@ enum Check {
         }
     }
 
+}
+
+@MainActor private final class SaveRecorder: NSObject {
+    private(set) var invocations = 0
+    @objc func save(_ sender: NSMenuItem) { invocations += 1 }
 }

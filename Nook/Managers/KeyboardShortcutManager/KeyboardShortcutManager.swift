@@ -186,6 +186,12 @@ class KeyboardShortcutManager {
 
     // MARK: - Shortcut Execution
 
+    var keyBrowserWindow: BrowserWindowState? {
+        guard let key = CommandWindow.key, let state = windowRegistry?.activeWindow,
+              state.window === key else { return nil }
+        return state
+    }
+
     func executeShortcut(_ event: NSEvent) -> Bool {
         guard !CommandWindow.keyKeepsKeys else { return false }
         // A window that is not a browser window (Settings, a mini window) keeps its own keys.
@@ -197,8 +203,7 @@ class KeyboardShortcutManager {
         }
 
         if browserManager?.tabs.profileEngine == .chromium {
-            guard let key = CommandWindow.key,
-                  windowRegistry?.activeWindow?.window === key else { return false }
+            guard keyBrowserWindow != nil else { return false }
         }
 
         let keyCode = event.keyCode
@@ -407,10 +412,20 @@ class KeyboardShortcutManager {
             return
         }
 
-        DispatchQueue.main.async { [weak self] in
+        let requiresSameWindow = action == .toggleSidebar || action == .nextSpace ||
+            action == .previousSpace || action.spaceIndex != nil
+        let source = requiresSameWindow ? keyBrowserWindow : nil
+        DispatchQueue.main.async { [weak self, weak source, weak owner = source?.window] in
             guard let self else { return }
             let tabs = browserManager.tabs
-            let window = self.windowRegistry?.activeWindow
+            let window: BrowserWindowState?
+            if requiresSameWindow {
+                guard let source, let owner, self.keyBrowserWindow === source,
+                      source.window === owner else { return }
+                window = source
+            } else {
+                window = self.windowRegistry?.activeWindow
+            }
 
             switch action {
             case .goBack, .goForward, .refresh, .clearCookiesAndRefresh, .hardReload, .findInPage,
@@ -495,7 +510,7 @@ class KeyboardShortcutManager {
 
             // NEW: Menu actions that were missing ShortcutAction definitions
             case .toggleSidebar:
-                browserManager.toggleSidebar()
+                if let window { browserManager.toggleSidebar(for: window) }
             case .toggleAIAssistant:
                 browserManager.toggleAISidebar()
             case .customizeSpaceGradient:

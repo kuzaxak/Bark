@@ -670,18 +670,6 @@ class BrowserManager: ObservableObject {
         saveSidebarSettings()
     }
 
-    func toggleSidebar() {
-        if let windowState = windowRegistry?.activeWindow {
-            toggleSidebar(for: windowState)
-        } else {
-            withAnimation(.easeInOut(duration: 0.1)) {
-                isSidebarVisible.toggle()
-                // Width stays the same whether visible or hidden
-            }
-            saveSidebarSettings()
-        }
-    }
-
     func toggleSidebar(for windowState: BrowserWindowState) {
         withAnimation(.easeInOut(duration: 0.1)) {
             windowState.isSidebarVisible.toggle()

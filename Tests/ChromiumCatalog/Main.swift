@@ -435,8 +435,16 @@ private struct NoTokens: KagiTokenStore {
     precondition(snapshot.regularTabCount == 3, "Count parked and factory tabs only for known regular owners")
 }
 
+/// Drive key-window changes inside this process without taking the desktop.
+private final class CatalogApplication: NSApplication {
+    weak var simulatedKeyWindow: NSWindow?
+    override var keyWindow: NSWindow? { simulatedKeyWindow ?? super.keyWindow }
+}
+
 @main private enum Checks {
     @MainActor static func main() throws {
+        let application = CatalogApplication.shared as! CatalogApplication
+        try checkWindowShortcuts(application)
         checkRegularTabCount()
         try checkEngineSelectionInBarkWindow()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcCatalog-\(UUID())")
@@ -2696,6 +2704,88 @@ private struct NoTokens: KagiTokenStore {
     Native.end(7001); Native.end(7002)
 }
 
+
+@MainActor private func checkWindowShortcuts(_ application: CatalogApplication) throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarkShortcuts-\(UUID())")
+    let defaults = UserDefaults(suiteName: root.lastPathComponent)!
+    defer {
+        application.simulatedKeyWindow = nil
+        defaults.removePersistentDomain(forName: root.lastPathComponent)
+        try? FileManager.default.removeItem(at: root)
+    }
+    // Empty spaces exercise command dispatch without requiring a renderer for a starter tab.
+    let initialSpace = UUID(), destination = UUID()
+    var tree = TabTree()
+    tree.createSpace(id: initialSpace, name: "First", icon: "house", accentHex: "#225588", after: nil)
+    tree.createSpace(id: destination, name: "Second", icon: "house", accentHex: "#225588", after: initialSpace)
+    var device = DeviceState()
+    device.firstLaunchCompleted = true
+    let directory = root.appendingPathComponent("Tabs")
+    let store = TabStore(directory: directory)
+    store.save(tree, device)
+    store.flush()
+    let registry = WindowRegistry()
+    let manager = BrowserManager(
+        settings: NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults,
+                                     boostStore: BoostStore(fileURL: root.appendingPathComponent("Boosts.json"))),
+        windowRegistry: registry, importManager: ImportManager(sources: .fixtures(in: root), workDirectory: root.appendingPathComponent("ImportCopies")),
+        persistence: try Persistence(directory: root), userDefaults: defaults, downloadManager: DownloadManager(),
+        tabsDirectory: directory)
+    let shortcuts = KeyboardShortcutManager(userDefaults: defaults)
+    shortcuts.setBrowserManager(manager)
+    let first = BrowserWindowState(), second = BrowserWindowState()
+    let firstHandle = NSWindow(), secondHandle = NSWindow(), settings = NSWindow()
+    first.window = firstHandle
+    second.window = secondHandle
+    for state in [first, second] {
+        registry.register(state)
+        manager.tabs.attach(window: state, restoringSavedState: false)
+    }
+    first.spaceID = initialSpace
+    second.spaceID = initialSpace
+
+    func focus(_ state: BrowserWindowState) {
+        registry.setActive(state)
+        application.simulatedKeyWindow = state.window
+    }
+    func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    focus(first)
+    shortcuts.perform(.toggleSidebar)
+    drain()
+    precondition(!first.isSidebarVisible && second.isSidebarVisible)
+    shortcuts.perform(.nextSpace)
+    drain()
+    precondition(first.spaceID == destination && second.spaceID == initialSpace,
+                 "Next Space must advance the focused window")
+    for action in [ShortcutAction.nextSpace, .previousSpace, .goToSpace2, .toggleSidebar] {
+        let otherSpace = action == .previousSpace ? destination : initialSpace
+        second.spaceID = otherSpace
+        focus(first)
+        shortcuts.perform(action)
+        focus(second)
+        drain()
+        precondition(!first.isSidebarVisible && second.isSidebarVisible &&
+                     first.spaceID == destination && second.spaceID == otherSpace,
+                     "A queued \(action) changed a different browser window")
+    }
+    focus(first)
+    shortcuts.perform(.toggleSidebar)
+    application.simulatedKeyWindow = settings
+    drain()
+    precondition(!first.isSidebarVisible, "Settings took focus before dispatch")
+    shortcuts.perform(.toggleSidebar)
+    focus(first)
+    drain()
+    precondition(!first.isSidebarVisible, "Settings dispatched to the browser behind it")
+    shortcuts.perform(.goToSpace1)
+    drain()
+    precondition(first.spaceID == initialSpace, "A numbered shortcut selects the first space in the same window")
+    shortcuts.perform(.toggleSidebar)
+    first.window = settings
+    application.simulatedKeyWindow = settings
+    drain()
+    precondition(!first.isSidebarVisible, "A replacement window inherited a stale command")
+}
 
 @MainActor private func checkPeekWithoutAnEngineDocument() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarkPeekWithoutDocument-\(UUID())")

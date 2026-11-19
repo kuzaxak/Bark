@@ -150,6 +150,24 @@ def main():
         result = {"first_input": key, "launch_to_input_sent_ms": round((submitted - screen.launch_started_ns) / 1e6),
                   "page_width_hidden": hide_width, "page_width_shown": int(resized["width"]),
                   "document": loaded["doc"]}
+        if not mouse:
+            menu_bar = access.attribute(access.application, "AXMenuBar")
+            view_menu = access.control("View", ("AXMenuBarItem",), root=menu_bar)
+            for title, showing in (("Hide Sidebar", False), ("Show Sidebar", True)):
+                access.press(view_menu)
+                item = access.control(title, ("AXMenuItem",), root=view_menu)
+                if not access.attribute(item, "AXEnabled"):
+                    raise RuntimeError(f"{title} is disabled in the browser window")
+                event_index = len(events)
+                access.press(item)
+                wait_for(f"{title} did not change sidebar visibility",
+                         lambda: bool(visible_toggle()) == showing, process)
+                def viewport_changed():
+                    return any(event["doc"] == loaded["doc"] and event["event"] == "resized" and
+                               (int(event["width"]) < hide_width - 100 if showing else int(event["width"]) >= hide_width - 2)
+                               for event in events[event_index:])
+                wait_for(f"{title} did not resize the same document", viewport_changed, process)
+            result["view_menu"] = ["Hide Sidebar", "Show Sidebar"]
         (output / f"{key}.json").write_text(json.dumps(result, indent=2) + "\n")
         print(json.dumps(result), flush=True)
         allow_page.clear()

@@ -459,11 +459,14 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
-            let appMenu = ChromiumAppMenu(isOffered: { [weak self, weak manager, weak pageHost] command in
+            let appMenu = ChromiumAppMenu(isOffered: { [weak self, weak manager, weak pageHost, weak shortcuts] command in
+                if command == .nextSpace || command == .previousSpace { return shortcuts?.keyBrowserWindow != nil }
                 if command == .checkForUpdates { return self?.acceptsWindows == true && self?.updater?.canCheckForUpdates == true }
                 if command == .resizeSplitPanes { return pageHost?.splitResizeRoot(in: NSApp.keyWindow) != nil }
                 return command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
                     chromium: true, privateWindow: manager?.windowRegistry?.activeWindow?.isIncognito == true)
+            }, sidebarVisibility: { [weak shortcuts] in
+                shortcuts?.keyBrowserWindow?.isSidebarVisible
             }, isToolbarShown: { [weak manager] in
                 manager?.nookSettings?.topBarAddressView == true
             }) { [weak self, weak manager, weak shortcuts, weak pageHost] command in
@@ -485,7 +488,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 case .closeTab: shortcuts.closeTab(isRepeat: false)
                 case .history: manager.showHistory()
                 case .downloads: manager.showDownloads()
-                case .toggleSidebar: manager.toggleSidebar()
+                case .toggleSidebar: shortcuts.perform(.toggleSidebar)
                 case .toggleToolbar: shortcuts.perform(.toggleTopBarAddressView)
                 case .toggleAIAssistant: manager.toggleAISidebar()
                 case .commandBar: shortcuts.perform(.openCommandPalette)
@@ -500,7 +503,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             self.appMenu = appMenu
             let menuShortcuts: [ChromiumAppMenu.Command: ShortcutAction] = [
                 .quit: .closeBrowser, .newTab: .newTab, .focusAddress: .focusAddressBar, .closeTab: .closeTab,
-                .history: .viewHistory, .downloads: .viewDownloads, .toggleToolbar: .toggleTopBarAddressView,
+                .history: .viewHistory, .downloads: .viewDownloads, .toggleSidebar: .toggleSidebar, .toggleToolbar: .toggleTopBarAddressView,
             ]
             let showMenuKeys = { [weak appMenu, weak shortcuts] in
                 guard let appMenu, let shortcuts else { return }
