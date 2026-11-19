@@ -280,12 +280,20 @@ struct ProfileEngineTests {
                 if case .success = $0 { successes += 1 }
             }
         }
-        #expect(observed == [.settings, .extensions, .privacy, .siteSettings, .clearData, .downloads, .passwords])
-        #expect(successes == 7 && tabs.tree == original)
+        #expect(observed == [.settings, .extensions, .privacy, .secureConnections, .siteSettings, .clearData, .downloads, .passwords])
+        #expect(successes == observed.count && tabs.tree == original)
         #expect(window.spaceID == personal && window.selectedItemID == nil)
+
+        let privateProfile = Profile.createEphemeral()
+        var privateFailure: ProfilePageOpenError?
+        tabs.onOpenProfilePage = { _, _, _, _ in Issue.record("An ephemeral profile reached the presenter") }
+        tabs.openProfilePage(profileID: privateProfile.id, destination: .secureConnections) {
+            if case .failure(let error) = $0 { privateFailure = error }
+        }
+        #expect(privateFailure == .profileUnavailable)
     }
 
-    @Test(arguments: [ProfilePageDestination.extensions, .passwords])
+    @Test(arguments: [ProfilePageDestination.extensions, .passwords, .secureConnections])
     func keptProfileControlsNeedNoWindowOrSpaceAssignment(destination: ProfilePageDestination) throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
@@ -309,7 +317,7 @@ struct ProfileEngineTests {
         #expect(tabs.tree == original && tabs.device.keptProfiles == kept)
     }
 
-    @Test(arguments: [ProfilePageDestination.clearData, .passwords])
+    @Test(arguments: [ProfilePageDestination.clearData, .passwords, .secureConnections])
     func staleProfileAdmissionFailsOnceWithoutFallback(destination: ProfilePageDestination) throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }

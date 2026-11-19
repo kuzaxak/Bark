@@ -22,7 +22,6 @@ public final class NookSettingsService {
     private let startupLoadModeKey = "settings.startupLoadMode"
     private let enhancedFingerprintingProtectionKey = "settings.enhancedFingerprintingProtection"
     private let removeTrackingFromLinksKey = "settings.removeTrackingFromLinks"
-    private let warnBeforeHTTPKey = "settings.warnBeforeHTTP"
     private let adBlockerEnabledKey = "settings.adBlockerEnabled"
     private let adBlockerWhitelistKey = "settings.adBlockerWhitelist"
     private let adBlockerLastUpdateKey = "settings.adBlockerLastUpdate"
@@ -207,12 +206,6 @@ public final class NookSettingsService {
     public var removeTrackingFromLinks: ProtectionScope {
         didSet {
             userDefaults.set(removeTrackingFromLinks.rawValue, forKey: removeTrackingFromLinksKey)
-        }
-    }
-
-    public var warnBeforeHTTP: Bool {
-        didSet {
-            userDefaults.set(warnBeforeHTTP, forKey: warnBeforeHTTPKey)
         }
     }
 
@@ -815,7 +808,6 @@ public final class NookSettingsService {
         self.removeTrackingFromLinks = ProtectionScope(
             rawValue: userDefaults.string(forKey: removeTrackingFromLinksKey) ?? ""
         ) ?? .privateWindows
-        self.warnBeforeHTTP = userDefaults.bool(forKey: warnBeforeHTTPKey)
         if let wlData = userDefaults.data(forKey: adBlockerWhitelistKey),
            let decoded = try? JSONDecoder().decode([String].self, from: wlData) {
             self.adBlockerWhitelist = decoded

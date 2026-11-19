@@ -318,6 +318,7 @@ private extension ProfilePageDestination {
         case .settings: "Open Profile Settings"
         case .extensions: "Extensions"
         case .privacy: "Privacy and Security"
+        case .secureConnections: "Secure Connections"
         case .siteSettings: "Site Settings"
         case .clearData: "Clear Browsing Data"
         case .downloads: "Downloads"

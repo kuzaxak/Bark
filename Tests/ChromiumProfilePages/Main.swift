@@ -389,6 +389,7 @@ private enum ProfileChecks {
 
         let routes: [(ProfilePageDestination, String)] = [(.settings, "chrome://settings/"),
             (.extensions, "chrome://extensions/"), (.privacy, "chrome://settings/privacy"),
+            (.secureConnections, "chrome://settings/security"),
             (.siteSettings, "chrome://settings/content"), (.clearData, "chrome://settings/clearBrowserData"), (.downloads, "chrome://settings/downloads"), (.passwords, "chrome://password-manager/passwords")]
         for (index, route) in routes.enumerated() {
             Native.calls = []
@@ -441,7 +442,7 @@ private enum ProfileChecks {
 
         // A foreign native identity is neither shown nor closed as if it were ours.
         Native.calls = []; Native.profile = UUID()
-        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        presenter.open(profile, destination: .secureConnections, canPresent: { true }) { outcomes.append($0) }
         Native.opened(21)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.count == 1)
@@ -466,7 +467,7 @@ private enum ProfileChecks {
 
         Native.calls = []; available = true
         Native.onAttach = { available = false }
-        presenter.open(profile, destination: .settings, canPresent: { available }) { outcomes.append($0) }
+        presenter.open(profile, destination: .secureConnections, canPresent: { available }) { outcomes.append($0) }
         Native.opened(25); Native.onAttach = nil
         guard case .failure(.profileUnavailable) = outcomes.removeLast() else { preconditionFailure() }
         precondition(!Native.calls.contains("show"))

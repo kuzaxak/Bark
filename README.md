@@ -42,6 +42,9 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
   browsing history, type `h`, a space, and your search term.
 - To inspect an HTTPS certificate, open **Site Controls** beside the address and
   choose **Secure**. Click **Close** or press Command+W to return to the same tab.
+- To change HTTPS warnings for a profile, choose **Settings → Profiles**, select
+  the profile, then open **Secure Connections**. Chromium shows the connection
+  settings for that profile.
 - Open two pages in a split to work with both in one window. Select a pane to
   direct typing and page commands to it. For keyboard resizing, choose
   **View → Resize Split Panes**, use the arrow keys, and press Escape to

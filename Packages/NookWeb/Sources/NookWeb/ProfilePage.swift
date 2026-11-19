@@ -4,7 +4,7 @@ import NookTabsCore
 
 /// Chromium-owned controls for an explicitly selected persistent profile.
 public enum ProfilePageDestination: CaseIterable, Hashable, Sendable {
-    case settings, extensions, privacy, siteSettings, clearData, downloads, passwords
+    case settings, extensions, privacy, secureConnections, siteSettings, clearData, downloads, passwords
 }
 
 public enum ProfilePageOpenError: Error, Equatable, LocalizedError {
