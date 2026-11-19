@@ -171,17 +171,26 @@ set -l handoff (mktemp -d /private/tmp/bark-official-handoff.XXXXXXXX)
 set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
 set -l archive "$handoff/BarkSDK-$arch-$pin.tar.gz"
 set -l revision (git rev-parse HEAD)
-git archive --format=tar.gz --output="$handoff/Bark-source-$revision.tar.gz" "$revision"
+set -l sources "Bark-source-$revision.tar.gz"
+git archive --format=tar.gz --output="$handoff/$sources" "$revision"
 env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py engine --arch "$arch" --require-official \
     --archive "$archive"
-python3 scripts/bark-check.py build --arch "$arch" --require-official --engine "$archive" \
+mkdir "$handoff/source"
+tar -xzf "$handoff/$sources" -C "$handoff/source"
+python3 "$handoff/source/scripts/bark-check.py" build --arch "$arch" --require-official --engine "$archive" \
     --output "$handoff/Bark.app"
 ditto -c -k --keepParent "$handoff/Bark.app" "$handoff/Bark-$arch.zip"
+pushd "$handoff"
+shasum -a 256 "$sources" (basename "$archive") "Bark-$arch.zip" > SHA256SUMS
+popd
 ```
 
-Give the receiver the source tarball, SDK archive and signed app zip. On the
-receiving native Mac, extract the source tarball into an empty directory or
-check out the revision recorded in its filename. From that source root, install
+Building the shell from the extracted archive includes exactly the source files
+the receiver gets. Give the receiver the three archives and the producer's
+`SHA256SUMS`. On the receiving native Mac, run `shasum -a 256 -c SHA256SUMS`
+in their directory and check all three match. This distinguishes signed app
+builds that use the same SDK. Extract the source tarball into an empty directory
+or check out the revision recorded in its filename. From that source root, install
 the SDK with `python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$archive"`.
 Unpack the signed app and compare it against the installed SDK with
 `python3 scripts/bark-check.py verify --arch "$arch" --require-official /path/to/Bark.app`.
