@@ -1,6 +1,6 @@
 /* chrome version: 156.0.8078.80 */
-Google_Chrome.pfm_title = "Google Chrome";
-Google_Chrome.pfm_description = "Google Chrome preferences";
+Google_Chrome.pfm_title = "Bark";
+Google_Chrome.pfm_description = "Bark preferences. Individual policy descriptions come from Chromium.";
 AIModeSettings.pfm_title = "Settings for Google's AI Mode integrations in the address bar and New Tab page search box.";
 AIModeSettings.pfm_description = "0 - Allow AI Mode integrations.\n1 - Do not allow AI Mode integrations.\nThis policy controls Google's AI Mode integrations in the address bar and the New Tab page search box.\n\nTo access this feature, Google must be set as the user's default search engine.\n\n0 = The feature will be available to users.\n\n1 = The feature will not be available to users.\n\nIf the policy is unset, its behavior is determined by the GenAiDefaultSettings policy.";
 AbusiveExperienceInterventionEnforce.pfm_title = "Abusive Experience Intervention Enforce";

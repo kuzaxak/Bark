@@ -997,6 +997,51 @@ publication.publish(Path(sys.argv[1]), "x86_64", True, sys.argv[2], sys.argv[3])
           result.returncode == 0 and (artifact_of(labels_package) / 'SHA256SUMS').read_text() == listed,
           result.stderr)
 
+    policy_resource = Path(
+        'ee.qdo.bark.manifest/Contents/Resources/en.lproj/Localizable.strings')
+
+    def original_policy_labels(build):
+        localized = build / 'Bark.app/Contents/Resources' / policy_resource
+        content = localized.read_text()
+        for branded, original in (
+            ('Google_Chrome.pfm_title = "Bark";', 'Google_Chrome.pfm_title = "Google Chrome";'),
+            ('Google_Chrome.pfm_description = "Bark preferences. Individual policy descriptions come from Chromium.";',
+             'Google_Chrome.pfm_description = "Google Chrome preferences";'),
+        ):
+            assert content.count(branded) == 1, branded
+            content = content.replace(branded, original)
+        localized.write_text(content)
+
+    result, policy_package = attempt('publish-outer-policy-labels', original_policy_labels)
+    check('publishing accepts Bark manifest labels and retains upstream policy documentation',
+          result.returncode == 0 and (artifact_of(policy_package) / 'SHA256SUMS').read_text() == listed,
+          result.stderr)
+
+    def changed_policy_history(build):
+        original_policy_labels(build)
+        localized = build / 'Bark.app/Contents/Resources' / policy_resource
+        localized.write_text(localized.read_text().replace(
+            'As of Google Chrome version 154, applying', 'As of Bark version 154, applying'))
+
+    refused('publish-policy-history', 'unapproved changes to the policy descriptions',
+            'Upstream policy documentation differs', changed_policy_history)
+
+    def changed_current_policy_prose(build):
+        original_policy_labels(build)
+        localized = build / 'Bark.app/Contents/Resources' / policy_resource
+        localized.write_text(localized.read_text().replace(
+            'Google Chrome can use native messaging hosts', 'Bark can use native messaging hosts'))
+
+    refused('publish-policy-prose', 'locally rewritten policy help',
+            'Upstream policy documentation differs', changed_current_policy_prose)
+
+    def changed_policy_schema(build):
+        schema = build / 'Bark.app/Contents/Resources' / policy_resource.parent.parent / 'ee.qdo.bark.manifest'
+        schema.write_text(schema.read_text().replace('ee.qdo.bark', 'ee.qdo.other'))
+
+    refused('publish-policy-schema', 'drift in the policy schema', 'differ from ChromiumApp/Resources',
+            changed_policy_schema)
+
     def changed_scripting_code(build):
         original_product_labels(build)
         dictionary = build / 'Bark.app/Contents/Resources/scripting.sdef'

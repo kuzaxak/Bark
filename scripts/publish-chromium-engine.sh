@@ -103,6 +103,7 @@ import subprocess
 import sys
 
 engine, app = map(Path, sys.argv[1:3])
+policy_strings = app / "ee.qdo.bark.manifest/Contents/Resources/en.lproj/Localizable.strings"
 engine_info, app_info, additions = map(Path, sys.argv[3:])
 visible_names = {"CFBundleName", "CFBundleDisplayName", "CFBundleGetInfoString"}
 
@@ -161,6 +162,24 @@ def compare_scripting(source, destination):
     raise ValueError(f"Outer scripting dictionary differs beyond the Chromium Suite description: {destination}")
 
 
+def compare_policy_strings(source, destination):
+    original, branded = source.read_bytes(), destination.read_bytes()
+    # The root labels identify Bark's preference domain. Policy help is upstream
+    # documentation and remains byte-for-byte identical.
+    labels = (
+        (b'Google_Chrome.pfm_title = "Google Chrome";', b'Google_Chrome.pfm_title = "Bark";'),
+        (b'Google_Chrome.pfm_description = "Google Chrome preferences";',
+         b'Google_Chrome.pfm_description = "Bark preferences. Individual policy descriptions come from Chromium.";'),
+    )
+    for old, new in labels:
+        if original.count(old) == 1:
+            original = original.replace(old, new)
+        if branded.count(new) != 1:
+            raise ValueError(f"Missing Bark policy manifest label: {destination}")
+    if original != branded:
+        raise ValueError(f"Upstream policy documentation differs: {destination}")
+
+
 def compare_directory(source, destination, *, outer_artwork=None, locale=None):
     names = {item.name for item in source.iterdir()}
     other_names = {item.name for item in destination.iterdir()}
@@ -179,6 +198,10 @@ def compare_directory(source, destination, *, outer_artwork=None, locale=None):
             compare_strings(left, right, locale)
         elif outer_artwork is not None and name == "scripting.sdef" and left.is_file() and right.is_file():
             compare_scripting(left, right)
+        elif right == policy_strings:
+            compare_policy_strings(left, right)
+        elif right in policy_strings.parents:
+            compare_directory(left, right)
         else:
             subprocess.run(["/usr/bin/diff", "-r", left, right], stdout=sys.stderr, check=True)
 
