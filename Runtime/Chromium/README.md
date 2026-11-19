@@ -706,7 +706,10 @@ host-only Mac window factory. Both framework binaries must also have identical
 contents. New test archives record SHA-256 digests for the test executable and
 framework at export. The runner checks both digests before launch. Older version
 1 archives record only the executable digest. The runner still compares their two
-framework copies. Stage the whole runtime from one completed build.
+framework copies. To test a transferred runtime against a published SDK, pass
+`--sdk-metadata` with the directory containing its `SHA256SUMS`. The runner
+checks that list against the checkout’s native SDK pin and verifies the framework
+it will load. [Package and run the native test runtime](../../Tests/ChromiumSDKLauncher/README.md)
 
 Some legacy fixtures still assert details of the retired window. They remain
 migration work and are excluded from current host-only qualification claims.
