@@ -72,15 +72,22 @@ def check_native_harness(command):
     maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
     # SwiftPM bundle lookup uses the executable directory for command-line tools.
     suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
-             "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions"}[command]
-    binary = products / f"bark-{command}-check"
-    run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
-        "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
-        "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
-        "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
-        "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
-        REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / "Main.swift", "-o", binary)
-    run(binary)
+             "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
+             "live-fetch": "ChromiumLiveFetch"}[command]
+    checks = ("Main", "Ownership") if command == "live-fetch" else ("Main",)
+    for check in checks:
+        # Put the executable beside the package bundles for SwiftPM's resource lookup.
+        binary = products / f".bark-{command}-{check}-{uuid4()}"
+        try:
+            run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
+                "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
+                "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
+                "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
+                "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
+                REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
+            run(binary)
+        finally:
+            binary.unlink(missing_ok=True)
 
 
 def cached_engine(architecture):
@@ -574,6 +581,7 @@ def main():
     commands.add_parser("page-host", help="check page ownership, transfer and close")
     commands.add_parser("profile-pages", help="check profile utility window ownership")
     commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
+    commands.add_parser("live-fetch", help="check Chromium live fetch and profile ownership")
     pair = commands.add_parser("pair-sdk", help="stage matching Intel and ARM64 official SDK metadata together")
     pair.add_argument("--x86-64", type=Path, required=True, help="published Intel Engine or its transfer metadata directory")
     pair.add_argument("--arm64", type=Path, required=True, help="published ARM64 Engine or its transfer metadata directory")
@@ -616,7 +624,7 @@ def main():
     if args.command == "interaction":
         run(sys.executable, REPO / "Tests/ChromiumShortcuts/check.py")
         return
-    if args.command in ("catalog", "page-host", "profile-pages", "extension-actions"):
+    if args.command in ("catalog", "page-host", "profile-pages", "extension-actions", "live-fetch"):
         check_native_harness(args.command)
         return
     if args.command == "shell":

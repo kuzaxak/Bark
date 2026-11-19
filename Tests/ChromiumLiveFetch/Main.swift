@@ -2,6 +2,7 @@
 import BarcChromium
 import Foundation
 import NookWeb
+@testable import NookNativeShell
 @MainActor private enum Native {
     struct Call { let token: UInt64; let profile: String; let route: Int32; let argument: String
         let callback: barc_live_callback?; let context: UnsafeMutableRawPointer?; var done = false }

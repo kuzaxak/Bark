@@ -245,7 +245,7 @@ final class LiveFavorites {
     /// Reads a Gmail favorite's feed when due: every two minutes, waiting longer after failures.
     /// `soon` shortens a regular wait to `mailSoon`.
     @discardableResult
-    private func fetchMail(_ itemID: UUID, spaceID: UUID, account: Int, soon: Bool) -> Task<Void, Never>? {
+    func fetchMail(_ itemID: UUID, spaceID: UUID, account: Int, soon: Bool) -> Task<Void, Never>? {
         guard let tabs else { return nil }
         let profileID = tabs.tree.dataStoreID(for: spaceID)
         var fetch = mailFetches[itemID] ?? MailFetch()
@@ -297,7 +297,7 @@ final class LiveFavorites {
     }
 
     /// Forgets the mail of every favorite not in `ids`.
-    private func keepMail(of ids: Set<UUID>) {
+    func keepMail(of ids: Set<UUID>) {
         if ids.isEmpty { nativeMailTail?.cancel() }
         for (id, fetch) in mailFetches where !ids.contains(id) { fetch.task?.cancel() }
         mailFetches = mailFetches.filter { ids.contains($0.key) }

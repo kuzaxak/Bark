@@ -5,6 +5,7 @@ import NookBlocker
 import NookTweaks
 import NookTabsCore
 @testable import NookWeb
+@testable import NookNativeShell
 private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ token:String?) {}}
 @main struct Ownership {
  @MainActor static func main() async throws {
@@ -23,30 +24,43 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   _=tabs.perform(.main,"createMailFixture",undoable:false) {try $0.createTab(id:mail,url:GoogleFavorite.mailFeed(account:0),title:"Gmail",in:.favorites(spaceID:work),after:nil)}
   let window=BrowserWindowState();window.spaceID=work;registry.register(window)
   var requests:[UUID]=[]
-  tabs.nativeLiveFetch={profile,source in
-   precondition(source == .githubPulls);requests.append(profile)
-   let title=profile == a ? "Owned A":"Owned B"
-   let data=Data("{\"payload\":{\"pullsDashboardSurfaceContentRoute\":{\"results\":[{\"permalink\":\"https://github.com/synthetic/repo/pull/1\",\"title\":\"\(title)\"}]}}}".utf8)
-   return ProfileLiveResponse(data:data,status:200)
+  tabs.nativeLiveFetch = { profile, source in
+   if source == .gmail(account: 0) {
+    precondition(profile == a)
+    return ProfileLiveResponse(data: Data("<feed><fullcount>3</fullcount></feed>".utf8), status: 200)
+   }
+   precondition(source == .githubPulls); requests.append(profile)
+   let title = profile == a ? "Owned A" : "Owned B"
+   let data = Data("{\"payload\":{\"pullsDashboardSurfaceContentRoute\":{\"results\":[{\"permalink\":\"https://github.com/synthetic/repo/pull/1\",\"title\":\"\(title)\"}]}}}".utf8)
+   return ProfileLiveResponse(data: data, status: 200)
   }
-  let preview=PreviewOwnership()
-  let item=tabs.item(pr)!
-  let first=await preview.load(item,tabs:tabs)
-  precondition(first.first?.title == "Owned A" && requests == [a])
-  _=await preview.load(item,tabs:tabs);precondition(requests == [a])
-  preview.itemID=pr;preview.windowID=window.id;preview.source=PreviewOwnership.source(for:item,tabs:tabs)
-  precondition(preview.isCurrent(in:window,tabs:tabs))
-  let live=MailOwnership();live.tabs=tabs
-  live.mail[mail] = .init(outcome:.inbox(.init(unread:3,messages:[])),at:Date(),spaceID:work,profileID:a,account:0)
-  precondition(live.mailOutcome(mail,account:0) != nil)
+  let preview = FavoritePreview()
+  let item = tabs.item(pr)!
+  func hoverShows(_ title: String) async throws {
+   preview.tileHover(item, hovering: true, in: window, tabs: tabs)
+   let limit = ContinuousClock.now + .seconds(4)
+   while preview.rows.first?.title != title && ContinuousClock.now < limit {
+    try await Task.sleep(for: .milliseconds(20))
+   }
+   precondition(preview.rows.first?.title == title)
+  }
+  try await hoverShows("Owned A")
+  precondition(requests == [a] && preview.isCurrent(in: window, tabs: tabs))
+  preview.dismiss()
+  try await hoverShows("Owned A")
+  precondition(requests == [a])
+  settings.favoriteMeetingsAndMail = false  // Keep normal periodic refresh and Calendar dormant.
+  let live = LiveFavorites()
+  live.start(tabs: tabs, windows: registry)
+  await live.fetchMail(mail, spaceID: work, account: 0, soon: true)?.value
+  precondition(live.mailOutcome(mail, account: 0) != nil)
   _=tabs.perform(.main,"reassignPreview",undoable:false){try $0.setProfile(work,to:b)}
   precondition(!preview.isCurrent(in:window,tabs:tabs) && live.mailOutcome(mail,account:0) == nil)
-  let second=await preview.load(item,tabs:tabs)
-  precondition(second.first?.title == "Owned B" && requests == [a,b])
-  preview.source=PreviewOwnership.source(for:item,tabs:tabs)
-  precondition(preview.isCurrent(in:window,tabs:tabs))
+  try await hoverShows("Owned B")
+  precondition(requests == [a, b] && preview.isCurrent(in: window, tabs: tabs))
   window.isIncognito=true;precondition(!preview.isCurrent(in:window,tabs:tabs));window.isIncognito=false
   registry.unregister(window.id);precondition(!preview.isCurrent(in:window,tabs:tabs))
+  preview.dismiss()
   precondition(tabs.sessions.isEmpty && tabs.profile(forSpace:work)?.webKitStorage == nil)
   // Actual shipped folder and Gmail source tasks share a transport with the
   // native two-per-profile admission bound. No fake batch implementation.
@@ -89,7 +103,7 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   }
   await joined?.value;await firstMail?.value;await secondMail?.value
   precondition(total==5 && peak==2 && refusals==0 && active==0 && tabs.liveRefreshing.isEmpty)
-  precondition(live.mailFetches.values.allSatisfy{$0.task==nil})
+  precondition(live.fetchMail(mail, spaceID: work, account: 0, soon: true) == nil)
   // A queued source reassigned before its turn never uses the replacement's
   // cookies; cancel/remove clears its existing source ownership.
   tabs.refreshLiveFolder(folders[0],force:true)
@@ -99,16 +113,17 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   pending.removeFirst().resume(returning:ProfileLiveResponse(data:Data(),status:302))
   await queued?.value;await drain()
   precondition(total==6 && active==0 && tabs.liveRefreshing.isEmpty)
-  live.mailFetches[mail]?.last = .distantPast
-  live.mailFetches[mail2]?.last = .distantPast
-  let cancelledMail=live.fetchMail(mail,spaceID:work,account:0,soon:true)
-  let cancelledQueuedMail=live.fetchMail(mail2,spaceID:work2,account:1,soon:true)
+  let cancelling = LiveFavorites()
+  cancelling.start(tabs: tabs, windows: registry)
+  let cancelledMail=cancelling.fetchMail(mail,spaceID:work,account:0,soon:true)
+  let cancelledQueuedMail=cancelling.fetchMail(mail2,spaceID:work2,account:1,soon:true)
   await drain();precondition(pending.count==1)
-  live.keepMail(of:[])
+  cancelling.keepMail(of:[])
   await drain()
   pending.removeFirst().resume(returning:ProfileLiveResponse(data:Data(),status:302))
   await cancelledMail?.value;await cancelledQueuedMail?.value;await drain()
-  precondition(live.mailFetches.isEmpty && active==0 && tabs.liveRefreshing.isEmpty)
+  precondition(cancelledMail?.isCancelled == true && cancelledQueuedMail?.isCancelled == true)
+  precondition(cancelling.mailOutcome(mail, account: 0) == nil && active == 0 && tabs.liveRefreshing.isEmpty)
   print("Five-source native batches: concurrency2, overlap/space joins, failure/reassignment/cancellation passed")
   print("Live preview ownership: real model/profile reassignment rejects cached PR/mail and stale/private/closed-window presentation")
  }
