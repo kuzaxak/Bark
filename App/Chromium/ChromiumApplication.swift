@@ -1,10 +1,13 @@
 import AppKit
 import BarcChromium
+internal import BarkCloudShare
 internal import BarkPasswordProvider
+import CloudKit
 import Darwin
 import NookSettings
 import enum NookTabsCore.SpaceSyncShareLink
 import class NookTabsCore.TabStore
+import enum NookTabsCore.SpaceSyncAvailability
 import NookWeb
 import Observation
 import SwiftUI
@@ -44,6 +47,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var mouseButtons: ChromiumMouseButtons?
     private let spaceFiles = ChromiumSpaceFiles()
     private let shareLinkReplay = ChromiumShareLinkReplay()
+    private let cloudShareInbox = ChromiumCloudShareInbox<CKShare.Metadata>()
+    private var cloudShareObserver: NSObjectProtocol?
     private let registry = WindowRegistry()
     private var initialWindow: BrowserWindowState?
     private var ready: (@MainActor () -> Void)?
@@ -109,6 +114,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }
             startup.register()
             guard app.blockerRegistered else { return startup.runtimeReturned(EXIT_FAILURE) }
+            app.observeSystemCloudShares(in: bundle)
             let engineArguments = config.engineArguments(executable: arguments[0])
             let strings = engineArguments.map { strdup($0)! }
             defer { strings.forEach { free($0) } }
@@ -118,6 +124,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 // An OS logout ends the runtime without the close manager's accepted callback.
                 app.quitSave?.save()
                 if let observer = app.syncActivationObserver { NotificationCenter.default.removeObserver(observer) }
+                if let observer = app.cloudShareObserver { NotificationCenter.default.removeObserver(observer) }
+                app.cloudShareInbox.stop()
                 app.acceptsWindows = false
                 app.blocker?.stop()
                 app.pageTweaks?.stop()
@@ -135,6 +143,30 @@ final class ChromiumApplication: ChromiumStartupBridge {
             fputs("Native Chromium startup refused: \(error)\n", stderr)
             return EXIT_FAILURE
         }
+    }
+
+    private func observeSystemCloudShares(in bundle: Bundle) {
+        guard !configuration.isVerification, SpaceSyncManager.isEntitled,
+              bundle.object(forInfoDictionaryKey: "CKSharingSupported") as? Bool == true,
+              let event = BarkCloudShareNotification() else { return }
+        cloudShareObserver = NotificationCenter.default.addObserver(
+            forName: Notification.Name(String(cString: event)), object: nil, queue: .main
+        ) { [weak self] note in
+            MainActor.assumeIsolated {
+                guard let self, self.acceptsWindows, let sender = note.object as? NSObject,
+                      sender === NSApp.delegate as AnyObject?,
+                      let metadata = note.userInfo?["metadata"] as? CKShare.Metadata else { return }
+                let record = metadata.share.recordID
+                guard Self.isSystemSpacesShare(container: metadata.containerIdentifier,
+                    zone: record.zoneID.zoneName, record: record.recordName) else { return }
+                self.cloudShareInbox.receive(metadata)
+            }
+        }
+    }
+
+    static func isSystemSpacesShare(container: String, zone: String, record: String) -> Bool {
+        container == SpaceSyncAvailability.containerID && zone == SpaceSyncAvailability.zoneName &&
+            record == CKRecordNameZoneWideShare
     }
 
     private func observePeekSettings() {
@@ -698,6 +730,14 @@ final class ChromiumApplication: ChromiumStartupBridge {
               let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
         admission?.reflectInitialActivation(row)
         didPresentInitialWindow = true
+        cloudShareInbox.ready { [weak self] metadata in
+            guard let self, self.acceptsWindows, let manager = self.browserManager else { return }
+            if manager.spaceSyncManager.isSyncEnabled {
+                manager.spaceSyncManager.accept(metadata)
+            } else {
+                manager.openSettings(tab: .spaces)
+            }
+        }
         updater?.start()
         if let manager = browserManager { spaceFiles.ready { [weak manager] in manager?.importSpaceFile(at: $0) } }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in

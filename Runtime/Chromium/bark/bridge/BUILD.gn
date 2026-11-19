@@ -4,6 +4,7 @@ assert(is_mac)
 # upstream code calls.
 source_set("bridge") {
   sources = [
+    "barc_app_cloud_share.mm",
     "barc_bridge.h",
     "barc_bridge_api.h",
     "barc_bridge_functions.h",
@@ -41,6 +42,7 @@ source_set("bridge") {
     "//base",
     "//chrome/app:command_ids",
     "//chrome/browser",
+    "//chrome/browser:app_controller_mac",
     "//chrome/browser/content_settings:content_settings_factory",
     "//chrome/browser/ui/webui/certificate_viewer",
     "//chrome/browser/devtools",
@@ -91,5 +93,8 @@ source_set("bridge") {
     "//ui/views",
     "//url",
   ]
-  frameworks = [ "AppKit.framework" ]
+  frameworks = [
+    "AppKit.framework",
+    "CloudKit.framework",
+  ]
 }

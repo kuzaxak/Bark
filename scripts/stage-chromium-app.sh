@@ -154,7 +154,7 @@ import os, plistlib, subprocess, sys
 from pathlib import Path
 
 sys.path.insert(0, sys.argv.pop())
-from bark_icloud_signing import CLOUD_KEYS, signed_cloud_entitlements
+from bark_icloud_signing import CLOUD_KEYS, signed_cloud_entitlements, supports_cloud_share_activation, verify_share_activation
 
 mode, path = sys.argv[1:3]
 def load(path):
@@ -208,6 +208,7 @@ elif mode == 'signed':
     signed = plistlib.loads(shown) if shown.strip() else {}
     try:
         cloud = signed_cloud_entitlements(Path(app), signed_info.get('CFBundleIdentifier'))
+        verify_share_activation(signed_info, bool(cloud) and supports_cloud_share_activation(Path(sys.argv[5])))
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         sys.exit(f'Cannot verify Bark iCloud signing: {error}')
     expected = merged(engine_entitlements, entitlements)
@@ -251,7 +252,7 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
     --engine-info "$engine/engine-Info.plist" --app "$2"
   check_outer_metadata "$2" "$engine/engine-Info.plist"
   check_bundle "$2" signed
-  additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
+  additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS" "$ENGINE_HEADERS"
   echo "One libnook_adblock.dylib, every Mach-O signed, and the engine's entitlements plus the declared additions: $2"
   exit 0
 fi

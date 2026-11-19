@@ -19,6 +19,20 @@ SERVICES = "com.apple.developer.icloud-services"
 ENVIRONMENT = "com.apple.developer.icloud-container-environment"
 PUSH = "com.apple.developer.aps-environment"
 CLOUD_KEYS = {APP_ID, TEAM_ID, CONTAINERS, SERVICES, ENVIRONMENT, PUSH}
+SHARE_ACTIVATION = "CKSharingSupported"
+
+
+def supports_cloud_share_activation(headers):
+    source = (headers / "barc_bridge_api.h").read_text()
+    return re.search(r"^#define BARC_HAS_CLOUD_SHARE_ACTIVATION 1$", source, re.MULTILINE) is not None
+
+
+def verify_share_activation(info, expected):
+    if expected:
+        if info.get(SHARE_ACTIVATION) is not True:
+            raise ValueError("The authorized Bark SDK requires CKSharingSupported in the signed app.")
+    elif SHARE_ACTIVATION in info:
+        raise ValueError("CKSharingSupported requires both an authorized iCloud profile and a capable Bark SDK.")
 
 
 def load_profile(path):
@@ -91,14 +105,16 @@ def assert_profile_free(app):
             raise ValueError("Supply the iCloud provisioning profile explicitly for this build.")
 
 
-def prepare_profile(stage, supplied):
+def prepare_profile(stage, supplied, *, share_activation=False):
     app = stage / "Bark.app"
     assert_profile_free(app)
+    info_path = app / "Contents/Info.plist"
+    info = plistlib.loads(info_path.read_bytes())
+    verify_share_activation(info, expected=False)
     if supplied is None:
         return None
     if supplied.is_symlink() or not supplied.is_file():
         raise ValueError("The iCloud provisioning profile must be a regular file.")
-    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     entitlements = stage / "Bark Packaging/app-entitlements.plist"
     base = plistlib.loads(entitlements.read_bytes())
     if CLOUD_KEYS & base.keys():
@@ -108,6 +124,9 @@ def prepare_profile(stage, supplied):
         candidate = Path(directory) / PROFILE_NAME
         shutil.copyfile(supplied, candidate)
         cloud = authorized_entitlements(load_profile(candidate), info.get("CFBundleIdentifier"))
+        if share_activation:
+            info[SHARE_ACTIVATION] = True
+            info_path.write_bytes(plistlib.dumps(info))
         entitlements.write_bytes(plistlib.dumps({**base, **cloud}))
         candidate.replace(path)
     return path

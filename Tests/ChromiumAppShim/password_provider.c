@@ -1,5 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 #include <assert.h>
+#include <string.h>
+#include "BarkCloudShare.h"
 #include "BarkPasswordProvider.h"
 
 #ifdef BARC_HAS_PASSWORD_PROVIDER
@@ -14,6 +16,11 @@ static int select_provider(BarcPasswordProvider provider) {
 
 int main(void) {
   struct BarcBridge bridge = {.size = sizeof(bridge)};
+#ifdef BARC_HAS_CLOUD_SHARE_ACTIVATION
+  assert(strcmp(BarkCloudShareNotification(), BARC_CLOUD_SHARE_NOTIFICATION) == 0);
+#else
+  assert(BarkCloudShareNotification() == NULL);
+#endif
   assert(!BarkTabShowsPawlManagement(0));
 #ifdef BARC_HAS_PAWL_MANAGEMENT
   assert(BarkTabShowsPawlManagement(BARC_TAB_PAWL_MANAGEMENT | BARC_TAB_LOADING));

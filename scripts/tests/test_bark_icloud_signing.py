@@ -46,6 +46,7 @@ class SigningTests(unittest.TestCase):
         self.assertIsNone(signing.prepare_profile(self.stage, None))
         self.assertEqual(signing.signed_cloud_entitlements(self.app, signing.BUNDLE_ID), {})
         self.assertEqual(self.entitlements.read_bytes(), original)
+        self.assertNotIn(signing.SHARE_ACTIVATION, plistlib.loads(self.info.read_bytes()))
         (self.contents / signing.PROFILE_NAME).write_bytes(b"unexpected profile")
         with self.assertRaisesRegex(ValueError, "explicitly"):
             signing.prepare_profile(self.stage, None)
@@ -56,12 +57,30 @@ class SigningTests(unittest.TestCase):
         load.assert_called_once()
         self.assertEqual(staged, self.contents / signing.PROFILE_NAME)
         self.assertEqual(staged.read_bytes(), self.source.read_bytes())
+        self.assertNotIn(signing.SHARE_ACTIVATION, plistlib.loads(self.info.read_bytes()))
         self.assertEqual(plistlib.loads(self.entitlements.read_bytes()), {
             "com.apple.security.device.camera": True,
             signing.APP_ID: "A123456BCD.ee.qdo.bark", signing.TEAM_ID: "A123456BCD",
             signing.CONTAINERS: [signing.CONTAINER], signing.SERVICES: ["CloudKit"],
             signing.ENVIRONMENT: "Production", signing.PUSH: "production",
         })
+
+    def test_share_activation_requires_profile_and_sdk_capability(self):
+        header = self.stage / "barc_bridge_api.h"
+        header.write_text("#define BARC_BRIDGE_VERSION 13\n")
+        self.assertFalse(signing.supports_cloud_share_activation(self.stage))
+        header.write_text("#define BARC_HAS_CLOUD_SHARE_ACTIVATION 1\n")
+        self.assertTrue(signing.supports_cloud_share_activation(self.stage))
+        self.assertIsNone(signing.prepare_profile(self.stage, None, share_activation=True))
+        self.assertNotIn(signing.SHARE_ACTIVATION, plistlib.loads(self.info.read_bytes()))
+        with patch.object(signing, "load_profile", return_value=self.profile):
+            signing.prepare_profile(self.stage, self.source, share_activation=True)
+        info = plistlib.loads(self.info.read_bytes())
+        signing.verify_share_activation(info, expected=True)
+        with self.assertRaisesRegex(ValueError, "requires both"):
+            signing.verify_share_activation(info, expected=False)
+        with self.assertRaisesRegex(ValueError, "requires CKSharingSupported"):
+            signing.verify_share_activation({}, expected=True)
 
     def test_refuses_profiles_for_the_wrong_bundle_environment_or_scope(self):
         grants = self.profile["Entitlements"]

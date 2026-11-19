@@ -3,6 +3,7 @@
 #endif
 import AppKit
 import BarcChromium
+import CloudKit
 import SwiftUI
 import NookTabsCore
 import NookBlocker
@@ -638,6 +639,35 @@ private enum ProfileChecks {
         try await checkScopedHistoryClear()
         checkPasswordManagementCommand()
         try checkPasswordManagementLanding()
+        await checkCloudShareActivation()
         print("Chromium profile page checks passed")
+    }
+
+    @MainActor private static func checkCloudShareActivation() async {
+        let container = SpaceSyncAvailability.containerID, zone = SpaceSyncAvailability.zoneName
+        let share = CKRecordNameZoneWideShare
+        precondition(ChromiumApplication.isSystemSpacesShare(container: container, zone: zone, record: share))
+        precondition(!ChromiumApplication.isSystemSpacesShare(container: "iCloud.ee.qdo.nook", zone: zone, record: share))
+        precondition(!ChromiumApplication.isSystemSpacesShare(container: container, zone: "other", record: share))
+        precondition(!ChromiumApplication.isSystemSpacesShare(container: container, zone: zone, record: "record-share"))
+
+        let inbox = ChromiumCloudShareInbox<String>()
+        var delivered: [String] = []
+        inbox.receive("cold")
+        await Task.yield()
+        precondition(delivered.isEmpty)
+        inbox.ready { invitation in
+            delivered.append(invitation)
+            if invitation == "cold" { inbox.receive("next") }
+        }
+        precondition(delivered.isEmpty, "Acceptance must not run on the AppKit call stack")
+        for _ in 0..<20 where delivered.count < 2 { await Task.yield() }
+        precondition(delivered == ["cold", "next"])
+        inbox.receive("cancelled")
+        inbox.stop()
+        inbox.receive("after shutdown")
+        await Task.yield()
+        precondition(delivered == ["cold", "next"])
+        print("System CloudKit share activation checks exact Bark zone and defers cold delivery")
     }
 }

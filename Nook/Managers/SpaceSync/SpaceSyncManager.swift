@@ -133,7 +133,7 @@ final class SpaceSyncManager: SpaceSyncControls {
         publish()
     }
 
-    private static var isEntitled: Bool {
+    static var isEntitled: Bool {
         guard let task = SecTaskCreateFromSelf(nil) else { return false }
         func strings(_ key: String) -> [String]? {
             let value = SecTaskCopyValueForEntitlement(task, key as CFString, nil)

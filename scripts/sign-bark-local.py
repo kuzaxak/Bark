@@ -6,7 +6,8 @@ import argparse
 from pathlib import Path
 import sys
 
-from bark_icloud_signing import prepare_profile
+from bark_icloud_signing import prepare_profile, supports_cloud_share_activation
+from chromium_sdk_layout import headers_directory
 
 
 def main():
@@ -16,7 +17,9 @@ def main():
     parser.add_argument("stage", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
-    prepare_profile(args.stage, args.icloud_profile)
+    headers = headers_directory(Path(__file__).resolve().parents[1] / "Packages/BarkEngine")
+    prepare_profile(args.stage, args.icloud_profile,
+                    share_activation=args.icloud_profile is not None and supports_cloud_share_activation(headers))
     sys.path.insert(0, str((args.stage / "Bark Packaging").resolve(strict=True)))
     from signing import config_factory, driver
 

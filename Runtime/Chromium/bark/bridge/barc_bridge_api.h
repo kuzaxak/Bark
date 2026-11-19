@@ -35,6 +35,10 @@ extern "C" {
 #define BARC_HAS_LOAD_PROGRESS 1
 #define BARC_HAS_RENDERER_STATE 1
 #define BARC_HAS_PAWL_MANAGEMENT 1
+// The actual AppKit application delegate posts this notification on the main
+// thread. The sender is the delegate; userInfo[@"metadata"] is CKShareMetadata.
+#define BARC_HAS_CLOUD_SHARE_ACTIVATION 1
+#define BARC_CLOUD_SHARE_NOTIFICATION "ee.qdo.bark.EngineCloudShareAccepted"
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.

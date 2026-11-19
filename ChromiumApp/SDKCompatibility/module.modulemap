@@ -12,3 +12,8 @@ module BarkRendererState {
   header "BarkRendererState.h"
   export *
 }
+
+module BarkCloudShare {
+  header "BarkCloudShare.h"
+  export *
+}
