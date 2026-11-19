@@ -1,6 +1,7 @@
 """Headless checks for the local Chromium browser-test runner."""
 
 import io
+import json
 import os
 from pathlib import Path
 import signal
@@ -15,6 +16,8 @@ from run_browser_tests import (
     file_identity, main,
     require_host_only_image, require_host_only_runtime, run_tests, screen_lock,
 )
+
+from chromium_test_runtime import MANIFEST_NAME, create_manifest
 
 
 class ScreenLockTests(unittest.TestCase):
@@ -129,6 +132,54 @@ class HostOnlyRuntimeTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "old product framework"):
                 require_host_only_runtime(self.binary)
         self.assertEqual(self.binary.parent / APP_FRAMEWORK, inspect.call_args.args[0])
+
+    def test_mixed_frameworks_and_missing_or_stale_archive_are_refused_before_screen_lock(self):
+        (self.checkout / "chrome").mkdir()
+        (self.checkout / "chrome/VERSION").touch()
+        test_image, app_image = (self.checkout / name for name in (TEST_FRAMEWORK, APP_FRAMEWORK))
+        for image in (test_image, app_image):
+            image.parent.mkdir(parents=True)
+            image.write_bytes(b"linked engine")
+        fixture = self.checkout / "fixture.mm"
+        fixture.write_text("mounted fixture")
+        record = create_manifest(self.binary, fixture)
+        manifest = self.checkout / MANIFEST_NAME
+
+        def before_lock(expected, *args):
+            command = ["runner", "--checkout", str(self.checkout), "--binary", str(self.binary), *args]
+            inspect = lambda path, **_: (path, file_identity(path))
+            with patch.object(sys, "argv", command), patch.object(sys, "platform", "darwin"), \
+                    patch("run_browser_tests.require_host_only_image", side_effect=inspect), \
+                    patch("run_browser_tests.screen_lock", side_effect=ScreenUnavailable("ready")) as lock, \
+                    patch("run_browser_tests.signal.signal"), \
+                    patch("run_browser_tests.sys.stderr", new_callable=io.StringIO) as stderr:
+                self.assertEqual(main(), 1 if expected else 3)
+                if expected:
+                    self.assertIn(expected, stderr.getvalue())
+                    lock.assert_not_called()
+                else:
+                    lock.assert_called_once()
+
+        before_lock(None)
+        before_lock("Expected a packaged", "--fixture-source", str(fixture))
+        app_image.write_bytes(b"other engine")
+        before_lock("framework binaries differ")
+        manifest.write_text(json.dumps(record))
+        test_image.write_bytes(b"other engine")
+        before_lock("framework differs from its archived SHA-256")
+        for image in (test_image, app_image):
+            image.write_bytes(b"linked engine")
+        before_lock(None, "--fixture-source", str(fixture))
+        fixture.write_text("a different fixture")
+        before_lock("differs from the expected source", "--fixture-source", str(fixture))
+        legacy = {**record, "format": 1}
+        del legacy["framework_sha256"]
+        manifest.write_text(json.dumps(legacy))
+        before_lock(None)
+        app_image.write_bytes(b"other engine")
+        before_lock("framework binaries differ")
+        self.binary.write_bytes(b"another executable")
+        before_lock("executable differs")
 
     def test_rejection_happens_before_screen_lock_or_test_execution(self):
         chrome = self.checkout / "chrome"

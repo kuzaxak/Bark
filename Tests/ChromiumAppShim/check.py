@@ -715,7 +715,7 @@ def paired_publication_case(work, accepted):
     scripts.mkdir(parents=True)
     for name in (PUBLISH.name, STAGE.name, 'publish_chromium_sdk.py', 'bark-check.py',
                  'bark_release.py', 'bark_icloud_signing.py', 'bark_shell_boundary.py',
-                 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
+                 'chromium_sdk_layout.py', 'chromium_test_runtime.py', 'check-chromium-architectures.py'):
         shutil.copy2(ROOT / 'scripts' / name, scripts / name)
     chromium = receiver / 'Runtime/Chromium'
     bridge = chromium / 'bark/bridge'

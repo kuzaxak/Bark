@@ -16,12 +16,11 @@ import time
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
 from chromium_sdk_layout import GN_CPU, native_architecture
+from chromium_test_runtime import APP_FRAMEWORK, TEST_FRAMEWORK, verify_manifest
 
 SCREEN_LOCK = Path("/private/tmp/nook-screen-lock")
 SCREEN_UNAVAILABLE = 3
 HOST_ONLY_MARKER = b"BARK_MAC_HOST_ONLY_FACTORY_V1\0"
-TEST_FRAMEWORK = Path("Bark Framework.framework/Versions/Current/Bark Framework")
-APP_FRAMEWORK = Path("Bark.app/Contents/Frameworks") / TEST_FRAMEWORK
 
 
 def file_identity(path):
@@ -60,14 +59,15 @@ def require_host_only_image(path, expected_arch=None):
         raise ValueError(f"Cannot inspect the Bark test runtime: {path}") from error
 
 
-def require_host_only_runtime(binary):
+def require_host_only_runtime(binary, expected_fixture=None):
     # Chromium's test launcher resolves its framework beside the executable.
     # The product bundle can launch helpers through its own framework copy.
     arch = native_architecture()
-    return tuple(require_host_only_image(path, expected_arch=arch) for path in (
+    images = tuple(require_host_only_image(path, expected_arch=arch) for path in (
         binary, binary.parent / TEST_FRAMEWORK, binary.parent / APP_FRAMEWORK,
     ))
-
+    verify_manifest(binary, expected_fixture)
+    return images
 
 
 class ScreenUnavailable(Exception):
@@ -244,6 +244,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkout", type=Path, required=True, help="Chromium src directory")
     parser.add_argument("--binary", type=Path, help="bark_browser_tests path (defaults to the native developer build)")
+    parser.add_argument("--fixture-source", type=Path, help="require the archived fixture to match this source")
     parser.add_argument("--filter", help="Chromium gtest filter. Defaults to the full suite.")
     parser.add_argument("--summary", type=Path, help="New path for Chromium's JSON test summary")
     parser.add_argument("--wait", type=float, default=15, help="Seconds to wait for the screen mutex")
@@ -279,7 +280,7 @@ def main():
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        verified_files = require_host_only_runtime(binary)
+        verified_files = require_host_only_runtime(binary, args.fixture_source)
         with screen_lock(SCREEN_LOCK, args.wait) as owns_screen:
             result = run_tests(
                 command, args.checkout, QuartzConsole(), owns_screen,

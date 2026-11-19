@@ -1,5 +1,6 @@
 """Exercise the maintained browser-test archive layout with a tiny runtime."""
 
+import json
 import runpy
 from pathlib import Path
 import tarfile
@@ -9,7 +10,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / "package-chromium-tests.py"
 package = runpy.run_path(str(SCRIPT))
-from chromium_test_runtime import verify_manifest
+from chromium_test_runtime import APP_FRAMEWORK, MANIFEST_NAME, TEST_FRAMEWORK, verify_manifest
 
 
 class BrowserTestArchiveTests(unittest.TestCase):
@@ -46,12 +47,30 @@ class BrowserTestArchiveTests(unittest.TestCase):
                     function(build, "arm64", archive, fixture_source=expected)
                 self.assertFalse(archive.exists())
                 expected.write_text(fixture.read_text())
+                (build / APP_FRAMEWORK).write_text("other host-only framework")
+                with self.assertRaisesRegex(ValueError, "framework binaries differ"):
+                    function(build, "arm64", archive, fixture_source=expected)
+                self.assertFalse(archive.exists())
+                (build / APP_FRAMEWORK).write_text((build / TEST_FRAMEWORK).read_text())
                 function(build, "arm64", archive, fixture_source=expected)
             restored = root / "restored"
             with tarfile.open(archive) as tar:
                 tar.extractall(restored, filter="data")
             restored_binary = restored / binary.relative_to(root)
             verify_manifest(restored_binary, expected)
+            installed = restored_binary.parent
+            record = json.loads((installed / MANIFEST_NAME).read_text())
+            self.assertEqual(record["format"], 2)
+            expected.write_text("other source")
+            with self.assertRaisesRegex(ValueError, "differs from the expected source"):
+                verify_manifest(restored_binary, expected)
+            expected.write_text(fixture.read_text())
+            (installed / APP_FRAMEWORK).write_text("different linked framework")
+            with self.assertRaisesRegex(ValueError, "framework binaries differ"):
+                verify_manifest(restored_binary, expected)
+            (installed / TEST_FRAMEWORK).write_text("different linked framework")
+            with self.assertRaisesRegex(ValueError, "framework differs from its archived SHA-256"):
+                verify_manifest(restored_binary, expected)
             restored_binary.write_text("different linked executable")
             with self.assertRaisesRegex(ValueError, "executable differs"):
                 verify_manifest(restored_binary, expected)

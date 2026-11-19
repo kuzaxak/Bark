@@ -10,8 +10,6 @@ import sys
 
 REPO = Path(__file__).resolve().parents[2]
 RUNNER = REPO / "Runtime/Chromium/run_browser_tests.py"
-sys.path.insert(0, str(REPO / "scripts"))
-from chromium_test_runtime import verify_manifest
 EXACT_TEST = re.compile(r"[A-Za-z0-9_/]+\.[A-Za-z0-9_/]+")
 
 
@@ -47,11 +45,11 @@ def main(argv=None):
         parser.error("provide distinct exact gtest names in Suite.Case form")
 
     try:
-        verify_manifest(args.binary, args.fixture_source)
+        fixture = ["--fixture-source", args.fixture_source] if args.fixture_source is not None else []
         result = subprocess.run([
             sys.executable, "-B", RUNNER, "--checkout", args.checkout,
             "--binary", args.binary, "--summary", args.summary,
-            "--filter", ":".join(args.tests),
+            *fixture, "--filter", ":".join(args.tests),
         ], check=False)
         if result.returncode:
             return result.returncode if result.returncode > 0 else 128 - result.returncode

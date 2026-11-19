@@ -702,10 +702,11 @@ an abandoned mutex.
 Before taking the screen mutex, the runner inspects the Mach-O image of the
 test executable and both framework copies in the output directory. All three
 must match the Mac’s hardware architecture and contain the capability emitted by the
-host-only Mac window factory. The same capability can be inspected offline in
-a thin Intel or Apple Silicon image without executing it.
-Stage the whole test runtime from one build. Historical browser-test binaries
-can open classic Chromium windows and are rejected before launch.
+host-only Mac window factory. Both framework binaries must also have identical
+contents. New test archives record SHA-256 digests for the test executable and
+framework at export. The runner checks both digests before launch. Older version
+1 archives record only the executable digest. The runner still compares their two
+framework copies. Stage the whole runtime from one completed build.
 
 Some legacy fixtures still assert details of the retired window. They remain
 migration work and are excluded from current host-only qualification claims.
