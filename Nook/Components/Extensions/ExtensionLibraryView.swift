@@ -265,6 +265,8 @@ struct ExtensionLibraryView: View {
         let secure = certificate == .secure
         let title = secure ? "Secure" : "Not Secure"
         let page = currentTab.map { (itemID: $0.itemID, url: $0.url) }
+        let clearCache = clearSiteDataAction(.clearSiteCache)
+        let clearCookies = clearSiteDataAction(.clearSiteCookies)
         return HStack {
             Button {
                 if let page { showCertificate(for: page.itemID, at: page.url) }
@@ -285,10 +287,10 @@ struct ExtensionLibraryView: View {
             Spacer()
 
             Menu {
-                Button("Clear Cache") { clear(cache: true) }
-                    .disabled(currentHost == nil)
-                Button("Clear Cookies") { clear(cache: false) }
-                    .disabled(currentHost == nil)
+                Button("Clear Cache") { clearCache?() }
+                    .disabled(clearCache == nil)
+                Button("Clear Cookies") { clearCookies?() }
+                    .disabled(clearCookies == nil)
                 Divider()
                 Button("Manage Boosts…") {
                     browserManager.openBoostLibrary(in: windowState)
@@ -334,21 +336,19 @@ struct ExtensionLibraryView: View {
 
     private static let webStoreURL = URL(string: "https://chromewebstore.google.com/category/extensions")!
 
-    private func clear(cache: Bool) {
-        guard let host = currentHost else { return }
-        if isChromium {
-            browserManager.perform(cache ? .clearSiteCache : .clearSiteCookies)
-            onDismiss()
-            return
+    private func clearSiteDataAction(_ command: PageCommand) -> (() -> Void)? {
+        guard let page = currentTab, page.url.host != nil,
+              page.url.scheme == "http" || page.url.scheme == "https",
+              let navigation = page.navigation as? ChromiumPageNavigation else { return nil }
+        let url = page.url
+        let document = page.nativeNavigationSerial
+        return {
+            guard page.navigation === navigation, page.nativeNavigationSerial == document,
+                  page.url == url,
+                  self.browserManager.performNativePageCommand(command, in: self.windowState, page: page)
+            else { return }
+            self.onDismiss()
         }
-        Task {
-            if cache {
-                await browserManager.cacheManager?.clearCacheForDomain(host)
-            } else {
-                await browserManager.cookieManager?.deleteCookiesForDomain(host)
-            }
-        }
-        onDismiss()
     }
 
     // MARK: - Zoom Helpers

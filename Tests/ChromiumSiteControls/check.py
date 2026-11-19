@@ -8,7 +8,7 @@ with TemporaryDirectory(prefix='bark-site-controls-') as directory:
     s=(root/'Nook/Components/Extensions/ExtensionLibraryView.swift').read_text()
     def method(name,end):
      a=s.index('    private func '+name+'(');return s[a:s.index(end,a)].replace('    private func ','    func ',1)
-    clear=method('clear','    // MARK: - Zoom Helpers')
+    clear=method('clearSiteDataAction','    // MARK: - Zoom Helpers')
     unprivate=lambda t:t.replace('    private func ','    func ').replace('    private var ','    var ')
     toggles=unprivate(s[s.index('    // MARK: - Site Toggles'):s.index('    // MARK: - Footer')])
     boost=unprivate(s[s.index('    /// Only web pages can be Boosted'):s.index('    static let width')])

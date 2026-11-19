@@ -18,6 +18,7 @@ final class WKWebView {}
 @MainActor final class PageSession {
     let itemID = UUID()
     var url = URL(string: "https://work.test/a")!
+    var nativeNavigationSerial: UInt64 = 1
     var webView: WKWebView?
     var navigation: AnyObject? = ChromiumPageNavigation()
 }
@@ -41,8 +42,6 @@ final class WKWebView {}
     func setDeveloperSite(_ host: String, on: Bool) { if on { developerSites.insert(host) } else { developerSites.remove(host) } }
 }
 enum Boost { static func normalizeHost(_ host: String) -> String { host } }
-@MainActor final class CacheManager { var hosts: [String] = []; func clearCacheForDomain(_ host: String) async { hosts.append(host) } }
-@MainActor final class CookieManager { var hosts: [String] = []; func deleteCookiesForDomain(_ host: String) async { hosts.append(host) } }
 @MainActor final class ZoomManager {
     var calls = 0
     func zoomIn(for webView: WKWebView, tabId: UUID) { calls += 1 }
@@ -53,12 +52,16 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
     var engine = Engine.chromium
     var performed: [PageCommand] = []
     var onPerform: (() -> Void)?
-    var cacheManager: CacheManager? = CacheManager()
-    var cookieManager: CookieManager? = CookieManager()
     let zoomManager = ZoomManager()
     let contentBlockerManager = ContentBlockerManager()
     let settings = NookSettingsService()
     func perform(_ command: PageCommand) { performed.append(command); onPerform?() }
+    var keyWindow: BrowserWindowState?
+    func performNativePageCommand(_ command: PageCommand, in window: BrowserWindowState, page: PageSession) -> Bool {
+        guard window === keyWindow, page === front else { return false }
+        perform(command)
+        return true
+    }
     var nookSettings: NookSettingsService? { settings }
     var windowRegistry: WindowRegistry? = WindowRegistry()
     var front: PageSession?
@@ -75,18 +78,38 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
         view.currentTab = page; view.currentHost = "work.test"
         let native = page.navigation as! ChromiumPageNavigation
 
-        view.clear(cache: false)
-        view.clear(cache: true)
-        await Task.yield()
+        manager.keyWindow = view.windowState
+        manager.front = page
+        let clearCookies = view.clearSiteDataAction(.clearSiteCookies)!
+        let clearCache = view.clearSiteDataAction(.clearSiteCache)!
+        clearCookies()
+        clearCache()
         precondition(manager.performed == [.clearSiteCookies, .clearSiteCache], "Chromium clears through its own data path")
-        precondition(manager.cookieManager!.hosts.isEmpty && manager.cacheManager!.hosts.isEmpty, "Chromium never reaches the WebKit stores")
         precondition(view.dismissals == 2)
 
-        view.currentHost = nil
         manager.performed = []
-        view.clear(cache: false)
-        precondition(manager.performed.isEmpty, "no host, nothing cleared")
-        view.currentHost = "work.test"
+        manager.keyWindow = BrowserWindowState()
+        clearCache()
+        manager.keyWindow = view.windowState
+        let replacement = PageSession()
+        view.currentTab = replacement
+        manager.front = replacement
+        clearCookies()
+        view.currentTab = page
+        manager.front = page
+        page.nativeNavigationSerial += 1
+        clearCache()
+        let beforeTransfer = view.clearSiteDataAction(.clearSiteCookies)!
+        page.navigation = ChromiumPageNavigation()
+        beforeTransfer()
+        page.navigation = native
+        let beforeNavigation = view.clearSiteDataAction(.clearSiteCache)!
+        page.url = URL(string: "https://other.test/b")!
+        beforeNavigation()
+        precondition(manager.performed.isEmpty && view.dismissals == 2, "stale menu commands leave both sites untouched")
+        page.url = URL(string: "chrome://settings/")!
+        precondition(view.clearSiteDataAction(.clearSiteCookies) == nil)
+        page.url = URL(string: "https://work.test/a")!
 
         manager.onPerform = { native.ratio = "2.5" }
         view.zoomIn()
@@ -159,13 +182,9 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
 
         manager.engine = .webKit
         manager.performed = []
-        view.clear(cache: false)
-        view.clear(cache: true)
-        for _ in 0..<40 where manager.cacheManager!.hosts.isEmpty { try? await Task.sleep(for: .milliseconds(5)) }
-        precondition(manager.performed.isEmpty && manager.cookieManager!.hosts == ["work.test"] && manager.cacheManager!.hosts == ["work.test"], "WebKit keeps its stores")
         page.webView = WKWebView()
         view.zoomIn()
         precondition(manager.zoomManager.calls == 1 && manager.performed.isEmpty, "WebKit keeps its zoom")
-        print("Site controls: native clear and zoom on Chromium, no saved site setting from a private window, WebKit unchanged")
+        print("Site controls passed for document-bound clearing, zoom and private-window settings")
     }
 }
