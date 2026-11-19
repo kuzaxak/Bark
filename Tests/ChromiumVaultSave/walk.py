@@ -364,7 +364,7 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
                  lambda: not controls.find(EXISTING_ACCOUNT, ("AXButton",), partial=True), process)
         controls.click("Open the passkey fixture", ("AXLink",))
         seen("ready:/passkey")
-        controls.press("Back")
+        controls.press("Go Back")
         controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
         picker = controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
         if method("password") or method("code") or "typed-fields-filled" in events:
