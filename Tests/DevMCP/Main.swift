@@ -33,6 +33,8 @@ final class NWConnection: @unchecked Sendable {
     var stateUpdateHandler: (@Sendable (State) -> Void)?
     private var cancelled = false
     private var sent = 0
+    private var response: Data?
+    var lastResponse: Data? { lock.withLock { response } }
     var wasCancelled: Bool { lock.withLock { cancelled } }
     var sends: Int { lock.withLock { sent } }
     func start(queue: DispatchQueue) {}
@@ -42,7 +44,7 @@ final class NWConnection: @unchecked Sendable {
     func deliver(_ data: Data) { lock.withLock { let result = callback; callback = nil; return result }?(data, nil, false, nil) }
     func cancel() { lock.withLock { cancelled = true }; stateUpdateHandler?(.cancelled) }
     func send(content: Data, completion: SendCompletion) {
-        lock.withLock { sent += 1 }
+        lock.withLock { sent += 1; response = content }
         if case .contentProcessed(let done) = completion { done(nil) }
     }
 }
@@ -300,6 +302,16 @@ actor NativeFileFixture {
         print("Native download job:6-stream bound,HTTP refusal,manifest/naming,no overwrite,tooLarge,source/directory rejection and temp cleanup passed")
         let server = DevMCPServer()
         let browser = BrowserManager()
+        let unconfigured = DevMCPServer()
+        unconfigured.configure(browserManager: browser, enabled: true)
+        precondition(NWListener.latest == nil, "the server must not bind or use a legacy path without Bark configuration")
+        unconfigured.shutdown()
+        let legacy = root.appendingPathComponent("Downloads/Nook MCP", isDirectory: true)
+        try FileManager.default.createDirectory(at: legacy, withIntermediateDirectories: true)
+        let legacyFile = legacy.appendingPathComponent("existing.json")
+        try Data("existing output".utf8).write(to: legacyFile)
+        precondition(configuration.resolve(legacyFile.path) == nil)
+        precondition(configuration.resolve("../../../Downloads/Nook MCP/existing.json") == nil)
         precondition(server.setConfiguration(configuration))
         server.configure(browserManager: browser, enabled: false)
         precondition(NWListener.latest == nil)
@@ -310,6 +322,22 @@ actor NativeFileFixture {
             if !(developer && control) { precondition(NWListener.latest == nil) }
         } }
         let first = NWListener.latest!
+        let handshake = NWConnection()
+        first.newConnectionHandler!(handshake)
+        await drain()
+        let initialize = #"{"id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#
+        handshake.deliver(Data("POST /mcp HTTP/1.1\r\nAuthorization: Bearer \(token)\r\nContent-Length: \(initialize.utf8.count)\r\n\r\n\(initialize)".utf8))
+        await drain()
+        let response = handshake.lastResponse.map { String(decoding: $0, as: UTF8.self) } ?? ""
+        let jsonStart = response.range(of: "\r\n\r\n")!.upperBound
+        let envelope = try JSONSerialization.jsonObject(with: Data(response[jsonStart...].utf8)) as! [String: Any]
+        let result = envelope["result"] as! [String: Any]
+        precondition((result["serverInfo"] as? [String: String]) == ["name": "bark-dev", "version": "1"])
+        precondition(result["protocolVersion"] as? String == "2025-06-18")
+        let instructions = result["instructions"] as? String ?? ""
+        precondition(instructions.contains("Browser Control is enabled") && !instructions.contains("Debug build"))
+        let unchanged = try Data(contentsOf: legacyFile)
+        precondition(unchanged == Data("existing output".utf8))
         let otherConfiguration = try DevMCPConfiguration.native(appRoot: outside)
         precondition(!server.setConfiguration(otherConfiguration))
         let connection = NWConnection()

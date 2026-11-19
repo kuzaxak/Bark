@@ -3,12 +3,9 @@
 //  DevMCPServer.swift
 //  Nook
 //
-//  Debug-only MCP server so a coding agent can drive the running app during development.
-//  Streamable HTTP (JSON responses only) on 127.0.0.1, bearer token from a 0600 file. A client
-//  holds a GET stream open for as long as it runs, so the last one closing ends the agent's tabs.
-//
-//  claude mcp add --transport http nook http://127.0.0.1:47823/mcp \
-//    --header "Authorization: Bearer $(cat ~/Library/Application\ Support/ee.qdo.nook/dev-mcp-token)"
+//  Opt-in MCP server for a coding agent to drive the running Bark app.
+//  Streamable HTTP on loopback, with a bearer token in App/DevMCP/token
+//  under Bark's configured data root.
 //
 
 import AppKit
@@ -119,11 +116,9 @@ final class DevMCPServer {
         guard let settings = browserManager.nookSettings,
               DevMCPConfiguration.isEnabled(developerMode: settings.developerModeEnabled,
                                             browserControl: settings.browserControlServerEnabled) else { stop(); return }
-        guard listener == nil else { return }
+        guard listener == nil, let configuration else { return }
         self.browserManager = browserManager
         do {
-            let configuration = configuration ?? DevMCPConfiguration.legacy()
-            self.configuration = configuration
             token = try configuration.loadOrCreateToken()
             guard let port = NWEndpoint.Port(rawValue: configuration.port) else { throw DevMCPConfiguration.ConfigurationError.unsafePath }
             let params = NWParameters.tcp
@@ -295,8 +290,11 @@ final class DevMCPServer {
             result = [
                 "protocolVersion": params["protocolVersion"] as? String ?? "2025-06-18",
                 "capabilities": ["tools": [:] as [String: Any]],
-                "serverInfo": ["name": "nook-dev", "version": "1"],
-                "instructions": "Drives the running Debug build of \(ProductDisplayName.current). Page and tab tools act on the Agent space: a space in the person's window, made on first use, with the logins of the space they had open. Agent activity never changes the space they see; they open the Agent space to watch. Popups from its pages open as Agent space tabs. pick and selection use the person's active tab."
+                "serverInfo": ["name": "bark-dev", "version": "1"],
+                "instructions": "Controls the running \(ProductDisplayName.current) app while Browser Control is enabled. "
+                    + "Agent browsing opens in the Agent space. Bark creates it on first use with the logins of the space the person was using. "
+                    + "The person can open the Agent space to watch. Popups from agent pages open as tabs in that space. "
+                    + "The pick and selection tools use the person’s active tab."
             ]
         case "ping":
             result = [:]

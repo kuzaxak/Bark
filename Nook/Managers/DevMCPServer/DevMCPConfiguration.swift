@@ -31,14 +31,6 @@ struct DevMCPConfiguration: Equatable, Sendable {
         return result
     }
 
-    static func legacy() -> Self {
-        let support = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let port = (UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["NookDevMCPPort"] as? String)
-            .flatMap(UInt16.init) ?? 47823
-        return Self(port: port, tokenFile: support.appendingPathComponent(Bundle.main.bundleIdentifier ?? "Nook")
-            .appendingPathComponent("dev-mcp-token"), filesRoot: DevMCPFiles.root)
-    }
-
     func validatePaths() throws {
         guard let confinedRoot else { return }
         for url in [tokenFile, filesRoot] {

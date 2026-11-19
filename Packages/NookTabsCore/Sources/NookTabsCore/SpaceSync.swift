@@ -214,7 +214,7 @@ public enum SpaceSyncDevice {
 
 /// CloudKit refusals Settings words for the person.
 public enum SpaceSyncErrorText {
-    public static let outdatedSchema = outdatedSchema(productName: "Nook")
+    public static let outdatedSchema = outdatedSchema(productName: "Bark")
 
     public static func outdatedSchema(productName: String) -> String {
         "iCloud hasn't been updated for this version of \(productName) yet; sync resumes once it is."

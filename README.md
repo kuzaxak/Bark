@@ -70,6 +70,16 @@ With Pawl selected, locking or closing it pauses saved-password fills and offers
 to save. Choosing Chromium again restores access to its existing logins.
 [Provider integration design](openspec/changes/select-pawl-vault-provider/design.md)
 
+### Connect an MCP client
+
+To let a local tool control Bark, open **Settings → Developer**, turn on
+**Developer Mode**, then enable **Allow agents to control this browser**.
+Configure the tool with the HTTP endpoint `http://127.0.0.1:47823/mcp`
+and a bearer token from the file shown in Settings. Bark identifies this
+server as `bark-dev`. Turning off Browser Control stops the server.
+
+To connect Bark’s assistant to an MCP server, open **Settings → AI** and use **MCP Servers**. Bark sends its app name and version when it connects.
+
 ### Sync bookmarks between Macs
 
 In a Bark build with iCloud support, open **Settings → Spaces → iCloud Sync**

@@ -3,7 +3,7 @@
 //  DevMCPFiles.swift
 //  Nook
 //
-//  Where DevMCP's evaluate saveTo and download tools may write (only under ~/Downloads/Nook MCP),
+//  Where DevMCP’s evaluate saveTo and download tools may write inside the configured Bark data root,
 //  file names for downloaded URLs, and which of the page's cookies a download sends.
 //  Foundation only, so scripts/tests/DevMCPFilesCheck.swift can compile it directly.
 //
@@ -12,11 +12,8 @@ import Foundation
 import Darwin
 
 enum DevMCPFiles {
-    static let root = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask)[0]
-        .appendingPathComponent("Nook MCP", isDirectory: true)
-
     /// `relative` under `root`, or nil when it is empty, absolute, or climbs out through `..` or a symlink.
-    static func resolve(_ relative: String, root: URL = root) -> URL? {
+    static func resolve(_ relative: String, root: URL) -> URL? {
         guard !relative.isEmpty, !relative.hasPrefix("/"), !relative.hasPrefix("~") else { return nil }
         let base = realPath(root.standardizedFileURL)
         let url = realPath(base.appendingPathComponent(relative).standardizedFileURL)

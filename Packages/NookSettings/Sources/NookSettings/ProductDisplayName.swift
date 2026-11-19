@@ -13,6 +13,6 @@ public enum ProductDisplayName {
                 return name
             }
         }
-        return "Nook"
+        return "Bark"
     }
 }

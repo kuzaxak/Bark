@@ -74,6 +74,16 @@ updates app chrome when the selected tab changes.
 [Window surfaces](App/Chromium/ChromiumWindowRoot.swift) ·
 [Tab observers](Packages/NookWeb/Sources/NookWeb/TabEventObserver.swift)
 
+For changes to Browser Control or external MCP connections, run both local
+checks. The first verifies the inbound server’s permission and session handling.
+The second starts a temporary stdio peer and verifies the identity Bark sends
+and the tools it discovers.
+
+```fish
+python3 -B Tests/DevMCP/check.py
+python3 -B Tests/DevMCP/check_client.py
+```
+
 ### Native command routing and signed Bark
 
 From a clean checkout, run the native command-window regression without an engine artifact.

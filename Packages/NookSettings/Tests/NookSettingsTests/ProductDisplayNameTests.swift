@@ -12,7 +12,8 @@ struct ProductDisplayNameTests {
             (["CFBundleDisplayName": "Bark", "CFBundleName": "Internal"], nil, "Bark"),
             (["CFBundleDisplayName": "Bark"], "Localized Bark", "Localized Bark"),
             (["CFBundleDisplayName": " ", "CFBundleName": "Nook"], nil, "Nook"),
-            ([:], nil, "Nook"),
+            ([:], nil, "Bark"),
+            (["CFBundleDisplayName": " ", "CFBundleName": ""], nil, "Bark"),
         ]
         for (index, entry) in cases.enumerated() {
             let (names, localizedDisplayName, expected) = entry

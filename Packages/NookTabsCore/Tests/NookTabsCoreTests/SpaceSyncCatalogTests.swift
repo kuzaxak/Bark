@@ -169,6 +169,7 @@ struct SpaceSyncCatalogTests {
         let (_, b, work, shared, _) = try setUp()
         let report = b.state.reportText(account: "_48e607c1179693a062ca0aefa4e62a57", now: later(30))
 
+        #expect(report.hasPrefix("Bark space sync report\n"))
         #expect(report.contains("Account ID: e62a57"))
         #expect(!report.contains("_48e607c1179693a062ca0aefa4e62a57"))
         #expect(report.contains(work.space.uuidString))
@@ -220,7 +221,7 @@ struct SpaceSyncCatalogTests {
         #expect(!SpaceSyncErrorText.isOutdatedSchema(code: 12, message: "Record ID is missing"))
         #expect(!SpaceSyncErrorText.isOutdatedSchema(code: 15, message: "Invalid bundle ID for container"))
         #expect(!SpaceSyncErrorText.isOutdatedSchema(code: 9, message: "Cannot create new type Space in production schema"))
-        #expect(SpaceSyncErrorText.outdatedSchema == "iCloud hasn't been updated for this version of Nook yet; sync resumes once it is.")
+        #expect(SpaceSyncErrorText.outdatedSchema == "iCloud hasn't been updated for this version of Bark yet; sync resumes once it is.")
     }
 
     // MARK: - Stored state

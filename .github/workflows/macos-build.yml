@@ -46,6 +46,11 @@ jobs:
       - name: Check native command routing
         run: python3 scripts/bark-check.py interaction
 
+      - name: Check both directions of MCP connections
+        run: |
+          python3 -B Tests/DevMCP/check.py
+          python3 -B Tests/DevMCP/check_client.py
+
       - name: Check the app bootstrap and SDK tools
         run: |
           python3 -B -m unittest discover -s scripts/tests
