@@ -1,5 +1,5 @@
 // Licensed under GPL-3.0. See LICENSE.
-// check.py compiles the shipped clear, zoom and site setting methods, and the Developer Mode and Boost writers, verbatim;
+// check.py compiles the shipped certificate, clear, zoom and site setting methods, and the Developer Mode and Boost writers;
 // the app around them is stubbed.
 import Foundation
 
@@ -8,6 +8,10 @@ enum PageCommand { case clearSiteCookies, clearSiteCache, zoomIn, zoomOut }
     enum ScriptMode { case expression }; enum ScriptWorld { case isolated }
     struct ScriptResult { let json: String }
     var ratio = "2", calls = 0
+    var certificateCalls = 0
+    var nativeWindowID: Int32 = 1, nativeTabID: Int32 = 2
+    var certificateAvailable = true
+    func showCertificate() -> Bool { certificateCalls += 1; return certificateAvailable }
     var beforeReply: (() -> Void)?
     func evaluateScript(_ source: String, mode: ScriptMode, world: ScriptWorld) async throws -> ScriptResult {
         calls += 1
@@ -19,15 +23,17 @@ enum PageCommand { case clearSiteCookies, clearSiteCache, zoomIn, zoomOut }
 @MainActor final class PageSession {
     let itemID = UUID()
     var url = URL(string: "https://work.test/a")!
+    var isLoading = false
     var nativeNavigationSerial: UInt64 = 1
     var navigation: AnyObject? = ChromiumPageNavigation()
 }
-@MainActor final class NSWindowStub { var backingScaleFactor = 2.0 }
+@MainActor final class NSWindowStub { var backingScaleFactor = 2.0; var isKeyWindow = true }
 @MainActor final class BrowserWindowState {
     var window: NSWindowStub? = NSWindowStub(); var isIncognito = false
     var isBoostPanelVisible = false, boostPanelOpensLibrary = false
+    var isExtensionLibraryVisible = true
 }
-@MainActor final class WindowRegistry { var allWindows: [BrowserWindowState] = [] }
+@MainActor final class WindowRegistry { var allWindows: [BrowserWindowState] = []; var activeWindow: BrowserWindowState? }
 @MainActor final class ContentBlockerManager {
     var allowed: Set<String> = []
     @discardableResult func allowDomain(_ host: String, allowed: Bool = true, from page: PageSession?) -> Bool {
@@ -74,6 +80,37 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
 
         manager.keyWindow = view.windowState
         manager.front = page
+        manager.windowRegistry?.activeWindow = view.windowState
+        let staleCertificate = view.certificateAction()!
+        page.nativeNavigationSerial += 1
+        staleCertificate()
+        let currentCertificate = view.certificateAction()!
+        let certificateWindow = view.windowState.window!
+        certificateWindow.isKeyWindow = false
+        currentCertificate()
+        certificateWindow.isKeyWindow = true
+        page.navigation = ChromiumPageNavigation()
+        currentCertificate()
+        page.navigation = native
+        native.nativeWindowID += 1
+        currentCertificate()
+        native.nativeWindowID -= 1
+        manager.windowRegistry?.activeWindow = BrowserWindowState()
+        currentCertificate()
+        manager.windowRegistry?.activeWindow = view.windowState
+        view.windowState.isExtensionLibraryVisible = false
+        currentCertificate()
+        view.windowState.isExtensionLibraryVisible = true
+        precondition(native.certificateCalls == 0 && view.dismissals == 0,
+                     "the original certificate action cannot reach a successor document or owner")
+        currentCertificate()
+        precondition(native.certificateCalls == 1 && view.dismissals == 1,
+                     "the current certificate opens once and closes Site Controls")
+        native.certificateAvailable = false
+        currentCertificate()
+        precondition(view.dismissals == 1 && manager.toasts.last == "No certificate is available for this page.",
+                     "a native refusal keeps Site Controls open and reports why")
+        view.dismissals = 0
         let clearCookies = view.clearSiteDataAction(.clearSiteCookies)!
         let clearCache = view.clearSiteDataAction(.clearSiteCache)!
         clearCookies()
@@ -183,6 +220,6 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
         window.isBoostPanelVisible = false; window.boostPanelOpensLibrary = false
         manager.settings.developerSites = []
 
-        print("Site controls passed for document-bound clearing, zoom and private-window settings")
+        print("Site controls passed for document-bound certificate and clearing, zoom and private-window settings")
     }
 }

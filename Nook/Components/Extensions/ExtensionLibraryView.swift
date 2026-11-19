@@ -197,25 +197,37 @@ struct ExtensionLibraryView: View {
         return (page.navigation as? ChromiumPageNavigation)?.certificateState ?? .unavailable
     }
 
-    private func showCertificate(for itemID: UUID, at url: URL) {
-        guard let page = currentTab, page.itemID == itemID, page.url == url, !page.isLoading else { return }
-        guard (page.navigation as? ChromiumPageNavigation)?.showCertificate() == true else {
-            browserManager.showWindowToast("No certificate is available for this page.", in: windowState)
-            return
+    private func certificateAction() -> (() -> Void)? {
+        guard let page = currentTab, !page.isLoading, let window = windowState.window,
+              let navigation = page.navigation as? ChromiumPageNavigation else { return nil }
+        let document = page.nativeNavigationSerial
+        let url = page.url
+        let client = navigation.nativeWindowID, tab = navigation.nativeTabID
+        return { [weak page, weak navigation, weak window] in
+            guard let page, let navigation, let window, self.windowState.isExtensionLibraryVisible,
+                  self.windowState.window === window, window.isKeyWindow,
+                  self.browserManager.windowRegistry?.activeWindow === self.windowState,
+                  self.currentTab === page, !page.isLoading, page.navigation === navigation,
+                  page.nativeNavigationSerial == document, page.url == url,
+                  navigation.nativeWindowID == client, navigation.nativeTabID == tab else { return }
+            guard navigation.showCertificate() else {
+                self.browserManager.showWindowToast("No certificate is available for this page.", in: self.windowState)
+                return
+            }
+            self.onDismiss()
         }
-        onDismiss()
     }
 
     private var footer: some View {
         let certificate = certificateState
         let secure = certificate == .secure
         let title = secure ? "Secure" : "Not Secure"
-        let page = currentTab.map { (itemID: $0.itemID, url: $0.url) }
+        let showCertificate = certificate == .unavailable ? nil : certificateAction()
         let clearCache = clearSiteDataAction(.clearSiteCache)
         let clearCookies = clearSiteDataAction(.clearSiteCookies)
         return HStack {
             Button {
-                if let page { showCertificate(for: page.itemID, at: page.url) }
+                showCertificate?()
             } label: {
                 Label(title, systemImage: secure ? "lock.fill" : "lock.open.fill")
                     .font(NookDesign.Font.body)
@@ -225,10 +237,10 @@ struct ExtensionLibraryView: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .disabled(certificate == .unavailable)
-            .accessibilityLabel(certificate == .unavailable ? title : "\(title), Show Certificate")
-            .help(certificate == .unavailable ? "No certificate for this page" : "Show Certificate")
-            .chromiumSiteControlsPointerTarget(enabled: certificate != .unavailable)
+            .disabled(showCertificate == nil)
+            .accessibilityLabel(showCertificate == nil ? title : "\(title), Show Certificate")
+            .help(showCertificate == nil ? "No certificate for this page" : "Show Certificate")
+            .chromiumSiteControlsPointerTarget(enabled: showCertificate != nil)
 
             Spacer()
 
