@@ -76,6 +76,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [x] Verify installation and update on the signed Intel developer build. Install build 100 from its Developer ID signed disk image into a private Applications directory. Sparkle rejected a changed Ed25519 signature and kept the original app running. With the valid archive it relaunched build 101 from the installed executable path and restored the saved draft. The installed launcher, Swift shell and Chromium framework matched the signed update images byte for byte. The replacement also passed the full embedded SDK comparison against the Intel pin.
 - [x] Cross-compile the app executable and full Swift/AppKit shell for Intel and Apple Silicon. Both Release builds linked against the public SDK headers, exported the native shell entry and contained the app resources. Mach-O inspection verified each target architecture and the bundle-local engine-loading boundary.
 - [ ] Qualify the official optimized engine and both SDK slices. Verify successful first input, return to parked tabs, signed installation and installed updates on native Intel and Apple Silicon Macs.
+  Candidate preparation now runs the app copied from the notarized DMG. Its receipt ties first input and parked-tab recovery to the same signed app used for the Sparkle rehearsal. On the Intel developer SDK, Sparkle rejected an invalid signature, then installed the valid replacement at the original path and restored the draft. Both native official results remain open.
 
 ## 5. Profile extensions and settings (G3)
 
