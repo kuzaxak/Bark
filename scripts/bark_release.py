@@ -195,10 +195,12 @@ def distribution_requirement(app, bundle_id):
             'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
 
 
-def verify_installed_image(image, staged_app, working, requirement, verify_staged, *, exercise=None):
-    """Assess the notarized disk image and a clean copy of its app."""
-    subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
-                    "--context", "context:primary-signature", "--verbose=4", image], check=True)
+def verify_installed_image(image, staged_app, working, requirement, verify_staged, *,
+                           exercise=None, assess_notarization=True):
+    """Verify a clean copy of the app from the image and assess notarized releases."""
+    if assess_notarization:
+        subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
+                        "--context", "context:primary-signature", "--verbose=4", image], check=True)
     expected_info = (staged_app / "Contents/Info.plist").read_bytes()
     expected_cdhash = bundle_cdhash(staged_app)
     with TemporaryDirectory(prefix="install-check-", dir=working) as directory:
@@ -210,7 +212,7 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
         try:
             source = mount / staged_app.name
             if source.is_symlink() or not source.is_dir():
-                raise ValueError("The notarized image does not contain the expected app bundle.")
+                raise ValueError("The disk image does not contain the expected app bundle.")
             installed = root / staged_app.name
             subprocess.run(["/usr/bin/ditto", source, installed], check=True)
         finally:
@@ -219,11 +221,12 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
                         installed], check=True)
         if ((installed / "Contents/Info.plist").read_bytes() != expected_info
                 or bundle_cdhash(installed) != expected_cdhash):
-            raise ValueError("The app copied from the notarized image differs from the signed staging app.")
+            raise ValueError("The app copied from the disk image differs from the signed staging app.")
         if verify_staged:
             verify_staged(installed)
-        subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=4",
-                        installed], check=True)
+        if assess_notarization:
+            subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=4",
+                            installed], check=True)
         if exercise:
             exercise(installed)
 
@@ -258,8 +261,8 @@ def stage_disk_image(app, info, image, stage, identity, verify_staged, notary_pr
     if notary_profile:
         notarize(image, image, notary_profile)
     subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, image], check=True)
-    if notary_profile:
-        verify_installed_image(image, installed, stage, app_requirement, verify_staged)
+    verify_installed_image(image, installed, stage, app_requirement, verify_staged,
+                           assess_notarization=bool(notary_profile))
 
 
 def make_personal_image(app, output, identity, verify_staged):

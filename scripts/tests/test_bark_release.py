@@ -192,9 +192,8 @@ class ReleaseTests(unittest.TestCase):
                 def read(command, **kwargs):
                     tool = Path(command[0]).name
                     if tool == "codesign":
-                        self.assertTrue(rehearsal, "Production must use the fixed release team")
-                        self.assertEqual(command[-1], staged[0])
-                        return f"TeamIdentifier={app_team}\n"
+                        self.assertIn(command[-1], staged)
+                        return f"TeamIdentifier={app_team}\nCDHash=abc123\n"
                     if tool == "du":
                         return b"1"
                     self.assertEqual(tool, "sign_update")
@@ -203,7 +202,6 @@ class ReleaseTests(unittest.TestCase):
                 def run(command, **kwargs):
                     tool = Path(command[0]).name
                     if tool == "ditto":
-                        self.assertEqual(command[-2], self.app)
                         staged.append(command[-1])
                         shutil.copytree(command[-2], command[-1])
                     elif tool == "codesign" and "--verify" in command:
@@ -212,7 +210,7 @@ class ReleaseTests(unittest.TestCase):
                         self.assertIn("certificate leaf[field.1.2.840.113635.100.6.1.13] exists", requirement)
                         target = command[-1]
                         if target.suffix == ".app":
-                            self.assertEqual(target, staged[0])
+                            self.assertEqual(target, staged[-1])
                             self.assertIn(f'identifier "{bundle_id}"', requirement)
                             self.assertIn("--deep", command)
                             team = app_team
@@ -225,7 +223,10 @@ class ReleaseTests(unittest.TestCase):
                         if team != expected_team:
                             raise subprocess.CalledProcessError(1, command)
                     elif tool == "hdiutil":
-                        command[-1].write_bytes(b"DMG fixture")
+                        if command[1] == "create":
+                            command[-1].write_bytes(b"DMG fixture")
+                        elif command[1] == "attach":
+                            shutil.copytree(staged[0], command[-2] / "Bark.app")
 
                 with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
                     "bark_release.subprocess.check_output", side_effect=read,
@@ -233,7 +234,8 @@ class ReleaseTests(unittest.TestCase):
                     args = self.app, output, "x86_64", "fixture signer", origin, self.root, "fixture key", self.root
                     if succeeds:
                         make_distribution(*args, verify_staged=verified)
-                        verified.assert_called_once_with(staged[0])
+                        self.assertEqual(verified.call_args_list, [mock.call(path) for path in staged])
+                        self.assertEqual(len(staged), 2)
                         self.assertTrue((output / "bark-macos-x86_64.xml").is_file())
                         shutil.rmtree(output)
                     else:
@@ -257,6 +259,46 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "ordinary signed"):
                     make_personal_image(self.app, destination, "signer", mock.Mock())
                 self.assertFalse(destination.exists())
+
+    def test_personal_image_requires_the_reopened_app_to_match(self):
+        for mismatch in (True, False):
+            with self.subTest(mismatch=mismatch):
+                destination = self.root / f"Bark-mismatch-{mismatch}.dmg"
+                copies = []
+                verified = mock.Mock()
+
+                def run(command, **kwargs):
+                    tool = Path(command[0]).name
+                    if tool == "ditto":
+                        copies.append(command[-1])
+                        shutil.copytree(command[-2], command[-1])
+                    elif tool == "hdiutil" and command[1] == "create":
+                        command[-1].write_bytes(b"DMG fixture")
+                    elif tool == "hdiutil" and command[1] == "attach":
+                        self.assertTrue({"-readonly", "-nobrowse", "-noautoopen"} <= set(command))
+                        shutil.copytree(copies[0], command[-2] / "Bark.app")
+                    else:
+                        self.assertNotEqual(tool, "spctl")
+
+                def read(command, **kwargs):
+                    if command[0] == "du":
+                        return b"1"
+                    installed_copy = len(copies) > 1 and command[-1] == copies[-1]
+                    return "CDHash=bad456\n" if mismatch and installed_copy else "CDHash=abc123\n"
+
+                with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
+                    "bark_release.subprocess.check_output", side_effect=read,
+                ):
+                    if mismatch:
+                        with self.assertRaisesRegex(ValueError, "copied from the disk image differs"):
+                            make_personal_image(self.app, destination, "signer", verified)
+                        self.assertFalse(destination.exists())
+                        verified.assert_called_once_with(copies[0])
+                    else:
+                        make_personal_image(self.app, destination, "signer", verified)
+                        self.assertEqual(verified.call_args_list, [mock.call(path) for path in copies])
+                        self.assertEqual(destination.read_bytes(), b"DMG fixture")
+                self.assertEqual(len(copies), 2)
 
     def test_personal_image_preserves_app_and_previous_exports(self):
         with self.assertRaisesRegex(ValueError, "outside the signed application"):
