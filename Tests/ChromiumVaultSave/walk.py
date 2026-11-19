@@ -51,7 +51,7 @@ class Fixture(BaseHTTPRequestHandler):
             "ready:/source", "ready:/new-form", "ready:/signed-in",
             "ready:/saved-form", "ready:/passkey", "ready:/existing-signed-in",
             "typed-fields-filled", "saved-fields-filled", "passkey-started", "passkey-cancelled",
-            "passkey-created", "passkey-error",
+            "passkey-created", "passkey-error", "code-only-filled", "wrong-code-fill",
         }:
             self.send_error(400)
             return
@@ -165,13 +165,16 @@ class CandidateControls:
             raise RuntimeError(f"Missing visible bounds for {label}")
         self.click_point(point)
 
-    def click_dialog_action(self, dialog_label, action_label):
+    def click_settled_button(self, label, *, dialog_label=None, partial=False):
         previous = None
 
         def settled_point():
             nonlocal previous
-            dialog = self.find(dialog_label, ("AXWindow",))
-            button = self.find(action_label, ("AXButton",), root=dialog) if dialog is not None else None
+            dialog = self.find(dialog_label, ("AXWindow",)) if dialog_label else None
+            if dialog_label and dialog is None:
+                previous = None
+                return None
+            button = self.find(label, ("AXButton",), partial=partial, root=dialog)
             if button is None or not self.attribute(button, "AXEnabled"):
                 previous = None
                 return None
@@ -180,8 +183,7 @@ class CandidateControls:
             previous = (dialog, point)
             return point if stable else None
 
-        point = wait_for(f"{action_label} did not settle in {dialog_label}",
-                         settled_point, self.process)
+        point = wait_for(f"{label} did not settle", settled_point, self.process)
         self.click_point(point)
 
     def dump(self, output):
@@ -269,6 +271,21 @@ def exercise(screen, process, events, output):
                  lambda: method("password") > reveals, process)
         print("Selected the newly saved account and verified both fields in a new document", flush=True)
 
+        reads = method("password")
+        controls.click("Fixture verification code", ("AXTextField",))
+        code_label = f"{EXISTING_ACCOUNT} · one-time code"
+        controls.require(code_label, ("AXButton",), partial=True)
+        if method("code") or controls.find(ACCOUNT, ("AXButton",), partial=True):
+            raise RuntimeError("Opening the code picker read a code or offered an account without one")
+        # VaultPrompt ignores input during the picker's initial half second.
+        time.sleep(0.5)
+        screen.screenshot(output / "code-picker.png", include_owned_windows=True)
+        controls.click_settled_button(code_label, partial=True)
+        seen("code-only-filled")
+        if method("code") != 1 or method("password") != reads:
+            raise RuntimeError("Selecting the code must request exactly one code and no password")
+        print("Filled only the verification code while preserving the other account’s login fields", flush=True)
+
         controls.click("Open the passkey fixture", ("AXLink",))
         seen("ready:/passkey")
         controls.click("Start disposable passkey", ("AXButton",))
@@ -287,7 +304,7 @@ def exercise(screen, process, events, output):
                                 chooser_control, process)
         if kind == "back":
             screen.press_button(button)
-        controls.click_dialog_action("Choose where to save your passkey for localhost", "Pawl Vault")
+        controls.click_settled_button("Pawl Vault", dialog_label="Choose where to save your passkey for localhost")
         consent = controls.require("Create a passkey for localhost?")
         sheet = controls.sheet_for(consent)
         controls.require("Pawl Vault will save a passkey for synthetic-passkey.", root=sheet)
@@ -305,7 +322,7 @@ def exercise(screen, process, events, output):
         outcome = wait_for("Passkey cancellation did not reach the browser",
                            cancellation, process, timeout=7)
         if outcome == "browser-dialog":
-            controls.click_dialog_action("Something went wrong", "Cancel")
+            controls.click_settled_button("Cancel", dialog_label="Something went wrong")
             seen("passkey-cancelled", timeout=7)
             print("Dismissed Chromium’s cancellation acknowledgement", flush=True)
         if method("register") or "passkey-created" in events:
@@ -327,7 +344,7 @@ def prepare_fixture(root, origin, app, profile):
     shell = app / "Contents/Frameworks/NookNativeShell.framework/NookNativeShell"
     code = shell.read_bytes()
     markers = ["VaultFixture.json", *(MARKER + name for name in
-                                     ("ready", "password", "save", "register"))]
+                                     ("ready", "password", "save", "code", "register"))]
     if any(marker.encode() not in code for marker in markers):
         raise RuntimeError("The signed candidate has no synthetic Pawl fixture support")
     report = subprocess.run(
@@ -349,7 +366,7 @@ def prepare_fixture(root, origin, app, profile):
 
 if __name__ == "__main__":
     sys.exit(run_walk(
-        "Signed Pawl vault fill, existing login, save and passkey cancellation", "vault", serve, exercise,
+        "Signed Pawl password and code fill, save and passkey cancellation", "vault", serve, exercise,
         preferences=(("settings.pawlVaultEnabled", "-bool", "true"),),
         source_host="localhost",
         prepare_fixture=prepare_fixture,

@@ -63,6 +63,28 @@ struct VerificationVaultTests {
         #expect(nextMatches.logins.map(\.username) == ["synthetic-existing"])
     }
 
+    @Test func onlyTheCodeEntryInTheFixtureProfileAndOriginCanReturnACode() async throws {
+        let fixture = VerificationVault(origin: origin, profile: profile)
+        let profileID = profile.uuidString
+        let saved = try await fixture.send(VaultSave(origin: origin, username: "no-code", password: "fixture",
+                                                     profile: profileID))
+        let logins = try await fixture.send(VaultLogins(origin: origin, profile: profileID)).logins
+        #expect(logins.filter(\.hasCode).map(\.id) == ["fixture-existing"])
+        let call = VaultCode(id: "fixture-existing", origin: origin, profile: profileID)
+        let reply = try await fixture.send(call)
+        #expect(reply.code == "246810" && reply.remaining > 0)
+        for id in [saved.id, "missing"] {
+            await #expect(throws: VaultClientError.server(.notFound, "")) {
+                try await fixture.send(VaultCode(id: id, origin: origin, profile: profileID))
+            }
+        }
+        for denied in [VaultCode(id: call.id, origin: origin, profile: nil),
+                       VaultCode(id: call.id, origin: origin, profile: UUID().uuidString),
+                       VaultCode(id: call.id, origin: "http://localhost:12346", profile: profileID)] {
+            await #expect(throws: VaultClientError.server(.denied, "")) { try await fixture.send(denied) }
+        }
+    }
+
     @Test func fixtureCannotPerformPasskeyRegistration() async {
         let fixture = VerificationVault(origin: origin, profile: profile)
         let request = VaultRegister(rpId: "localhost", rpName: "Fixture",

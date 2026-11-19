@@ -59,6 +59,17 @@ if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname
   password.addEventListener("input", checkFill);
   account.addEventListener("change", checkFill);
   password.addEventListener("change", checkFill);
+  if (location.pathname === "/saved-form") {
+    password.closest("label").insertAdjacentHTML("afterend",
+      '<label>Fixture verification code <input autocomplete="one-time-code" inputmode="numeric"></label>');
+    const code = document.querySelector('[autocomplete="one-time-code"]');
+    const checkCode = setInterval(() => {
+      if (!code.value) return;
+      clearInterval(checkCode);
+      const intact = account.value === "synthetic-new" && password.value === "disposable-new-password";
+      report(code.value === "246810" && intact ? "code-only-filled" : "wrong-code-fill");
+    }, 100);
+  }
   const fillCheck = setInterval(() => {
     checkFill();
     if (verified) clearInterval(fillCheck);

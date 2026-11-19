@@ -51,7 +51,8 @@ actor VerificationVault: VaultRequests {
     private let origin: String?
     private let profile: UUID
     private var logins: [VaultLogin] = [
-        VaultLogin(id: "fixture-existing", username: "synthetic-existing", title: "Synthetic local vault")
+        VaultLogin(id: "fixture-existing", username: "synthetic-existing", title: "Synthetic local vault",
+                   hasCode: true)
     ]
     private var passwords = ["fixture-existing": "fixture-password"]
 
@@ -78,6 +79,12 @@ actor VerificationVault: VaultRequests {
             }
             Self.record("Bark verification vault: password")
             reply = VaultPassword.Reply(username: login.username, password: password)
+        case let request as VaultCode where request.origin == origin && matches(request.profile):
+            guard logins.contains(where: { $0.id == request.id && $0.hasCode }) else {
+                throw VaultClientError.server(.notFound, "")
+            }
+            Self.record("Bark verification vault: code")
+            reply = VaultCode.Reply(code: "246810", remaining: 30)
         case let request as VaultSave where request.origin == origin && matches(request.profile):
             let id = logins.first(where: { $0.username == request.username })?.id ?? UUID().uuidString
             if passwords[id] == nil {
