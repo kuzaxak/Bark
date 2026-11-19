@@ -19,15 +19,7 @@ enum SettingsTabs: String, Hashable, CaseIterable {
     case spaces
     case profiles
     case shortcuts
-    case extensions
     case developer
-
-    var availableInChromium: Bool {
-        switch self {
-        case .extensions: return false
-        default: return true
-        }
-    }
 
     var name: String {
         switch self {
@@ -41,7 +33,6 @@ enum SettingsTabs: String, Hashable, CaseIterable {
         case .spaces: return "Spaces"
         case .profiles: return "Profiles"
         case .shortcuts: return "Shortcuts"
-        case .extensions: return "Extensions"
         case .developer: return "Developer"
         }
     }
@@ -58,7 +49,6 @@ enum SettingsTabs: String, Hashable, CaseIterable {
         case .spaces: return "square.on.square"
         case .profiles: return "person.crop.circle"
         case .shortcuts: return "keyboard"
-        case .extensions: return "puzzlepiece.extension"
         case .developer: return "hammer"
         }
     }
@@ -76,7 +66,6 @@ enum SettingsTabs: String, Hashable, CaseIterable {
         case .spaces: return ["accent", "colour", "color", "rename", "icon"]
         case .profiles: return ["profile", "logins", "cookies", "search engine", "downloads", "download location", "website data"]
         case .shortcuts: return ["keyboard", "keys", "hotkeys"]
-        case .extensions: return ["web extensions", "chrome", "add-ons"]
         case .developer: return ["devtools", "inspector", "console", "network", "mcp", "browser control"]
         }
     }
@@ -100,7 +89,6 @@ enum SettingsTabs: String, Hashable, CaseIterable {
         case .spaces: return .cyan
         case .profiles: return .blue
         case .shortcuts: return .indigo
-        case .extensions: return .teal
         case .developer: return .gray
         }
     }
@@ -111,7 +99,7 @@ enum SettingsTabs: String, Hashable, CaseIterable {
             (nil, [.general, .appearance]),
             (nil, [.ai]),
             (nil, [.privacy, .adBlocker, .airTrafficControl]),
-            (nil, [.spaces, .profiles, .shortcuts, .extensions, .developer]),
+            (nil, [.spaces, .profiles, .shortcuts, .developer]),
             (nil, [.tweaks]),
         ]
     }

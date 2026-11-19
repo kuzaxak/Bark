@@ -762,7 +762,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     private func showSettings(_ tab: SettingsTabs) {
-        guard tab.availableInChromium, let manager = browserManager, let storage,
+        guard let manager = browserManager, let storage,
               let shortcuts = manager.keyboardShortcutManager else { return }
         SettingsNavigation.shared.currentSettingsTab = tab
         if let settingsWindow { settingsWindow.makeKeyAndOrderFront(nil); return }

@@ -57,32 +57,3 @@ final class ExtensionEntity {
         self.grantedOptionalMatchPatterns = grantedOptionalMatchPatterns
     }
 }
-
-// Runtime models (not persisted)
-struct InstalledExtension {
-    let id: String
-    let name: String
-    let version: String
-    let manifestVersion: Int
-    let description: String?
-    let isEnabled: Bool
-    let installDate: Date
-    let lastUpdateDate: Date
-    let packagePath: String
-    let iconPath: String?
-    let manifest: [String: Any]
-    
-    init(from entity: ExtensionEntity, manifest: [String: Any]) {
-        self.id = entity.id
-        self.name = entity.name
-        self.version = entity.version
-        self.manifestVersion = entity.manifestVersion
-        self.description = entity.extensionDescription
-        self.isEnabled = entity.isEnabled
-        self.installDate = entity.installDate
-        self.lastUpdateDate = entity.lastUpdateDate
-        self.packagePath = entity.packagePath
-        self.iconPath = entity.iconPath
-        self.manifest = manifest
-    }
-}

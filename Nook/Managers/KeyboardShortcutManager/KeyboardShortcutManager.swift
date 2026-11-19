@@ -700,8 +700,6 @@ class KeyboardShortcutManager {
                 browserManager.toggleSidebar()
             case .toggleAIAssistant:
                 browserManager.toggleAISidebar()
-            case .installExtension:
-                browserManager.showExtensionInstallDialog()
             case .customizeSpaceGradient:
                 browserManager.showSpaceSettings()
             case .organizeTabs:
@@ -720,7 +718,7 @@ class KeyboardShortcutManager {
                 SidebarRenameState.shared.itemID = selected
             case .toggleExtensionLibrary:
                 browserManager.toggleExtensionLibrary()
-            case .manageExtensions:
+            case .manageExtensions, .installExtension:
                 browserManager.manageExtensions()
             case .toggleDarkMode:
                 guard let settings = browserManager.nookSettings else { break }
@@ -743,13 +741,6 @@ class KeyboardShortcutManager {
             // Try to execute shortcut - if handled, consume event
             if self.executeShortcut(event) {
                 return nil // Consume the event
-            }
-
-            // Forward unhandled key events to extension commands (chrome.commands API).
-            // This enables extension keyboard shortcuts like Bitwarden's Ctrl+Shift+L.
-            if self.websiteShortcutDetector != nil,
-               ExtensionManager.shared.tryPerformExtensionCommand(for: event) {
-                return nil
             }
 
             return event // Pass through

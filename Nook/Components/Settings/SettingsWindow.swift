@@ -41,7 +41,6 @@ struct SettingsWindow: View {
         HStack(spacing: 0) {
             SettingsSidebar(selection: selection, query: $query)
             Divider()
-            if browserManager.engine == .webKit || tab.availableInChromium {
             SettingsDetailPane(
                 tab: tab,
                 path: Binding(get: { paths[tab] ?? [] }, set: { paths[tab] = $0 }),
@@ -57,10 +56,6 @@ struct SettingsWindow: View {
             // Rebuilds the pane per tab so each opens scrolled to the top.
             .id(tab)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                Text("These settings are unavailable in this build.")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
         }
         .onChange(of: location) { old, _ in
             if restoring { restoring = false; return }
@@ -153,7 +148,6 @@ private struct UnifiedToolbarWindow: NSViewRepresentable {
 private struct SettingsSidebar: View {
     @Binding var selection: SettingsTabs
     @Binding var query: String
-    @EnvironmentObject var browserManager: BrowserManager
 
     private let sidebarWidth: CGFloat = 230
 
@@ -163,11 +157,7 @@ private struct SettingsSidebar: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: NookDesign.Spacing.rowGap) {
                     ForEach(Array(SettingsTabs.sidebarGroups.enumerated()), id: \.offset) { _, group in
-                        let tabs = group.tabs.filter { tab in
-                            guard tab.matches(query) else { return false }
-                            if browserManager.engine == .chromium, !tab.availableInChromium { return false }
-                            return tab != .extensions || browserManager.extensionManager != nil
-                        }
+                        let tabs = group.tabs.filter { $0.matches(query) }
                         if !tabs.isEmpty {
                             // A group header reads as a filter label while searching, so it goes.
                             if let title = group.title, query.isEmpty {
@@ -303,10 +293,6 @@ private struct SettingsDetailPane: View {
             }
         case .shortcuts:
             ShortcutsSettingsView()
-        case .extensions:
-            if let extensionManager = browserManager.extensionManager {
-                ExtensionsSettingsView(extensionManager: extensionManager)
-            }
         case .developer:
             SettingsDeveloperTab()
         }

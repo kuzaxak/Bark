@@ -402,9 +402,6 @@ class BrowserManager: ObservableObject {
     var historyManager: HistoryManager
     let cookieManager: CookieManager? = nil
     let cacheManager: CacheManager? = nil
-    let extensionManager: ExtensionManager? = nil
-    /// Store ids an import found, installed once a browser window can show their permission sheets.
-    var pendingExtensionImports: [String] = []
     var splitManager: SplitViewManager
     var gradientColorManager: GradientColorManager
     var contentBlockerManager: ContentBlockerManager
@@ -945,12 +942,7 @@ class BrowserManager: ObservableObject {
     // MARK: - Extension Management
 
     func manageExtensions() {
-        if engine == .chromium { openNativeExtensionControls(); return }
-        openSettings(tab: .extensions)
-    }
-
-    /// Utility/settings windows must not borrow a stale active product identity.
-    private func openNativeExtensionControls() {
+        // Utility/settings windows must not borrow a stale active product identity.
         guard let window = windowRegistry?.activeWindow, let key = CommandWindow.key,
               window.window === key else { return }
         tabs.openExtensionControls(in: window) { [weak window] result in
@@ -959,23 +951,6 @@ class BrowserManager: ObservableObject {
                 window?.isShowingCopyURLToast = true
             }
         }
-    }
-
-    func showExtensionInstallDialog() {
-        if engine == .chromium { openNativeExtensionControls(); return }
-        extensionManager?.showExtensionInstallDialog()
-    }
-
-    func enableExtension(_ extensionId: String) {
-        extensionManager?.enableExtension(extensionId)
-    }
-
-    func disableExtension(_ extensionId: String) {
-        extensionManager?.disableExtension(extensionId)
-    }
-
-    func uninstallExtension(_ extensionId: String) {
-        extensionManager?.uninstallExtension(extensionId)
     }
 
     /// Set the active window state (called when a window gains focus)
