@@ -306,15 +306,29 @@ After linking and before writing an official build receipt, the build recipe
 checks the requested thin architecture, both property lists, and the raw
 launcher's refusal-only library and symbol imports. When the launcher matches the host CPU,
 the recipe also exercises all five direct invocation cases, including when
-Python runs under Rosetta. Cross-builds report static inspection. Run the
-gate on the target hardware before qualifying the cross-built runtime.
+Python runs under Rosetta. Cross-builds report static inspection.
+
+For a private cross-build handoff, copy the launcher and its two property
+lists from the same completed GN output into a separate test archive. On the
+builder, set `gn_cpu` to the target (`arm64` or `x64`) and use the handoff
+directory prepared above.
 
 ```fish
-python3 Tests/ChromiumSDKLauncher/check.py "$engine_checkout/src/out/Barc-arm64-official" --arch arm64
+tar -czf "$handoff/launcher-check-$gn_cpu.tar.gz" -C "$engine_checkout/src/out/Barc-$gn_cpu-official" \
+    Bark.app/Contents/MacOS/Bark Bark.app/Contents/Info.plist gen/chrome/chrome_integrated_app_info_plist.plist
 ```
 
-Use `--arch x86_64` for Intel. The check opens no windows and needs the original
-GN output because the published SDK excludes the raw launcher.
+On the target Mac, extract those three files in a temporary directory and run
+the check from the matching Bark source. Omitting `--arch` requires a launcher
+that matches the physical Mac and exercises all five direct invocations.
+
+```fish
+set -l launcher_check (mktemp -d)
+tar -xzf /path/to/launcher-check-arm64.tar.gz -C "$launcher_check"
+python3 Tests/ChromiumSDKLauncher/check.py "$launcher_check"
+```
+
+The developer SDK and signed Bark app exclude this private qualification archive.
 
 ### Publishing the engine
 
