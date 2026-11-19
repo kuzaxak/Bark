@@ -22,7 +22,7 @@ let serial=0;const timers=new Map(),downloads=[];
 const context=vm.createContext({document,window,location:{hostname:'a.test',href:'https://a.test/'},URL,innerWidth:800,
  NOOK_DOWNLOAD_SITES:['a.test'],nookSocialDownloadNative:url=>{downloads.push(url);return true;},
  setTimeout:fn=>{timers.set(++serial,fn);return serial;},clearTimeout:id=>timers.delete(id),getComputedStyle:()=>({overflow:'visible'})});
-const control=vm.runInContext(fs.readFileSync('Packages/NookTweaks/Sources/NookTweaks/Resources/social-image-download.js','utf8'),context);
+const control=vm.runInContext(fs.readFileSync('Runtime/Chromium/bark/resources/nook_tweaks/social-image-download.js','utf8'),context);
 document.fire('mouseover',{clientX:180,clientY:20,target:image});assert.ok(button);
 const click={clientX:180,clientY:20,preventDefault(){},stopPropagation(){}};
 button.fire('click',{...click,isTrusted:false});assert.equal(downloads.length,0,'synthetic clicks carry no authority');
@@ -31,7 +31,7 @@ window.fire('scroll',{target:document});assert.equal(timers.size,1);
 control.stop();assert.equal(document.count(),0);assert.equal(window.count(),0);assert.equal(timers.size,0);assert.equal(host.isConnected,false);
 button.fire('click',{...click,isTrusted:true});assert.equal(downloads.length,1,'retired controller cannot dispatch');
 const pageDocument=new Node();const page=vm.createContext({document:pageDocument,location:{hostname:'www.facebook.com'}});
-const reader=vm.runInContext(fs.readFileSync('Packages/NookTweaks/Sources/NookTweaks/Resources/social-video-source.js','utf8'),page);
+const reader=vm.runInContext(fs.readFileSync('Runtime/Chromium/bark/resources/nook_tweaks/social-video-source.js','utf8'),page);
 assert.equal(pageDocument.count(),1);reader.stop();assert.equal(pageDocument.count(),0);
 assert.equal('nookSocialDownloadNative' in page,false,'page data reader has no native capability');
 console.log('Social script PASS: trusted-only fixed dispatch, retired controls/timer, removable page-world data listener');

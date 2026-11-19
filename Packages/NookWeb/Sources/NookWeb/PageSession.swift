@@ -817,9 +817,6 @@ public final class PageSession: NSObject, Identifiable {
 
     public var isUnloaded: Bool { navigation == nil }
 
-    /// Console and network log while Developer Mode is on; nil otherwise.
-    public internal(set) var devCapture: DevCapture?
-
     /// Drop cached history documents, preserving history and the current live page.
     /// Returns acceptance, not a cached-entry count or reclaimed-memory claim.
     @discardableResult public func clearPageCache() -> Bool {
@@ -995,7 +992,6 @@ public final class PageSession: NSObject, Identifiable {
         // Let the web content control its own background so extension styles (like Dark
         // Reader) can paint dark backgrounds. The themed background shows only while loading.
         webView.setDrawsPageBackground(true)
-        if developerModeOn { attachDevCaptureHandler(to: webView) }
         webView.isInspectable = true
         webView.allowsLinkPreview = true
         webView.configuration.preferences.isFraudulentWebsiteWarningEnabled = true
@@ -1069,7 +1065,6 @@ public final class PageSession: NSObject, Identifiable {
         stopNativeAudioMonitoring()
         profileAwaitCancellable?.cancel()
         profileAwaitCancellable = nil
-        devCapture = nil
         resetTranslation()
         loadingState = .idle
         hasPiPActive = false
@@ -1106,9 +1101,6 @@ public final class PageSession: NSObject, Identifiable {
         }
         controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
         controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-        detachDevCaptureHandler(from: webView)
-        controller.removeScriptMessageHandler(
-            forName: AdvancedRulesEngine.messageHandlerName, contentWorld: .page)
 
         removeThemeColorObserver(from: webView)
         removeNavigationStateObservers(from: webView)

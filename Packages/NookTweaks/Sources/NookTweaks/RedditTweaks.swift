@@ -7,25 +7,10 @@
 //
 
 import Foundation
-import NookBlocker
 import NookSettings
-import WebKit
 
-/// Opens Reddit feeds sorted by Hot instead of Best. Full loads are redirected in
-/// `decidePolicyFor`; Reddit's in-page navigations never reach it, so a click listener
-/// rewrites feed links before Reddit's router reads them.
 @MainActor
 public enum RedditTweaks {
-    private static let marker = "// Nook Reddit Tweaks"
-    private static let world = WKContentWorld.world(name: "NookRedditTweaks")
-
-    // Mirrors hotURL(for:settings:).
-    private static let script: String = {
-        guard let url = Bundle.module.url(forResource: "reddit-tweaks", withExtension: "js", subdirectory: "Resources"),
-              let source = try? String(contentsOf: url, encoding: .utf8) else { return "" }
-        return source
-    }()
-
     /// The Hot version of a sortless Reddit feed URL: home, a subreddit, or a custom feed.
     public static func hotURL(for url: URL, settings: NookSettingsService) -> URL? {
         guard settings.redditSortHot,
@@ -39,21 +24,5 @@ public enum RedditTweaks {
         guard isFeed else { return nil }
         components.path = "/" + parts.map { "\($0)/" }.joined() + "hot/"
         return components.url
-    }
-
-    /// Main-frame navigation hook, next to FacebookTweaks. The script gates on hostname itself,
-    /// so it is only rewritten when the setting changes.
-    public static func apply(in webView: WKWebView, settings: NookSettingsService) {
-        let ucc = webView.configuration.userContentController
-        // Read everything from the lazily bridged array before removeAllUserScripts (Release-only trap).
-        let all = ucc.userScripts
-        let installed = all.contains { $0.source.hasPrefix(marker) }
-        guard installed != settings.redditSortHot else { return }
-        let others = all.nookOwned.filter { !$0.source.hasPrefix(marker) }
-        ucc.removeAllUserScripts()
-        others.forEach { ucc.addUserScript($0) }
-        if settings.redditSortHot, !script.isEmpty {
-            ucc.addUserScript(WKUserScript(source: script, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
-        }
     }
 }

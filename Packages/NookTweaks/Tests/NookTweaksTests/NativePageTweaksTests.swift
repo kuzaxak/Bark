@@ -14,6 +14,9 @@ private struct NoTokens: KagiTokenStore { func load() -> String? { nil }; func s
         await settings.waitForBoosts()
         settings.facebookHideReels = true; settings.facebookHideSuggested = true
         settings.redditSortHot = true; settings.youTubeHideShorts = true
+        settings.youTubeVideosPerRow = 5
+        settings.youTubeFrameThumbnails = true
+        settings.youTubeNoHoverPreview = true
         var first = Boost(host: "example.test", script: "await Promise.resolve();return 1;", scriptEnabled: true)
         var off = first; off.id = UUID(); off.scriptEnabled = false
         var disabled = first; disabled.id = UUID(); disabled.isEnabled = false
@@ -24,7 +27,9 @@ private struct NoTokens: KagiTokenStore { func load() -> String? { nil }; func s
         #expect(snapshot.scripts.map(\.source) == [first.script, second.script])
         #expect(snapshot.scripts.map(\.includeSubdomains) == [true, false])
         #expect(snapshot.facebookReels && snapshot.facebookSuggested && snapshot.redditHot)
-        #expect(!snapshot.youtube.css.isEmpty)
+        #expect(snapshot.youtube.css.contains("ytd-reel-shelf-renderer"))
+        #expect(snapshot.youtube.css.contains("--ytd-rich-grid-items-per-row: 5"))
+        #expect(snapshot.youtube.frameThumbnails && snapshot.youtube.noHoverPreview)
         settings.adBlockerEnabled = true
         #expect(try NativePageTweaks(settings: settings) == snapshot)
         let json = try #require(JSONSerialization.jsonObject(with: snapshot.encoded()) as? [String: Any])

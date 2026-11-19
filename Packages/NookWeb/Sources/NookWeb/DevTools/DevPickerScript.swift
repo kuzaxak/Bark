@@ -3,17 +3,11 @@
 //  DevPickerScript.swift
 //  Nook
 //
-//  The element picker. Isolated world, so the page cannot call it or forge a pick; dormant until
-//  Swift calls start(). React and Vue expandos are invisible from here, so PageSession reads them
-//  from the page world afterwards.
-//
+//  DOM descriptions and accessibility snapshots for Chromium developer tools.
 
 import Foundation
 
 enum DevPickerScript {
-    static let handlerName = "nookDevPicker"
-    static let marker = "// Nook Dev Picker"
-
     /// Reads what only the page world sees on the picked element.
     static let hintsSource = """
     const el = document.querySelector(selector);
@@ -65,12 +59,8 @@ enum DevPickerScript {
     }
 
     static let source = """
-    \(marker)
     (function () {
       if (window.__nookDevPicker) return;
-      const handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.\(handlerName);
-      let host = null, margin = null, box = null, label = null, current = null;
-
       const STYLE_ORDER = ['display', 'position', 'top', 'right', 'bottom', 'left', 'z-index', 'width', 'height',
         'min-width', 'max-width', 'min-height', 'max-height', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
         'padding-top', 'padding-right', 'padding-bottom', 'padding-left', 'flex-direction', 'flex-wrap', 'flex-grow',
@@ -185,75 +175,6 @@ enum DevPickerScript {
                  styles: stylesOf(el), source: sourceOf(el) };
       }
 
-      function place(el) {
-        const r = el.getBoundingClientRect();
-        const cs = getComputedStyle(el);
-        const mt = parseFloat(cs.marginTop) || 0, mr = parseFloat(cs.marginRight) || 0;
-        const mb = parseFloat(cs.marginBottom) || 0, ml = parseFloat(cs.marginLeft) || 0;
-        Object.assign(margin.style, { left: (r.left - ml) + 'px', top: (r.top - mt) + 'px',
-          width: (r.width + ml + mr) + 'px', height: (r.height + mt + mb) + 'px' });
-        Object.assign(box.style, { left: r.left + 'px', top: r.top + 'px', width: r.width + 'px', height: r.height + 'px' });
-        let text = el.tagName.toLowerCase();
-        if (el.id) text += '#' + el.id;
-        else if (typeof el.className === 'string' && el.className.trim()) text += '.' + el.className.trim().split(/\\s+/).slice(0, 2).join('.');
-        label.textContent = text + '  ' + Math.round(r.width) + '×' + Math.round(r.height);
-        label.style.left = Math.max(0, r.left) + 'px';
-        label.style.top = (r.top > 24 ? r.top - 22 : r.bottom + 4) + 'px';
-      }
-
-      function move(ev) {
-        const el = document.elementFromPoint(ev.clientX, ev.clientY);
-        if (!el || el === current || el === host) return;
-        current = el;
-        place(el);
-      }
-      function swallow(ev) { ev.preventDefault(); ev.stopPropagation(); ev.stopImmediatePropagation(); }
-      function click(ev) {
-        swallow(ev);
-        const el = current || document.elementFromPoint(ev.clientX, ev.clientY);
-        stop();
-        if (el && handler) { try { handler.postMessage(bundle(el)); } catch (_) {} }
-      }
-      function key(ev) { if (ev.key === 'Escape') { swallow(ev); stop(); } }
-
-      const events = [['mousemove', move], ['click', click], ['mousedown', swallow], ['mouseup', swallow],
-                      ['pointerdown', swallow], ['pointerup', swallow], ['keydown', key]];
-      function start() {
-        if (host) return;
-        host = document.createElement('div');
-        host.style.cssText = 'all: initial; position: fixed; inset: 0; pointer-events: none; z-index: 2147483647';
-        const root = host.attachShadow({ mode: 'closed' });
-        root.innerHTML = '<style>div{position:fixed;pointer-events:none;box-sizing:border-box}' +
-          '.m{background:rgba(255,159,10,.18)}.b{background:rgba(10,132,255,.22);outline:1px solid rgba(10,132,255,.9)}' +
-          '.l{font:500 11px -apple-system,system-ui,sans-serif;background:#1c1c1e;color:#fff;padding:2px 6px;' +
-          'border-radius:4px;white-space:nowrap}</style><div class="m"></div><div class="b"></div><div class="l"></div>';
-        [margin, box, label] = root.querySelectorAll('div');
-        document.documentElement.appendChild(host);
-        for (const [type, fn] of events) addEventListener(type, fn, true);
-        document.documentElement.style.setProperty('cursor', 'crosshair', 'important');
-      }
-      function stop() {
-        if (!host) return;
-        for (const [type, fn] of events) removeEventListener(type, fn, true);
-        host.remove();
-        host = current = null;
-        document.documentElement.style.removeProperty('cursor');
-      }
-      // Outlines an element for 1.5 s and scrolls it into view: the Perf tab's LCP and INP targets.
-      function flash(selector) {
-        let el = null;
-        try { el = document.querySelector(selector); } catch (_) {}
-        if (!el) return false;
-        el.scrollIntoView({ block: 'center', inline: 'nearest' });
-        const r = el.getBoundingClientRect();
-        const ring = document.createElement('div');
-        ring.style.cssText = 'all: initial; position: fixed; pointer-events: none; z-index: 2147483647; box-sizing: border-box;' +
-          'border: 2px solid rgba(10,132,255,.95); background: rgba(10,132,255,.15); border-radius: 4px;' +
-          'left:' + r.left + 'px; top:' + r.top + 'px; width:' + r.width + 'px; height:' + r.height + 'px';
-        document.documentElement.appendChild(ring);
-        setTimeout(() => ring.remove(), 1500);
-        return true;
-      }
       // Accessibility outline for agents: one line per role, generic wrappers flattened, hidden content skipped.
       const LEAF = new Set(['link', 'button', 'heading', 'img', 'textbox', 'searchbox', 'checkbox', 'radio',
         'slider', 'combobox', 'option', 'progressbar', 'switch', 'tab', 'menuitem']);
@@ -305,7 +226,7 @@ enum DevPickerScript {
       }
       function describe(selector) { const el = document.querySelector(selector); return el ? bundle(el) : null; }
 
-      window.__nookDevPicker = { start, stop, flash, snapshot, describe };
+      window.__nookDevPicker = { snapshot, describe };
     })();
     """
 }

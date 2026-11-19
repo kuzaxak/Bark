@@ -8,15 +8,13 @@
 
 import SwiftUI
 import WebKit
-import NookTweaks
 
 extension PageSession {
     /// Script message handler names this session registers on each of its web views.
     var messageHandlerNames: [String] {
         ["linkHover", "commandHover",
          "mediaStateChange_\(itemID.uuidString)", "backgroundColor_\(itemID.uuidString)",
-         "historyStateDidChange", "nookShortcutDetect",
-         "nookSponsorBlock"]
+         "historyStateDidChange", "nookShortcutDetect"]
     }
 
     /// Per-document observers. Each script guards against a second install in the same document.
@@ -159,10 +157,6 @@ extension WebKitPageDelegateAdapter: WKScriptMessageHandler {
 
 extension PageSession {
     fileprivate func receiveScriptMessage(_ message: WKScriptMessage, from view: WKWebView) {
-        // The dev capture handler only appends log lines, so every frame may post to it.
-        if message.name == DevCaptureScript.handlerName { receiveDevCapture(message); return }
-        if message.name == DevPickerScript.handlerName { receiveDevPick(message); return }
-
         // These handlers live in the page world, so any frame can post to them. Every script
         // that feeds them runs in the main frame only; media state is the exception, since a
         // player can sit in a subframe.
@@ -240,36 +234,6 @@ extension PageSession {
 
         case "nookShortcutDetect":
             handleShortcutDetection(message: message)
-
-        case "nookSponsorBlock":
-            // Only a YouTube page has a reason to ask for segments or report a skip.
-            if let sponsorBlock = controller?.sponsorBlock,
-               sponsorBlock.isYouTubeDomain(message.frameInfo.securityOrigin.host),
-               let body = message.body as? [String: Any],
-               let type = body["type"] as? String
-            {
-                switch type {
-                case "video-changed":
-                    if let videoID = body["videoID"] as? String,
-                       videoID.range(of: "^[A-Za-z0-9_-]{11}\\z", options: .regularExpression) != nil {
-                        Task { @MainActor [weak self] in
-                            guard let webView = message.webView else { return }
-                            let segments = await self?.controller?.sponsorBlock?
-                                .fetchSegments(for: videoID) ?? []
-                            self?.controller?.sponsorBlock?
-                                .deliverSegments(segments, to: webView)
-                        }
-                    }
-                case "segment-skipped":
-                    // Telemetry: report viewed segment to SponsorBlock
-                    if let uuid = body["uuid"] as? String,
-                       uuid.range(of: "^[0-9a-f]{64,}\\z", options: .regularExpression) != nil {
-                        sponsorBlock.reportViewedSegment(uuid: uuid, isPrivate: isPrivate)
-                    }
-                default:
-                    break
-                }
-            }
 
         default:
             break

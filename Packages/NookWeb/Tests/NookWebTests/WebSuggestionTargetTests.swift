@@ -65,7 +65,7 @@ private final class SuggestionFixture {
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
         let registry = WindowRegistry()
         tabs = TabsController(settings: settings, windowRegistry: registry,
-            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory.appendingPathComponent("Tabs"))
         workSpace = try #require(tabs.tree.orderedSpaces.first?.id)
         let personalSpace = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: workSpace))

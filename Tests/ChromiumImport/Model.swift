@@ -24,8 +24,8 @@ final class Host {
         let tabsDirectory = directory.appendingPathComponent("Tabs", isDirectory: true)
         try FileManager.default.createDirectory(at: tabsDirectory, withIntermediateDirectories: true)
         let settings = NookSettingsService()
-        tabs = TabsController(settings: settings, windowRegistry: registry, blocker: ContentBlockerManager(settings: settings),
-                              sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
+        tabs = TabsController(settings: settings, windowRegistry: registry, blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
+                              siteRouting: SiteRoutingManager(settings: settings),
                               directory: tabsDirectory)
         if onDisk {
             let container = try ModelContainer(for: HistoryEntity.self, configurations: ModelConfiguration(url: directory.appendingPathComponent("History.store")))

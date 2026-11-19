@@ -8,7 +8,7 @@ class Events {
   fire(name, event = {}) { for (const fn of [...(this.listeners.get(name)||[])]) fn(event); }
   count() { return [...this.listeners.values()].reduce((n,v)=>n+v.size,0); }
 }
-const source=fs.readFileSync(process.argv[2]||'Packages/NookTweaks/Sources/NookTweaks/Resources/youtube-sponsorblock.js','utf8');
+const source=fs.readFileSync(process.argv[2]||'Runtime/Chromium/bark/resources/nook_tweaks/youtube-sponsorblock.js','utf8');
 const document=new Events(),window=new Events(),video=new Events();
 Object.assign(video,{isConnected:true,duration:100,paused:true,ended:false,currentTime:0,playbackRate:1});
 Object.assign(document,{readyState:'loading',querySelector:s=>s==='#movie_player video'?video:null});

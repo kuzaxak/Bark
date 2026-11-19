@@ -15,24 +15,6 @@ struct ProfileEngineTests {
         for _ in 0..<4 { await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } } }
     }
 
-    @Test(arguments: [Profile.Engine.chromium, .webKit])
-    func sponsorBlockAdapterIsConstructedOnlyForWebKit(engine: Profile.Engine) throws {
-        let fixture = try ProfileFixture()
-        defer { fixture.cleanup() }
-        let settings = fixture.makeSettings()
-        var constructions = 0
-        func makeLegacyAdapter() -> SponsorBlockManager {
-            constructions += 1
-            return SponsorBlockManager(settings: settings)
-        }
-        let tabs = TabsController(settings: settings, windowRegistry: WindowRegistry(),
-            blocker: ContentBlockerManager(settings: settings),
-            sponsorBlock: makeLegacyAdapter(), siteRouting: SiteRoutingManager(settings: settings),
-            profileEngine: engine, directory: fixture.directory.appendingPathComponent("Tabs"))
-        #expect(constructions == (engine == .webKit ? 1 : 0))
-        #expect((tabs.sponsorBlock != nil) == (engine == .webKit))
-    }
-
     @Test func nativeLiveGmailUsesExactRegularProfileWithoutWindowsOrWebKit() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
         let tabs = f.makeTabs(engine: .chromium)
@@ -192,26 +174,6 @@ struct ProfileEngineTests {
         #expect(cancellations == 2 && !tabs.liveRefreshing.contains(folder))
         pending?.resume(returning: ProfileLiveResponse(data: Data(), status: 200)); pending = nil
         await liveCallbacks(); #expect(tabs.tree.item(folder) == nil)
-    }
-
-    @Test func nativeDeveloperModeCannotChangeWebKitConfiguration() throws {
-        let native = try ProfileFixture(); defer { native.cleanup() }
-        let legacy = try ProfileFixture(); defer { legacy.cleanup() }
-        let nativeTabs = native.makeTabs(engine: .chromium)
-        let legacyTabs = legacy.makeTabs(engine: .webKit)
-        let controller = BrowserConfiguration.webKit.webViewConfiguration.userContentController
-        func captureInstalled() -> Bool {
-            controller.userScripts.contains { $0.source.hasPrefix(DevCaptureScript.marker) }
-        }
-        let original = captureInstalled()
-        defer { DevCaptureScript.setInstalled(original, in: controller) }
-        legacyTabs.setDeveloperMode(true)
-        nativeTabs.setDeveloperMode(false)
-        #expect(captureInstalled())
-        legacyTabs.setDeveloperMode(false)
-        nativeTabs.setDeveloperMode(true)
-        #expect(!captureInstalled())
-        #expect(BrowserConfiguration.webKitAdapter(for: .chromium) == nil)
     }
 
     @Test func chromiumMetadataHasNoWebKitStorageOrCookieConnection() {
@@ -789,7 +751,7 @@ struct ProfileEngineTests {
         defer { fixture.cleanup() }
         let settings = fixture.makeSettings()
         let tabs = TabsController(settings: settings, windowRegistry: WindowRegistry(),
-            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            blocker: ContentBlockerManager(settings: settings, storageDirectory: fixture.directory.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings), directory: fixture.directory)
         let space = try #require(tabs.orderedSpaces.first)
         let profile = try #require(tabs.profile(forSpace: space.id))
@@ -844,8 +806,7 @@ private final class ProfileFixture {
     func makeTabs(engine: Profile.Engine) -> TabsController {
         let settings = makeSettings()
         return TabsController(settings: settings, windowRegistry: WindowRegistry(),
-            blocker: ContentBlockerManager(settings: settings),
-            sponsorBlock: SponsorBlockManager(settings: settings),
+            blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings),
             profileEngine: engine, directory: directory.appendingPathComponent("Tabs"))
     }

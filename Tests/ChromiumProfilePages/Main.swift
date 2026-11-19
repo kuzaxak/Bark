@@ -200,8 +200,7 @@ private func checkScopedHistoryClear() async throws {
                                        boostStore: BoostStore(fileURL: folder.appendingPathComponent("Boosts.json")))
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
-                              blocker: ContentBlockerManager(settings: settings),
-                              sponsorBlock: SponsorBlockManager(settings: settings),
+                              blocker: ContentBlockerManager(settings: settings, storageDirectory: folder.appendingPathComponent("Blocker")),
                               siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium,
                               directory: folder.appendingPathComponent("Tabs"))
     let first = tabs.tree.orderedSpaces.first!.id

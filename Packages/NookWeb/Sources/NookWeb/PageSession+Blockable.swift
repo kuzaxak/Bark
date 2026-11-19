@@ -18,13 +18,11 @@ extension PageSession: BlockablePage {
     }
 
     public var blockingURL: URL? {
-        usesNativePageHost ? navigation?.state.url ?? url : WebKitPageAccess.existingView(for: self)?.url
+        usesNativePageHost ? navigation?.state.url ?? url : nil
     }
 
     @discardableResult public func reloadForBlocking() -> Bool {
-        if usesNativePageHost { return navigation?.reload() ?? false }
-        guard let primaryWebView = WebKitPageAccess.existingView(for: self) else { return false }
-        primaryWebView.reloadFromOrigin()
-        return true
+        guard usesNativePageHost else { return false }
+        return navigation?.reload() ?? false
     }
 }

@@ -15,7 +15,7 @@ struct NativeRulesExportTests {
     @Test func exportedRulesPreserveRequestTypesAndCrossListExceptions() async throws {
         let engine = BlockerEngine(cacheFile: nil)
         #expect(engine.networkRules == nil)
-        #expect(await engine.build(sources: sources, exportingNetworkRules: true))
+        #expect(await engine.build(sources: sources))
         let snapshot = try #require(engine.networkRules)
         let restored = try restore(snapshot.bytes)
         defer { nook_adblock_engine_free(restored) }
@@ -41,32 +41,32 @@ struct NativeRulesExportTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let cache = directory.appendingPathComponent("engine.dat")
         let first = BlockerEngine(cacheFile: cache)
-        #expect(await first.build(sources: sources, exportingNetworkRules: true))
+        #expect(await first.build(sources: sources))
         let snapshot = try #require(first.networkRules)
         let saved = try Data(contentsOf: cache)
         #expect(saved.count == snapshot.bytes.count + 32)
         #expect(Data(saved.dropFirst(32)) == snapshot.bytes)
 
         let cached = BlockerEngine(cacheFile: cache)
-        #expect(await cached.build(sources: sources, exportingNetworkRules: true))
+        #expect(await cached.build(sources: sources))
         #expect(cached.networkRules?.bytes == snapshot.bytes)
 
         var corrupted = Data(saved.prefix(32))
         corrupted.append(contentsOf: [0, 1, 2])
         try corrupted.write(to: cache, options: .atomic)
         let rebuilt = BlockerEngine(cacheFile: cache)
-        #expect(await rebuilt.build(sources: sources, exportingNetworkRules: true))
+        #expect(await rebuilt.build(sources: sources))
         let restored = try restore(try #require(rebuilt.networkRules).bytes)
         defer { nook_adblock_engine_free(restored) }
         #expect(matches(restored, url: "https://ads.test/ad.js", source: "https://site.test/", type: "script"))
         #expect(!matches(restored, url: "https://ads.test/allowed.js", source: "https://site.test/", type: "script"))
     }
 
-    @Test func emptyNativePolicyIsAUsableReplacementAndWebKitRetainsNoExport() async throws {
+    @Test func emptyNativePolicyIsAUsableReplacement() async throws {
         let engine = BlockerEngine(cacheFile: nil)
-        #expect(await engine.build(sources: sources, exportingNetworkRules: true))
+        #expect(await engine.build(sources: sources))
         let old = try #require(engine.networkRules)
-        #expect(await engine.build(sources: [], exportingNetworkRules: true))
+        #expect(await engine.build(sources: []))
         let empty = try #require(engine.networkRules)
         #expect(empty.generation > old.generation)
         let restored = try restore(empty.bytes)
@@ -77,20 +77,17 @@ struct NativeRulesExportTests {
         defer { nook_adblock_engine_free(previous) }
         #expect(matches(previous, url: "https://ads.test/ad.js", source: "https://site.test/", type: "script"))
 
-        #expect(await engine.build(sources: sources))
-        #expect(engine.networkRules == nil)
-        #expect(engine.matches(url: "https://ads.test/ad.js", sourceURL: "https://site.test/", type: "script"))
         engine.clear()
         #expect(!engine.isLoaded && engine.networkRules == nil)
     }
 
     @Test func cancelledReplacementKeepsAcceptedRules() async throws {
         let engine = BlockerEngine(cacheFile: nil)
-        #expect(await engine.build(sources: sources, exportingNetworkRules: true))
+        #expect(await engine.build(sources: sources))
         let accepted = try #require(engine.networkRules)
         let cancelled = Task { @MainActor in
             withUnsafeCurrentTask { $0?.cancel() }
-            return await engine.build(sources: [], exportingNetworkRules: true)
+            return await engine.build(sources: [])
         }
         #expect(await cancelled.value == false)
         #expect(engine.networkRules?.generation == accepted.generation)
@@ -100,16 +97,16 @@ struct NativeRulesExportTests {
 
     @Test func ownerRefusalAfterParsingPreservesAcceptedMatcherAndExport() async throws {
         let engine = BlockerEngine(cacheFile: nil)
-        #expect(await engine.build(sources: sources, exportingNetworkRules: true))
+        #expect(await engine.build(sources: sources))
         let accepted = try #require(engine.networkRules)
         let replacement = [FilterListManager.Source(rules: "||replacement.test^$script", isTrusted: false)]
-        #expect(await engine.build(sources: replacement, exportingNetworkRules: true, accepting: { false }) == false)
+        #expect(await engine.build(sources: replacement, accepting: { false }) == false)
         #expect(engine.networkRules?.generation == accepted.generation)
         #expect(engine.networkRules?.bytes == accepted.bytes)
         #expect(engine.matches(url: "https://ads.test/ad.js", sourceURL: "https://site.test/", type: "script"))
         #expect(!engine.matches(url: "https://replacement.test/ad.js", sourceURL: "https://site.test/", type: "script"))
         // Final owner validation may synchronously revoke the entire engine.
-        #expect(await engine.build(sources: replacement, exportingNetworkRules: true, accepting: {
+        #expect(await engine.build(sources: replacement, accepting: {
             engine.clear()
             return true
         }) == false)
@@ -125,7 +122,7 @@ struct NativeRulesExportTests {
             let engine = BlockerEngine(cacheFile: cache)
             #expect(await engine.build(sources: [
                 FilterListManager.Source(rules: "example.test##+js(trusted-mark, hello)", isTrusted: trusted),
-            ], exportingNetworkRules: true))
+            ]))
             let restored = try restore(try #require(engine.networkRules).bytes)
             defer { nook_adblock_engine_free(restored) }
             // Resource bodies are deliberately separate from the compiled rule snapshot.

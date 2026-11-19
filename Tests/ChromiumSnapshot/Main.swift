@@ -8,6 +8,7 @@ import Foundation
     var nativeWindowID:Int32=10,nativeTabID:Int32=20
     var profileID:UUID?=UUID();var isClosed=false
     var result=Result();var calls:[String]=[];var hook:(()->Void)?
+    var worlds: [ScriptWorld] = []
     var screenshotWidths:[Double]=[]
     var screenshotHook:(()->Void)?
     var screenshotFailure=false
@@ -25,17 +26,17 @@ import Foundation
         return Data([255,216,255,217])
     }
     func evaluateScript(_ source:String,mode:ScriptMode,world:ScriptWorld) async throws -> Result {
-        calls.append(source);hook?();return result
+        calls.append(source);worlds.append(world);hook?();return result
     }
 }
 @MainActor final class PageSession {
     let itemID=UUID();var navigation:AnyObject?=ChromiumPageNavigation()
     var nativeNavigationSerial:UInt64=1
     var nativeAgentNavigationIsPending=false
-    var developerModeOn=true,usesNativePageHost=true,nativeIsEnding=false
+    struct Controller { var settings = BrowserManager.Settings() }
+    var controller: Controller? = Controller()
+    var usesNativePageHost=true,nativeIsEnding=false
     var isAgentPage = false
-    func nativeDevPickScript(_ selector: String) -> String? { selector }
-    func nativeDevHintsScript(_ selector: String) -> String? { nil }
     var waitHook:(()->Void)?
     func waitForNativeAgentNavigation(in window:BrowserWindowState,reload:Bool,while current:@MainActor()->Bool) async -> Bool {
         precondition(!reload);guard current() else{return false};waitHook?();nativeAgentNavigationIsPending=false;return current()
@@ -95,11 +96,11 @@ import Foundation
         precondition(navigation.calls.last!.hasSuffix("snapshot(\(literal), 40, 2000);"))
         precondition(!navigation.calls.last!.contains(".__nookDevPicker.start("))
         let count=navigation.calls.count
-        page.developerModeOn=false
+        page.controller?.settings.developerModeEnabled=false
         let disabled=try await server.nativeSnapshot([:],browserManager:manager,window:window)
         precondition(disabled["isError"] as? Bool==true)
         precondition(navigation.calls.count==count)
-        page.developerModeOn=true;server.isPermitted=false
+        page.controller?.settings.developerModeEnabled=true;server.isPermitted=false
         _=try await server.nativeSnapshot([:],browserManager:manager,window:window)
         precondition(navigation.calls.count==count)
         server.isPermitted=true;navigation.result.isString=false;navigation.result.json="null"
@@ -198,7 +199,10 @@ import Foundation
         navigation.result.json = ##"{"url":"https://design.test","selector":"#save","tag":"button","rect":{}}"##
         let passed = await server.callTool("pick", [:])
         precondition(passed["isError"] as? Bool == false && (passed["text"] as? String)?.contains("#save") == true)
-        precondition(navigation.calls == ["#save"] && manager.handedOff.count == 1)
+        precondition(navigation.worlds == [.isolated, .page])
+        precondition(navigation.calls == [DevPickerScript.describeScript(selector: "#save"),
+                                          DevPickerScript.hintsScript(selector: "#save")])
+        precondition(manager.handedOff.count == 1)
         let selected = await server.callTool("selection", [:])
         precondition(selected["text"] as? String == passed["text"] as? String)
 
@@ -217,7 +221,7 @@ import Foundation
         window.window?.attachedSheet = nil
         navigation.pickerHook = { page.nativeNavigationSerial += 1 }
         let stale = await server.callTool("pick", [:])
-        precondition(stale["isError"] as? Bool == true && navigation.calls.count == 1)
+        precondition(stale["isError"] as? Bool == true && navigation.calls.count == 2)
         navigation.pickerHook = nil
         navigation.hook = { server.reset() }
         let stopped = await server.callTool("pick", [:])

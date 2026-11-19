@@ -154,7 +154,7 @@ struct NativePageLifecycleTests {
     }
 
     @Test func nativeBlockNoticeRequiresProvenanceAndContinuePublishesBeforeLoad() async throws {
-        let f = try NativeModelFixture(nativeBlocking: true); defer { f.cleanup() }
+        let f = try NativeModelFixture(); defer { f.cleanup() }
         let native = f.host.finishCreate(0)
         let id = try #require(f.window.selectedItemID)
         let page = try #require(f.tabs.session(for: id))
@@ -175,7 +175,7 @@ struct NativePageLifecycleTests {
 
     @Test(arguments: ["navigation", "owner", "adapter", "profile"])
     func nativeBlockContinueRejectsStaleIntent(change: String) async throws {
-        let f = try NativeModelFixture(nativeBlocking: true); defer { f.cleanup() }
+        let f = try NativeModelFixture(); defer { f.cleanup() }
         let native = f.host.finishCreate(0)
         let id = try #require(f.window.selectedItemID)
         let page = try #require(f.tabs.session(for: id))
@@ -197,7 +197,7 @@ struct NativePageLifecycleTests {
     }
 
     @Test func nativeBlockingExceptionsUpdateBoundPageBeforeRetry() throws {
-        let f = try NativeModelFixture(nativeBlocking: true); defer { f.cleanup() }
+        let f = try NativeModelFixture(); defer { f.cleanup() }
         let native = f.host.finishCreate(0)
         let id = try #require(f.window.selectedItemID)
         let page = try #require(f.tabs.session(for: id))
@@ -5217,15 +5217,14 @@ private final class NativeModelFixture {
     let registry = WindowRegistry()
     let window = BrowserWindowState()
     let host = ControlledNativeHost()
-    init(synchronous: Bool = false, nativeBlocking: Bool = false) throws {
+    init(synchronous: Bool = false) throws {
         defaults = try #require(UserDefaults(suiteName: suite))
         directory = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let settings = NookSettingsService(kagiTokenStore: NativeNoTokenStore(), userDefaults: defaults,
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
         tabs = TabsController(settings: settings, windowRegistry: registry,
-            blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker"),
-                nativeNetworkBlocking: nativeBlocking), sponsorBlock: SponsorBlockManager(settings: settings),
+            blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium,
             directory: directory.appendingPathComponent("Tabs"))
         registry.register(window)
@@ -5244,7 +5243,7 @@ private final class NativeModelFixture {
         let settings = NookSettingsService(kagiTokenStore: NativeNoTokenStore(), userDefaults: defaults,
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
         return TabsController(settings: settings, windowRegistry: WindowRegistry(),
-            blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+            blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
     }
     func cleanup() {

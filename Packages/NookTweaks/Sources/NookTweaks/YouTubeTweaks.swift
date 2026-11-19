@@ -7,12 +7,7 @@
 //
 
 import Foundation
-import NookBlocker
 import NookSettings
-import OSLog
-import WebKit
-
-private let ytLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "YouTubeTweaks")
 
 /// The selectors each hideable home shelf is matched by. The enum itself lives in NookSettings.
 extension YouTubeHomeSection {
@@ -41,19 +36,6 @@ extension YouTubeHomeSection {
 public enum YouTubeTweaks {
     public static let videosPerRowRange = 3...8
 
-    private static let marker = "// Nook YouTube Tweaks"
-    private static let world = WKContentWorld.world(name: "NookYouTubeTweaks")
-
-    private static let script: String? = {
-        guard let url = Bundle.module.url(forResource: "youtube-tweaks", withExtension: "js", subdirectory: "Resources"),
-              let source = try? String(contentsOf: url, encoding: .utf8)
-        else {
-            ytLog.warning("Failed to load youtube-tweaks.js from NookTweaks")
-            return nil
-        }
-        return source
-    }()
-
     private static let shortsSelectors = [
         "ytd-rich-section-renderer:has(\(YouTubeHomeSection.shorts))",  // home shelf
         "grid-shelf-view-model:has(\(YouTubeHomeSection.shorts))",  // search shelf
@@ -65,41 +47,6 @@ public enum YouTubeTweaks {
         "ytd-mini-guide-entry-renderer:has(a[href^=\"/shorts\"])",
         "yt-tab-shape[tab-title=\"Shorts\"]",  // channel tab; English UI only
     ]
-
-    /// Main-frame navigation hook, next to SponsorBlock's. Settings apply from the next page load.
-    public static func apply(for url: URL, in webView: WKWebView, settings: NookSettingsService) {
-        let host = url.host?.lowercased()
-        let source = (host == "www.youtube.com" || host == "youtube.com") ? userScriptSource(settings) : nil
-
-        let ucc = webView.configuration.userContentController
-        // Read everything from the lazily bridged array before removeAllUserScripts() (Release-only trap).
-        let all = ucc.userScripts
-        let others = all.nookOwned.filter { !$0.source.hasPrefix(marker) }
-        let current = all.first { $0.source.hasPrefix(marker) }?.source
-        guard current != source else { return }
-
-        ucc.removeAllUserScripts()
-        others.forEach { ucc.addUserScript($0) }
-        if let source {
-            ucc.addUserScript(WKUserScript(source: source, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: world))
-        }
-    }
-
-    private static func userScriptSource(_ settings: NookSettingsService) -> String? {
-        guard let script else { return nil }
-        let css = css(for: settings)
-        guard !css.isEmpty || settings.youTubeFrameThumbnails || settings.youTubeNoHoverPreview else { return nil }
-
-        let config: [String: Any] = [
-            "css": css,
-            "frameThumbnails": settings.youTubeFrameThumbnails,
-            "noHoverPreview": settings.youTubeNoHoverPreview,
-        ]
-        guard let data = try? JSONSerialization.data(withJSONObject: config, options: .sortedKeys),
-              let json = String(data: data, encoding: .utf8)
-        else { return nil }
-        return "\(marker)\n\(script)(\(json));"
-    }
 
     /// One rule per selector: an unknown selector in a list would drop the whole rule.
     static func css(for settings: NookSettingsService) -> String {

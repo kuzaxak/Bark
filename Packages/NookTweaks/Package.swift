@@ -19,7 +19,8 @@ let package = Package(
                 .product(name: "NookSettings", package: "NookSettings"),
                 .product(name: "NookBlocker", package: "NookBlocker"),
             ],
-            resources: [.copy("Resources")],
+            // The Chromium recipe links these scripts directly; Swift does not bundle them.
+            exclude: ["Resources"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(name: "NookTweaksTests", dependencies: ["NookTweaks", .product(name: "NookSettings", package: "NookSettings")],

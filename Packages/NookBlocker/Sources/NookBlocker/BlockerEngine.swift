@@ -39,15 +39,10 @@ public final class BlockerEngine {
     private let cacheFile: URL?
     private var buildGeneration: UInt64 = 0
 
-    /// Nil until a build explicitly requests an export. WebKit retains no
-    /// extra serialized rules; native consumers receive one immutable value.
+    /// Immutable serialized rules from the last accepted build.
     public private(set) var networkRules: NetworkRules?
 
     public var isLoaded: Bool { engine != nil }
-
-    init() {
-        self.cacheFile = Self.defaultCacheFile
-    }
 
     init(cacheFile: URL?) {
         self.cacheFile = cacheFile
@@ -63,14 +58,9 @@ public final class BlockerEngine {
     /// Construction and serialization run off the main actor. A failed,
     /// cancelled or superseded build leaves the last accepted policy intact.
     @discardableResult
-    func build(sources: [FilterListManager.Source], exportingNetworkRules: Bool = false,
+    func build(sources: [FilterListManager.Source],
                accepting: (@MainActor () -> Bool)? = nil) async -> Bool {
         guard !Task.isCancelled else { return false }
-        guard !sources.isEmpty || exportingNetworkRules else {
-            clear()
-            log.info("No filter rules; blocker engine cleared")
-            return true
-        }
         precondition(buildGeneration < UInt64.max)
         buildGeneration += 1
         let generation = buildGeneration
@@ -79,18 +69,18 @@ public final class BlockerEngine {
         let cacheFile = self.cacheFile
         let (built, restored, serialized) = await Task.detached(priority: .userInitiated) { () -> (UnsafeMutableRawPointer?, Bool, Data?) in
             let key = Self.cacheKey(for: sources)
-            let cached = Self.restore(matching: key, from: cacheFile, exportingBytes: exportingNetworkRules)
+            let cached = Self.restore(matching: key, from: cacheFile)
             var engine = cached?.engine
             var bytes = cached?.bytes
             let restored = engine != nil
             if engine == nil {
                 engine = Self.parse(sources)
-                if let engine, exportingNetworkRules || cacheFile != nil {
+                if let engine {
                     bytes = Self.serialize(engine)
                     if let bytes { Self.save(bytes, key: key, to: cacheFile) }
                 }
             }
-            if exportingNetworkRules && bytes == nil {
+            guard let bytes else {
                 if let engine { nook_adblock_engine_free(engine) }
                 return (nil, restored, nil)
             }
@@ -106,7 +96,7 @@ public final class BlockerEngine {
                     return (nil, restored, nil)
                 }
             }
-            return (engine, restored, exportingNetworkRules ? bytes : nil)
+            return (engine, restored, bytes)
         }.value
 
         let ownerAccepts = accepting?() ?? true
@@ -146,11 +136,6 @@ public final class BlockerEngine {
 
     /// The parsed engine, saved so a launch with unchanged lists skips the parse (0.3 s).
     /// One file: a 32-byte key, then `Engine::serialize` bytes.
-    nonisolated private static var defaultCacheFile: URL {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-        return appSupport.appendingPathComponent("\(Bundle.main.bundleIdentifier ?? "Nook")/ContentBlocker/Cache/engine.dat")
-    }
-
     /// Everything the parse depends on: each list's text and trust, and the build, since a new
     /// build can carry a new parser. Bump the leading tag if the Rust side changes without one.
     nonisolated private static func cacheKey(for sources: [FilterListManager.Source]) -> Data {
@@ -166,8 +151,8 @@ public final class BlockerEngine {
         return Data(hasher.finalize())
     }
 
-    nonisolated private static func restore(matching key: Data, from cacheFile: URL?,
-                                           exportingBytes: Bool) -> (engine: UnsafeMutableRawPointer, bytes: Data?)? {
+    nonisolated private static func restore(matching key: Data, from cacheFile: URL?)
+        -> (engine: UnsafeMutableRawPointer, bytes: Data)? {
         guard let cacheFile, let saved = try? Data(contentsOf: cacheFile, options: .mappedIfSafe),
               saved.count > key.count, saved.prefix(key.count) == key else { return nil }
         // A file the Rust side cannot read comes back nil, and the caller parses.
@@ -175,7 +160,7 @@ public final class BlockerEngine {
             nook_adblock_engine_deserialize(
                 bytes.bindMemory(to: UInt8.self).baseAddress?.advanced(by: key.count), bytes.count - key.count)
         }) else { return nil }
-        return (engine, exportingBytes ? Data(saved.dropFirst(key.count)) : nil)
+        return (engine, Data(saved.dropFirst(key.count)))
     }
 
     nonisolated private static func serialize(_ engine: UnsafeMutableRawPointer) -> Data? {
@@ -205,61 +190,8 @@ public final class BlockerEngine {
         networkRules = nil
     }
 
-    /// Cosmetic configuration for a frame, or nil when nothing applies.
-    ///
-    /// `topUrl` is accepted for call-site compatibility and deliberately unused:
-    /// adblock-rust keys cosmetic lookups on the frame's own URL, so a subframe
-    /// gets its own rules rather than the top document's.
-    ///
-    /// Plain cosmetic filters do not come back here. They become
-    /// `css-display-none` entries during conversion and are applied by WebKit
-    /// from the compiled rule list. What returns is what the rule list cannot
-    /// express, chiefly procedural filters.
-    func configuration(for pageUrl: URL, topUrl: URL?) -> [String: Any]? {
-        guard let engine else { return nil }
-        let raw: String? = pageUrl.absoluteString.withCString { urlPtr in
-            guard let p = nook_adblock_cosmetic_for_url(engine, urlPtr) else { return nil }
-            defer { nook_adblock_string_free(p) }
-            return String(cString: p)
-        }
-        guard let raw,
-              let data = raw.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-
-        // `hide_selectors` is deliberately dropped. Every cosmetic filter with a
-        // plain CSS selector already compiled into the WKContentRuleList as a
-        // css-display-none entry, which WebKit applies natively and out of
-        // process. Re-sending them here injected 21KB of JSON into every page on
-        // every navigation (496 selectors on reuters.com), which fed the
-        // renderer until jetsam killed the app.
-        //
-        // Known gap: a cosmetic filter the converter rejected for a reason other
-        // than being procedural is in neither place. That is entity rules
-        // (`google.*##.x`) and non-ASCII selectors. Small, and worth fixing by
-        // teaching the converter those cases rather than by shipping 21KB a page.
-        //
-        // Each procedural entry is itself a JSON document, so it needs a second decode.
-        let procedural = (object["procedural_actions"] as? [String] ?? []).compactMap { entry -> [String: Any]? in
-            guard let d = entry.data(using: .utf8) else { return nil }
-            return try? JSONSerialization.jsonObject(with: d) as? [String: Any]
-        }
-
-        let scriptlets = object["injected_script"] as? String ?? ""
-        if !scriptlets.isEmpty {
-            log.info("Scriptlets for \(pageUrl.host ?? "?", privacy: .public): \(scriptlets.count, privacy: .public) bytes")
-        }
-
-        if procedural.isEmpty && scriptlets.isEmpty { return nil }
-        var config: [String: Any] = [:]
-        if !procedural.isEmpty { config["extendedCss"] = procedural }
-        if !scriptlets.isEmpty { config["scriptlets"] = scriptlets }
-        return config
-    }
-
     /// True when the request would be blocked. Used by the dev MCP `check_urls`
-    /// tool; nothing in the browsing path calls this, because WebKit does the
-    /// blocking itself from the compiled rule lists.
+    /// tool. Chromium consumes the serialized policy on its own request path.
     public func matches(url: String, sourceURL: String, type: String) -> Bool {
         guard let engine else { return false }
         return url.withCString { u in

@@ -1136,7 +1136,7 @@ private func checkActualModelAdoption() throws {
     let registry = WindowRegistry(), window = BrowserWindowState()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Filters")),
-        sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings),
         profileEngine: .chromium, directory: directory.appendingPathComponent("Tabs"))
     registry.register(window)
     registry.setActive(window)
@@ -1405,7 +1405,7 @@ private func checkAuthoritativeGroups() throws {
         let settings = NookSettingsService(kagiTokenStore: AdoptionNoTokenStore(), userDefaults: defaults,
             boostStore: .init(fileURL: directory.appendingPathComponent("Boosts.json")))
         settings.adBlockerEnabled = true; settings.adBlockerWhitelist = []; settings.enabledOptionalFilterLists = []
-        let manager = ContentBlockerManager(settings: settings, storageDirectory: filters, nativeNetworkBlocking: true)
+        let manager = ContentBlockerManager(settings: settings, storageDirectory: filters)
         defer { manager.setEnabled(false); settings.flushBoosts() }
         manager.setEnabled(true); await manager.activationTask?.value
         precondition(manager.networkRules != nil)
@@ -1416,7 +1416,7 @@ private func checkAuthoritativeGroups() throws {
         var device = DeviceState(); device.firstLaunchCompleted = true
         let store = TabStore(directory: tabsDirectory); store.save(tree, device); store.flush()
         let tabs = TabsController(settings: settings, windowRegistry: registry, blocker: manager,
-            sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
+            siteRouting: SiteRoutingManager(settings: settings),
             profileEngine: .chromium, directory: tabsDirectory)
         registry.register(window); registry.setActive(window); window.spaceID = Native.first
         tabs.attach(window: window, restoringSavedState: false)

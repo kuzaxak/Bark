@@ -490,8 +490,7 @@ class BrowserManager: ObservableObject {
         self.modelContext = persistence.container.mainContext
         self.userDefaults = userDefaults
         let blocker = ContentBlockerManager(settings: settings,
-            storageDirectory: tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists"),
-            nativeNetworkBlocking: true)
+            storageDirectory: tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists"))
         let siteRouting = SiteRoutingManager(settings: settings)
         self.contentBlockerManager = blocker
         self.siteRoutingManager = siteRouting

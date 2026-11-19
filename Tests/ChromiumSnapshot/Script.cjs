@@ -18,6 +18,7 @@ function fixture() {
   getElementById(){return null},createElement(){created++;throw Error('picker UI created')}};
  const context=vm.createContext({window:{},document,getComputedStyle(){return {display:'block',visibility:'visible'}},
   addEventListener(){listeners++},removeEventListener(){listeners--},setTimeout(){throw Error('timer installed')}});
+ Object.defineProperty(context.window, "webkit", { get() { throw Error("accessed a WebKit message handler"); } });
  vm.runInContext(source,context);
  return {context,button,body,stats:()=>({listeners,created})};
 }

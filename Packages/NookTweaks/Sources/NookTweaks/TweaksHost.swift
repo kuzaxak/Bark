@@ -5,12 +5,7 @@
 //
 //  Created by Bain Gurley on 17/09/2026.
 //
-//  The two seams the tweaks need from the app. Everything else in this package
-//  is Foundation and WebKit.
-//
-
 import Foundation
-import WebKit
 
 /// Air Traffic Control hands the app a matched rule and lets it do the window and space work.
 /// `page` is a `PageSession` on the app side; this package never looks inside it.
@@ -23,10 +18,4 @@ import WebKit
 
     /// The spaces that exist now, used to drop rules whose target was merged away.
     func liveSpaceIDs() -> Set<UUID>
-}
-
-/// The download button on Instagram, Facebook, and VSCO saves through the app's download path.
-/// `webView` is the `FocusableWKWebView` the message came from; the app downcasts it.
-@MainActor public protocol MediaDownloading: AnyObject {
-    func downloadImage(at url: URL, from webView: WKWebView)
 }

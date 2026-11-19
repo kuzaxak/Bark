@@ -3,7 +3,6 @@ import Foundation
 import NookSettings
 import NookAdblockFFI
 import Testing
-import WebKit
 @testable import NookBlocker
 
 @MainActor
@@ -14,36 +13,6 @@ struct NativeBlockerModelTests {
                 DispatchQueue.main.async { continuation.resume() }
             }
         }
-    }
-
-    @Test func webKitControllerCapabilityIsUsedOnlyByWebKitBlocker() throws {
-        let fixture = try NativeBlockerFixture(); defer { fixture.cleanup() }
-        let host = WebKitBlockerHost()
-        #expect(fixture.manager.webKitRules == nil)
-        fixture.manager.attach(host: host)
-        #expect(host.controllerHook == nil && host.controllerReads == 0)
-
-        let webKit = ContentBlockerManager(settings: fixture.settings, storageDirectory: fixture.directory)
-        #expect(webKit.webKitRules != nil)
-        webKit.attach(host: host)
-        #expect(host.controllerHook != nil && host.controllerReads == 0)
-    }
-
-    @Test func legacyExemptionReconcilesOnlyAnExistingWebKitView() throws {
-        let fixture = try NativeBlockerFixture(); defer { fixture.cleanup() }
-        let manager = ContentBlockerManager(settings: fixture.settings, storageDirectory: fixture.directory)
-        let host = WebKitBlockerHost()
-        manager.attach(host: host)
-        let first = NativeBlockerPage("https://ads.test/"), second = NativeBlockerPage("https://ads.test/")
-        host.blockablePages = [first, second]
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        host.views[first.itemID] = WKWebView(frame: .zero, configuration: configuration)
-
-        #expect(manager.allowDomain("ads.test", from: first))
-        #expect(host.viewLookups == [first.itemID, second.itemID])
-        #expect(first.reloads == 1 && second.reloads == 0)
-        #expect(first.policies.isEmpty && second.policies.isEmpty)
     }
 
     @Test func persistedNativePolicySeedsFirstCompilationAndExport() async throws {
@@ -91,7 +60,7 @@ struct NativeBlockerModelTests {
         #expect(f.settings.adBlockerWhitelist.isEmpty)
     }
 
-    @Test func nativeBuildUsesSamePolicyWithoutTouchingWebKit() async throws {
+    @Test func nativeBuildAppliesExactPagePolicy() async throws {
         let f = try NativeBlockerFixture(); defer { f.cleanup() }
         let first = NativeBlockerPage("https://ads.test/"), second = NativeBlockerPage("https://ads.test/")
         f.host.pages = [first, second]
@@ -100,7 +69,7 @@ struct NativeBlockerModelTests {
         await f.manager.activationTask?.value
         #expect(f.manager.isEnabled && f.manager.lastBuildSucceeded)
         #expect(f.manager.networkRules != nil)
-        #expect(f.manager.advancedRulesEngine.engine.matches(url: "https://ads.test/ad.js", sourceURL: "https://site.test/", type: "script"))
+        #expect(f.manager.engine.matches(url: "https://ads.test/ad.js", sourceURL: "https://site.test/", type: "script"))
         #expect(f.manager.shouldApplyBlocking(to: first))
         f.manager.allowDomain("ADS.TEST", from: nil)
         #expect(!f.manager.shouldApplyBlocking(to: first) && !f.manager.shouldApplyBlocking(to: second))
@@ -117,7 +86,6 @@ struct NativeBlockerModelTests {
         #expect(f.manager.shouldApplyBlocking(to: second))
         second.blockingURL = URL(string: "https://ads.test/")!
         #expect(f.manager.shouldApplyBlocking(to: second))
-        #expect(await f.manager.setUserCosmeticRules(["ads.test##.advert"]) == false)
         #expect(FileManager.default.fileExists(atPath: f.directory.appendingPathComponent("Cache/engine.dat").path))
     }
 
@@ -203,7 +171,7 @@ struct NativeBlockerModelTests {
         await drainSettings()
         await f.manager.activationTask?.value
         #expect(f.manager.isEnabled && f.manager.lastBuildSucceeded)
-        #expect(f.manager.advancedRulesEngine.engine.matches(url: "https://optional.test/ad.png", sourceURL: "https://site.test/", type: "image"))
+        #expect(f.manager.engine.matches(url: "https://optional.test/ad.png", sourceURL: "https://site.test/", type: "image"))
         #expect(other.manager.networkRules == nil && !other.manager.isEnabled)
         f.settings.adBlockerWhitelist = ["site.test"]
         await drainSettings()
@@ -223,7 +191,7 @@ struct NativeBlockerModelTests {
         await f.manager.activationTask?.value
         #expect(f.manager.isEnabled && !f.manager.isCompiling)
         #expect(f.manager.networkRules?.generation == 1)
-        #expect(f.manager.advancedRulesEngine.engine.matches(url: "https://optional.test/ad.png", sourceURL: "https://site.test/", type: "image"))
+        #expect(f.manager.engine.matches(url: "https://optional.test/ad.png", sourceURL: "https://site.test/", type: "image"))
     }
 
     @Test func supersededSettingsDoNotPublishProducerFailureBeforeObservation() async throws {
@@ -246,7 +214,7 @@ struct NativeBlockerModelTests {
         await f.manager.activationTask?.value
         #expect(!f.sawSupersededFailure)
         #expect(f.manager.networkSourceGeneration > token && f.manager.networkSourceSucceeded == true)
-        #expect(f.manager.advancedRulesEngine.engine.matches(url: "https://optional.test/ad.png", sourceURL: "https://site.test/", type: "image"))
+        #expect(f.manager.engine.matches(url: "https://optional.test/ad.png", sourceURL: "https://site.test/", type: "image"))
     }
 
     @Test func settingsRefusalClearsOnlyItsOwnCompilingState() async throws {
@@ -387,7 +355,7 @@ private final class NativeBlockerFixture {
         persisted.enabledOptionalFilterLists = persistedOptionalLists
         settings = NookSettingsService(kagiTokenStore: NativeBlockerTokenStore(), userDefaults: defaults,
             boostStore: .init(fileURL: directory.appendingPathComponent("Boosts.json")))
-        manager = ContentBlockerManager(settings: settings, storageDirectory: directory, nativeNetworkBlocking: true)
+        manager = ContentBlockerManager(settings: settings, storageDirectory: directory)
     }
     func cleanup() {
         manager.setEnabled(false)
@@ -425,25 +393,4 @@ private final class NativeBlockerPage: BlockablePage {
 private final class NativeBlockerHost: ContentBlockerHost {
     var pages: [NativeBlockerPage] = []
     var blockablePages: [any BlockablePage] { pages }
-}
-
-@MainActor
-private final class WebKitBlockerHost: WebKitContentBlockerHost {
-    var blockablePages: [any BlockablePage] = []
-    var views: [UUID: WKWebView] = [:]
-    private(set) var viewLookups: [UUID] = []
-    var controllerHook: (@MainActor (WKUserContentController) -> Void)?
-    private(set) var controllerReads = 0
-    var sharedUserContentController: WKUserContentController {
-        controllerReads += 1
-        return WKUserContentController()
-    }
-    func existingWebKitView(for page: any BlockablePage) -> WKWebView? {
-        viewLookups.append(page.itemID)
-        return views[page.itemID]
-    }
-    func blockablePage(for webView: WKWebView) -> (any BlockablePage)? { nil }
-    func onNewUserContentController(_ handler: @escaping @MainActor (WKUserContentController) -> Void) {
-        controllerHook = handler
-    }
 }

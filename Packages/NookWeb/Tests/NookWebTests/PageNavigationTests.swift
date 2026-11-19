@@ -308,7 +308,7 @@ struct PageNavigationTests {
         session.installPopupWebView(first)
         let adapter = session.webKitDelegate
         #expect(first.navigationDelegate === adapter)
-        #expect(adapter.responds(to: NSSelectorFromString(
+        #expect(!adapter.responds(to: NSSelectorFromString(
             "_webView:contentRuleListWithIdentifier:performedAction:forURL:")))
         session.unload()
         let second = NavigationView(frame: .zero, configuration: configuration)

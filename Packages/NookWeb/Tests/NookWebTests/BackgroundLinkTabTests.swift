@@ -96,8 +96,8 @@ final class Host {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let settings = NookSettingsService()
         tabs = TabsController(
-            settings: settings, windowRegistry: registry, blocker: ContentBlockerManager(settings: settings),
-            sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
+            settings: settings, windowRegistry: registry, blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
+            siteRouting: SiteRoutingManager(settings: settings),
             profileEngine: engine, directory: directory)
         if engine == .webKit { tabs.webViews = webViews }
         tabs.onPageLoadedInBackground = { [weak self] in self?.backgroundLoads.append($0.itemID) }

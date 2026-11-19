@@ -2,7 +2,9 @@ import BarcChromium
 import Foundation
 import NookBlocker
 import NookSettings
-import WebKit
+#if BARK_CATALOG_FRAMEWORK
+@testable import NookNativeShell
+#endif
 
 @MainActor private enum Native {
     struct Source {
@@ -102,7 +104,7 @@ private struct NoCredentials: KagiTokenStore { func load() -> String? { nil }; f
         settings = NookSettingsService(kagiTokenStore: NoCredentials(), userDefaults: defaults,
             boostStore: .init(fileURL: directory.appendingPathComponent("Boosts.json")))
         settings.adBlockerEnabled = true; settings.adBlockerWhitelist = []; settings.enabledOptionalFilterLists = []
-        manager = ContentBlockerManager(settings: settings, storageDirectory: directory, nativeNetworkBlocking: true)
+        manager = ContentBlockerManager(settings: settings, storageDirectory: directory)
     }
     func start() async { manager.setEnabled(true); await manager.activationTask?.value; precondition(manager.networkRules != nil) }
     func cleanup() { manager.setEnabled(false); settings.flushBoosts(); defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: directory) }
@@ -115,7 +117,8 @@ private struct NoCredentials: KagiTokenStore { func load() -> String? { nil }; f
     let itemID = UUID()
     var isOAuthFlow = false
     var isPrivate = false
-    var webView: WKWebView? { nil }
+    var blockingURL: URL? { nil }
+    func reloadForBlocking() -> Bool { false }
 }
 
 private func check(_ condition: Bool) { precondition(condition) }

@@ -23,7 +23,7 @@ for f in arglist-parser.js jsonpath.js urlskip.js redirect-resources.js; do
     curl -fsSL -o "$DEST/src/js/$f" "$REPO/$SHA/src/js/$f"
 done
 
-# The redirect resources answer $redirect= rules; see scripts/build-redirects.mjs.
+# build-scriptlets.mjs includes the text resources in the adblock-rust manifest.
 for f in $(curl -fsSL "https://api.github.com/repos/gorhill/uBlock/contents/src/web_accessible_resources?ref=$SHA" \
   | python3 -c 'import sys,json; [print(e["name"]) for e in json.load(sys.stdin)]'); do
     curl -fsSL -o "$DEST/src/web_accessible_resources/$f" "$REPO/$SHA/src/web_accessible_resources/$f"
@@ -32,7 +32,5 @@ done
 echo "$SHA" > "$DEST/UPSTREAM_COMMIT"
 sed -i '' -E "s/commit \`[0-9a-f]{40}\`/commit \`$SHA\`/" "$DEST/README.md"
 node scripts/build-scriptlets.mjs
-node scripts/build-redirects.mjs
-node scripts/check-redirects.mjs
 node scripts/check-scriptlet-globals.mjs
 echo "Now run: cd Nook/ThirdParty/AdblockRustFFI && cargo test --test real_lists_scriptlets"

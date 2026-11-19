@@ -578,7 +578,7 @@ final class DevMCPServer {
             let type = args["type"] as? String ?? "script"
             var matches: [String: Bool] = [:]
             for url in args["urls"] as? [String] ?? [] {
-                matches[url] = blocker.advancedRulesEngine.engine.matches(url: url, sourceURL: source, type: type)
+                matches[url] = blocker.engine.matches(url: url, sourceURL: source, type: type)
             }
             return text(json(["scope": "inProcessRuleMatcher", "nativeInstallation": "notVerifiedByThisTool",
                               "compiling": blocker.isCompiling, "lastBuildSucceeded": blocker.lastBuildSucceeded,

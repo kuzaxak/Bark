@@ -14,7 +14,6 @@ with TemporaryDirectory(prefix='bark-snapshot-') as directory:
     pickerSource=(root/'Nook/Components/DevTools/BrowserManager+DevPick.swift').read_text()
     a=pickerSource.index('    func nativeDeveloperPage');b=pickerSource.index('    /// Clipboard',a)
     developer=pickerSource[a:b]
-    p=(root/'Packages/NookWeb/Sources/NookWeb/DevTools/PageSession+DevTools.swift').read_text();a=p.index('    public func nativeDevSnapshotScript(');b=p.index('    /// Accessibility outline',a);facade=p[a:b]
     a=s.index('    private static func wholeNumber(');b=s.index('    /// These operations',a);whole=s[a:b]
     tools=root/'Packages/NookWeb/Sources/NookWeb/DevTools'
     fixture='''import Foundation
@@ -27,12 +26,10 @@ with TemporaryDirectory(prefix='bark-snapshot-') as directory:
  var cacheCount:Int {snapshots.count}
 }
 @MainActor extension BrowserManager {
-'''+developer+'''}
-@MainActor extension PageSession {
-'''+facade+'}\n'
+'''+developer+'}\n'
     (out/'Snapshot.swift').write_text(fixture)
     picker=root/'Packages/NookWeb/Sources/NookWeb/DevTools/DevPickerScript.swift'
-    args=['swiftc','-swift-version','5','-parse-as-library',str(out/'Snapshot.swift'),str(tools/'DevPick.swift'),str(tools/'DevEntries.swift'),str(tools/'DevLog.swift'),str(picker),str(root/'Tests/ChromiumSnapshot/Main.swift'),'-o',str(out/'check')]
+    args=['swiftc','-swift-version','5','-parse-as-library',str(out/'Snapshot.swift'),str(tools/'PageSession+DevTools.swift'),str(tools/'DevPick.swift'),str(tools/'DevEntries.swift'),str(tools/'DevLog.swift'),str(picker),str(root/'Tests/ChromiumSnapshot/Main.swift'),'-o',str(out/'check')]
     (out/'command.json').write_text(json.dumps(args,indent=2))
     for i,c in enumerate([args,[str(out/'check')]]):
      p=subprocess.run(c,capture_output=True,text=True);(out/f'{i}.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr)

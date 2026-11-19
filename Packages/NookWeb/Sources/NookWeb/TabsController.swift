@@ -90,7 +90,6 @@ public final class TabsController {
     @ObservationIgnored public let settings: NookSettingsService
     @ObservationIgnored public let windowRegistry: WindowRegistry
     @ObservationIgnored public let blocker: ContentBlockerManager
-    @ObservationIgnored let sponsorBlock: SponsorBlockManager?
     @ObservationIgnored public let siteRouting: SiteRoutingManager
     /// Set once the SwiftData context has produced it; nil in a host without history.
     @ObservationIgnored public var history: HistoryManager?
@@ -103,8 +102,6 @@ public final class TabsController {
             }
         }
     }
-    /// The app takes the screenshot, writes the clipboard and shows the toast.
-    @ObservationIgnored public var onDevPick: ((PageSession, DevPickedElement) -> Void)?
     @ObservationIgnored public weak var sessionDelegate: PageSessionDelegate?
     var webKitSessionDelegate: (any WebKitPageSessionDelegate)? {
         guard profileEngine == .webKit else { return nil }
@@ -174,7 +171,6 @@ public final class TabsController {
         settings: NookSettingsService,
         windowRegistry: WindowRegistry,
         blocker: ContentBlockerManager,
-        sponsorBlock: @autoclosure () -> SponsorBlockManager? = nil,
         siteRouting: SiteRoutingManager,
         history: HistoryManager? = nil,
         legacyProfiles: [(id: UUID, name: String)] = [],
@@ -187,7 +183,6 @@ public final class TabsController {
         self.settings = settings
         self.windowRegistry = windowRegistry
         self.blocker = blocker
-        self.sponsorBlock = profileEngine == .webKit ? (sponsorBlock() ?? SponsorBlockManager(settings: settings)) : nil
         self.siteRouting = siteRouting
         self.history = history
         self.directory = directory

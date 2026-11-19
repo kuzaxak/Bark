@@ -9,11 +9,8 @@
 //  `ContentBlockerHost` in `BrowserManager+Blocker.swift`; nothing in this
 //  package knows either type exists.
 //
-//  Foundation + WebKit only; nothing here is AppKit-specific.
-//
 
 import Foundation
-import WebKit
 
 /// One live page, as far as blocking is concerned.
 @MainActor
@@ -43,16 +40,4 @@ public extension BlockablePage {
 public protocol ContentBlockerHost: AnyObject {
     /// Every live page, for reconciling rule lists after a toggle or whitelist change.
     var blockablePages: [any BlockablePage] { get }
-}
-
-@MainActor
-public protocol WebKitContentBlockerHost: ContentBlockerHost {
-    /// An existing WebKit view to reconcile, without creating a page.
-    func existingWebKitView(for page: any BlockablePage) -> WKWebView?
-    /// The page that owns this web view, if any.
-    func blockablePage(for webView: WKWebView) -> (any BlockablePage)?
-    /// The user content controller shared by every web view configuration.
-    var sharedUserContentController: WKUserContentController { get }
-    /// Register a hook run against each freshly created user content controller.
-    func onNewUserContentController(_ handler: @escaping @MainActor (WKUserContentController) -> Void)
 }

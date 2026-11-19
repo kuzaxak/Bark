@@ -68,9 +68,4 @@ extension WebKitPageDelegateAdapter: WKNavigationDelegate {
         navigationOwner(of: webView)?.webView(webView, navigationResponse: navigationResponse, didBecome: download)
     }
 
-    /// WebKit's optional compiled content rule list action notification.
-    @objc(_webView:contentRuleListWithIdentifier:performedAction:forURL:)
-    func contentRuleAction(_ webView: WKWebView, identifier _: String, performedAction action: NSObject, url: URL) {
-        navigationOwner(of: webView)?.recordWebKitContentRuleAction(action, url: url)
-    }
 }

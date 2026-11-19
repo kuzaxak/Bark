@@ -35,11 +35,10 @@ typealias TabsController = BrowserManager.Tabs
         var isEnabled = true, isCompiling = false, lastBuildSucceeded = true, networkBlockingRequested = true
         var networkRules: Int? = 1
         var allowed = Set<String>()
-        let advancedRulesEngine = Advanced()
-        @MainActor final class Advanced {
-            let engine = Matcher()
-            @MainActor final class Matcher {
-                func matches(url: String, sourceURL: String, type: String) -> Bool { url.contains("advert") && sourceURL.contains("agent.test") && type == "script" }
+        let engine = Matcher()
+        final class Matcher {
+            func matches(url: String, sourceURL: String, type: String) -> Bool {
+                url.contains("advert") && sourceURL.contains("agent.test") && type == "script"
             }
         }
         func isDomainAllowed(_ host: String?) -> Bool { host.map(allowed.contains) ?? false }

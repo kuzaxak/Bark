@@ -37,13 +37,6 @@ extension PageSession {
         guard navigationChanged(.committed(webView.url), from: webView,
                                 navigation: navigation) else { return }
         isDisplayingPDF = WebKitPageNavigation.isDisplayingPDF(in: webView)
-        if let capture = devCapture {
-            capture.reset()
-            if let url = webView.url, controller?.blocker.isEnabled == true {
-                let rules = controller?.blocker.advancedRulesEngine.pageRules(for: url)
-                capture.pageRules = rules.map { DevPageRules(procedural: $0.procedural, scriptletCode: $0.scriptlets) }
-            }
-        }
         // First commit of the process is the launch-to-first-paint mark; later ones no-op.
         LaunchMetrics.markFirstPaint()
         // A new page gets its dialogs back.
@@ -72,7 +65,6 @@ extension PageSession {
             #if DEBUG
             controller?.webKitTabEvents?.diagnose(for: webView, url: newURL)
             #endif
-            if let settings = controller?.settings { BoostTweaks.runScripts(for: newURL, in: webView, settings: settings) }
 
             // Load saved zoom level for the new domain
             controller?.webKitSessionDelegate?.loadZoom(for: self.itemID)
@@ -285,7 +277,6 @@ extension PageSession {
         if let url = navigationAction.request.url,
             navigationAction.targetFrame?.isMainFrame == true
         {
-            devCapture?.markNavigationStart()
             // urlskip= goes past a known redirector; $removeparam restarts without tracking
             // parameters. Either way the replacement comes back through here.
             if navigationAction.navigationType != .backForward,
@@ -293,11 +284,6 @@ extension PageSession {
                let replacement = controller?.blocker.urlSkipTarget(for: url, from: self.url, tab: self)
                    ?? (removesTrackingFromLinks ? controller?.blocker.strippedTrackingParams(for: url, tab: self) : nil)
             {
-                if let capture = devCapture {
-                    let skipped = replacement.host != url.host
-                    capture.recordBlock(DevBlockEntry(action: skipped ? .skippedRedirect : .strippedParams,
-                                                      url: url.absoluteString, target: replacement.absoluteString))
-                }
                 decisionHandler(.cancel)
                 webView.load(URLRequest(url: replacement))
                 return
@@ -313,22 +299,9 @@ extension PageSession {
             // so content scripts can inject at document_start
             controller?.webKitTabEvents?.grantAccess(to: url)
 
-            // Setup content blocker scripts before navigation starts
-            controller?.blocker.setupContentBlockerScripts(for: url, in: webView, tab: self)
             #if os(macOS)
             controller?.vault?.navigationStarted()
             #endif
-
-            // Inject SponsorBlock script (independent of content blocker)
-            controller?.sponsorBlock?.injectScriptIfNeeded(for: url, in: webView)
-            if let settings = controller?.settings {
-                YouTubeTweaks.apply(for: url, in: webView, settings: settings)
-                SocialImageTweaks.apply(for: url, in: webView, settings: settings)
-                FacebookTweaks.apply(for: url, in: webView, settings: settings)
-                ClickUpTweaks.apply(for: url, in: webView)
-                RedditTweaks.apply(in: webView, settings: settings)
-                if let blocker = controller?.blocker { BoostTweaks.apply(for: url, in: webView, settings: settings, blocker: blocker) }
-            }
         }
 
         // Check for Option+click to trigger Peek for any link. Inside Peek or a mini window
