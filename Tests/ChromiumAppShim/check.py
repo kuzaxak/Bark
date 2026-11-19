@@ -329,23 +329,17 @@ def header_cases(work):
                          capture_output=True, text=True)
     check('C imports the size-checked space request and callback', run.returncode == 0, run.stderr[-600:])
 
-    provider = work / 'password-provider'
-    subprocess.run(['xcrun', 'clang', '-arch', native_architecture(), '-std=c11', '-Werror', f'-I{PUBLIC_HEADERS}',
-                    f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',
-                    str(ROOT / 'Tests/ChromiumAppShim/password_provider.c'), '-o', str(provider)], check=True)
-    check('the password provider choice follows the paired SDK capability',
-          subprocess.run([str(provider)]).returncode == 0)
-
-    recipe_headers = work / 'renderer-state-headers'
+    recipe_headers = work / 'recipe-headers'
     recipe_headers.mkdir()
     (recipe_headers / 'BarcChromium').symlink_to(RUNTIME, target_is_directory=True)
     for label, headers in [('packaged', PUBLIC_HEADERS), ('recipe', recipe_headers)]:
-        binary = work / f'renderer-state-{label}'
-        subprocess.run(['xcrun', 'clang', '-arch', native_architecture(), '-std=c11', '-Werror',
-                        f'-I{headers}', f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',
-                        str(ROOT / 'Tests/ChromiumAppShim/renderer_state.c'), '-o', binary], check=True)
-        check(f'renderer diagnostic adapter honors the {label} SDK table and size',
-              subprocess.run([binary]).returncode == 0)
+        for fixture in ('password_provider', 'renderer_state'):
+            binary = work / f'{fixture}-{label}'
+            subprocess.run(['xcrun', 'clang', '-arch', native_architecture(), '-std=c11', '-Werror',
+                            f'-I{headers}', f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',
+                            str(ROOT / f'Tests/ChromiumAppShim/{fixture}.c'), '-o', binary], check=True)
+            check(f'{fixture} adapter honors the {label} SDK capabilities',
+                  subprocess.run([binary]).returncode == 0)
 
     swift = work / 'import.swift'
     swift.write_text('import BarcChromium\n'
