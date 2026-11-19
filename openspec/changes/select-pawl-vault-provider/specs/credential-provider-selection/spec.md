@@ -18,6 +18,17 @@ Bark SHALL use the selected provider exclusively for built-in website password f
 - **THEN** the owning profile can use its existing Chromium logins and Pawl does not offer credentials
 - **AND** changing the provider neither copies nor deletes stored credentials
 
+#### Scenario: Chromium save offers were turned off before choosing Pawl
+- **GIVEN** a user previously disabled Chromium's save offers and now runs Bark with Pawl selected
+- **WHEN** a supported regular-window login succeeds on a site that permits saving
+- **THEN** Bark offers the applicable Pawl save or management action
+- **AND** the user's Chromium setting retains its previous value
+
+#### Scenario: An administrator disables saving
+- **GIVEN** an administrator disables password saving globally or blocks password management for the site
+- **WHEN** the user submits a login on that site with Pawl selected
+- **THEN** Bark offers no save or update and neither provider stores the submission
+
 #### Scenario: Change the preference during a live credential request
 - **WHEN** the user selects a different provider while Bark is running
 - **THEN** Settings identifies the running provider and explains that the selection takes effect after a restart
@@ -111,3 +122,9 @@ Bark SHALL identify the selected provider at its password-management entry point
 - **WHEN** the user invokes a browser password-management shortcut, built-in URL or context menu
 - **THEN** the browser routes management to Pawl or its connection settings
 - **AND** the page cannot receive credentials from Chromium through that action
+
+#### Scenario: A password-management page returns from history
+- **GIVEN** a regular window restores a password-management page while Pawl is selected
+- **WHEN** the user brings that page to the foreground and chooses Open Password Settings
+- **THEN** Bark opens its Privacy settings
+- **AND** restoring the page in a background tab leaves the foreground window and its focus unchanged
