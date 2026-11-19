@@ -22,6 +22,7 @@ source_point = runpy.run_path(str(HERE.parent / "ChromiumPeek/walk.py"))["source
 
 SELECTED = 23
 COLD = 25
+PARKED_SPACE = "Parked space"
 STANDARD_LIMIT = 16
 PAGE = """<!doctype html><meta charset=utf-8><title>Saved tab TAB</title>
 <style>body { margin: 24px; font: 18px system-ui } input { font: inherit }</style>
@@ -158,9 +159,10 @@ class Fixture(BaseHTTPRequestHandler):
             self.send_error(404)
             return
         row = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        row["received_ns"] = time.monotonic_ns()
         self.server.events.append(row)
         if (row.get("page"), row.get("event"), row.get("trusted"), row.get("value")) == (
-            tab_path(SELECTED), "input", True, "foreground draft"
+            tab_path(self.server.selected), "input", True, "foreground draft"
         ):
             self.server.foreground_typed.set()
         self.reply(status=204)
@@ -170,14 +172,15 @@ class Fixture(BaseHTTPRequestHandler):
 
 
 @contextmanager
-def serve():
+def serve(selected):
     with ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
         server.events = []
+        server.selected = selected
         server.foreground_typed = Event()
         server.pages = {}
         for number in range(1, 51):
             page = PAGE.replace("TAB", f"{number:02}")
-            if number == SELECTED:
+            if number == selected:
                 page += '<img hidden alt="" src="/foreground-gate">'
             server.pages[tab_path(number)] = page.encode()
         thread = Thread(target=server.serve_forever, daemon=True)
@@ -190,28 +193,32 @@ def serve():
             thread.join()
 
 
-def prepare_fixture(root, origin, _app, space):
+def prepare_fixture(root, origin, _app, space, *, selected, first_space_size, check_space_switch):
     directory = root / "App/Tabs"
     structure = json.loads((directory / "structure.json").read_text())
     device = json.loads((directory / "device.json").read_text())
     template = device["items"][0]
     other_space = str(uuid4()).upper()
-    structure["spaces"].append(dict(structure["spaces"][0], id=other_space, order="W", name="Parked space"))
+    if check_space_switch:
+        # Share one engine profile, so switched-out tabs remain live and the
+        # catalog detects any optional warming restarted by the switch.
+        structure["spaces"][0]["dataStoreID"] = space
+    structure["spaces"].append(dict(structure["spaces"][0], id=other_space, order="W", name=PARKED_SPACE))
     items = []
     for number in range(1, 51):
-        owner = space if number <= 25 else other_space
+        owner = space if number <= first_space_size else other_space
         items.append(dict(template, id=str(uuid4()).upper(),
                           kind={"tab": {"url": origin + tab_path(number), "pageTitle": f"Saved tab {number:02}"}},
                           parent={"tabs": {"spaceID": owner}}, order=f"V{number:02}"))
     device["items"] = items
     device["state"]["windows"][0]["selectedItemBySpace"] = [
-        space, items[SELECTED - 1]["id"], other_space, items[25]["id"],
+        space, items[selected - 1]["id"], other_space, items[first_space_size]["id"],
     ]
     for name, value in (("structure", structure), ("device", device)):
         (directory / f"{name}.json").write_text(json.dumps(value) + "\n")
 
 
-def exercise(screen, process, events, output, *, last_tab_only, engine):
+def exercise(screen, process, events, output, *, selected, first_space_size, mode, engine):
     engine.bind(process.pid)
     access = Accessibility(screen, process)
     screen.keys["9"] = 25
@@ -252,21 +259,23 @@ def exercise(screen, process, events, output, *, last_tab_only, engine):
         return find_event("input", page=tab_path(number), since=start, id=ready["id"],
                           value=text, trusted=True, focused=True)
 
-    selected_page = tab_path(SELECTED)
+    selected_page = tab_path(selected)
     foreground = find_event("ready", page=selected_page)
     find_event("gate-requested")
     initial_requests = request_list()
     if initial_requests != [selected_page]:
         raise RuntimeError(f"Startup reached saved background tabs before the restored page: {initial_requests}")
     held_counts = engine.checkpoint(1, process, "Held foreground")
-    input_on(SELECTED, foreground, "foreground draft")
+    first_input = input_on(selected, foreground, "foreground draft")
     find_event("gate-released")
     gate_index = next(index for index, row in enumerate(events) if row["event"] == "gate-released")
     if any(row["event"] == "request" and row["page"] != selected_page for row in events[:gate_index]):
         raise RuntimeError("A background document was requested before foreground input released its load")
 
     expected = {selected_page}
-    if not last_tab_only:
+    if mode == "space-switch":
+        expected.update(tab_path(number) for number in range(1, first_space_size + 1))
+    elif mode == "default":
         expected.update(tab_path(number) for number in range(1, STANDARD_LIMIT))
     for page in sorted(expected):
         find_event("settled", page=page)
@@ -276,23 +285,43 @@ def exercise(screen, process, events, output, *, last_tab_only, engine):
     startup_ready = {row["page"]: row["id"] for row in events if row["event"] == "ready"}
     if len(startup_requests) != len(expected) or set(startup_requests) != expected or set(startup_ready) != expected:
         raise RuntimeError(f"Wrong startup document set, requests={startup_requests}, ready={list(startup_ready)}")
-    settled_ax = mounted_tab(SELECTED)
+    settled_ax = mounted_tab(selected)
     startup_counts = engine.checkpoint(len(expected), process, "Settled startup")
 
     since = len(events)
-    screen.key("9", screen.command)
-    cold_page = tab_path(COLD)
+    selection_started = time.monotonic_ns()
+    if mode == "space-switch":
+        x, y = access.center(access.control(PARKED_SPACE, ("AXButton",)))
+        bounds = screen.windows()[0]["kCGWindowBounds"]
+        screen.click((x - bounds["X"], y - bounds["Y"]))
+        wait_for("Parked space did not become selected",
+                 lambda: access.find(PARKED_SPACE, ("AXMenuButton",)), process)
+        cold_tab = first_space_size + 1
+    else:
+        screen.key("9", screen.command)
+        cold_tab = COLD
+    cold_page = tab_path(cold_tab)
     cold = find_event("ready", page=cold_page, since=since)
-    cold_ax = mounted_tab(COLD)
-    input_on(COLD, cold, "selected parked draft")
+    cold_ax = mounted_tab(cold_tab)
+    cold_input = input_on(cold_tab, cold, "selected parked draft")
+    if mode == "space-switch":
+        find_event("settled", page=cold_page, since=since, id=cold["id"])
+        quiet_until = time.monotonic() + 3
+        wait_for("Post-switch observation interval did not finish", lambda: time.monotonic() >= quiet_until, process)
     final_requests = request_list()
     if final_requests != startup_requests + [cold_page]:
         raise RuntimeError(f"Selecting the cold row also started another document: {final_requests}")
 
     final_counts = engine.checkpoint(len(expected) + 1, process, "Cold selection")
     (output / "result.json").write_text(json.dumps({
-        "mode": "last-tab-only" if last_tab_only else "default",
+        "mode": mode,
         "saved_rows": 50,
+        "observed_latency_ms": {
+            "launch_to_selected_document": round((foreground["received_ns"] - screen.launch_started_ns) / 1e6, 2),
+            "launch_to_trusted_input": round((first_input["received_ns"] - screen.launch_started_ns) / 1e6, 2),
+            "cold_selection_to_document": round((cold["received_ns"] - selection_started) / 1e6, 2),
+            "cold_selection_to_trusted_input": round((cold_input["received_ns"] - selection_started) / 1e6, 2),
+        },
         "initial_requests": initial_requests,
         "startup_requests": startup_requests,
         "startup_renderer_documents": startup_ready,
@@ -314,25 +343,42 @@ def exercise(screen, process, events, output, *, last_tab_only, engine):
     screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process))
 
 
-if __name__ == "__main__":
+def main():
     preferences = []
+    mode, selected, first_space_size, ceiling = "default", SELECTED, 25, STANDARD_LIMIT + 1
 
     def options(parser):
-        parser.add_argument("--last-tab-only", action="store_true",
-                            help="verify the same session with the startup warmer disabled")
+        nonlocal mode, selected, first_space_size, ceiling
+        scenario = parser.add_mutually_exclusive_group()
+        scenario.add_argument("--last-tab-only", action="store_true",
+                              help="verify the same session with the startup warmer disabled")
+        scenario.add_argument("--check-space-switch", action="store_true",
+                              help="verify ordinary space switching does not restart the completed startup warmer")
         args = parser.parse_args()
         if args.last_tab_only:
+            mode, ceiling = "last-tab-only", 2
             preferences.append(("settings.startupLoadMode", "-string", "nothing"))
+        elif args.check_space_switch:
+            mode, selected, first_space_size, ceiling = "space-switch", 2, 3, 4
         return args
 
+    def prepare(root, origin, app, space):
+        prepare_fixture(root, origin, app, space, selected=selected, first_space_size=first_space_size,
+                        check_space_switch=mode == "space-switch")
+
     def walk(screen, process, events, output):
-        exercise(screen, process, events, output, last_tab_only=bool(preferences), engine=engine)
+        exercise(screen, process, events, output, selected=selected, first_space_size=first_space_size,
+                 mode=mode, engine=engine)
 
     with observe_engine_counts() as engine:
-        status = run_walk(__doc__, "startup-lazy-restore", serve, walk, preferences,
-                          prepare_fixture=prepare_fixture, official_qualification=True, parse_options=options)
+        status = run_walk(__doc__, "startup-lazy-restore", lambda: serve(selected), walk, preferences,
+                          prepare_fixture=prepare, official_qualification=True, parse_options=options)
     if status == 0:
         counts = engine.snapshot()
-        if max(counts) > (2 if preferences else STANDARD_LIMIT + 1):
+        if max(counts) > ceiling:
             raise RuntimeError(f"The engine exceeded the tab ceiling before quit: {counts}")
-    sys.exit(status)
+    return status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

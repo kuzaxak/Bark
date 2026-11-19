@@ -203,6 +203,10 @@ The two-profile walk opens the same inbox in Work and Personal. It checks
 which tab receives typed input and which page receives the decision on a
 pending location request. [Run the two-profile walk](Tests/ChromiumProfilePages/README.md)
 
+The large-session walk restores 50 saved tabs. It measures foreground input,
+counts Chromium tabs under each startup mode, and checks which pages load
+when you switch spaces. [Run the large-session walk](Tests/ChromiumStartup/README.md)
+
 The download walks use a disposable Chromium profile and local attachments.
 They cover cancellation, Quick Look, history after relaunch and choosing another
 folder in Save As. The upload walk cancels and reopens the native file chooser,

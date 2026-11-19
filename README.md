@@ -10,6 +10,9 @@ AppKit. Chromium renders the pages.
 Choose **Help → Bark Help** for a quick guide to the browser’s window controls.
 
 - Switch spaces from the sidebar to return to the tabs for that space and profile.
+- In **Settings → General → Performance**, set **On Startup** to **Last Tab Only**
+  to restore the pages shown in your saved windows and splits. Background tabs
+  load when you select them.
 - Choose **View → Show Toolbar** to move the address and navigation controls
   above the page. Choose **View → Hide Toolbar** to return them to the sidebar.
 - Choose **View → Open Command Bar** and type a folder name. Use the full path
