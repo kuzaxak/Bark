@@ -68,3 +68,23 @@ URLs and stale or deleted profile handling.
 set -l evidence (mktemp -d /private/tmp/bark-profile-quick-links.XXXXXX)
 "$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python" -B Tests/ChromiumProfilePages/quick_links_walk.py --app build/Bark.app --output "$evidence/walk" --verify-sdk
 ```
+
+### Profile-local site icons
+
+Use the pinned SDK and a signed candidate built with the optional native favicon
+callback. Run from the source snapshot that pins the candidate’s SDK. Use
+`--verify-sdk` for a staged developer SDK, or `--require-official` only for an
+official SDK with verified provenance.
+
+```fish
+set -l evidence (mktemp -d /private/tmp/bark-profile-favicons.XXXXXX)
+"$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python" -B Tests/ChromiumProfilePages/favicon_walk.py --app build/Bark.app --output "$evidence/walk" --verify-sdk
+```
+
+A disposable Work profile and Personal profile open the same loopback URL. The
+walk switches profiles through the sidebar and verifies the active document’s
+profile label and URL through accessibility. It measures the two fixture colors
+in screenshots of the real sidebar row and checks that navigation to a page
+without an icon clears Work’s previous icon while Personal’s remains intact.
+The evidence includes each rendered step, candidate verification, fixture
+requests and clean quit.
