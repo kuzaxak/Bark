@@ -656,7 +656,6 @@ class BrowserManager: ObservableObject {
             windowState.isSidebarVisible.toggle()
             // Width stays the same whether visible or hidden
         }
-        if !windowState.isSidebarVisible { sidebarPiPSidebarHidden(in: windowState) }
         if windowRegistry?.activeWindow?.id == windowState.id {
             isSidebarVisible = windowState.isSidebarVisible
             sidebarWidth = windowState.sidebarWidth
@@ -996,7 +995,6 @@ class BrowserManager: ObservableObject {
         isCommandPaletteVisible = windowState.isCommandPaletteVisible
         // The newly active window's space is the app's login context.
         windowSpaceChanged(windowState)
-        moveSidebarPiP(to: windowState)
     }
 
     // MARK: - Window-Aware Tab Operations

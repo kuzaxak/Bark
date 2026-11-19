@@ -243,7 +243,7 @@ extension PageSession: WKScriptMessageHandler {
 
                     // The store coalesces writes, so SPA URL changes report directly.
                     controller?.pageCommitted(itemID: itemID, url: url)
-                    controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                    controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
                     if let webView = message.webView { schedulePageTextCapture(in: webView, sameDocument: true) }
                 }
             }

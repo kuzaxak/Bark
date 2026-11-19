@@ -48,6 +48,21 @@ struct BackgroundLinkTabTests {
         #expect((page.webView as? RecordingWebView)?.requested == [link])
     }
 
+    @Test func legacyWebKitObserverReceivesOpenTitleAndClose() throws {
+        let host = try Host()
+        let observer = RecordingWebKitTabEvents()
+        host.tabs.tabEvents = observer
+        let space = try #require(host.window.spaceID)
+        let id = try #require(host.tabs.open(url: link, in: host.window, placement: .newTab,
+                                            parent: .tabs(spaceID: space)))
+        let page = try #require(host.tabs.session(for: id))
+        page.updateTitle("Fixture title")
+        host.tabs.close(id)
+        #expect(observer.opened.contains(id) && observer.activated.contains(id))
+        #expect(observer.changed.contains(id))
+        #expect(observer.closed.contains(id))
+    }
+
     @Test func backgroundTabWithoutOpenerWaitsForSelection() throws {
         let host = try Host()
         let spaceID = try #require(host.window.spaceID)
@@ -120,4 +135,24 @@ final class RecordingWebView: WKWebView, SessionWebView {
         request.url.map { requested.append($0) }
         return nil
     }
+}
+
+@MainActor
+final class RecordingWebKitTabEvents: WebKitTabEventObserver {
+    private(set) var opened: [UUID] = []
+    private(set) var activated: [UUID] = []
+    private(set) var changed: [UUID] = []
+    private(set) var closed: [UUID] = []
+    private(set) var granted: [URL] = []
+    var nativeController: WKWebExtensionController? { nil }
+    func tabOpened(_ session: PageSession) { opened.append(session.itemID) }
+    func tabActivated(new session: PageSession, previous: PageSession?) { activated.append(session.itemID) }
+    func tabClosed(itemID: UUID) { closed.append(itemID) }
+    func tabMoved(itemID: UUID, from oldIndex: Int?, in oldWindow: BrowserWindowState?, pinnedChanged: Bool) {}
+    func tabPropertiesChanged(_ session: PageSession, properties: WKWebExtension.TabChangedProperties) {
+        if properties.contains(.title) { changed.append(session.itemID) }
+    }
+    func grantAccess(to url: URL) { granted.append(url) }
+    func wakeBackgroundWorkers() {}
+    func diagnose(for webView: WKWebView, url: URL) {}
 }

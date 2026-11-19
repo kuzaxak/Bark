@@ -1,18 +1,17 @@
 // Licensed under GPL-3.0. See LICENSE.
-//
-//  TabEventObserver.swift
-//  NookWeb
-//
-//  Tab lifecycle as web extensions see it. The app forwards these to ExtensionManager;
-//  a host without extensions leaves the observer nil.
-//
 
 import WebKit
 
+/// App chrome updates shared by both page engines.
 @MainActor
 public protocol TabEventObserver: AnyObject {
-    func tabOpened(_ session: PageSession)
     func tabActivated(new session: PageSession, previous: PageSession?)
+}
+
+/// Optional extension lifecycle hooks for WebKit hosts.
+@MainActor
+public protocol WebKitTabEventObserver: TabEventObserver {
+    func tabOpened(_ session: PageSession)
     func tabClosed(itemID: UUID)
     func tabMoved(itemID: UUID, from oldIndex: Int?, in oldWindow: BrowserWindowState?, pinnedChanged: Bool)
     func tabPropertiesChanged(_ session: PageSession, properties: WKWebExtension.TabChangedProperties)

@@ -68,7 +68,7 @@ extension PageSession: WKNavigationDelegate {
         if let newURL = webView.url {
             // Extension diagnostics: check content scripts, background worker, and messaging
             #if DEBUG
-            controller?.tabEvents?.diagnose(for: webView, url: newURL)
+            controller?.webKitTabEvents?.diagnose(for: webView, url: newURL)
             #endif
             if let settings = controller?.settings { BoostTweaks.runScripts(for: newURL, in: webView, settings: settings) }
 
@@ -228,7 +228,7 @@ extension PageSession: WKNavigationDelegate {
         // newer navigation superseded this one, isLoading is still true and that one owns `url`.
         if !webView.isLoading, let committed = webView.url, committed != url {
             url = committed
-            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+            controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
             controller?.pageCommitted(itemID: itemID, url: committed)
         }
 
@@ -328,7 +328,7 @@ extension PageSession: WKNavigationDelegate {
 
             // Grant extension access to this URL BEFORE navigation starts
             // so content scripts can inject at document_start
-            controller?.tabEvents?.grantAccess(to: url)
+            controller?.webKitTabEvents?.grantAccess(to: url)
 
             // Setup content blocker scripts before navigation starts
             controller?.blocker.setupContentBlockerScripts(for: url, in: webView, tab: self)

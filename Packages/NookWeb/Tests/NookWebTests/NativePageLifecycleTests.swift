@@ -2833,6 +2833,26 @@ struct NativePageLifecycleTests {
         #expect(session.title == "Native page")
     }
 
+    @Test func chromiumSelectionKeepsActivationWithoutWebKitExtensionHooks() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        fixture.host.finishCreate(0)
+        let observer = RecordingWebKitTabEvents()
+        fixture.tabs.tabEvents = observer
+        let space = try #require(fixture.window.spaceID)
+        let page = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        let id = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: fixture.window, spaceID: space, select: true))
+        #expect(observer.activated == [id])
+        let url = URL(string: "https://fixture.invalid/extension-observer")!
+        page.onEvent?(.committed(url, sameDocument: false))
+        page.onEvent?(.titleChanged("Native title"))
+        fixture.tabs.close(id)
+        fixture.host.finishClose(0, admitted: true)
+        #expect(observer.opened.isEmpty && observer.changed.isEmpty &&
+                observer.granted.isEmpty && observer.closed.isEmpty)
+    }
+
     @Test func adoptionUsesExplicitInactiveProfileWithoutAnotherCreateOrLoad() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }

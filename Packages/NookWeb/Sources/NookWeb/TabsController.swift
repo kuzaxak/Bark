@@ -113,6 +113,10 @@ public final class TabsController {
         return sessionDelegate as? any WebKitPageSessionDelegate
     }
     @ObservationIgnored public weak var tabEvents: TabEventObserver?
+    var webKitTabEvents: (any WebKitTabEventObserver)? {
+        guard profileEngine == .webKit else { return nil }
+        return tabEvents as? any WebKitTabEventObserver
+    }
     @ObservationIgnored private weak var webKitAlerts: (any WebKitAlertPresenter)?
     /// Native Chromium presents page prompts through its own mounted browser host.
     public var webKitAlertPresenter: (any WebKitAlertPresenter)? {
@@ -587,7 +591,7 @@ public final class TabsController {
         guard let session else { return }
         session.tearDown()
         if !session.isPrivate {
-            tabEvents?.tabClosed(itemID: itemID)
+            webKitTabEvents?.tabClosed(itemID: itemID)
         }
     }
 

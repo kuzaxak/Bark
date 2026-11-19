@@ -160,7 +160,7 @@ extension TabsController {
         session.onClose = nil
         register(session, in: window)
         // Extensions could not see the page while it had no item.
-        if !session.isPrivate { tabEvents?.tabOpened(session) }
+        if !session.isPrivate { webKitTabEvents?.tabOpened(session) }
         select(session.itemID, in: window)
         return session.itemID
     }
@@ -170,7 +170,7 @@ extension TabsController {
         guard session.isDetached else { return }
         session.onClose = nil
         session.tearDown()
-        if !session.isPrivate { tabEvents?.tabClosed(itemID: session.itemID) }
+        if !session.isPrivate { webKitTabEvents?.tabClosed(itemID: session.itemID) }
     }
 
     /// A WebKit-created popup from `opener`: a new selected tab in the opener's window whose
@@ -835,7 +835,7 @@ extension TabsController {
         let currentURL = current?.storableURL ?? (wasSynced ? device.openPages[itemID]?.url : nil)
         // Extensions see the move against the window list the tab was in.
         // ponytail: only the moved item is reported, not tabs inside a moved folder.
-        let oldWindow = regularWindows.first { displayOrder(in: $0).contains(itemID) }
+        let oldWindow = webKitTabEvents == nil ? nil : regularWindows.first { displayOrder(in: $0).contains(itemID) }
         let oldIndex = oldWindow.flatMap { displayOrder(in: $0).firstIndex(of: itemID) }
         let before = tree(owner).item(itemID)
         guard perform(owner, "move", { try $0.move(itemID, to: parent, after: after, currentURL: currentURL) }) != nil else { return }
@@ -843,7 +843,7 @@ extension TabsController {
         guard case .main = owner else { return }
         let isSynced = tree.scope(of: itemID) == .synced
         if current != nil {
-            tabEvents?.tabMoved(itemID: itemID, from: oldIndex, in: oldWindow, pinnedChanged: wasSynced != isSynced)
+            webKitTabEvents?.tabMoved(itemID: itemID, from: oldIndex, in: oldWindow, pinnedChanged: wasSynced != isSynced)
         }
         if wasSynced, !isSynced {
             for id in tree.subtree(of: itemID) where device.openPages[id]?.pendingSearch == nil { setOpenPage(id, nil) }

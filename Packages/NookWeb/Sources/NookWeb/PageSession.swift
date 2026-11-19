@@ -627,7 +627,7 @@ public final class PageSession: NSObject, Identifiable {
             loadingState = .didStartProvisionalNavigation
             blockedURL = nil
             certificateWarning = nil
-            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+            controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
             if let newURL {
                 if newURL != navigationDocumentURL {
                     hasAudioContent = false
@@ -664,7 +664,7 @@ public final class PageSession: NSObject, Identifiable {
                 loadingState = .didCommit
                 linkPreview = nil
                 certificateWarning = nil
-                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
             }
             if let newURL {
                 url = newURL
@@ -676,8 +676,8 @@ public final class PageSession: NSObject, Identifiable {
                 controller?.pageCommitted(itemID: itemID, url: newURL, resolvingPrivateSearch: privateSearchCommit)
                 controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
                 if !isDetached { controller?.webKitSessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
-                controller?.tabEvents?.grantAccess(to: newURL)
-                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                controller?.webKitTabEvents?.grantAccess(to: newURL)
+                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
             }
             if sameDocument { scheduleNativePageTextCapture(sameDocument: true) }
         case .finished(let newURL, let finalTitle, let isReload):
@@ -690,12 +690,12 @@ public final class PageSession: NSObject, Identifiable {
                 navigationFinishedReported = true
                 scheduleNativePageTextCapture(sameDocument: false)
                 if usesNativePageHost { offerTranslationIfNeeded() }
-                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
                 if let newURL {
                     url = newURL
-                    controller?.tabEvents?.grantAccess(to: newURL)
-                    controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
-                    controller?.tabEvents?.wakeBackgroundWorkers()
+                    controller?.webKitTabEvents?.grantAccess(to: newURL)
+                    controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                    controller?.webKitTabEvents?.wakeBackgroundWorkers()
                     controller?.pageCommitted(itemID: itemID, url: newURL)
                     controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
                 }
@@ -719,7 +719,7 @@ public final class PageSession: NSObject, Identifiable {
             if let committedURL { navigationDocumentURL = committedURL }
             if let committedURL, committedURL != url {
                 url = committedURL
-                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
                 controller?.pageCommitted(itemID: itemID, url: committedURL)
             }
             loadingState = provisional ? .didFailProvisionalNavigation(error) : .didFail(error)
@@ -733,10 +733,10 @@ public final class PageSession: NSObject, Identifiable {
             loadingState = .idle
             if let committedURL, committedURL != url {
                 url = committedURL
-                controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
+                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
                 controller?.pageCommitted(itemID: itemID, url: committedURL)
             }
-            controller?.tabEvents?.tabPropertiesChanged(self, properties: [.loading])
+            controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
         case .nativeBlocked(let target):
             guard usesNativePageHost, !nativeIsEnding, !nativeNavigationPendingStart,
                   navigation?.profileID == profile?.id else { return }
@@ -947,7 +947,7 @@ public final class PageSession: NSObject, Identifiable {
         if isPrivate || isAgentPage {
             configuration.webExtensionController = nil
         } else if configuration.webExtensionController == nil,
-                  let extensionController = controller?.tabEvents?.nativeController {
+                  let extensionController = controller?.webKitTabEvents?.nativeController {
             configuration.webExtensionController = extensionController
         }
 
@@ -977,7 +977,7 @@ public final class PageSession: NSObject, Identifiable {
         // Inform extensions before loading so content scripts and messaging can resolve this
         // page during early document phases.
         if !didNotifyOpenToExtensions {
-            controller?.tabEvents?.tabOpened(self)
+            controller?.webKitTabEvents?.tabOpened(self)
             if controller?.activeWindowSession === self {
                 controller?.tabEvents?.tabActivated(new: self, previous: nil)
             }
@@ -1039,7 +1039,7 @@ public final class PageSession: NSObject, Identifiable {
         setupThemeColorObserver(for: webView)
         setupNavigationStateObservers(for: webView)
         if !didNotifyOpenToExtensions, !isPrivate {
-            controller?.tabEvents?.tabOpened(self)
+            controller?.webKitTabEvents?.tabOpened(self)
             didNotifyOpenToExtensions = true
         }
     }
@@ -1187,7 +1187,7 @@ public final class PageSession: NSObject, Identifiable {
         loadingState = .didStartProvisionalNavigation
 
         // Grant extension access before loading so content scripts inject at document_start.
-        controller?.tabEvents?.grantAccess(to: newURL)
+        controller?.webKitTabEvents?.grantAccess(to: newURL)
 
         // Reset audio tracking for the new page; the mute preference is preserved.
         hasAudioContent = false
@@ -1459,7 +1459,7 @@ public final class PageSession: NSObject, Identifiable {
         guard resolved != title else { return }
         title = resolved
         controller?.pageTitleChanged(itemID: itemID, title: resolved)
-        controller?.tabEvents?.tabPropertiesChanged(self, properties: [.title])
+        controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.title])
     }
 
     // MARK: - Observation
