@@ -4131,7 +4131,7 @@ struct NativeVaultFormTests {
         #expect(launches == (result == "ambiguous" ? 1 : 0))
         if result == "conflict" || result == "lostReply" {
             let notice = f.tabs.selectedSession(in: f.window)?.nativeVaultNotice
-            #expect(notice == (result == "conflict" ? "This login changed. Open Pawl Vault to review it."
+            #expect(notice == (result == "conflict" ? "Review this login in Pawl Vault before saving again."
                                                     : "Save unconfirmed. Check this login in Pawl Vault."))
         }
     }

@@ -32,27 +32,32 @@ struct VaultSaveOfferView: View {
         }
     }
 
+    @ViewBuilder
+    private var actions: some View {
+        Button("Not Now") { answer(false) }
+            .buttonStyle(.bordered)
+        Button(buttonLabel) { answer(true) }
+            .buttonStyle(.borderedProminent)
+    }
+
     var body: some View {
-        HStack(spacing: NookDesign.Spacing.md) {
-            VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                Text(title)
-                    .font(NookDesign.Font.body)
-                    .foregroundStyle(.primary)
-                Text("\(offer.username) on \(offer.host)")
-                    .font(NookDesign.Font.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+        VStack(alignment: .leading, spacing: NookDesign.Spacing.sm) {
+            Text(title)
+                .font(NookDesign.Font.body)
+                .foregroundStyle(.primary)
+            Text("\(offer.username) on \(offer.host)")
+                .font(NookDesign.Font.caption)
+                .foregroundStyle(.secondary)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: NookDesign.Spacing.sm) { actions }
+                    .fixedSize()
+                VStack(alignment: .trailing, spacing: NookDesign.Spacing.xs) { actions }
             }
-            .padding(.leading, NookDesign.Spacing.sm)
-            HStack(spacing: NookDesign.Spacing.xxs) {
-                Button("Not Now") { answer(false) }
-                Button(buttonLabel) { answer(true) }
-            }
-            .buttonStyle(RectNavButtonStyle())
+            .frame(maxWidth: .infinity, alignment: .trailing)
             .controlSize(.small)
         }
-        .padding(NookDesign.Spacing.xxs)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(NookDesign.Spacing.md)
         .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.md))
     }
 }

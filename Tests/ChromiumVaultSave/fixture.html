@@ -13,6 +13,7 @@ if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname
     <p>Signed in to the disposable fixture</p>
     <button type="button" id="passkey">Start disposable passkey</button>
     <a href="/saved-form">Check the saved fixture account</a>
+    <a href="/updated-form">Check the updated fixture account</a>
     <a href="/new-form">Use a new fixture account</a>
   `;
   document.querySelector("#passkey").onclick = async function () {
@@ -49,10 +50,12 @@ if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname
   function checkFill() {
     const saved = location.pathname === "/saved-form";
     const expectedAccount = saved ? "synthetic-new" : "synthetic-existing";
-    const expectedPassword = saved ? "disposable-new-password" : "fixture-password";
+    const updated = location.pathname === "/updated-form";
+    const expectedPassword = saved ? "disposable-new-password" :
+      (updated ? "disposable-replacement-password" : "fixture-password");
     if (!verified && account.value === expectedAccount && password.value === expectedPassword) {
       verified = true;
-      report(saved ? "saved-fields-filled" : "typed-fields-filled");
+      report(saved ? "saved-fields-filled" : (updated ? "updated-fields-filled" : "typed-fields-filled"));
     }
   }
   account.addEventListener("input", checkFill);

@@ -282,7 +282,8 @@ def launch_verified(app, cdhash, root, profile, log, app_output_lock):
 
 
 def run_walk(description, name, serve, exercise, preferences=(), *,
-             source_host="127.0.0.1", prepare_fixture=None, official_qualification=False, relaunch=None):
+             source_host="127.0.0.1", prepare_fixture=None, official_qualification=False, relaunch=None,
+             parse_options=None):
     parser = argparse.ArgumentParser(description=description)
     parser.add_argument("--app", type=Path, required=True, help="Signed Bark.app for this Mac’s native architecture")
     parser.add_argument("--output", type=Path, required=True, help="New directory for test evidence")
@@ -292,7 +293,7 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
                                   help="verify the native official SDK and signed payload")
         verification.add_argument("--verify-sdk", action="store_true",
                                   help="verify the pinned native SDK and signed payload without checking official provenance")
-    args = parser.parse_args()
+    args = parser.parse_args() if parse_options is None else parse_options(parser)
     if sys.platform != "darwin":
         parser.error("This walk requires macOS")
     from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,

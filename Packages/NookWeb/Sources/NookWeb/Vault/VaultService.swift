@@ -663,7 +663,7 @@ private final class NativeVaultAttachment {
                 let reply = try await service.client.send(write)
                 guard self.requireCurrentSave(offer, generation) else { return }
                 if reply.outcome == .conflict {
-                    self.session?.nativeVaultNotice = "This login changed. Open Pawl Vault to review it."
+                    self.session?.nativeVaultNotice = "Review this login in Pawl Vault before saving again."
                 }
             } catch {
                 // Report uncertain delivery to the original page before a disconnect retires its offer.

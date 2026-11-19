@@ -19,13 +19,13 @@ from signed_walk import run_walk, wait_for
 ACCOUNT = "synthetic-new"
 PASSWORD = "disposable-new-password"
 EXISTING_ACCOUNT = "synthetic-existing"
-EXISTING_PASSWORD = "fixture-password"
+UPDATED_PASSWORD = "disposable-replacement-password"
 MARKER = "Bark verification vault: "
 
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        if self.path in ("/source", "/new-form", "/saved-form", "/passkey"):
+        if self.path in ("/source", "/new-form", "/saved-form", "/updated-form", "/passkey"):
             self.page()
         else:
             self.send_error(404)
@@ -38,9 +38,9 @@ class Fixture(BaseHTTPRequestHandler):
         data = self.rfile.read(length).decode()
         if self.path in ("/signed-in", "/existing-signed-in"):
             existing = self.path == "/existing-signed-in"
-            account, password = (EXISTING_ACCOUNT, EXISTING_PASSWORD) if existing else (ACCOUNT, PASSWORD)
+            account, password = (EXISTING_ACCOUNT, UPDATED_PASSWORD) if existing else (ACCOUNT, PASSWORD)
             matches = parse_qs(data) == {"username": [account], "password": [password]}
-            event = "existing-fixture-submitted" if existing else "fixture-submitted"
+            event = "updated-fixture-submitted" if existing else "fixture-submitted"
             self.server.events.append(event if matches else "unmatched-submission")
             if not matches:
                 self.send_error(400)
@@ -49,8 +49,8 @@ class Fixture(BaseHTTPRequestHandler):
             return
         if self.path != "/event" or data not in {
             "ready:/source", "ready:/new-form", "ready:/signed-in",
-            "ready:/saved-form", "ready:/passkey", "ready:/existing-signed-in",
-            "typed-fields-filled", "saved-fields-filled", "passkey-started", "passkey-cancelled",
+            "ready:/saved-form", "ready:/updated-form", "ready:/passkey", "ready:/existing-signed-in",
+            "typed-fields-filled", "saved-fields-filled", "updated-fields-filled", "passkey-started", "passkey-cancelled",
             "passkey-created", "passkey-error", "code-only-filled", "wrong-code-fill",
         }:
             self.send_error(400)
@@ -138,7 +138,7 @@ class CandidateControls:
                 break
         raise RuntimeError("Native Pawl consent was not in an attached sheet")
 
-    def center(self, element):
+    def rect(self, element):
         self.screen.guard()
 
         def rect_component(name, kind):
@@ -152,7 +152,35 @@ class CandidateControls:
         size = rect_component("AXSize", self.ax.kAXValueCGSizeType)
         if position is None or size is None or size.width <= 0 or size.height <= 0:
             return None
-        return position.x + size.width / 2, position.y + size.height / 2
+        return position.x, position.y, size.width, size.height
+
+    def center(self, element):
+        bounds = self.rect(element)
+        if bounds is None:
+            return None
+        x, y, width, height = bounds
+        return x + width / 2, y + height / 2
+
+    def require_card_layout(self, title, account, action):
+        detail_label = f"{account} on localhost"
+
+        def detail_above_actions():
+            for window in self.attribute(self.app, "AXWindows") or ():
+                if not self.find(title, (), root=window):
+                    continue
+                detail = self.find(detail_label, ("AXStaticText",), partial=True, root=window)
+                decline = self.find("Not Now", ("AXButton",), root=window)
+                accept = self.find(action, ("AXButton",), root=window)
+                if detail is None or decline is None or accept is None:
+                    continue
+                detail_rect, decline_rect, accept_rect = map(self.rect, (detail, decline, accept))
+                if (detail_rect and decline_rect and accept_rect and
+                        detail_rect[1] + detail_rect[3] <= min(decline_rect[1], accept_rect[1])):
+                    return True
+            return False
+
+        wait_for(f"{title}: account detail must sit above both native action buttons",
+                 detail_above_actions, self.process)
 
     def click_point(self, point):
         bounds = self.screen.windows()[0]["kCGWindowBounds"]
@@ -192,7 +220,7 @@ class CandidateControls:
         (output / "accessibility.json").write_text(json.dumps(labels, indent=2))
 
 
-def exercise(screen, process, events, output):
+def exercise(screen, process, events, output, *, legacy_provider):
     controls = CandidateControls(screen, process)
     log = output / "app.log"
 
@@ -204,12 +232,44 @@ def exercise(screen, process, events, output):
         return sum(line.strip().endswith(MARKER + name)
                    for line in log.read_text(errors="replace").splitlines())
 
+    def writes():
+        return tuple(method(name) for name in ("save", "checked create", "checked update"))
+
+    def attempts():
+        return method("save attempted"), method("checked commit attempted")
+
+    def quit_app():
+        screen.key("q", screen.command)
+        controls.press("Quit")
+
+    def decline_manual_card(card, account, screenshot, reads):
+        controls.require(card)
+        controls.require(f"{account} on localhost", partial=True)
+        controls.require("Open Pawl Vault", ("AXButton",))
+        controls.require_card_layout(card, account, "Open Pawl Vault")
+        if any(controls.find(title, ()) for title in (
+            "Save password to Pawl Vault?", "Update password in Pawl Vault?"
+        )):
+            raise RuntimeError("The legacy provider offered a password write")
+        screen.screenshot(output / screenshot, include_owned_windows=True)
+        controls.press("Not Now")
+        wait_for("The manual management card did not dismiss",
+                 lambda: not controls.find(card, ()), process)
+        if method("password") != reads or any(writes()) or any(attempts()):
+            raise RuntimeError("A manual-only submission fetched or attempted to write a secret")
+
     try:
         seen("ready:/source", timeout=30)
         screen.guard()
         controls.ax.AXUIElementSetAttributeValue(controls.app, "AXEnhancedUserInterface", True)
         wait_for("Synthetic Pawl provider did not initialize",
                  lambda: method("ready"), process)
+        wait_for("The signed fixture did not report its negotiated login mode",
+                 lambda: method("conditional login writes") or method("legacy login writes"),
+                 process)
+        expected_mode = (0, 1) if legacy_provider else (1, 0)
+        if (method("conditional login writes"), method("legacy login writes")) != expected_mode:
+            raise RuntimeError("The signed fixture selected the wrong login-write mode")
         controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
         picker = controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
         time.sleep(0.5)
@@ -219,28 +279,59 @@ def exercise(screen, process, events, output):
         wait_for("Synthetic password provider was not called", lambda: method("password"), process)
         print("Selected the synthetic Pawl login and verified both typed Chromium fields", flush=True)
 
-        reads_before_existing, saves_before_existing = method("password"), method("save")
+        reads_before_existing = method("password")
+        if any(writes()) or any(attempts()):
+            raise RuntimeError("The fixture attempted a write before any submission")
+        screen.keys["a"] = 0
+        controls.click("Fixture password", ("AXSecureTextField", "AXTextField"))
+        screen.key("Escape")
+        screen.key("a", screen.command)
+        screen.key(UPDATED_PASSWORD, unicode=True)
         controls.click("Sign in to fixture", ("AXButton",))
-        seen("existing-fixture-submitted")
+        seen("updated-fixture-submitted")
         seen("ready:/existing-signed-in")
-        card = "This login is already in Pawl Vault"
-        controls.require(card)
-        controls.require(f"{EXISTING_ACCOUNT} on localhost", partial=True)
-        controls.require("Open Pawl Vault", ("AXButton",))
-        if controls.find("Save password to Pawl Vault?", ()):
-            raise RuntimeError("The existing login offered a new password save")
-        screen.screenshot(output / "existing-login-card.png", include_owned_windows=True)
-        controls.press("Not Now")
-        wait_for("The existing-login card did not dismiss",
-                 lambda: not controls.find(card, ()), process)
-        if (method("password"), method("save")) != (reads_before_existing, saves_before_existing):
-            raise RuntimeError("The existing-login submission fetched or stored a secret")
-        print("Declined the existing-login card without a password fetch or save", flush=True)
+        if not legacy_provider:
+            card = "Update password in Pawl Vault?"
+            controls.require(card)
+            controls.require(f"{EXISTING_ACCOUNT} on localhost", partial=True)
+            controls.require("Update", ("AXButton",))
+            controls.require_card_layout(card, EXISTING_ACCOUNT, "Update")
+            if controls.find("Review this login in Pawl Vault", ()) or controls.find(
+                "Save password to Pawl Vault?", ()
+            ):
+                raise RuntimeError("Expected only the conditional update card")
+            if any(writes()) or any(attempts()) or method("password") != reads_before_existing:
+                raise RuntimeError("The existing-account submission fetched or wrote before approval")
+            screen.screenshot(output / "update-card.png", include_owned_windows=True)
+            controls.press("Update")
+            wait_for("Approved update did not reach the conditional transport",
+                     lambda: method("checked update") == 1, process)
+            wait_for("Native update card stayed open after Update",
+                     lambda: not controls.find(card, ()), process)
+            if writes() != (0, 0, 1) or attempts() != (0, 1) or method("password") != reads_before_existing:
+                raise RuntimeError("Updating the existing login created a record or fetched its secret")
+            controls.click("Check the updated fixture account", ("AXLink",))
+            seen("ready:/updated-form")
+            controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
+            updated = controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
+            rows = [element for element in controls.elements()
+                    if controls.attribute(element, "AXRole") == "AXButton"
+                    and any(EXISTING_ACCOUNT in label for label in controls.labels(element))]
+            if len(rows) != 1:
+                raise RuntimeError("Expected one picker row for the updated account")
+            time.sleep(0.5)
+            screen.press_button(updated)
+            seen("updated-fields-filled")
+            wait_for("Updated synthetic account was not fetched",
+                     lambda: method("password") > reads_before_existing, process)
+            print("Approved the native update and verified the replacement in the existing login", flush=True)
+        else:
+            decline_manual_card("Review this login in Pawl Vault", EXISTING_ACCOUNT,
+                                "manage-existing-card.png", reads_before_existing)
 
         new_form = controls.require("Use a new fixture account", ("AXLink",))
         screen.press_button(new_form)
         seen("ready:/new-form")
-        screen.keys["a"] = 0
         for label, value in (("Fixture account", ACCOUNT), ("Fixture password", PASSWORD)):
             controls.click(label, ("AXTextField", "AXSecureTextField"))
             screen.key("Escape")
@@ -249,12 +340,27 @@ def exercise(screen, process, events, output):
         controls.click("Sign in to fixture", ("AXButton",))
         seen("fixture-submitted")
         seen("ready:/signed-in")
+        if legacy_provider:
+            decline_manual_card("Open Pawl Vault to save this login", ACCOUNT,
+                                "manage-new-card.png", reads_before_existing)
+            if "leak_detection_request" in log.read_text(errors="replace"):
+                raise RuntimeError("Chromium attempted a password leak check in the disposable fixture")
+            quit_app()
+            if process.wait(timeout=20) != 0:
+                raise RuntimeError("The signed legacy-provider walk did not quit cleanly")
+            if method("password") != reads_before_existing or any(writes()) or any(attempts()):
+                raise RuntimeError("A manual-only submission sent a delayed credential request")
+            print("Both legacy cards left the submitted credentials untouched", flush=True)
+            return
         controls.require("Save password to Pawl Vault?")
         controls.require(f"{ACCOUNT} on localhost", partial=True)
+        controls.require_card_layout("Save password to Pawl Vault?", ACCOUNT, "Save")
+        if writes() != (0, 0, 1) or attempts() != (0, 1):
+            raise RuntimeError("The new login was saved before approval")
         screen.screenshot(output / "save-card.png", include_owned_windows=True)
         controls.press("Save")
         wait_for("Synthetic password save did not reach Pawl transport",
-                 lambda: method("save"), process)
+                 lambda: method("checked create") == 1, process)
         wait_for("Native save card stayed open after Save",
                  lambda: not controls.find("Save password to Pawl Vault?", ()), process)
         print("Approved the native Pawl save card for the synthetic account", flush=True)
@@ -329,8 +435,9 @@ def exercise(screen, process, events, output):
             raise RuntimeError("Cancelled consent produced a synthetic registration")
         print("Cancelled the native Pawl passkey consent without registering", flush=True)
 
-        if (method("password"), method("save")) != (reads_before_existing + 1, saves_before_existing + 1):
-            raise RuntimeError("Only the approved new save and its readback may add vault operations")
+        if (method("password") != reads_before_existing + 2 or
+                writes() != (0, 1, 1) or attempts() != (0, 2)):
+            raise RuntimeError("Unexpected password reads, creates, or updates in the disposable vault")
         if "leak_detection_request" in log.read_text(errors="replace"):
             raise RuntimeError("Chromium attempted a password leak check in the disposable fixture")
 
@@ -354,14 +461,13 @@ def exercise(screen, process, events, output):
             raise RuntimeError("Missing native Settings window close button")
         screen.press_button(close_settings)
         wait_for("Privacy settings stayed open after Close", lambda: not controls.find("Privacy", ("AXWindow",)), process)
-        screen.key("q", screen.command)
-        controls.press("Quit")
+        quit_app()
     except Exception:
         controls.dump(output)
         raise
 
 
-def prepare_fixture(root, origin, app, profile):
+def prepare_fixture(root, origin, app, profile, *, legacy_provider):
     shell = app / "Contents/Frameworks/NookNativeShell.framework/NookNativeShell"
     code = shell.read_bytes()
     markers = ["VaultFixture.json", *(MARKER + name for name in
@@ -375,7 +481,13 @@ def prepare_fixture(root, origin, app, profile):
     entitlements = plistlib.loads(report.stdout) if report.stdout else {}
     if {"keychain-access-groups", "com.apple.developer.web-browser.public-key-credential"} & entitlements.keys():
         raise RuntimeError("The vault fixture requires an app without platform credential entitlements")
-    (root / "VaultFixture.json").write_text(json.dumps({"origin": origin}) + "\n")
+    mode_markers = ("conditional login writes", "legacy login writes",
+                    "checked create", "checked update", "checked commit attempted", "save attempted")
+    if any((MARKER + name).encode() not in code for name in mode_markers):
+        raise RuntimeError("The signed candidate lacks the current vault fixture modes")
+    (root / "VaultFixture.json").write_text(json.dumps({
+        "origin": origin, "conditionalLoginWrites": not legacy_provider,
+    }) + "\n")
     # The synthetic submission stays on loopback. Chromium otherwise schedules
     # its own password leak check, independently of the selected save provider.
     engine_profile = root / "Engine" / f"Barc-{profile.lower()}"
@@ -385,11 +497,32 @@ def prepare_fixture(root, origin, app, profile):
     }) + "\n")
 
 
-if __name__ == "__main__":
-    sys.exit(run_walk(
-        "Signed Pawl password and code fill, save and passkey cancellation", "vault", serve, exercise,
+def main():
+    legacy_provider = False
+
+    def parse_options(parser):
+        nonlocal legacy_provider
+        parser.add_argument("--legacy-provider", action="store_true",
+                            help="exercise manual login management with a legacy Pawl transport")
+        options = parser.parse_args()
+        legacy_provider = options.legacy_provider
+        return options
+
+    def prepare(root, origin, app, profile):
+        prepare_fixture(root, origin, app, profile, legacy_provider=legacy_provider)
+
+    def run(screen, process, events, output):
+        exercise(screen, process, events, output, legacy_provider=legacy_provider)
+
+    return run_walk(
+        "Signed Pawl password and code fill, save, update and passkey cancellation", "vault", serve, run,
         preferences=(("settings.pawlVaultEnabled", "-bool", "true"),),
         source_host="localhost",
-        prepare_fixture=prepare_fixture,
+        prepare_fixture=prepare,
+        parse_options=parse_options,
         official_qualification=True,
-    ))
+    )
+
+
+if __name__ == "__main__":
+    sys.exit(main())

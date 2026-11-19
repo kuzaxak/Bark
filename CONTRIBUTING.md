@@ -178,15 +178,16 @@ The shipping address walk submits two forms, accepts one save prompt, declines
 the other, and checks what Chromium retained after quit.
 [Run the address walk](Tests/ChromiumAddressSave/README.md)
 
-To exercise the Chromium password UI, run the Pawl walk with the same Python
-environment. It uses an in-memory vault and a loopback sign-in form. It checks
-the filled fields, dismisses an existing-login card, approves a new login,
-reads it back, fills a one-time-code field while preserving both login fields,
-and cancels a passkey request. In Privacy settings it exercises the connected
-provider's management button using the disposable vault's unavailable launcher.
+The Pawl walk uses an in-memory vault and a loopback sign-in form. It updates an
+existing login, creates another, and reads both back through Chromium. It also
+fills a one-time code, cancels a passkey request, and exercises the connected
+provider’s management button. A second run selects a legacy provider. It submits
+both logins and dismisses both manual management cards,
+then checks that the browser attempted no password writes.
 
 ```fish
 python3 Tests/ChromiumVaultSave/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/vault
+python3 Tests/ChromiumVaultSave/walk.py --legacy-provider --verify-sdk --app build/Bark.app --output (mktemp -d)/legacy-vault
 ```
 
 The extension walk installs a local fixture, opens its pinned action from
