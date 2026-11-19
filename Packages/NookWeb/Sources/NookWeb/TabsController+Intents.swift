@@ -151,11 +151,16 @@ extension TabsController {
             return selectForAgent(itemID)
         }
         if profileEngine == .chromium && !nativeAdmitted {
-            if !window.isIncognito, let host = nativePageHost as? any NativeSpaceSwitchHost,
-               let space = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source),
-               space != window.spaceID || window.showsNativeEmptySpace || window.nativeSpaceSwitchIsPending {
-                switchNativeSpace(space, itemID: itemID, in: window, through: host)
-                return
+            // A split pane can lose activation to another pane of the same client.
+            // Let Chromium settle the selection before routing page commands.
+            let switchesPane = window.selectedItemID != itemID && window.split?.contains(itemID) == true
+            if let host = nativePageHost as? any NativeSpaceSwitchHost,
+               let space = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source) {
+                let changesSpace = !window.isIncognito && (space != window.spaceID || window.showsNativeEmptySpace)
+                if changesSpace || switchesPane || window.nativeSpaceSwitchIsPending {
+                    switchNativeSpace(space, itemID: itemID, in: window, through: host)
+                    return
+                }
             }
             prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
                 guard let self, let window else { return }
@@ -316,10 +321,16 @@ extension TabsController {
         }
     }
 
+    private func canSelect(_ profile: Profile, forSpace spaceID: UUID, in window: BrowserWindowState) -> Bool {
+        nativeProfile(profile.id, matches: spaceID, in: window) &&
+            (window.isIncognito ? window.ephemeralProfile === profile : isProfileAvailable(profile.id))
+    }
+
     private func switchNativeSpace(_ spaceID: UUID, itemID: UUID?, in window: BrowserWindowState,
                                    through host: any NativeSpaceSwitchHost) {
         guard !isTerminating, windowRegistry.windows[window.id] === window,
-              let profile = profile(forSpace: spaceID), isProfileAvailable(profile.id) else { return }
+              let profile = window.isIncognito ? window.ephemeralProfile : profile(forSpace: spaceID),
+              canSelect(profile, forSpace: spaceID, in: window) else { return }
         let generation = UUID()
         window.nativeSpaceSwitch = (generation, spaceID)
         guard cancelNativeSplit(in: window), window.nativeSpaceSwitch?.generation == generation,
@@ -350,6 +361,7 @@ extension TabsController {
                 window.refreshCompositor()
             }
 
+            let source = self.tree(self.owner(of: window))
             var presented = false
             var selected: PageSession?
             var destination = spaceID
@@ -358,10 +370,10 @@ extension TabsController {
             switch outcome {
             case .applied(let navigation):
                 finalSelection = nil
-                if self.tree.dataStoreID(for: spaceID) == profile.id && self.isProfileAvailable(profile.id) {
+                if self.canSelect(profile, forSpace: spaceID, in: window) {
                     applied = true
                     if let itemID, let navigation, let page = self.session(for: itemID), page.navigation === navigation,
-                       self.selectionSpaceID(for: itemID, currentSpaceID: spaceID, in: self.tree) == spaceID {
+                       self.selectionSpaceID(for: itemID, currentSpaceID: spaceID, in: source) == spaceID {
                         selected = page
                     } else if itemID == nil && navigation == nil {
                         publishEmpty(spaceID)
@@ -383,12 +395,12 @@ extension TabsController {
                 } else {
                     selected = self.sessions.first { $0.navigation === navigation }
                     if let page = selected, let space = self.selectionSpaceID(for: page.itemID,
-                        currentSpaceID: window.spaceID, in: self.tree) {
+                        currentSpaceID: window.spaceID, in: source) {
                         destination = space
                     } else { selected = nil }
                 }
             case .empty(let profileID):
-                let candidates = self.userSpaces(for: window).filter { self.tree.dataStoreID(for: $0.id) == profileID }
+                let candidates = self.userSpaces(for: window).filter { self.nativeProfile(profileID, matches: $0.id, in: window) }
                 if let empty = candidates.first(where: { $0.id == window.spaceID })?.id ??
                     (candidates.count == 1 ? candidates.first?.id : nil) {
                     if window.spaceID != empty || !window.showsNativeEmptySpace { publishEmpty(empty) }
@@ -398,7 +410,7 @@ extension TabsController {
                 break
             }
             if let selected, let navigation = selected.navigation,
-               navigation.profileID == self.tree.dataStoreID(for: destination),
+               self.nativeProfile(navigation.profileID, matches: destination, in: window),
                host.isNativeSelection(navigation, in: window), current() {
                 self.select(selected.itemID, in: window, leaving: self.selectedSession(in: window),
                             nativeAdmitted: true, showingAgentSpace: true, adoptionGeneration: generation,
@@ -432,8 +444,9 @@ extension TabsController {
         guard current() else { return }
         let submit = { [weak self, weak window, weak host] (page: (any PageNavigation)?) in
             guard let self, let window, let host, current() else { return }
-            guard self.tree.dataStoreID(for: spaceID) == profile.id, self.isProfileAvailable(profile.id),
-                  itemID.map({ self.selectionSpaceID(for: $0, currentSpaceID: spaceID, in: self.tree) == spaceID }) ?? true else {
+            let source = self.tree(self.owner(of: window))
+            guard self.canSelect(profile, forSpace: spaceID, in: window),
+                  itemID.map({ self.selectionSpaceID(for: $0, currentSpaceID: spaceID, in: source) == spaceID }) ?? true else {
                 settle(.refused(retained: nil)); return
             }
             if let leaving = self.selectedSession(in: window), leaving.navigation !== page {

@@ -99,6 +99,7 @@ import NookWeb
     static var onShow: ((Int32) -> Int32)?
     static var onCloseWindow: ((Int32) -> Int32)?
     static var onSelectWindow: ((Int32) -> Int32)?
+    static var onForward: ((Int32, Int32) -> Void)?
     static var onSpaceSwitch: ((BarcSpaceSwitchRequest, BarcSpaceSwitchCallback?, UnsafeMutableRawPointer?) -> Int32)?
     static var onOpen: ((Int32, barc_profile_window_callback?, UnsafeMutableRawPointer?) -> Void)?
     static var onPageView: ((Int32) -> Void)?
@@ -346,7 +347,11 @@ import NookWeb
             precondition(Native.restoring && Native.tabs.contains { $0.window == window && $0.tab == tab })
             Native.restoredURLs.append(String(cString: url!)); return 1
         } }
-        bridge.tab_go_back = { _, _ in 1 }; bridge.tab_go_forward = { _, _ in 1 }
+        bridge.tab_go_back = { _, _ in 1 }
+        bridge.tab_go_forward = { client, tab in MainActor.assumeIsolated {
+            Native.onForward?(client, tab)
+            return 1
+        } }
         bridge.tab_reload = { _, _ in preconditionFailure("Existing page was reloaded") }
         bridge.tab_stop = { _, _ in preconditionFailure("Existing page was stopped") }
         bridge.tab_select = { window, tab in MainActor.assumeIsolated {
@@ -851,6 +856,7 @@ private final class CatalogApplication: NSApplication {
     Native.windows[642] = Native.window(642, group: 642, profile: Native.work, flags: 0, active: 6420)
     Native.selectClient(640, tab: 6400)
     Native.tabs = [Native.tab(6400, window: 640), Native.tab(6401, window: 640),
+                   Native.tab(6402, window: 640), Native.tab(6403, window: 640),
                    Native.tab(6410, window: 641), Native.tab(6420, window: 642)]
     func discover() { admission.apply(Native.bridge.readSnapshot()!) }
     discover()
@@ -991,10 +997,58 @@ private final class CatalogApplication: NSApplication {
     tabs.setSpace(Native.personal, in: window)
     assertCommands(work, in: window)
 
-    // An existing mixed-profile split routes to its actual focused pane.
+    // Selecting another pane in one space follows the owner Chromium settles on.
     Native.onSpaceSwitch = nil
+    tabs.setSpace(Native.work, in: window)
     Native.restoring = true
     Native.onSelectWindow = { owner in Native.selectClient(owner, tab: 0); return 1 }
+    let second = page(6402), third = page(6403)
+    let sameSpaceSplit = SplitRecord([work.itemID, second.itemID, third.itemID],
+                                     orientation: .vertical, dividers: [0.3, 0.7])!
+    precondition(tabs.presentNativeSplit(sameSpaceSplit, activeItemID: work.itemID, in: window))
+    precondition(window.split == sameSpaceSplit && window.spaceID == Native.work)
+    var finishPaneSelection: ((BarcSpaceSwitchStatus, Int32) -> Void)?
+    Native.onSpaceSwitch = { request, callback, context in
+        precondition(request.client == 640 && request.tab == 6402)
+        finishPaneSelection = { status, actualTab in
+            Native.selectClient(640, tab: actualTab)
+            Native.settle(request, group: group, status: status, client: 640, tab: actualTab,
+                          callback: callback, context: context)
+        }
+        return 1
+    }
+    var forwardedTabs: [Int32] = []
+    Native.onForward = { client, tab in
+        precondition(client == 640)
+        forwardedTabs.append(tab)
+    }
+    func forward() { _ = tabs.controllableSession(in: window)?.navigation?.goForward() }
+    tabs.select(second.itemID, in: window)
+    precondition(finishPaneSelection != nil && window.nativeSpaceSwitchIsPending,
+                 "A pane activation must wait for the engine's selected page")
+    Native.selectClient(640, tab: 6403)
+    discover()
+    precondition(tabs.controllableSession(in: window) == nil)
+    forward()
+    precondition(forwardedTabs.isEmpty)
+    finishPaneSelection?(BARC_SPACE_SWITCH_SUPERSEDED, 6403)
+    assertCommands(third, in: window)
+    forward()
+    precondition(window.split == sameSpaceSplit && window.spaceID == Native.work)
+    tabs.select(second.itemID, in: window)
+    finishPaneSelection?(BARC_SPACE_SWITCH_REFUSED, 6403)
+    assertCommands(third, in: window)
+    forward()
+    Native.onSpaceSwitch = nil
+    tabs.select(second.itemID, in: window)
+    assertCommands(second, in: window)
+    forward()
+    precondition(forwardedTabs == [6403, 6403, 6402])
+    Native.onForward = nil
+    precondition(window.split == sameSpaceSplit)
+    assertCommands(otherPage, in: other)
+
+    // An existing mixed-profile split routes to its actual focused pane.
     let split = SplitRecord([research.itemID, personal.itemID], orientation: .vertical, dividers: [0.5])!
     var splitReady = false
     precondition(tabs.presentNativeSplit(split, activeItemID: research.itemID, in: window,
@@ -1156,6 +1210,33 @@ private final class CatalogApplication: NSApplication {
     precondition(privateTarget?.window == page.nativeWindowID && privateTarget?.regularProfile == nil)
     precondition(admission.browserTarget(kind: 0, regularProfile: a) == nil)
 
+    precondition(tabs.tree == originalTree && tabs.device == originalDevice)
+    let privateSibling = tabs.sessions.first {
+        ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == 7110
+    }!
+    let otherPrivate = tabs.privateWindows.first { $0.ephemeralProfile?.id == b }!
+    let otherSelection = tabs.controllableSession(in: otherPrivate)!
+    let privateSplit = SplitRecord([item, privateSibling.itemID])!
+    precondition(tabs.presentNativeSplit(privateSplit, activeItemID: item, in: child))
+    precondition(child.split == privateSplit)
+    var askedForPrivatePane = false
+    Native.onSpaceSwitch = { request, callback, context in
+        precondition(request.window == 711 && request.client == 711 && request.tab == 7110)
+        askedForPrivatePane = true
+        Native.settle(request, group: 711, status: BARC_SPACE_SWITCH_REFUSED, client: 711, tab: 7010,
+                      callback: callback, context: context)
+        return 1
+    }
+    tabs.select(privateSibling.itemID, in: child)
+    precondition(askedForPrivatePane && tabs.controllableSession(in: child) === originalSession,
+                 "A refused private pane change retains the original private page")
+    Native.onSpaceSwitch = nil
+    tabs.select(privateSibling.itemID, in: child)
+    precondition(tabs.controllableSession(in: child) === privateSibling && child.split == privateSplit)
+    tabs.select(item, in: child)
+    precondition(tabs.controllableSession(in: child) === originalSession)
+    precondition(tabs.presentNativeSplit(nil, activeItemID: item, in: child))
+    precondition(tabs.controllableSession(in: otherPrivate) === otherSelection)
     precondition(tabs.tree == originalTree && tabs.device == originalDevice)
     // A user-created tab reuses this exact private client; any persistent
     // profile factory, native focus or navigation replay remains a hard trap.

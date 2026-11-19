@@ -1348,13 +1348,13 @@ public final class TabsController {
         return id
     }
 
-    private func nativeProfileMatches(_ page: any PageNavigation, in window: BrowserWindowState,
-                                      spaceID: UUID) -> Bool {
+    func nativeProfile(_ profileID: UUID?, matches spaceID: UUID, in window: BrowserWindowState) -> Bool {
+        guard let profileID else { return false }
         if window.isIncognito {
             return window.privateTree?.space(spaceID) != nil && window.ephemeralProfile?.isEphemeral == true &&
-                window.ephemeralProfile?.engine == .chromium && window.ephemeralProfile?.id == page.profileID
+                window.ephemeralProfile?.engine == .chromium && window.ephemeralProfile?.id == profileID
         }
-        return window.privateTree == nil && tree.dataStoreID(for: spaceID) == page.profileID
+        return window.privateTree == nil && tree.dataStoreID(for: spaceID) == profileID
     }
 
     /// Private contents stay in their existing window-owned tree/session map.
@@ -1366,7 +1366,7 @@ public final class TabsController {
             (detachedSession == nil || (detachedSession?.navigation === page &&
                 detachedSession?.nativeIsEnding == false && detachedSession?.nativeRelease == nil)) && profileEngine == .chromium && !isTerminating && nativePageHost === host &&
             windowRegistry.windows[window.id] === window && window.isIncognito &&
-            nativeProfileMatches(page, in: window, spaceID: spaceID) && host.canAdoptPage(page, in: window)
+            nativeProfile(page.profileID, matches: spaceID, in: window) && host.canAdoptPage(page, in: window)
         }
         let generation = shouldSelect ? UUID() : nil
         if let generation { window.nativeSelectionGeneration = generation }
@@ -1536,7 +1536,7 @@ public final class TabsController {
               let host = nativePageHost, session.nativeResourceHost === host,
               let spaceID = tree(owner(of: window)).spaceID(of: itemID),
               tree(owner(of: window)).item(itemID)?.url != nil,
-              page.profileID != nil, nativeProfileMatches(page, in: window, spaceID: spaceID),
+              nativeProfile(page.profileID, matches: spaceID, in: window),
               !session.nativeIsEnding, session.nativeRelease == nil,
               host.canAdoptPage(page, in: window) else { return false }
         let generation = UUID()
@@ -1556,7 +1556,7 @@ public final class TabsController {
             self.session(for: itemID) === session && session.nativeResourceHost === host && session.navigation === page && !session.nativeIsEnding && session.nativeRelease == nil &&
             tree(owner(of: window)).item(itemID)?.url != nil &&
             tree(owner(of: window)).spaceID(of: itemID) == spaceID &&
-            nativeProfileMatches(page, in: window, spaceID: spaceID)
+            nativeProfile(page.profileID, matches: spaceID, in: window)
         }
         guard modelIsCurrent(), host.acceptNativeSelection(page, in: window), modelIsCurrent() else { return false }
         let validate = { modelIsCurrent() && host.isNativeSelection(page, in: window) }

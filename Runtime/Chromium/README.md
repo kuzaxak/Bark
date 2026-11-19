@@ -861,6 +861,13 @@ each live Chromium page view in the root with `tab_native_view`. The host report
 and full-screen changes through `window_host_observe`. The selected client and its exact
 mounted root identify the controls that may act on the page.
 
+When a sidebar or keyboard selection changes spaces or activates another split
+pane, Bark sends the destination client and tab through `window_switch_space`.
+Chromium reports the pane it actually selected, including when a dialog keeps
+the current pane or another activation wins. During the switch, Bark sends
+tab commands to the outgoing page only while Chromium still shows it as selected.
+Private panes use the originating window's ephemeral profile and in-memory tabs.
+
 The integrated app accepts the default window configuration or an explicit
 `--bark-window=host`. It rejects other values before starting Chromium.
 
