@@ -152,6 +152,88 @@ struct ProfileEngineTests {
         #expect(tabs.tree.dataStoreID(for: space) == nextProfile && tabs.sessions.isEmpty)
     }
 
+    @Test func nativeLiveGmailRejectsAReplyAfterOwnershipChangesAwayAndBack() async throws {
+        let f = try ProfileFixture(); defer { f.cleanup() }
+        let tabs = f.makeTabs()
+        let space = try #require(tabs.tree.orderedSpaces.first?.id)
+        let other = try #require(tabs.createSpace(name: "Other", icon: "", accentHex: "#123456", after: space))
+        let original = try #require(tabs.tree.dataStoreID(for: space))
+        let replacement = try #require(tabs.tree.dataStoreID(for: other))
+        var pending: CheckedContinuation<ProfileLiveResponse, Error>?
+        var cancelled = false
+        tabs.nativeLiveFetch = { profile, source in
+            #expect(profile == original && source == .gmail(account: 0))
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { pending = $0 }
+            } onCancel: { Task { @MainActor in cancelled = true } }
+        }
+        let request = Task { await tabs.gmailInbox(inSpace: space, account: 0) }
+        defer {
+            request.cancel()
+            pending?.resume(throwing: CancellationError())
+        }
+        await liveCallbacks()
+        try #require(pending != nil)
+        try #require(tabs.perform(.main, "switchLiveOwner", undoable: false) {
+            try $0.setProfile(space, to: replacement)
+        } != nil)
+        try #require(tabs.perform(.main, "restoreLiveOwner", undoable: false) {
+            try $0.setProfile(space, to: original)
+        } != nil)
+        await liveCallbacks()
+        #expect(cancelled)
+        pending?.resume(returning: ProfileLiveResponse(data: Data("<feed><fullcount>5</fullcount></feed>".utf8), status: 200))
+        pending = nil
+        #expect(await request.value == .failed)
+        #expect(tabs.tree.dataStoreID(for: space) == original && tabs.sessions.isEmpty)
+    }
+
+    @Test func nativeLiveFolderRejectsAnInFlightReplyWhenItsProfileIsDeleted() async throws {
+        let f = try ProfileFixture(); defer { f.cleanup() }
+        let tabs = f.makeTabs()
+        let space = try #require(tabs.tree.orderedSpaces.first?.id)
+        let other = try #require(tabs.createSpace(name: "Other", icon: "", accentHex: "#123456", after: space))
+        let original = try #require(tabs.tree.dataStoreID(for: space))
+        let survivor = try #require(tabs.tree.dataStoreID(for: other))
+        var pending: CheckedContinuation<ProfileLiveResponse, Error>?
+        var cancelled = false
+        tabs.nativeLiveFetch = { profile, source in
+            #expect(profile == original && source == .githubPulls)
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { pending = $0 }
+            } onCancel: { Task { @MainActor in cancelled = true } }
+        }
+        let folder = try #require(tabs.createLiveFolder(.githubPulls, in: space))
+        defer { pending?.resume(throwing: CancellationError()) }
+        await liveCallbacks()
+        try #require(pending != nil)
+
+        var finish: (@MainActor (ProfileDeletionOutcome) -> Void)?
+        tabs.onDeleteProfile = { intent, reconcileOnly, canDelete, done in
+            #expect(intent.target == original && intent.survivor == survivor)
+            #expect(!reconcileOnly && canDelete())
+            finish = done
+        }
+        var deletion: Result<Void, ProfileDeletionError>?
+        tabs.deleteProfile(original, surviving: survivor) { deletion = $0 }
+        try #require(finish != nil)
+        await liveCallbacks()
+        #expect(cancelled && !tabs.liveRefreshing.contains(folder))
+        finish?(.deleted)
+        _ = try #require(deletion).get()
+        let body = Data("""
+        {"payload":{"pullsDashboardSurfaceContentRoute":{"results":[
+            {"permalink":"https://github.com/synthetic/repo/pull/1","title":"Stale deleted-profile data"}
+        ]}}}
+        """.utf8)
+        pending?.resume(returning: ProfileLiveResponse(data: body, status: 200))
+        pending = nil
+        await liveCallbacks()
+        #expect(tabs.children(of: .folder(itemID: folder)).isEmpty)
+        #expect(!tabs.isProfileAvailable(original) && tabs.tree.dataStoreID(for: space) == survivor)
+        #expect(tabs.sessions.isEmpty)
+    }
+
     @Test func nativeLiveCallerCancellationAndDeletedSourceReleaseWithoutPublishing() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
         let tabs = f.makeTabs()

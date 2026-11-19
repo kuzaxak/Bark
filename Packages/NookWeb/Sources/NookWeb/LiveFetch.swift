@@ -8,7 +8,6 @@
 
 import Foundation
 import NookTabsCore
-import Observation
 
 public enum ProfileLiveSource: Equatable, Sendable {
     case githubPulls, githubIssues, githubNotifications, asanaWorkspaces
@@ -72,35 +71,52 @@ enum LiveFetch {
 }
 
 extension TabsController {
-    /// Request-local observation of existing model ownership. Zero polling and
-    /// no transport/session registry; cancellation ends this request's task.
+    /// Retire an invalid request on the model mutation that revokes ownership.
+    /// A later reassignment to the original profile cannot revive it.
+    func invalidateNativeLiveRequests() {
+        for (id, validate) in nativeLiveRequestOwners where !validate() {
+            nativeLiveRequestOwners.removeValue(forKey: id)
+        }
+    }
+
     func nativeLiveResponse(_ source: ProfileLiveSource, profileID: UUID, spaceID: UUID,
                             while ownsSource: @escaping @MainActor () -> Bool) async throws -> ProfileLiveResponse {
         guard let fetch = nativeLiveFetch else { throw ProfileLiveFailure.unavailable }
         func current() -> Bool {
-            !isTerminating && isProfileAvailable(profileID) &&
-                tree.space(spaceID) != nil && profile(forSpace: spaceID)?.id == profileID && ownsSource()
+            !isTerminating && tree.dataStoreID(for: spaceID) == profileID &&
+                isProfileAvailable(profileID) && profileSpaceIsReady(spaceID) && ownsSource()
         }
-        let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        func watch() -> Bool {
-            withObservationTracking { current() } onChange: {
-                DispatchQueue.main.async { changes.continuation.yield(()) }
+        guard current(), !Task.isCancelled else { throw ProfileLiveFailure.cancelled }
+
+        let id = UUID()
+        let response = AsyncStream<Result<ProfileLiveResponse, Error>>.makeStream()
+        nativeLiveRequestOwners[id] = {
+            guard current() else {
+                response.continuation.finish()
+                return false
             }
+            return true
         }
-        guard watch(), !Task.isCancelled else { throw ProfileLiveFailure.cancelled }
-        var result: Result<ProfileLiveResponse, Error>?
         let work = Task { @MainActor in
-            do {
-                guard current(), !Task.isCancelled else { throw ProfileLiveFailure.cancelled }
-                result = .success(try await fetch(profileID, source))
+            guard nativeLiveRequestOwners[id] != nil, current(), !Task.isCancelled else {
+                response.continuation.finish()
+                return
             }
-            catch { result = .failure(error) }
-            changes.continuation.yield(())
+            do {
+                let result = try await fetch(profileID, source)
+                response.continuation.yield(.success(result))
+            } catch {
+                response.continuation.yield(.failure(error))
+            }
         }
-        defer { changes.continuation.finish(); work.cancel() }
-        for await _ in changes.stream {
-            guard watch(), !Task.isCancelled else { throw ProfileLiveFailure.cancelled }
-            if let result { return try result.get() }
+        defer {
+            nativeLiveRequestOwners.removeValue(forKey: id)
+            response.continuation.finish()
+            work.cancel()
+        }
+        for await result in response.stream {
+            guard nativeLiveRequestOwners[id] != nil, current(), !Task.isCancelled else { break }
+            return try result.get()
         }
         throw ProfileLiveFailure.cancelled
     }

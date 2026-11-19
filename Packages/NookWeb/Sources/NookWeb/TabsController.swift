@@ -30,9 +30,12 @@ public final class TabsController {
         didSet {
             mainChildren = nil
             mainRows = [:]
+            invalidateNativeLiveRequests()
         }
     }
-    public private(set) var device: DeviceState
+    public private(set) var device: DeviceState {
+        didSet { invalidateNativeLiveRequests() }
+    }
     @ObservationIgnored private var mainChildren: [Parent: [Item]]?
     @ObservationIgnored private var mainRows: [UUID: (openFolders: Set<UUID>, rows: [Row])] = [:]
     /// How many times the main tree's items were grouped by parent for sidebar rows; tests read it.
@@ -62,6 +65,7 @@ public final class TabsController {
     var liveRefreshing: Set<UUID> { Set(liveRefreshTasks.keys) }
     /// App-injected exact regular-profile transport. Nil is explicitly unavailable.
     @ObservationIgnored public var nativeLiveFetch: ProfileLiveFetch?
+    @ObservationIgnored var nativeLiveRequestOwners: [UUID: () -> Bool] = [:]
     @ObservationIgnored private var archiveTimer: Timer?
     /// The tab DevMCP page tools act on, in the Agent space (see `TabsController+Agent.swift`).
     public internal(set) var agentItemID: UUID?
@@ -77,10 +81,14 @@ public final class TabsController {
     /// Tells the person why a space could not be deleted.
     @ObservationIgnored public var onSpaceDeletionNotice: ((String) -> Void)?
     @ObservationIgnored public var onProfileWindowsNeedReload: (@MainActor (Set<UUID>) -> Void)?
-    @ObservationIgnored private var profileDeletionInFlight = false
+    @ObservationIgnored private var profileDeletionInFlight = false {
+        didSet { invalidateNativeLiveRequests() }
+    }
     @ObservationIgnored private let store: TabStore
     @ObservationIgnored private(set) var undoStack: [Change] = []
-    @ObservationIgnored private(set) var isTerminating = false
+    @ObservationIgnored private(set) var isTerminating = false {
+        didSet { invalidateNativeLiveRequests() }
+    }
     @ObservationIgnored public let log = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "Tabs")
 
     // MARK: - Injected
@@ -1775,7 +1783,7 @@ extension TabsController {
         return tree.spaceID(of: itemID).map(change.spaceIDs.contains) == true
     }
 
-    private func profileSpaceIsReady(_ spaceID: UUID) -> Bool {
+    func profileSpaceIsReady(_ spaceID: UUID) -> Bool {
         guard let change = device.pendingProfileDeletion?.change,
               change.spaceIDs.contains(spaceID) else { return true }
         return change.phase == .assignmentCommitted ||
