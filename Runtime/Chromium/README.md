@@ -17,8 +17,11 @@ individual dependencies independently. The initial host is Intel macOS 15.8.1,
 Xcode 26.3 (17C529), SDK 26.2. The signed Intel developer build passed
 installation from a disk image and a Sparkle update with a disposable profile.
 The signed ARM developer build rendered a loopback page on an M4 Pro running
-macOS 15.8.2. Official builds require SDK 26.5. ARM installation and update
-testing and notarized release qualification remain open. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
+macOS 15.8.2. On that Mac the update walk installed build 100 from its signed
+DMG and verified both the installed app and the build 101 reference copy.
+The Sparkle handoff still needs an ARM desktop with Accessibility and
+event-posting access. Official builds require SDK 26.5 and separate notarized
+release qualification. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
 
 Keep upstream's engine compilation deployment default, `13.0`, distinct from
 `mac_min_system_version = "15.5"` (the packaged `LSMinimumSystemVersion`) and the
