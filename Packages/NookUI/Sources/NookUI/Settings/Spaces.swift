@@ -298,12 +298,10 @@ public struct SpacesSettingsView: View {
             Text("Bark does not transfer your old Nook iCloud data or invitations. Macs still using Nook do not sync with Bark.")
                 .font(NookDesign.Font.caption)
                 .foregroundStyle(.secondary)
-            if status.availability != .needsSignedBuild && status.availability != .notEnabled {
+            if status.availability == .available {
                 Text(Self.hint(status.mode))
                     .font(NookDesign.Font.caption)
                     .foregroundStyle(.secondary)
-            }
-            if status.availability == .available {
                 LabeledContent("Account ID") {
                     Text(status.accountID ?? "Checking\u{2026}")
                         .font(NookDesign.Font.mono)
