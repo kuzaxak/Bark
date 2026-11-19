@@ -81,7 +81,9 @@ package. Its SHA-256 is
 `debe353b27a13cd678b26ab216a040acf07b62c0639d8ac522df4ca07d121eb2`.
 Check the package signature with `pkgutil --check-signature` and extract it
 with `pkgutil --expand-full`. The SDK directory inside the expanded package is
-`Payload/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`.
+`Payload/Library/Developer/CommandLineTools/SDKs/MacOSX26.5.sdk`. You can pass
+that directory to the recipe without installing the package or changing the
+selected Xcode.
 [Apple SDK package](https://swcdn.apple.com/content/downloads/33/19/140-17812-A_21ZLMMLY4E/zu3xwktttpoe71qiawhzgzvqss6rovawsa/CLTools_macOSNMOS_SDK.pkg)
 
 ```fish
@@ -134,13 +136,17 @@ Start from the clean app revision to be qualified. After `prepare` and
 `check`, build and publish from the official output. Publication verifies
 that output’s provenance before writing the local pin. A first architecture
 can do this before it has a committed pin. The release workflow consumes a
-committed official pin after this qualification.
+committed official pin after this qualification. If the selected Xcode's
+default SDK matches the pin, leave `sdk_args` empty. If you extracted the SDK
+separately, uncomment the assignment and use its actual path.
 
 ```fish
 set arch (python3 "$barc_repo/scripts/chromium_sdk_layout.py" native-arch)
 set gn_cpu (python3 "$barc_repo/scripts/chromium_sdk_layout.py" native-arch --gn)
 set -lx PATH (dirname "$engine_checkout")/depot_tools $PATH
-python3 "$recipe" build --checkout "$engine_checkout" --arch "$gn_cpu" --official --jobs 8
+set -l sdk_args
+# set sdk_args --macos-sdk "/path/to/MacOSX26.5.sdk"
+python3 "$recipe" build --checkout "$engine_checkout" --arch "$gn_cpu" --official $sdk_args --jobs 8
 bash "$barc_repo/scripts/publish-chromium-engine.sh" --arch "$arch" --require-official --replace \
     "$engine_checkout/src/out/Barc-$gn_cpu-official" "$barc_repo/Packages/BarkEngine"
 ```
