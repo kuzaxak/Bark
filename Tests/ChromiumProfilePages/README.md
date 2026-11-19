@@ -54,3 +54,15 @@ the original UUID-backed directories.
 set -l evidence (mktemp -d /private/tmp/bark-profile-storage.XXXXXX)
 "$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python" -B Tests/ChromiumProfilePages/storage_walk.py --app build/Bark.app --output "$evidence/walk" --verify-sdk
 ```
+
+The quick links walk opens Settings → Profiles and selects a disposable
+profile with no spaces or existing Chromium window. It opens each
+profile control, checks the named owner and the loaded page in the
+utility window, and closes the window without changing browser data.
+The headless `profile-pages` check separately verifies exact navigation
+URLs and stale or deleted profile handling.
+
+```fish
+set -l evidence (mktemp -d /private/tmp/bark-profile-quick-links.XXXXXX)
+"$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python" -B Tests/ChromiumProfilePages/quick_links_walk.py --app build/Bark.app --output "$evidence/walk" --verify-sdk
+```
