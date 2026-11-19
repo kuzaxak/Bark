@@ -9,6 +9,7 @@ Screen Recording access.
 python3 Tests/ChromiumPeek/walk.py --app /path/to/Bark.app --output /private/tmp/peek-walk
 python3 Tests/ChromiumPeek/keyboard_walk.py --app /path/to/Bark.app --output /private/tmp/peek-keys
 python3 Tests/ChromiumPeek/split_walk.py --app /path/to/Bark.app --output /private/tmp/peek-split
+python3 Tests/ChromiumPeek/divider_walk.py --verify-sdk --app /path/to/Bark.app --output /private/tmp/split-divider
 ```
 
 The output directory must be new. The walk creates and removes its own
@@ -31,3 +32,9 @@ The split walk creates a sibling pane before opening Peek over the original
 pane. It checks that Escape restores the original document, focused link,
 draft, viewport width and scroll position. A trusted click in the trailing
 gutter must still reach the sibling document while Peek is open.
+
+The divider walk promotes Peek into a split, then uses **View → Resize Split Panes**.
+It checks actual pane widths after physical arrow keys and native macOS AX
+increment and decrement. Escape, Tab, and Shift-Tab must return trusted
+typing to the same pane and draft. The walk exercises the accessibility API
+without enabling VoiceOver.

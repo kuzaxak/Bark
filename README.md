@@ -18,7 +18,9 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 - To inspect an HTTPS certificate, open **Site Controls** beside the address and
   choose **Secure**. Click **Close** or press Command+W to return to the same tab.
 - Open two pages in a split to work with both in one window. Select a pane to
-  direct typing and page commands to it.
+  direct typing and page commands to it. For keyboard resizing, choose
+  **View → Resize Split Panes**, use the arrow keys, and press Escape to
+  return to the selected page.
 - Shift-click a link, or focus it and press Shift+Return, to open it in Peek.
   Escape returns focus to the source pane. Use **Add Split View** (Control+Shift+= by
   default) to keep the preview and its edits in a second pane.
