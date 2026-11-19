@@ -35,7 +35,8 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [x] 3.1 Introduce engine profile/page/event contracts and lifetime rules; add contract tests for cancellation and callbacks arriving after close. `Profile`, `PageNavigation` and `NativePageHost` define the ownership boundary; `ProfileEngineTests` and `NativePageLifecycleTests` verify cancelled creation, close veto, owner teardown and rejection of late callbacks.
 - [x] 3.2 Move `BrowserConfiguration` and profile storage access behind a WebKit adapter; verify shared-profile spaces and private-session isolation with regression tests.
   Chromium startup, Developer Mode and content blocking bypass WebKit configuration. ProfileEngineTests cover shared-profile spaces, private WebKit cookie isolation and Chromium profiles without a WebKit store. NativeBlockerModelTests cover the optional WebKit controller hook.
-- [ ] 3.3 Adapt `PageSession`, `WebViewProvider`, and `PageSessionDelegate`; verify navigation, URL/title state and close behavior using existing package checks.
+- [x] 3.3 Adapt `PageSession`, `WebViewProvider`, and `PageSessionDelegate`; verify navigation, URL/title state and close behavior using existing package checks.
+  Chromium’s host implements the shared page delegate. WebKit hosts opt into the view provider and WebKit callbacks. The adopted-page regression covers commit, title, acknowledged close and a late title event.
 - [ ] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
 - [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.
 

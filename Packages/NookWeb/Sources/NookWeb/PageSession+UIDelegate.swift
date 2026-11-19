@@ -87,7 +87,7 @@ extension PageSession: WKUIDelegate {
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        guard let delegate = controller?.sessionDelegate else { return nil }
+        guard let delegate = controller?.webKitSessionDelegate else { return nil }
         let url = navigationAction.request.url
         // Extensions manage their own auth flows, and never get Peek.
         let sourceScheme = navigationAction.sourceFrame.request.url?.scheme?.lowercased() ?? ""
@@ -259,7 +259,7 @@ extension PageSession: WKUIDelegate {
         enterFullScreenForVideoWith completionHandler: @escaping (Bool, Error?) -> Void
     ) {
 
-        guard !isAgentPage, controller?.sessionDelegate?.toggleFullScreen(for: webView) == true else {
+        guard !isAgentPage, controller?.webKitSessionDelegate?.toggleFullScreen(for: webView) == true else {
             completionHandler(
                 false,
                 NSError(
@@ -276,7 +276,7 @@ extension PageSession: WKUIDelegate {
         exitFullScreenWith completionHandler: @escaping (Bool, Error?) -> Void
     ) {
 
-        guard controller?.sessionDelegate?.toggleFullScreen(for: webView) == true else {
+        guard controller?.webKitSessionDelegate?.toggleFullScreen(for: webView) == true else {
             completionHandler(
                 false,
                 NSError(

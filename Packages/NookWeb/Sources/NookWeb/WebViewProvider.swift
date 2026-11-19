@@ -1,11 +1,4 @@
 // Licensed under GPL-3.0. See LICENSE.
-//
-//  WebViewProvider.swift
-//  NookWeb
-//
-//  The web view pool, as PageSession and TabsController see it. The app implements this
-//  over WebViewCoordinator, which clones a page's view into every window showing it.
-//
 
 import WebKit
 
@@ -19,7 +12,7 @@ public protocol SessionWebView: AnyObject {
 }
 
 @MainActor
-public protocol WebViewProvider: AnyObject {
+public protocol WebKitWebViewProvider: AnyObject {
     /// A new view of the app's session web view class.
     func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView
 

@@ -496,6 +496,6 @@ extension PageSession {
         // in the current window, not just the first WebView created
         let activeWindowID = controller?.windowRegistry.activeWindow?.id
         let activeWebView = activeWindowID.flatMap { controller?.webViews?.webView(for: self.itemID, in: $0) }
-        controller?.sessionDelegate?.requestPictureInPicture(for: self, webView: activeWebView)
+        controller?.webKitSessionDelegate?.requestPictureInPicture(for: self, webView: activeWebView)
     }
 }

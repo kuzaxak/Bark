@@ -3,103 +3,23 @@
 //  BrowserManager+NookWeb.swift
 //  Nook
 //
-//  What NookWeb asks of its host. The tab model and its live pages reach every AppKit-only
-//  manager (web view pool, downloads, Peek, zoom, PiP, extensions, native panels) through
-//  these four protocols and nothing else.
+//  AppKit host callbacks for the tab model and its live pages.
 //
 
 import AppKit
-import Combine
 import WebKit
 import NookWeb
 
 // MARK: - PageSessionDelegate
 
 extension BrowserManager: PageSessionDelegate {
-    func navigateAcrossWindows(_ itemID: UUID, to url: URL) {}
-
-    func addDownload(_ download: WKDownload, originalURL: URL, suggestedFilename: String) {
-        _ = downloadManager.addDownload(
-            download, originalURL: originalURL, suggestedFilename: suggestedFilename,
-            origin: DownloadOrigin(session: (download.webView as? FocusableWKWebView)?.owningSession))
-    }
-
-    func saveFile(_ data: Data, suggestedFilename: String, originalURL: URL, from webView: WKWebView) {
-        downloadManager.saveCompletedFile(
-            data, suggestedFilename: suggestedFilename, originalURL: originalURL, from: webView.window,
-            origin: DownloadOrigin(session: (webView as? FocusableWKWebView)?.owningSession))
-    }
-
-    func toggleFullScreen(for webView: WKWebView) -> Bool {
-        guard let window = webView.window else { return false }
-        DispatchQueue.main.async { window.toggleFullScreen(nil) }
-        return true
-    }
-
     func presentPeek(url: URL, from session: PageSession) {
         peekManager.presentExternalURL(url, from: session)
     }
 
-    func presentPopupWindow(_ session: PageSession) {
-        tabs.endDetached(session)
-    }
-
-    func handleAuthenticationChallenge(
-        _ challenge: URLAuthenticationChallenge,
-        for session: PageSession,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) -> Bool {
-        authenticationManager.handleAuthenticationChallenge(
-            challenge, for: session, completionHandler: completionHandler)
-    }
-
-    var certificateExceptions: CertificateExceptions { authenticationManager.certificateExceptions }
-
-    func confirmVisit(despite warning: CertificateWarning, in session: PageSession) {
-        authenticationManager.confirmVisit(despite: warning, in: session)
-    }
-
-    func loadZoom(for itemID: UUID) { loadZoomForTab(itemID) }
-
     func cleanupZoom(for itemID: UUID) { cleanupZoomForTab(itemID) }
 
     func setMuteState(_ muted: Bool, for itemID: UUID) {}
-
-    func requestPictureInPicture(for session: PageSession, webView: WKWebView?) {
-        guard engine == .webKit else { return }
-        PiPManager.shared.requestPiP(for: session, webView: webView)
-    }
-
-    func configureShortcutDetection(in webView: WKWebView) {
-        keyboardShortcutManager?.websiteShortcutDetector?.configure(webView: webView)
-    }
-
-    func shortcutDetectorDidNavigate(to url: URL) {
-        keyboardShortcutManager?.websiteShortcutDetector?.updateCurrentURL(url)
-    }
-
-    func updateDetectedShortcuts(for url: String, shortcuts: Set<String>) {
-        keyboardShortcutManager?.websiteShortcutDetector?.updateJSDetectedShortcuts(
-            for: url, shortcuts: shortcuts)
-    }
-
-    func installWebStoreScript(in webView: WKWebView) -> AnyObject? {
-        guard let url = webView.url, WebStoreScriptHandler.store(for: url) != nil,
-              let script = BrowserConfiguration.webStoreInjectorScript()
-        else { return nil }
-        let controller = webView.configuration.userContentController
-        let world = WebStoreScriptHandler.contentWorld
-        controller.removeScriptMessageHandler(forName: WebStoreScriptHandler.handlerName, contentWorld: world)
-        let handler = WebStoreScriptHandler(browserManager: self)
-        controller.add(handler, contentWorld: world, name: WebStoreScriptHandler.handlerName)
-        webView.evaluateJavaScript(script.source, in: nil, in: world, completionHandler: nil)
-        return handler
-    }
-
-    func removeWebStoreHandler(from controller: WKUserContentController) {
-        controller.removeScriptMessageHandler(
-            forName: WebStoreScriptHandler.handlerName, contentWorld: WebStoreScriptHandler.contentWorld)
-    }
 }
 
 // MARK: - TabEventObserver

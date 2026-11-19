@@ -144,7 +144,7 @@ extension PageSession {
     }
     
     func injectShortcutDetection(to webView: WKWebView) {
-        controller?.sessionDelegate?.configureShortcutDetection(in: webView)
+        controller?.webKitSessionDelegate?.configureShortcutDetection(in: webView)
     }
 
     // MARK: - Chrome Web Store Integration
@@ -153,7 +153,7 @@ extension PageSession {
     /// Script and message handler both live in an isolated content world, so page scripts
     /// on any site (including the store itself) cannot call the install handler.
     func injectWebStoreScriptIfNeeded(for url: URL, in webView: WKWebView) {
-        webStoreHandler = controller?.sessionDelegate?.installWebStoreScript(in: webView)
+        webStoreHandler = controller?.webKitSessionDelegate?.installWebStoreScript(in: webView)
     }
 }
 
@@ -298,6 +298,6 @@ extension PageSession: WKScriptMessageHandler {
         let shortcuts = Set(shortcutsString.split(separator: ",").map { String($0) })
         
         // Update the detector with detected shortcuts for this URL
-        controller?.sessionDelegate?.updateDetectedShortcuts(for: url, shortcuts: shortcuts)
+        controller?.webKitSessionDelegate?.updateDetectedShortcuts(for: url, shortcuts: shortcuts)
     }
 }

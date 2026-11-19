@@ -674,8 +674,8 @@ public final class PageSession: NSObject, Identifiable {
                 // an actual commit still settles their page-local cold query.
                 if privateSearchCommit { nativePrivatePendingSearch = nil }
                 controller?.pageCommitted(itemID: itemID, url: newURL, resolvingPrivateSearch: privateSearchCommit)
-                controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
-                if !isDetached { controller?.sessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
+                controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
+                if !isDetached { controller?.webKitSessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
                 controller?.tabEvents?.grantAccess(to: newURL)
                 controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
             }
@@ -697,7 +697,7 @@ public final class PageSession: NSObject, Identifiable {
                     controller?.tabEvents?.tabPropertiesChanged(self, properties: [.URL])
                     controller?.tabEvents?.wakeBackgroundWorkers()
                     controller?.pageCommitted(itemID: itemID, url: newURL)
-                    controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
+                    controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
                 }
                 sampleNativeTopBarColor()
             }
@@ -918,7 +918,7 @@ public final class PageSession: NSObject, Identifiable {
         } else {
             // Edge case: no profile yet. Delay creating WKWebView until one resolves.
             if profileAwaitCancellable == nil {
-                profileAwaitCancellable = controller?.sessionDelegate?
+                profileAwaitCancellable = controller?.webKitSessionDelegate?
                     .currentProfilePublisher
                     .receive(on: RunLoop.main)
                     .sink { [weak self] value in
@@ -1124,7 +1124,7 @@ public final class PageSession: NSObject, Identifiable {
         controller?.sessionDelegate?.cleanupZoom(for: itemID)
         if webStoreHandler != nil {
             if let controller = primaryWebView?.configuration.userContentController {
-                self.controller?.sessionDelegate?.removeWebStoreHandler(from: controller)
+                self.controller?.webKitSessionDelegate?.removeWebStoreHandler(from: controller)
             }
             webStoreHandler = nil
         }
@@ -1142,7 +1142,7 @@ public final class PageSession: NSObject, Identifiable {
         }
         controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
         controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-        self.controller?.sessionDelegate?.removeWebStoreHandler(from: controller)
+        self.controller?.webKitSessionDelegate?.removeWebStoreHandler(from: controller)
         #if os(macOS)
         VaultService.detach(from: controller)
         #endif
@@ -1209,7 +1209,7 @@ public final class PageSession: NSObject, Identifiable {
         }
 
         // Keep other windows displaying this page on the same URL.
-        controller?.sessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
+        controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
 
         if usesWebKitFavicon {
             Task { @MainActor in
@@ -1370,7 +1370,7 @@ public final class PageSession: NSObject, Identifiable {
     /// Asks the person to confirm, then loads the page under the certificate warning on its certificate.
     public func visitDespiteCertificateWarning() {
         guard let certificateWarning, certificateWarning.allowsVisit else { return }
-        controller?.sessionDelegate?.confirmVisit(despite: certificateWarning, in: self)
+        controller?.webKitSessionDelegate?.confirmVisit(despite: certificateWarning, in: self)
     }
 
     /// Loads the page under `warning` again the way the failed navigation asked for it, so the

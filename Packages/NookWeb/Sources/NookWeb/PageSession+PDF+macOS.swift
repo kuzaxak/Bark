@@ -31,14 +31,14 @@ extension PageSession {
     /// ignores the switch; without it that Save button does nothing and logs nothing.
     @objc(_webView:saveDataToFile:suggestedFilename:mimeType:originatingURL:)
     func webView(_ webView: WKWebView, saveDataToFile data: Data, suggestedFilename: String, mimeType: String, originatingURL: URL) {
-        controller?.sessionDelegate?.saveFile(data, suggestedFilename: suggestedFilename, originalURL: originatingURL, from: webView)
+        controller?.webKitSessionDelegate?.saveFile(data, suggestedFilename: suggestedFilename, originalURL: originatingURL, from: webView)
     }
 
     /// Saves the PDF into Downloads as a finished download.
     public func savePDF(from webView: WKWebView) {
         Task { @MainActor in
             guard let data = await webView.nookMainResourceData(), !data.isEmpty else { return }
-            controller?.sessionDelegate?.saveFile(data, suggestedFilename: pdfFilename, originalURL: url, from: webView)
+            controller?.webKitSessionDelegate?.saveFile(data, suggestedFilename: pdfFilename, originalURL: url, from: webView)
         }
     }
 

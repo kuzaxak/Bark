@@ -448,7 +448,7 @@ final class StillLoadingWebView: WKWebView {
 
 /// Answers a page's questions about certificates and records the visits it is asked to confirm.
 @MainActor
-final class RecordingCertificateDelegate: PageSessionDelegate {
+final class RecordingCertificateDelegate: WebKitPageSessionDelegate {
     var certificateExceptions = CertificateExceptions()
     private(set) var visits: [CertificateWarning] = []
     var onSpaceChanged: ((BrowserWindowState) -> Void)?

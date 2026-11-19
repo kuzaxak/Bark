@@ -2805,6 +2805,9 @@ struct NativePageLifecycleTests {
     @Test func selectedAdoptionBindsExistingResourceAndClosesOnlyAfterActualOutcome() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
+        let delegate = NativeOnlyPageDelegate()
+        fixture.tabs.sessionDelegate = delegate
+        #expect(fixture.tabs.webKitSessionDelegate == nil)
         fixture.host.finishCreate(0)
         let space = try #require(fixture.window.spaceID)
         let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
@@ -2814,11 +2817,20 @@ struct NativePageLifecycleTests {
         #expect(fixture.window.selectedItemID == adopted)
         #expect(fixture.host.selectionCount == selectedBefore + 1)
         #expect(native.loaded.isEmpty && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
+        let session = try #require(fixture.tabs.session(for: adopted))
+        let url = URL(string: "https://fixture.invalid/native-only")!
+        native.onEvent?(.committed(url, sameDocument: false))
+        native.onEvent?(.finished(url, title: "Native page", isReload: false))
+        #expect(session.url == url && session.title == "Native page" && session.webView == nil)
+        let retired = native.onEvent
         fixture.tabs.close(adopted)
         #expect(fixture.tabs.tree.item(adopted) != nil && fixture.host.closes.count == 1)
         fixture.host.finishClose(0, admitted: true)
         #expect(fixture.tabs.tree.item(adopted) == nil && native.invalidated)
         #expect(native.stops == 0 && fixture.host.closes.count == 1)
+        #expect(delegate.cleanedZoom.filter { $0 == adopted } == [adopted])
+        retired?(.titleChanged("Late native title"))
+        #expect(session.title == "Native page")
     }
 
     @Test func adoptionUsesExplicitInactiveProfileWithoutAnotherCreateOrLoad() throws {
@@ -4933,3 +4945,13 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
     func invalidate() { invalidated = true; onStateChanged = nil; onEvent = nil }
 }
 #endif
+
+@MainActor
+private final class NativeOnlyPageDelegate: PageSessionDelegate {
+    var currentProfile: Profile? { nil }
+    private(set) var cleanedZoom: [UUID] = []
+    func windowSpaceChanged(_ window: BrowserWindowState) {}
+    func presentPeek(url: URL, from session: PageSession) {}
+    func cleanupZoom(for itemID: UUID) { cleanedZoom.append(itemID) }
+    func setMuteState(_ muted: Bool, for itemID: UUID) {}
+}

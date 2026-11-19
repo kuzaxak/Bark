@@ -96,7 +96,7 @@ public final class TabsController {
     @ObservationIgnored public let siteRouting: SiteRoutingManager
     /// Set once the SwiftData context has produced it; nil in a host without history.
     @ObservationIgnored public var history: HistoryManager?
-    @ObservationIgnored public weak var webViews: WebViewProvider?
+    @ObservationIgnored public weak var webViews: WebKitWebViewProvider?
     @ObservationIgnored public weak var nativePageHost: (any NativePageHost)? {
         didSet {
             guard nativePageHost != nil else { return }
@@ -108,6 +108,10 @@ public final class TabsController {
     /// The app takes the screenshot, writes the clipboard and shows the toast.
     @ObservationIgnored public var onDevPick: ((PageSession, DevPickedElement) -> Void)?
     @ObservationIgnored public weak var sessionDelegate: PageSessionDelegate?
+    var webKitSessionDelegate: (any WebKitPageSessionDelegate)? {
+        guard profileEngine == .webKit else { return nil }
+        return sessionDelegate as? any WebKitPageSessionDelegate
+    }
     @ObservationIgnored public weak var tabEvents: TabEventObserver?
     @ObservationIgnored public weak var alerts: AlertPresenter?
     #if os(macOS)

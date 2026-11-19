@@ -232,7 +232,7 @@ final class LivePage {
 }
 
 @MainActor
-final class LiveWebViews: WebViewProvider {
+final class LiveWebViews: WebKitWebViewProvider {
     func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView {
         LiveWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
     }

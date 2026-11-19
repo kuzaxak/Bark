@@ -73,7 +73,7 @@ extension PageSession: WKNavigationDelegate {
             if let settings = controller?.settings { BoostTweaks.runScripts(for: newURL, in: webView, settings: settings) }
 
             // Load saved zoom level for the new domain
-            controller?.sessionDelegate?.loadZoom(for: self.itemID)
+            controller?.webKitSessionDelegate?.loadZoom(for: self.itemID)
 
             // CHROME WEB STORE INTEGRATION: Inject script after navigation
             injectWebStoreScriptIfNeeded(for: newURL, in: webView)
@@ -215,7 +215,7 @@ extension PageSession: WKNavigationDelegate {
             blockedURL = (error as NSError).userInfo[NSURLErrorFailingURLErrorKey] as? URL ?? attempted
         } else if !webView.isLoading, let warning = CertificateWarning(
             error: error,
-            exceptions: controller?.sessionDelegate?.certificateExceptions ?? CertificateExceptions(),
+            exceptions: controller?.webKitSessionDelegate?.certificateExceptions ?? CertificateExceptions(),
             isPrivate: isPrivate,
             allowsVisit: !isAgentPage
         ) {
@@ -248,7 +248,7 @@ extension PageSession: WKNavigationDelegate {
     ) {
         // An agent page gets no sign-in dialog over the person's window and never takes a
         // certificate exception: default handling fails a bad certificate, and the card shows.
-        if !isAgentPage, controller?.sessionDelegate?.handleAuthenticationChallenge(
+        if !isAgentPage, controller?.webKitSessionDelegate?.handleAuthenticationChallenge(
             challenge,
             for: self,
             completionHandler: completionHandler
@@ -446,7 +446,7 @@ extension PageSession: WKNavigationDelegate {
         let suggestedFilename = navigationAction.request.url?.lastPathComponent ?? "download"
 
 
-        controller?.sessionDelegate?.addDownload(
+        controller?.webKitSessionDelegate?.addDownload(
             download, originalURL: originalURL, suggestedFilename: suggestedFilename)
     }
 
@@ -459,7 +459,7 @@ extension PageSession: WKNavigationDelegate {
         let suggestedFilename = navigationResponse.response.url?.lastPathComponent ?? "download"
 
 
-        controller?.sessionDelegate?.addDownload(
+        controller?.webKitSessionDelegate?.addDownload(
             download, originalURL: originalURL, suggestedFilename: suggestedFilename)
     }
 }

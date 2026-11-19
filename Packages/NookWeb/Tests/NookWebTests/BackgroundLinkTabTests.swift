@@ -99,7 +99,7 @@ final class Host {
 }
 
 @MainActor
-final class RecordingWebViews: WebViewProvider {
+final class RecordingWebViews: WebKitWebViewProvider {
     func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView {
         RecordingWebView(frame: .zero, configuration: configuration)
     }

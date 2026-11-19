@@ -66,7 +66,7 @@ struct InactiveUnloadTests {
 }
 
 @MainActor
-private final class CaptureViews: WebViewProvider {
+private final class CaptureViews: WebKitWebViewProvider {
     var additional: [UUID: [WKWebView]] = [:]
     func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView {
         CaptureView(frame: .zero, configuration: configuration)
