@@ -30,7 +30,7 @@ import bark_release
 from run_browser_tests import (
     QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, ScreenUnavailable, require_idle_console, screen_lock,
 )
-from signed_walk import Screen, crash_reports, processes, verify_official_sdk, wait_for
+from signed_walk import Screen, crash_reports, processes, verify_pinned_sdk, wait_for
 
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
               "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister")
@@ -122,7 +122,7 @@ def outer_icon(app):
     return relative
 
 
-def verify_installed_replacement(installed, newer):
+def verify_installed_replacement(installed, newer, expected_cdhash):
     frameworks = Path("Contents/Frameworks")
     exact_files = [
         Path("Contents/MacOS/Bark"),
@@ -136,6 +136,8 @@ def verify_installed_replacement(installed, newer):
         current, expected = installed / relative, newer / relative
         if not current.is_file() or not expected.is_file() or not filecmp.cmp(current, expected, shallow=False):
             raise RuntimeError(f"The installed update differs from v101 at {relative}")
+    if bark_release.bundle_cdhash(installed) != expected_cdhash:
+        raise RuntimeError("The installed update has a different CDHash from signed v101")
 
 
 def run(*args, **kwargs):
@@ -272,7 +274,7 @@ def preparation_handoff_seen(status, extraction_seen):
             or (extraction_seen and not status["installer_visible"]))
 
 
-def exercise(check, installed, newer, root, versions, arch, server, output, *, engine):
+def exercise(check, installed, newer, root, versions, arch, server, output, *, engine, replacement_cdhash):
     import ApplicationServices as ax
     import Quartz
     from AppKit import NSRunningApplication, NSWorkspace
@@ -517,8 +519,8 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                 final = app_info(installed)
                 if any(final.get(key) != val for key, val in new.items()):
                     raise RuntimeError("The installed and relaunched app is not the sealed new version")
-                verify_installed_replacement(installed, newer)
                 check["verify_candidate"](installed, engine, root.parent, arch, release_info=new)
+                verify_installed_replacement(installed, newer, replacement_cdhash)
                 record("Sparkle installed the exact signed v101 with the pinned SDK, relaunched it at the same path "
                        "and restored the draft")
 
@@ -575,16 +577,10 @@ def main():
     output = args.output.resolve()
     check = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     arch = check["native_architecture"]()
-    qualification = {"architecture": arch}
     try:
-        if args.require_official:
-            engine, qualification = verify_official_sdk(check, arch)
-        else:
-            engine = check["cached_engine"](arch)
+        engine, qualification = verify_pinned_sdk(check, arch, require_official=args.require_official)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
-    if not engine.is_dir():
-        parser.error(f"Install this checkout's pinned {arch} Bark SDK first.")
     output.mkdir(parents=True)
     with tempfile.TemporaryDirectory(prefix="bark-update-", dir="/private/tmp") as directory:
         work = Path(directory)
@@ -596,8 +592,15 @@ def main():
         with UpdateServer(bark_release.feed_name(arch)) as server:
             installed, newer, root, settings = versions(check, derived, engine, args.identity,
                                                          arch, work, server, output)
+            replacement_cdhash = bark_release.bundle_cdhash(newer)
+            qualification.update(
+                shell_source="checkout" if args.derived_data is None else "external-derived-data",
+                original_bundle_cdhash=bark_release.bundle_cdhash(installed),
+                replacement_bundle_cdhash=replacement_cdhash,
+            )
             (output / "candidate.json").write_text(json.dumps(qualification) + "\n")
-            exercise(check, installed, newer, root, settings, arch, server, output, engine=engine)
+            exercise(check, installed, newer, root, settings, arch, server, output, engine=engine,
+                     replacement_cdhash=replacement_cdhash)
     print("Installed update rehearsal passed.", flush=True)
 
 

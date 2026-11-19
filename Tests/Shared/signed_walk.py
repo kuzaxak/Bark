@@ -15,7 +15,8 @@ from uuid import uuid4
 
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(REPO / "Runtime/Chromium"))
+sys.path[:0] = [str(REPO / folder) for folder in ("Runtime/Chromium", "scripts")]
+from bark_release import bundle_cdhash
 from run_browser_tests import ScreenUnavailable
 
 
@@ -269,6 +270,17 @@ def verify_official_sdk(contributor, architecture, app=None):
     return verify_pinned_sdk(contributor, architecture, app, require_official=True)
 
 
+def launch_verified(app, cdhash, root, profile, log, app_output_lock):
+    with app_output_lock(app):
+        if bundle_cdhash(app) != cdhash:
+            raise RuntimeError("The signed Bark app changed before launch.")
+        started = time.monotonic_ns()
+        process = subprocess.Popen([str(app / "Contents/MacOS/Bark"), f"--barc-app-data-dir={root}",
+                                    f"--barc-app-profile={profile}"],
+                                   stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    return process, started
+
+
 def run_walk(description, name, serve, exercise, preferences=(), *,
              source_host="127.0.0.1", prepare_fixture=None, official_qualification=False, relaunch=None):
     parser = argparse.ArgumentParser(description=description)
@@ -290,15 +302,17 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
     if not binary.is_file() or processes(app):
         parser.error("Pass a candidate that is not already running")
     contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
-    if getattr(args, "require_official", False) or getattr(args, "verify_sdk", False):
-        architecture = contributor["native_architecture"]()
-        try:
-            _, qualification = verify_pinned_sdk(contributor, architecture, app,
-                                                  require_official=args.require_official)
-        except (OSError, ValueError, subprocess.CalledProcessError) as error:
-            parser.error(str(error))
-    else:
-        qualification = {"architecture": verify_native_candidate(contributor, app)}
+    with contributor["app_output_lock"](app):
+        if getattr(args, "require_official", False) or getattr(args, "verify_sdk", False):
+            architecture = contributor["native_architecture"]()
+            try:
+                _, qualification = verify_pinned_sdk(contributor, architecture, app,
+                                                      require_official=args.require_official)
+            except (OSError, ValueError, subprocess.CalledProcessError) as error:
+                parser.error(str(error))
+        else:
+            qualification = {"architecture": verify_native_candidate(contributor, app)}
+        qualification["bundle_cdhash"] = bundle_cdhash(app)
     import ApplicationServices as ax
     import Quartz as quartz
 
@@ -333,10 +347,8 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
                         path = output / log_name
                         require_idle_console(console, owns_screen, pointer, min_idle=10)
                         with path.open("wb") as log:
-                            launch_started_ns = time.monotonic_ns()
-                            proc = subprocess.Popen([str(binary), f"--barc-app-data-dir={root}",
-                                                     f"--barc-app-profile={profile}"],
-                                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+                            proc, launch_started_ns = launch_verified(
+                                app, qualification["bundle_cdhash"], root, profile, log, contributor["app_output_lock"])
                             try:
                                 screen = Screen(console, owns_screen, proc.pid, pointer, launch_started_ns)
                                 phase(screen, proc, server.events, output)

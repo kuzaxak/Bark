@@ -436,12 +436,20 @@ def launch_candidate(app, working, *, interactive):
         print("Signed Bark rendered the loopback fixture with an isolated profile.")
 
 
+@contextmanager
+def app_output_lock(app, *, replacing=False):
+    parent = os.open(app.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(parent, fcntl.LOCK_EX if replacing else fcntl.LOCK_SH)
+        yield
+    finally:
+        os.close(parent)
+
+
 def install_local_build(app, output, bundle_id="ee.qdo.bark"):
     # Work and destination share a volume. Swap complete bundles in one
     # operation so readers see a verified app even if a rebuild is interrupted.
-    parent = os.open(output.parent, os.O_RDONLY)
-    try:
-        fcntl.flock(parent, fcntl.LOCK_EX)
+    with app_output_lock(output, replacing=True):
         if output.is_symlink():
             raise ValueError(f"Choose a local output directory instead of a symlink: {output}")
         if not output.exists():
@@ -454,8 +462,6 @@ def install_local_build(app, output, bundle_id="ee.qdo.bark"):
         if any(path.strip().startswith(str(output) + "/") for path in processes.splitlines()):
             raise ValueError(f"Quit the running copy before rebuilding {output}")
         swap(app, output)
-    finally:
-        os.close(parent)
 
 
 def release_shell_build_args(derived, architecture):
