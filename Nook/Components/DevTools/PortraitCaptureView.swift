@@ -194,54 +194,41 @@ struct PortraitCaptureView: View {
         captured = nil
         nativeCaptureIsCurrent = nil
         snapshotUnavailable = false
-        if browserManager.tabs.profileEngine == .chromium {
-            guard let result = await browserManager.captureNativeScreenshot(of: session, in: windowState),
-                  !Task.isCancelled, windowState.isPortraitCaptureVisible, result.isCurrent() else {
-                if !Task.isCancelled { snapshotUnavailable = true }
-                return
-            }
-            nativeCaptureIsCurrent = result.isCurrent
-            page = result.image
-        } else {
-            guard let webView = WebKitPageAccess.existingView(for: session) else { snapshotUnavailable = true; return }
-            let image = try? await webView.takeSnapshot(configuration: nil)
-            guard !Task.isCancelled else { return }
-            page = image
-            snapshotUnavailable = image == nil
+        guard let result = await browserManager.captureNativeScreenshot(of: session, in: windowState),
+              !Task.isCancelled, windowState.isPortraitCaptureVisible, result.isCurrent() else {
+            if !Task.isCancelled { snapshotUnavailable = true }
+            return
         }
+        nativeCaptureIsCurrent = result.isCurrent
+        page = result.image
     }
 
     /// The framed page at the page's own resolution: copied at once, then offered for saving.
     private func capture() {
-        guard let page else { return }
+        guard let page, nativeCaptureIsCurrent?() == true else { return }
         let clipboardVersion = NSPasteboard.general.changeCount
-        if browserManager.tabs.profileEngine == .chromium {
-            guard nativeCaptureIsCurrent?() == true else { return }
-        }
         isCapturing = true
+        defer { isCapturing = false }
         let size = PortraitComposition.canvasSize(for: page.size)
         let renderer = ImageRenderer(content: PortraitComposition(page: page, backdrop: backdrop, wallpaper: wallpaper, mark: .footer)
             .frame(width: size.width, height: size.height))
         // Chromium JPEG dimensions already count device pixels.
-        renderer.scale = browserManager.tabs.profileEngine == .chromium ? 1 : (NSScreen.main?.backingScaleFactor ?? 2)
+        renderer.scale = 1
         if let image = renderer.nsImage {
-            if browserManager.tabs.profileEngine == .chromium {
-                guard nativeCaptureIsCurrent?() == true,
-                      clipboardVersion == NSPasteboard.general.changeCount else { isCapturing = false; return }
-            }
+            guard nativeCaptureIsCurrent?() == true,
+                  clipboardVersion == NSPasteboard.general.changeCount else { return }
             if PortraitComposition.copyImage(image, to: .general, expectedVersion: clipboardVersion) {
                 withAnimation(NookDesign.Motion.spring) { captured = image }
             } else {
                 browserManager.showWindowToast("Could not copy screenshot", in: windowState)
             }
         }
-        isCapturing = false
     }
 
     /// Straight into Downloads as Arc saves it: named for the page's title, listed with the
     /// other downloads, flown to the downloads button. A name already taken gets a number.
     private func save() {
-        if browserManager.tabs.profileEngine == .chromium, nativeCaptureIsCurrent?() != true { return }
+        guard nativeCaptureIsCurrent?() == true else { return }
         guard let captured, let tiff = captured.tiffRepresentation,
               let png = NSBitmapImageRep(data: tiff)?.representation(using: .png, properties: [:]) else { return }
         let title = session.title.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -456,7 +456,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }
             guard blocker.synchronize(), pageHost.configureBlocker(blocker), downloads.start(manager: storage.downloads) else { completion(nil); return }
             self.blocker = blocker
-            let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults, usesWebKitShortcuts: false)
+            let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
             let appMenu = ChromiumAppMenu(isOffered: { [weak self, weak manager, weak pageHost] command in

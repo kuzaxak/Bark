@@ -8,9 +8,9 @@ with TemporaryDirectory(prefix='bark-snapshot-') as directory:
     s=(root/'Nook/Managers/DevMCPServer/DevMCPServer.swift').read_text();a=s.index('    private struct StoredSnapshot');b=s.index('    private var token',a);cache=s[a:b]
     a=s.index('    private func nativeScreenshot(');b=s.index('    private func nativeSelectionTool(',a);helper=s[a:b].replace('    private func nativeSnapshot','    func nativeSnapshot',1).replace('    private func nativeScreenshot','    func nativeScreenshot',1)
     a=s.index('    private func nativeSelectionTool(')
-    b=s.index('        if bm.engine == .chromium,\n           let result = nativeBlockerTool',a)
+    b=s.index('        if let result = nativeBlockerTool',a)
     selection=s[a:b].replace('    private func callTool(', '    func callTool(',1)
-    selection+='        preconditionFailure("Chromium picker reached the legacy WebKit route")\n    }\n'
+    selection+='        preconditionFailure("Human picker did not reach native selection dispatch")\n    }\n'
     pickerSource=(root/'Nook/Components/DevTools/BrowserManager+DevPick.swift').read_text()
     a=pickerSource.index('    func nativeDeveloperPage');b=pickerSource.index('    /// Clipboard',a)
     developer=pickerSource[a:b]

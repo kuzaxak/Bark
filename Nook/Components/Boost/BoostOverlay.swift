@@ -20,7 +20,6 @@ struct BoostOverlay: View {
     @State private var nativePreview: (session: PageSession, serial: UInt64, page: ObjectIdentifier, token: UUID)?
 
     private var session: PageSession? { browserManager.frontPage(in: windowState) }
-    private var isNative: Bool { browserManager.tabs.profileEngine == .chromium }
 
     var body: some View {
         content.task(id: windowState.isBoostPanelVisible) { await browserManager.nookSettings?.waitForBoosts() }
@@ -41,30 +40,19 @@ struct BoostOverlay: View {
             BoostPanel(
                 settings: settings,
                 host: host,
-                canZap: !isNative || session.navigation?.supportsElementPicker == true,
+                canZap: session.navigation?.supportsElementPicker == true,
                 canRunScripts: true,
                 opensLibrary: windowState.boostPanelOpensLibrary,
-                onPreview: { draft in
-                    if isNative { preview(draft, in: session, serial: serial, page: page) }
-                    else if let webView = WebKitPageAccess.existingView(for: session) {
-                        BoostTweaks.preview(for: session.url, in: webView, settings: settings, draft: draft)
-                    }
-                },
+                onPreview: { draft in preview(draft, in: session, serial: serial, page: page) },
                 onZap: {
-                    if isNative {
-                        guard let lease = nativePreview, lease.session === session,
-                              lease.serial == serial, lease.page == page else { return nil }
-                        return await session.pickNativeBoostElement(token: lease.token)
-                    }
-                    guard let webView = WebKitPageAccess.existingView(for: session) else { return nil }
-                    return await BoostTweaks.pickElement(in: webView)
+                    guard let lease = nativePreview, lease.session === session,
+                          lease.serial == serial, lease.page == page else { return nil }
+                    return await session.pickNativeBoostElement(token: lease.token)
                 },
                 onCancelZap: {
-                    if isNative {
-                        if let lease = nativePreview, lease.session === session, lease.serial == serial, lease.page == page {
-                            session.cancelNativeBoostElementPicker(token: lease.token)
-                        }
-                    } else { WebKitPageAccess.existingView(for: session).map { BoostTweaks.cancelPick(in: $0) } }
+                    if let lease = nativePreview, lease.session === session, lease.serial == serial, lease.page == page {
+                        session.cancelNativeBoostElementPicker(token: lease.token)
+                    }
                 },
                 onFinish: { close(session, serial: serial, page: page, settings) }
             )
@@ -78,18 +66,18 @@ struct BoostOverlay: View {
             .transition(.opacity)
             .onAppear {
                 windowState.boostPanelOpensLibrary = false
-                if isNative { preview(nil, in: session, serial: serial, page: page) }
+                preview(nil, in: session, serial: serial, page: page)
             }
             .onDisappear { endNativePreview(session, serial: serial, page: page) }
             .onChange(of: windowState.selectedItemID) { _, _ in close(session, serial: serial, page: page, settings) }
             .onChange(of: session.nativeNavigationSerial) { _, _ in
-                if isNative { close(session, serial: serial, page: page, settings) }
+                close(session, serial: serial, page: page, settings)
             }
             .onChange(of: session.navigation.map { ObjectIdentifier($0) }) { _, _ in
-                if isNative { close(session, serial: serial, page: page, settings) }
+                close(session, serial: serial, page: page, settings)
             }
             .onChange(of: session.isUnloaded) { _, unloaded in
-                if isNative, unloaded { close(session, serial: serial, page: page, settings) }
+                if unloaded { close(session, serial: serial, page: page, settings) }
             }
         }
     }
@@ -120,13 +108,8 @@ struct BoostOverlay: View {
     /// Whatever was not saved goes away: the page shows the saved Boosts again, and the zap list
     /// catches up with them.
     private func close(_ session: PageSession, serial: UInt64, page: ObjectIdentifier?, _ settings: NookSettingsService) {
-        if isNative {
-            endNativePreview(session, serial: serial, page: page)
-            BoostTweaks.syncZapList(settings: settings, blocker: browserManager.contentBlockerManager)
-        } else if let webView = WebKitPageAccess.existingView(for: session) {
-            BoostTweaks.preview(for: session.url, in: webView, settings: settings)
-            BoostTweaks.syncZapList(settings: settings, blocker: browserManager.contentBlockerManager)
-        }
+        endNativePreview(session, serial: serial, page: page)
+        BoostTweaks.syncZapList(settings: settings, blocker: browserManager.contentBlockerManager)
         windowState.isBoostPanelVisible = false
     }
 }

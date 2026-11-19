@@ -25,7 +25,6 @@ with TemporaryDirectory(prefix='bark-script-approval-') as directory:
  var windowState: BrowserWindowState?
  var agentSpace: UUID?
  var confirmationHandler: ((String,[String:Any]) async -> Bool)?
- func getWebView(browserManager: BrowserManager, windowState: BrowserWindowState) -> FakeWK? { fatalError("native execution reached WK preparation") }
 ''' + execute + methods + '\n' + stubs + '\n}\n'
     (out / 'Executor.swift').write_text(fixture)
     cmd = ['swiftc','-swift-version','5','-parse-as-library',str(out/'Executor.swift'),str(root/'Tests/ChromiumScriptApproval/Main.swift'),'-o',str(out/'check')]

@@ -18,8 +18,7 @@ extension BrowserManager {
     /// Whether the window's page is on a site with Developer Mode on.
     func showsDeveloperBar(in windowState: BrowserWindowState) -> Bool {
         guard !windowState.isIncognito, let settings = nookSettings,
-              let host = (engine == .chromium ? frontPage(in: windowState)
-                           : tabs.selectedSession(in: windowState))?.url.host else { return false }
+              let host = frontPage(in: windowState)?.url.host else { return false }
         return settings.isDeveloperSite(host)
     }
 
@@ -59,31 +58,12 @@ extension BrowserManager {
 
     /// Chromium keeps the selected address placement when the developer tools are visible.
     func showsTopBar(in windowState: BrowserWindowState) -> Bool {
-        nookSettings?.topBarAddressView == true && (engine == .chromium || !showsDeveloperBar(in: windowState))
+        nookSettings?.topBarAddressView == true
     }
 
-    /// Runs a developer tool. WebKit pages capture for these tools only with Developer Mode on
-    /// (Settings > Developer); Chromium's tools need nothing. On a site with Developer Mode on,
-    /// the bar's tools ask to turn it on rather than sit greyed out; turning it on here does what
-    /// the Settings toggle does, Browser Control included.
-    func withDeveloperCapture(_ action: @escaping () -> Void) {
-        guard let settings = nookSettings else { return }
-        if settings.developerModeEnabled || tabs.profileEngine == .chromium { action(); return }
-        guard let windowState = windowRegistry?.activeWindow, showsDeveloperBar(in: windowState),
-              let window = windowState.windowHandle as? NSWindow else { return }
-        let alert = NSAlert()
-        alert.messageText = "Turn on Developer Mode?"
-        alert.informativeText = "Console, Network, Performance and Pick Element record what pages do. While Developer Mode is on, that happens on every site, not only this one. You can turn it off in Settings → Developer."
-        alert.addButton(withTitle: "Turn On")
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { [weak self, weak windowState] response in
-            guard response == .alertFirstButtonReturn, let self else { return }
-            settings.developerModeEnabled = true
-            self.tabs.setDeveloperMode(true)
-            DevMCPServer.shared.applyEnabledSetting(settings.browserControlServerEnabled)
-            if let windowState { self.showWindowToast("Developer Mode on. Reload to capture this page", in: windowState) }
-            action()
-        }
+    func withDeveloperCapture(_ action: () -> Void) {
+        guard nookSettings != nil else { return }
+        action()
     }
 
     func togglePortraitCapture(in windowState: BrowserWindowState) {
@@ -160,12 +140,14 @@ struct DeveloperBar: View {
                      isOn: windowState.isPortraitCaptureVisible) { if nativeCurrent { browserManager.togglePortraitCapture(in: windowState) } }
                 tool("camera", "Copy Screenshot", shortcut: .copyScreenshot) { perform(.copyScreenshot) }
                 separator
-                tool("terminal", "Console", shortcut: .openDevPanel, isOn: devTabShowing(.console)) { openPanel(.console) }
-                tool("network", "Network", shortcut: .openNetworkPanel, isOn: devTabShowing(.network)) { openPanel(.network) }
+                tool("terminal", "Console", shortcut: .openDevPanel) { perform(.developerConsole) }
+                tool("network", "Network", shortcut: .openNetworkPanel) { perform(.developerNetwork) }
                 tool("scope", "Pick Element", shortcut: .pickElement) { perform(.pickElement) }
+                    .disabled(browserManager.nookSettings?.developerModeEnabled != true ||
+                              session.navigation?.supportsElementPicker != true)
                 separator
                 tool("hammer", "Web Inspector", shortcut: .openDevTools) { perform(.webInspector) }
-                tool("gauge.with.needle", "Performance", shortcut: .openPerformancePanel, isOn: devTabShowing(.perf)) { openPanel(.perf) }
+                tool("gauge.with.needle", "Performance", shortcut: .openPerformancePanel) { perform(.developerPerformance) }
             }
         }
         .padding(.horizontal, NookDesign.Spacing.lg)
@@ -183,31 +165,15 @@ struct DeveloperBar: View {
     }
 
     private var nativeCurrent: Bool {
-        browserManager.engine != .chromium ||
-            (browserManager.windowRegistry?.windows[windowState.id] === windowState &&
-             browserManager.windowRegistry?.activeWindow === windowState &&
-             windowState.window != nil && windowState.window === NSApp.keyWindow &&
-             browserManager.frontPage(in: windowState) === session &&
-             (session.navigation.map { browserManager.tabs.nativePageHost?.isNativeSelection($0, in: windowState) == true } ?? false))
-    }
-    private func perform(_ command: PageCommand) {
-        if browserManager.engine == .chromium {
-            _ = browserManager.performNativePageCommand(command, in: windowState, page: session)
-        } else { browserManager.perform(command) }
-    }
-    private func openPanel(_ tab: DevPanelTab) {
-        if browserManager.engine == .chromium {
-            switch tab {
-            case .console: perform(.developerConsole)
-            case .network: perform(.developerNetwork)
-            case .perf: perform(.developerPerformance)
-            default: break
-            }
-        } else { browserManager.toggleDevPanel(tab) }
+        browserManager.windowRegistry?.windows[windowState.id] === windowState &&
+            browserManager.windowRegistry?.activeWindow === windowState &&
+            windowState.window != nil && windowState.window === NSApp.keyWindow &&
+            browserManager.frontPage(in: windowState) === session &&
+            (session.navigation.map { browserManager.tabs.nativePageHost?.isNativeSelection($0, in: windowState) == true } ?? false)
     }
 
-    private func devTabShowing(_ tab: DevPanelTab) -> Bool {
-        browserManager.engine != .chromium && windowState.isSidebarAIChatVisible && windowState.devPanelTab == tab
+    private func perform(_ command: PageCommand) {
+        _ = browserManager.performNativePageCommand(command, in: windowState, page: session)
     }
 
     private func tool(_ symbol: String, _ help: String, shortcut: ShortcutAction, isOn: Bool = false, action: @escaping () -> Void) -> some View {

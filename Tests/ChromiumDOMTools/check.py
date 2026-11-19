@@ -15,7 +15,6 @@ with TemporaryDirectory(prefix='bark-dom-') as directory:
     fixture='''import Foundation
 @MainActor final class ToolFixture {
  var agentSpace: UUID? = UUID()
- func getWebView(browserManager: BrowserManager, windowState: BrowserWindowState) -> WKWebView? { fatalError("native tool reached WK preparation") }
 '''+'\n'.join(method(x) for x in names)+'\n'+methods+'\n}\n'
     (out/'Tools.swift').write_text(fixture)
     ai=(root/'Nook/Managers/AIManager/AIService.swift').read_text()

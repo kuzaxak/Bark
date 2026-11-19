@@ -33,6 +33,7 @@ from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, lo
                                  read_pin, remove_work, swap)
 from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements, load_profile
 from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
+from bark_shell_boundary import verify_shell_boundary
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "Runtime/Chromium"))
@@ -649,6 +650,8 @@ def main():
     if args.command in ("catalog", "page-host", "profile-pages", "extension-actions", "live-fetch", "vault", "downloads"):
         check_native_harness(args.command)
         return
+    if args.command in ("shell", "build"):
+        verify_shell_boundary(REPO)
     if args.command == "shell":
         check_release_shell(args.arch)
         return

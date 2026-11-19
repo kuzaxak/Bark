@@ -18,12 +18,8 @@ typealias TabsController = BrowserManager.Tabs
     init(profile: UUID) { self.profile = profile }
 }
 @MainActor final class BrowserManager {
-    enum Engine { case chromium, webKit }
-    var engine = Engine.chromium
     let tabs = Tabs()
     let contentBlockerManager = Blocker()
-    func agentWebView() throws -> Never { throw WKPreparation.unexpected }
-    enum WKPreparation: Error { case unexpected }
     @MainActor final class Tabs {
         var regularDiagnosticSessions: [PageSession] = []
         var displayed: UUID?
@@ -115,7 +111,14 @@ typealias TabsController = BrowserManager.Tabs
         let all = try replyText("clear_page_cache", ["all": true])
         precondition(all.contains("1 of 2") && shown.flushes == 1 && parked.flushes == 2 && unloaded.flushes == 0)
         precondition(privatePage.flushes == 0)
+        for name in ["perf", "blocker_log", "console", "network", "user_scripts"] {
+            let reply = try server.dispatch(name, [:], browserManager: manager, window: window)
+            precondition(reply["isError"] as? Bool == true)
+            let content = reply["content"] as! [[String: String]]
+            precondition(content[0]["text"] == "\(name) failed: This tool is not available for Chromium pages yet")
+        }
+        print("Unsupported diagnostic calls keep their Chromium error response")
         print("Regular page diagnostics and cache requests preserve foreground selection and cold pages")
-        print("PASS: three blocker dispatches bypass throwing WK preparation; exact page/profile refusal; no window selection change; policy/readiness labels")
+        print("PASS: three blocker dispatches do not prepare a page; exact page/profile refusal; no window selection change; policy/readiness labels")
     }
 }

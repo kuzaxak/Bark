@@ -2,15 +2,6 @@
 // Compiles the shipped fixed-tool/helper bodies verbatim; only app/transport
 // surroundings are stubbed. The actual adapter/module has separate checks.
 import Foundation
-@MainActor final class WKWebView {
-    var evaluated: Any?
-    func evaluateJavaScript(_ source: String) async throws -> Any? {
-        guard let evaluated else { fatalError("WK evaluation") }
-        return evaluated
-    }
-    func callAsyncJavaScript(_ source: String, arguments: [String:Any], contentWorld: World) async throws -> Any? { fatalError("WK async evaluation") }
-    enum World { case page }
-}
 @MainActor final class ChromiumPageNavigation {
     enum ScriptMode { case expression, asyncBody }; enum ScriptWorld { case page }
     enum ScriptError: Error { case unavailable, cancelled, unserializable }
@@ -48,10 +39,8 @@ import Foundation
     func prepareNativeAgentPage(in window:BrowserWindowState) async -> PageSession? {prepares+=1;return available ? page:nil}
 }
 @MainActor final class BrowserManager {
-    enum Engine {case chromium,webKit};var engine=Engine.chromium;let tabs=Tabs()
+    let tabs=Tabs()
     var windowRegistry:Registry?=Registry()
-    var webView:WKWebView?
-    func getWebView(for item:UUID,in window:UUID)->WKWebView? {webView}
 }
 enum AppleIntelligenceProvider {
     static let toolOutputTokens=400
@@ -134,8 +123,8 @@ enum AppleIntelligenceProvider {
         precondition(window.selectedItemID==selected && window.spaceID==space)
         native.fail=false;tools.agentSpace=nil
         try await checkPageContext(manager:manager,window:window,tools:tools)
-        print("Seven fixed DOM tools: native route, formatting, escaped query, exact hidden ownership/cancellation and WK trap passed")
-        print("Page context: exact selected page, refused changes and WK route passed")
+        print("Seven fixed DOM tools: native route, formatting, escaped query, exact hidden ownership and cancellation passed")
+        print("Page context: exact selected page and refused ownership changes passed")
     }
 }
 
@@ -208,13 +197,5 @@ enum AppleIntelligenceProvider {
     seen=await read();precondition(seen=="","unexpected shape")
     native.result=reply
 
-    count=native.calls.count
-    manager.engine = .webKit
-    seen=await read();precondition(seen=="","WebKit without a view")
-    let web=WKWebView()
-    web.evaluated=["title":"Web","url":"https://web.test/","content":"Web words"] as [String:Any]
-    manager.webView=web
-    seen=await read();precondition(seen.contains("Web words"),"WebKit path")
-    precondition(native.calls.count==count,"WebKit never reaches the native page")
-    manager.engine = .chromium;manager.webView=nil
+
 }

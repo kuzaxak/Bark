@@ -9,7 +9,6 @@
 import Foundation
 import AppKit
 import SwiftUI
-import WebKit
 import NookWeb
 import NookUI
 
@@ -35,9 +34,6 @@ class KeyboardShortcutManager {
     /// Hash-based storage for O(1) lookup: ["cmd+t": KeyboardShortcut]
     private var shortcutMap: [String: KeyboardShortcut] = [:]
     
-    /// Flag to prevent re-entrancy when forwarding events to WebView
-    private var isForwardingEvent = false
-
     /// All shortcuts for UI display (sorted by display name)
     var shortcuts: [KeyboardShortcut] {
         Array(shortcutMap.values).sorted { $0.action.displayName < $1.action.displayName }
@@ -47,21 +43,8 @@ class KeyboardShortcutManager {
     weak var windowRegistry: WindowRegistry?
     @ObservationIgnored var onShortcutsChanged: (() -> Void)?
     
-    /// Detector for website keyboard shortcut conflicts
-    let websiteShortcutDetector: WebsiteShortcutDetector?
-
-    /// Actions a page's self-reported shortcuts never take the first press of. The report
-    /// comes from the page, so a site could otherwise swallow the keys that leave it.
-    /// Keyed by action so a rebound shortcut stays covered; built-in site profiles are
-    /// not affected.
-    private static let neverYieldedToPageReports: Set<ShortcutAction> = [
-        .closeTab, .closeWindow, .closeBrowser, .newTab, .newWindow,
-        .focusAddressBar, .openCommandPalette, .toggleFullScreen,
-    ]
-
-    init(userDefaults: UserDefaults = .standard, usesWebKitShortcuts: Bool = true) {
+    init(userDefaults: UserDefaults = .standard) {
         self.userDefaults = userDefaults
-        websiteShortcutDetector = usesWebKitShortcuts ? WebsiteShortcutDetector() : nil
         loadShortcuts()
         setupGlobalMonitor()
     }
@@ -69,7 +52,6 @@ class KeyboardShortcutManager {
     func setBrowserManager(_ manager: BrowserManager) {
         self.browserManager = manager
         self.windowRegistry = manager.windowRegistry
-        self.websiteShortcutDetector?.browserManager = manager
     }
 
     // MARK: - Persistence
@@ -205,11 +187,6 @@ class KeyboardShortcutManager {
     // MARK: - Shortcut Execution
 
     func executeShortcut(_ event: NSEvent) -> Bool {
-        // Prevent re-entrancy when forwarding events to WebView
-        guard !isForwardingEvent else {
-            return false
-        }
-
         guard !CommandWindow.keyKeepsKeys else { return false }
         // A window that is not a browser window (Settings, a mini window) keeps its own keys.
         if let keyWindow = CommandWindow.key,
@@ -286,23 +263,6 @@ class KeyboardShortcutManager {
             }
         }
 
-        // MARK: - Website Shortcut Conflict Resolution
-        // Check if this shortcut conflicts with a website shortcut
-        if let websiteShortcutDetector, let windowId = windowRegistry?.activeWindow?.id {
-            let shouldPass = websiteShortcutDetector.shouldPassToWebsite(
-                keyCombination,
-                windowId: windowId,
-                nookActionName: shortcut.action.displayName,
-                allowPageReports: !Self.neverYieldedToPageReports.contains(shortcut.action)
-            )
-            
-            if shouldPass {
-                // First press: Forward event directly to the WebView
-                forwardEventToWebView(event)
-                return true // We handled it (by forwarding)
-            }
-        }
-
         // The constrained Chromium WebUI has the key now. Check it before
         // deferring an ordinary close to the browser model.
         if shortcut.action == .closeTab, handleCertificateClose(isRepeat: event.isARepeat) { return true }
@@ -314,7 +274,7 @@ class KeyboardShortcutManager {
         return true
     }
 
-    /// The WebKit app binds Command-Shift-T in its menu commands, outside the shortcut table.
+    /// Handles the standard reopen shortcut when the shortcut table leaves it unbound.
     private func reopenClosedTabInChromium(for key: KeyCombination) -> Bool {
         guard let browserManager, browserManager.tabs.profileEngine == .chromium,
               key == KeyCombination(key: "t", modifiers: [.command, .shift]) else { return false }
@@ -331,172 +291,6 @@ class KeyboardShortcutManager {
     private var lastShortcutWasControlTab = false
     private var lastShortcutWasRepeat = false
     
-    /// Forward a keyboard event directly to the active WebView
-    private func forwardEventToWebView(_ event: NSEvent) {
-        guard let windowState = windowRegistry?.activeWindow,
-              let webView = browserManager?.frontWebView(in: windowState) else {
-            return
-        }
-        
-        // Set flag to prevent re-entrancy
-        isForwardingEvent = true
-        defer { isForwardingEvent = false }
-        
-        // Make the WebView the first responder if it isn't already
-        if webView.window?.firstResponder != webView {
-            webView.window?.makeFirstResponder(webView)
-        }
-        
-        // Try JavaScript dispatch first - this is more reliable for web apps
-        dispatchKeyboardEventToWebView(webView, event: event)
-        
-        // Also call keyDown for native WebView handling (scroll, copy/paste, etc.)
-        webView.keyDown(with: event)
-    }
-    
-    /// Dispatch a keyboard event to the WebView's DOM via JavaScript
-    private func dispatchKeyboardEventToWebView(_ webView: WKWebView, event: NSEvent) {
-        let key = event.charactersIgnoringModifiers ?? event.characters ?? ""
-        let keyCode = event.keyCode
-        let modifiers = event.modifierFlags
-        
-        // Build modifier flags for JavaScript
-        var jsModifiers: [String] = []
-        if modifiers.contains(.command) { jsModifiers.append("metaKey: true") }
-        if modifiers.contains(.shift) { jsModifiers.append("shiftKey: true") }
-        if modifiers.contains(.control) { jsModifiers.append("ctrlKey: true") }
-        if modifiers.contains(.option) { jsModifiers.append("altKey: true") }
-        let modifierStr = jsModifiers.joined(separator: ", ")
-        let modifierSuffix = modifierStr.isEmpty ? "" : ", \(modifierStr)"
-        
-        // Escape the key for JavaScript
-        let escapedKey = key
-            .replacingOccurrences(of: "\\", with: "\\\\")
-            .replacingOccurrences(of: "'", with: "\\'")
-            .replacingOccurrences(of: "\"", with: "\\\"")
-            .replacingOccurrences(of: "\n", with: "\\n")
-            .replacingOccurrences(of: "\r", with: "\\r")
-            .replacingOccurrences(of: "\t", with: "\\t")
-        
-        // Map keyCode to JavaScript key codes
-        let jsKeyCode = mapToJSKeyCode(key, keyCode: keyCode, modifiers: modifiers)
-        
-        let js = """
-        (function() {
-            var keyEvent = new KeyboardEvent('keydown', {
-                key: '\(escapedKey)',
-                code: '\(jsKeyCode)',
-                keyCode: \(keyCode),
-                which: \(keyCode)\(modifierSuffix),
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-
-            var dispatched = document.activeElement.dispatchEvent(keyEvent);
-            if (!dispatched) {
-                // Try dispatching to document if activeElement didn't handle it
-                document.dispatchEvent(keyEvent);
-            }
-
-            // Also dispatch keyup
-            var keyUpEvent = new KeyboardEvent('keyup', {
-                key: '\(escapedKey)',
-                code: '\(jsKeyCode)',
-                keyCode: \(keyCode),
-                which: \(keyCode)\(modifierSuffix),
-                bubbles: true,
-                cancelable: true,
-                composed: true
-            });
-            document.activeElement.dispatchEvent(keyUpEvent);
-
-            return dispatched;
-        })();
-        """
-        
-        webView.evaluateJavaScript(js) { result, error in
-            if let error = error {
-            } else {
-            }
-        }
-    }
-    
-    /// Map NSEvent keyCode to JavaScript code string
-    private func mapToJSKeyCode(_ key: String, keyCode: UInt16, modifiers: NSEvent.ModifierFlags) -> String {
-        // Map common keys to JavaScript code values
-        switch keyCode {
-        case 0x00: return "KeyA"
-        case 0x01: return "KeyS"
-        case 0x02: return "KeyD"
-        case 0x03: return "KeyF"
-        case 0x04: return "KeyH"
-        case 0x05: return "KeyG"
-        case 0x06: return "KeyZ"
-        case 0x07: return "KeyX"
-        case 0x08: return "KeyC"
-        case 0x09: return "KeyV"
-        case 0x0B: return "KeyB"
-        case 0x0C: return "KeyQ"
-        case 0x0D: return "KeyW"
-        case 0x0E: return "KeyE"
-        case 0x0F: return "KeyR"
-        case 0x10: return "KeyY"
-        case 0x11: return "KeyT"
-        case 0x12: return "Digit1"
-        case 0x13: return "Digit2"
-        case 0x14: return "Digit3"
-        case 0x15: return "Digit4"
-        case 0x16: return "Digit6"
-        case 0x17: return "Digit5"
-        case 0x18: return "Equal"
-        case 0x19: return "Digit9"
-        case 0x1A: return "Digit7"
-        case 0x1B: return "Minus"
-        case 0x1C: return "Digit8"
-        case 0x1D: return "Digit0"
-        case 0x1E: return "BracketRight"
-        case 0x1F: return "KeyO"
-        case 0x20: return "KeyU"
-        case 0x21: return "BracketLeft"
-        case 0x22: return "KeyI"
-        case 0x23: return "KeyP"
-        case 0x24: return "Enter"
-        case 0x25: return "KeyL"
-        case 0x26: return "KeyJ"
-        case 0x27: return "Quote"
-        case 0x28: return "KeyK"
-        case 0x29: return "Semicolon"
-        case 0x2A: return "Backslash"
-        case 0x2B: return "Comma"
-        case 0x2C: return "Slash"
-        case 0x2D: return "KeyN"
-        case 0x2E: return "KeyM"
-        case 0x2F: return "Period"
-        case 0x30: return "Tab"
-        case 0x31: return "Space"
-        case 0x33: return "Backspace"
-        case 0x35: return "Escape"
-        case 0x7A: return "F1"
-        case 0x78: return "F2"
-        case 0x63: return "F3"
-        case 0x76: return "F4"
-        case 0x60: return "F5"
-        case 0x61: return "F6"
-        case 0x62: return "F7"
-        case 0x64: return "F8"
-        case 0x65: return "F9"
-        case 0x6D: return "F10"
-        case 0x67: return "F11"
-        case 0x6F: return "F12"
-        case 0x7B: return "ArrowLeft"
-        case 0x7C: return "ArrowRight"
-        case 0x7D: return "ArrowDown"
-        case 0x7E: return "ArrowUp"
-        default: return "Key\(key.uppercased())"
-        }
-    }
-
     private static func isControlTab(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown, event.keyCode == 48 else { return false } // Tab
         return event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command)

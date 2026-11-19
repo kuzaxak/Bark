@@ -54,16 +54,13 @@ There is no app test target. Logic with its own checks lives in `Checks/` folder
 
 A tab’s saved state lives in `NookTabsCore`. `PageSession` follows a live
 page through the engine-neutral `PageNavigation` protocol. Implement a new
-Chromium operation in the native adapter using Bark’s public C bridge. The shared
-`Profile` carries identity and an optional
-[WebKitProfileStorage capability](Packages/NookWeb/Sources/NookWeb/WebKitProfileStorage.swift).
-Only a WebKit host uses that capability’s `dataStore` or implements
-[WebKitPageSessionDelegate](Packages/NookWeb/Sources/NookWeb/WebKitPageSessionDelegate.swift).
-WebKit hosts can use `WebKitPageAccess` to look up an existing view, its
-session or its WebContent process. These lookups leave unloaded pages unloaded.
-WebKit navigation, UI and script callbacks enter through a delegate tied to
-the owning session. Chromium profiles use their native page host and diagnostics.
-[WebKit page access](Packages/NookWeb/Sources/NookWeb/WebKitPageAccess.swift)
+Chromium operation in the native adapter using Bark’s public C bridge. Regular and private
+profiles default to Chromium. A page keeps its engine when its window or controller goes away. Bark’s shell
+and signing builds check app-owned Swift sources for direct WebKit page
+access. The shared package still has an explicit WebKit adapter and tests.
+[Profile identity](Packages/NookWeb/Sources/NookWeb/Profile.swift) ·
+[Shell source check](scripts/bark_shell_boundary.py)
+
 `NativePageHost` owns creation, selection, transfer and acknowledged close.
 Check the page’s current window and profile before applying an asynchronous
 result. A transfer can preserve the document while changing the window

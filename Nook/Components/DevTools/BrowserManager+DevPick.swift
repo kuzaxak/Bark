@@ -3,33 +3,14 @@
 //  BrowserManager+DevPick.swift
 //  Nook
 //
-//  Element handoff: the picked element's screenshot, the Markdown on the clipboard, the
+//  Element handoff: the Markdown on the clipboard, the
 //  selection DevMCP serves, and the toast.
 //
 
 import AppKit
-import OSLog
-import WebKit
 import NookWeb
 
 extension BrowserManager {
-    private static let devLog = Logger(subsystem: "com.gstudios.nook", category: "DevTools")
-
-    func installDevPickHandler() {
-        tabs.onDevPick = { [weak self] session, element in
-            Task { @MainActor in await self?.handleDevPick(session, element) }
-        }
-    }
-
-    private func handleDevPick(_ session: PageSession, _ element: DevPickedElement) async {
-        let imagePath = await snapshot(of: element, in: session)
-        let context = session.devHandoffContext
-        let markdown = DevHandoff.markdown(element: element, errors: context.errors,
-                                           failed: context.failed, imagePath: imagePath)
-        handOff(DevPick(markdown: markdown, imagePath: imagePath), from: session)
-        showDevToast("Element copied")
-    }
-
     func nativeDeveloperPage(in window: BrowserWindowState) -> (PageSession, ChromiumPageNavigation)? {
         guard nookSettings?.developerModeEnabled == true, !window.isIncognito,
               windowRegistry?.windows[window.id] === window, windowRegistry?.activeWindow === window,
@@ -99,49 +80,5 @@ extension BrowserManager {
             windowState?.isShowingCopyURLToast = false
             windowState?.copyToastText = nil
         }
-    }
-
-    /// The element's on-screen part as a PNG in Caches/DevPicks; picks older than a day are deleted.
-    private func snapshot(of element: DevPickedElement, in session: PageSession) async -> String? {
-        guard let webView = WebKitPageAccess.existingView(for: session) else { return nil }
-        let scale = webView.pageZoom * webView.magnification
-        let topInset: CGFloat
-        if #available(macOS 26, *) {
-            topInset = webView.obscuredContentInsets.top
-        } else {
-            topInset = 0
-        }
-        let rect = CGRect(x: element.rect.minX * scale, y: element.rect.minY * scale + topInset,
-                          width: element.rect.width * scale, height: element.rect.height * scale)
-            .intersection(webView.bounds)
-        guard !rect.isNull, rect.width >= 1, rect.height >= 1 else { return nil }
-        let config = WKSnapshotConfiguration()
-        config.rect = rect
-        do {
-            let image = try await webView.takeSnapshot(configuration: config)
-            guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-                  let png = rep.representation(using: .png, properties: [:]) else { return nil }
-            let dir = try Self.devPicksDirectory()
-            let url = dir.appendingPathComponent("pick-\(Int(Date().timeIntervalSince1970 * 1000)).png")
-            try png.write(to: url)
-            return url.path
-        } catch {
-            Self.devLog.error("pick snapshot failed: \(error.localizedDescription, privacy: .public)")
-            return nil
-        }
-    }
-
-    private static func devPicksDirectory() throws -> URL {
-        let fm = FileManager.default
-        let caches = try fm.url(for: .cachesDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
-        let dir = caches.appendingPathComponent(Bundle.main.bundleIdentifier ?? "ee.qdo.nook")
-            .appendingPathComponent("DevPicks")
-        try fm.createDirectory(at: dir, withIntermediateDirectories: true)
-        let cutoff = Date().addingTimeInterval(-86_400)
-        for file in (try? fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? [] {
-            let date = (try? file.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
-            if let date, date < cutoff { try? fm.removeItem(at: file) }
-        }
-        return dir
     }
 }

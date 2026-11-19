@@ -114,8 +114,6 @@ public class BrowserWindowState {
     /// Read inside the sidebar's PiP view body, so it stays observed.
     public var sidebarPiPStorage: Any?
     @ObservationIgnored public weak var commandPaletteStorage: AnyObject?
-    /// Read inside the toast view body, so it stays observed.
-    public var shortcutConflictStorage: Any?
 
     /// Frame of the URL bar within this window
     public var urlBarFrame: CGRect = .zero
@@ -127,9 +125,6 @@ public class BrowserWindowState {
     public var isShowingCopyURLToast: Bool = false
     /// Replaces the copy toast's text for one showing; nil is the URL wording.
     public var copyToastText: String?
-
-    /// Presentation flag for the shortcut conflict toast
-    public var isShowingShortcutConflictToast: Bool = false
 
     /// Compositor version counter for this window (incremented when tab ownership changes)
     public var compositorVersion: Int = 0

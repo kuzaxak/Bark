@@ -40,10 +40,4 @@ extension BrowserWindowState {
         get { commandPaletteStorage as? CommandPalette }
         set { commandPaletteStorage = newValue }
     }
-
-    /// Shortcut conflict info for this window's toast
-    var shortcutConflictInfo: ShortcutConflictInfo? {
-        get { shortcutConflictStorage as? ShortcutConflictInfo }
-        set { shortcutConflictStorage = newValue }
-    }
 }

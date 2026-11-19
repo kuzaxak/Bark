@@ -17,7 +17,6 @@ import BarcChromium
 import Foundation
 import Network
 import OSLog
-import WebKit
 import NookBlocker
 import NookWeb
 
@@ -44,7 +43,7 @@ final class DevMCPServer {
     @discardableResult
     func setConfiguration(_ value: DevMCPConfiguration) -> Bool {
         // Once installed, roots are immutable for this server lifetime, including abandoned
-        // asynchronous WebKit calls that may outlive their cancelled HTTP request.
+        // asynchronous operations that may outlive their cancelled HTTP request.
         guard configuration == nil || configuration == value else { return false }
         guard listener == nil, requests.isEmpty, connections.isEmpty else { return configuration == value }
         configuration = value
@@ -310,7 +309,7 @@ final class DevMCPServer {
             let callManager = browserManager
             callManager?.tabs.agentCallsInFlight += 1
             let requestedTimeout = (args["timeout"] as? NSNumber)?.doubleValue ?? 20
-            let nativeWait = browserManager?.engine == .chromium && (name == "reload" || name == "wait_for_load")
+            let nativeWait = browserManager != nil && (name == "reload" || name == "wait_for_load")
             let timeout = nativeWait ? (requestedTimeout.isFinite ? max(0, min(requestedTimeout, Self.toolTimeout - 5)) : 20) : Self.toolTimeout
             let called = await withTimeout(timeout, owned: owned, operation: { await self.callTool(name, args) })
             callManager?.tabs.agentCallsInFlight -= 1
@@ -326,10 +325,10 @@ final class DevMCPServer {
 
     /// A tool that never returns must not hold its connection open for ever, so
     /// every call races a deadline and nil means the deadline won. The losing work
-    /// is cancelled but may not notice: `evaluateJavaScript` cannot be cancelled.
+    /// is cancelled; a native operation may still deliver its completion.
     private func withTimeout<T: Sendable>(_ seconds: Double, owned: Request, operation: @escaping @MainActor () async -> T) async -> T? {
         // Not a task group: a group waits for its children even after cancelAll(),
-        // so an abandoned evaluateJavaScript would still hold the connection open
+        // so an abandoned operation would still hold the connection open
         // for as long as it took. These two tasks race and the loser is dropped.
         let latch = Latch()
         owned.cancelTool = { latch.finishCancellation() }
@@ -434,7 +433,7 @@ final class DevMCPServer {
         ),
         AIToolDefinition(
             name: "perf",
-            description: "The selected tab's load timings (TTFB, FCP, LCP with its element, DOMContentLoaded, load) and Interaction to Next Paint with the worst interaction's target and its input delay, processing and presentation delay, plus the WebContent process's memory footprint. WebKit cannot measure CLS. Interactions only count after the person clicks or types.",
+            description: "Legacy page performance capture. Not available for Chromium pages.",
             parameters: ["type": "object", "properties": [:] as [String: Any]]
         ),
         AIToolDefinition(
@@ -855,11 +854,10 @@ final class DevMCPServer {
         guard let bm = browserManager,
               let window = forPerson ? active : (active?.privateTree == nil ? active : bm.tabs.regularWindows.first)
         else { return text("No browser window", error: true) }
-        if bm.engine == .chromium, forPerson {
+        if forPerson {
             return await nativeSelectionTool(name, browserManager: bm, window: window)
         }
-        if bm.engine == .chromium,
-           let result = nativeBlockerTool(name, args, browserManager: bm, window: window) { return result }
+        if let result = nativeBlockerTool(name, args, browserManager: bm, window: window) { return result }
         if let result = pageResourceTool(name, args, tabs: bm.tabs) { return result }
         // Model-only tools never create an Agent space or materialize a page.
         let agentSpace = forPerson ? nil
@@ -872,19 +870,19 @@ final class DevMCPServer {
         let order = space.map(bm.tabs.displayOrder(inSpace:)) ?? []
 
         do {
-            if bm.engine == .chromium, name == "download" {
+            if name == "download" {
                 return try await nativeDownload(args,browserManager:bm,window:window)
             }
-            if bm.engine == .chromium, name == "screenshot" {
+            if name == "screenshot" {
                 return try await nativeScreenshot(args, browserManager: bm, window: window)
             }
-            if bm.engine == .chromium, name == "snapshot" {
+            if name == "snapshot" {
                 return try await nativeSnapshot(args, browserManager: bm, window: window)
             }
-            if bm.engine == .chromium, name == "evaluate" {
+            if name == "evaluate" {
                 return try await nativeEvaluate(args, browserManager: bm, window: window)
             }
-            if bm.engine == .chromium, name == "reload" || name == "wait_for_load" {
+            if name == "reload" || name == "wait_for_load" {
                 guard let page = await bm.tabs.prepareNativeAgentPage(in: window),
                       let navigation = page.navigation as? ChromiumPageNavigation else {
                     return text("Agent page preparation was cancelled or unavailable", error: true)
@@ -913,7 +911,7 @@ final class DevMCPServer {
                 let r = try await executor.execute(AIToolCall(name: name, arguments: args))
                 return text(r.content, error: r.isError)
             }
-            // Tab-tree commands do not need a renderer or a WebKit view.
+            // Tab-tree commands do not need a renderer.
             switch name {
             case "closeTabs":
                 if args["regular"] as? Bool == true {
@@ -936,278 +934,8 @@ final class DevMCPServer {
                 bm.tabs.pin(order[index], to: .pinned(spaceID: spaceID))
                 return text("Pinned: \(bm.tabs.item(order[index])?.displayTitle ?? "")")
 
-            default: break
-            }
-
-            // The agent's page, loaded and hosted once for this call; a read-only tool loads nothing.
-            let agentView: WKWebView? = forPerson || Self.toolsWithoutAgentPage.contains(name) || agentSpace == nil
-                ? nil : try bm.agentWebView()
-            var webView: WKWebView? {
-                if !forPerson { return agentView }
-                guard let id = window.selectedItemID else { return nil }
-                return bm.getWebView(for: id, in: window.id) ?? bm.tabs.controllableSession(in: window).flatMap(WebKitPageAccess.existingView(for:))
-            }
-            var session: PageSession? {
-                guard !forPerson else { return bm.tabs.controllableSession(in: window) }
-                return agentView == nil ? nil : bm.tabs.agentItem.flatMap(bm.tabs.session(for:))
-            }
-
-            switch name {
-            case "evaluate":
-                guard let wv = webView else { return text("No active tab", error: true) }
-                let code = args["code"] as? String ?? ""
-                let world: WKContentWorld = args["world"] as? String == "isolated" ? .defaultClient : .page
-                var saveURL: URL?
-                if let saveTo = args["saveTo"] as? String {
-                    guard let url = configuration!.resolve(saveTo) else {
-                        return text("saveTo must be a relative path inside \(configuration!.filesRoot.path)", error: true)
-                    }
-                    saveURL = url
-                }
-                // Serialize in the page so DOM nodes, undefined and cycles come back readable.
-                // A string being saved is written as is, not as a JSON string literal.
-                let wrapped = """
-                const __v = await (async () => { \(code)
-                })();
-                if (__v === undefined) return 'undefined';
-                if (\(saveURL != nil) && typeof __v === 'string') return __v;
-                try { const s = JSON.stringify(__v, null, 2); return s === undefined ? String(__v) : s; }
-                catch (e) { return String(__v); }
-                """
-                let result = try await wv.callAsyncJavaScript(wrapped, contentWorld: world)
-                guard !Task.isCancelled else { return text("Request cancelled", error: true) }
-                let output = result as? String ?? String(describing: result)
-                guard let saveURL else { return text(output) }
-                try FileManager.default.createDirectory(at: saveURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-                let data = Data(output.utf8)
-                if args["append"] as? Bool == true, let handle = try? FileHandle(forWritingTo: saveURL) {
-                    defer { try? handle.close() }
-                    handle.seekToEndOfFile()
-                    handle.write(data)
-                } else {
-                    try data.write(to: saveURL)
-                }
-                return text("Saved \(data.count) bytes to \(saveURL.path)")
-
-            case "download":
-                guard let wv = webView else { return text("No active tab", error: true) }
-                guard let dir = (args["dir"] as? String).flatMap({ configuration!.resolve($0) }) else {
-                    return text("dir must be a relative path inside \(configuration!.filesRoot.path)", error: true)
-                }
-                var list = args["urls"] as? [String] ?? []
-                if let file = args["urlsFile"] as? String {
-                    guard let source = configuration!.resolve(file), let body = try? String(contentsOf: source, encoding: .utf8) else {
-                        return text("urlsFile must be a readable file inside \(configuration!.filesRoot.path)", error: true)
-                    }
-                    list += body.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
-                }
-                var seen = Set<URL>()
-                let urls = list.compactMap(URL.init(string:)).filter { ["http", "https"].contains($0.scheme) && seen.insert($0).inserted }
-                guard !urls.isEmpty else { return text("No http(s) URLs given", error: true) }
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let job = DevMCPDownload(
-                    urls: urls, dir: dir,
-                    cookies: await wv.configuration.websiteDataStore.httpCookieStore.allCookies(),
-                    userAgent: (try? await wv.evaluateJavaScript("navigator.userAgent")) as? String,
-                    referer: wv.url?.absoluteString
-                )
-                guard !Task.isCancelled else { job.cancel(); return text("Request cancelled", error: true) }
-                let downloadID = UUID()
-                downloads[downloadID] = job
-                Task { [weak self] in
-                    await job.run()
-                    self?.downloads.removeValue(forKey: downloadID)
-                }
-                await job.waitForCompletion(seconds:20)
-                guard !Task.isCancelled else { job.cancel();return text("Request cancelled",error:true) }
-                let progress = job.progress
-                let done = progress.counts.values.reduce(0, +)
-                return text(json([
-                    "dir": dir.path, "manifest": dir.appendingPathComponent("manifest.jsonl").path,
-                    "total": urls.count, "done": done, "finished": progress.finished, "counts": progress.counts
-                ]))
-
-            case "screenshot":
-                guard let wv = webView else { return text("No active tab", error: true) }
-                let maxWidth = (args["maxWidth"] as? NSNumber)?.doubleValue ?? 1200
-                let config = WKSnapshotConfiguration()
-                // snapshotWidth is in points; the image comes back at the backing scale.
-                let scale = wv.window?.backingScaleFactor ?? 2
-                config.snapshotWidth = NSNumber(value: min(wv.bounds.width, maxWidth / scale))
-                let image = try await wv.takeSnapshot(configuration: config)
-                guard let tiff = image.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
-                      let jpeg = rep.representation(using: .jpeg, properties: [.compressionFactor: 0.7]) else {
-                    return text("Snapshot encoding failed", error: true)
-                }
-                return ["content": [["type": "image", "data": jpeg.base64EncodedString(), "mimeType": "image/jpeg"]]]
-
-            case "pick":
-                guard let session, session.devCapture != nil else {
-                    return text("No capture for this tab. Reload it: it loaded before Developer Mode turned on.", error: true)
-                }
-                let before = session.devCapture?.lastPick?.date
-                session.startDevPicker()
-                let deadline = Date().addingTimeInterval(25)
-                // ponytail: 200 ms poll bounded by 25 s; a continuation on onDevPick if this ever matters.
-                while Date() < deadline, session.devCapture?.lastPick?.date == before {
-                    try await Task.sleep(for: .milliseconds(200))
-                }
-                guard session.devCapture?.lastPick?.date != before else {
-                    return text("No element picked within 25 seconds.", error: true)
-                }
-                return await callTool("selection", [:])
-
-            case "selection":
-                guard let pick = session?.devCapture?.lastPick else {
-                    return text("Nothing picked in this tab. Ask the person to press Cmd+Shift+X and click an element.", error: true)
-                }
-                var content: [[String: Any]] = [["type": "text", "text": pick.markdown]]
-                if let path = pick.imagePath, let png = FileManager.default.contents(atPath: path) {
-                    content.append(["type": "image", "data": png.base64EncodedString(), "mimeType": "image/png"])
-                }
-                return ["content": content, "isError": false]
-
-            case "snapshot":
-                guard let session else { return text("No active tab", error: true) }
-                let selector = args["selector"] as? String ?? ""
-                let maxNodes = (args["maxNodes"] as? NSNumber).flatMap(Self.wholeNumber).map { min(max($0, 1), 2_000) } ?? 300
-                let maxDepth = (args["maxDepth"] as? NSNumber).flatMap(Self.wholeNumber).map { min(max($0, 1), 40) } ?? 12
-                guard let outline = try await session.devSnapshot(selector, maxDepth: maxDepth, maxNodes: maxNodes) else {
-                    return text(session.devCapture == nil ? "Developer Mode is off." : "Nothing matches \(selector).", error: true)
-                }
-                let key = "\(session.itemID)|\(session.url.absoluteString)|\(selector)"
-                defer { snapshots[key] = StoredSnapshot(outline: outline) }
-                if args["full"] as? Bool != true, let previous = snapshots[key] {
-                    return text(DevHandoff.snapshotDiff(old: previous.outline, new: outline))
-                }
-                return text(outline)
-
-            case "perf":
-                guard let session, let capture = session.devCapture else {
-                    return text("No capture for this tab. Reload it: it loaded before Developer Mode turned on.", error: true)
-                }
-                var summary = capture.perf.summary
-                if let pid = WebKitPageAccess.processID(for: session) {
-                    var usage = rusage_info_v6()
-                    let ok = withUnsafeMutablePointer(to: &usage) {
-                        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V6, $0) }
-                    }
-                    if ok == 0 { summary += "\nWebContent memory footprint: \(usage.ri_phys_footprint / 1_048_576) MB" }
-                }
-                if !capture.perf.advice.isEmpty { summary += "\n\n" + capture.perf.advice.joined(separator: "\n") }
-                return text(summary)
-
-            case "blocker_log":
-                guard let capture = session?.devCapture else {
-                    return text("No capture for this tab. Reload it: it loaded before Developer Mode turned on.", error: true)
-                }
-                let since = (args["since"] as? NSNumber).flatMap(Self.wholeNumber) ?? 0
-                let actions = capture.blocked.since(since).map { e -> [String: Any] in
-                    var o: [String: Any] = ["action": e.action.rawValue, "url": e.url]
-                    if let t = e.target { o["target"] = t }
-                    return o
-                }
-                var result: [String: Any] = ["actions": actions, "cursor": capture.blocked.lastSeq,
-                                             "dropped": capture.blocked.dropped,
-                                             "blockedByHost": capture.blockedHosts.map { [$0.host: $0.count] }]
-                if let rules = capture.pageRules {
-                    result["scriptlets"] = rules.scriptlets
-                    result["scriptletBytes"] = rules.scriptletBytes
-                    result["procedural"] = rules.procedural
-                }
-                return text(json(result))
-
-            case "console", "network":
-                guard let capture = session?.devCapture else {
-                    return text("No capture for this tab. Reload it: it loaded before Developer Mode turned on.", error: true)
-                }
-                let since = (args["since"] as? NSNumber).flatMap(Self.wholeNumber) ?? 0
-                if name == "console" {
-                    let entries = capture.console.since(since).map { e -> [String: Any] in
-                        var o: [String: Any] = ["level": e.level, "msg": e.message]
-                        if let at = e.location { o["at"] = at }
-                        if let frame = e.frameURL { o["frame"] = frame }
-                        if e.repeatCount > 1 { o["repeat"] = e.repeatCount }
-                        return o
-                    }
-                    let result: [String: Any] = ["entries": entries, "cursor": capture.console.lastSeq,
-                                                 "dropped": capture.droppedMessages + capture.console.dropped]
-                    if args["clear"] as? Bool == true { capture.clearConsole() }
-                    return text(json(result))
-                }
-                let entries = capture.network.since(since).map { e -> [String: Any] in
-                    var o: [String: Any] = ["kind": e.kind, "method": e.method, "url": e.url, "state": e.state.rawValue]
-                    if let v = e.status { o["status"] = v }
-                    if let v = e.duration { o["ms"] = Int(v.rounded()) }
-                    if let v = e.size { o["size"] = v }
-                    if let v = e.error { o["error"] = v }
-                    if args["detail"] as? Bool == true, e.hasDetail {
-                        o["requestHeaders"] = e.requestHeaders
-                        o["responseHeaders"] = e.responseHeaders
-                        if let b = e.requestBody { o["requestBody"] = b }
-                        if let b = e.responseBody { o["responseBody"] = b }
-                    }
-                    return o
-                }
-                return text(json(["entries": entries, "cursor": capture.network.lastSeq, "dropped": capture.network.dropped]))
-
-            case "reload", "wait_for_load":
-                guard let wv = webView else { return text("No active tab", error: true) }
-                if name == "reload" { wv.reload() }
-                // Clamped below the outer deadline: an uncapped timeout: 60 would be cut off
-                // by withTimeout at 30s as a confusing -32001 instead of this tool's own answer.
-                let timeout = min((args["timeout"] as? NSNumber)?.doubleValue ?? 20, Self.toolTimeout - 5)
-                let deadline = Date().addingTimeInterval(timeout)
-                // ponytail: 100 ms poll, debug-only and bounded by the timeout; use navigation delegate callbacks if this ever matters.
-                if name == "reload" { try await Task.sleep(for: .milliseconds(150)) }
-                while wv.isLoading, Date() < deadline { try await Task.sleep(for: .milliseconds(100)) }
-                return text(wv.isLoading ? "Still loading after \(timeout)s: \(wv.url?.absoluteString ?? "")" : "Loaded: \(wv.url?.absoluteString ?? "") | \(wv.title ?? "")", error: wv.isLoading)
-
-            case "blocker_status":
-                let cb = bm.contentBlockerManager
-                let host = webView?.url?.host
-                var status: [String: Any] = [
-                    "enabled": cb.isEnabled,
-                    "compiling": cb.isCompiling,
-                    "hostAllowlisted": cb.isDomainAllowed(host),
-                    "host": host ?? ""
-                ]
-                if let s = session {
-                    status["blockingApplied"] = cb.shouldApplyBlocking(to: s)
-                    status["oauthFlow"] = s.isOAuthFlow
-                    status["temporarilyDisabled"] = cb.isTemporarilyDisabled(tabId: s.itemID)
-                }
-                return text(json(status))
-
-            case "set_blocking":
-                guard let host = webView?.url?.host else { return text("Selected tab has no host", error: true) }
-                let enabled = args["enabled"] as? Bool ?? true
-                bm.contentBlockerManager.allowDomain(host, allowed: !enabled, from: session)
-                return text("Blocking \(enabled ? "on" : "off") for \(host); reloading. Call wait_for_load next.")
-
-            case "check_urls":
-                let engine = bm.contentBlockerManager.advancedRulesEngine.engine
-                let urls = args["urls"] as? [String] ?? []
-                let type = args["type"] as? String ?? "script"
-                let source = args["sourceURL"] as? String ?? webView?.url?.absoluteString ?? ""
-                var out: [String: Bool] = [:]
-                for url in urls {
-                    out[url] = engine.matches(url: url, sourceURL: source, type: type)
-                }
-                return text(json(out))
-
-            case "user_scripts":
-                guard let wv = webView else { return text("No active tab", error: true) }
-                let scripts = wv.configuration.userContentController.userScripts.map { s -> [String: Any] in
-                    let first = s.source.prefix(while: { $0 != "\n" }).prefix(120)
-                    return [
-                        "firstLine": String(first),
-                        "atStart": s.injectionTime == .atDocumentStart,
-                        "mainFrameOnly": s.isForMainFrameOnly,
-                        "length": s.source.count
-                    ]
-                }
-                return text(json(scripts))
+            case "perf", "blocker_log", "console", "network", "user_scripts":
+                return text("\(name) failed: This tool is not available for Chromium pages yet", error: true)
 
             default:
                 return text("Unknown tool: \(name)", error: true)

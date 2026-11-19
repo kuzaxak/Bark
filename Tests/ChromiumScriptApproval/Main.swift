@@ -5,7 +5,6 @@ import Foundation
 struct AIToolCall { let id = "fixture"; let name: String; let arguments: [String: Any] }
 struct AIToolResult { let toolCallId: String; let toolName: String; let content: String; var isError = false }
 struct Log { func warning(_ text: String) {} ; func error(_ text: String) {} }
-final class FakeWK { func evaluateJavaScript(_ source: String) async throws -> Any? { fatalError("WK execution") } }
 @MainActor final class ChromiumPageNavigation {
     enum Mode { case expression }; enum World { case page }
     struct State { var isLoading = false }
@@ -29,8 +28,7 @@ final class FakeWK { func evaluateJavaScript(_ source: String) async throws -> A
     func controllableSession(in window: BrowserWindowState) -> PageSession? { page }
 }
 @MainActor final class BrowserManager {
-    enum Engine { case chromium, webKit }
-    let engine = Engine.chromium, tabs = Tabs()
+    let tabs = Tabs()
     var windowRegistry: Registry? = Registry()
 }
 @main struct Main {
@@ -65,6 +63,6 @@ final class FakeWK { func evaluateJavaScript(_ source: String) async throws -> A
             precondition(result.isError == (change != "none"), change)
             if change == "none" { precondition(result.content == "42") }
         }
-        print("AI script approval: exact captured target, pending commit, denial and no WK fallback passed")
+        print("AI script approval: exact captured target, pending commit, and denial passed")
     }
 }

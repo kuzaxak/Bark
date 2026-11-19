@@ -3,12 +3,11 @@
 //  BrowserToolExecutor.swift
 //  Nook
 //
-//  Executes browser tool calls using BrowserManager and WebView APIs
+//  Executes browser tool calls using BrowserManager and Chromium page APIs
 //
 
 import Foundation
 import OSLog
-import WebKit
 import NookTabsCore
 import NookWeb
 
@@ -48,7 +47,7 @@ class BrowserToolExecutor {
         // Capture before the existing approval await; approval must never retarget
         // the tool to a newer selected page or document.
         let nativeScriptTarget: NativeScriptTarget?
-        if toolCall.name == "executeJavaScript", browserManager.engine == .chromium {
+        if toolCall.name == "executeJavaScript" {
             nativeScriptTarget = captureNativeScriptTarget(browserManager, windowState)
         } else { nativeScriptTarget = nil }
 
@@ -67,7 +66,7 @@ class BrowserToolExecutor {
             }
         }
 
-        if toolCall.name == "executeJavaScript", browserManager.engine == .chromium,
+        if toolCall.name == "executeJavaScript",
            nativeScriptTarget == nil || !nativeScriptTargetIsCurrent(nativeScriptTarget!, browserManager, windowState) {
             return AIToolResult(toolCallId: toolCall.id, toolName: toolCall.name,
                 content: "The approved page changed or is unavailable; JavaScript was not executed", isError: true)
@@ -114,21 +113,11 @@ class BrowserToolExecutor {
         return tabs.session(for: itemID)?.title ?? tabs.item(itemID)?.displayTitle ?? ""
     }
 
-    private func getWebView(browserManager: BrowserManager, windowState: BrowserWindowState) -> WKWebView? {
-        if agentSpace != nil { return (try? browserManager.agentWebView()) ?? nil }
-        guard let itemID = windowState.selectedItemID else { return nil }
-        return browserManager.getWebView(for: itemID, in: windowState.id)
-    }
-
     /// Fixed tools share the existing exact-page transport; only arbitrary
     /// executeJavaScript uses the separate pre-approval target capture above.
     private func evaluateToolScript(_ script: String, browserManager manager: BrowserManager,
-        windowState window: BrowserWindowState, webView: WKWebView?,
+        windowState window: BrowserWindowState,
         mode: ChromiumPageNavigation.ScriptMode = .expression, refusingChangedPage: Bool = false) async throws -> Any? {
-        guard manager.engine == .chromium else {
-            guard let webView else { return nil }
-            return try await webView.evaluateJavaScript(script)
-        }
         if agentSpace != nil {
             guard let page = await manager.tabs.prepareNativeAgentPage(in: window),
                   let navigation = page.navigation as? ChromiumPageNavigation else {
@@ -169,7 +158,7 @@ class BrowserToolExecutor {
     func evaluatePageContextScript(_ script: String, browserManager: BrowserManager,
         windowState: BrowserWindowState) async throws -> Any? {
         try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState,
-            webView: nil, refusingChangedPage: true)
+            refusingChangedPage: true)
     }
 
     private func tabOrder(_ tabs: TabsController, _ windowState: BrowserWindowState) -> [UUID] {
@@ -229,10 +218,6 @@ class BrowserToolExecutor {
     }
 
     private func executeReadPageContent(_ args: [String: Any], browserManager: BrowserManager, windowState: BrowserWindowState) async throws -> String {
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
-
         let maxLength = args["maxLength"] as? Int ?? 8000
         let selector = args["selector"] as? String
 
@@ -263,7 +248,7 @@ class BrowserToolExecutor {
             """
         }
 
-        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
         if let dict = result as? [String: Any] {
             if let error = dict["error"] as? String {
                 return "Error: \(error)"
@@ -278,10 +263,6 @@ class BrowserToolExecutor {
     }
 
     private func executeClickElement(_ args: [String: Any], browserManager: BrowserManager, windowState: BrowserWindowState) async throws -> String {
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
-
         // Support clicking by CSS selector OR by visible text
         if let selector = args["selector"] as? String, !selector.isEmpty {
             let selectorJSON = jsLiteral(selector)
@@ -295,7 +276,7 @@ class BrowserToolExecutor {
                 return 'Clicked element: ' + (el.textContent || '').substring(0, 100).trim();
             })();
             """
-            let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+            let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
             return result as? String ?? "Click executed"
         } else if let text = args["text"] as? String, !text.isEmpty {
             let textJSON = jsLiteral(text)
@@ -325,7 +306,7 @@ class BrowserToolExecutor {
                 return 'Clicked: ' + (best.textContent || best.value || '').substring(0, 100).trim();
             })();
             """
-            let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+            let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
             return result as? String ?? "Click executed"
         } else {
             return "Provide either 'selector' (CSS) or 'text' (visible text) to identify the element"
@@ -333,10 +314,6 @@ class BrowserToolExecutor {
     }
 
     private func executeGetInteractiveElements(_ args: [String: Any], browserManager: BrowserManager, windowState: BrowserWindowState) async throws -> String {
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
-
         let filter = args["filter"] as? String ?? ""
         let limit = args["limit"] as? Int ?? 50
         let filterJSON = jsLiteral(filter)
@@ -389,7 +366,7 @@ class BrowserToolExecutor {
         })();
         """
 
-        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
         if let jsonString = result as? String {
             return jsonString
         }
@@ -400,10 +377,6 @@ class BrowserToolExecutor {
         guard let type = args["type"] as? String else {
             return "Missing type parameter"
         }
-
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
 
         let script: String
         switch type {
@@ -457,15 +430,11 @@ class BrowserToolExecutor {
             return "Unknown extraction type: \(type)"
         }
 
-        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
         return result as? String ?? "No data found"
     }
 
     private func executeSummarizePage(browserManager: BrowserManager, windowState: BrowserWindowState) async throws -> String {
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
-
         let script = """
         (function() {
             const clone = document.body.cloneNode(true);
@@ -477,7 +446,7 @@ class BrowserToolExecutor {
         })();
         """
 
-        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
         if let dict = result as? [String: Any] {
             let title = dict["title"] as? String ?? ""
             let url = dict["url"] as? String ?? ""
@@ -492,10 +461,6 @@ class BrowserToolExecutor {
         guard let query = args["query"] as? String else {
             return "Missing query parameter"
         }
-
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
 
         // The query goes in as an argument. Interpolating it meant JSON-encoding a
         // bare String, which JSONSerialization rejects as an invalid top-level type
@@ -515,15 +480,9 @@ class BrowserToolExecutor {
         return JSON.stringify({ count: matches.length, matches: matches });
         """
 
-        let result: Any?
-        if browserManager.engine == .chromium {
-            // Same argument value and function-body semantics as callAsyncJavaScript;
-            // JSON encoding keeps the query data rather than executable source.
-            result = try await evaluateToolScript("const query = \(jsLiteral(query));\n" + script,
-                browserManager: browserManager, windowState: windowState, webView: nil, mode: .asyncBody)
-        } else {
-            result = try await webView!.callAsyncJavaScript(script, arguments: ["query": query], contentWorld: .page)
-        }
+        // JSON encoding keeps the query data rather than executable source.
+        let result = try await evaluateToolScript("const query = \(jsLiteral(query));\n" + script,
+            browserManager: browserManager, windowState: windowState, mode: .asyncBody)
         return result as? String ?? "No matches found"
     }
 
@@ -581,12 +540,8 @@ class BrowserToolExecutor {
     }
 
     private func executeGetSelectedText(browserManager: BrowserManager, windowState: BrowserWindowState) async throws -> String {
-        let webView = browserManager.engine == .chromium ? nil
-            : getWebView(browserManager: browserManager, windowState: windowState)
-        guard browserManager.engine == .chromium || webView != nil else { return "No active tab" }
-
         let script = "window.getSelection().toString();"
-        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState, webView: webView)
+        let result = try await evaluateToolScript(script, browserManager: browserManager, windowState: windowState)
         let text = result as? String ?? ""
         return text.isEmpty ? "No text selected" : text
     }
@@ -627,21 +582,10 @@ class BrowserToolExecutor {
             return "Missing code parameter"
         }
 
-        if browserManager.engine == .chromium {
-            guard let target = nativeTarget,
-                  nativeScriptTargetIsCurrent(target, browserManager, windowState) else {
-                return "The approved page changed or is unavailable; JavaScript was not executed"
-            }
-            return try await target.navigation.evaluateScript(code, mode: .expression, world: .page).browserToolText
+        guard let target = nativeTarget,
+              nativeScriptTargetIsCurrent(target, browserManager, windowState) else {
+            return "The approved page changed or is unavailable; JavaScript was not executed"
         }
-        guard let webView = getWebView(browserManager: browserManager, windowState: windowState) else {
-            return "No active tab"
-        }
-
-        let result = try await webView.evaluateJavaScript(code)
-        if let result = result {
-            return String(describing: result)
-        }
-        return "JavaScript executed (no return value)"
+        return try await target.navigation.evaluateScript(code, mode: .expression, world: .page).browserToolText
     }
 }

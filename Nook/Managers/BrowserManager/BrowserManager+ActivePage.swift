@@ -5,7 +5,6 @@
 //
 
 import AppKit
-import WebKit
 import NookWeb
 
 extension BrowserManager {
@@ -26,12 +25,6 @@ extension BrowserManager {
     /// The active window's page in front.
     var frontPage: PageSession? {
         windowRegistry?.activeWindow.flatMap { frontPage(in: $0) }
-    }
-
-    /// `window`'s own view of its page in front.
-    func frontWebView(in window: BrowserWindowState) -> WKWebView? {
-        guard let page = frontPage(in: window) else { return nil }
-        return WebKitPageAccess.existingView(for: page)
     }
 
     /// Runs `command` on the active window's page in front.

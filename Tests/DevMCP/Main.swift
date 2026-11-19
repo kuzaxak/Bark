@@ -47,8 +47,6 @@ final class NWConnection: @unchecked Sendable {
     }
 }
 @MainActor final class BrowserManager {
-    enum Engine { case chromium }
-    let engine = Engine.chromium
     let tabs = Tabs()
     var nookSettings: Settings? = Settings()
     final class Settings { var developerModeEnabled = true; var browserControlServerEnabled = true }

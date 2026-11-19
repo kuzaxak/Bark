@@ -324,20 +324,11 @@ struct CommandPaletteView: View {
             } else {
                 isSearchFocused = false
                 // Without this the field editor keeps first responder and Space no longer scrolls the page.
-                if isNative {
-                    if oldVisible, pickedTabFocus == nil, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
-                       let page = browserManager.frontPage(in: windowState),
-                       let native = page.navigation as? ChromiumPageNavigation,
-                       browserManager.tabs.nativePageHost?.isNativeSelection(native, in: windowState) == true {
-                        _ = native.selectNativePage()
-                    }
-                } else {
-                    DispatchQueue.main.async {
-                        if let itemID = windowState.selectedItemID,
-                           let webView = browserManager.getWebView(for: itemID, in: windowState.id) {
-                            webView.window?.makeFirstResponder(webView)
-                        }
-                    }
+                if oldVisible, pickedTabFocus == nil, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
+                   let page = browserManager.frontPage(in: windowState),
+                   let native = page.navigation as? ChromiumPageNavigation,
+                   browserManager.tabs.nativePageHost?.isNativeSelection(native, in: windowState) == true {
+                    _ = native.selectNativePage()
                 }
                 searchManager.clearSuggestions()
                 text = ""

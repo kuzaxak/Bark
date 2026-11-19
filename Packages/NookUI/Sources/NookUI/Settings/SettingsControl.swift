@@ -6,7 +6,7 @@ public enum SettingsControl: CaseIterable {
     case quit, updates, sidebarVideo, tabs, peekOnShiftClick, peekFromLinkTargets, performance, search, siteSearch, urlShortcuts, wordStops
     case sidebarPosition, linkStatusPreview, hideBorder
     case renamePinnedTabs, linkPreviews, tidyDownloads
-    case websiteShortcutDetection, iCloudSync
+    case iCloudSync
 
     public func isShown(chromium: Bool) -> Bool {
         guard chromium else { return true }
@@ -23,8 +23,6 @@ public enum SettingsControl: CaseIterable {
         case .linkStatusPreview, .hideBorder: return false
         // Pinning, Shift-hover and download naming reach these only through WebKit.
         case .renamePinnedTabs, .linkPreviews, .tidyDownloads: return false
-        // Website shortcuts are detected in WebKit pages only.
-        case .websiteShortcutDetection: return false
         case .quit, .iCloudSync, .tabs, .peekOnShiftClick, .performance, .search, .siteSearch, .urlShortcuts, .wordStops: return true
         }
     }

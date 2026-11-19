@@ -7,7 +7,6 @@
 //
 
 import SwiftUI
-import NookSettings
 import NookDesign
 import NookUI
 
@@ -24,26 +23,10 @@ struct ShortcutsSettingsView: View {
         return Dictionary(grouping: matching, by: { $0.action.category })
     }
 
-    private var detectsWebsiteShortcuts: Bool {
-        SettingsControl.websiteShortcutDetection.isShown(chromium: keyboardShortcutManager.browserManager?.tabs.profileEngine == .chromium)
-    }
-
     var body: some View {
         Form {
             Section {
                 SidebarMenuSearchField(prompt: "Search shortcuts...", text: $searchText)
-
-                if detectsWebsiteShortcuts {
-                    Toggle("Detect Website Shortcuts", isOn: Binding(
-                        get: { WebsiteShortcutProfile.isFeatureEnabled },
-                        set: { WebsiteShortcutProfile.isFeatureEnabled = $0 }
-                    ))
-                }
-            } footer: {
-                if detectsWebsiteShortcuts {
-                    Text("When a website uses the same shortcut, press once for the website, twice for \(ProductDisplayName.current).")
-                        .settingsFooter()
-                }
             }
 
             ForEach(ShortcutCategory.allCases, id: \.self) { category in

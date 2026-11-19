@@ -3,8 +3,7 @@
 //  AgentIdleClose.swift
 //  Nook
 //
-//  Closes the Agent space's tabs once no DevMCP tool call has run for a while, as WebKit windows
-//  do half an hour after parking the agent's idle page.
+//  Closes the Agent space's tabs once no DevMCP tool call has run for a while.
 //
 
 import Foundation

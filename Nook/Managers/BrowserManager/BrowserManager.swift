@@ -12,7 +12,6 @@ import CoreServices
 import OSLog
 import SwiftData
 import SwiftUI
-import WebKit
 import NookBlocker
 import NookDesign
 import NookSettings
@@ -708,43 +707,26 @@ class BrowserManager: ObservableObject {
 
     /// Opens the right column on a dev tab, or closes it when that tab is already showing.
     func toggleDevPanel(_ tab: DevPanelTab) {
-        if tabs.profileEngine == .chromium {
-            guard let window = windowRegistry?.activeWindow,
-                  windowRegistry?.windows[window.id] === window,
-                  let keyWindow = CommandWindow.key, window.window === keyWindow,
-                  let page = frontPage(in: window),
-                  let native = page.navigation as? ChromiumPageNavigation,
-                  tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return }
-            let command: PageCommand
-            switch tab {
-            case .console: command = .developerConsole
-            case .network: command = .developerNetwork
-            case .perf: command = .developerPerformance
-            default: return
-            }
-            let serial = page.nativeNavigationSerial
-            let owner = native.nativeWindowID, tabID = native.nativeTabID
-            withDeveloperCapture { [weak self, weak window, weak page, weak native] in
-                guard let self, let window, let page, let native,
-                      page.navigation === native, page.nativeNavigationSerial == serial,
-                      native.nativeWindowID == owner, native.nativeTabID == tabID else { return }
-                _ = self.performNativePageCommand(command, in: window, page: page)
-            }
-            return
+        guard let window = windowRegistry?.activeWindow,
+              windowRegistry?.windows[window.id] === window,
+              let keyWindow = CommandWindow.key, window.window === keyWindow,
+              let page = frontPage(in: window),
+              let native = page.navigation as? ChromiumPageNavigation,
+              tabs.nativePageHost?.isNativeSelection(native, in: window) == true else { return }
+        let command: PageCommand
+        switch tab {
+        case .console: command = .developerConsole
+        case .network: command = .developerNetwork
+        case .perf: command = .developerPerformance
+        default: return
         }
-        withDeveloperCapture { [weak self] in self?.showDevPanel(tab) }
-    }
-
-    private func showDevPanel(_ tab: DevPanelTab) {
-        guard let windowState = windowRegistry?.activeWindow else { return }
-        withAnimation(NookDesign.Motion.standard) {
-            if windowState.isSidebarAIChatVisible, windowState.devPanelTab == tab {
-                windowState.isSidebarAIChatVisible = false
-            } else {
-                windowState.devPanelTab = tab
-                windowState.isSidebarAIChatVisible = true
-                windowState.isSidebarMenuVisible = false
-            }
+        let serial = page.nativeNavigationSerial
+        let owner = native.nativeWindowID, tabID = native.nativeTabID
+        withDeveloperCapture { [weak self, weak window, weak page, weak native] in
+            guard let self, let window, let page, let native,
+                  page.navigation === native, page.nativeNavigationSerial == serial,
+                  native.nativeWindowID == owner, native.nativeTabID == tabID else { return }
+            _ = self.performNativePageCommand(command, in: window, page: page)
         }
     }
 
@@ -991,9 +973,6 @@ class BrowserManager: ObservableObject {
     }
 
     // MARK: - Window-Aware Tab Operations
-
-    /// Older app helpers still ask for a WK view. Chromium has no such view.
-    func getWebView(for tabId: UUID, in windowId: UUID) -> WKWebView? { nil }
 
     func createNewWindow() {
         nativeCreateWindow?()

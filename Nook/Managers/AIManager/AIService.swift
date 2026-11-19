@@ -9,7 +9,6 @@
 import AppKit
 import Foundation
 import OSLog
-import WebKit
 import NookSettings
 import NookWeb
 
@@ -513,16 +512,6 @@ class AIService {
 
     func extractPageContext(windowState: BrowserWindowState, tag: String, maxTokens: Int? = nil, canSearch: Bool = false) async -> String {
         guard let browserManager = browserManager else { return "" }
-        let webView: WKWebView?
-        if browserManager.engine == .chromium {
-            webView = nil
-        } else {
-            guard let itemID = windowState.selectedItemID,
-                  let selected = browserManager.getWebView(for: itemID, in: windowState.id) else {
-                return ""
-            }
-            webView = selected
-        }
 
         let script = """
         (function() {
@@ -554,12 +543,8 @@ class AIService {
         """
 
         do {
-            let result: Any?
-            if let webView {
-                result = try await webView.evaluateJavaScript(script)
-            } else {
-                result = try await browserToolExecutor?.evaluatePageContextScript(script, browserManager: browserManager, windowState: windowState)
-            }
+            let result = try await browserToolExecutor?.evaluatePageContextScript(script,
+                browserManager: browserManager, windowState: windowState)
 
             if let dict = result as? [String: Any],
                let title = dict["title"] as? String,
