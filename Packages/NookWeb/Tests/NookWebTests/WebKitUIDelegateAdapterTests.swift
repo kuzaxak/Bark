@@ -34,26 +34,14 @@ struct WebKitUIDelegateAdapterTests {
     }
 
     #if os(macOS)
-    @Test func preservesWebKitUISelectorsAndUnownedWindowFrameCompletion() throws {
-        let session = PageSession(itemID: UUID(), url: try #require(URL(string: "about:blank")),
+    @Test func retainsCloseAndPiPWithoutLegacyWindowGeometryOrSwipe() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
                                   title: "Popup", isPrivate: true, controller: nil)
         let adapter = session.webKitDelegate
-        for selector in [
-            "webViewDidClose:",
-            "_webView:getWindowFrameWithCompletionHandler:",
-            "_webViewFullscreenMayReturnToInline:",
-            "_webView:didNotHandleWheelEvent:",
-        ] {
-            #expect(adapter.responds(to: NSSelectorFromString(selector)), "Missing \(selector)")
-        }
-
-        let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = .nonPersistent()
-        let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 360, height: 240),
-                             configuration: configuration)
-        var sizes: [CGRect] = []
-        adapter.webView(view, getWindowFrameWithCompletionHandler: { sizes.append($0) })
-        #expect(sizes == [view.bounds])
+        #expect(adapter.responds(to: NSSelectorFromString("webViewDidClose:")))
+        #expect(adapter.responds(to: NSSelectorFromString("_webViewFullscreenMayReturnToInline:")))
+        #expect(!adapter.responds(to: NSSelectorFromString("_webView:getWindowFrameWithCompletionHandler:")))
+        #expect(!adapter.responds(to: NSSelectorFromString("_webView:didNotHandleWheelEvent:")))
     }
 
     @Test func doesNotRegisterLegacyPrintOrPDFSaveSelectors() {
