@@ -28,7 +28,7 @@ class ArchitectureTests(unittest.TestCase):
 
     def invoke(self, args, hardware):
         targets = ("install_engine", "archive_engine", "build_candidate", "verify_candidate",
-                   "make_distribution", "launch_candidate")
+                   "make_distribution", "make_personal_image", "launch_candidate")
         calls = {target: Mock() for target in targets}
         calls["pinned_engine"] = Mock(return_value=nullcontext(self.root / "Engine"))
         with patch.dict(self.cli, {**calls, "native_architecture": lambda: hardware,
@@ -60,6 +60,20 @@ class ArchitectureTests(unittest.TestCase):
                         self.assertFalse(calls["pinned_engine"].call_args.args[3])
                         self.assertEqual(calls["launch_candidate"].call_args.kwargs,
                                          {"interactive": args[0] == "launch"})
+
+    def test_personal_image_uses_selected_sdk_for_the_signed_app_copy(self):
+        for architecture in ("arm64", "x86_64"):
+            with self.subTest(architecture=architecture):
+                result = self.invoke(["dmg", str(self.app), "--arch", architecture,
+                                      "--identity", "signer", "--output", str(self.root / "Bark.dmg")], "x86_64")
+                original, output, identity, verify_copy = result["make_personal_image"].call_args.args
+                self.assertEqual((original, output, identity), (self.app.resolve(), self.root / "Bark.dmg", "signer"))
+                self.assertEqual(result["pinned_engine"].call_args.args[2], architecture)
+                copy = self.root / "installed/Bark.app"
+                # The captured closure resolves the verifier in the CLI globals.
+                with patch.dict(self.cli, {"verify_candidate": result["verify_candidate"]}):
+                    verify_copy(copy)
+                result["verify_candidate"].assert_called_once_with(copy, self.root / "Engine", self.root, architecture)
 
     def test_release_shell_checks_both_thin_images_without_selecting_an_sdk(self):
         for architecture in ("arm64", "x86_64"):

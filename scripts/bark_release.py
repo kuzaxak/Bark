@@ -228,6 +228,61 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
             exercise(installed)
 
 
+def stage_disk_image(app, info, image, stage, identity, verify_staged, notary_profile=None):
+    """Stage the original signed bundle with the Applications shortcut and sign the image."""
+    bundle_id, version = info["CFBundleIdentifier"], info["CFBundleShortVersionString"]
+    volume = stage / "volume"
+    volume.mkdir()
+    installed = volume / "Bark.app"
+    subprocess.run(["/usr/bin/ditto", app, installed], check=True)
+    if plistlib.loads((installed / "Contents/Info.plist").read_bytes()) != info:
+        raise ValueError("The source app changed while the release was being staged.")
+    if info.get("BarkChromiumVersion") != framework_version(installed):
+        raise ValueError("The declared Chromium version differs from the embedded engine.")
+    requirement = distribution_requirement(installed, bundle_id)
+    app_requirement = requirement + f' and identifier "{bundle_id}"'
+    subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R",
+                    app_requirement, installed], check=True)
+    if verify_staged:
+        verify_staged(installed)
+    if notary_profile:
+        upload = stage / "app.zip"
+        subprocess.run(["/usr/bin/ditto", "-c", "-k", "--keepParent", installed, upload], check=True)
+        notarize(installed, upload, notary_profile)
+        upload.unlink()
+    (volume / "Applications").symlink_to("/Applications")
+    size_kib = int(subprocess.check_output(["du", "-sk", volume]).split()[0])
+    subprocess.run(["hdiutil", "create", "-volname", f"Bark {version}", "-srcfolder", volume, "-format", "UDZO",
+                    "-size", f"{size_kib * 12 // 10 + 20480}k", image], check=True)
+    subprocess.run(["codesign", "--force", "--timestamp", "--sign", identity, image], check=True)
+    if notary_profile:
+        notarize(image, image, notary_profile)
+    subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, image], check=True)
+    if notary_profile:
+        verify_installed_image(image, installed, stage, app_requirement, verify_staged)
+
+
+def make_personal_image(app, output, identity, verify_staged):
+    """Package an ordinary Bark build for hands-on use with persistent data."""
+    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
+    if info.get("CFBundleIdentifier") != "ee.qdo.bark" or "BarkUpdateRehearsal" in info:
+        raise ValueError("Personal browsing requires an ordinary signed ee.qdo.bark app.")
+    if not identity:
+        raise ValueError("Supply a Developer ID identity for signing the disk image.")
+    output = Path(output).absolute()
+    if output.resolve().is_relative_to(app.resolve()):
+        raise ValueError("Write the disk image outside the signed application bundle.")
+    if output.suffix != ".dmg" or os.path.lexists(output):
+        raise ValueError(f"Choose a new .dmg file: {output}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with TemporaryDirectory(prefix=".bark-image-", dir=output.parent) as directory:
+        stage = Path(directory)
+        image = stage / "Bark.dmg"
+        stage_disk_image(app, info, image, stage, identity, verify_staged)
+        publish_new(image, output)
+    print(f"Packaged signed Bark for normal browsing at {output}", flush=True)
+
+
 def make_distribution(app, output_directory, architecture, identity, download_base_url, sparkle_bin,
                       ed_key_file, working, notary_profile=None, verify_staged=None):
     """Publish a complete local DMG and appcast directory only after both signatures verify."""
@@ -248,37 +303,10 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
     output_directory.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".bark-release-", dir=output_directory.parent) as stage:
         stage = Path(stage)
-        volume, published = stage / "volume", stage / "release"
-        volume.mkdir()
+        published = stage / "release"
         published.mkdir()
-        installed = volume / "Bark.app"
-        subprocess.run(["/usr/bin/ditto", app, installed], check=True)
-        if plistlib.loads((installed / "Contents/Info.plist").read_bytes()) != info:
-            raise ValueError("The source app changed while the release was being staged.")
-        if info.get("BarkChromiumVersion") != framework_version(installed):
-            raise ValueError("The declared Chromium version differs from the embedded engine.")
-        requirement = distribution_requirement(installed, bundle_id)
-        app_requirement = requirement + f' and identifier "{bundle_id}"'
-        subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R",
-                        app_requirement, installed], check=True)
-        if verify_staged:
-            verify_staged(installed)
-        if notary_profile:
-            upload = stage / "app.zip"
-            subprocess.run(["/usr/bin/ditto", "-c", "-k", "--keepParent", installed, upload], check=True)
-            notarize(installed, upload, notary_profile)
-            upload.unlink()
-        (volume / "Applications").symlink_to("/Applications")
         image = published / f"Bark-{version}-{build}-macos-{architecture}.dmg"
-        size_kib = int(subprocess.check_output(["du", "-sk", volume]).split()[0])
-        subprocess.run(["hdiutil", "create", "-volname", f"Bark {version}", "-srcfolder", volume, "-format", "UDZO",
-                        "-size", f"{size_kib * 12 // 10 + 20480}k", image], check=True)
-        subprocess.run(["codesign", "--force", "--timestamp", "--sign", identity, image], check=True)
-        if notary_profile:
-            notarize(image, image, notary_profile)
-        subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, image], check=True)
-        if notary_profile:
-            verify_installed_image(image, installed, stage, app_requirement, verify_staged)
+        stage_disk_image(app, info, image, stage, identity, verify_staged, notary_profile)
         signature = subprocess.check_output([Path(sparkle_bin) / "sign_update", "--ed-key-file", ed_key_file,
                                               "-p", image], text=True).strip()
         subprocess.run(["xcrun", "swift", REPO / "scripts/VerifyBarkUpdate.swift", image, info["SUPublicEDKey"],

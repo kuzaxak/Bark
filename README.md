@@ -115,6 +115,17 @@ The launch command leaves a separate disposable profile open for hands-on testin
 To keep a personal browsing session, open the signed app normally. Its local data
 lives under `~/Library/Application Support/NookChromium`.
 
+To give someone a signed copy for everyday testing, package that same app.
+Select the architecture used to build it.
+
+```fish
+python3 scripts/bark-check.py dmg build/Bark.app --arch arm64 --output ~/Downloads/Bark-macOS-arm64.dmg
+```
+
+Open the DMG, drag **Bark** into **Applications**, eject the image and open Bark
+from Applications. This build keeps tabs, bookmarks and website sign-ins in
+the regular Bark profile. Sparkle update rehearsals use a separate test app.
+
 In a signed build with a configured update feed, use **Bark → Check for Updates**
 for a manual check. Under **Settings → General** you can also turn on automatic
 checks and, when the build allows it, automatic downloads.

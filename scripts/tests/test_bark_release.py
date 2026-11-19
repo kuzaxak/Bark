@@ -12,7 +12,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bark_release import (SPARKLE, TEAM, check_distribution_settings, configure_release,
-                          expected_additions, make_distribution, production_settings,
+                          expected_additions, make_distribution, make_personal_image, production_settings,
                           verify_installed_image, write_appcast)
 
 
@@ -245,6 +245,27 @@ class ReleaseTests(unittest.TestCase):
                         else:
                             verified.assert_not_called()
                         self.assertFalse(output.exists())
+
+    def test_personal_image_requires_the_ordinary_application(self):
+        destination = self.root / "Bark.dmg"
+        for metadata in [
+            {"CFBundleIdentifier": "ee.qdo.bark.test.00000000-0000-4000-8000-000000000001"},
+            {"BarkUpdateRehearsal": {"DataRoot": "/private/tmp/test"}},
+        ]:
+            with self.subTest(metadata=metadata):
+                self.info_path.write_bytes(plistlib.dumps({**self.base, **metadata}))
+                with self.assertRaisesRegex(ValueError, "ordinary signed"):
+                    make_personal_image(self.app, destination, "signer", mock.Mock())
+                self.assertFalse(destination.exists())
+
+    def test_personal_image_preserves_app_and_previous_exports(self):
+        with self.assertRaisesRegex(ValueError, "outside the signed application"):
+            make_personal_image(self.app, self.app / "Bark.dmg", "signer", mock.Mock())
+        previous = self.root / "Bark.dmg"
+        previous.write_bytes(b"previous image")
+        with self.assertRaisesRegex(ValueError, "new .dmg"):
+            make_personal_image(self.app, previous, "signer", mock.Mock())
+        self.assertEqual(previous.read_bytes(), b"previous image")
 
     def test_feed_describes_the_signed_app_and_final_archive(self):
         path = self.root / "bark-macos-x86_64.xml"

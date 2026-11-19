@@ -32,7 +32,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, local_engine, native_architecture,
                                  read_pin, remove_work, swap)
 from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements, load_profile
-from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
+from bark_release import (configure_release, expected_additions, make_distribution, make_personal_image,
+                          production_settings, publish_new)
 from bark_shell_boundary import verify_shell_boundary
 
 REPO = Path(__file__).resolve().parents[1]
@@ -609,7 +610,7 @@ def main():
     pair.add_argument("--package", type=Path, required=True, help="receiver checkout's Packages/BarkEngine")
     shell = commands.add_parser("shell", help="build and check the unsigned Bark Release shell")
     shell.add_argument("--arch", required=True, choices=ARCHITECTURES)
-    for command in ("engine", "build", "verify", "smoke", "launch", "package"):
+    for command in ("engine", "build", "verify", "smoke", "launch", "dmg", "package"):
         sub = commands.add_parser(command)
         sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture (default: native hardware)")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
@@ -628,7 +629,10 @@ def main():
             sub.add_argument("--feed-base-url", help="HTTPS directory serving the architecture-specific Bark feed")
         else:
             sub.add_argument("app", type=Path, help="path to a signed Bark.app")
-            if command == "package":
+            if command == "dmg":
+                sub.add_argument("--output", type=Path, required=True, help="new signed DMG for normal browsing")
+                sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"))
+            elif command == "package":
                 sub.add_argument("--output", type=Path, required=True, help="new directory for DMG and appcast")
                 sub.add_argument("--download-base-url", required=True, help="directory URL for the finished DMG")
                 sub.add_argument("--ed-key-file", required=True, help="Sparkle private key file or - for stdin")
@@ -671,6 +675,11 @@ def main():
                     install_engine(engine, architecture, require_official)
             elif args.command == "build":
                 build_candidate(engine, args.output, args.identity, architecture, release_info, args.icloud_profile)
+            elif args.command == "dmg":
+                app = args.app.resolve(strict=True)
+                with app_output_lock(app):
+                    make_personal_image(app, args.output, args.identity,
+                                        lambda staged: verify_candidate(staged, engine, working, architecture))
             elif args.command == "package":
                 make_distribution(args.app.resolve(strict=True), args.output, architecture, args.identity,
                                   args.download_base_url, None, args.ed_key_file, working, args.notary_profile,
