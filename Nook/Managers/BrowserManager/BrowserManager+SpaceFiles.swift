@@ -15,7 +15,9 @@ import OSLog
 import UniformTypeIdentifiers
 
 extension UTType {
-    static let nookSpace = UTType(exportedAs: SpaceFile.typeIdentifier, conformingTo: .json)
+    static var nookSpace: UTType {
+        UTType(importedAs: SpaceFile.typeIdentifier, conformingTo: .json)
+    }
 }
 
 extension BrowserManager {
