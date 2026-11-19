@@ -277,13 +277,19 @@ def open_password_settings_from_palette(controls):
     screen.keys["t"] = 17
     screen.key("t", screen.command)
 
-    def editing():
+    def editor():
         field = controls.attribute(controls.app, "AXFocusedUIElement")
-        return field is not None and controls.attribute(field, "AXRole") == "AXTextField"
+        return field if field is not None and controls.attribute(field, "AXRole") == "AXTextField" else None
 
-    wait_for("The command palette did not take focus", editing, controls.process)
-    screen.key("chrome://password-manager/passwords", unicode=True)
-    controls.require("Open Passwords in Bark Settings", partial=True)
+    wait_for("The command palette did not take focus", editor, controls.process)
+    address = "chrome://password-manager/passwords"
+    for character in address:
+        screen.key(character, unicode=True)
+    # SwiftUI's palette results are in an overlay outside the normal AXWindows
+    # descendants. Verify the submitted address and the real native destination.
+    wait_for("The focused palette did not receive the exact password-manager address",
+             lambda: (field := editor()) is not None and controls.attribute(field, "AXValue") == address,
+             controls.process)
     screen.key("Return")
     settings = controls.require("Privacy", ("AXWindow",))
     controls.require("Connected", root=settings)
@@ -580,6 +586,8 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
         controls.press("OK")
         print("Used the connected vault’s management action and verified its fallback in the disposable app", flush=True)
         close_settings(controls, settings)
+        if require_exclusive and controls.find("password-manager", ("AXButton",)):
+            raise RuntimeError("Opening Password Settings created an extra browser tab")
         quit_app()
     except Exception:
         controls.dump(output)
