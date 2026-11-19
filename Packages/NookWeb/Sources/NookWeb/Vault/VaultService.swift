@@ -189,6 +189,32 @@ public final class VaultService {
         }
     }
 
+    func password(for id: String, in offered: [VaultLogin], origin: String, profile: String?) async throws -> VaultPassword.Reply {
+        let matches = offered.filter { $0.id == id }
+        guard matches.count == 1, let login = matches.first else { throw VaultClientError.malformedResponse }
+        let reply = try await send(VaultPassword(id: login.id, origin: origin, profile: profile))
+        // Display text is shortened and sanitized. Consent belongs to the listed raw account.
+        guard reply.username.utf8.elementsEqual(login.username.utf8) else { throw VaultClientError.malformedResponse }
+        return reply
+    }
+
+    func matchingPasskeys(_ call: VaultPasskeys) async throws -> [VaultPasskey] {
+        let entries = try await send(call).passkeys
+        let allowed = Set(call.allowCredentials)
+        return entries.filter {
+            guard let bytes = Base64URL.decode($0.credentialId), !bytes.isEmpty else { return false }
+            return allowed.isEmpty || allowed.contains($0.credentialId)
+        }
+    }
+
+    func assertPasskey(_ call: VaultAssert) async throws -> VaultAssert.Reply {
+        let reply = try await send(call)
+        guard reply.credentialId == call.credentialId else {
+            throw VaultClientError.malformedResponse
+        }
+        return reply
+    }
+
     fileprivate func recordRequestFailure(_ error: Error) {
         guard isEnabled, let error = error as? VaultClientError else { return }
         switch error {
@@ -528,9 +554,9 @@ private final class NativeVaultAttachment {
             passkeyTask = Task { [weak self] in
                 guard let self, self.requireCurrentPasskey(request,generation) else { return }
                 do {
-                    let matches = try await service.send(VaultPasskeys(rpId:rp,allowCredentials:allowed,profile:profile)).passkeys
+                    let matches = try await service.matchingPasskeys(VaultPasskeys(rpId:rp,allowCredentials:allowed,profile:profile))
                     guard self.requireCurrentPasskey(request,generation) else { return }
-                    let items = matches.filter { allowed.isEmpty || allowed.contains($0.credentialId) }.map(VaultPickerItem.init)
+                    let items = matches.map(VaultPickerItem.init)
                     guard !items.isEmpty else { self.cancelPasskey(); return }
                     self.passkeyTask = nil
                     presenter.presentNativePicker(host:VaultPrompt.displayText(rp),items:items,
@@ -538,12 +564,11 @@ private final class NativeVaultAttachment {
                         in:view,validateSelection:{ [weak self] in self?.passkeyCurrent(request,generation) == true }) { [weak self] result in
                         guard let self, self.requireCurrentPasskey(request,generation) else { return }
                         guard case .selected(let item) = result, case .passkey(let credential) = item.kind,
-                              items.contains(where: { $0.id == item.id }),
-                              (allowed.isEmpty || allowed.contains(credential)) else { self.cancelPasskey(); return }
+                              items.contains(where: { $0.id == item.id }) else { self.cancelPasskey(); return }
                         self.passkeyTask = Task { [weak self] in
                             guard let self, self.requireCurrentPasskey(request,generation) else { return }
                             do {
-                                let result = try await service.send(VaultAssert(rpId:rp,credentialId:credential,
+                                let result = try await service.assertPasskey(VaultAssert(rpId:rp,credentialId:credential,
                                     clientDataHash:hash,userVerification:"required",origin:origin,profile:profile))
                                 if allowed.isEmpty {
                                     guard let handle = result.userHandle, let bytes = Base64URL.decode(handle),
@@ -772,7 +797,12 @@ private final class NativeVaultAttachment {
                 guard let self, self.generation == generation, self.focus?.token == focus.token else { return }
                 let item: VaultPickerItem
                 switch result {
-                case .selected(let selected): item = selected
+                case .selected(let selected):
+                    guard let offered = items.first(where: { $0.id == selected.id }) else {
+                        self.cancel()
+                        return
+                    }
+                    item = offered
                 case .cancelled: self.cancel(); return
                 case .focusUnavailable:
                     self.awaitingSecret = true
@@ -780,9 +810,9 @@ private final class NativeVaultAttachment {
                 }
                 self.awaitingSecret = true
                 guard self.current(focus, generation) else {
-                        if self.generation == generation { self.cancel(showRetry: true) }
-                        return
-                    }
+                    if self.generation == generation { self.cancel(showRetry: true) }
+                    return
+                }
                 self.pickerView = nil
                 // The native picker is consent. Secrets are fetched only now,
                 // after rechecking the exact page/profile/document/field.
@@ -796,7 +826,7 @@ private final class NativeVaultAttachment {
                         let username: String, secret: String
                         switch item.kind {
                         case .login(let id) where !focus.isCode:
-                            let reply = try await service.send(VaultPassword(id: id, origin: focus.origin, profile: profile))
+                            let reply = try await service.password(for: id, in: logins, origin: focus.origin, profile: profile)
                             username = reply.username; secret = reply.password
                         case .code(let id) where focus.isCode:
                             let reply = try await service.send(VaultCode(id: id, origin: focus.origin, profile: profile))

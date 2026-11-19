@@ -171,6 +171,7 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
     }
 
     private func closePicker() {
+        modalGetID = nil
         focusGeneration += 1
         guard openPicker != nil, let webView else { return }
         openPicker = nil
@@ -237,28 +238,30 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
             var passkeys: [VaultPasskey] = []
             if let conditional {
                 let call = VaultPasskeys(rpId: conditional.rpId, allowCredentials: conditional.allowCredentials, profile: profile)
-                passkeys = (try? await service.send(call))?.passkeys ?? []
+                passkeys = (try? await service.matchingPasskeys(call)) ?? []
             }
             let items = code
                 ? logins.filter(\.hasCode).map(VaultPickerItem.init(code:))
                 : passkeys.map(VaultPickerItem.init) + logins.map(VaultPickerItem.init(_:))
-            guard generation == focusGeneration, !items.isEmpty, let presenter = service.presenter else { return }
+            guard generation == focusGeneration, self.profile == profile, !items.isEmpty, let presenter = service.presenter else { return }
             let token = pickerOpened()
             presenter.presentPicker(host: frame.securityOrigin.host, items: items, anchor: anchor, in: webView) { [weak self] item in
-                guard let self, self.pickerClosed(token) else { return }
-                self.picked(item, frame: frame, origin: origin, conditionalID: conditional?.id, in: webView)
+                guard let self, self.pickerClosed(token), self.profile == profile, let item,
+                      let offered = items.first(where: { $0.id == item.id }) else { return }
+                self.picked(offered, logins: logins, frame: frame, origin: origin, profile: profile,
+                            conditionalID: conditional?.id, in: webView)
             }
         }
     }
 
-    private func picked(_ item: VaultPickerItem?, frame: WKFrameInfo, origin: String, conditionalID: PasskeyRequestKey?,
-                        in webView: WKWebView) {
-        guard let item, let service else { return }
+    private func picked(_ item: VaultPickerItem, logins: [VaultLogin], frame: WKFrameInfo, origin: String,
+                        profile: String?, conditionalID: PasskeyRequestKey?, in webView: WKWebView) {
+        guard let service else { return }
         switch item.kind {
         case .login(let id):
-            let call = VaultPassword(id: id, origin: origin, profile: profile)
             Task {
-                guard let reply = try? await service.send(call) else { return }
+                guard let reply = try? await service.password(for: id, in: logins, origin: origin, profile: profile),
+                      self.profile == profile else { return }
                 // The script checks the frame still shows `origin` before it fills.
                 _ = try? await webView.callAsyncJavaScript(
                     "return window.__nookVaultFill && window.__nookVaultFill(origin, username, password);",
@@ -268,7 +271,7 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         case .code(let id):
             let call = VaultCode(id: id, origin: origin, profile: profile)
             Task {
-                guard let reply = try? await service.send(call) else { return }
+                guard let reply = try? await service.send(call), self.profile == profile else { return }
                 _ = try? await webView.callAsyncJavaScript(
                     "return window.__nookVaultFillCode && window.__nookVaultFillCode(origin, code);",
                     arguments: ["origin": origin, "code": reply.code],
@@ -459,7 +462,7 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
 
         let passkeys: [VaultPasskey]
         do {
-            passkeys = try await service.send(VaultPasskeys(rpId: rpId, allowCredentials: allow, profile: context.profile)).passkeys
+            passkeys = try await service.matchingPasskeys(VaultPasskeys(rpId: rpId, allowCredentials: allow, profile: context.profile))
         } catch {
             return reply.fail(WebAuthnError(error as? VaultClientError ?? .malformedResponse, creating: false))
         }
@@ -471,21 +474,25 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         let token = pickerOpened()
         presenter.presentPicker(host: context.host, items: passkeys.map(VaultPickerItem.init), anchor: Self.topAnchor(in: webView),
                                 in: webView) { [weak self] item in
-            _ = self?.pickerClosed(token)
-            if self?.modalGetID == id { self?.modalGetID = nil }
-            guard let self, case .passkey(let credentialId)? = item?.kind else { return reply.fail(.notAllowed) }
+            guard let self, self.pickerClosed(token), self.modalGetID == id else { return reply.fail(.notAllowed) }
+            self.modalGetID = nil
+            guard case .passkey(let credentialId)? = item?.kind,
+                  passkeys.contains(where: { $0.credentialId == credentialId }) else { return reply.fail(.notAllowed) }
             Task { await self.finishGet(request, credentialId: credentialId) }
         }
     }
 
     private func finishGet(_ request: GetRequest, credentialId: String) async {
         guard request.reply.isPending, let service else { return }
+        guard request.allowCredentials.isEmpty || request.allowCredentials.contains(credentialId) else {
+            return request.reply.fail(.notAllowed)
+        }
         let call = VaultAssert(
             rpId: request.rpId, credentialId: credentialId,
             clientDataHash: Base64URL.encode(WebAuthnClientData.hash(request.clientDataJSON)),
             userVerification: request.userVerification, origin: request.origin, profile: request.profile)
         do {
-            let result = try await service.send(call)
+            let result = try await service.assertPasskey(call)
             request.reply.succeed([
                 "id": result.credentialId,
                 "clientDataJSON": Base64URL.encode(request.clientDataJSON),

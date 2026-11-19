@@ -3798,6 +3798,49 @@ struct NativeVaultFormTests {
         #expect(calls.allSatisfy { $0.0 == "https://vault.synthetic.invalid" && $0.1 == native.profileID?.uuidString })
     }
 
+    @Test func nativePasswordReplyMustMatchTheRawSelectedUsername() async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        let listed = "synthetic-\u{200B}user"
+        let vault = VaultService(settings:f.tabs.settings,client:transport)
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        await transport.passwordUsers(listed:listed, reply:"synthetic-user")
+        native.focusVault(); await agentCallbacks()
+        try #require(presenter.items.count == 1 && presenter.nativeCompletion != nil)
+        presenter.pick(); await agentCallbacks()
+        #expect(await transport.methods.filter { $0 == "password" }.count == 1)
+        #expect(native.vaultFills.isEmpty)
+
+        native.vaultFills.removeAll()
+        await transport.passwordUsers(listed:listed, reply:listed)
+        native.focusVault(); await agentCallbacks()
+        try #require(presenter.nativeCompletion != nil)
+        presenter.pick(); await agentCallbacks()
+        #expect(await transport.methods.filter { $0 == "password" }.count == 2)
+        #expect(native.vaultFills.count == 1 && native.vaultFills.first?.1 == listed)
+    }
+
+    @Test(arguments:[false,true])
+    func nativePickerCannotFetchAnUnofferedLoginOrCode(isCode:Bool) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        let vault = VaultService(settings:f.tabs.settings,client:transport)
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        native.focusVault(code:isCode); await agentCallbacks()
+        let select = try #require(presenter.nativeCompletion)
+        #expect(presenter.items.map(\.id) == [isCode ? "code:synthetic" : "login:synthetic"])
+        let unoffered = VaultLogin(id:"unoffered",username:"synthetic-user",title:"Fixture",hasCode:true)
+        select(.selected(isCode ? VaultPickerItem(code:unoffered) : VaultPickerItem(unoffered)))
+        await agentCallbacks()
+        let methods = await transport.methods
+        #expect(!methods.contains("password") && !methods.contains("code"))
+        #expect(native.vaultFills.isEmpty)
+    }
+
     @Test(arguments: ["blur", "navigation", "close", "disconnect", "profile"])
     func pendingSecretCannotFillAfterAuthorityEnds(change: String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
@@ -4398,6 +4441,36 @@ struct NativeVaultFormTests {
         }
     }
 
+    @Test(arguments:[false,true])
+    func nativeAssertionReplyMustMatchTheSelectedCredential(emptyAllow:Bool) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        let vault = VaultService(settings:f.tabs.settings,client:transport)
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        for returnedID in ["Ag", "AQ"] {
+            await transport.assertionCredentials(listed:["AQ","Ag"], reply:returnedID)
+            native.requestPasskey(operation:1,emptyAllow:emptyAllow,allowed:["AQ","Ag"])
+            await agentCallbacks()
+            try #require(presenter.items.map(\.id) == ["passkey:AQ","passkey:Ag"])
+            try #require(presenter.nativeCompletion != nil)
+            let count = native.passkeyReplies.count
+            presenter.pick(); await agentCallbacks()
+            #expect(native.passkeyReplies.count == count + 1)
+            let result = native.passkeyReplies.last?.1
+            if returnedID == "AQ" {
+                let payload = try #require(result)
+                let object = try #require(try JSONSerialization.jsonObject(with:Data(payload.utf8)) as? [String:Any])
+                #expect(object["credentialId"] as? String == "AQ")
+            } else {
+                #expect(result == nil)
+            }
+        }
+        #expect(await transport.assertedCredentials == ["AQ","AQ"])
+        #expect(await transport.passkeyAllowed == Array(repeating:emptyAllow ? [] : ["AQ","Ag"],count:2))
+    }
+
     @Test func disconnectedNativePasskeysLeaveStockProviderPathAvailable() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -4531,6 +4604,13 @@ private actor SyntheticVaultRequests: VaultRequests {
         earlierContinuation?.resume(); earlierContinuation = nil
         queuedContinuation?.resume(); queuedContinuation = nil
     }
+    var listedUsername = "synthetic-user"
+    var passwordUsername = "synthetic-user"
+    func passwordUsers(listed:String, reply:String) { listedUsername = listed; passwordUsername = reply }
+    var listedCredentials = ["AQ"]
+    var assertionCredential = "AQ"
+    var assertedCredentials: [String] = []
+    func assertionCredentials(listed:[String], reply:String) { listedCredentials = listed; assertionCredential = reply }
     var passkeyAllowed: [[String]] = []
     var assertionUserHandle: String? = "AQ"
     func assertionHandle(_ value:String?) { assertionUserHandle = value }
@@ -4607,13 +4687,14 @@ private actor SyntheticVaultRequests: VaultRequests {
                 let exists = (params["username"] as? String) == "synthetic-user"
                 result = ["disposition": exists ? "update" : "create", "ticket": writeScenario == "invalidTicket" ? "" : "test-ticket"]
             }
-        case "logins": result = ["logins":[["id":"synthetic","username":"synthetic-user","title":"Fixture","hasCode":true]]]
+        case "logins": result = ["logins":[["id":"synthetic","username":listedUsername,"title":"Fixture","hasCode":true]]]
         case "passkeys":
             passkeyAllowed.append(params["allowCredentials"] as? [String] ?? [])
-            result = ["passkeys":[["credentialId":"AQ","userName":"synthetic-user","title":"Synthetic"]]]
+            result = ["passkeys":listedCredentials.map { ["credentialId":$0,"userName":"synthetic-user","title":"Synthetic"] }]
         case "register": result = ["credentialId":"AQ","attestationObject":"AA","authenticatorData":"AA","publicKeyAlgorithm":-7]
         case "assert":
-            var assertion: [String:Any] = ["credentialId":"AQ","authenticatorData":"AA","signature":"AA"]
+            assertedCredentials.append(params["credentialId"] as! String)
+            var assertion: [String:Any] = ["credentialId":assertionCredential,"authenticatorData":"AA","signature":"AA"]
             if let handle = assertionUserHandle { assertion["userHandle"] = handle }
             result = assertion
         case "commitLoginWrite":
@@ -4626,7 +4707,7 @@ private actor SyntheticVaultRequests: VaultRequests {
             saves.append((params["origin"] as! String,params["username"] as! String,params["password"] as! String,params["profile"] as? String))
             if writeScenario == "lostReply" { throw VaultClientError.connectionClosed }
             result = ["outcome": "saved"]
-        case "password": result = ["username":"synthetic-user","password":"synthetic-password"]
+        case "password": result = ["username":passwordUsername,"password":"synthetic-password"]
         case "code": result = ["code":"123456","period":30,"remaining":20]
         default: throw VaultClientError.malformedResponse
         }
@@ -4869,13 +4950,13 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
         if vaultView.window == nil { vaultWindow.contentView?.addSubview(vaultView) }
         precondition(vaultView.window != nil)
     }
-    func requestPasskey(operation:Int32,badHash:Bool = false,emptyAllow:Bool = false) {
+    func requestPasskey(operation:Int32,badHash:Bool = false,emptyAllow:Bool = false,allowed:[String] = ["AQ"]) {
         mountVaultView()
         passkeySerial += 1; passkeyValid = true
         let args: [String:Any] = ["rpId":"vault.synthetic.invalid","rpName":"Synthetic",
             "origin":"https://vault.synthetic.invalid", "clientDataHash":badHash ? "AQ" : Base64URL.encode(Data(repeating:0,count:32)),
             "user":["id":"AQ","name":"synthetic-user","displayName":"Synthetic"],
-            "pubKeyCredParams":[-7],"excludeCredentials":[],"allowCredentials":emptyAllow ? [] : ["AQ"]]
+            "pubKeyCredParams":[-7],"excludeCredentials":[],"allowCredentials":emptyAllow ? [] : allowed]
         let json = String(data:try! JSONSerialization.data(withJSONObject:args),encoding:.utf8)!
         passkeyCallback?(VaultNativePasskeyRequest(token:passkeySerial,operation:operation,arguments:json,view:vaultView))
     }
