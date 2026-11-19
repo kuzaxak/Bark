@@ -70,9 +70,9 @@ struct ChromiumStartupConfiguration {
             }
             let expected = Self.canonicalURL(support).appendingPathComponent("NookChromium", isDirectory: true)
             let canonical = Self.canonicalURL(expected)
-            // A preexisting root symlink must not quietly redirect normal
-            // startup into an installed browser's store.
-            guard canonical.path == expected.standardizedFileURL.path else { throw StartupError.invalidConfiguration }
+            // The parent is already canonical. Compare its literal child with
+            // the resolved child so a root symlink cannot redirect the store.
+            guard canonical.path == expected.path else { throw StartupError.invalidConfiguration }
             root = canonical; profileID = nil; isVerification = false
         }
         try validateChildDirectories()

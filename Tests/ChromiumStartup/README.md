@@ -1,4 +1,18 @@
-# Signed large-session restore walk
+# Chromium startup checks
+
+Run the headless startup and storage regression from the repository root.
+
+```fish
+python3 -B Tests/ChromiumStartup/check.py
+```
+
+The check compiles the app's startup source and uses a mock startup bridge.
+Each run owns a private scratch directory. It checks that normal startup
+prepares and reopens the same app and engine paths with their existing bytes
+intact, that verification uses separate storage and adds the mock-keychain
+switch, and that malformed or redirected storage paths are refused.
+
+## Signed large-session restore walk
 
 Use the signed-walk Python environment from the contributor guide and a native
 signed Bark app. The runner uses Accessibility, event posting and Screen

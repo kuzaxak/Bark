@@ -34,22 +34,30 @@ struct StartupTests {
     }
 
     @MainActor static func main() throws {
+        precondition(CommandLine.arguments.count == 3, "Run Tests/ChromiumStartup/check.py")
+        let root = URL(fileURLWithPath: CommandLine.arguments[1], isDirectory: true)
+        let normalRoot = root.appendingPathComponent("Application Support", isDirectory: true)
+        let verificationRoot = root.appendingPathComponent("verification", isDirectory: true)
         let id = UUID()
-        let config = try ChromiumStartupConfiguration(arguments: [
-            "Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test",
-            "--barc-app-profile=\(id.uuidString)"])
+        let verificationArguments = ["Nook", "--barc-app-data-dir=\(verificationRoot.path)",
+                                     "--barc-app-profile=\(id.uuidString)"]
+        let config = try ChromiumStartupConfiguration(arguments: verificationArguments,
+                                                      applicationSupportDirectory: normalRoot)
         precondition(config.profileID == id)
         precondition(config.isVerification && config.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
-        let normalRoot = URL(fileURLWithPath: "/private/tmp/NookNormalConfig-\(UUID())", isDirectory: true)
-        defer { try? FileManager.default.removeItem(at: normalRoot) }
         let normal = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: normalRoot)
         precondition(!normal.isVerification && normal.profileID == nil)
         precondition(normal.root == normalRoot.appendingPathComponent("NookChromium", isDirectory: true))
-        precondition(config.aiConfigURL.path == "/private/tmp/nook-startup-test/App/ai_config.json")
-        precondition(config.aiKeychainService == "ee.qdo.nook.chromium-verification.aiProvider.26edca9982aeea417df94b6de0431c4c446fa35683d1e743c65a8f42fdedf377")
+        precondition(config.aiConfigURL.path == verificationRoot.appendingPathComponent("App/ai_config.json").path)
+        let expectedDigest = CommandLine.arguments[2]
+        precondition(config.rootDigest == expectedDigest)
+        precondition(config.aiKeychainService == "ee.qdo.nook.chromium-verification.aiProvider." + expectedDigest)
+        precondition(config.preferencesDomain == "ee.qdo.nook.chromium-verification." + expectedDigest)
         let otherRoot = try ChromiumStartupConfiguration(arguments: [
-            "Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test-other", "--barc-app-profile=\(id.uuidString)"])
+            "Nook", "--barc-app-data-dir=\(root.appendingPathComponent("other").path)",
+            "--barc-app-profile=\(id.uuidString)"], applicationSupportDirectory: normalRoot)
         precondition(otherRoot.aiKeychainService != config.aiKeychainService)
+        precondition(normal.preferencesDomain == "ee.qdo.nook.chromium")
         precondition(normal.aiConfigURL == normal.root.appendingPathComponent("App/ai_config.json"))
         precondition(normal.aiKeychainService == "ee.qdo.nook.chromium.aiProvider")
         precondition(!normal.engineArguments(executable: "Nook").contains("--use-mock-keychain"))
@@ -66,7 +74,7 @@ struct StartupTests {
         let sdkModeFlags = ["--barc-native-shell", "--barc-shared-native-window"]
         for launch in [
             ["Nook"],
-            ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"],
+            verificationArguments,
             ["Nook", "--barc-native-shell=off", "--barc-shared-native-window=off",
              "--", "--barc-native-shell", "--barc-shared-native-window"],
         ] {
@@ -88,26 +96,27 @@ struct StartupTests {
                      "a plain launch names nothing outside its own store: \(urls(normal).map(\.path))")
         for verification in [false, true] {
             let arguments = verification
-                ? ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"]
+                ? verificationArguments
                 : ["Nook"]
             let plain = try ChromiumStartupConfiguration(arguments: arguments, applicationSupportDirectory: normalRoot)
-            let switched = try ChromiumStartupConfiguration(arguments: arguments + ["--barc-conversion-source=/private/tmp/nook-startup-source"],
+            let switched = try ChromiumStartupConfiguration(arguments: arguments + ["--barc-conversion-source=\(root.appendingPathComponent("conversion-source").path)"],
                                                             applicationSupportDirectory: normalRoot)
             precondition(urls(switched).map(\.path) == urls(plain).map(\.path)
                          && switched.engineArguments(executable: "Nook") == plain.engineArguments(executable: "Nook"),
                          "--barc-conversion-source is an unknown switch, dropped like any other")
         }
+        let fixtureURL = root.appendingPathComponent("fixture.html").absoluteString
         let withURLs = try ChromiumStartupConfiguration(arguments: ["Nook",
-            "--no-sandbox", "https://fixture.invalid/cli", "file:///private/tmp/fixture.html"],
+            "--no-sandbox", "https://fixture.invalid/cli", fixtureURL],
             applicationSupportDirectory: normalRoot)
         let engineURLs = withURLs.engineArguments(executable: "Nook")
         precondition(!engineURLs.contains("--no-sandbox"))
-        precondition(Array(engineURLs.suffix(3)) == ["--", "https://fixture.invalid/cli", "file:///private/tmp/fixture.html"])
+        precondition(Array(engineURLs.suffix(3)) == ["--", "https://fixture.invalid/cli", fixtureURL])
         let literal = try ChromiumStartupConfiguration(arguments: ["Nook", "--", "--barc-app-profile=literal"],
             applicationSupportDirectory: normalRoot)
         precondition(!literal.isVerification && literal.launchArguments == ["--barc-app-profile=literal"])
         precondition(config.launchArguments.isEmpty)
-        for launch in [["Nook"], ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"]] {
+        for launch in [["Nook"], verificationArguments] {
             let byDefault = try ChromiumStartupConfiguration(arguments: launch, applicationSupportDirectory: normalRoot)
             precondition(byDefault.engineArguments(executable: "Nook").filter { $0.hasPrefix("--bark-window") } == ["--bark-window=host"],
                          "a launch with no window switch gets the Bark window: \(launch)")
@@ -144,6 +153,25 @@ struct StartupTests {
         precondition(retainedLegacy == legacyBytes)
         precondition(!FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("App/default.store").path))
         precondition(FileManager.default.fileExists(atPath: normal.root.appendingPathComponent("Engine").path))
+        let savedFiles = [
+            "App/model.store": Data("synthetic Bark model".utf8),
+            "Engine/Preferences": Data(#"{"fixture":true}"#.utf8),
+        ]
+        for (relativePath, bytes) in savedFiles {
+            try bytes.write(to: normal.root.appendingPathComponent(relativePath))
+        }
+        let reopened = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: normalRoot)
+        precondition(reopened.root == normal.root && !reopened.isVerification)
+        precondition(reopened.engineArguments(executable: "Nook") == normal.engineArguments(executable: "Nook"))
+        precondition(reopened.engineArguments(executable: "Nook").contains(
+            "--user-data-dir=\(normal.root.appendingPathComponent("Engine").path)"))
+        try reopened.prepare()
+        try config.prepare()
+        for (relativePath, bytes) in savedFiles {
+            let retained = try Data(contentsOf: reopened.root.appendingPathComponent(relativePath))
+            precondition(retained == bytes)
+            precondition(!FileManager.default.fileExists(atPath: config.root.appendingPathComponent(relativePath).path))
+        }
         let redirected = normalRoot.appendingPathComponent("RedirectedSupport")
         try FileManager.default.createDirectory(at: redirected, withIntermediateDirectories: true)
         try FileManager.default.createSymbolicLink(at: redirected.appendingPathComponent("NookChromium"),
@@ -151,17 +179,22 @@ struct StartupTests {
         do {
             _ = try ChromiumStartupConfiguration(arguments: ["Nook"], applicationSupportDirectory: redirected)
             preconditionFailure("Accepted redirected normal native store")
-        } catch { }
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
+        let dataSwitch = "--barc-app-data-dir=\(verificationRoot.path)"
+        let profileSwitch = "--barc-app-profile=\(id)"
         for partial in [
-            ["--barc-app-profile=\(id)"], ["--barc-app-data-dir=/private/tmp/incomplete"],
-            ["--barc-app-data-dir"], ["--barc-app-profile"],
+            [profileSwitch], [dataSwitch], ["--barc-app-data-dir"], ["--barc-app-profile"],
             ["--barc-app-data-dir="], ["--barc-app-profile="],
-            ["--barc-app-data-dir", "/private/tmp/owned", "--barc-app-profile=\(id)"],
-            ["--barc-app-data-dir=/private/tmp/owned", "--barc-app-profile", "\(id)"],
-            ["--barc-app-data-dir=/private/tmp/owned", "--barc-app-data-dir=/private/tmp/owned", "--barc-app-profile=\(id)"],
-            ["--barc-app-data-dir=/private/tmp/owned", "--barc-app-profile=\(id)", "--barc-app-profile=\(id)"]
+            ["--barc-app-data-dir", verificationRoot.path, profileSwitch],
+            [dataSwitch, "--barc-app-profile", id.uuidString],
+            [dataSwitch, dataSwitch, profileSwitch],
+            [dataSwitch, profileSwitch, profileSwitch],
         ] {
-            do { _ = try ChromiumStartupConfiguration(arguments: partial, applicationSupportDirectory: normalRoot); preconditionFailure("Accepted malformed verification mode") } catch { }
+            do {
+                _ = try ChromiumStartupConfiguration(arguments: ["Nook"] + partial,
+                                                     applicationSupportDirectory: normalRoot)
+                preconditionFailure("Accepted malformed verification mode")
+            } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         }
 
         precondition(!config.engineArguments(executable: "Nook").contains { $0.hasPrefix("--profile-directory=") })
@@ -170,32 +203,28 @@ struct StartupTests {
         for bad in ["/Users/example/Library", "/private/tmp/../var", "/private/tmp"] {
             do {
                 _ = try ChromiumStartupConfiguration(arguments: [
-                    "--barc-app-data-dir=\(bad)", "--barc-app-profile=\(id)"])
+                    "Nook", "--barc-app-data-dir=\(bad)", "--barc-app-profile=\(id)"], applicationSupportDirectory: normalRoot)
                 preconditionFailure("Accepted non-synthetic directory")
-            } catch { }
+            } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         }
-        let sandbox = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(UUID().uuidString)
-        let outside = URL(fileURLWithPath: "/private/tmp").appendingPathComponent(UUID().uuidString)
+        let sandbox = root.appendingPathComponent("sandbox", isDirectory: true)
+        let outside = root.appendingPathComponent("outside", isDirectory: true)
         try FileManager.default.createDirectory(at: sandbox, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: sandbox)
-            try? FileManager.default.removeItem(at: outside)
-        }
         try FileManager.default.createSymbolicLink(at: sandbox.appendingPathComponent("Engine"), withDestinationURL: outside)
         do {
             _ = try ChromiumStartupConfiguration(arguments: [
-                "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"])
+                "Nook", "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"], applicationSupportDirectory: normalRoot)
             preconditionFailure("Accepted escaped Engine child")
-        } catch { }
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         try FileManager.default.removeItem(at: sandbox.appendingPathComponent("Engine"))
         let safeConfig = try ChromiumStartupConfiguration(arguments: [
-            "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"])
+            "Nook", "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"], applicationSupportDirectory: normalRoot)
         try FileManager.default.createSymbolicLink(at: sandbox.appendingPathComponent("App"), withDestinationURL: outside)
         do {
-            try safeConfig.prepare()
+        try safeConfig.prepare()
             preconditionFailure("Prepared escaped App child")
-        } catch { }
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         try FileManager.default.removeItem(at: sandbox.appendingPathComponent("App"))
         let appDirectory = sandbox.appendingPathComponent("App", isDirectory: true)
         let engineDirectory = sandbox.appendingPathComponent("Engine", isDirectory: true)
@@ -205,7 +234,7 @@ struct StartupTests {
         try engineBytes.write(to: engineFixture)
         try FileManager.default.createSymbolicLink(at: appDirectory, withDestinationURL: engineDirectory)
         do {
-            try safeConfig.prepare()
+        try safeConfig.prepare()
             throw PreflightRegression.acceptedAliasedStore
         } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         let retainedEngine = try Data(contentsOf: engineFixture)
@@ -217,7 +246,7 @@ struct StartupTests {
         // valid App directory is created.
         try engineBytes.write(to: engineDirectory)
         do {
-            try safeConfig.prepare()
+        try safeConfig.prepare()
             throw PreflightRegression.acceptedNonDirectory
         } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         precondition(!FileManager.default.fileExists(atPath: appDirectory.path))
@@ -230,7 +259,7 @@ struct StartupTests {
             at: engineDirectory, withDestinationURL: sandbox.appendingPathComponent("missing"))
         do {
             _ = try ChromiumStartupConfiguration(arguments: [
-                "Bark", "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"])
+                "Bark", "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"], applicationSupportDirectory: normalRoot)
             throw PreflightRegression.acceptedAliasedStore
         } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
         try FileManager.default.removeItem(at: engineDirectory)
@@ -305,6 +334,6 @@ struct StartupTests {
         precondition(cancelled.window == nil && cancelledBridge.completed == [0])
         precondition(startup.runtimeReturned(0) == 0)
         precondition(bridge.completed == [43, 0])
-        print("Chromium startup: configuration isolation, callback ordering, duplicate readiness, profile failure and attachment failure PASS")
+        print("Chromium startup: same-path storage reuse, verification isolation, callback ordering, duplicate readiness, profile failure and attachment failure PASS")
     }
 }
