@@ -15,6 +15,24 @@ struct ProfileEngineTests {
         for _ in 0..<4 { await withCheckedContinuation { c in DispatchQueue.main.async { c.resume() } } }
     }
 
+    @Test(arguments: [Profile.Engine.chromium, .webKit])
+    func sponsorBlockAdapterIsConstructedOnlyForWebKit(engine: Profile.Engine) throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let settings = fixture.makeSettings()
+        var constructions = 0
+        func makeLegacyAdapter() -> SponsorBlockManager {
+            constructions += 1
+            return SponsorBlockManager(settings: settings)
+        }
+        let tabs = TabsController(settings: settings, windowRegistry: WindowRegistry(),
+            blocker: ContentBlockerManager(settings: settings),
+            sponsorBlock: makeLegacyAdapter(), siteRouting: SiteRoutingManager(settings: settings),
+            profileEngine: engine, directory: fixture.directory.appendingPathComponent("Tabs"))
+        #expect(constructions == (engine == .webKit ? 1 : 0))
+        #expect((tabs.sponsorBlock != nil) == (engine == .webKit))
+    }
+
     @Test func nativeLiveGmailUsesExactRegularProfileWithoutWindowsOrWebKit() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
         let tabs = f.makeTabs(engine: .chromium)

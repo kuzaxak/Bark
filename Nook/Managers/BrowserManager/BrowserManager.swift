@@ -445,7 +445,6 @@ class BrowserManager: ObservableObject {
     var splitManager: SplitViewManager
     var gradientColorManager: GradientColorManager
     var contentBlockerManager: ContentBlockerManager
-    var sponsorBlockManager: SponsorBlockManager
     var findManager: FindManager
     let importManager: ImportManager
     let importSession: BrowserImportSession
@@ -493,14 +492,12 @@ class BrowserManager: ObservableObject {
         let blocker = ContentBlockerManager(settings: settings,
             storageDirectory: tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists"),
             nativeNetworkBlocking: true)
-        let sponsorBlock = SponsorBlockManager(settings: settings)
         let siteRouting = SiteRoutingManager(settings: settings)
         self.contentBlockerManager = blocker
-        self.sponsorBlockManager = sponsorBlock
         self.siteRoutingManager = siteRouting
         let tabs = TabsController(
             settings: settings, windowRegistry: windowRegistry, blocker: blocker,
-            sponsorBlock: sponsorBlock, siteRouting: siteRouting,
+            siteRouting: siteRouting,
             legacyProfiles: Self.legacyProfileRecords(in: modelContext),
             legacyTree: { [modelContext] in LegacyTabImport.tree(from: modelContext) },
             profileEngine: .chromium,

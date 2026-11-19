@@ -320,7 +320,7 @@ extension PageSession {
             #endif
 
             // Inject SponsorBlock script (independent of content blocker)
-            controller?.sponsorBlock.injectScriptIfNeeded(for: url, in: webView)
+            controller?.sponsorBlock?.injectScriptIfNeeded(for: url, in: webView)
             if let settings = controller?.settings {
                 YouTubeTweaks.apply(for: url, in: webView, settings: settings)
                 SocialImageTweaks.apply(for: url, in: webView, settings: settings)

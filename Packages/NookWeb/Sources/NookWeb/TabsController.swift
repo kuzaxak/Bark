@@ -90,7 +90,7 @@ public final class TabsController {
     @ObservationIgnored public let settings: NookSettingsService
     @ObservationIgnored public let windowRegistry: WindowRegistry
     @ObservationIgnored public let blocker: ContentBlockerManager
-    @ObservationIgnored public let sponsorBlock: SponsorBlockManager
+    @ObservationIgnored let sponsorBlock: SponsorBlockManager?
     @ObservationIgnored public let siteRouting: SiteRoutingManager
     /// Set once the SwiftData context has produced it; nil in a host without history.
     @ObservationIgnored public var history: HistoryManager?
@@ -174,7 +174,7 @@ public final class TabsController {
         settings: NookSettingsService,
         windowRegistry: WindowRegistry,
         blocker: ContentBlockerManager,
-        sponsorBlock: SponsorBlockManager,
+        sponsorBlock: @autoclosure () -> SponsorBlockManager? = nil,
         siteRouting: SiteRoutingManager,
         history: HistoryManager? = nil,
         legacyProfiles: [(id: UUID, name: String)] = [],
@@ -187,7 +187,7 @@ public final class TabsController {
         self.settings = settings
         self.windowRegistry = windowRegistry
         self.blocker = blocker
-        self.sponsorBlock = sponsorBlock
+        self.sponsorBlock = profileEngine == .webKit ? (sponsorBlock() ?? SponsorBlockManager(settings: settings)) : nil
         self.siteRouting = siteRouting
         self.history = history
         self.directory = directory

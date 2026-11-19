@@ -254,9 +254,9 @@ extension PageSession {
                        videoID.range(of: "^[A-Za-z0-9_-]{11}\\z", options: .regularExpression) != nil {
                         Task { @MainActor [weak self] in
                             guard let webView = message.webView else { return }
-                            let segments = await self?.controller?.sponsorBlock
+                            let segments = await self?.controller?.sponsorBlock?
                                 .fetchSegments(for: videoID) ?? []
-                            self?.controller?.sponsorBlock
+                            self?.controller?.sponsorBlock?
                                 .deliverSegments(segments, to: webView)
                         }
                     }
