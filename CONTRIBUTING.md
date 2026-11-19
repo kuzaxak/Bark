@@ -144,13 +144,15 @@ exists, use its run ID and the checkout’s pin to obtain the SDK. Enter the
 numeric run ID when prompted.
 
 ```fish
-read -P 'Candidate run ID: ' run_id
-set -l arch (python3 scripts/chromium_sdk_layout.py native-arch)
-set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
-set -l sdk "BarkSDK-$arch-$pin"
-set -l download (mktemp -d)
-gh run download "$run_id" --repo kuzaxak/Nook --name "$sdk" --dir "$download"
-python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$download/$sdk.tar.gz"
+begin
+    read -P 'Candidate run ID: ' run_id
+    and set -l arch (python3 scripts/chromium_sdk_layout.py native-arch)
+    and set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
+    and set -l sdk "BarkSDK-$arch-$pin"
+    and set -l download (mktemp -d)
+    and gh run download "$run_id" --repo kuzaxak/Nook --name "$sdk" --dir "$download"
+    and python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$download/$sdk.tar.gz"
+end
 ```
 
 The SDK headers build on Intel and Apple Silicon. Engine install and export, build,
