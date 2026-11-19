@@ -51,6 +51,10 @@ public extension BlockablePage {
 public protocol ContentBlockerHost: AnyObject {
     /// Every live page, for reconciling rule lists after a toggle or whitelist change.
     var blockablePages: [any BlockablePage] { get }
+}
+
+@MainActor
+public protocol WebKitContentBlockerHost: ContentBlockerHost {
     /// The page that owns this web view, if any.
     func blockablePage(for webView: WKWebView) -> (any BlockablePage)?
     /// The user content controller shared by every web view configuration.

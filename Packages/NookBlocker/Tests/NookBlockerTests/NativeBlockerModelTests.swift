@@ -16,6 +16,17 @@ struct NativeBlockerModelTests {
         }
     }
 
+    @Test func webKitControllerCapabilityIsUsedOnlyByWebKitBlocker() throws {
+        let fixture = try NativeBlockerFixture(); defer { fixture.cleanup() }
+        let host = WebKitBlockerHost()
+        fixture.manager.attach(host: host)
+        #expect(host.controllerHook == nil && host.controllerReads == 0)
+
+        let webKit = ContentBlockerManager(settings: fixture.settings, storageDirectory: fixture.directory)
+        webKit.attach(host: host)
+        #expect(host.controllerHook != nil && host.controllerReads == 0)
+    }
+
     @Test func persistedNativePolicySeedsFirstCompilationAndExport() async throws {
         let optional = try #require(FilterListManager.optionalLists.first)
         let whitelist = ["ADS.TEST", "allowed.test", "ads.test"]
@@ -396,9 +407,19 @@ private final class NativeBlockerPage: BlockablePage {
 private final class NativeBlockerHost: ContentBlockerHost {
     var pages: [NativeBlockerPage] = []
     var blockablePages: [any BlockablePage] { pages }
-    func blockablePage(for webView: WKWebView) -> (any BlockablePage)? { fatalError("Unexpected WK lookup") }
-    var sharedUserContentController: WKUserContentController { fatalError("Unexpected WK controller") }
+}
+
+@MainActor
+private final class WebKitBlockerHost: WebKitContentBlockerHost {
+    let blockablePages: [any BlockablePage] = []
+    var controllerHook: (@MainActor (WKUserContentController) -> Void)?
+    private(set) var controllerReads = 0
+    var sharedUserContentController: WKUserContentController {
+        controllerReads += 1
+        return WKUserContentController()
+    }
+    func blockablePage(for webView: WKWebView) -> (any BlockablePage)? { nil }
     func onNewUserContentController(_ handler: @escaping @MainActor (WKUserContentController) -> Void) {
-        fatalError("Unexpected WK hook")
+        controllerHook = handler
     }
 }

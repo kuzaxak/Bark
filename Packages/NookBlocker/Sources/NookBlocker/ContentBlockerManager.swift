@@ -25,6 +25,10 @@ private let cbLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", ca
 @MainActor
 public final class ContentBlockerManager: NSObject {
     public weak var host: ContentBlockerHost?
+    private var webKitHost: (any WebKitContentBlockerHost)? {
+        guard !nativeNetworkBlocking else { return nil }
+        return host as? any WebKitContentBlockerHost
+    }
     private let settings: NookSettingsService
     public private(set) var isEnabled = false
     public private(set) var isCompiling = false
@@ -222,8 +226,7 @@ public final class ContentBlockerManager: NSObject {
         filterListManager.enabledOptionalFilterListFilenames = Set(settings.enabledOptionalFilterLists)
 
         // Every new user content controller gets the reply handler (always) and rule lists (when enabled).
-        guard !nativeNetworkBlocking else { return }
-        host.onNewUserContentController { [weak self] controller in
+        webKitHost?.onNewUserContentController { [weak self] controller in
             self?.configureNewController(controller)
         }
     }
@@ -629,16 +632,14 @@ public final class ContentBlockerManager: NSObject {
     // MARK: - Shared Configuration
 
     private func applyToSharedConfiguration() {
-        guard !nativeNetworkBlocking else { return }
-        guard let ucc = self.host?.sharedUserContentController else { return }
+        guard let ucc = webKitHost?.sharedUserContentController else { return }
         ucc.removeAllContentRuleLists()
         for list in activeRuleLists { ucc.add(list) }
         ensureStaticScripts(in: ucc)
     }
 
     private func removeFromSharedConfiguration() {
-        guard !nativeNetworkBlocking else { return }
-        guard let ucc = self.host?.sharedUserContentController else { return }
+        guard let ucc = webKitHost?.sharedUserContentController else { return }
         ucc.removeAllContentRuleLists()
         removeOwnScripts(from: ucc)
     }
@@ -709,7 +710,7 @@ public final class ContentBlockerManager: NSObject {
     }
 
     private func session(for webView: WKWebView) -> (any BlockablePage)? {
-        host?.blockablePage(for: webView)
+        webKitHost?.blockablePage(for: webView)
     }
 }
 

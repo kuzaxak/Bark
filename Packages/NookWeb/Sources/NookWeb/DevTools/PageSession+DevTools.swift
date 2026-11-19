@@ -143,10 +143,11 @@ extension PageSession {
 }
 
 extension TabsController {
-    /// Developer Mode changed: the shared configuration carries the capture script for new views,
-    /// and every live page picks it up on its next load.
+    /// Update capture for new and existing WebKit views. Chromium evaluates the preference
+    /// at the native developer command entry points.
     public func setDeveloperMode(_ on: Bool) {
-        DevCaptureScript.setInstalled(on, in: BrowserConfiguration.shared.webViewConfiguration.userContentController)
+        guard let configuration = BrowserConfiguration.webKitAdapter(for: profileEngine) else { return }
+        DevCaptureScript.setInstalled(on, in: configuration.webViewConfiguration.userContentController)
         for session in sessions { session.setDeveloperMode(on) }
     }
 }

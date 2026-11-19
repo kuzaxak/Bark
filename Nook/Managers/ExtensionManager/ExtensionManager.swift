@@ -108,7 +108,7 @@ final class ExtensionManager: NSObject, ObservableObject,
             config = WKWebExtensionController.Configuration(identifier: uuid)
         }
 
-        let sharedWebConfig = BrowserConfiguration.shared.webViewConfiguration
+        let sharedWebConfig = BrowserConfiguration.webKit.webViewConfiguration
 
         // Extension pages (background, popup, options) use one persistent store keyed by the
         // controller identifier. `controller.configuration` returns a copy, so this cannot be

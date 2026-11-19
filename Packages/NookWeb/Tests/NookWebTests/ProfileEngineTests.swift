@@ -83,6 +83,26 @@ struct ProfileEngineTests {
         await liveCallbacks(); #expect(tabs.tree.item(folder) == nil)
     }
 
+    @Test func nativeDeveloperModeCannotChangeWebKitConfiguration() throws {
+        let native = try ProfileFixture(); defer { native.cleanup() }
+        let legacy = try ProfileFixture(); defer { legacy.cleanup() }
+        let nativeTabs = native.makeTabs(engine: .chromium)
+        let legacyTabs = legacy.makeTabs(engine: .webKit)
+        let controller = BrowserConfiguration.webKit.webViewConfiguration.userContentController
+        func captureInstalled() -> Bool {
+            controller.userScripts.contains { $0.source.hasPrefix(DevCaptureScript.marker) }
+        }
+        let original = captureInstalled()
+        defer { DevCaptureScript.setInstalled(original, in: controller) }
+        legacyTabs.setDeveloperMode(true)
+        nativeTabs.setDeveloperMode(false)
+        #expect(captureInstalled())
+        legacyTabs.setDeveloperMode(false)
+        nativeTabs.setDeveloperMode(true)
+        #expect(!captureInstalled())
+        #expect(BrowserConfiguration.webKitAdapter(for: .chromium) == nil)
+    }
+
     @Test func chromiumMetadataHasNoWebKitStorageOrCookieConnection() async {
         let id = UUID()
         let profile = Profile(id: id, name: "Work", icon: "person", engine: .chromium)

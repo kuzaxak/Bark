@@ -98,7 +98,7 @@ extension PageSession: WKUIDelegate {
         // popup, and closing the popup would strip them from the opener. Give the popup its own
         // controller; WebKit only requires the configuration's related web view to match.
         func popupConfiguration() -> WKWebViewConfiguration {
-            configuration.userContentController = BrowserConfiguration.shared.freshUserContentController()
+            configuration.userContentController = BrowserConfiguration.webKit.freshUserContentController()
             return configuration
         }
 

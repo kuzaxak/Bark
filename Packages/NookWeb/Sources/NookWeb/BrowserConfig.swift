@@ -11,7 +11,13 @@ import WebKit
 import NookBlocker
 
 public class BrowserConfiguration {
-    public static let shared = BrowserConfiguration()
+    /// Shared configuration for explicitly WebKit-owned adapters.
+    public static let webKit = BrowserConfiguration()
+
+    static func webKitAdapter(for engine: Profile.Engine) -> BrowserConfiguration? {
+        guard engine == .webKit else { return nil }
+        return webKit
+    }
     
     private init() {}
     
@@ -121,7 +127,7 @@ public class BrowserConfiguration {
     @MainActor
     public static func webViewConfiguration(for profile: Profile) -> WKWebViewConfiguration? {
         guard let dataStore = profile.webKitDataStore else { return nil }
-        let browser = shared
+        let browser = webKit
         let config = browser.webViewConfiguration.copy() as! WKWebViewConfiguration
         config.userContentController = browser.freshUserContentController()
         config.websiteDataStore = dataStore

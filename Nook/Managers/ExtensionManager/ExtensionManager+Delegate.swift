@@ -354,7 +354,7 @@ extension ExtensionManager {
            let resolvedContext = controller.extensionContext(for: url),
            let session = bm.tabs.session(for: itemID) {
             session.applyConfigurationOverride(
-                resolvedContext.webViewConfiguration ?? BrowserConfiguration.shared.webViewConfiguration)
+                resolvedContext.webViewConfiguration ?? BrowserConfiguration.webKit.webViewConfiguration)
         }
         return itemID
     }
@@ -698,7 +698,7 @@ extension ExtensionManager {
         // the WebExtensions environment (browser/chrome APIs) is available.
         let config =
             extensionContext.webViewConfiguration
-            ?? BrowserConfiguration.shared.webViewConfiguration
+            ?? BrowserConfiguration.webKit.webViewConfiguration
         // Ensure the controller is attached for safety
         if config.webExtensionController == nil, let c = extensionController {
             config.webExtensionController = c
