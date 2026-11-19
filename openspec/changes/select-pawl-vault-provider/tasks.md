@@ -20,7 +20,7 @@
 - [ ] 3.4 Prove stock mode still works and unrelated address and payment Autofill retain their behavior in both modes. Run the pinned engine browser tests and a signed shell walk.
 
 - [ ] 3.5 Route direct password-manager URLs and any remaining context-menu actions to the running provider. Verify an existing Chromium login cannot be offered through those entry points.
-  The engine candidate filters Chromium's password select, import and generate commands. Password-manager WebUI, Chromium Settings API access and browser-data import are still open.
+  The engine candidate filters password selection, import and generation commands, replaces the stock management page with directions to Bark's Passwords settings, and prevents the private password API from obtaining a credential delegate. The macOS general browser-data importer already omits passwords. Linked browser checks and direct navigation to native management remain open.
 
 ## 4. Passkeys and qualification
 
