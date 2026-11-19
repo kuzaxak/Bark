@@ -26,6 +26,5 @@ struct ExtensionLibraryButton: View {
         .font(.system(size: NookDesign.Size.siteControlsGlyph, weight: .regular))
         .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.addressButton, radius: NookDesign.Radius.sm, foreground: .secondary))
         // The overlay in WindowView hangs off this frame.
-        .anchorPreference(key: ExtensionLibraryAnchorKey.self, value: .bounds) { $0 }
     }
 }

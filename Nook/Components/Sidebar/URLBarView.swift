@@ -288,24 +288,6 @@ struct URLBarView: View {
                         .allowsHitTesting(shown)
                         .background { if let siteControlsAnchor { ChromiumSiteControlsButtonProbe(anchor: siteControlsAnchor) } }
                 }
-                if !isEditing, browserManager.engine != .chromium, let extensionManager = browserManager.extensionManager {
-                    let pinnedIDs = browserManager.nookSettings?.pinnedExtensionIDs ?? []
-                    let pinnedExtensions = extensionManager.installedExtensions.filter { pinnedIDs.contains($0.id) }
-
-                    if !pinnedExtensions.isEmpty {
-                        ExtensionActionView(extensions: pinnedExtensions)
-                            .environmentObject(browserManager)
-                    }
-
-                    ExtensionLibraryButton()
-                        .environmentObject(browserManager)
-                        .onAppear {
-                            let installedIDs = extensionManager.installedExtensions
-                                .filter { $0.isEnabled }
-                                .map { $0.id }
-                            browserManager.nookSettings?.migrateExtensionPinStateIfNeeded(installedExtensionIDs: installedIDs)
-                        }
-                }
             }
             .padding(.leading, NookDesign.Spacing.lg)
             .padding(.trailing, NookDesign.Spacing.sm)

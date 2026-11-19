@@ -51,15 +51,12 @@ struct ExtensionLibraryView: View {
     }
 
     static let width: CGFloat = 240
-    private let columns = Array(repeating: GridItem(.flexible(), spacing: NookDesign.Spacing.sm), count: 4)
 
     var body: some View {
         VStack(alignment: .leading, spacing: NookDesign.Spacing.md + NookDesign.Spacing.xxs) {
             actionTiles
-            if isChromium {
-                if let nativeExtensions { ChromiumExtensionActionList(actions: nativeExtensions, dismiss: onDismiss) }
-            } else {
-                extensionsSection
+            if let nativeExtensions {
+                ChromiumExtensionActionList(actions: nativeExtensions, dismiss: onDismiss)
             }
             settingsSection
             Rectangle().fill(NookDesign.Surface.hairline).frame(height: 1)
@@ -117,33 +114,6 @@ struct ExtensionLibraryView: View {
             .chromiumSiteControlsPointerTarget(enabled: currentTab != nil)
 
             MuteButton(tab: currentTab)
-        }
-    }
-
-    // MARK: - Extensions
-
-    private var extensionsSection: some View {
-        VStack(alignment: .leading, spacing: NookDesign.Spacing.sm) {
-            Text("Extensions")
-                .font(NookDesign.Font.label)
-
-            let extensions = browserManager.extensionManager?.installedExtensions.filter { $0.isEnabled } ?? []
-            LazyVGrid(columns: columns, spacing: NookDesign.Spacing.sm) {
-                ForEach(extensions, id: \.id) { ext in
-                    ExtensionGridItem(
-                        ext: ext,
-                        isPinned: settings.pinnedExtensionIDs.contains(ext.id),
-                        browserManager: browserManager,
-                        windowState: windowState,
-                        settings: settings
-                    )
-                }
-                Button(action: openWebStore) {
-                    ActionTileLabel(systemImage: "plus", compact: true)
-                }
-                .buttonStyle(ActionTileStyle(raised: false))
-                .help("Add Extension…")
-            }
         }
     }
 
@@ -357,7 +327,6 @@ struct ExtensionLibraryView: View {
         }
     }
 
-    /// Extensions come from the Chrome Web Store, whose pages get Nook's install button.
     private func openWebStore() {
         browserManager.tabs.open(url: Self.webStoreURL, in: windowState, placement: .newTab)
         onDismiss()
@@ -451,11 +420,10 @@ private struct ActionTileStyle: ButtonStyle {
 
 private struct ActionTileLabel: View {
     let systemImage: String
-    var compact = false
 
     var body: some View {
         Image(systemName: systemImage)
-            .font(.system(size: compact ? NookDesign.Size.spaceIcon : NookDesign.Size.spaceIcon + 2, weight: .regular))
+            .font(.system(size: NookDesign.Size.spaceIcon + 2, weight: .regular))
             .contentTransition(.symbolEffect(.replace))
             .frame(maxWidth: .infinity)
             .frame(height: NookDesign.Size.row)
@@ -478,104 +446,6 @@ private struct MuteButton: View {
         .help(muted ? "Unmute" : "Mute")
         .disabled(tab == nil)
         .chromiumSiteControlsPointerTarget(enabled: tab != nil)
-    }
-}
-
-// MARK: - Extension Grid Item
-
-private struct ExtensionGridItem: View {
-    let ext: InstalledExtension
-    let isPinned: Bool
-    let browserManager: BrowserManager
-    let windowState: BrowserWindowState
-    let settings: NookSettingsService
-
-    @State private var isHovering = false
-    @State private var badgeText: String?
-
-    private var currentTab: PageSession? {
-        browserManager.tabs.selectedSession(in: windowState)
-    }
-
-    var body: some View {
-        Button {
-            triggerExtensionAction()
-        } label: {
-            Group {
-                if let iconPath = ext.iconPath, let nsImage = NSImage(contentsOfFile: iconPath) {
-                    Image(nsImage: nsImage)
-                        .resizable()
-                        .interpolation(.high)
-                        .scaledToFit()
-                        .frame(width: NookDesign.Size.essentialsFavicon + 2, height: NookDesign.Size.essentialsFavicon + 2)
-                } else {
-                    Image(systemName: "puzzlepiece.extension")
-                        .font(NookDesign.Font.title)
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: NookDesign.Size.essentialsTile)
-            .overlay(alignment: .topTrailing) {
-                if let badge = badgeText, !badge.isEmpty {
-                    Text(badge)
-                        .font(NookDesign.Font.micro)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, NookDesign.Spacing.xs)
-                        .padding(.vertical, 1)
-                        .background(Color.red, in: Capsule())
-                        .padding(NookDesign.Spacing.xs)
-                }
-            }
-            .overlay(alignment: .bottomTrailing) {
-                if isPinned {
-                    Image(systemName: "pin.fill")
-                        .font(NookDesign.Font.micro)
-                        .foregroundStyle(.secondary)
-                        .padding(NookDesign.Spacing.xs)
-                }
-            }
-        }
-        .buttonStyle(ActionTileStyle())
-        .help(ext.name)
-        .onHoverTracking { isHovering = $0 }
-        .onAppear { refreshBadge() }
-        .contextMenu {
-            if isPinned {
-                Button("Unpin from URL Bar") {
-                    settings.pinnedExtensionIDs.removeAll { $0 == ext.id }
-                }
-            } else {
-                Button("Pin to URL Bar") {
-                    settings.pinnedExtensionIDs.append(ext.id)
-                }
-            }
-        }
-        .accessibilityLabel(ext.name)
-        .accessibilityHint("Extension. Double-tap to activate.")
-        .accessibilityAddTraits(.isButton)
-    }
-
-    private func triggerExtensionAction() {
-        guard let ctx = ExtensionManager.shared.getExtensionContext(for: ext.id) else { return }
-
-        if ctx.webExtension.hasBackgroundContent {
-            ctx.loadBackgroundContent { error in
-                if let error { Logger(subsystem: "com.nook.browser", category: "ExtensionLibrary").error("Background wake failed: \(error.localizedDescription, privacy: .public)") }
-            }
-        }
-
-        let adapter = ExtensionManager.shared.actionAdapter(in: windowState)
-        ExtensionManager.shared.performAction(ctx, for: adapter)
-    }
-
-    private func refreshBadge() {
-        guard let ctx = ExtensionManager.shared.getExtensionContext(for: ext.id) else {
-            badgeText = nil
-            return
-        }
-        let adapter = ExtensionManager.shared.actionAdapter(in: windowState)
-        badgeText = ctx.action(for: adapter)?.badgeText
     }
 }
 
@@ -631,5 +501,17 @@ private struct SiteSettingRow<Trailing: View>: View {
 extension SiteSettingRow where Trailing == EmptyView {
     init(icon: String, title: String, subtitle: String, isOn: Bool, action: (() -> Void)?) {
         self.init(icon: icon, title: title, subtitle: subtitle, isOn: isOn, action: action) { EmptyView() }
+    }
+}
+
+/// A small rounded triangle pointing up.
+struct PanelNotch: Shape {
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addQuadCurve(to: CGPoint(x: rect.midX, y: rect.minY), control: CGPoint(x: rect.midX - rect.width * 0.18, y: rect.minY))
+        path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY), control: CGPoint(x: rect.midX + rect.width * 0.18, y: rect.minY))
+        path.closeSubpath()
+        return path
     }
 }
