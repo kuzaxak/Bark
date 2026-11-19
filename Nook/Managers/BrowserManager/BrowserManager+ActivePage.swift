@@ -163,18 +163,4 @@ extension BrowserManager {
               !shortcut.keyCombination.key.isEmpty else { return title }
         return "\(title) (\(shortcut.keyCombination.displayString))"
     }
-
-    // MARK: - Zoom Management
-
-    /// Reset zoom when a tab navigates, so a page never inherits the previous page's zoom.
-    func loadZoomForTab(_ tabId: UUID) {
-        // A background tab navigating must not move the readout off the tab being looked at.
-        zoomManager.showZoomLevel(for: windowRegistry?.activeWindow?.selectedItemID)
-    }
-
-    /// Clean up zoom data when a tab is closed
-    func cleanupZoomForTab(_ tabId: UUID) {
-        zoomManager.removeTabZoomLevel(for: tabId)
-    }
-
 }

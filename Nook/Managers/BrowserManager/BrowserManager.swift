@@ -407,7 +407,6 @@ class BrowserManager: ObservableObject {
     var findManager: FindManager
     let importManager: ImportManager
     let importSession: BrowserImportSession
-    var zoomManager = ZoomManager()
     var keyboardShortcutManager: KeyboardShortcutManager?
     weak var mcpManager: MCPManager?
     weak var tabOrganizerManager: TabOrganizerManager?

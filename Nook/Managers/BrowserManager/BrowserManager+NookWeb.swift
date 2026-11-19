@@ -16,7 +16,7 @@ extension BrowserManager: PageSessionDelegate {
         peekManager.presentExternalURL(url, from: session)
     }
 
-    func cleanupZoom(for itemID: UUID) { cleanupZoomForTab(itemID) }
+    func cleanupZoom(for itemID: UUID) {}
 
     func setMuteState(_ muted: Bool, for itemID: UUID) {}
 }
@@ -25,7 +25,6 @@ extension BrowserManager: PageSessionDelegate {
 
 extension BrowserManager: TabEventObserver {
     func tabActivated(new session: PageSession, previous: PageSession?) {
-        zoomManager.showZoomLevel(for: session.itemID)
         session.sampleNativeTopBarColor()
     }
 }
