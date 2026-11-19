@@ -82,3 +82,9 @@ Bark SHALL identify the selected provider at its password-management entry point
 - **WHEN** the user opens password management with Pawl selected
 - **THEN** they reach Pawl management or connection settings for Bark
 - **AND** an unavailable provider has a visible status
+
+#### Scenario: Open the built-in password manager directly
+- **GIVEN** Pawl is the running provider
+- **WHEN** the user invokes a browser password-management shortcut, built-in URL or context menu
+- **THEN** the browser routes management to Pawl or its connection settings
+- **AND** the page cannot receive credentials from Chromium through that action

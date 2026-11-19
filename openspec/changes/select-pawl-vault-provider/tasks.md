@@ -17,8 +17,10 @@
 - [ ] 3.3 Add a safely targeted password update with owner approval and explicit old-provider handling. Verify two matching usernames, a concurrent edit and a redirect, and check both stores after cancellation and success.
 - [ ] 3.4 Prove stock mode still works and unrelated address and payment Autofill retain their behavior in both modes. Run the pinned engine browser tests and a signed shell walk.
 
+- [ ] 3.5 Route direct password-manager URLs and any remaining context-menu actions to the running provider. Verify an existing Chromium login cannot be offered through those entry points.
+
 ## 4. Passkeys and qualification
 
 - [ ] 4.1 Isolate browser-managed passkey suggestions from Pawl in Pawl mode. Verify a disposable relying party accepts a signed modal assertion and that separately chosen hardware security keys work.
 - [ ] 4.2 Qualify conditional passkeys on Chromium before claiming parity with WebKit. Verify account suggestions, opt-out, cancellation and navigation using a disposable relying party.
-- [ ] 4.3 Qualify a signed pair on Intel and Apple Silicon with password, OTP and passkey flows, and promote the matching SDK receipts through the tracked recipe after results pass.
+- [ ] 4.3 Pass the unchanged upstream patch budget and qualify a signed pair on Intel and Apple Silicon with password, OTP and passkey flows, and promote the matching SDK receipts through the tracked recipe after results pass.
