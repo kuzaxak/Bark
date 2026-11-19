@@ -10,6 +10,11 @@ AppKit. Chromium renders the pages.
 Choose **Help → Bark Help** for a quick guide to the browser’s window controls.
 
 - Switch spaces from the sidebar to return to the tabs for that space and profile.
+- Choose **View → Show Toolbar** to move the address and navigation controls
+  above the page. Choose **View → Hide Toolbar** to return them to the sidebar.
+- Choose **View → Open Command Bar** and type a folder name. Use the full path
+  beneath each result to distinguish folders with the same name. Select a
+  result to reveal that folder in the sidebar.
 - To inspect an HTTPS certificate, open **Site Controls** beside the address and
   choose **Secure**. Click **Close** or press Command+W to return to the same tab.
 - Open two pages in a split to work with both in one window. Select a pane to

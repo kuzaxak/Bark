@@ -559,11 +559,13 @@ final class ChromiumApplication: ChromiumStartupBridge {
         alert.messageText = "Bark Help"
         let split = browserManager?.help("Add Split View", shortcut: .addSplitView) ?? "Add Split View"
         alert.informativeText = """
-        Spaces keep tabs and bookmark folders together. Switch spaces from the sidebar to return to their pages.
+        Use the sidebar to switch spaces. Choose View → Show Toolbar to move the address and navigation controls above the page, or Hide Toolbar to move them back.
 
-        Choose View → Add Split View to use two pages in one window. Select a pane to direct typing and page commands to it.
+        Choose View → Open Command Bar and type a folder name. Use the full path beneath each result to distinguish folders with the same name. Select one to reveal it in the sidebar.
 
-        With Shift-click Peek enabled, Shift-click a link or focus it and press Shift-Return to open it in Peek. While Peek is open, choose View → \(split) to keep it in a split, or press Escape to return to the original page.
+        Choose View → Add Split View to show two pages. Select a pane to direct typing and page commands to it.
+
+        With Shift-click Peek enabled, Shift-click a link or focus it and press Shift-Return. While Peek is open, choose View → \(split) to keep it in a split, or press Escape to return to the source.
 
         In a compact window, choose Open in Space to move the page into the main window.
         """
