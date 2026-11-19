@@ -79,6 +79,7 @@ public final class ContentBlockerManager: NSObject {
                      "Native blocking requires an explicit app-owned cache directory")
         self.settings = settings
         self.nativeNetworkBlocking = nativeNetworkBlocking
+        self.webKitRules = nativeNetworkBlocking ? nil : WebKitRuleState()
         self.filterListManager = FilterListManager(directory: storageDirectory)
         let engine = storageDirectory.map { BlockerEngine(cacheFile: $0.appendingPathComponent("Cache/engine.dat")) }
             ?? BlockerEngine()
@@ -98,24 +99,25 @@ public final class ContentBlockerManager: NSObject {
     public private(set) var trackingParamStripper = TrackingParamStripper()
     private var linkCleaningTask: Task<Void, Never>?
     private var urlSkipper: URLSkipper?
-    private var lastRulesHash: String?
 
     /// In-flight activation; startup tab loading waits on it so the first page is protected.
     public private(set) var activationTask: Task<Void, Never>?
     private var hasActivated = false
 
-    private var compiledRuleLists: [WKContentRuleList] = []
-    /// The person's own cosmetic filters, compiled apart from the big lists.
-    private var userRuleList: WKContentRuleList?
-    private var userRuleGeneration = 0
-    private var userRuleKey: String?
-    private var activeRuleLists: [WKContentRuleList] { compiledRuleLists + (userRuleList.map { [$0] } ?? []) }
+    /// WebKit-only rule lists and view reconciliation. Chromium owns neither.
+    final class WebKitRuleState {
+        var compiled: [WKContentRuleList] = []
+        var userList: WKContentRuleList?
+        var userGeneration = 0
+        var userKey: String?
+        let exemptedViews = NSHashTable<WKWebView>.weakObjects()
+        var activeLists: [WKContentRuleList] { compiled + (userList.map { [$0] } ?? []) }
+    }
+
+    let webKitRules: WebKitRuleState?
     private var updateTimer: Timer?
     /// How often to look for due lists; each list's own `! Expires:` decides whether it is fetched.
     private static let updateCheckInterval: TimeInterval = 60 * 60
-
-    /// Webviews whose blocking has been removed (whitelisted domain, temporary disable, OAuth flow).
-    private let exemptedWebViews = NSHashTable<WKWebView>.weakObjects()
 
     // MARK: - Exceptions
 
@@ -396,7 +398,7 @@ public final class ContentBlockerManager: NSObject {
         NotificationCenter.default.post(name: .adBlockerStateChanged, object: nil)
         scheduleAutoUpdate()
 
-        cbLog.info("Activated with \(self.compiledRuleLists.count) rule list(s) in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start), privacy: .public)s")
+        cbLog.info("Activated with \(self.webKitRules?.compiled.count ?? 0) rule list(s) in \(String(format: "%.2f", CFAbsoluteTimeGetCurrent() - start), privacy: .public)s")
     }
 
     private func deactivateBlocking() {
@@ -445,11 +447,10 @@ public final class ContentBlockerManager: NSObject {
         let acceptedSkipper = await skipper.value
         if let nativeGeneration, !nativeBuildIsCurrent(nativeGeneration, lists: nativeLists) { return false }
         if native, !built { return false }
-        if let result { compiledRuleLists = result.ruleLists }
+        if let result { webKitRules?.compiled = result.ruleLists }
         trackingParamStripper = acceptedStripper
         urlSkipper = acceptedSkipper
         cbLog.info("urlskip: \(self.urlSkipper?.ruleCount ?? 0, privacy: .public) rules")
-        lastRulesHash = result?.rulesHash
         return true
     }
 
@@ -523,18 +524,18 @@ public final class ContentBlockerManager: NSObject {
     public func setUserCosmeticRules(_ lines: [String]) async -> Bool {
         // Native cosmetic/scriptlet transport is separate; never invoke a WK
         // compiler or pretend a native cosmetic replacement was installed.
-        guard !nativeNetworkBlocking else { return lines.isEmpty }
+        guard let webKitRules else { return lines.isEmpty }
         // Empty to empty: nothing in the store, nothing to apply.
-        if userRuleList == nil, ContentRuleListCompiler.userListIsAbsent(for: lines) { return true }
+        if webKitRules.userList == nil, ContentRuleListCompiler.userListIsAbsent(for: lines) { return true }
         let key = ContentRuleListCompiler.userKey(lines)
-        if key == userRuleKey { return true }
-        userRuleGeneration += 1
-        let generation = userRuleGeneration
+        if key == webKitRules.userKey { return true }
+        webKitRules.userGeneration += 1
+        let generation = webKitRules.userGeneration
         let result = await ContentRuleListCompiler.compileUser(rules: lines)
-        guard generation == userRuleGeneration else { return true }
-        if result.ok { userRuleKey = key }
-        let changed = result.list !== userRuleList
-        userRuleList = result.list
+        guard generation == webKitRules.userGeneration else { return true }
+        if result.ok { webKitRules.userKey = key }
+        let changed = result.list !== webKitRules.userList
+        webKitRules.userList = result.list
         if changed, isEnabled, host != nil {
             applyToSharedConfiguration()
             applyToExistingWebViews()
@@ -580,7 +581,7 @@ public final class ContentBlockerManager: NSObject {
     // MARK: - Per-Navigation (main frame, from PageSession.decidePolicyFor)
 
     public func setupContentBlockerScripts(for url: URL, in webView: WKWebView, tab session: any BlockablePage) {
-        guard !nativeNetworkBlocking else { return }
+        guard webKitRules != nil else { return }
         if let continued = continuedHosts[session.itemID], continued != url.host?.lowercased() {
             continuedHosts[session.itemID] = nil
         }
@@ -594,7 +595,7 @@ public final class ContentBlockerManager: NSObject {
         let boostCSS = settings.boostsLoaded ? Boost.css(for: url, in: settings.boosts) : ""
         let config = exempt ? nil : advancedRulesEngine.configUserScript(for: url, boostCSS: boostCSS)
         replaceConfigScript(in: webView.configuration.userContentController, with: config)
-        cbLog.info("main frame \(url.host ?? "-", privacy: .private(mask: .hash)): exempt=\(exempt) config=\(config?.source.count ?? 0, privacy: .public)B ruleLists=\(self.compiledRuleLists.count)")
+        cbLog.info("main frame \(url.host ?? "-", privacy: .private(mask: .hash)): exempt=\(exempt) config=\(config?.source.count ?? 0, privacy: .public)B ruleLists=\(self.webKitRules?.compiled.count ?? 0)")
     }
 
     /// Swap the main-frame configuration script. It must precede the runtime script, so it goes first.
@@ -623,18 +624,19 @@ public final class ContentBlockerManager: NSObject {
     // MARK: - New controllers (from BrowserConfiguration.freshUserContentController)
 
     private func configureNewController(_ controller: WKUserContentController) {
+        guard let webKitRules else { return }
         controller.addScriptMessageHandler(self, contentWorld: .page, name: AdvancedRulesEngine.messageHandlerName)
         guard isEnabled else { return }
-        for list in activeRuleLists { controller.add(list) }
+        for list in webKitRules.activeLists { controller.add(list) }
         // Static scripts arrive by copy from the shared configuration.
     }
 
     // MARK: - Shared Configuration
 
     private func applyToSharedConfiguration() {
-        guard let ucc = webKitHost?.sharedUserContentController else { return }
+        guard let webKitRules, let ucc = webKitHost?.sharedUserContentController else { return }
         ucc.removeAllContentRuleLists()
-        for list in activeRuleLists { ucc.add(list) }
+        for list in webKitRules.activeLists { ucc.add(list) }
         ensureStaticScripts(in: ucc)
     }
 
@@ -647,7 +649,8 @@ public final class ContentBlockerManager: NSObject {
     // MARK: - Per-WebView
 
     private func reconcile(_ webView: WKWebView, exempt: Bool) {
-        let isExempt = exemptedWebViews.contains(webView)
+        guard let webKitRules else { return }
+        let isExempt = webKitRules.exemptedViews.contains(webView)
         if exempt && !isExempt {
             removeBlocking(from: webView)
         } else if !exempt && isExempt {
@@ -656,18 +659,20 @@ public final class ContentBlockerManager: NSObject {
     }
 
     private func applyBlocking(to webView: WKWebView) {
+        guard let webKitRules else { return }
         let ucc = webView.configuration.userContentController
         ucc.removeAllContentRuleLists()
-        for list in activeRuleLists { ucc.add(list) }
+        for list in webKitRules.activeLists { ucc.add(list) }
         ensureStaticScripts(in: ucc)
-        exemptedWebViews.remove(webView)
+        webKitRules.exemptedViews.remove(webView)
     }
 
     private func removeBlocking(from webView: WKWebView) {
+        guard let webKitRules else { return }
         let ucc = webView.configuration.userContentController
         ucc.removeAllContentRuleLists()
         removeOwnScripts(from: ucc)
-        exemptedWebViews.add(webView)
+        webKitRules.exemptedViews.add(webView)
     }
 
     /// A page that committed before blocking was ready can only be fixed by reloading it:
@@ -685,14 +690,14 @@ public final class ContentBlockerManager: NSObject {
     }
 
     private func removeFromExistingWebViews() {
-        guard !nativeNetworkBlocking else { return }
+        guard let webKitRules else { return }
         if let webKitHost {
             for session in webKitHost.blockablePages {
                 guard let wv = webKitHost.existingWebKitView(for: session) else { continue }
                 removeBlocking(from: wv)
             }
         }
-        exemptedWebViews.removeAllObjects()
+        webKitRules.exemptedViews.removeAllObjects()
     }
 
     private func ensureStaticScripts(in ucc: WKUserContentController) {

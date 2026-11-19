@@ -19,10 +19,12 @@ struct NativeBlockerModelTests {
     @Test func webKitControllerCapabilityIsUsedOnlyByWebKitBlocker() throws {
         let fixture = try NativeBlockerFixture(); defer { fixture.cleanup() }
         let host = WebKitBlockerHost()
+        #expect(fixture.manager.webKitRules == nil)
         fixture.manager.attach(host: host)
         #expect(host.controllerHook == nil && host.controllerReads == 0)
 
         let webKit = ContentBlockerManager(settings: fixture.settings, storageDirectory: fixture.directory)
+        #expect(webKit.webKitRules != nil)
         webKit.attach(host: host)
         #expect(host.controllerHook != nil && host.controllerReads == 0)
     }
