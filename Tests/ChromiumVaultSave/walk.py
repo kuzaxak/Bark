@@ -307,8 +307,8 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
     controls = CandidateControls(screen, process)
     log = output / "app.log"
 
-    def seen(event, timeout=14):
-        wait_for(f"Fixture did not report {event}", lambda: event in events,
+    def seen(event, timeout=14, *, occurrences=1):
+        wait_for(f"Fixture did not report {event}", lambda: events.count(event) >= occurrences,
                  process, timeout=timeout)
 
     def method(name):
@@ -358,12 +358,24 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
             require_exclusive_pawl(controls, settings, output)
             close_settings(controls, settings)
         controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
+        controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
+        screen.key("Escape")
+        wait_for("Escape did not dismiss the Pawl account picker",
+                 lambda: not controls.find(EXISTING_ACCOUNT, ("AXButton",), partial=True), process)
+        controls.click("Open the passkey fixture", ("AXLink",))
+        seen("ready:/passkey")
+        controls.press("Back")
+        controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
         picker = controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
+        if method("password") or method("code") or "typed-fields-filled" in events:
+            raise RuntimeError("Pawl released a secret before the user chose an account")
+        print("Dismissed the picker, left the page and returned without reading a secret", flush=True)
         time.sleep(0.5)
         screen.screenshot(output / "picker.png", include_owned_windows=True)
         screen.press_button(picker)
         seen("typed-fields-filled")
-        wait_for("Synthetic password provider was not called", lambda: method("password"), process)
+        if method("password") != 1 or method("code"):
+            raise RuntimeError("The first account choice did not read exactly one password")
         print("Selected the synthetic Pawl login and verified both typed Chromium fields", flush=True)
 
         reads_before_existing = method("password")
@@ -480,7 +492,7 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
         print("Filled only the verification code while preserving the other account’s login fields", flush=True)
 
         controls.click("Open the passkey fixture", ("AXLink",))
-        seen("ready:/passkey")
+        seen("ready:/passkey", occurrences=2)
         controls.click("Start disposable passkey", ("AXButton",))
         seen("passkey-started")
         def chooser_control():

@@ -32,6 +32,7 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
 
     @ObservationIgnored private var nativeCreation: (id: UUID, alert: NSAlert, view: NSView, owner: NSWindow, reply: (Bool) -> Void)?
     @ObservationIgnored private var popover: NSPopover?
+    @ObservationIgnored private var pickerEscapeMonitor: Any?
     @ObservationIgnored private weak var popoverWebView: NSView?
     @ObservationIgnored private weak var pickerOwnerWindow: NSWindow?
     @ObservationIgnored private var nativePickerOpening = false
@@ -87,6 +88,22 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
         nativePickerOpening = nativeCheck != nil
         popover.show(relativeTo: anchor, of: webView, preferredEdge: webView.isFlipped ? .maxY : .minY)
         nativePickerOpening = false
+        if nativeCheck != nil, self.popover === popover {
+            // Chromium can retain keyboard focus in the page while the account list is visible.
+            pickerEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak popover] event in
+                MainActor.assumeIsolated {
+                    guard event.keyCode == 53,
+                          event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+                          let self, let popover, self.popover === popover,
+                          let view = self.popoverWebView, self.ownsNativePicker(in: view),
+                          let target = event.window,
+                          target === popover.contentViewController?.view.window ||
+                              (target === view.window && target.attachedSheet == nil) else { return event }
+                    self.closePicker(with: nil)
+                    return nil
+                }
+            }
+        }
     }
 
     func dismissPicker(in webView: NSView) {
@@ -112,6 +129,8 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
     }
 
     private func closePicker(with item: VaultPickerItem?) {
+        if let pickerEscapeMonitor { NSEvent.removeMonitor(pickerEscapeMonitor) }
+        pickerEscapeMonitor = nil
         let completion = pickerCompletion
         pickerCompletion = nil
         let shown = popover, view = popoverWebView, window = pickerOwnerWindow
