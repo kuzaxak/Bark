@@ -290,7 +290,7 @@ extension PageSession: WKNavigationDelegate {
             guard navigationAction.targetFrame?.isMainFrame != false || clicked, canOpenWithSystem(url) else { return }
             if clicked || scheme == "mailto" || scheme == "tel" {
                 openWithSystem(url)
-            } else if let alerts = controller?.alerts {
+            } else if let alerts = controller?.webKitAlertPresenter {
                 let message = systemAppName(for: url).map { "Open this link in \($0)?" } ?? "Open this link in another app?"
                 alerts.presentConfirm(
                     message: message, host: webView.url?.host ?? "", over: webView, onSuppress: nil

@@ -71,7 +71,7 @@ final class Host {
     /// Pages the app's unload policy was told about.
     private(set) var backgroundLoads: [UUID] = []
 
-    init(isPrivate: Bool = false) throws {
+    init(isPrivate: Bool = false, engine: Profile.Engine = .webKit) throws {
         let directory = FileManager.default.temporaryDirectory
             .appendingPathComponent("NookWebTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -79,13 +79,13 @@ final class Host {
         tabs = TabsController(
             settings: settings, windowRegistry: registry, blocker: ContentBlockerManager(settings: settings),
             sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
-            directory: directory)
+            profileEngine: engine, directory: directory)
         tabs.loadsWebKitFavicons = false
-        tabs.webViews = webViews
+        if engine == .webKit { tabs.webViews = webViews }
         tabs.onPageLoadedInBackground = { [weak self] in self?.backgroundLoads.append($0.itemID) }
         if isPrivate {
             window.isIncognito = true
-            window.ephemeralProfile = Profile.createEphemeral()
+            window.ephemeralProfile = Profile.createEphemeral(engine: engine)
         }
         registry.register(window)
         registry.setActive(window)

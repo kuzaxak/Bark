@@ -374,10 +374,6 @@ class BrowserManager: ObservableObject {
         set { currentProfileSubject.send(newValue) }
     }
 
-    var currentProfilePublisher: AnyPublisher<Profile?, Never> {
-        currentProfileSubject.eraseToAnyPublisher()
-    }
-
     /// True for the length of a space change, so views do not animate content from the old space
     /// into the new one.
     @Published var isSwitchingSpace: Bool = false
@@ -403,7 +399,6 @@ class BrowserManager: ObservableObject {
     let spaceSyncManager: SpaceSyncManager
     var dialogManager: DialogManager
     var downloadManager: DownloadManager
-    var authenticationManager: AuthenticationManager
     var historyManager: HistoryManager
     let cookieManager: CookieManager? = nil
     let cacheManager: CacheManager? = nil
@@ -482,7 +477,6 @@ class BrowserManager: ObservableObject {
 
         self.dialogManager = DialogManager()
         self.downloadManager = downloadManager
-        self.authenticationManager = AuthenticationManager(userDefaults: self.userDefaults)
         // Initialize managers with the current space's data store for isolation
         self.historyManager = HistoryManager(
             context: modelContext, profileId: initialProfile?.id,
@@ -507,7 +501,6 @@ class BrowserManager: ObservableObject {
         }
         self.tabs.sessionDelegate = self
         self.tabs.tabEvents = self
-        self.tabs.alerts = self
         NotificationCenter.default.addObserver(
             forName: NookSettingsService.paletteWordStopsDidChange, object: nil, queue: .main
         ) { [weak self, settings] _ in

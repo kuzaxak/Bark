@@ -113,7 +113,15 @@ public final class TabsController {
         return sessionDelegate as? any WebKitPageSessionDelegate
     }
     @ObservationIgnored public weak var tabEvents: TabEventObserver?
-    @ObservationIgnored public weak var alerts: AlertPresenter?
+    @ObservationIgnored private weak var webKitAlerts: (any WebKitAlertPresenter)?
+    /// Native Chromium presents page prompts through its own mounted browser host.
+    public var webKitAlertPresenter: (any WebKitAlertPresenter)? {
+        get { profileEngine == .webKit ? webKitAlerts : nil }
+        set {
+            guard profileEngine == .webKit else { return }
+            webKitAlerts = newValue
+        }
+    }
     #if os(macOS)
     /// Pawl Vault passwords and passkeys; set by the app.
     @ObservationIgnored public var vault: VaultService?

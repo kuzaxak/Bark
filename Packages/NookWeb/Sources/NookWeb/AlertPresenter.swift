@@ -9,7 +9,7 @@
 import WebKit
 
 @MainActor
-public protocol AlertPresenter: AnyObject {
+public protocol WebKitAlertPresenter: AnyObject {
     // `host` is the frame that asked, so an iframe cannot speak as the page embedding it. A
     // non-nil `onSuppress` means offer "no more dialogs" and call it, before `completion`, if
     // the user takes it.

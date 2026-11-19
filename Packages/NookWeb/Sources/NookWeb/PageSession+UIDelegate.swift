@@ -201,7 +201,7 @@ extension PageSession: WKUIDelegate {
     ) {
         // An agent page's dialogs answer at once: a sheet would cover the person's window and
         // hold the agent's next call until it times out.
-        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.alerts else { return completionHandler() }
+        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler() }
         alerts.presentAlert(
             message: message, host: frame.securityOrigin.host, over: webView,
             onSuppress: nextDialogSuppressor(), completion: completionHandler)
@@ -213,7 +213,7 @@ extension PageSession: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (Bool) -> Void
     ) {
-        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.alerts else { return completionHandler(false) }
+        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler(false) }
         alerts.presentConfirm(
             message: message, host: frame.securityOrigin.host, over: webView,
             onSuppress: nextDialogSuppressor(), completion: completionHandler)
@@ -226,7 +226,7 @@ extension PageSession: WKUIDelegate {
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (String?) -> Void
     ) {
-        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.alerts else { return completionHandler(nil) }
+        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler(nil) }
         alerts.presentPrompt(
             prompt: prompt, defaultText: defaultText, host: frame.securityOrigin.host, over: webView,
             onSuppress: nextDialogSuppressor(), completion: completionHandler)
@@ -245,7 +245,7 @@ extension PageSession: WKUIDelegate {
         completionHandler: @escaping ([URL]?) -> Void
     ) {
 
-        guard !isAgentPage, let alerts = controller?.alerts else { return completionHandler(nil) }
+        guard !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler(nil) }
         alerts.presentOpenPanel(
             allowsMultipleSelection: parameters.allowsMultipleSelection,
             allowsDirectories: parameters.allowsDirectories,
