@@ -310,19 +310,12 @@ struct PageNavigationTests {
         #expect(first.navigationDelegate === adapter)
         #expect(adapter.responds(to: NSSelectorFromString(
             "_webView:contentRuleListWithIdentifier:performedAction:forURL:")))
-        #expect(adapter.responds(to: NSSelectorFromString("_webViewDidBeginNavigationGesture:")))
-        #expect(adapter.responds(to: NSSelectorFromString(
-            "_webViewDidEndNavigationGesture:withNavigationToBackForwardListItem:")))
-        adapter.webViewDidBeginNavigationGesture(first)
-        #expect(session.navigationGestureCount == 1)
         session.unload()
         let second = NavigationView(frame: .zero, configuration: configuration)
         session.installPopupWebView(second)
         defer { session.unload() }
 
         // Simulate an already dispatched callback after the old view retired.
-        adapter.webViewDidBeginNavigationGesture(first)
-        #expect(session.navigationGestureCount == 1)
         adapter.webView(first, didStartProvisionalNavigation: nil)
         #expect(!session.isLoading)
         adapter.webView(second, didStartProvisionalNavigation: nil)

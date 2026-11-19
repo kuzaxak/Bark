@@ -244,8 +244,6 @@ public final class PageSession: NSObject, Identifiable {
 
     /// Back and forward history kept across an unload, so the next view comes back with it.
     @ObservationIgnored var savedHistory: Any?
-    /// Counts back and forward swipes, so a late snapshot cleanup never touches a newer swipe.
-    @ObservationIgnored var navigationGestureCount = 0
     /// The page's address as it may be stored, copied or shown: without a Kagi session token.
     public var storableURL: URL { KagiSession.withoutToken(url) }
 

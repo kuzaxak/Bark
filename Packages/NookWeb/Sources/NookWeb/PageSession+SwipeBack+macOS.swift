@@ -3,8 +3,7 @@
 //  PageSession+SwipeBack+macOS.swift
 //  NookWeb
 //
-//  Trackpad swipes: back to the tab that opened a page with no history, and the snapshot WebKit
-//  shows after a swipe.
+//  Trackpad swipes back to the tab that opened a page with no history.
 //
 
 #if os(macOS)
@@ -40,47 +39,6 @@ extension WebKitPageDelegateAdapter {
             if !cancelled { WebKitPageCommands.goBack(on: session, in: webView) }
             webView.layer?.setAffineTransform(.identity)
         }
-    }
-
-    // MARK: - Swipe Snapshot
-
-    /// After a swipe WebKit covers the page with a snapshot until the page restores its scroll
-    /// position. A site that restores scroll itself (`history.scrollRestoration = "manual"`, as
-    /// Reddit does) never reports that, so the page sat dead under the snapshot for WebKit's 3 s
-    /// watchdog. Once the swipe has ended and the page is not loading, the snapshot goes.
-    /// ponytail: fixed 300 ms wait; tune it if pages show half drawn or still feel slow.
-    @objc(_webViewDidBeginNavigationGesture:)
-    func webViewDidBeginNavigationGesture(_ webView: WKWebView) {
-        navigationOwner(of: webView)?.navigationGestureCount += 1
-    }
-
-    @objc(_webViewDidEndNavigationGesture:withNavigationToBackForwardListItem:)
-    func webViewDidEndNavigationGesture(_ webView: WKWebView, withNavigationTo item: WKBackForwardListItem?) {
-        guard item != nil, let session = navigationOwner(of: webView) else { return }
-        let gesture = session.navigationGestureCount
-        DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(300)) { [weak self, weak webView] in
-            guard let self, let webView, let session = self.navigationOwner(of: webView),
-                  gesture == session.navigationGestureCount, !webView.isLoading,
-                  webView.callBool("_isShowingNavigationGestureSnapshot") == true else { return }
-            // Testing SPI, but the only way in: it removes the snapshot once the swipe has ended.
-            webView.callVoid("_resetNavigationGestureStateForTesting")
-        }
-    }
-}
-
-private extension WKWebView {
-    func callBool(_ name: String) -> Bool? {
-        let selector = NSSelectorFromString(name)
-        guard responds(to: selector) else { return nil }
-        typealias Getter = @convention(c) (AnyObject, Selector) -> Bool
-        return unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
-    }
-
-    func callVoid(_ name: String) {
-        let selector = NSSelectorFromString(name)
-        guard responds(to: selector) else { return }
-        typealias Call = @convention(c) (AnyObject, Selector) -> Void
-        unsafeBitCast(method(for: selector), to: Call.self)(self, selector)
     }
 }
 #endif
