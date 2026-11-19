@@ -242,6 +242,56 @@ SDK and Rust compiler versions.
 
 Upstream instructions: [Chromium macOS build](https://chromium.googlesource.com/chromium/src/+/fb096c0011f9d50f0a264a9376420cdea9c421e3/docs/mac_build_instructions.md).
 
+### Upgrade the Chromium revision
+
+Use a local qualification branch and retain the previous SDK and source
+revision. Resolve the new upstream tag to its commit and update
+`PINS.json` and `CHROMIUM_VERSION`. Read `chrome/build/mac.pgo.txt` and
+`chrome/build/mac-arm.pgo.txt` at that commit. If either selector changes,
+fetch its exact object with Chromium’s PGO updater, verify it against the
+upstream object’s checksum at the applicable encoding, and pin the SHA-256
+of the decompressed profile. Check the new `DEPS` V8 revision and its
+`include/v8-version.h`. If it changes, verify the versioned Google
+`x64.profile` and refresh the V8 revision, version and SHA-256 in `PINS.json`.
+
+Set `CHROMIUM_ENGINE_VERSION` for both outer app configurations in
+`Bark.xcodeproj/project.pbxproj` and match the new Chromium-generated
+`SCMRevision` in `ChromiumApp/Info.plist`. Staging checks the latter against
+the engine’s outer metadata and the shim uses the former to load the
+exact framework version.
+
+Prepare a fresh gclient root for the new revision. If a patch conflicts,
+adapt the tracked patch against the new base and repeat preparation from a
+pristine root. Check the patch budget and exact replay before compiling.
+
+```fish
+set barc_repo "$PWD"
+set recipe "$barc_repo/Runtime/Chromium/build_engine.py"
+set upgrade_root (mktemp -d "$HOME/Library/Caches/chromium-upgrade.XXXXXXXX")
+set engine_checkout "$upgrade_root/checkout"
+python3 "$recipe" prepare --checkout "$engine_checkout" --jobs 8; and \
+    python3 "$recipe" check --checkout "$engine_checkout"; and \
+    python3 "$barc_repo/Runtime/Chromium/budget.py" --check
+```
+
+Follow [first official SDK preparation](#prepare-the-first-official-sdk-on-its-native-mac)
+to publish and verify each architecture's pin. Build the signed app against
+that pin. On the matching native Mac, run the engine suite from the official
+output, then exercise startup and extension actions in the signed app. Use
+the [signed walk environment](../../CONTRIBUTING.md#run-the-signed-ui-walks).
+
+```fish
+set -l gn_cpu (python3 scripts/chromium_sdk_layout.py native-arch --gn)
+set -l src "$engine_checkout/src"
+python3 Runtime/Chromium/run_browser_tests.py --checkout "$src" --binary "$src/out/Barc-$gn_cpu-official/bark_browser_tests"
+python3 scripts/bark-check.py verify --require-official build/Bark.app
+python3 scripts/bark-check.py smoke build/Bark.app
+python3 Tests/ChromiumExtensionActions/walk.py --require-official --app build/Bark.app --output (mktemp -d)/extensions
+```
+
+Update `extension-versions.json` after reviewing its store update query
+and qualifying the new candidate.
+
 ## Bark's tree and the patches
 
 Use a separate pristine checkout and output when establishing an unmodified
