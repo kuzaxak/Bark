@@ -6,6 +6,7 @@
 //  Created by Maciek Bagiński on 19/02/2026.
 //
 
+import AppKit
 import SwiftUI
 import NookSettings
 
@@ -16,10 +17,11 @@ struct HelloStage: View {
             Text("Say Hi to \(ProductDisplayName.current)")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
-            Image(.nookLogo1024)
+            Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .scaledToFit()
-                .frame(width: 128 ,height: 128)
+                .frame(width: 128, height: 128)
+                .accessibilityHidden(true)
             Text("Your new open-source browser.")
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)

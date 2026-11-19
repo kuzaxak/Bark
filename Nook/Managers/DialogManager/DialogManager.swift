@@ -8,6 +8,7 @@
 
 import Observation
 import NookSettings
+import AppKit
 import SwiftUI
 import Garnish
 import NookDesign
@@ -83,11 +84,12 @@ class DialogManager {
                 },
                 content: {
                     VStack(alignment: .leading, spacing: 20) {
-                        Image(.nookLogo1024)
+                        Image(nsImage: NSApp.applicationIconImage)
                             .resizable()
                             .scaledToFit()
                             .frame(width: 50, height: 50)
                             .nookElevation(.raised)
+                            .accessibilityHidden(true)
                         Text("Quit \(ProductDisplayName.current)?")
                             .font(NookDesign.Font.heading)
                             .foregroundStyle(AppColors.textPrimary)
