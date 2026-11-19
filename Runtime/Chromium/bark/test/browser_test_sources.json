@@ -1,0 +1,19 @@
+{
+  "sources": [
+    "barc_bridge_browsertest.mm",
+    "barc_extension_dialog_browsertest.mm",
+    "barc_extension_focus_browsertest.mm",
+    "barc_extension_storage_browsertest.mm",
+    "barc_native_policy_browsertest.mm",
+    "barc_profiles_browsertest.mm",
+    "bark_compact_bounds_browsertest.mm",
+    "bark_engine_config_browsertest.mm",
+    "bark_host_peek_browsertest.mm",
+    "bark_host_split_browsertest.mm",
+    "bark_host_stock_ui_browsertest.mm",
+    "bark_profile_reload_browsertest.mm",
+    "bark_window_host_browsertest.mm",
+    "real_pointer_isolation.mm"
+  ],
+  "support": []
+}

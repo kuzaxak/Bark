@@ -2,26 +2,30 @@ import("//testing/test.gni")
 
 assert(is_mac)
 
+bark_browser_test_inventory = "browser_test_sources.json"
+bark_browser_test_inputs = read_file(bark_browser_test_inventory, "json")
+
+# The linked receipt records the same local sources fed to the compiler and
+# changes independently of the SDK's production source identity.
+action("browser_test_source_receipt") {
+  script = "write_source_receipt.py"
+  inputs = bark_browser_test_inputs.sources + bark_browser_test_inputs.support + [
+             "BUILD.gn",
+             bark_browser_test_inventory,
+             script,
+           ]
+  outputs = [ "$target_gen_dir/browser_test_source_receipt.cc" ]
+  args = [ rebase_path(outputs[0], root_build_dir) ] +
+         rebase_path(inputs, root_build_dir)
+}
+
 # Bark's browser tests, run with Chromium's ordinary launcher.
 test("bark_browser_tests") {
   defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
-  sources = [
-    "barc_bridge_browsertest.mm",
-    "barc_extension_dialog_browsertest.mm",
-    "barc_extension_focus_browsertest.mm",
-    "barc_extension_storage_browsertest.mm",
-    "barc_native_policy_browsertest.mm",
-    "barc_profiles_browsertest.mm",
-    "bark_compact_bounds_browsertest.mm",
-    "bark_engine_config_browsertest.mm",
-    "bark_host_peek_browsertest.mm",
-    "bark_host_split_browsertest.mm",
-    "bark_host_stock_ui_browsertest.mm",
-    "bark_profile_reload_browsertest.mm",
-    "bark_window_host_browsertest.mm",
-    "real_pointer_isolation.mm",
-  ]
+  sources = bark_browser_test_inputs.sources +
+            get_target_outputs(":browser_test_source_receipt")
   deps = [
+    ":browser_test_source_receipt",
     "//ui/display",
     "//chrome/browser/download",
     "//chrome/browser/download/bubble",

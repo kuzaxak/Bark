@@ -38,7 +38,8 @@ def main(argv=None):
     parser.add_argument("--checkout", required=True, type=Path)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--summary", required=True, type=Path)
-    parser.add_argument("--fixture-source", type=Path, help="require the archived fixture hash to match this source")
+    parser.add_argument("--fixture-tree", type=Path, default=REPO / "Runtime/Chromium/bark/test",
+                        help="require the linked receipt for this complete source directory")
     parser.add_argument("--sdk-metadata", type=Path, help="require the framework from the checkout’s pinned SDK")
     parser.add_argument("tests", nargs="+", metavar="Suite.Case")
     args = parser.parse_args(argv)
@@ -46,9 +47,7 @@ def main(argv=None):
         parser.error("provide distinct exact gtest names in Suite.Case form")
 
     try:
-        checks = []
-        if args.fixture_source is not None:
-            checks.extend(["--fixture-source", args.fixture_source])
+        checks = ["--fixture-tree", args.fixture_tree]
         if args.sdk_metadata is not None:
             checks.extend(["--sdk-metadata", args.sdk_metadata])
         result = subprocess.run([

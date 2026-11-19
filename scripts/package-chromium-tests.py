@@ -70,7 +70,7 @@ def check_entry(src, path, entries, directories):
         raise ValueError(f"Runtime dependency uses a symlinked parent: {path}")
 
 
-def package(build, arch, output, *, fixture_source=None):
+def package(build, arch, output, *, fixture_source=None, fixture_tree=None):
     build = build.resolve(strict=True)
     src = build.parent.parent
     native_output = f"Barc-{GN_CPU[arch]}"
@@ -96,7 +96,7 @@ def package(build, arch, output, *, fixture_source=None):
     fixture = src / FIXTURE if fixture_source is not None else None
     if fixture is not None:
         verified[fixture] = file_identity(fixture)
-    provenance = create_manifest(build / IMAGES[0], fixture)
+    provenance = create_manifest(build / IMAGES[0], fixture, expected_tree=fixture_tree)
     if fixture_source is not None and provenance["installed_fixture_sha256"] != digest_regular(fixture_source):
         raise ValueError("Installed browser-test fixture differs from the expected source")
     manifest_member = (build / MANIFEST_NAME).relative_to(src.parent)
@@ -127,10 +127,13 @@ def main():
     parser.add_argument("build", type=Path, help="Chromium src/out/Barc-<cpu>[-official]")
     parser.add_argument("--arch", choices=ARCHITECTURES, help="target architecture (defaults to native hardware)")
     parser.add_argument("--output", required=True, type=Path, help="new .tar.gz archive")
-    parser.add_argument("--fixture-source", type=Path, help="expected producer barc_bridge_browsertest.mm")
+    sources = parser.add_mutually_exclusive_group()
+    sources.add_argument("--fixture-source", type=Path, help="legacy export-time barc_bridge_browsertest.mm check")
+    sources.add_argument("--fixture-tree", type=Path, help="require the linked browser-test sources to match this directory")
     args = parser.parse_args()
     try:
-        package(args.build, args.arch or native_architecture(), args.output, fixture_source=args.fixture_source)
+        package(args.build, args.arch or native_architecture(), args.output, fixture_source=args.fixture_source,
+                fixture_tree=args.fixture_tree)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{error}\n")
 

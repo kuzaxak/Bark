@@ -713,10 +713,14 @@ Before taking the screen mutex, the runner inspects the Mach-O image of the
 test executable and both framework copies in the output directory. All three
 must match the Mac’s hardware architecture and contain the capability emitted by the
 host-only Mac window factory. Both framework binaries must also have identical
-contents. New test archives record SHA-256 digests for the test executable and
-framework at export. The runner checks both digests before launch. Older version
-1 archives record only the executable digest. The runner still compares their two
-framework copies. To test a transferred runtime against a published SDK, pass
+contents. Test archives record the executable and framework digests. For
+source-exact qualification, export with `--fixture-tree Runtime/Chromium/bark/test`
+and use the named-case runner. It checks the inventory embedded when GN linked
+the test executable against the reviewed test sources, confirms the requested
+tests exist before visible execution, and checks Chromium's result for each
+case. Test-only source updates require an updated test executable; they leave
+the runtime SDK identity unchanged. Older archives remain available for
+historical runs through the general runner. To test a transferred runtime against a published SDK, pass
 `--sdk-metadata` with the directory containing its `SHA256SUMS`. The runner
 checks that list against the checkout’s native SDK pin and verifies the framework
 it will load. [Package and run the native test runtime](../../Tests/ChromiumSDKLauncher/README.md)

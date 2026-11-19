@@ -14,11 +14,34 @@ from unittest.mock import Mock, patch
 
 from run_browser_tests import (
     APP_FRAMEWORK, HOST_ONLY_MARKER, TEST_FRAMEWORK, ScreenUnavailable,
-    file_identity, main,
+    file_identity, listed_tests, main, require_filter_matches,
     require_host_only_image, require_host_only_runtime, run_tests, screen_lock,
 )
 
 from chromium_test_runtime import MANIFEST_NAME, create_manifest
+
+
+class LinkedTestInventoryTests(unittest.TestCase):
+    def test_google_test_patterns_require_each_enabled_match(self):
+        tests = listed_tests(
+            "BrowserHostTest.\n  CurrentColdRestore\n  DISABLED_OldRestore\n"
+            "Policy/PermissionTest.  # TypeParam = Profile\n  MountedDialog/0  # GetParam() = 1\n"
+        )
+        self.assertEqual(tests, {
+            "BrowserHostTest.CurrentColdRestore", "BrowserHostTest.DISABLED_OldRestore",
+            "Policy/PermissionTest.MountedDialog/0",
+        })
+        require_filter_matches(tests, "BrowserHostTest.*:Policy/PermissionTest.MountedDialog/?")
+        for filter_ in (
+            "BrowserHostTest.CurrentColdRestore:BrowserHostTest.Missing",
+            "BrowserHostTest.DISABLED_OldRestore",
+            "Missing.*:BrowserHostTest.*",
+            "BrowserHostTest.*-BrowserHostTest.Current*",
+        ):
+            with self.subTest(filter=filter_), self.assertRaisesRegex(ValueError, "no enabled linked match"):
+                require_filter_matches(tests, filter_)
+        with self.assertRaisesRegex(ValueError, "listed no tests"):
+            listed_tests("Chromium browser tests launcher")
 
 
 class ScreenLockTests(unittest.TestCase):
@@ -171,6 +194,7 @@ class HostOnlyRuntimeTests(unittest.TestCase):
         for image in (test_image, app_image):
             image.write_bytes(b"linked engine")
         before_lock(None, "--fixture-source", str(fixture))
+        before_lock("Exact qualification requires the linked", "--fixture-tree", str(self.checkout))
         sdk_manifest = self.checkout / "SHA256SUMS"
         version = Path(__file__).with_name("CHROMIUM_VERSION").read_text().strip()
         sdk_manifest.write_text(f"{record['framework_sha256']}  ./Bark Framework.framework/Versions/{version}/Bark Framework\n")
