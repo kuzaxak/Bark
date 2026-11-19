@@ -424,6 +424,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     let version = Bundle.main.object(forInfoDictionaryKey: "BarkChromiumVersion") as? String
                     NSApp.orderFrontStandardAboutPanel(options: ChromiumAppMenu.aboutOptions(chromiumVersion: version))
                 case .barkHelp: self?.showBarkHelp()
+                case .buildInformation: self?.showBuildInformation()
                 case .checkForUpdates:
                     if self?.acceptsWindows == true { self?.updater?.checkForUpdates() }
                 case .settings: manager.openSettings(tab: .general)
@@ -607,6 +608,21 @@ final class ChromiumApplication: ChromiumStartupBridge {
         }
     }
 
+    private func showBuildInformation() {
+        let report = ChromiumAppMenu.buildInformation(in: .main)
+        let alert = NSAlert()
+        alert.messageText = "Build Information"
+        alert.informativeText = report
+        alert.addButton(withTitle: "Done")
+        alert.addButton(withTitle: "Copy")
+        presentInformation(alert) { response in
+            if response == .alertSecondButtonReturn {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(report, forType: .string)
+            }
+        }
+    }
+
     private func showBarkHelp() {
         let alert = NSAlert()
         alert.messageText = "Bark Help"
@@ -623,10 +639,14 @@ final class ChromiumApplication: ChromiumStartupBridge {
         In a compact window, choose Open in Space to move the page into the main window.
         """
         alert.addButton(withTitle: "Done")
+        presentInformation(alert)
+    }
+
+    private func presentInformation(_ alert: NSAlert, completion: @escaping (NSApplication.ModalResponse) -> Void = { _ in }) {
         if let window = CommandWindow.key ?? NSApp.mainWindow {
-            alert.beginSheetModal(for: window)
+            alert.beginSheetModal(for: window, completionHandler: completion)
         } else {
-            alert.runModal()
+            completion(alert.runModal())
         }
     }
 

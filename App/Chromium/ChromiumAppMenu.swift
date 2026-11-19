@@ -4,6 +4,28 @@ import AppKit
 /// Routes the Chromium application menu to the controls in Bark's native window.
 @MainActor
 final class ChromiumAppMenu: NSObject {
+    static func buildInformation(in bundle: Bundle) -> String {
+        let info = bundle.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
+        let build = info["CFBundleVersion"] as? String ?? "unknown"
+        let chromium = info["BarkChromiumVersion"] as? String ?? "unknown"
+        #if arch(arm64)
+        let architecture = "arm64"
+        #else
+        let architecture = "x86_64"
+        #endif
+        var lines = ["Bark \(version) (build \(build))", "Chromium \(chromium)", "Architecture \(architecture)"]
+        if let name = info["BarkEngineSDKResource"] as? String, name == "BarkEngineSDK.sha256",
+           let url = bundle.url(forResource: name, withExtension: nil),
+           let data = try? Data(contentsOf: url), data.count == 65, data.last == 10,
+           data.dropLast().allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) {
+            lines.append("Engine SDK SHA-256\n" + String(decoding: data.dropLast(), as: UTF8.self))
+        } else {
+            lines.append("Engine SDK identity unavailable")
+        }
+        return lines.joined(separator: "\n")
+    }
+
     static func aboutOptions(chromiumVersion: String?) -> [NSApplication.AboutPanelOptionKey: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
@@ -21,7 +43,7 @@ final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
         case about, settings, importBrowser, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
         case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
-        case nextSpace, previousSpace, manageExtensions, checkForUpdates, barkHelp
+        case nextSpace, previousSpace, manageExtensions, checkForUpdates, barkHelp, buildInformation
     }
 
     // Values from the pinned chrome/app/chrome_command_ids.h.
@@ -112,6 +134,9 @@ final class ChromiumAppMenu: NSObject {
             help.target = self
             help.action = #selector(run(_:))
             help.representedObject = Command.barkHelp
+            if let menu = help.menu, !menu.items.contains(where: { $0.representedObject as? Command == .buildInformation }) {
+                menu.insertItem(make("Build Information…", .buildInformation), at: menu.index(of: help) + 1)
+            }
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
         let viewItems = [("Toggle Sidebar", Command.toggleSidebar), (toolbarTitle, .toggleToolbar),

@@ -56,6 +56,10 @@ space. You can enable sync for it separately.
 
 ## Build and run
 
+For a bug report, choose **Help → Build Information…** in Bark. **Copy**
+includes the app build, Chromium version, processor architecture and exact
+engine SDK digest.
+
 This branch builds a signed Intel developer app for macOS 15.5 and later.
 Native Apple Silicon qualification and an official Bark download are pending.
 The repository’s earlier releases are published under the Nook name.

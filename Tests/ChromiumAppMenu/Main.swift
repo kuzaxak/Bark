@@ -161,11 +161,12 @@ enum Check {
         precondition(application.items.filter { $0.title == "Check for Updates…" }.count == 1)
 
         let view = main.item(withTag: 57327)!.submenu
-        precondition(help.items.count == 1 && help.items.first === originalHelp)
+        precondition(help.items.count == 2 && help.items.first === originalHelp)
         precondition(originalHelp.title == "Bark Help")
         precondition(originalHelp.keyEquivalent == "?" && originalHelp.keyEquivalentModifierMask == .command)
         precondition(press("?", [.command, .shift]) == [.barkHelp], "Command-Shift-/ opens Bark Help")
         precondition(added("Bark Help", in: help) == .barkHelp)
+        precondition(added("Build Information…", in: help) == .buildInformation)
         precondition(added("Toggle Sidebar", in: view) == .toggleSidebar)
         let toolbar = view!.items[1]
         precondition(view!.items[0].title == "Toggle Sidebar" && toolbar.title == "Show Toolbar")
@@ -212,7 +213,7 @@ enum Check {
         let count = main.items.count
         installer.install(in: main)
         precondition(main.items.count == count && view!.items.filter { $0.title == "Toggle Sidebar" }.count == 1, "install must not duplicate items")
-        precondition(help.items.count == 1 && help.items.first === originalHelp)
+        precondition(help.items.count == 2 && help.items.first === originalHelp)
         precondition(press("?", [.command, .shift]) == [.barkHelp], "reinstall preserves Help shortcut")
         precondition(view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleToolbar }.count == 1)
 
@@ -226,6 +227,8 @@ enum Check {
         let unversioned = ChromiumAppMenu.aboutOptions(chromiumVersion: nil)
         precondition((unversioned[.credits] as? NSAttributedString)?.string.hasPrefix("Chromium\n") == true)
         verifyUpdateConfiguration()
+        precondition(ChromiumAppMenu.buildInformation(in: .main).hasSuffix("Engine SDK identity unavailable"),
+                     "The standalone shell must not invent an engine identity")
         print("PASS chromium-app-menu")
     }
     private static func verifyUpdateConfiguration() {

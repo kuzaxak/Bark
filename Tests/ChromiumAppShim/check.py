@@ -673,7 +673,7 @@ def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architectur
     app = root / 'app/Bark.app/Contents'
     (app / 'MacOS').mkdir(parents=True)
     shutil.copy2(shim, app / 'MacOS/Bark')
-    write_plist(app / 'Info.plist', **ENGINE_PLIST, **XCODE_ONLY_KEYS)
+    write_plist(app / 'Info.plist', **ENGINE_PLIST, **XCODE_ONLY_KEYS, BarkEngineSDKResource='BarkEngineSDK.sha256')
     shutil.copytree(APP_RESOURCES, app / 'Resources')
 
     products = root / 'products'
@@ -1147,6 +1147,8 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     run = stage(app, artifact, products, output)
     check('valid inputs stage from a read-only artifact', run.returncode == 0, run.stderr)
     contents = output / 'Contents'
+    check('the staged Intel diagnostic identifies the verified engine manifest',
+          (contents / 'Resources/BarkEngineSDK.sha256').read_text().strip() == sha256(artifact / 'SHA256SUMS'))
     staged_binary = contents / 'Frameworks' / FRAMEWORK / f'Versions/{VERSION}/Bark Framework'
     check('what signing rewrites is writable after staging',
           os.access(staged_binary, os.W_OK) and os.access(staged_binary, os.X_OK) and os.access(staged_binary.parent, os.W_OK))
@@ -1194,7 +1196,7 @@ def stage_cases(work, shim, framework_lib, shell_lib):
           staged.get('CFBundleDocumentTypes'))
     unlisted = {k: v for k, v in staged.items() if k not in FIXTURE_ADDITIONS['Info']}
     check('every other key is the app target\'s',
-          unlisted == {k: v for k, v in {**ENGINE_PLIST, **XCODE_ONLY_KEYS}.items() if k not in FIXTURE_ADDITIONS['Info']}, unlisted)
+          unlisted == {k: v for k, v in read_plist(app / 'Contents/Info.plist').items() if k not in FIXTURE_ADDITIONS['Info']}, unlisted)
     packaging = listed.parent / 'Bark Packaging'
     entitlements = read_plist(packaging / 'app-entitlements.plist') if (packaging / 'app-entitlements.plist').is_file() else None
     check('a listed entitlement lands in the staged packaging beside the app, after the engine\'s',
@@ -1238,6 +1240,8 @@ def stage_cases(work, shim, framework_lib, shell_lib):
 
     refused('no-engine-framework', 'an engine without its framework', 'Missing Bark framework',
             lambda a, e, p: shutil.rmtree(e / FRAMEWORK))
+    refused('preloaded-sdk-identity', 'an app-supplied SDK identity', 'supplied by engine staging',
+            lambda a, e, p: (a / 'Contents/Resources/BarkEngineSDK.sha256').write_text('0' * 64))
     def wrong_dependency(app, engine, products):
         destination = products / 'Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater'
         destination.parent.mkdir(parents=True)
@@ -1551,6 +1555,8 @@ def arm_artifact_cases(work):
           result.returncode == 0, result.stderr)
     if result.returncode:
         return
+    check('the staged ARM64 diagnostic identifies its own verified engine manifest',
+          (out / 'Contents/Resources/BarkEngineSDK.sha256').read_text().strip() == sha256(artifact / 'SHA256SUMS'))
     result = stage(app, artifact, products, fixture / 'mislabelled/Bark.app')
     check('the ARM64 SDK cannot stage as Intel',
           result.returncode != 0 and 'another engine artifact' in result.stderr, result.stderr)
@@ -1637,6 +1643,17 @@ def signed_cases(work, mach_o):
         if mutate:
             mutate(app)
         return subprocess.run(['bash', str(STAGE), '--arch', 'x86_64', '--check-signed', str(app), str(additions), str(artifact)], capture_output=True, text=True)
+
+    (artifact / 'SHA256SUMS').write_text('signed fixture manifest\n')
+    identity_info = {**listed_info, 'BarkEngineSDKResource': 'BarkEngineSDK.sha256'}
+    for name, digest in [('missing', None), ('wrong', '0' * 64), ('matching', sha256(artifact / 'SHA256SUMS'))]:
+        def identity_resource(app):
+            if digest is not None:
+                (app / 'Contents/Resources/BarkEngineSDK.sha256').write_text(digest + '\n')
+        run = check_signed('signed-sdk-' + name, identity_resource, info=identity_info)
+        check('signed SDK identity ' + name,
+              run.returncode == 0 if name == 'matching' else
+              run.returncode != 0 and 'differs from the engine manifest' in run.stderr, run.stderr)
 
     universal = work / 'signed-Sparkle'
     compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'x86_64', '-arch', 'arm64')

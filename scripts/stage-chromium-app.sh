@@ -73,6 +73,7 @@ check_engine() {
 # Keep product metadata independent while checking the engine's runtime keys during staging.
 check_outer_metadata() {
   python3 - "$@" <<'PYTHON' || exit 1
+import hashlib
 import plistlib
 import sys
 from pathlib import Path
@@ -89,11 +90,27 @@ app_engine_version = app.get('BarkChromiumVersion', app.get('CFBundleShortVersio
 if app_engine_version != engine_version:
     sys.exit(f'App engine version {app_engine_version!r} must match the pinned engine {engine_version!r}')
 
-if len(sys.argv) == 4 and sys.argv[3] == 'source':
+source = len(sys.argv) == 4 and sys.argv[3] == 'source'
+if 'BarkEngineSDKResource' in app:
+    if app['BarkEngineSDKResource'] != 'BarkEngineSDK.sha256':
+        sys.exit('Invalid Bark engine SDK resource name')
+    if resources.is_symlink() or not resources.resolve().is_relative_to(bundle.resolve()):
+        sys.exit('The SDK identity must be inside the app resources')
+    identifier = resources / app['BarkEngineSDKResource']
+    if source:
+        if identifier.exists() or identifier.is_symlink():
+            sys.exit('The SDK identity must be supplied by engine staging')
+    else:
+        manifest = Path(sys.argv[2]).with_name('SHA256SUMS')
+        digest = hashlib.sha256(manifest.read_bytes()).hexdigest()
+        if identifier.is_symlink() or not identifier.is_file() or identifier.read_bytes() != (digest + '\n').encode():
+            sys.exit('The packaged SDK identity differs from the engine manifest')
+
+if source:
     app_owned = {
         'CFBundleDisplayName', 'CFBundleName', 'CFBundleGetInfoString',
         'CFBundleIconFile', 'CFBundleIconName',
-        'CFBundleShortVersionString', 'CFBundleVersion', 'BarkChromiumVersion',
+        'CFBundleShortVersionString', 'CFBundleVersion', 'BarkChromiumVersion', 'BarkEngineSDKResource',
         'CFBundleDocumentTypes', 'CFBundleURLTypes', 'NSUserActivityTypes',
         'UTImportedTypeDeclarations', 'UTExportedTypeDeclarations',
     }
@@ -305,6 +322,9 @@ done
   refuse "Native shell names an engine symbol: only main resolves the engine: $NATIVE"
 trap '/bin/rm -rf "$OUTPUT" "$PACKAGING"' EXIT
 /usr/bin/ditto "$APP" "$OUTPUT"
+if [[ -n "$(plist "$APP_INFO" BarkEngineSDKResource)" ]]; then
+  python3 -B "$LAYOUT" digest "$PACKAGE" "$ARCH" "$PRODUCTS/include/BarcChromium" > "$OUTPUT/Contents/Resources/BarkEngineSDK.sha256"
+fi
 /bin/mkdir -p "$OUTPUT/Contents/Frameworks"
 # Xcode/SPM dependencies and resources retain their existing names. Refuse
 # collisions rather than replacing engine-owned files or guessing precedence.
