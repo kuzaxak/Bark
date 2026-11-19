@@ -35,6 +35,34 @@ class SourceTests(unittest.TestCase):
             if not path.suffix or path.name == "xcshareddata":
                 path = path / "fixture"
             self.write(path)
+        self.write(shell._PROJECT, b"""
+        // !$*UTF8*$!
+        { rootObject = project; objects = {
+            project = { isa = PBXProject; mainGroup = root; targets = (shell,); };
+            root = { isa = PBXGroup; sourceTree = "<group>"; children = (app, palette, navigation, explicit,); };
+            shell = { isa = PBXNativeTarget; name = BarkNativeShell; fileSystemSynchronizedGroups = (app,);
+                      buildPhases = (sources,); };
+            app = { isa = PBXFileSystemSynchronizedRootGroup; path = App; sourceTree = "<group>";
+                    exceptions = (excluded,); };
+            palette = { isa = PBXFileSystemSynchronizedRootGroup; path = CommandPalette; sourceTree = "<group>";
+                        exceptions = (includedPalette,); };
+            navigation = { isa = PBXFileSystemSynchronizedRootGroup; path = Navigation; sourceTree = "<group>";
+                           exceptions = (includedNavigation,); };
+            excluded = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; target = shell;
+                         membershipExceptions = (excluded.swift,); };
+            includedPalette = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; target = shell;
+                                membershipExceptions = ("Accessories/Command Item.swift",); };
+            includedNavigation = { isa = PBXFileSystemSynchronizedBuildFileExceptionSet; target = shell;
+                                   membershipExceptions = (Sidebar/SidebarHeader.swift,); };
+            explicit = { isa = PBXGroup; path = Other; sourceTree = "<group>"; children = (file,); };
+            file = { isa = PBXFileReference; path = Explicit.swift; sourceTree = "<group>"; };
+            sources = { isa = PBXSourcesBuildPhase; files = (buildFile,); };
+            buildFile = { isa = PBXBuildFile; fileRef = file; };
+        }; }
+        """)
+        for member in ("App/member.swift", "CommandPalette/Accessories/Command Item.swift",
+                       "Navigation/Sidebar/SidebarHeader.swift", "Other/Explicit.swift"):
+            self.write(member)
         for package in shell._PACKAGES:
             self.write(f"Packages/{package}/Package.swift")
             self.write(f"Packages/{package}/Sources/fixture.swift")
@@ -49,7 +77,8 @@ class SourceTests(unittest.TestCase):
         shutil.copytree(self.root, archive)
         for ignored in (".git/HEAD", "README.md", "Tests/fixture.swift", "build/Bark.app/Contents/MacOS/Bark",
                         "Packages/NookWeb/.build/derived", "Packages/NookWeb/Tests/fixture.swift",
-                        "CommandPalette/legacy.swift", "Navigation/legacy.swift",
+                        "CommandPalette/legacy.swift", "Navigation/legacy.swift", "App/excluded.swift",
+                        "Other/unlisted.swift",
                         shell._RUST / "Cargo.lock", shell._RUST / "target/compiled",
                         "Packages/BarkEngine/RuntimeArtifacts/x86_64/Engine/framework",
                         sdk / "macos-x86_64/Engine/framework",
@@ -59,13 +88,14 @@ class SourceTests(unittest.TestCase):
         self.assertEqual(shell.shell_source_digest(archive), original)
 
         for changed in ("App/new.swift", "Packages/NookWeb/Sources/fixture.swift",
-                        "Bark.xcodeproj/project.pbxproj",
+                        shell._PROJECT, "CommandPalette/Accessories/Command Item.swift",
+                        "Navigation/Sidebar/SidebarHeader.swift", "Other/Explicit.swift",
                         shell._ADBLOCK_BINARY / "libnook_adblock.a",
                         sdk / "macos-arm64_x86_64/Headers/BarcChromium/public.h"):
             with self.subTest(changed=changed):
                 path = self.root / changed
                 prior = path.read_bytes() if path.exists() else None
-                self.write(changed, b"dirty")
+                self.write(changed, prior + b"\n// dirty project\n" if changed == shell._PROJECT else b"dirty")
                 self.assertNotEqual(shell.shell_source_digest(self.root), original)
                 if prior is None:
                     path.unlink()

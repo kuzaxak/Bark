@@ -147,9 +147,12 @@ python3 scripts/bark-check.py verify --shell-source REPORTED_SHA256 /path/to/Bar
 ```
 
 This digest includes local app and package sources, resources, the Release project and package
-lock, and the SDK compile interface. It excludes the runtime engine, engine pins, tests,
-generated output and documentation outside the build input paths. For relative links within
-the checkout it includes both the link destination and the input contents. Keep linked
+lock, and the SDK compile interface. Shell inputs follow the BarkNativeShell target’s
+synchronized groups, including their membership exceptions and explicit source and resource
+entries. The source-only command works without Xcode or an existing build.
+The digest excludes the runtime engine, engine pins, tests, generated output and documentation
+outside the build input paths. For relative links within the checkout it includes both the
+link destination and the input contents. Keep linked
 inputs inside the source archive so it can move between Macs. The digest includes local edits. The build refuses when the fingerprints taken before compilation
 and after staging differ. Build from an isolated source snapshot when reproducibility matters.
 The digest does not encode the compiler, signing identity or a Git commit. Older signed apps
