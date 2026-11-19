@@ -67,8 +67,10 @@ enum Check {
         let installer = ChromiumAppMenu(isOffered: {
             if $0 == .checkForUpdates { return canUpdate }
             if $0 == .resizeSplitPanes { return canResize }
-            return $0 != .manageExtensions || !privateWindow
-        }, sidebarVisibility: { sidebarVisible }, isToolbarShown: { toolbarShown }) { command in
+            return true
+        }, keyBrowserWindow: {
+            sidebarVisible.map { .init(showsSidebar: $0, canManageExtensions: !privateWindow) }
+        }, isToolbarShown: { toolbarShown }) { command in
             ran.append(command)
             if command == .toggleSidebar, let visible = sidebarVisible { sidebarVisible = !visible }
             if command == .toggleToolbar { toolbarShown.toggle() }
@@ -120,6 +122,16 @@ enum Check {
             _ = entry.target?.perform(entry.action, with: entry)
             precondition(ran == [command], "\(command) ran \(ran)")
         }
+
+        let downloads = item(main, 57321, 40012)
+        precondition(installer.validateMenuItem(downloads))
+        sidebarVisible = nil
+        ran = []
+        _ = downloads.target?.perform(downloads.action, with: downloads)
+        precondition(ran.isEmpty, "Downloads acted on the browser after its menu owner changed")
+        precondition(!installer.validateMenuItem(downloads) && !installer.validateMenuItem(item(main, 57324, 40010)))
+        precondition(installer.validateMenuItem(item(main, 57326, 34015)), "Settings keeps its own Close command")
+        sidebarVisible = true
 
         precondition(!item(main, 57325, 40014).isHidden && item(main, 57325, 40014).title == "Import from Another Browser…",
                      "Chromium's import item opens Bark's import from Arc or Chrome")
@@ -246,7 +258,7 @@ enum Check {
         precondition(view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleToolbar }.count == 1)
 
         let empty = NSMenu()
-        ChromiumAppMenu { _ in }.install(in: empty)
+        ChromiumAppMenu(keyBrowserWindow: { nil }) { _ in }.install(in: empty)
         let about = ChromiumAppMenu.aboutOptions(chromiumVersion: "156.1.2.3")
         precondition(Set(about.keys) == [.applicationName, .credits], "Keep bundle versions and copyright")
         precondition(about[.applicationName] as? String == "Bark")

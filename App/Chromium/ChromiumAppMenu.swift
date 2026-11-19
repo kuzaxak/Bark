@@ -46,6 +46,11 @@ final class ChromiumAppMenu: NSObject {
         case nextSpace, previousSpace, manageExtensions, checkForUpdates, barkHelp, buildInformation
     }
 
+    struct BrowserWindow {
+        let showsSidebar: Bool
+        let canManageExtensions: Bool
+    }
+
     // Values from the pinned chrome/app/chrome_command_ids.h.
     private enum Tag {
         static let appMenu = 57325, fileMenu = 57326, viewMenu = 57327, historyMenu = 57324
@@ -73,14 +78,14 @@ final class ChromiumAppMenu: NSObject {
     private static let addedIdentifier = NSUserInterfaceItemIdentifier("ee.qdo.nook.menu")
     private let perform: (Command) -> Void
     private let isOffered: (Command) -> Bool
-    private let sidebarVisibility: () -> Bool?
+    private let keyBrowserWindow: () -> BrowserWindow?
     private let isToolbarShown: () -> Bool
 
     init(isOffered: @escaping (Command) -> Bool = { _ in true },
-         sidebarVisibility: @escaping () -> Bool? = { nil }, isToolbarShown: @escaping () -> Bool = { false },
+         keyBrowserWindow: @escaping () -> BrowserWindow?, isToolbarShown: @escaping () -> Bool = { false },
          perform: @escaping (Command) -> Void) {
         self.isOffered = isOffered
-        self.sidebarVisibility = sidebarVisibility
+        self.keyBrowserWindow = keyBrowserWindow
         self.isToolbarShown = isToolbarShown
         self.perform = perform
     }
@@ -149,7 +154,7 @@ final class ChromiumAppMenu: NSObject {
             }
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
-        let viewItems = [(sidebarTitle(visible: sidebarVisibility()), Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
+        let viewItems = [(sidebarTitle(visible: keyBrowserWindow()?.showsSidebar), Command.toggleSidebar), (toolbarTitle, .toggleToolbar),
                          ("Toggle AI Assistant", .toggleAIAssistant),
                          ("Open Command Bar", .commandBar), ("Add Split View", .addSplitView),
                          ("Resize Split Panes", .resizeSplitPanes)]
@@ -204,7 +209,8 @@ final class ChromiumAppMenu: NSObject {
     }
 
     @objc private func run(_ sender: NSMenuItem) {
-        if let command = sender.representedObject as? Command { perform(command) }
+        guard let command = sender.representedObject as? Command, validateMenuItem(sender) else { return }
+        perform(command)
     }
 
     @objc private func ignore(_ sender: NSMenuItem) {}
@@ -221,12 +227,21 @@ final class ChromiumAppMenu: NSObject {
 extension ChromiumAppMenu: NSMenuItemValidation {
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         guard let command = item.representedObject as? Command else { return true }
-        if command == .toggleSidebar {
-            let visible = sidebarVisibility()
-            item.title = sidebarTitle(visible: visible)
-            return visible != nil && isOffered(command)
+        switch command {
+        case .toggleSidebar:
+            let window = keyBrowserWindow()
+            item.title = sidebarTitle(visible: window?.showsSidebar)
+            guard window != nil else { return false }
+        case .manageExtensions:
+            guard keyBrowserWindow()?.canManageExtensions == true else { return false }
+        case .newTab, .reopenClosedTab, .focusAddress, .history, .downloads, .toggleAIAssistant,
+             .commandBar, .addSplitView, .resizeSplitPanes, .nextSpace, .previousSpace:
+            guard keyBrowserWindow() != nil else { return false }
+        case .toggleToolbar:
+            item.title = toolbarTitle
+        case .about, .settings, .importBrowser, .quit, .closeTab, .checkForUpdates, .barkHelp, .buildInformation:
+            break
         }
-        if command == .toggleToolbar { item.title = toolbarTitle }
         return isOffered(command)
     }
 }

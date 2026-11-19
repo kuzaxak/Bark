@@ -459,14 +459,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
             let shortcuts = KeyboardShortcutManager(userDefaults: storage.defaults)
             shortcuts.setBrowserManager(manager)
             manager.keyboardShortcutManager = shortcuts
-            let appMenu = ChromiumAppMenu(isOffered: { [weak self, weak manager, weak pageHost, weak shortcuts] command in
-                if command == .nextSpace || command == .previousSpace { return shortcuts?.keyBrowserWindow != nil }
+            let appMenu = ChromiumAppMenu(isOffered: { [weak self, weak pageHost] command in
                 if command == .checkForUpdates { return self?.acceptsWindows == true && self?.updater?.canCheckForUpdates == true }
                 if command == .resizeSplitPanes { return pageHost?.splitResizeRoot(in: NSApp.keyWindow) != nil }
-                return command != .manageExtensions || ShortcutAction.manageExtensions.isOffered(
-                    chromium: true, privateWindow: manager?.windowRegistry?.activeWindow?.isIncognito == true)
-            }, sidebarVisibility: { [weak shortcuts] in
-                shortcuts?.keyBrowserWindow?.isSidebarVisible
+                return true
+            }, keyBrowserWindow: { [weak shortcuts] in
+                shortcuts?.keyBrowserWindow.map { window in
+                    .init(showsSidebar: window.isSidebarVisible, canManageExtensions:
+                        ShortcutAction.manageExtensions.isOffered(chromium: true, privateWindow: window.isIncognito))
+                }
             }, isToolbarShown: { [weak manager] in
                 manager?.nookSettings?.topBarAddressView == true
             }) { [weak self, weak manager, weak shortcuts, weak pageHost] command in
