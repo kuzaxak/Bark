@@ -328,6 +328,13 @@ def header_cases(work):
                          capture_output=True, text=True)
     check('C imports the size-checked space request and callback', run.returncode == 0, run.stderr[-600:])
 
+    provider = work / 'password-provider'
+    subprocess.run(['xcrun', 'clang', '-std=c11', '-Werror', f'-I{PUBLIC_HEADERS}',
+                    f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',
+                    str(ROOT / 'Tests/ChromiumAppShim/password_provider.c'), '-o', str(provider)], check=True)
+    check('the password provider choice follows the paired SDK capability',
+          subprocess.run([str(provider)]).returncode == 0)
+
     swift = work / 'import.swift'
     swift.write_text('import BarcChromium\n'
                      'let entry: String = BARC_ENGINE_MAIN_SYMBOL\n'
