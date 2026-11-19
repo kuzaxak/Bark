@@ -1,0 +1,46 @@
+# Design
+
+## Context
+
+Bark's native engine already reports parsed password and OTP fields, validated submissions, and Chromium WebAuthn requests through its C SDK. Swift's existing VaultService presents the choices, speaks the Pawl v1 socket protocol, and checks ownership again when a reply arrives. Pawl validates the peer's macOS audit token and code signature before servicing credential requests. This is a shared user vault. A profile UUID binds a browser operation to its page. Pawl's v1 server selects entries from its unlocked database by site and does not partition the database by browser profile.
+
+Two issues are independently reproducible. Pawl Vault build 7 recognizes the exact signed Nook identifier and rejects the correctly signed Bark identifier. Separately, the engine's save interception returns to Chromium when a connected observer does not claim the offer. Profile settings always opens Chromium's password manager. The earlier migration design intentionally retained that fallback. Selecting Pawl as the manager changes that behavior.
+
+## Goals
+
+Give the existing opt-in a consistent meaning on normal launch, after an unlock and during a page or profile transition. Keep native input, modal passkeys, external security keys, and the existing signing and SDK model. No credential migration is necessary.
+
+## Options considered
+
+| Option | Fit for this project |
+| --- | --- |
+| Complete the native integration | Reuses the existing signed peer, Chromium's field and submission identities, its WebAuthn request lifetime, and Bark's native picker. Requires a companion trust update and provider routing in the engine. Selected. |
+| Build a Chromium extension and native-messaging host | Adds an extension, host registration, permissions and another identity per install. It would duplicate existing field and passkey integration. Keep interoperability with deliberately installed extensions. |
+| Rely on Apple's system Autofill or a Chrome policy | Platform Authenticators remain valuable separate choices, but this does not route every Bark save, OTP and prompt through Pawl. Chromium's PasswordManagerEnabled policy can still fill previously saved passwords. |
+
+## Decisions
+
+1. **Provider choice and engine startup.** Keep the existing app-wide opt-in and its current default. Publish the chosen provider before Chromium starts serving documents, independent of vault connection status, active window or per-page observers. Apply preference changes on the next full relaunch. The running browser keeps its launch-time provider, and Settings names it when a change is pending. This avoids transferring an in-flight lookup, generated credential or queued write between managers. Append a single pre-start operation to the versioned C table. Build and pin the matching SDK through the tracked recipe. Keep all Chromium C++ types behind the C boundary and changes within the project's reviewed patch budget. An incompatible SDK must not advertise exclusive mode.
+2. **Separate form recognition from stored credentials.** Keep Chromium parsing, submission validation, navigation/redirect checks and document-bound field capabilities. Suppress built-in suggestions, automatic fill/sign-in, password generation, manual fallback, save/update UI and writes at the sites that deliver Chromium credentials or commit them. Include Credential Management API and generated-password paths. Do not disable form parsing or rely on a single disabled save bubble. Preserve managed policy, origin restrictions, address/card Autofill and standalone security keys. Apply selection before first navigation, including new, private and unattached tabs. Termination ends the current provider’s browser requests. An already-authorized Pawl write can finish in Pawl.
+3. **Keep the trust boundary.** A separately shipped Pawl change can admit the exact Bark and legacy Nook identifiers under the approved Apple signing team. Both apps check the code of the socket peer. Identify the client in consent copy from the verified identity. Never authorize using the hello string, a path, a team-wide wildcard or a persisted hash exception. Preserve owner authentication, process/database/lock-epoch binding, and signed-server verification. Check socket access on supported macOS using the shipped entitlements before considering any entitlement change. Keep database access with Pawl.
+4. **Capture the right interaction.** Require genuine field interaction before opening the chooser, plus explicit credential selection to fetch the password or code. Preserve cross-origin frame identity, foreground view and profile through async replies. Under the proposed private-window policy user-invoked fills may use the shared vault, with ephemeral browser state and no save/update offers. Agent and verification sessions retain their existing isolation. Do not promise separate vault databases for Work and Personal.
+5. **Make updates safe.** Bark currently discards a save when any candidate has the submitted username. Pawl v1 can upsert by exact host and username and takes the first such entry. The candidate list does not tell Bark which match is exact. Do not remove the guard and blindly upsert. An update must name or unambiguously resolve the intended entry at write time, with user approval. Coordinate an optional capability and an entry-checked write with Pawl if needed. Old clients keep working. When a provider cannot safely update, offer a specific explanation and a way to open Pawl. Never fetch a stored password merely to compare it with the submission.
+6. **Keep WebAuthn on its native path.** Pawl is an existing modal authenticator. Preserve Chromium's relying-party/origin checks, client-data hashes, user presence, ES256 bounds and cancellation. In Pawl mode suppress competing browser-managed password/passkey-provider offerings while leaving explicitly selectable hardware and other independently supported external authenticators available. Conditional account suggestions require separate Chromium integration and qualification before claiming WebKit parity.
+7. **Show who owns passwords.** Privacy settings identifies the selected manager, vault status and recovery steps. Profiles routes Password Manager to the selected provider, independent of the active browsing space. Existing Chrome credentials remain available if the user explicitly selects Chromium again. A provider that refuses the client is distinct from a locked vault or a failed verification of the vault itself.
+
+## Qualification and rollout
+
+Use the existing synthetic vault, receipt-pinned engine and disposable profiles. Seed a synthetic Chromium credential alongside a different Pawl credential for the same site. Exercise cold launch, a disabled preference, locked/disconnected/untrusted Pawl, recovery, two profiles, private browsing, redirect, split/Peek ownership, and change the preference during an outstanding request, then verify the next launch. Verify the delivered field value, the selected entry and write counts in both stores. Check normal address/card paths independently. Use a disposable signed Pawl database on Intel and Apple Silicon for the process handshake, OTP, approved update, and relying-party verification of a signed passkey ceremony. Hardware keys and conditional UI require their own evidence. Do not log secrets or export a user's database.
+
+The initial engine candidate reaches 296 upstream files, 996 hunks and 12,702 added lines. The current ceilings are 291, 982 and 12,614. Keep that candidate separate from the integration recipe. Before promoting a provider-capable SDK, reduce the upstream footprint through a smaller credential-delivery hook or retire independently superseded patches with equivalent tests. Do not raise the limit as part of this change. [Patch budget](../../../Runtime/Chromium/BUDGET.json)
+
+Check the website Credential Management API, Chrome's Touch ID and enclave paths, and password context menus alongside the visible form picker. Enterprise password-reuse protection has its own policy and must be tested separately from the user's choice of a password store.
+
+Ship the narrowly compatible Pawl companion first. Offer exclusive mode in a Bark build whose engine implements the routing contract. Retaining the setting while a vault is being updated must never silently switch the user back to Chromium. Reverting the selection restores Chromium for future requests without moving either provider's data.
+
+
+## Implementation references
+
+The shell already forwards frame-bound focus, validated submission and WebAuthn events. The pre-existing migration describes the earlier optional save path. [Native adapter](../../../App/Chromium/ChromiumPageNavigation.swift) · [Native request lifetimes](../../../Packages/NookWeb/Sources/NookWeb/Vault/VaultService.swift) · [Original migration design](../decouple-fork-and-migrate-to-chromium/design.md)
+
+Chromium documents the existing-credential behavior of its enterprise policy. Native messaging uses an installed host manifest and an extension allowlist. [PasswordManagerEnabled policy](https://chromeenterprise.google/policies/#PasswordManagerEnabled) · [Chromium native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)
