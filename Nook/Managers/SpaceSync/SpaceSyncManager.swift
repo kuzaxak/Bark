@@ -641,8 +641,11 @@ final class SpaceSyncManager: SpaceSyncControls {
         guard !ids.isEmpty else { return }
         let database = container.privateCloudDatabase
         let zone = CKRecordZone.ID(zoneName: SpaceSyncAvailability.zoneName, ownerName: CKCurrentUserDefaultName)
+        let recordIDs = ids.map { CKRecord.ID(recordName: $0.uuidString, zoneID: zone) }
+        let fetched = try await database.records(for: recordIDs)
         var marked: [CKRecord] = []
-        for (_, result) in try await database.records(for: ids.map { CKRecord.ID(recordName: $0.uuidString, zoneID: zone) }) {
+        for id in recordIDs {
+            guard let result = fetched[id] else { throw CKError(.internalError) }
             switch result {
             case .success(let record):
                 record[SyncRecord.Key.movedTo] = owner as NSString
@@ -654,7 +657,12 @@ final class SpaceSyncManager: SpaceSyncControls {
             }
         }
         guard joinIsCurrent(claim, in: container) else { throw CancellationError() }
-        for (_, result) in try await database.modifyRecords(saving: marked, deleting: [], atomically: false).saveResults {
+        guard !marked.isEmpty else { return }
+        // Other Macs turn off sync for every marked space. Publish the user's move as one change.
+        let saved = try await database.modifyRecords(saving: marked, deleting: [],
+                                                      savePolicy: .ifServerRecordUnchanged, atomically: true)
+        for record in marked {
+            guard let result = saved.saveResults[record.recordID] else { throw CKError(.internalError) }
             _ = try result.get()
         }
     }
