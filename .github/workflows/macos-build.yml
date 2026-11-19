@@ -52,6 +52,7 @@ jobs:
           python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
           python3 -B -m unittest discover -s Tests/Shared
           python3 -B -m unittest discover -s Tests/ChromiumSDKLauncher
+          python3 -B Tests/ChromiumSDKLauncher/check_helper_roles.py
           python3 -B -m unittest discover -s Tests/ChromiumStartup
           python3 -B -m unittest discover -s Tests/ChromiumUpdate
           python3 -B Tests/ChromiumAppShim/check.py
@@ -165,6 +166,7 @@ jobs:
           shell_source="$(python3 -B scripts/bark-check.py shell-source)"
           env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py smoke --arch "$BARK_SMOKE_ARCH" \
             --shell-source "$shell_source" "$app"
+          python3 -B Tests/ChromiumSDKLauncher/check_helper_roles.py --app "$app"
           {
             echo '### Signed Bark smoke'
             printf 'Architecture: `%s`\n\nSDK pin: `%s`\n\nShell inputs at `%s`: `%s`\n' \

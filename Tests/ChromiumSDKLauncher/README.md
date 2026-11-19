@@ -1,5 +1,13 @@
 # Run official browser regressions on Apple Silicon
 
+To verify the helper apps in an installed candidate on its native Mac, run
+`python3 -B Tests/ChromiumSDKLauncher/check_helper_roles.py --app /Applications/Bark.app`.
+The check verifies Bark's signature and runs each packaged helper in place
+with window-server access, child processes, network and file writes denied.
+Each helper must return its direct-launch refusal. Run the same command
+without `--app` to exercise both accepted and refused subprocess roles against
+the C and C++ entry point header.
+
 After the official engine build links `bark_browser_tests`, package the test runtime from its completed GN output. Package from an idle build directory to keep the manifest and its inputs consistent.
 
 ```fish
