@@ -98,7 +98,7 @@ python3 -B -m unittest discover -s Tests/ChromiumSDKLauncher
 python3 -B Tests/ChromiumAppShim/check.py
 ```
 
-Run the catalog, startup focus, page ownership, download actions, extension actions and live fetch regressions against the Debug shell on the host architecture. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`.
+Run the catalog, startup focus, page ownership, download actions, extension actions and live fetch regressions against the Debug shell on the host architecture. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`. Pull requests run the catalog, page-host and Site Controls checks on a hosted macOS runner.
 
 ```fish
 python3 scripts/bark-check.py catalog
