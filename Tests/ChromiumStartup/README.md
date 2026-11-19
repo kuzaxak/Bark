@@ -55,3 +55,24 @@ It first restores tab 02 and waits for all three initial pages to settle.
 It then clicks Parked space in the native sidebar. Only the saved selection,
 tab 04, may load or receive input. The engine count must go from 1 to 3 to 4,
 and the remaining 46 destination URLs must receive no document requests.
+
+## Verify a transferred release candidate
+
+Use the full Bark source revision and the official SDK archive for the
+candidate’s architecture. Supply the DMG and native qualification receipt
+from the same candidate run.
+
+```fish
+python3 -B scripts/bark-check.py engine --arch "$arch" --require-official \
+    --engine "$sdk_archive" --install
+and python3 -B Tests/ChromiumStartup/qualify.py check-release-receipt \
+    --arch "$arch" --image "$image" --receipt "$receipt"
+```
+
+If you also have the signed staging app, add `--app "$app"` to compare it
+with the image. The check mounts the DMG read-only and copies Bark to a
+temporary directory. It checks the image signature, Gatekeeper assessments
+and the installed app’s signature and identity. It compares the embedded
+framework with the official SDK.
+The startup measurements and installed update identities come from the
+native walk recorded in the receipt. The verifier can run without opening Bark.

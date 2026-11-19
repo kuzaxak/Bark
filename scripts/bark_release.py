@@ -197,12 +197,13 @@ def distribution_requirement(app, bundle_id):
 
 def verify_installed_image(image, staged_app, working, requirement, verify_staged, *,
                            exercise=None, assess_notarization=True):
-    """Verify a clean copy of the app from the image and assess notarized releases."""
+    """Verify a copy from the release image, optionally comparing the staging app."""
     if assess_notarization:
         subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
                         "--context", "context:primary-signature", "--verbose=4", image], check=True)
-    expected_info = (staged_app / "Contents/Info.plist").read_bytes()
-    expected_cdhash = bundle_cdhash(staged_app)
+    app_name = staged_app.name if staged_app else "Bark.app"
+    expected_info = (staged_app / "Contents/Info.plist").read_bytes() if staged_app else None
+    expected_cdhash = bundle_cdhash(staged_app) if staged_app else None
     with TemporaryDirectory(prefix="install-check-", dir=working) as directory:
         root = Path(directory)
         mount = root / "image"
@@ -210,17 +211,17 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
         subprocess.run(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
                         "-mountpoint", mount, image], stdin=subprocess.DEVNULL, check=True)
         try:
-            source = mount / staged_app.name
+            source = mount / app_name
             if source.is_symlink() or not source.is_dir():
                 raise ValueError("The disk image does not contain the expected app bundle.")
-            installed = root / staged_app.name
+            installed = root / app_name
             subprocess.run(["/usr/bin/ditto", source, installed], check=True)
         finally:
             subprocess.run(["/usr/bin/hdiutil", "detach", mount], check=True)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement,
                         installed], check=True)
-        if ((installed / "Contents/Info.plist").read_bytes() != expected_info
-                or bundle_cdhash(installed) != expected_cdhash):
+        if staged_app and ((installed / "Contents/Info.plist").read_bytes() != expected_info
+                           or bundle_cdhash(installed) != expected_cdhash):
             raise ValueError("The app copied from the disk image differs from the signed staging app.")
         if verify_staged:
             verify_staged(installed)

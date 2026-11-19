@@ -65,8 +65,9 @@ class ReleaseTests(unittest.TestCase):
     def test_assesses_sealed_app_copied_from_read_only_image(self):
         image = self.root / "Bark.dmg"
         requirement = '=identifier "ee.qdo.bark"'
-        for failure in (None, "image", "copy", "seal", "identity", "sdk", "execution"):
+        for failure in (None, "image", "copy", "seal", "identity", "sdk", "execution", "received"):
             with self.subTest(failure=failure):
+                staged = None if failure == "received" else self.app
                 events = []
                 installation = []
 
@@ -108,16 +109,17 @@ class ReleaseTests(unittest.TestCase):
 
                 with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
                     "bark_release.subprocess.check_output",
-                    side_effect=["CDHash=abc123", "CDHash=bad456" if failure == "identity" else "CDHash=abc123"],
+                    side_effect=[] if staged is None else
+                    ["CDHash=abc123", "CDHash=bad456" if failure == "identity" else "CDHash=abc123"],
                 ):
                     if failure in ("sdk", "identity"):
                         with self.assertRaises(ValueError):
-                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk, exercise=exercise)
-                    elif failure:
+                            verify_installed_image(image, staged, self.root, requirement, verify_sdk, exercise=exercise)
+                    elif failure and staged is not None:
                         with self.assertRaises(subprocess.CalledProcessError):
-                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk, exercise=exercise)
+                            verify_installed_image(image, staged, self.root, requirement, verify_sdk, exercise=exercise)
                     else:
-                        verify_installed_image(image, self.app, self.root, requirement, verify_sdk, exercise=exercise)
+                        verify_installed_image(image, staged, self.root, requirement, verify_sdk, exercise=exercise)
                 expected = {
                     None: ["image", "attach", "copy", "detach", "seal", "sdk", "execution", "exercise"],
                     "image": ["image"],
@@ -127,7 +129,7 @@ class ReleaseTests(unittest.TestCase):
                     "sdk": ["image", "attach", "copy", "detach", "seal", "sdk"],
                     "execution": ["image", "attach", "copy", "detach", "seal", "sdk", "execution"],
                 }
-                self.assertEqual(events, expected[failure])
+                self.assertEqual(events, expected[None if staged is None else failure])
                 self.assertEqual(list(self.root.glob("install-check-*")), [])
 
     def test_releasing_the_shell_preserves_the_embedded_engine_version(self):

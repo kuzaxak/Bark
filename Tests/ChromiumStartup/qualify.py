@@ -12,6 +12,7 @@ import runpy
 import stat
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import time
 
 TESTS = Path(__file__).resolve().parents[1]
@@ -20,7 +21,7 @@ sys.path.insert(0, str(TESTS / "Shared"))
 from signed_walk import bundle_cdhash, verify_official_sdk
 from bark_macos_console import SCREEN_UNAVAILABLE, ScreenUnavailable
 import bark_release
-from chromium_sdk_layout import file_digest, read_pin
+from chromium_sdk_layout import file_digest
 from bark_shell_source import shell_source_digest, verify_shell_source
 
 
@@ -180,34 +181,50 @@ def qualify(app, image, identity, output, *, update_kit=None):
           f"Receipt: {path}", flush=True)
 
 
-def check_release_receipt(receipt, image, architecture, app):
+def check_release_receipt(receipt, image, architecture, app=None):
     result = json.loads(receipt.read_text())
     if result.get("installation") != "notarized-dmg":
         raise ValueError("Release qualification requires a notarized DMG installation.")
     candidate = result["candidate"]
     if candidate["architecture"] != architecture or candidate["official"] is not True:
         raise ValueError("The release receipt requires the official SDK for the release architecture.")
-    if candidate["bundle_cdhash"] != bundle_cdhash(app):
+    if app is not None and candidate["bundle_cdhash"] != bundle_cdhash(app):
         raise ValueError("The release app does not match the app in the qualification receipt.")
     if result["image_sha256"] != file_digest(image):
         raise ValueError("The release DMG does not match the image in the qualification receipt.")
-    if candidate.get("sdk_pin") != read_pin(REPO / "Packages/BarkEngine", architecture):
-        raise ValueError("The release receipt belongs to a different SDK pin.")
-    info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
-    if (result.get("build"), result.get("version")) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
-        raise ValueError("The release receipt belongs to a different Bark build.")
     validate_samples(result.get("startup"))
     validate_machine(result.get("hardware"), result.get("macos"))
     checked_update_identities(result["installed_update"])
-    verify_release_signature(app)
-    verify_shell_source(app, expected=shell_source_digest(REPO))
+    image_requirement = bark_release.distribution_requirement(app, "ee.qdo.bark")
+    app_requirement = (verify_release_signature(app) if app is not None else
+                       image_requirement + ' and identifier "ee.qdo.bark"')
+    subprocess.run(["/usr/bin/codesign", "--verify", "--strict", "-R", image_requirement, image], check=True)
+    contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
+
+    def verify_copy(installed):
+        info = plistlib.loads((installed / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != "ee.qdo.bark":
+            raise ValueError("The disk image must contain the ordinary Bark application.")
+        if (result.get("build"), result.get("version")) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
+            raise ValueError("The release receipt belongs to a different Bark build.")
+        verify_shell_source(installed, expected=shell_source_digest(REPO))
+        if bundle_cdhash(installed) != candidate["bundle_cdhash"]:
+            raise ValueError("The disk image app does not match the app in the qualification receipt.")
+        _, verified = verify_official_sdk(contributor, architecture, installed)
+        if candidate.get("sdk_pin") != verified["sdk_pin"]:
+            raise ValueError("The release receipt belongs to a different SDK pin.")
+
+    with TemporaryDirectory(prefix="bark-receipt-", dir="/private/tmp") as work:
+        bark_release.verify_installed_image(image, app, Path(work), app_requirement, verify_copy)
+    if result["image_sha256"] != file_digest(image):
+        raise ValueError("The release DMG changed during verification.")
 
 
 def release_receipt_main(argv):
     parser = argparse.ArgumentParser(description="Check a native qualification receipt before release transfer.")
     parser.add_argument("--receipt", type=Path, required=True)
     parser.add_argument("--image", type=Path, required=True)
-    parser.add_argument("--app", type=Path, required=True)
+    parser.add_argument("--app", type=Path, help="Optional original staging app to cross-check against the DMG")
     parser.add_argument("--arch", choices=("x86_64", "arm64"), required=True)
     args = parser.parse_args(argv)
     try:
