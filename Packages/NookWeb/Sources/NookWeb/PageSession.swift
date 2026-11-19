@@ -836,7 +836,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     /// The web view, created on first access.
-    public var activeWebView: WKWebView {
+    var activeWebView: WKWebView {
         if primaryWebView == nil {
             setupWebView()
         }
@@ -896,7 +896,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     /// Makes `webView` the primary view, owned by the window that displays it first.
-    public func assignWebView(_ webView: WKWebView, toWindow windowId: UUID) {
+    func assignWebView(_ webView: WKWebView, toWindow windowId: UUID) {
         primaryWebView = webView
         primaryWindowId = windowId
     }
@@ -1000,7 +1000,7 @@ public final class PageSession: NSObject, Identifiable {
 
     /// Handlers, user agent and preferences shared by primary, clone and popup views.
     /// The view's controller must belong to this view alone: handlers are keyed by name.
-    public func configure(_ webView: WKWebView) {
+    private func configure(_ webView: WKWebView) {
         let controller = webView.configuration.userContentController
         for name in messageHandlerNames {
             controller.removeScriptMessageHandler(forName: name)
@@ -1045,7 +1045,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     /// Updates the extension controller on the existing web view.
-    public func applyConfigurationOverride(_ configuration: WKWebViewConfiguration) {
+    func applyConfigurationOverride(_ configuration: WKWebViewConfiguration) {
         guard let existing = primaryWebView else { return }
         if let extensionController = configuration.webExtensionController {
             existing.configuration.webExtensionController = extensionController
@@ -1131,7 +1131,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     /// Detaches a view from this session: handlers, observers, delegates, superview.
-    public func cleanupClone(_ webView: WKWebView) {
+    private func cleanupClone(_ webView: WKWebView) {
         webView.stopLoading()
         // Stop playback through WebKit; releasing the view tears down its document.
         webView.pauseAllMediaPlayback(completionHandler: nil)
@@ -1169,7 +1169,7 @@ public final class PageSession: NSObject, Identifiable {
     /// Loads a URL into a specific view. File URLs get read access to their directory so local
     /// subresources load. Uses the protocol cache policy: restoring an evicted page with
     /// returnCacheDataElseLoad served the stale cached document without revalidation.
-    public static func loadPage(_ url: URL, in webView: WKWebView) {
+    static func loadPage(_ url: URL, in webView: WKWebView) {
         WebKitPageNavigation.load(url, in: webView)
     }
 
@@ -1461,7 +1461,7 @@ public final class PageSession: NSObject, Identifiable {
 
     // MARK: - Observation
 
-    public func setupNavigationStateObservers(for webView: WKWebView) {
+    private func setupNavigationStateObservers(for webView: WKWebView) {
         if !navigationStateObservedWebViews.contains(webView) {
             webView.addObserver(self, forKeyPath: "fullscreenState", options: [.new], context: nil)
             let observesAudio = webView.responds(to: Self.isPlayingAudioSelector)

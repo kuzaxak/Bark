@@ -134,7 +134,7 @@ extension TabsController {
         guard let source = tree.item(folderID)?.live, Self.isKnown(source), !isTerminating,
               force || Date().timeIntervalSince(liveRefreshed[folderID] ?? .distantPast) >= Self.liveRefreshInterval,
               let spaceID = tree.spaceID(of: folderID), let profile = profile(forSpace: spaceID) else { return nil }
-        let store = profile.webKitDataStore
+        let store = profile.webKitStorage?.dataStore
         let native = source.feedURL == nil && profile.engine == .chromium && !profile.isEphemeral
         guard source.feedURL != nil || store != nil || (native && nativeLiveFetch != nil) else {
             liveStatus[folderID] = .unavailable
@@ -205,7 +205,7 @@ extension TabsController {
             guard !profile.isEphemeral else { return [] }
             return (try? await fetchNative(.githubPulls, profileID: profile.id, spaceID: spaceID) { true }) ?? []
         }
-        guard let store = profile.webKitDataStore else { return [] }
+        guard let store = profile.webKitStorage?.dataStore else { return [] }
         let cookies = await store.httpCookieStore.allCookies()
         return (try? await GitHubPulls.fetch(cookies: cookies)) ?? []
     }

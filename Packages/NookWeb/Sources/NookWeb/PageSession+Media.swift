@@ -259,7 +259,7 @@ extension PageSession {
     }
 
     // MARK: - Background Color Management
-    public func setupThemeColorObserver(for webView: WKWebView) {
+    func setupThemeColorObserver(for webView: WKWebView) {
         if !themeColorObservedWebViews.contains(webView) {
             webView.addObserver(
                 self, forKeyPath: "themeColor", options: [.new, .initial], context: nil)

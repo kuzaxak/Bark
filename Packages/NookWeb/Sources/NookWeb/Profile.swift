@@ -10,7 +10,6 @@
 //
 
 import Foundation
-import WebKit
 import Observation
 
 @MainActor
@@ -25,7 +24,8 @@ public final class Profile: NSObject, Identifiable {
     }
 
     public let engine: Engine
-    @ObservationIgnored private let webKitStorage: WebKitProfileStorage?
+    /// The WebKit adapter, available only for profiles backed by a WebKit store.
+    @ObservationIgnored public let webKitStorage: WebKitProfileStorage?
     // Metadata (not yet persisted)
     public var createdDate: Date = Date()
     public var lastUsed: Date = Date()
@@ -52,7 +52,7 @@ public final class Profile: NSObject, Identifiable {
                   storage: engine == .webKit ? WebKitProfileStorage(persistentID: id) : nil)
     }
 
-    private init(id: UUID, name: String, icon: String, engine: Engine, storage: WebKitProfileStorage?) {
+    init(id: UUID, name: String, icon: String, engine: Engine, storage: WebKitProfileStorage?) {
         self.id = id
         self.name = name
         self.icon = icon
@@ -67,7 +67,8 @@ public final class Profile: NSObject, Identifiable {
         let profile: Profile
         switch engine {
         case .webKit:
-            profile = Profile(id: id, name: "Incognito", icon: "eye.slash", dataStore: .nonPersistent())
+            profile = Profile(id: id, name: "Incognito", icon: "eye.slash", engine: .webKit,
+                              storage: WebKitProfileStorage.ephemeral())
         case .chromium:
             // Identity only. The caller must open/close the real native private
             // session; metadata creation never simulates runtime isolation.
@@ -80,7 +81,7 @@ public final class Profile: NSObject, Identifiable {
     // MARK: - Validation & Stats
     public func validateDataStore() async -> Bool {
         // Basic check: store exists and is persistent
-        guard let dataStore = webKitDataStore, dataStore.isPersistent else { return false }
+        guard let webKitStorage, webKitStorage.dataStore.isPersistent else { return false }
         await refreshDataStoreStats()
         return true
     }
@@ -109,18 +110,5 @@ public final class Profile: NSObject, Identifiable {
             return
         }
         webKitStorage.destroyEphemeralDataStore(completion: completion)
-    }
-}
-
-// MARK: - WebKit storage capability
-
-extension Profile {
-    /// Chromium owns its data through the native ProfileManager.
-    public var webKitDataStore: WKWebsiteDataStore? { webKitStorage?.dataStore }
-
-    /// Uses the caller's WebKit store without persistent session-cookie backup.
-    public convenience init(id: UUID = UUID(), name: String, icon: String, dataStore: WKWebsiteDataStore) {
-        self.init(id: id, name: name, icon: icon, engine: .webKit,
-                  storage: WebKitProfileStorage(dataStore: dataStore))
     }
 }

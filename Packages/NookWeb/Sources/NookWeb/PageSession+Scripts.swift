@@ -118,7 +118,7 @@ extension PageSession {
 
     /// The PiP state listener and its handler live here: the state decides unloading and auto
     /// PiP, so a page must not be able to post it.
-    public static let pipStateWorld = WKContentWorld.world(name: "NookPiPState")
+    static let pipStateWorld = WKContentWorld.world(name: "NookPiPState")
 
     func injectPiPStateListener(to webView: WKWebView) {
         // Capture on the document sees every video, including ones added later, and reports the

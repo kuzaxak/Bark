@@ -34,7 +34,7 @@ struct ProfileEngineTests {
         #expect(calls[0].0 == workID && calls[0].1 == .gmail(account: 2) && calls[1].0 == personalID)
         #expect(await tabs.gmailInbox(inSpace: UUID(), account: 0) == .failed && calls.count == 2)
         #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
-        #expect(tabs.profile(forSpace: work)?.webKitDataStore == nil && tabs.profile(forSpace: personal)?.webKitDataStore == nil)
+        #expect(tabs.profile(forSpace: work)?.webKitStorage == nil && tabs.profile(forSpace: personal)?.webKitStorage == nil)
     }
 
     @Test func nativeLiveFolderReassignmentCancelsAndCannotPublishOldProfileReply() async throws {
@@ -107,15 +107,15 @@ struct ProfileEngineTests {
         let id = UUID()
         let profile = Profile(id: id, name: "Work", icon: "person", engine: .chromium)
         #expect(profile.engine == .chromium)
-        #expect(profile.webKitDataStore == nil)
+        #expect(profile.webKitStorage == nil)
         profile.name = "Renamed"
         profile.icon = "folder"
         #expect(profile.id == id && profile.name == "Renamed")
-        #expect(profile.webKitDataStore == nil)
+        #expect(profile.webKitStorage == nil)
         #expect(await profile.validateDataStore() == false)
         let privateProfile = Profile.createEphemeral(engine: .chromium)
         #expect(privateProfile.isEphemeral && privateProfile.engine == .chromium)
-        #expect(privateProfile.webKitDataStore == nil)
+        #expect(privateProfile.webKitStorage == nil)
         #expect(privateProfile.id != id)
         for identity in [profile, privateProfile] {
             #expect(BrowserConfiguration.webViewConfiguration(for: identity) == nil)
@@ -123,7 +123,7 @@ struct ProfileEngineTests {
             #expect(await identity.clearAllData() == false)
             var completed = false
             identity.destroyEphemeralDataStore { completed = true }
-            #expect(completed && identity.webKitDataStore == nil)
+            #expect(completed && identity.webKitStorage == nil)
             #expect(identity.cachedCookieCount == 0 && identity.cachedRecordCount == 0)
         }
     }
@@ -336,7 +336,7 @@ struct ProfileEngineTests {
         #expect(await tabs.pullRequests(inSpace: space) == [])
         #expect(await tabs.gmailInbox(inSpace: space, account: 0) == .unavailable)
         await Task.yield()
-        #expect(profile.webKitDataStore == nil)
+        #expect(profile.webKitStorage == nil)
         #expect(tabs.liveRefreshing.isEmpty && tabs.liveRefreshed.isEmpty)
         #expect(folders.allSatisfy { tabs.liveStatus[$0] == .unavailable })
     }
@@ -355,10 +355,10 @@ struct ProfileEngineTests {
         #expect(profile === tabs.profile(forSpace: shared))
         #expect(profile !== tabs.profile(forSpace: personal))
         #expect(profile.id == tabs.tree.dataStoreID(for: work))
-        #expect(profile.webKitDataStore == nil)
+        #expect(profile.webKitStorage == nil)
         tabs.updateSpace(work, name: "Renamed", icon: nil, accentHex: nil)
         #expect(tabs.profile(forSpace: work) === profile)
-        #expect(profile.name == "Renamed" && profile.webKitDataStore == nil)
+        #expect(profile.name == "Renamed" && profile.webKitStorage == nil)
         let id = profile.id
         tabs.deleteSpace(work, keepingLeftProfile: true)
         tabs.deleteSpace(shared, keepingLeftProfile: true)
@@ -366,7 +366,7 @@ struct ProfileEngineTests {
         let reloaded = fixture.makeTabs(engine: .chromium)
         let kept = try #require(reloaded.profile(forStore: id))
         #expect(kept.id == id && kept.engine == .chromium)
-        #expect(kept.webKitDataStore == nil)
+        #expect(kept.webKitStorage == nil)
         #expect(kept === reloaded.profile(forStore: id))
     }
 
@@ -404,7 +404,7 @@ struct ProfileEngineTests {
         #expect(!page.hasFavicon)
         let profile = Profile(name: "Native", engine: .chromium)
         #expect(await tabs.clearData(of: profile) == false)
-        #expect(profile.webKitDataStore == nil)
+        #expect(profile.webKitStorage == nil)
         page.unload()
     }
     @Test func keptDeletionPersistsBeforeAdmissionAndCancellationPreservesEverything() throws {
@@ -604,13 +604,23 @@ struct ProfileEngineTests {
         #expect(!accepted)
     }
 
+    @Test func customWebKitStorageAdapterUsesTheSuppliedStore() throws {
+        let id = UUID()
+        let store = WKWebsiteDataStore.nonPersistent()
+        let profile = WebKitProfileStorage.makeProfile(id: id, name: "Imported", icon: "person", dataStore: store)
+        #expect(profile.id == id && profile.engine == .webKit && profile.name == "Imported")
+        #expect(profile.webKitStorage?.dataStore === store)
+        let configuration = try #require(BrowserConfiguration.webViewConfiguration(for: profile))
+        #expect(configuration.websiteDataStore === store)
+    }
+
     @Test func defaultPrivateWebKitStorageStillOwnsAndClearsItsCookies() async throws {
         let profile = Profile.createEphemeral()
-        let store = try #require(profile.webKitDataStore)
+        let store = try #require(profile.webKitStorage?.dataStore)
         #expect(profile.engine == .webKit && profile.isEphemeral)
-        #expect(!store.isPersistent && profile.webKitDataStore === store)
+        #expect(!store.isPersistent && profile.webKitStorage?.dataStore === store)
         let other = Profile.createEphemeral()
-        let otherStore = try #require(other.webKitDataStore)
+        let otherStore = try #require(other.webKitStorage?.dataStore)
         #expect(other.id != profile.id && otherStore !== store)
         let configuration = try #require(BrowserConfiguration.webViewConfiguration(for: profile))
         #expect(configuration.websiteDataStore === store)

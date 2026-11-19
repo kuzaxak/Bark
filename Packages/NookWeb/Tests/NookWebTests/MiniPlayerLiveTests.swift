@@ -175,7 +175,7 @@ final class LivePage {
         for page in host.tabs.sessions { page.unload() }
         window.orderOut(nil)
         window.close()
-        let dataStores = host.tabs.allSpaceProfiles.filter { $0.webKitDataStore?.isPersistent == true }.map(\.id)
+        let dataStores = host.tabs.allSpaceProfiles.filter { $0.webKitStorage?.dataStore.isPersistent == true }.map(\.id)
         return (dataStores, [directory, host.tabs.directory.deletingLastPathComponent()])
     }
 

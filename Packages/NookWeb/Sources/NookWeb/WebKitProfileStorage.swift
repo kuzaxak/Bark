@@ -5,8 +5,18 @@ import WebKit
 
 /// Owns a profile's WebKit website data and persistent session-cookie backup.
 @MainActor
-final class WebKitProfileStorage: NSObject, WKHTTPCookieStoreObserver {
-    let dataStore: WKWebsiteDataStore
+public final class WebKitProfileStorage: NSObject, WKHTTPCookieStoreObserver {
+    public let dataStore: WKWebsiteDataStore
+
+    /// Creates a WebKit profile with the caller's store and no session-cookie backup.
+    public static func makeProfile(id: UUID = UUID(), name: String, icon: String,
+                                   dataStore: WKWebsiteDataStore) -> Profile {
+        Profile(id: id, name: name, icon: icon, engine: .webKit, storage: Self(dataStore: dataStore))
+    }
+
+    static func ephemeral() -> WebKitProfileStorage {
+        Self(dataStore: .nonPersistent())
+    }
     private let persistentID: UUID?
     private var sessionCookieSave: Task<Void, Never>?
     private var savedSessionCookies: Data?
@@ -78,7 +88,7 @@ final class WebKitProfileStorage: NSObject, WKHTTPCookieStoreObserver {
         }
     }
 
-    func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+    public func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
         sessionCookieSave?.cancel()
         sessionCookieSave = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1))

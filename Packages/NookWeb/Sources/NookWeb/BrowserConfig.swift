@@ -126,7 +126,7 @@ public class BrowserConfiguration {
     /// Refuse native identities before instantiating shared WebKit configuration.
     @MainActor
     public static func webViewConfiguration(for profile: Profile) -> WKWebViewConfiguration? {
-        guard let dataStore = profile.webKitDataStore else { return nil }
+        guard let dataStore = profile.webKitStorage?.dataStore else { return nil }
         let browser = webKit
         let config = browser.webViewConfiguration.copy() as! WKWebViewConfiguration
         config.userContentController = browser.freshUserContentController()

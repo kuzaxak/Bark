@@ -1073,7 +1073,7 @@ private struct NoTokens: KagiTokenStore {
     precondition(!Native.admitted.contains(703) && !Native.admitted.contains(704))
     let source = tabs.privateWindows.first { $0.ephemeralProfile?.id == a }!
     let originalSession = tabs.selectedSession(in: source)!, page = originalSession.navigation as! ChromiumPageNavigation
-    precondition(page.isPrivateSession && originalSession.isPrivate && originalSession.profile?.webKitDataStore == nil)
+    precondition(page.isPrivateSession && originalSession.isPrivate && originalSession.profile?.webKitStorage == nil)
     add(711, session: a)
     Native.tabs[Native.tabs.firstIndex { $0.tab == 7110 }!].opener_tab = 7010
     admission.apply(Native.bridge.readSnapshot()!)
@@ -2275,7 +2275,7 @@ private struct NoTokens: KagiTokenStore {
     Native.tabs.append(Native.tab(40001, window: 4001))
     tabs.deleteSpace(keptSpace, keepingLeftProfile: true)
     let kept = tabs.profile(forStore: keptID)!
-    precondition(kept.id == keptID && kept.webKitDataStore == nil && tabs.profiles.first(where: { $0.id == keptID })?.spaceIDs.isEmpty == true)
+    precondition(kept.id == keptID && kept.webKitStorage == nil && tabs.profiles.first(where: { $0.id == keptID })?.spaceIDs.isEmpty == true)
     let keptTree = tabs.tree, keptDevice = tabs.device
     let keptPage = try ChromiumPageNavigation(profileID: keptID, window: 4001, tab: 40001, bridge: Native.bridge)
     let keptController = ChromiumMiniWindowController(tabs: tabs, profile: kept, navigation: keptPage,

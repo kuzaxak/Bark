@@ -47,7 +47,7 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   precondition(preview.isCurrent(in:window,tabs:tabs))
   window.isIncognito=true;precondition(!preview.isCurrent(in:window,tabs:tabs));window.isIncognito=false
   registry.unregister(window.id);precondition(!preview.isCurrent(in:window,tabs:tabs))
-  precondition(tabs.sessions.isEmpty && tabs.profile(forSpace:work)?.webKitDataStore == nil)
+  precondition(tabs.sessions.isEmpty && tabs.profile(forSpace:work)?.webKitStorage == nil)
   // Actual shipped folder and Gmail source tasks share a transport with the
   // native two-per-profile admission bound. No fake batch implementation.
   let work2=tabs.createSpace(name:"Work 2",icon:"",accentHex:"#123456",after:personal)!

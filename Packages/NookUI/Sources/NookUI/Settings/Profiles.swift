@@ -421,17 +421,17 @@ struct ProfileDetailForm: View {
     #endif
 
     private var supportsWebsiteData: Bool {
-        tabs.profile(forStore: profile.id)?.webKitDataStore != nil
+        tabs.profile(forStore: profile.id)?.webKitStorage != nil
     }
 
     private func refreshDataSize() async {
-        guard let store = tabs.profile(forStore: profile.id), store.webKitDataStore != nil else { return }
+        guard let store = tabs.profile(forStore: profile.id), store.webKitStorage != nil else { return }
         await store.refreshDataStoreStats()
         dataSize = store.estimatedDataSize
     }
 
     private func clearData() async {
-        guard let store = tabs.profile(forStore: profile.id), store.webKitDataStore != nil else { return }
+        guard let store = tabs.profile(forStore: profile.id), store.webKitStorage != nil else { return }
         await tabs.clearData(of: store)
         dataSize = store.estimatedDataSize
     }

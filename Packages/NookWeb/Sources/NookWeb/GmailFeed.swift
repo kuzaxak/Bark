@@ -169,7 +169,7 @@ extension TabsController {
             } catch ProfileLiveFailure.unavailable { return .unavailable }
             catch { return .failed }
         }
-        guard let store = profile.webKitDataStore else { return .unavailable }
+        guard let store = profile.webKitStorage?.dataStore else { return .unavailable }
         let cookies = await store.httpCookieStore.allCookies()
         return await GmailFeed.fetch(account: account, cookies: cookies)
     }

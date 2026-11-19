@@ -51,7 +51,12 @@ There is no app test target. Logic with its own checks lives in `Checks/` folder
 
 A tab’s saved state lives in `NookTabsCore`. `PageSession` follows a live
 page through the engine-neutral `PageNavigation` protocol. Implement a new
-Chromium operation in the native adapter using Bark’s public C bridge.
+Chromium operation in the native adapter using Bark’s public C bridge. The shared
+`Profile` carries identity and an optional
+[WebKitProfileStorage capability](Packages/NookWeb/Sources/NookWeb/WebKitProfileStorage.swift).
+Only a WebKit host uses that capability’s `dataStore` or implements
+[WebKitPageSessionDelegate](Packages/NookWeb/Sources/NookWeb/WebKitPageSessionDelegate.swift).
+Chromium profiles do not create a WebKit store.
 `NativePageHost` owns creation, selection, transfer and acknowledged close.
 Check the page’s current window and profile before applying an asynchronous
 result. A transfer can preserve the document while changing the window

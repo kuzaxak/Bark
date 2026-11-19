@@ -40,6 +40,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [x] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
   Page-host checks retain the existing page adapter across a window transfer. The signed Intel mini-window transfer in section 4a preserved the document and draft. AppKit checks cover promotion while the source pane keeps focus and a late Peek request for the promoted sibling. The signed split walk restored typing to the original document, draft and scroll position, and delivered a click to the uncovered sibling.
 - [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.
+  The shared profile and page delegate no longer expose raw WebKit storage or callback types. WebKit hosts use the explicit storage and delegate adapters. The package suite exercises custom and private stores and Chromium profiles without a WebKit store. Public WebKit view accessors and PDF operations on the shared page still need migration.
 
 ## 3a. Shared smart-tab policy (after G2, before G4 completion)
 
@@ -130,7 +131,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 9.1 Run the complete compatibility, extension and migration matrices on both architectures; attach concise results to the review/ticket and keep transient logs outside commits.
 - [ ] 9.2 Compare candidate measurements against the frozen per-architecture budgets; record pass/fail and any explicitly accepted change before promotion.
 - [ ] 9.3 Prepare opt-in canary/beta rollout, recovery instructions and named security ownership; verify a release candidate can use the runbook without undocumented steps.
-- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite. The legacy app scene, desktop window, split compositor and mini-window presenter have been removed. Shared WebKit services and fixtures remain.
+- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite. The legacy app scene, desktop window, split compositor, mini-window presenter, extension host and app-owned cookie/cache managers have been removed. Bark's profile-specific Chromium controls handle site data. Shared WebKit services and fixtures remain.
 
 ## Workflow follow-up
 
