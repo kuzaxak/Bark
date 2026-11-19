@@ -138,20 +138,4 @@ public class BrowserConfiguration {
         }
         return config
     }
-
-    // MARK: - Chrome Web Store Integration
-    
-    /// Get the Web Store injector script
-    public static func webStoreInjectorScript() -> WKUserScript? {
-        guard let scriptPath = Bundle.main.path(forResource: "WebStoreInjector", ofType: "js"),
-              let scriptSource = try? String(contentsOfFile: scriptPath, encoding: .utf8) else {
-            return nil
-        }
-        
-        return WKUserScript(
-            source: scriptSource,
-            injectionTime: .atDocumentEnd,
-            forMainFrameOnly: true
-        )
-    }
 }

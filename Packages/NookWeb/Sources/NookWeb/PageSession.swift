@@ -272,7 +272,6 @@ public final class PageSession: NSObject, Identifiable {
     /// UInt32 rather than AudioDeviceID so this file stays free of a macOS-only type.
     @ObservationIgnored var audioRunningListenerDevice: UInt32?
     @ObservationIgnored var profileAwaitCancellable: AnyCancellable?
-    @ObservationIgnored var webStoreHandler: AnyObject?
     @ObservationIgnored var didNotifyOpenToExtensions: Bool = false
 
     @ObservationIgnored let themeColorObservedWebViews = NSHashTable<AnyObject>.weakObjects()
@@ -1085,7 +1084,6 @@ public final class PageSession: NSObject, Identifiable {
         stopNativeAudioMonitoring()
         profileAwaitCancellable?.cancel()
         profileAwaitCancellable = nil
-        webStoreHandler = nil
         devCapture = nil
         resetTranslation()
         loadingState = .idle
@@ -1109,12 +1107,6 @@ public final class PageSession: NSObject, Identifiable {
         savedHistory = nil
         isAudioMuted = false
         controller?.sessionDelegate?.cleanupZoom(for: itemID)
-        if webStoreHandler != nil {
-            if let controller = primaryWebView?.configuration.userContentController {
-                self.controller?.webKitSessionDelegate?.removeWebStoreHandler(from: controller)
-            }
-            webStoreHandler = nil
-        }
     }
 
     /// Detaches a view from this session: handlers, observers, delegates, superview.
@@ -1129,7 +1121,6 @@ public final class PageSession: NSObject, Identifiable {
         }
         controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
         controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-        self.controller?.webKitSessionDelegate?.removeWebStoreHandler(from: controller)
         #if os(macOS)
         VaultBridge.uninstall(from: controller)
         #endif

@@ -469,6 +469,4 @@ final class RecordingCertificateDelegate: WebKitPageSessionDelegate {
     func configureShortcutDetection(in webView: WKWebView) {}
     func shortcutDetectorDidNavigate(to url: URL) {}
     func updateDetectedShortcuts(for url: String, shortcuts: Set<String>) {}
-    func installWebStoreScript(in webView: WKWebView) -> AnyObject? { nil }
-    func removeWebStoreHandler(from controller: WKUserContentController) {}
 }

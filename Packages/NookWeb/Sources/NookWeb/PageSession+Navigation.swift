@@ -79,10 +79,6 @@ extension PageSession {
 
             // Load saved zoom level for the new domain
             controller?.webKitSessionDelegate?.loadZoom(for: self.itemID)
-
-            // CHROME WEB STORE INTEGRATION: Inject script after navigation
-            injectWebStoreScriptIfNeeded(for: newURL, in: webView)
-
         }
 
         // CRITICAL: Update navigation state after back/forward navigation

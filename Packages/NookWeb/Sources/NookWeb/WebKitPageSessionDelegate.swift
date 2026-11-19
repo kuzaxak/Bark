@@ -45,11 +45,4 @@ public protocol WebKitPageSessionDelegate: PageSessionDelegate {
     func configureShortcutDetection(in webView: WKWebView)
     func shortcutDetectorDidNavigate(to url: URL)
     func updateDetectedShortcuts(for url: String, shortcuts: Set<String>)
-
-    // MARK: Chrome Web Store
-
-    /// Installs the "Add to Nook" handler and script on a store page. Returns the handler to
-    /// retain for the life of the page, or nil when the URL is not a store page.
-    func installWebStoreScript(in webView: WKWebView) -> AnyObject?
-    func removeWebStoreHandler(from controller: WKUserContentController)
 }
