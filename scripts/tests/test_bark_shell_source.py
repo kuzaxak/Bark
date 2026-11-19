@@ -29,7 +29,7 @@ class SourceTests(unittest.TestCase):
         path.write_bytes(content)
         return path
 
-    def test_checkout_and_archive_match_but_dirty_inputs_do_not(self):
+    def make_shell_inputs(self):
         for name in shell._INPUTS:
             path = Path(name)
             if not path.suffix or path.name == "xcshareddata":
@@ -38,9 +38,12 @@ class SourceTests(unittest.TestCase):
         for package in shell._PACKAGES:
             self.write(f"Packages/{package}/Package.swift")
             self.write(f"Packages/{package}/Sources/fixture.swift")
-        sdk = shell._SDK_INTERFACE
         self.write(shell._ADBLOCK_BINARY / "libnook_adblock.a")
-        self.write(sdk / "macos-arm64_x86_64/Headers/BarcChromium/public.h")
+        self.write(shell._SDK_INTERFACE / "macos-arm64_x86_64/Headers/BarcChromium/public.h")
+
+    def test_checkout_and_archive_match_but_dirty_inputs_do_not(self):
+        self.make_shell_inputs()
+        sdk = shell._SDK_INTERFACE
         original = shell.shell_source_digest(self.root)
         archive = self.root / "archive"
         shutil.copytree(self.root, archive)
@@ -68,8 +71,36 @@ class SourceTests(unittest.TestCase):
                     path.unlink()
                 else:
                     path.write_bytes(prior)
-        (self.root / "App/relative.swift").symlink_to("fixture")
-        with self.assertRaisesRegex(ValueError, "Unsupported shell source input"):
+
+    def test_relocated_links_bind_destinations_and_file_contents(self):
+        self.make_shell_inputs()
+        source = self.write("Shared/first.swift", b"shared code")
+        self.write("Shared/second.swift", b"shared code")
+        link = self.root / "App/relative.swift"
+        link.symlink_to("../Shared/first.swift")
+        linked = shell.shell_source_digest(self.root)
+        source.write_bytes(b"edited shared code")
+        self.assertNotEqual(shell.shell_source_digest(self.root), linked)
+        link.unlink()
+        link.symlink_to("../Shared/second.swift")
+        self.assertNotEqual(shell.shell_source_digest(self.root), linked)
+        link.unlink()
+        alias = self.root / "App/Shared"
+        alias.symlink_to("../Shared", target_is_directory=True)
+        moved = self.root / "relocated"
+        shutil.copytree(self.root, moved, symlinks=True, ignore=shutil.ignore_patterns("relocated", "archive"))
+        self.assertEqual(shell.shell_source_digest(moved), shell.shell_source_digest(self.root))
+        alias.unlink()
+        alias.symlink_to("Shared")
+        with self.assertRaises((ValueError, OSError)):
+            shell.shell_source_digest(self.root)
+        alias.unlink()
+        alias.symlink_to(".", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "Directory cycle"):
+            shell.shell_source_digest(self.root)
+        alias.unlink()
+        alias.symlink_to("../..", target_is_directory=True)
+        with self.assertRaisesRegex(ValueError, "within the checkout"):
             shell.shell_source_digest(self.root)
 
     def test_legacy_missing_invalid_and_verified_bundle_value(self):

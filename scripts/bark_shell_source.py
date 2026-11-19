@@ -29,8 +29,19 @@ _PROJECT_EXCLUSIONS = {
 }
 
 
-def _inputs(root):
-    def collect(relative):
+def _inputs(root, links):
+    def record_link(relative):
+        path = root / relative
+        target = path.readlink()
+        try:
+            resolved = path.resolve(strict=True)
+        except RuntimeError as error:
+            raise ValueError(f"Cycle in shell source links: {relative}") from error
+        if target.is_absolute() or not resolved.is_relative_to(root):
+            raise ValueError(f"Shell source link must resolve within the checkout: {relative}")
+        links[relative] = target.as_posix()
+
+    def collect(relative, parents=frozenset()):
         if relative.name in _IGNORED_NAMES or relative in _PROJECT_EXCLUSIONS:
             return
         if relative.is_relative_to(_SDK_INTERFACE) and (
@@ -41,37 +52,53 @@ def _inputs(root):
         if relative.is_relative_to(_RUST) and relative != _RUST and not relative.is_relative_to(_ADBLOCK_BINARY):
             return
         path = root / relative
-        mode = path.lstat().st_mode
-        if stat.S_ISDIR(mode):
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            record_link(relative)
+            info = path.stat()
+        if stat.S_ISDIR(info.st_mode):
+            identity = (info.st_dev, info.st_ino)
+            if identity in parents:
+                raise ValueError(f"Directory cycle in shell source inputs: {relative}")
+            lineage = parents | {identity}
             for child in path.iterdir():
-                yield from collect(relative / child.name)
-        elif stat.S_ISREG(mode):
+                yield from collect(relative / child.name, lineage)
+        elif stat.S_ISREG(info.st_mode):
             yield relative
         else:
             raise ValueError(f"Unsupported shell source input: {relative}")
 
-    paths = tuple(Path(name) for name in _INPUTS)
-    for relative in (*paths, _SDK_INTERFACE):
+    paths = [Path(name) for name in _INPUTS]
+    paths.append(_SDK_INTERFACE)
+    for package in _PACKAGES:
+        paths.extend(Path("Packages") / package / name for name in ("Package.swift", "Sources"))
+    for relative in paths:
+        # A local package or Xcode group can itself be a source-tree alias.
+        for parent in reversed(relative.parents):
+            if parent not in links and (root / parent).is_symlink():
+                record_link(parent)
         # This synchronized Xcode group currently has no source directory.
-        if relative == Path("Settings") and not (root / relative).exists():
+        path = root / relative
+        if relative == Path("Settings") and not path.exists() and not path.is_symlink():
             continue
         yield from collect(relative)
-    for package in _PACKAGES:
-        path = Path("Packages") / package
-        for name in ("Package.swift", "Sources"):
-            yield from collect(path / name)
 
 
 def shell_source_digest(root):
     """Hash local inputs by relative path and content using the v1 format."""
-    root = Path(root)
+    root = Path(root).resolve(strict=True)
+    links = {}
     digest = hashlib.sha256(b"Bark shell source v1\0")
-    for path in sorted(_inputs(root)):
+    for path in sorted(_inputs(root, links)):
         content = hashlib.sha256()
         with (root / path).open("rb") as handle:
             for block in iter(lambda: handle.read(1024 * 1024), b""):
                 content.update(block)
         digest.update(path.as_posix().encode("utf-8") + b"\0" + content.digest())
+    if links:
+        digest.update(b"\0Bark shell source links\0")
+        for path, target in sorted(links.items()):
+            digest.update(path.as_posix().encode("utf-8") + b"\0" + target.encode("utf-8") + b"\0")
     return digest.hexdigest()
 
 

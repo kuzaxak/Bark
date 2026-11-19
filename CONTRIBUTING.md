@@ -148,9 +148,9 @@ python3 scripts/bark-check.py verify --shell-source REPORTED_SHA256 /path/to/Bar
 
 This digest includes local app and package sources, resources, the Release project and package
 lock, and the SDK compile interface. It excludes the runtime engine, engine pins, tests,
-generated output and documentation outside the build input paths. Inputs must be regular
-files or directories. Symlinks inside those paths are refused. The digest describes the files
-on disk, including local edits. The build refuses when the fingerprints taken before compilation
+generated output and documentation outside the build input paths. For relative links within
+the checkout it includes both the link destination and the input contents. Keep linked
+inputs inside the source archive so it can move between Macs. The digest includes local edits. The build refuses when the fingerprints taken before compilation
 and after staging differ. Build from an isolated source snapshot when reproducibility matters.
 The digest does not encode the compiler, signing identity or a Git commit. Older signed apps
 can still be verified without `--shell-source`. Release packaging requires the field.
