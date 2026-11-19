@@ -16,6 +16,32 @@ from bark_release import (SPARKLE, TEAM, check_distribution_settings, configure_
                           verify_installed_image, write_appcast)
 
 
+class NookReleaseSourceTests(unittest.TestCase):
+    def test_requires_legacy_project_and_shared_scheme_before_release(self):
+        with tempfile.TemporaryDirectory() as workspace:
+            root = Path(workspace)
+            script = root / "scripts/release.sh"
+            script.parent.mkdir()
+            shutil.copy(Path(__file__).resolve().parents[1] / "release.sh", script)
+            project = root / "Nook.xcodeproj/project.pbxproj"
+            scheme = root / "Nook.xcodeproj/xcshareddata/xcschemes/Nook.xcscheme"
+            scheme.parent.mkdir(parents=True)
+            for has_project, has_scheme in ((False, False), (True, False), (False, True), (True, True)):
+                with self.subTest(project=has_project, scheme=has_scheme):
+                    for path, present in ((project, has_project), (scheme, has_scheme)):
+                        if present:
+                            path.touch()
+                        else:
+                            path.unlink(missing_ok=True)
+                    result = subprocess.run([script, "--check-source"], capture_output=True, text=True)
+                    if has_project and has_scheme:
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn("Prepare Bark Candidate", result.stderr)
+                    self.assertFalse((root / "build").exists())
+
+
 class ReleaseTests(unittest.TestCase):
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory()

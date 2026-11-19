@@ -1,4 +1,4 @@
-name: Release
+name: Release Nook
 
 # A version tag (v1.4.0.2) builds the universal app with scripts/release.sh: Developer ID
 # signature, notarized and stapled app and DMG, EdDSA-signed appcast, and a GitHub release with
@@ -45,6 +45,10 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Verify the Nook release source
+        id: legacy_source
+        run: scripts/release.sh --check-source
+
       - name: Set version
         env:
           INPUT_VERSION: ${{ inputs.version }}
@@ -84,5 +88,5 @@ jobs:
         run: caffeinate -i scripts/release.sh "$VERSION" --publish
 
       - name: Remove temporary keychain
-        if: always()
+        if: always() && steps.legacy_source.outcome == 'success'
         run: scripts/ci-keychain.sh cleanup

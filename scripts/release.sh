@@ -27,6 +27,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Bark uses a separate signed SDK and an architecture-specific update feed.
+# Refuse the wrong checkout before touching build outputs or release credentials.
+if [[ ! -f Nook.xcodeproj/project.pbxproj || ! -f Nook.xcodeproj/xcshareddata/xcschemes/Nook.xcscheme ]]; then
+  echo "The Nook release requires a revision containing its shared Nook scheme. For Bark, use Prepare Bark Candidate." >&2
+  exit 1
+fi
+if [[ "$#" == 1 && "$1" == "--check-source" ]]; then
+  exit 0
+fi
+
 VERSION="${1:?usage: scripts/release.sh <version> [--publish | --app-only]}"
 PUBLISH="${2:-}"
 [[ -z "$PUBLISH" || "$PUBLISH" == "--publish" || "$PUBLISH" == "--app-only" ]] || { echo "Unknown option: $PUBLISH"; exit 1; }
