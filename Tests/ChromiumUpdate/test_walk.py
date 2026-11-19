@@ -5,8 +5,11 @@ import hashlib
 import json
 from io import StringIO
 from pathlib import Path
+import plistlib
 import runpy
 import shutil
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -17,6 +20,40 @@ import update_kit
 
 
 class SparklePreparationTests(unittest.TestCase):
+    @unittest.skipUnless(sys.platform == "darwin", "Uses macOS bundle signing")
+    def test_disk_image_copy_verifies_installed_resources(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "Source.app"
+            contents = app / "Contents"
+            (contents / "MacOS").mkdir(parents=True)
+            (contents / "Resources").mkdir()
+            bundle_id = "test.bark.update.copy"
+            (contents / "Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleIdentifier": bundle_id, "CFBundleExecutable": "Fixture",
+                "CFBundlePackageType": "APPL",
+            }))
+            shutil.copy("/usr/bin/true", contents / "MacOS/Fixture")
+            (contents / "Resources/payload.txt").write_text("update fixture")
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", app],
+                           capture_output=True, check=True)
+            requirement = f'=identifier "{bundle_id}"'
+            expected = walk.bark_release.bundle_cdhash(app)
+            self.assertEqual(walk.copy_kit_app(app, root / "Complete.app", requirement), expected)
+
+            # Model an incomplete copy. The executable and its CodeDirectory still arrive intact.
+            incomplete = root / "Incomplete.app"
+            def copy_without_resource(command, *args):
+                if command == "/usr/bin/ditto":
+                    shutil.copytree(args[0], args[1], ignore=shutil.ignore_patterns("payload.txt"))
+                else:
+                    subprocess.run([command, *args], capture_output=True, check=True)
+
+            with patch.object(walk, "run", side_effect=copy_without_resource), \
+                    self.assertRaises(subprocess.CalledProcessError):
+                walk.copy_kit_app(app, incomplete, requirement)
+            self.assertEqual(walk.bark_release.bundle_cdhash(incomplete), expected)
+
     def test_extraction_does_not_start_quit_deadline(self):
         status = {"installer_visible": True, "controls": {}, "dialog_text": ["Extracting update…"]}
         self.assertFalse(walk.preparation_handoff_seen(status, True))

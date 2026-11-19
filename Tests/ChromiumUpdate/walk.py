@@ -664,6 +664,15 @@ def verify_kit_app(check, app, source, engine, work, arch, settings, requirement
             raise ValueError(f"The kit shell differs from its verified ordinary source at {binary}.")
 
 
+def copy_kit_app(app, destination, requirement):
+    image_hash = bark_release.bundle_cdhash(app)
+    run("/usr/bin/ditto", app, destination)
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement, destination)
+    if bark_release.bundle_cdhash(destination) != image_hash:
+        raise ValueError(f"The copied rehearsal app differs from its signed disk image: {destination}")
+    return image_hash
+
+
 def run_kit(check, args, engine, qualification, arch, work, output):
     source = args.candidate_app.resolve(strict=True)
     source_hash = verify_ordinary_source(check, source, engine, work, arch)
@@ -692,20 +701,18 @@ def run_kit(check, args, engine, qualification, arch, work, output):
         })
         with mount_app(original, work, run) as original_app:
             verify_kit_app(check, original_app, source, engine, work, arch, settings[0], requirement)
-            original_hash = bark_release.bundle_cdhash(original_app)
-            run("/usr/bin/ditto", original_app, installed)
-            if bark_release.bundle_cdhash(installed) != original_hash:
-                raise ValueError("The installed original does not match its disk image.")
+            original_hash = copy_kit_app(original_app, installed, requirement)
         newer = work / "reference/Bark.app"
         newer.parent.mkdir()
         with mount_app(replacement, work, run) as replacement_app:
             verify_kit_app(check, replacement_app, source, engine, work, arch, settings[1], requirement)
-            replacement_hash = bark_release.bundle_cdhash(replacement_app)
-            run("/usr/bin/ditto", replacement_app, newer)
-        if replacement_hash != bark_release.bundle_cdhash(newer) or original_hash == replacement_hash:
-            raise ValueError("The signed replacement does not match the verified, distinct update.")
+            replacement_hash = copy_kit_app(replacement_app, newer, requirement)
+        if original_hash == replacement_hash:
+            raise ValueError("The installed original and replacement must be distinct builds.")
         if source_hash != bark_release.bundle_cdhash(source):
             raise ValueError("The ordinary source app changed during verification.")
+        print(f"Verified the installed build 100 and reference build 101 from the signed {arch} disk images.",
+              flush=True)
         qualification.update(shell_source="signed-candidate", source_bundle_cdhash=source_hash,
                              original_bundle_cdhash=original_hash, replacement_bundle_cdhash=replacement_hash,
                              rehearsal_kit=file_digest(snapshot / MANIFEST))
