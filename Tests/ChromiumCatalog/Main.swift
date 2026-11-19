@@ -2714,19 +2714,21 @@ private final class CatalogApplication: NSApplication {
         try? FileManager.default.removeItem(at: root)
     }
     // Empty spaces exercise command dispatch without requiring a renderer for a starter tab.
-    let initialSpace = UUID(), destination = UUID(), drafts = UUID()
+    let initialSpace = UUID(), destination = UUID(), drafts = UUID(), personal = UUID()
     let first = BrowserWindowState(), second = BrowserWindowState()
-    let original = UUID(), other = UUID()
+    let original = UUID(), other = UUID(), personalDraft = UUID()
     var tree = TabTree()
     tree.createSpace(id: initialSpace, name: "First", icon: "house", accentHex: "#225588", after: nil)
     tree.createSpace(id: destination, name: "Second", icon: "house", accentHex: "#225588", after: initialSpace)
     tree.createSpace(id: drafts, name: "Drafts", icon: "folder", accentHex: "#225588", after: destination)
+    tree.createSpace(id: personal, name: "Personal", icon: "person", accentHex: "#886622", after: drafts)
     let url = URL(string: "https://fixture.invalid/draft")!
     _ = try tree.createTab(id: original, url: url, title: "Draft", in: .tabs(spaceID: drafts), after: nil)
     _ = try tree.createTab(id: other, url: url, title: "Draft", in: .tabs(spaceID: drafts), after: original)
+    _ = try tree.createTab(id: personalDraft, url: url, title: "Draft", in: .tabs(spaceID: personal), after: nil)
     var device = DeviceState()
     device.windows = [
-        WindowRecord(id: first.id, spaceID: initialSpace, selectedItemBySpace: [drafts: original]),
+        WindowRecord(id: first.id, spaceID: initialSpace, selectedItemBySpace: [drafts: original, personal: personalDraft]),
         WindowRecord(id: second.id, spaceID: initialSpace, selectedItemBySpace: [drafts: other]),
     ]
     device.firstLaunchCompleted = true
@@ -2803,6 +2805,27 @@ private final class CatalogApplication: NSApplication {
     first.spaceID = drafts
     second.spaceID = drafts
     precondition(first.selectedItemID == original && second.selectedItemID == other)
+    focus(first)
+    shortcuts.perform(.toggleBookmark)
+    focus(second)
+    drain()
+    precondition(manager.tabs.section(of: other) == .tabs(spaceID: drafts),
+                 "Bookmark Tab moved the other window's draft into Pinned")
+    precondition(manager.tabs.section(of: original) == .tabs(spaceID: drafts))
+    focus(first)
+    shortcuts.perform(.toggleBookmark)
+    first.spaceID = personal
+    drain()
+    precondition(first.selectedItemID == personalDraft && manager.tabs.section(of: personalDraft) == .tabs(spaceID: personal),
+                 "Bookmark Tab changed a different profile after the window switched spaces")
+    first.spaceID = drafts
+    shortcuts.perform(.toggleBookmark)
+    drain()
+    precondition(manager.tabs.section(of: original) == .pinned(spaceID: drafts),
+                 "Bookmark Tab must still work in its invoking window")
+    shortcuts.perform(.toggleBookmark)
+    drain()
+    precondition(manager.tabs.section(of: original) == .tabs(spaceID: drafts))
     focus(first)
     shortcuts.perform(.closeTab)
     focus(second)

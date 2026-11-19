@@ -281,8 +281,7 @@ class KeyboardShortcutManager {
     }
 
     func reopenClosedTab() {
-        guard let browserManager, let window = windowRegistry?.activeWindow else { return }
-        DispatchQueue.main.async { browserManager.tabs.reopenLastClosed(in: window) }
+        executeAction(.undoCloseTab)
     }
 
     private static func isControlTab(_ event: NSEvent) -> Bool {
@@ -399,20 +398,30 @@ class KeyboardShortcutManager {
             return
         }
 
-        let requiresSameWindow = action == .toggleSidebar || action == .nextSpace ||
-            action == .previousSpace || action.spaceIndex != nil
-        let source = requiresSameWindow ? keyBrowserWindow : nil
+        let target = ShortcutTarget(action)
+        let source = keyBrowserWindow
+        let space = source?.spaceID
+        let item = source?.selectedItemID
+        if target == .selectedTab {
+            guard item != nil, source?.nativePresentationIsPreparing == false,
+                  source?.nativeSpaceSwitchIsUnresolved == false else { return }
+        }
         let run = { [weak self, weak source, weak owner = source?.window] in
             guard let self else { return }
             let tabs = browserManager.tabs
-            let window: BrowserWindowState?
-            if requiresSameWindow {
+            switch target {
+            case .browserWindow, .space, .selectedTab:
                 guard let source, let owner, self.keyBrowserWindow === source,
                       source.window === owner else { return }
-                window = source
-            } else {
-                window = self.windowRegistry?.activeWindow
+                if target != .browserWindow, source.spaceID != space { return }
+                if target == .selectedTab {
+                    guard source.selectedItemID == item, !source.nativePresentationIsPreparing,
+                          !source.nativeSpaceSwitchIsUnresolved else { return }
+                }
+            case .application, .keyWindow:
+                break
             }
+            let window = source
 
             switch action {
             case .goBack, .goForward, .refresh, .clearCookiesAndRefresh, .hardReload, .findInPage,
@@ -527,8 +536,8 @@ class KeyboardShortcutManager {
                 settings.appearanceMode = isDark ? .light : .dark
             }
         }
-        // Close has to resolve its layer while the invoking window and pane still own the key.
-        if action == .closeTab { run() }
+        // AppKit also delivers Close to utility windows. Resolve its layer during the key event.
+        if target == .keyWindow { run() }
         else { DispatchQueue.main.async { run() } }
     }
 
@@ -553,6 +562,26 @@ class KeyboardShortcutManager {
     deinit {
         if let monitor = eventMonitor {
             NSEvent.removeMonitor(monitor as! NSObjectProtocol)
+        }
+    }
+}
+
+private enum ShortcutTarget {
+    case application, keyWindow, browserWindow, space, selectedTab
+
+    init(_ action: ShortcutAction) {
+        switch action {
+        case .newWindow, .closeBrowser, .toggleDarkMode, .toggleTopBarAddressView:
+            self = .application
+        case .closeTab, .closeWindow:
+            self = .keyWindow
+        case .duplicateTab, .toggleBookmark, .pinToSpace, .addToFavorites, .renameTab, .addToFolder, .moveToSpace:
+            self = .selectedTab
+        case .undoCloseTab, .nextTab, .previousTab, .goToTab1, .goToTab2, .goToTab3, .goToTab4,
+             .goToTab5, .goToTab6, .goToTab7, .goToTab8, .goToLastTab, .expandAllFolders, .customizeSpaceGradient, .organizeTabs:
+            self = .space
+        default:
+            self = .browserWindow
         }
     }
 }
