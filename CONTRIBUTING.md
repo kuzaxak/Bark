@@ -263,6 +263,25 @@ set -l evidence (mktemp -d /private/tmp/bark-timing.XXXXXX)
 python3 Tests/ChromiumStartup/walk.py --app build/Bark.app --require-official --output "$evidence/startup"
 ```
 
+### Measuring package size for Q1
+
+Measure the signed app extracted from the exact distribution being qualified. Run the commands from the source revision that pins its SDK, once per native architecture. For an update, measure the Sparkle ZIP served by the feed. For an initial installation, measure the distributed disk image.
+
+```fish
+set app /path/to/extracted/Bark.app
+set archive /path/to/Bark-release.zip
+set arch (python3 scripts/chromium_sdk_layout.py native-arch)
+python3 -B scripts/bark-check.py verify --arch "$arch" --require-official "$app"; or exit 1
+/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist"
+shasum -a 256 "$archive"
+stat -f 'Download bytes: %z' "$archive"
+du -A -s -k "$app"
+du -s -k "$app"
+du -A -k -d 1 "$app/Contents/Frameworks" | sort -nr
+```
+
+Record the archive digest, download bytes, apparent bundle size and allocated bundle size in KiB, with the build number, SDK pin, architecture and macOS version. The per-framework breakdown identifies which component grew. APFS clones and compression affect allocated space. Compare the same architecture and archive format with the preceding release. Capture the agreed size limits and measured deltas in the release ticket before promotion.
+
 ### Prepare a Bark distribution candidate
 
 The manual **Prepare Bark Candidate** workflow uses the architecture's pinned official SDK. It checks the build receipt and embedded framework before signing, then uploads the notarized, stapled DMG and Sparkle appcast for review. Feed and download publication are separate release steps. The public Nook transition feed uses the existing Nook release workflow.
