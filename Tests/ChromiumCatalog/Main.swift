@@ -1514,10 +1514,15 @@ private final class CatalogApplication: NSApplication {
         delivery.delayedItem = delayed ? splitOther : nil
         precondition(splitAdmission.admitRestoredWindow(state, native: native, profile: Native.work,
             show: true, canPresent: { true }, completion: { outcomes.append($0) }))
+        var refusedPane: Int32?
         if delayed {
             precondition(delivery.isPending && outcomes.isEmpty && Native.shown.count == showsBefore)
             precondition(splitRegistry.windows[state.id] === state && state.split == split)
-            if mode == "refused" { Native.servesPageViews = false }
+            if mode == "refused" {
+                let pane = Native.tabs.first { $0.window == native && $0.tab != native * 10 }!.tab
+                refusedPane = pane
+                Native.viewless.insert(pane)
+            }
             if mode == "closed" { splitRegistry.unregister(state.id) }
             if mode == "new-selection" { splitTabs.select(splitOther, in: state) }
             delivery.resolve()
@@ -1537,7 +1542,7 @@ private final class CatalogApplication: NSApplication {
         if succeeds { precondition(split.itemIDs.allSatisfy { splitTabs.session(for: $0)?.navigation != nil }) }
         if mode == "new-selection" { precondition(state.selectedItemID == splitOther) }
         if mode == "closed" { precondition(Native.failedPrivateCloses.count == closedPagesBefore + 1) }
-        Native.servesPageViews = true
+        if let refusedPane { Native.viewless.remove(refusedPane) }
         Native.end(native)
         splitAdmission.apply(Native.bridge.readSnapshot()!)
     }
@@ -2846,6 +2851,48 @@ private final class CatalogApplication: NSApplication {
             precondition(state.split == record && barkRoot!.split?.panes.count == 2
                          && Set(barkRoot!.split!.panes.compactMap { $0?.client }) == (mode == "two-profiles" ? [native, joined] : [native]),
                          "\(mode): the saved split shows in the Bark window: \(String(describing: barkRoot!.split))")
+            let focused = tabs.session(for: first)!, inactive = tabs.session(for: record.itemIDs[1])!
+            let pages = [focused.itemID: focused, inactive.itemID: inactive]
+            let background = inactive.navigation as! ChromiumPageNavigation
+            let inactiveView = Native.pageViews[background.nativeTabID]!
+            precondition(host.isSplit(record, pages: pages, activeItemID: first, in: state))
+            let replacementRoot = NSView()
+            replacementRoot.addSubview(inactiveView)
+            precondition(host.isNativeSelection(focused.navigation!, in: state) && barkRoot!.split != nil)
+            precondition(!host.isSplit(record, pages: pages, activeItemID: first, in: state),
+                         "A restored split missing its inactive pane must not be considered presented (\(mode))")
+            let beforeLoads = Native.restoredURLs
+            host.showModelSplit(record.itemIDs.map(Optional.some), vertical: record.orientation == .vertical,
+                dividers: record.dividers.map { CGFloat($0) }, focused: first,
+                page: { pages[$0]?.navigation as? ChromiumPageNavigation }, in: state)
+            precondition(host.isSplit(record, pages: pages, activeItemID: first, in: state) &&
+                         inactive.navigation === background && inactiveView.isDescendant(of: barkRoot!) &&
+                         Native.restoredURLs == beforeLoads,
+                         "Repair must reuse the existing pane document without loading it")
+            let replacement = NSView()
+            Native.pageViews[background.nativeTabID] = replacement
+            precondition(inactiveView.isDescendant(of: barkRoot!) &&
+                         !host.isSplit(record, pages: pages, activeItemID: first, in: state),
+                         "The old view is still mounted but is no longer the native pane (\(mode))")
+            host.showModelSplit(record.itemIDs.map(Optional.some), vertical: record.orientation == .vertical,
+                dividers: record.dividers.map { CGFloat($0) }, focused: first,
+                page: { pages[$0]?.navigation as? ChromiumPageNavigation }, in: state)
+            precondition(host.isSplit(record, pages: pages, activeItemID: first, in: state) &&
+                         replacement.isDescendant(of: barkRoot!) && inactiveView.superview == nil &&
+                         inactive.navigation === background && Native.restoredURLs == beforeLoads,
+                         "The mounted pane must match Chromium's replacement view without loading another page")
+
+            let focusedPage = focused.navigation as! ChromiumPageNavigation
+            let oldFocusView = Native.pageViews[focusedPage.nativeTabID]!
+            let newFocusView = NSView()
+            Native.pageViews[focusedPage.nativeTabID] = newFocusView
+            precondition(oldFocusView.isDescendant(of: barkRoot!) &&
+                         !host.isNativeSelection(focusedPage, in: state))
+            precondition(host.acceptNativeSelection(focusedPage, in: state) &&
+                         host.isSplit(record, pages: pages, activeItemID: first, in: state) &&
+                         newFocusView.isDescendant(of: barkRoot!) && oldFocusView.superview == nil &&
+                         focused.navigation === focusedPage && Native.restoredURLs == beforeLoads,
+                         "Accepting the current focused page replaces its old view without collapsing the split")
         }
         for window in [native, joined] where Native.windows[window] != nil { Native.end(window) }
         admission.apply(Native.bridge.readSnapshot()!)

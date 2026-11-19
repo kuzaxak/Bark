@@ -299,6 +299,15 @@ final class ChromiumWindowRoot: NSView {
         return true
     }
 
+    /// A slot can outlive its native view, even while the tab IDs and layout match.
+    func showsSplit(_ expected: Split) -> Bool {
+        guard split == expected, slots.count == expected.panes.count else { return false }
+        return zip(slots, expected.panes).allSatisfy { slot, pane in
+            guard slot.pane == pane, slot.container.superview === pageFrame else { return false }
+            return pane.map { slot.holds(bridge.tab_native_view($0.client, $0.tab)) } ?? true
+        }
+    }
+
     /// Ends the split shown: the focused page fills the page frame, the others leave the window.
     @discardableResult
     func endSplit() -> Bool {
@@ -402,8 +411,11 @@ final class ChromiumWindowRoot: NSView {
     func show(tab: Int32, of owner: Int32, while isCurrent: () -> Bool = { true }) -> Bool {
         let pane = Pane(client: owner, tab: tab)
         if let split, split.panes.contains(pane) {
-            guard let slot = slots.first(where: { $0.pane == pane }), slot.view != nil else { return false }
-            let changed = shownTab != tab
+            guard let slot = slots.first(where: { $0.pane == pane }), let view = pageView(pane),
+                  isCurrent(), self.split == split, slot.container.superview === pageFrame else { return false }
+            let replaced = slot.heldView !== view
+            let changed = shownTab != tab || replaced
+            if replaced { place(view, in: slot) }
             self.split?.focused = tab
             shownTab = tab
             client = owner
@@ -426,7 +438,11 @@ final class ChromiumWindowRoot: NSView {
     }
 
     func showsPage(tab: Int32, of owner: Int32) -> Bool {
-        client == owner && shownTab == tab && heldPage != nil
+        let pane = Pane(client: owner, tab: tab)
+        guard client == owner, shownTab == tab,
+              let slot = slots.first(where: { $0.pane == pane }),
+              slot.container.superview === pageFrame else { return false }
+        return slot.holds(bridge.tab_native_view(owner, tab))
     }
 
     private func pageView(_ pane: Pane) -> NSView? {

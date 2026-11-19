@@ -1141,7 +1141,7 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         }
         guard let active, let split = hostSplit(record, navigations: navigations, activeItemID: activeItemID, mount: mount, in: window)
         else { return false }
-        return mount.presenter.shownSplit == split && isNativeSelection(active, in: window)
+        return mount.presenter.root.showsSplit(split) && isNativeSelection(active, in: window)
     }
 
     /// Shows `record` in `window`'s root with `activeItemID`'s page focused and selected in
@@ -1209,7 +1209,7 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
             placed.append(.init(client: navigation.nativeWindowID, tab: navigation.nativeTabID))
         }
         let split = ChromiumWindowRoot.Split(panes: placed, vertical: vertical, dividers: dividers, focused: focused.nativeTabID)
-        if mount.presenter.shownSplit != split { _ = mount.presenter.showSplit(split) }
+        if !mount.presenter.root.showsSplit(split) { _ = mount.presenter.showSplit(split) }
     }
 
     /// Refusal cleanup may dispose only an empty fresh host or our own header,
