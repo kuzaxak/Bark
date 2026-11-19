@@ -2,8 +2,9 @@ import AppKit
 
 @main
 enum Check {
-    static func main() {
+    @MainActor static func main() async {
         commandWindowCases()
+        await extensionCommandCases()
         var offeredButIdle: [ShortcutAction] = []
         for action in ShortcutAction.allCases {
             let runs = action.pageCommand?.supportsNativePage ?? (action.runsInChromium
@@ -66,6 +67,53 @@ enum Check {
         }
         migrationCases(defaults: defaults)
         print("PASS")
+    }
+
+    @MainActor static func extensionCommandCases() async {
+        let browser = ExtensionBrowserFixture()
+        let shortcuts = ExtensionShortcutFixture(browserManager: browser)
+        let window = ExtensionWindowFixture()
+        let successor = ExtensionWindowFixture()
+        let profile = window.profileID
+        browser.windowRegistry?.windows = [window.id: window, successor.id: successor]
+
+        func select(_ target: ExtensionWindowFixture) {
+            browser.windowRegistry?.activeWindow = target
+            browser.keyWindow = target.window
+        }
+        func drain() async {
+            await withCheckedContinuation { continuation in
+                DispatchQueue.main.async { continuation.resume() }
+            }
+        }
+
+        select(window)
+        shortcuts.executeAction(.manageExtensions)
+        await drain()
+        precondition(browser.tabs.opened == [profile])
+
+        shortcuts.executeAction(.manageExtensions)
+        select(successor)
+        await drain()
+        precondition(browser.tabs.opened == [profile], "The next window does not receive the previous shortcut")
+
+        for state in ["space", "pane", "profile", "preparing", "unresolved"] {
+            select(window)
+            shortcuts.executeAction(.manageExtensions)
+            switch state {
+            case "space": window.spaceID = UUID()
+            case "pane": window.selectedItemID = UUID()
+            case "profile": window.profileID = UUID()
+            case "preparing": window.nativePresentationIsPreparing = true
+            default: window.nativeSpaceSwitchIsUnresolved = true
+            }
+            await drain()
+            precondition(browser.tabs.opened == [profile], "Superseded context: \(state)")
+            window.nativePresentationIsPreparing = false
+            window.nativeSpaceSwitchIsUnresolved = false
+        }
+        browser.manageExtensions()
+        precondition(browser.tabs.opened == [profile, window.profileID], "Direct menu path still runs")
     }
 
     /// Version 18's migration: a version-17 list gets Open Library, and every shortcut the person set stays as set.
@@ -134,4 +182,48 @@ enum Check {
                  "a sheet keeps its keys: no command acts on the window behind it (its parent: \(String(describing: sheet.parent)))")
     sheetOwner.endSheet(sheet)
     sheetOwner.orderOut(nil)
+}
+
+@MainActor final class ExtensionWindowFixture {
+    final class Key {}
+    let id = UUID()
+    let window = Key()
+    var spaceID = UUID()
+    var selectedItemID = UUID()
+    var profileID = UUID()
+    var nativePresentationIsPreparing = false
+    var nativeSpaceSwitchIsUnresolved = false
+    var copyToastText: String?
+    var isShowingCopyURLToast = false
+}
+
+@MainActor final class ExtensionBrowserFixture {
+    final class Registry {
+        var windows: [UUID: ExtensionWindowFixture] = [:]
+        var activeWindow: ExtensionWindowFixture?
+    }
+    final class Tabs {
+        enum Engine { case chromium }
+        let profileEngine = Engine.chromium
+        var opened: [UUID] = []
+        @MainActor func extensionControlsProfileID(in window: ExtensionWindowFixture) -> UUID? {
+            window.profileID
+        }
+        @MainActor func openExtensionControls(in window: ExtensionWindowFixture,
+                                              completion: (Result<Void, Error>) -> Void) {
+            opened.append(window.profileID)
+            completion(.success(()))
+        }
+    }
+    var keyWindow: ExtensionWindowFixture.Key?
+    let windowRegistry: Registry? = Registry()
+    let tabs = Tabs()
+}
+
+@MainActor final class ExtensionShortcutFixture {
+    let browserManager: ExtensionBrowserFixture?
+
+    init(browserManager: ExtensionBrowserFixture) {
+        self.browserManager = browserManager
+    }
 }

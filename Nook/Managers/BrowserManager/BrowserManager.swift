@@ -900,16 +900,29 @@ class BrowserManager: ObservableObject {
 
     // MARK: - Extension Management
 
-    func manageExtensions() {
+    func manageExtensions(deferred: Bool = false) {
         // Utility/settings windows must not borrow a stale active product identity.
         guard let window = windowRegistry?.activeWindow, let key = CommandWindow.key,
-              window.window === key else { return }
-        tabs.openExtensionControls(in: window) { [weak window] result in
-            if case .failure(let error) = result {
-                window?.copyToastText = error.localizedDescription
-                window?.isShowingCopyURLToast = true
+              window.window === key, !window.nativePresentationIsPreparing,
+              !window.nativeSpaceSwitchIsUnresolved else { return }
+        let space = window.spaceID, selection = window.selectedItemID
+        let profile = tabs.extensionControlsProfileID(in: window)
+        let open: @MainActor () -> Void = { [weak self, weak window, weak key] in
+            guard let self, let window, let key, CommandWindow.key === key, window.window === key,
+                  self.windowRegistry?.activeWindow === window,
+                  self.windowRegistry?.windows[window.id] === window,
+                  window.spaceID == space, window.selectedItemID == selection,
+                  self.tabs.extensionControlsProfileID(in: window) == profile,
+                  !window.nativePresentationIsPreparing, !window.nativeSpaceSwitchIsUnresolved else { return }
+            self.tabs.openExtensionControls(in: window) { [weak window] result in
+                if case .failure(let error) = result {
+                    window?.copyToastText = error.localizedDescription
+                    window?.isShowingCopyURLToast = true
+                }
             }
         }
+        if deferred { DispatchQueue.main.async { open() } }
+        else { open() }
     }
 
     /// Set the active window state (called when a window gains focus)

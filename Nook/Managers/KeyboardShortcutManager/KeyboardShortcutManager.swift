@@ -554,6 +554,10 @@ class KeyboardShortcutManager {
 
     private func executeAction(_ action: ShortcutAction) {
         guard let browserManager = browserManager else { return }
+        if browserManager.tabs.profileEngine == .chromium, action == .manageExtensions {
+            browserManager.manageExtensions(deferred: true)
+            return
+        }
         let isRepeat = lastShortcutWasRepeat
         if browserManager.tabs.profileEngine == .chromium, action == .addSplitView {
             guard !isRepeat, let window = windowRegistry?.activeWindow,

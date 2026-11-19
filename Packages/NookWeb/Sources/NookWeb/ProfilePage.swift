@@ -30,6 +30,17 @@ public typealias ProfilePageAction = @MainActor (
 ) -> Void
 
 extension TabsController {
+    /// Resolve the pane's saved profile without opening controls or creating a page.
+    public func extensionControlsProfileID(in window: BrowserWindowState) -> UUID? {
+        let space: UUID?
+        if let selected = window.selectedItemID {
+            space = tree.spaceID(of: selected)
+        } else {
+            space = window.spaceID
+        }
+        return space.flatMap { tree.dataStoreID(for: $0) }
+    }
+
     /// Product commands capture the selected regular profile once. Its controls
     /// then remain independent of the source window's subsequent selection.
     public func openExtensionControls(in window: BrowserWindowState?,
@@ -40,13 +51,7 @@ extension TabsController {
             completion(.failure(.presentationUnavailable))
             return
         }
-        let spaceID: UUID?
-        if let selected = window.selectedItemID {
-            spaceID = tree.spaceID(of: selected)
-        } else {
-            spaceID = window.spaceID
-        }
-        guard let spaceID, let profileID = tree.dataStoreID(for: spaceID) else {
+        guard let profileID = extensionControlsProfileID(in: window) else {
             completion(.failure(.profileUnavailable))
             return
         }
