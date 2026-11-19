@@ -59,7 +59,7 @@ jobs:
     name: Smoke-test the pinned signed Bark candidate
     if: >-
       (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
-      github.ref_name == github.event.repository.default_branch &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch) &&
       vars.BARK_SMOKE_RUNNER != '' &&
       vars.BARK_ENGINE_SOURCE != '' &&
       (vars.BARK_SIGN_IDENTITY != '' || vars.BARK_SMOKE_CANDIDATE != '')
@@ -69,23 +69,53 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
+
+      - name: Install the pinned SDK for this runner
+        env:
+          BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
+        run: |
+          set -euo pipefail
+          arch="$(python3 scripts/chromium_sdk_layout.py native-arch)"
+          pin="$(python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")"
+          python3 scripts/bark-check.py engine --arch "$arch" --engine "$BARK_ENGINE_SOURCE" --install
+          printf 'BARK_SMOKE_ARCH=%s\nBARK_SMOKE_PIN=%s\nBARK_SMOKE_WORK=\n' "$arch" "$pin" >> "$GITHUB_ENV"
 
       - name: Build Bark from an empty output directory
         if: vars.BARK_SIGN_IDENTITY != ''
         env:
           BARK_SIGN_IDENTITY: ${{ vars.BARK_SIGN_IDENTITY }}
-          BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
         run: |
+          set -euo pipefail
           test ! -e build
-          python3 scripts/bark-check.py build
-          python3 -c 'from pathlib import Path; assert set(Path("build").iterdir()) == {Path("build/Bark.app")}'
+          work="$(mktemp -d "$RUNNER_TEMP/bark-smoke.XXXXXXXX")"
+          printf 'BARK_SMOKE_WORK=%s\n' "$work" >> "$GITHUB_ENV"
+          env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py build --arch "$BARK_SMOKE_ARCH" \
+            --output "$work/Bark.app"
+          test ! -e build
 
       - name: Check catalog and initial window activation
         run: python3 scripts/bark-check.py catalog
 
       - name: Verify and launch the signed candidate
         env:
-          BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
-          BARK_SMOKE_CANDIDATE: ${{ vars.BARK_SIGN_IDENTITY != '' && 'build/Bark.app' || vars.BARK_SMOKE_CANDIDATE }}
-        run: python3 scripts/bark-check.py smoke "$BARK_SMOKE_CANDIDATE"
+          BARK_SMOKE_CANDIDATE: ${{ vars.BARK_SMOKE_CANDIDATE }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BARK_SMOKE_WORK:-}" ]]; then
+            app="$BARK_SMOKE_WORK/Bark.app"
+            source="Built from $GITHUB_SHA in this job."
+          else
+            app="$BARK_SMOKE_CANDIDATE"
+            source="Supplied signed app. Its source revision was not verified."
+          fi
+          env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py smoke --arch "$BARK_SMOKE_ARCH" "$app"
+          {
+            echo '### Signed Bark smoke'
+            printf 'Architecture: `%s`\n\nSDK pin: `%s`\n\n%s\n' "$BARK_SMOKE_ARCH" "$BARK_SMOKE_PIN" "$source"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove this run's temporary candidate
+        if: always() && env.BARK_SMOKE_WORK != ''
+        run: rm -rf -- "$BARK_SMOKE_WORK"

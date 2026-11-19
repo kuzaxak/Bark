@@ -128,7 +128,12 @@ architecture. The ARM64 runtime pin is still pending.
 
 `smoke` and `launch` require a pinned engine matching the host’s native architecture. Add `--require-official` to either command to verify the optimized SDK before opening Bark. The automated smoke test uses the same desktop lock as the native walks. It opens its loopback page after ten seconds of desktop inactivity and stops Bark when the renderer acknowledges the page. Exit status 3 means the desktop was occupied, locked, or in use during the test. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 
-For the optional CI smoke, choose a trusted Mac with a logged-in desktop session and a verified SDK pin for its native CPU. Set `BARK_SMOKE_RUNNER` to a runner label unique to that configuration and `BARK_ENGINE_SOURCE` to the matching SDK directory or archive. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch. It checks the supplied candidate against the checkout's engine pin before running the smoke.
+For the optional CI smoke, choose a trusted Mac with a logged-in desktop session and a verified SDK pin for its native CPU. Set `BARK_SMOKE_RUNNER` to a runner label unique to that configuration and `BARK_ENGINE_SOURCE` to the matching SDK directory or archive. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch.
+The job installs the SDK once in `~/Library/Caches/BarkSDK/<pin>/Engine`. It
+builds and signs the checked-out shell in a temporary directory when a signing
+identity is configured. Both paths verify the signed app against the cached SDK
+and record its architecture and pin. The job can identify the shell revision
+only for an app it built.
 
 ### Run the signed UI walks
 
