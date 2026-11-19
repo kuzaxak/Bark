@@ -238,6 +238,56 @@ private func checkScopedHistoryClear() async throws {
     print("Clear History preserves other profiles and waits for admission of the captured regular profile")
 }
 
+@MainActor
+private func checkPasswordManagementCommand() {
+    let commands = [
+        "chrome://password-manager", "chrome://password-manager/passwords",
+        "  CHROME://Password-Manager/settings?from=typed  ",
+        "about:password-manager", "about:password-manager/passwords",
+    ]
+    let unrelated = [
+        "https://password-manager/passwords", "chrome://settings/passwords",
+        "chrome://password-manager.invalid/passwords", "chrome://password-manager@other.invalid/",
+        "chrome://user@password-manager/", "chrome://password-manager:99/passwords",
+        "chrome://%70assword-manager/", "about:password-manager-other", "about://password-manager",
+        "view-source:chrome://password-manager/", "pawlvault://open", "what is chrome://password-manager/",
+    ]
+
+    var opened = 0
+    var dismissed = 0
+    func route(_ text: String, provider: Bool?, regularOwner: Bool = true,
+               override: Bool = false, losesOwnerOnDismiss: Bool = false) -> Bool {
+        var current = regularOwner
+        return ChromiumPasswordManagementCommand.handle(
+            text, pawlEnabledAtLaunch: provider, hasSearchOrPlacementOverride: override,
+            ownerCurrent: { current },
+            dismissEditor: {
+                dismissed += 1
+                if losesOwnerOnDismiss { current = false }
+            },
+            openPasswordSettings: { opened += 1 }
+        )
+    }
+
+    for command in commands {
+        precondition(ChromiumPasswordManagementCommand.offersSettings(
+            command, pawlEnabledAtLaunch: true, regularNativeOwner: true, hasSearchOrPlacementOverride: false))
+        precondition(route(command, provider: true))
+        precondition(!route(command, provider: false))
+        precondition(!route(command, provider: nil))
+        precondition(!route(command, provider: true, regularOwner: false))
+        precondition(!route(command, provider: true, override: true))
+        precondition(!ChromiumPasswordManagementCommand.offersSettings(
+            command, pawlEnabledAtLaunch: true, regularNativeOwner: true, hasSearchOrPlacementOverride: true))
+    }
+    for input in unrelated {
+        precondition(!route(input, provider: true), "Unexpected Settings route for \(input)")
+    }
+    precondition(route(commands[0], provider: true, losesOwnerOnDismiss: true))
+    precondition(opened == commands.count && dismissed == commands.count + 1)
+    print("Native password management opens Bark Settings only for explicit commands with the selected Pawl provider")
+}
+
 @main
 private enum ProfileChecks {
     @MainActor static func main() async throws {
@@ -538,6 +588,7 @@ private enum ProfileChecks {
         }
         precondition(Native.observers.isEmpty)
         try await checkScopedHistoryClear()
+        checkPasswordManagementCommand()
         print("Chromium profile page checks passed")
     }
 }

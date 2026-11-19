@@ -22,7 +22,7 @@
 - [ ] 3.4 Prove stock mode still works and unrelated address and payment Autofill retain their behavior in both modes. Run the pinned engine browser tests and a signed shell walk.
 
 - [ ] 3.5 Route direct password-manager URLs and any remaining context-menu actions to the running provider. Verify an existing Chromium login cannot be offered through those entry points.
-  The engine candidate filters password selection, import and generation commands, replaces the stock management page with directions to Bark's Passwords settings, and prevents the private password API from obtaining a credential delegate. The macOS general browser-data importer already omits passwords. Linked browser checks and direct navigation to native management remain open.
+  In exclusive mode, submitting a password-manager URL from Bark's address bar or command palette opens Privacy settings. The palette labels the destination before the user presses Return. The shell regression covers both Chromium URL spellings, provider modes, search and placement overrides, and a window change during dismissal. The engine candidate filters password context-menu commands, gives other navigations directions to Bark's settings, and gates the private password API. The signed exclusive-provider walk now exercises the typed command. Running it and the linked engine checks remains open.
 
 ## 4. Passkeys and qualification
 

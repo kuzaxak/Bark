@@ -572,6 +572,13 @@ struct URLBarView: View {
         case .history(let entry): url = entry.url
         case .tab(let match): url = match.url
         case .url, .search:
+            if usesNativeEditor,
+               browserManager.openPasswordManagementCommand(
+                suggestion.text, in: windowState, hasSearchOrPlacementOverride: suggestion.text != typed,
+                dismissEditor: cancelEditing
+               ) {
+                return
+            }
             if browserManager.tabs.profileEngine == .chromium, isSearchInput(suggestion.text) {
                 cancelEditing()
                 guard currentTarget() else { return }

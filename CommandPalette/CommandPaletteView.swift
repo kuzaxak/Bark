@@ -134,6 +134,10 @@ struct CommandPaletteView: View {
     private var primarySuggestion: SearchManager.SearchSuggestion? {
         let typed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !typed.isEmpty, scope == nil else { return nil }
+        if browserManager.offersPasswordManagementCommand(typed, in: windowState,
+                                                            hasSearchOrPlacementOverride: hasPasswordCommandOverride(typed)) {
+            return SearchManager.SearchSuggestion(text: typed, type: .url)
+        }
         if activeSiteSearch == nil, let shortcut = URLShortcut.expand(typed, in: nookSettings.urlShortcuts) {
             return SearchManager.SearchSuggestion(text: shortcut.absoluteString, type: .url)
         }
@@ -520,6 +524,12 @@ struct CommandPaletteView: View {
                     selectedIndex: max(selectedSuggestionIndex, 0),
                     revealsFullURL: commandHeld,
                     returnPlacement: returnPlacement,
+                    opensPasswordSettings: { suggestion in
+                        browserManager.offersPasswordManagementCommand(
+                            suggestion.text, in: windowState,
+                            hasSearchOrPlacementOverride: hasPasswordCommandOverride(suggestion.text)
+                        )
+                    },
                     tabDestination: { browserManager.tabs.tabSwitchDestination(for: $0, in: windowState) },
                     hoveredIndex: $hoveredSuggestionIndex,
                     maximumHeight: isNative ? min(470, max(80, (paletteFrame.height > 0 ? paletteFrame.height : windowState.window?.contentView?.bounds.height ?? 600) - (commandPalette.addSplit == nil ? 100 : 140))) : 470,
@@ -554,6 +564,7 @@ struct CommandPaletteView: View {
         let revealsFullURL: Bool
         /// Where Enter on the Return row goes, said under it: "this tab" or a new tab's place.
         let returnPlacement: String
+        let opensPasswordSettings: (SearchManager.SearchSuggestion) -> Bool
         let tabDestination: (UUID) -> (name: String, icon: String, profileName: String?)?
         @Binding var hoveredIndex: Int?
         var maximumHeight: CGFloat = 470
@@ -624,19 +635,24 @@ struct CommandPaletteView: View {
             case .history(let entry):
                 HistorySuggestionItem(entry: entry, showsFullURL: showsFullURL)
             case .url:
-                GenericSuggestionItem(
-                    icon: Image(systemName: "link"),
-                    text: suggestion.text,
-                    detail: isReturnRow ? "Opens in \(returnPlacement)" : nil
-                )
+                genericRow(suggestion, symbol: "link", detail: isReturnRow ? "Opens in \(returnPlacement)" : nil)
             case .search:
-                GenericSuggestionItem(
-                    icon: Image(systemName: "magnifyingglass"),
-                    text: suggestion.text,
-                    detail: isReturnRow ? "Searches in \(returnPlacement)" : nil
-                )
+                genericRow(suggestion, symbol: "magnifyingglass", detail: isReturnRow ? "Searches in \(returnPlacement)" : nil)
             }
         }
+        private func genericRow(_ suggestion: SearchManager.SearchSuggestion, symbol: String, detail: String?) -> some View {
+            let isSettings = opensPasswordSettings(suggestion)
+            return GenericSuggestionItem(
+                icon: Image(systemName: isSettings ? "key" : symbol),
+                text: suggestion.text,
+                detail: isSettings ? "Open Passwords in Bark Settings" : detail
+            )
+        }
+    }
+
+    private func hasPasswordCommandOverride(_ candidate: String) -> Bool {
+        activeSiteSearch != nil || commandPalette.addSplit != nil || scope != nil
+            || candidate != text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var returnPlacement: String {
@@ -704,6 +720,12 @@ struct CommandPaletteView: View {
             browserManager.historyManager.recordPick(prefix: text, url: historyEntry.url, fromPrivateWindow: windowState.isIncognito)
             open(historyEntry.url)
         case .url, .search:
+            if isNative, browserManager.openPasswordManagementCommand(
+                suggestion.text, in: windowState, hasSearchOrPlacementOverride: hasPasswordCommandOverride(suggestion.text),
+                dismissEditor: finishSubmission
+            ) {
+                return
+            }
             // Explicit site-search templates remain URLs, including mouse picks.
             if activeSiteSearch != nil, case .search = suggestion.type, let url = url(for: suggestion) {
                 open(url)
@@ -724,6 +746,10 @@ struct CommandPaletteView: View {
             }
         }
 
+        finishSubmission()
+    }
+
+    private func finishSubmission() {
         text = ""
         activeSiteSearch = nil
         selectedSuggestionIndex = -1

@@ -94,6 +94,38 @@ extension BrowserManager: TabActions {
         )
     }
 
+    private func ownsPasswordManagementCommand(_ window: BrowserWindowState) -> Bool {
+        guard engine == .chromium, let nativeWindow = window.window, nativeWindow.isKeyWindow,
+              let registry = windowRegistry, registry.activeWindow === window,
+              registry.windows[window.id] === window, !window.isIncognito, window.privateTree == nil else { return false }
+        return window.spaceID.flatMap(tabs.space)?.isAgent == false
+    }
+
+    func offersPasswordManagementCommand(_ text: String, in window: BrowserWindowState,
+                                          hasSearchOrPlacementOverride: Bool) -> Bool {
+        ChromiumPasswordManagementCommand.offersSettings(
+            text, pawlEnabledAtLaunch: tabs.vault?.pawlEnabledAtLaunch,
+            regularNativeOwner: nativeOpenSettings != nil && ownsPasswordManagementCommand(window),
+            hasSearchOrPlacementOverride: hasSearchOrPlacementOverride
+        )
+    }
+
+    func openPasswordManagementCommand(_ text: String, in window: BrowserWindowState,
+                                       hasSearchOrPlacementOverride: Bool, dismissEditor: () -> Void) -> Bool {
+        guard let open = nativeOpenSettings else { return false }
+        let space = window.spaceID, item = window.selectedItemID, page = frontPage(in: window)
+        return ChromiumPasswordManagementCommand.handle(
+            text, pawlEnabledAtLaunch: tabs.vault?.pawlEnabledAtLaunch,
+            hasSearchOrPlacementOverride: hasSearchOrPlacementOverride,
+            ownerCurrent: {
+                ownsPasswordManagementCommand(window) && window.spaceID == space
+                    && window.selectedItemID == item && frontPage(in: window) === page
+            },
+            dismissEditor: dismissEditor,
+            openPasswordSettings: { open(.privacy) }
+        )
+    }
+
     func openSpaceSettings() {
         openSettings(tab: .spaces)
     }

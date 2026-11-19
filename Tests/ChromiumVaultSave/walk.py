@@ -264,6 +264,24 @@ def open_password_settings(controls):
     return settings
 
 
+def open_password_settings_from_palette(controls):
+    screen = controls.screen
+    screen.keys["t"] = 17
+    screen.key("t", screen.command)
+
+    def editing():
+        field = controls.attribute(controls.app, "AXFocusedUIElement")
+        return field is not None and controls.attribute(field, "AXRole") == "AXTextField"
+
+    wait_for("The command palette did not take focus", editing, controls.process)
+    screen.key("chrome://password-manager/passwords", unicode=True)
+    controls.require("Open Passwords in Bark Settings", partial=True)
+    screen.key("Return")
+    settings = controls.require("Privacy", ("AXWindow",))
+    controls.require("Connected", root=settings)
+    return settings
+
+
 def close_settings(controls, settings):
     close = controls.attribute(settings, "AXCloseButton")
     if close is None:
@@ -530,7 +548,7 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
         if "leak_detection_request" in log.read_text(errors="replace"):
             raise RuntimeError("Chromium attempted a password leak check in the disposable fixture")
 
-        settings = open_password_settings(controls)
+        settings = open_password_settings_from_palette(controls) if require_exclusive else open_password_settings(controls)
         manage = controls.require("Open Pawl Vault", ("AXButton",), root=settings)
         if not controls.attribute(manage, "AXEnabled"):
             raise RuntimeError("A connected vault could not be opened from Passwords settings")
