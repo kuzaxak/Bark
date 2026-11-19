@@ -13,39 +13,10 @@ import Combine
 import WebKit
 import NookWeb
 
-// MARK: - WebViewProvider
-
-extension BrowserManager: WebViewProvider {
-    func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView {
-        precondition(engine == .webKit, "Chromium pages require their native surface")
-        return FocusableWKWebView(frame: .zero, configuration: configuration)
-    }
-
-    func webView(for itemID: UUID, in windowID: UUID) -> WKWebView? {
-        webViewCoordinator?.getWebView(for: itemID, in: windowID)
-    }
-
-    func allWebViews(for itemID: UUID) -> [WKWebView] {
-        webViewCoordinator?.getAllWebViews(for: itemID) ?? []
-    }
-
-    /// Every unload comes through here, so a sidebar showing the page lets go of it first.
-    func releaseWebViews(for session: PageSession) {
-        exitSidebarPiP(showing: session.itemID)
-        webViewCoordinator?.removeAllWebViews(for: session)
-    }
-
-    func removeFromContainers(_ webView: WKWebView) {
-        webViewCoordinator?.removeWebViewFromContainers(webView)
-    }
-}
-
 // MARK: - PageSessionDelegate
 
 extension BrowserManager: PageSessionDelegate {
-    func navigateAcrossWindows(_ itemID: UUID, to url: URL) {
-        navigateTabAcrossWindows(itemID, to: url)
-    }
+    func navigateAcrossWindows(_ itemID: UUID, to url: URL) {}
 
     func addDownload(_ download: WKDownload, originalURL: URL, suggestedFilename: String) {
         _ = downloadManager.addDownload(
@@ -70,7 +41,7 @@ extension BrowserManager: PageSessionDelegate {
     }
 
     func presentPopupWindow(_ session: PageSession) {
-        externalMiniWindowManager.present(session)
+        tabs.endDetached(session)
     }
 
     func handleAuthenticationChallenge(
@@ -92,9 +63,7 @@ extension BrowserManager: PageSessionDelegate {
 
     func cleanupZoom(for itemID: UUID) { cleanupZoomForTab(itemID) }
 
-    func setMuteState(_ muted: Bool, for itemID: UUID) {
-        setMuteState(muted, for: itemID, originatingWindowId: windowRegistry?.activeWindow?.id)
-    }
+    func setMuteState(_ muted: Bool, for itemID: UUID) {}
 
     func requestPictureInPicture(for session: PageSession, webView: WKWebView?) {
         guard engine == .webKit else { return }
@@ -143,9 +112,6 @@ extension BrowserManager: TabEventObserver {
     func tabActivated(new session: PageSession, previous: PageSession?) {
         zoomManager.showZoomLevel(for: session.itemID)
         extensionManager?.notifyTabActivated(new: session, previous: previous)
-        // The loaded-page budget was only ever reached from startup warming and split view, so
-        // opening tabs by hand never checked it and no cap could bind.
-        compositorManager?.pageActivated(session.itemID)
         updateSidebarPiP(new: session, previous: previous)
         session.sampleNativeTopBarColor()
     }

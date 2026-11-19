@@ -110,25 +110,6 @@ final class FocusableWKWebView: WKWebView, SessionWebView {
         }
     }
 
-    /// Keeps a mini window page's fixed content clear of the window's glass toolbar while the
-    /// page scrolls underneath it. Synced in `layout()` so it survives resize, full screen and
-    /// toolbar changes; in a browser window the inset stays zero.
-    override func layout() {
-        super.layout()
-        guard #available(macOS 26, *) else { return }
-        guard let window = window as? MiniBrowserWindow, bounds.height > 0 else {
-            if obscuredContentInsets.top != 0 { obscuredContentInsets = NSEdgeInsetsZero }
-            return
-        }
-        // How far this view reaches up under the titlebar and toolbar. WebKit throws on
-        // negative insets or insets taller than the view, both possible mid-layout.
-        let overlap = convert(bounds, to: nil).maxY - window.contentLayoutRect.maxY
-        let inset = min(max(0, overlap), bounds.height - 1)
-        if obscuredContentInsets.top != inset {
-            obscuredContentInsets = NSEdgeInsets(top: inset, left: 0, bottom: 0, right: 0)
-        }
-    }
-
     /// Set when sidebar PiP asks to isolate the page; undone when the view next lands in a tab.
     var isPictureInPictureIsolated = false
 

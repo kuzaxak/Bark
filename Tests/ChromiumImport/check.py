@@ -11,8 +11,7 @@ with TemporaryDirectory(prefix='bark-import-check-') as directory:
     out = Path(directory)
 
     # The person's own browsers are reachable only through ImportManager(configuration:), which gives a
-    # verification launch its fixtures, and through the WebKit app's own entry point, which no Bark
-    # launch runs. Nothing may build an ImportManager from defaults.
+    # verification launch its fixtures. Nothing may build an ImportManager from defaults.
     reached = []
     for folder in ['App', 'Nook', 'Onboarding']:
         for path in sorted((root / folder).rglob('*.swift')):
@@ -22,8 +21,8 @@ with TemporaryDirectory(prefix='bark-import-check-') as directory:
             for number, line in enumerate(text.splitlines(), 1):
                 if re.search(r'\.installed\b|\bImportManager\(\)', line):
                     reached.append((str(path.relative_to(root)), number, line.strip()))
-    allowed = [r for r in reached if r[0] == 'App/NookApp.swift'
-               or (r[0] == 'Nook/Managers/ImportManager/ImportManager.swift' and r[2].startswith('self.init(sources: configuration.isVerification ? .fixtures'))]
+    allowed = [r for r in reached if r[0] == 'Nook/Managers/ImportManager/ImportManager.swift'
+               and r[2].startswith('self.init(sources: configuration.isVerification ? .fixtures')]
     if reached != allowed or not allowed:
         print('the installed browsers are reachable outside ImportManager(configuration:):')
         for r in reached:

@@ -79,20 +79,17 @@ final class SplitViewManager: ObservableObject {
                   let record = SplitRecord(edge == .leading ? [itemID, current] : [current, itemID]) else { return }
             if presentNative(record, selecting: current, in: window) { return }
             window.split = record
-            loadPanes(of: window)
             // Selecting again saves the window record with its new split.
             tabs.select(current, in: window)
         case .insert(let pane, let edge):
             guard let record = shownSplit(in: window)?.inserting(itemID, beside: pane, after: edge == .trailing) else { return }
             if presentNative(record, selecting: itemID, in: window) { return }
             window.split = record
-            loadPanes(of: window)
             tabs.select(itemID, in: window)
         case .replace(let pane):
             guard let record = shownSplit(in: window)?.replacing(pane, with: itemID) else { return }
             if presentNative(record, selecting: itemID, in: window) { return }
             window.split = record
-            loadPanes(of: window)
             tabs.select(itemID, in: window)
         case .move(let pane, let edge):
             guard let record = shownSplit(in: window)?.moving(itemID, beside: pane, after: edge == .trailing) else { return }
@@ -141,7 +138,6 @@ final class SplitViewManager: ObservableObject {
         else { return }
         if presentNative(record, selecting: filled, in: window) { return }
         window.split = record
-        loadPanes(of: window)
         tabs.select(filled, in: window)
     }
 
@@ -207,19 +203,6 @@ final class SplitViewManager: ObservableObject {
         guard let tabs, tabs.profileEngine == .chromium else { return false }
         tabs.presentNativeSplit(record, activeItemID: active, in: window)
         return true
-    }
-
-    /// A pane shows its page, so the sidebar gives it back first.
-    private func loadPanes(of window: BrowserWindowState) {
-        guard let bm = browserManager, bm.tabs.profileEngine != .chromium,
-              let split = window.split else { return }
-        for id in split.itemIDs {
-            bm.exitSidebarPiP(showing: id)
-            if let session = bm.tabs.ensureSession(for: id) {
-                PiPManager.shared.leaveAutomatic(session)
-                bm.compositorManager?.load(session)
-            }
-        }
     }
 
     func cleanupWindow(_ windowId: UUID) {

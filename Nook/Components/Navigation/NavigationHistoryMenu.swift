@@ -8,7 +8,6 @@
 
 import AppKit
 import SwiftUI
-import WebKit
 import NookDesign
 import NookWeb
 
@@ -30,24 +29,6 @@ struct NavigationHistoryMenu: View {
     }
 
     private func makeMenu() -> NSMenu? {
-        if browserManager.engine == .chromium { return makeNativeMenu() }
-        guard let session = browserManager.tabs.controllableSession(in: windowState),
-              let webView = browserManager.webViewCoordinator?.getWebView(for: session.itemID, in: windowState.id)
-                ?? session.assignedWebView
-        else { return nil }
-        let list = webView.backForwardList
-        let entries = direction == .back ? Array(list.backList.reversed()) : list.forwardList
-        guard !entries.isEmpty else { return nil }
-        let menu = NSMenu()
-        for entry in entries {
-            let item = HandlerMenuItem(title: Self.title(of: entry)) { _ in webView.go(to: entry) }
-            item.image = Self.favicon(for: entry.url)
-            menu.addItem(item)
-        }
-        return menu
-    }
-
-    private func makeNativeMenu() -> NSMenu? {
         guard let page = browserManager.frontPage(in: windowState),
               let navigation = page.navigation,
               browserManager.tabs.nativePageHost?.isNativeSelection(navigation, in: windowState) == true else { return nil }
@@ -77,16 +58,4 @@ struct NavigationHistoryMenu: View {
         return menu
     }
 
-    private static func title(of entry: WKBackForwardListItem) -> String {
-        if let title = entry.title, !title.isEmpty { return title }
-        return entry.url.host ?? entry.url.absoluteString
-    }
-
-    private static func favicon(for url: URL) -> NSImage? {
-        let cached = url.host.flatMap { FaviconCache.shared.image(for: $0) ?? FaviconCache.shared.imageFromDiskSync(for: $0) }
-        guard let image = (cached ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil))?.copy() as? NSImage
-        else { return nil }
-        image.size = NSSize(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
-        return image
-    }
 }

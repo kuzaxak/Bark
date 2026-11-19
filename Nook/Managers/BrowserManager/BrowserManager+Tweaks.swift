@@ -25,7 +25,10 @@ extension BrowserManager: SiteRoutingHost {
             return false
         }
         guard let session = page as? PageSession else {
-            openLinkFromOtherApp(url) { _ in spaceID }
+            let preferred = windowRegistry?.activeWindow
+            guard let window = (preferred?.isIncognito == false ? preferred : nil)
+                ?? tabs.regularWindows.first(where: { !$0.isIncognito && $0.spaceID != nil }) else { return false }
+            tabs.open(url: url, in: window, placement: .newTab, parent: .tabs(spaceID: spaceID))
             return true
         }
         // An agent page stays in the Agent space: routing would show the person a new tab.

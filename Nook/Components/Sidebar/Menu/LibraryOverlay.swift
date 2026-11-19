@@ -80,63 +80,6 @@ extension LibraryMotion {
     }
 }
 
-/// The browser and the library behind it. The only view that reads the library's position, so a
-/// swipe, which moves it on every trackpad event, re-renders this and nothing above it.
-struct LibraryPushContainer<Content: View>: View {
-    @Environment(BrowserWindowState.self) private var windowState
-    @Environment(\.nookSettings) private var nookSettings
-    /// Whether the window buttons show at rest (the sidebar, or its hover overlay, is out).
-    let lightsVisible: Bool
-    @ViewBuilder let content: Content
-
-    init(lightsVisible: Bool, @ViewBuilder content: () -> Content) {
-        self.lightsVisible = lightsVisible
-        self.content = content()
-    }
-
-    var body: some View {
-        GeometryReader { proxy in
-            let width = LibraryMotion.width(for: windowState.sidebarMenuSelectedTab, windowWidth: proxy.size.width)
-            let shown = LibraryMotion.shown(windowState, width: width)
-            let progress = width > 0 ? min(shown / width, 1) : 0
-            let onRight = nookSettings.sidebarPosition == .right
-            // The sidebar fades into the library, so the page travels only as far as it takes to
-            // sit beside the library, not the library's width on top of the sidebar's.
-            let sidebar = windowState.isSidebarVisible ? windowState.sidebarWidth : 0
-            let push = max(shown - sidebar * progress, 0)
-            ZStack {
-                // As in Arc, the window buttons go with the sidebar over the first half of the pull
-                // and come back with the library over the second; at rest they belong to whichever
-                // is showing.
-                TrafficLights(visible: lightsVisible || progress > 0, alpha: abs(1 - 2 * progress))
-                    .frame(width: 0, height: 0)
-                LibraryPanel(width: width, shown: shown)
-                content
-                    .environment(\.libraryProgress, progress)
-                    .offset(x: onRight ? -push : push)
-                // While the library is out, a click on the page beside it brings the page back.
-                // Only beside it: an overlay on the moved browser stays at the browser's old
-                // frame (offset moves drawing, not layout) and swallowed every click in the library.
-                if shown > 0 {
-                    HStack(spacing: 0) {
-                        if !onRight { Color.clear.frame(width: shown).allowsHitTesting(false) }
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .onTapGesture { LibraryMotion.close(windowState) }
-                        if onRight { Color.clear.frame(width: shown).allowsHitTesting(false) }
-                    }
-                }
-                // While it is open, a sideways swipe anywhere pushes it shut under the fingers.
-                if windowState.isSidebarMenuVisible {
-                    LibrarySwipeSurface(width: width, onRight: onRight,
-                                        onChange: { windowState.libraryDrag = max($0, 0) },
-                                        onEnd: { LibraryMotion.release(windowState, distance: $0, velocity: $1, width: width) })
-                }
-            }
-        }
-    }
-}
-
 extension EnvironmentValues {
     /// How far the library is out, 0...1. Only small modifiers read it, so a swipe redraws them alone.
     @Entry var libraryProgress: CGFloat = 0

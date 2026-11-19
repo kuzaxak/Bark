@@ -126,7 +126,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 9.1 Run the complete compatibility, extension and migration matrices on both architectures; attach concise results to the review/ticket and keep transient logs outside commits.
 - [ ] 9.2 Compare candidate measurements against the frozen per-architecture budgets; record pass/fail and any explicitly accepted change before promotion.
 - [ ] 9.3 Prepare opt-in canary/beta rollout, recovery instructions and named security ownership; verify a release candidate can use the runbook without undocumented steps.
-- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite.
+- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite. The legacy app scene, desktop window, split compositor and mini-window presenter have been removed. Shared WebKit services and fixtures remain.
 
 ## Workflow follow-up
 

@@ -23,3 +23,15 @@ final class ChromiumAppearance {
 
     isolated deinit { NotificationCenter.default.removeObserver(observer) }
 }
+
+@MainActor
+private func applyAppearanceMode(_ mode: AppearanceMode) {
+    switch mode {
+    case .system:
+        NSApp.appearance = nil  // Follow system
+    case .light:
+        NSApp.appearance = NSAppearance(named: .aqua)
+    case .dark:
+        NSApp.appearance = NSAppearance(named: .darkAqua)
+    }
+}

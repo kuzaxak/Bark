@@ -21,7 +21,6 @@ enum WebContextMenuItem {
     case pageViewSource
 
     case linkOpenInNewTab
-    case linkOpenInNewWindow
     case linkOpenInSplitView
     case linkSaveAs
     case linkCopy
@@ -68,7 +67,7 @@ enum WebContextMenuItem {
     private static func section(for payload: WebContextMenuPayload) -> [WebContextMenuItem] {
         switch payload {
         case .link:
-            return [.linkOpenInNewTab, .linkOpenInNewWindow, .linkOpenInSplitView, .separator, .linkSaveAs, .linkCopy]
+            return [.linkOpenInNewTab, .linkOpenInSplitView, .separator, .linkSaveAs, .linkCopy]
         case .image:
             return [.imageOpenInNewTab, .separator, .imageSaveToDownloads, .imageSaveAs, .separator, .imageCopyAddress, .systemImageCopy]
         case .textSelection:
@@ -135,8 +134,6 @@ enum WebContextMenuItem {
         case .pagePrint: return "Print…"
         case .pageViewSource: return "View Page Source"
         case .linkOpenInNewTab: return "Open Link in New Tab"
-        // A new window is a regular one, so a private page leaves it out.
-        case .linkOpenInNewWindow: return webView.owningSession?.isPrivate == true ? nil : "Open Link in New Window"
         case .linkOpenInSplitView: return "Open Link in Split View"
         case .linkSaveAs: return "Save Link As…"
         case .linkCopy: return "Copy Link"
@@ -196,10 +193,6 @@ enum WebContextMenuItem {
             webView.nookPrint()
         case .pageViewSource:
             webView.showPageSource()
-        case .linkOpenInNewWindow:
-            if let url = payload.linkURL {
-                webView.openLinkInNewWindow(url)
-            }
         case .linkOpenInSplitView:
             if let url = payload.linkURL {
                 webView.openLinkInSplitView(url)
@@ -281,15 +274,6 @@ extension FocusableWKWebView {
 
     private var browserManager: BrowserManager? {
         owningSession?.controller?.sessionDelegate as? BrowserManager
-    }
-
-    /// Opens `url` in a new regular window on the page's space.
-    func openLinkInNewWindow(_ url: URL) {
-        guard let browserManager, let spaceID = owningSession.flatMap({ browserManager.tabs.window(for: $0) })?.spaceID else { return }
-        browserManager.createNewWindow { window in
-            browserManager.tabs.setSpace(spaceID, in: window)
-            _ = browserManager.tabs.open(url: url, in: window, placement: .newTab)
-        }
     }
 
     /// Opens `url` as a trail child beside the page's pane, or beside the window's selection.

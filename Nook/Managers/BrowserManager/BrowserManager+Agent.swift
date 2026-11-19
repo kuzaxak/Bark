@@ -42,7 +42,6 @@ extension BrowserManager {
         guard let session = tabs.ensureSession(for: id) else { throw AgentPageError.noPage }
         session.loadWebViewIfNeeded()
         guard let view = session.webView else { throw AgentPageError.noPage }
-        compositorManager?.markTabAccessed(id)
         agentParked = false
         hostAgentPage(session)
         scheduleAgentIdle()

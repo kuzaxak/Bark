@@ -318,10 +318,6 @@ extension BrowserManager {
 
     /// Reset zoom when a tab navigates, so a page never inherits the previous page's zoom.
     func loadZoomForTab(_ tabId: UUID) {
-        // Every window's view of the page, not just the active window's: magnification is per view.
-        for webView in webViewCoordinator?.getAllWebViews(for: tabId) ?? [] {
-            zoomManager.resetZoom(for: webView, tabId: tabId)
-        }
         // A background tab navigating must not move the readout off the tab being looked at.
         zoomManager.showZoomLevel(for: windowRegistry?.activeWindow?.selectedItemID)
     }

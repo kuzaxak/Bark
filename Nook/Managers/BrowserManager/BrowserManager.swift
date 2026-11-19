@@ -10,7 +10,6 @@ import AppKit
 import Combine
 import CoreServices
 import OSLog
-import Sparkle
 import SwiftData
 import SwiftUI
 import WebKit
@@ -388,19 +387,11 @@ class BrowserManager: ObservableObject {
     /// The card offering to make Nook the default browser, in the window in front.
     @Published var showDefaultBrowserPrompt = false
     @Published var tabClosureToastCount: Int = 0
-    @Published var updateAvailability: UpdateAvailability?
-    /// Set on the first launch after an update; the sidebar shows a what's-new card until acted on.
-    @Published var whatsNewVersion: String?
     @Published var isExtensionPopupActive: Bool = false
 
     /// Track tabs currently being synced to prevent recursive sync calls
     private var isSyncingTab: Set<UUID> = []
 
-    /// Reference to the app delegate for Sparkle integration
-    weak var appDelegate: AppDelegate?
-    /// SwiftUI's action for the Settings scene, handed over by `WindowView`. The old
-    /// `showSettingsWindow:` selector no longer opens a SwiftUI Settings scene.
-    var openSettingsAction: OpenSettingsAction?
     var nativeOpenSettings: ((SettingsTabs) -> Void)?
     var nativeCreateIncognitoWindow: (() -> Void)?
     var nativeCreateWindow: (() -> Void)?
@@ -414,12 +405,11 @@ class BrowserManager: ObservableObject {
     var downloadManager: DownloadManager
     var authenticationManager: AuthenticationManager
     var historyManager: HistoryManager
-    var cookieManager: CookieManager?
-    var cacheManager: CacheManager?
-    var extensionManager: ExtensionManager?
+    let cookieManager: CookieManager? = nil
+    let cacheManager: CacheManager? = nil
+    let extensionManager: ExtensionManager? = nil
     /// Store ids an import found, installed once a browser window can show their permission sheets.
     var pendingExtensionImports: [String] = []
-    var compositorManager: TabCompositorManager?
     var splitManager: SplitViewManager
     var gradientColorManager: GradientColorManager
     var contentBlockerManager: ContentBlockerManager
@@ -439,10 +429,6 @@ class BrowserManager: ObservableObject {
     var externalMiniWindowManager = ExternalMiniWindowManager()
     let peekManager = PeekManager()
     let autofillManager = AutofillManager()
-    let securityKeySheets = SecurityKeySheetPresenter()
-
-    // TEMPORARY: Will be removed when cross-window coordination is eliminated
-    weak var webViewCoordinator: WebViewCoordinator?
     weak var windowRegistry: WindowRegistry?
 
     private var savedSidebarWidth: CGFloat = SidebarWidth.standard
@@ -457,34 +443,25 @@ class BrowserManager: ObservableObject {
         return entities.map { ($0.id, $0.name) }
     }
 
-    let engine: Profile.Engine
+    let engine: Profile.Engine = .chromium
 
     init(
         settings: NookSettingsService,
         windowRegistry: WindowRegistry,
         importManager: ImportManager,
-        persistence: Persistence? = nil,
-        userDefaults: UserDefaults? = nil,
-        downloadManager: DownloadManager? = nil,
-        tabsDirectory: URL? = nil,
-        cloudSyncEnabled: Bool = true,
-        engine: Profile.Engine = .webKit,
+        persistence: Persistence,
+        userDefaults: UserDefaults,
+        downloadManager: DownloadManager,
+        tabsDirectory: URL,
+        cloudSyncEnabled: Bool = false,
         vault: VaultService? = nil
     ) {
-        self.engine = engine
-        // Chromium must supply every app store before any legacy singleton can
-        // be evaluated. The WebKit path preserves its existing defaults.
-        precondition(engine == .webKit || (persistence != nil && userDefaults != nil &&
-            downloadManager != nil && tabsDirectory != nil))
-        let tabsDirectory = tabsDirectory ?? TabsController.defaultDirectory
-        // Phase 1: initialize all stored properties
         self.nookSettings = settings
-        self.modelContext = (persistence ?? .shared).container.mainContext
-        self.userDefaults = userDefaults ?? .standard
-        self.extensionManager = engine == .webKit ? ExtensionManager.shared : nil
-        let blocker = ContentBlockerManager(settings: settings, storageDirectory: engine == .chromium
-            ? tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists") : nil,
-            nativeNetworkBlocking: engine == .chromium)
+        self.modelContext = persistence.container.mainContext
+        self.userDefaults = userDefaults
+        let blocker = ContentBlockerManager(settings: settings,
+            storageDirectory: tabsDirectory.deletingLastPathComponent().appendingPathComponent("ContentBlocker/FilterLists"),
+            nativeNetworkBlocking: true)
         let sponsorBlock = SponsorBlockManager(settings: settings)
         let siteRouting = SiteRoutingManager(settings: settings)
         self.contentBlockerManager = blocker
@@ -495,17 +472,16 @@ class BrowserManager: ObservableObject {
             sponsorBlock: sponsorBlock, siteRouting: siteRouting,
             legacyProfiles: Self.legacyProfileRecords(in: modelContext),
             legacyTree: { [modelContext] in LegacyTabImport.tree(from: modelContext) },
-            profileEngine: engine,
+            profileEngine: .chromium,
             directory: tabsDirectory)
         self.tabs = tabs
-        self.spaceSyncManager = SpaceSyncManager(tabs: tabs, enabled: cloudSyncEnabled && engine == .webKit)
+        self.spaceSyncManager = SpaceSyncManager(tabs: tabs, enabled: cloudSyncEnabled)
         // The first space's data store is the one the app starts on.
         let initialProfile = tabs.orderedSpaces.first.flatMap { tabs.profile(forSpace: $0.id) }
         self.currentProfileSubject = CurrentValueSubject(initialProfile)
 
-        // settingsManager will be injected from NookApp
         self.dialogManager = DialogManager()
-        self.downloadManager = downloadManager ?? .shared
+        self.downloadManager = downloadManager
         self.authenticationManager = AuthenticationManager(userDefaults: self.userDefaults)
         // Initialize managers with the current space's data store for isolation
         self.historyManager = HistoryManager(
@@ -516,9 +492,6 @@ class BrowserManager: ObservableObject {
                 .appendingPathComponent("History/history-index.sqlite"),
             halfLifeDays: settings.historyHalfLifeDays,
             wordStops: PaletteText.stops(from: settings.paletteWordStops))
-        self.cookieManager = engine == .webKit ? CookieManager(dataStore: initialProfile?.dataStore) : nil
-        self.cacheManager = engine == .webKit ? CacheManager(dataStore: initialProfile?.dataStore) : nil
-        self.compositorManager = engine == .webKit ? TabCompositorManager() : nil
         self.splitManager = SplitViewManager()
         self.gradientColorManager = GradientColorManager()
         self.findManager = FindManager()
@@ -526,19 +499,15 @@ class BrowserManager: ObservableObject {
         self.importSession = BrowserImportSession()
 
         // Phase 2: wire dependencies and perform side effects (safe to use self)
-        self.compositorManager?.browserManager = self
         self.splitManager.browserManager = self
         self.windowRegistry = windowRegistry
-        // Note: settingsManager will be injected later, so we skip initialization here
         self.tabs.history = self.historyManager
         self.historyManager.onHistoryCleared = { [caches = tabs.translationCaches] profile, cutoff in
             Task { await caches.erase(profile: profile, usedBefore: cutoff) }
         }
-        self.tabs.webViews = engine == .webKit ? self : nil
         self.tabs.sessionDelegate = self
         self.tabs.tabEvents = self
         self.tabs.alerts = self
-        self.tabs.onPageLoadedInBackground = { [weak self] in self?.compositorManager?.load($0) }
         NotificationCenter.default.addObserver(
             forName: NookSettingsService.paletteWordStopsDidChange, object: nil, queue: .main
         ) { [weak self, settings] _ in
@@ -549,37 +518,15 @@ class BrowserManager: ObservableObject {
         let vault = vault ?? VaultService(settings: settings)
         vault.presenter = autofillManager
         // Native Chromium retains its stock WebAuthn/security-key implementation.
-        if engine == .webKit { vault.securityKeyPresenter = securityKeySheets }
         self.tabs.vault = vault
         if case .readOnly(let reason) = tabs.loadOutcome {
             TabsController.presentReadOnlyAlert(reason: reason, directory: tabs.directory)
         }
-        if let mgr = self.extensionManager {
-            // Attach extension manager BEFORE any WKWebView is created so content scripts can inject
-            mgr.attach(browserManager: self)
-            
-            // Bind popup active state
-            mgr.$isPopupActive
-                .receive(on: RunLoop.main)
-                .assign(to: &$isExtensionPopupActive)
-        }
         self.gradientColorManager.setImmediate(.default)
         self.contentBlockerManager.attach(host: self)
         self.contentBlockerManager.prepareLinkCleaning()
-        if engine == .webKit {
-            // Launch waits on the blocker, so it starts here and not when the first window appears,
-            // about 190 ms later. NookApp's own call then finds it already under way.
-            self.contentBlockerManager.setEnabled(settings.adBlockerEnabled)
-            SocialImageTweaks.downloader = self
-        }
         self.siteRoutingManager.host = self
-        // Note: tracking protection will be configured after settingsManager injection
-
         self.peekManager.attach(browserManager: self)
-        if engine == .webKit {
-            self.externalMiniWindowManager.attach(browserManager: self)
-            self.authenticationManager.attach(browserManager: self)
-        }
         // Migrate legacy history entries (with nil profile) to default profile to avoid cross-profile leakage
         self.migrateUnassignedDataToDefaultProfile()
         loadSidebarSettings()
@@ -608,7 +555,6 @@ class BrowserManager: ObservableObject {
 
     // MARK: - Startup Loading
 
-    private var startupWaitedForContentBlocker = false
     private var startupWarmTasks: [UUID: Task<Void, Never>] = [:]
     private var nativeWarmAttempt: UUID?
 
@@ -642,83 +588,6 @@ class BrowserManager: ObservableObject {
             })
         }
     }
-    /// Runs once the next regular window is set up: one `createNewWindow(then:)` opened, or the
-    /// window restored at launch for a link that arrived before it.
-    private var nextWindowSetup: ((BrowserWindowState) -> Void)?
-
-    /// Adds `setup` after any setup already waiting for the next regular window.
-    private func whenNextWindowIsSetUp(_ setup: @escaping (BrowserWindowState) -> Void) {
-        let earlier = nextWindowSetup
-        nextWindowSetup = { window in
-            earlier?(window)
-            setup(window)
-        }
-    }
-
-    /// Loads a newly registered window's selected page. With "Last Tab, Favorites & Space" the
-    /// space's other tabs-section pages then warm one at a time; pinned tabs and favorites load
-    /// when selected.
-    private func applyStartupLoadMode(for windowState: BrowserWindowState) {
-        // Content blocking should be active before the first navigation, otherwise the startup
-        // page loads without scriptlets/cosmetics. Warm activation is ~0.3s (cache hit); a cold
-        // compile after a list change is several seconds, so the wait is capped at 2s.
-        if !startupWaitedForContentBlocker, !contentBlockerManager.isEnabled,
-           let activation = contentBlockerManager.activationTask {
-            startupWaitedForContentBlocker = true
-            Task { @MainActor [weak self, weak windowState] in
-                let interval = BrowserPerformance.signposter.beginInterval("StartupBlockerWait")
-                _ = await TaskDeadline.wait(for: activation, timeout: .seconds(2))
-                BrowserPerformance.signposter.endInterval("StartupBlockerWait", interval)
-                guard let self, let windowState else { return }
-                self.applyStartupLoadMode(for: windowState)
-            }
-            return
-        }
-
-        let selected = windowState.selectedItemID
-        if let selected {
-            tabs.select(selected, in: windowState)
-        } else {
-            windowState.refreshCompositor()
-        }
-
-        guard nookSettings?.startupLoadMode == .favoritesAndSpace, let spaceID = windowState.spaceID else { return }
-        let warmIDs = tabs.rows(space: spaceID)
-            .filter { $0.section == .tabs && !$0.item.isFolder && $0.item.id != selected }
-            .map(\.item.id)
-        startupWarmTasks[windowState.id]?.cancel()
-        startupWarmTasks[windowState.id] = Task { @MainActor [weak self, weak windowState] in
-            defer { if let windowState { self?.startupWarmTasks[windowState.id] = nil } }
-            // Wait for the visible page before competing for WebKit and network resources.
-            if let view = selected.flatMap({ self?.tabs.session(for: $0)?.webView }),
-               !(await Self.waitForStartupNavigation(view)) { return }
-            for id in warmIDs {
-                do { try await Task.sleep(for: .milliseconds(350)) } catch { return }
-                guard !Task.isCancelled, let self, let windowState,
-                      self.windowRegistry?.windows[windowState.id] != nil,
-                      self.compositorManager?.allowsBackgroundWarming == true,
-                      self.tabs.item(id) != nil,
-                      let session = self.tabs.ensureSession(for: id) else { return }
-                guard session.isUnloaded else { continue }
-                self.compositorManager?.load(session)
-                if let view = session.webView,
-                   !(await Self.waitForStartupNavigation(view)) { return }
-            }
-        }
-    }
-
-    /// Abort speculative warming after a slow page; other tabs remain available on demand.
-    private static func waitForStartupNavigation(_ webView: WKWebView) async -> Bool {
-        let completion = Task { @MainActor in
-            for await loading in webView.publisher(for: \.isLoading, options: [.initial, .new]).values {
-                if !loading || Task.isCancelled { return }
-            }
-        }
-        let finished = await TaskDeadline.wait(for: completion, timeout: .seconds(10))
-        completion.cancel()
-        return finished
-    }
-
     // MARK: - Space Switching
 
     /// A window changed space. A space owns its login context, so cookies, cache and history
@@ -968,9 +837,7 @@ class BrowserManager: ObservableObject {
     }
 
     func openSettings(tab: SettingsTabs) {
-        if engine == .chromium { nativeOpenSettings?(tab); return }
-        SettingsNavigation.shared.currentSettingsTab = tab
-        openSettingsAction?.callAsFunction()
+        nativeOpenSettings?(tab)
     }
 
     func closeDialog() {
@@ -978,8 +845,7 @@ class BrowserManager: ObservableObject {
     }
 
     private func quitApplication() {
-        // AppDelegate saves the final tab snapshot. Do not close tabs first: a closed tab is
-        // removed from the snapshot and therefore deleted from the store.
+        // Leave open tabs intact for the native quit snapshot.
         NSApplication.shared.terminate(nil)
     }
 
@@ -1013,16 +879,9 @@ class BrowserManager: ObservableObject {
     }
 
     @objc private func handleTabManagementModeChange(_ notification: Notification) {
-        if engine == .chromium {
-            guard notification.object as? NookSettingsService === tabs.settings else { return }
-            cancelNativeStartupWarming()
-            if let window = windowRegistry?.activeWindow { nativeStartupWindowPresented(window) }
-            return
-        }
-        if let modeRaw = notification.userInfo?["mode"] as? String,
-           let mode = TabManagementMode(rawValue: modeRaw) {
-            compositorManager?.setMode(mode)
-        }
+        guard notification.object as? NookSettingsService === tabs.settings else { return }
+        cancelNativeStartupWarming()
+        if let window = windowRegistry?.activeWindow { nativeStartupWindowPresented(window) }
     }
 
     deinit {
@@ -1125,80 +984,6 @@ class BrowserManager: ObservableObject {
         extensionManager?.uninstallExtension(extensionId)
     }
 
-    /// A link from another app: the mini window, or a new tab in the current space of a regular
-    /// window, as Settings → Air Traffic Control says.
-    func presentExternalURL(_ url: URL) {
-        guard nookSettings?.externalLinkDestination == .currentSpace else {
-            externalMiniWindowManager.present(url: url)
-            return
-        }
-        openLinkFromOtherApp(url) { [tabs] window in
-            window.spaceID.flatMap {
-                ExternalLinkDestination.space(showing: $0, spaces: tabs.orderedSpaces.map(\.id), agentSpace: tabs.agentSpaceID)
-            }
-        }
-    }
-
-    /// Opens a link from another app as a selected tab in the frontmost regular window, the one
-    /// that is opening, or a new one, in the space `space` names for that window, and brings
-    /// the window to front.
-    func openLinkFromOtherApp(_ url: URL, space: @escaping (BrowserWindowState) -> UUID?) {
-        let open: (BrowserWindowState) -> Void = { [weak self] window in
-            guard let self else { return }
-            guard let spaceID = space(window) else {
-                externalMiniWindowManager.present(url: url)
-                return
-            }
-            tabs.open(url: url, in: window, placement: .newTab, parent: .tabs(spaceID: spaceID))
-            NSApp.activate()
-            window.bringToFront()
-        }
-        let zOrder = NSApp.orderedWindows
-        func depth(_ window: BrowserWindowState) -> Int { window.window.flatMap(zOrder.firstIndex(of:)) ?? .max }
-        let regular = tabs.regularWindows
-            .filter { !$0.isIncognito && $0.spaceID != nil }
-            .sorted { depth($0) < depth($1) }
-        switch ExternalLinkWindow(
-            activeWindow: windowRegistry?.activeWindowId,
-            regularWindows: regular.map(\.id),
-            windowOpening: !didRestoreSavedWindows || nextWindowSetup != nil
-        ) {
-        case .existing(let id):
-            if let window = regular.first(where: { $0.id == id }) { open(window) }
-        case .opening:
-            whenNextWindowIsSetUp(open)
-        case .new:
-            createNewWindow(then: open)
-        }
-    }
-
-    // MARK: - Window State Management
-
-    /// A window registered: sidebar chrome from the active globals, then its space, selection and
-    /// split from TabsController (an unclaimed saved window record when there is one), then its
-    /// selected page. The first regular window also reopens the other saved windows.
-    func setupWindowState(_ windowState: BrowserWindowState) {
-        guard engine == .webKit else { return }
-        windowState.sidebarWidth = sidebarWidth
-        windowState.sidebarContentWidth = max(sidebarWidth - 16, 0)
-        windowState.isSidebarVisible = isSidebarVisible
-        windowState.savedSidebarWidth = savedSidebarWidth
-        windowState.isCommandPaletteVisible = false
-        windowState.sidebarPiPController = SidebarPiPController(windowState: windowState)
-        // NSWindow reference is set by WindowFocusBridge.attach in ContentView
-        windowState.urlBarFrame = urlBarFrame
-
-        tabs.attach(window: windowState)
-        guard !windowState.isIncognito else { return }
-        let setup = nextWindowSetup
-        nextWindowSetup = nil
-        windowSpaceChanged(windowState)
-        applyStartupLoadMode(for: windowState)
-        restoreSavedWindows()
-        installPendingExtensionImports()
-        setup?(windowState)
-    }
-
     /// Set the active window state (called when a window gains focus)
     /// NOTE: This is called BY the WindowRegistry callback, so we don't call setActive again
     func setActiveWindowState(_ windowState: BrowserWindowState) {
@@ -1209,7 +994,7 @@ class BrowserManager: ObservableObject {
         sidebarContentWidth = windowState.sidebarContentWidth
         isSidebarVisible = windowState.isSidebarVisible
         urlBarFrame = windowState.urlBarFrame
-        // Regular windows get their space accent from WindowView; private windows keep their own look.
+        // Regular windows get their space accent from the sidebar; private windows keep their own look.
         if windowState.isIncognito {
             gradientColorManager.setImmediate(.incognito)
         }
@@ -1221,159 +1006,15 @@ class BrowserManager: ObservableObject {
 
     // MARK: - Window-Aware Tab Operations
 
-    /// DEPRECATED: Use WebViewCoordinator.getWebView() directly via environment
-    func getWebView(for tabId: UUID, in windowId: UUID) -> WKWebView? {
-        webViewCoordinator?.getWebView(for: tabId, in: windowId)
+    /// Older app helpers still ask for a WK view. Chromium has no such view.
+    func getWebView(for tabId: UUID, in windowId: UUID) -> WKWebView? { nil }
+
+    func createNewWindow() {
+        nativeCreateWindow?()
     }
 
-    func navigateTabAcrossWindows(_ tabId: UUID, to url: URL) {
-        webViewCoordinator?.syncTab(tabId, to: url)
-    }
-
-    func setMuteState(_ muted: Bool, for tabId: UUID, originatingWindowId: UUID?) {
-        webViewCoordinator?.setMuteState(muted, for: tabId, excludingWindow: originatingWindowId)
-    }
-
-    /// Opens a regular window. `frame` places a window restored from DeviceState.windows;
-    /// `setup` runs once the window is registered and set up.
-    func createNewWindow(frame: NSRect? = nil, then setup: ((BrowserWindowState) -> Void)? = nil) {
-        if engine == .chromium {
-            if frame == nil, setup == nil { nativeCreateWindow?() }
-            return
-        }
-        guard let windowRegistry = windowRegistry,
-              let webViewCoordinator = webViewCoordinator else {
-            #if DEBUG
-            print("⚠️ [BrowserManager] Cannot create window - missing WindowRegistry or WebViewCoordinator")
-            #endif
-            return
-        }
-
-        if let setup { whenNextWindowIsSetUp(setup) }
-        let newWindow = makeBrowserNSWindow(title: ProductDisplayName.current)
-        let contentView = windowContent(ContentView(), windowRegistry: windowRegistry, webViewCoordinator: webViewCoordinator)
-        newWindow.contentView = NSHostingView(rootView: contentView)
-        if let frame {
-            newWindow.setFrame(frame, display: false)
-        } else {
-            newWindow.center()
-        }
-        newWindow.makeKeyAndOrderFront(nil)
-    }
-
-    private func windowContent(_ content: ContentView, windowRegistry: WindowRegistry, webViewCoordinator: WebViewCoordinator) -> some View {
-        content
-            .background(BackgroundWindowModifier())
-            .ignoresSafeArea(.all)
-            .environmentObject(self)
-            .environment(\.tabActions, self)
-            .environment(tabs)
-            .environment(windowRegistry)
-            .environment(webViewCoordinator)
-            .environmentObject(gradientColorManager)
-            .environment(\.nookSettings, nookSettings ?? NookSettingsService())
-            .environment(aiService)
-            .environment(aiConfigService)
-            .environment(keyboardShortcutManager)
-            .environment(mcpManager)
-            .environment(tabOrganizerManager)
-    }
-
-    /// A browser window created in code, styled like the SwiftUI main window up front so the
-    /// first frame already has the hidden, transparent title bar.
-    private func makeBrowserNSWindow(title: String) -> NSWindow {
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
-            backing: .buffered,
-            defer: false
-        )
-        // ARC owns this window. AppKit's default release on close over-releases it and crashes
-        // in the next autorelease pool drain.
-        window.isReleasedWhenClosed = false
-        window.title = title
-        window.titleVisibility = .hidden
-        window.titlebarAppearsTransparent = true
-        window.backgroundColor = .clear
-        window.minSize = NSSize(width: 470, height: 382)
-        window.contentMinSize = NSSize(width: 470, height: 382)
-        return window
-    }
-
-    /// Opens every saved window record no open window has claimed, once per launch.
-    private var didRestoreSavedWindows = false
-
-    private func restoreSavedWindows() {
-        guard !didRestoreSavedWindows else { return }
-        didRestoreSavedWindows = true
-        for record in tabs.unclaimedWindowRecords() {
-            createNewWindow(frame: record.frame.map(NSRectFromString))
-        }
-    }
-
-    // MARK: - Incognito Window
-
-    /// Create a new incognito/private browsing window
     func createIncognitoWindow() {
-        if engine == .chromium { nativeCreateIncognitoWindow?(); return }
-        guard let windowRegistry = windowRegistry,
-              let webViewCoordinator = webViewCoordinator else {
-            #if DEBUG
-            print("⚠️ [BrowserManager] Cannot create incognito window - missing WindowRegistry or WebViewCoordinator")
-            #endif
-            return
-        }
-
-        let windowState = BrowserWindowState()
-        windowState.isIncognito = true
-        windowState.ephemeralProfile = Profile.createEphemeral()
-
-        // Registration gives the window its private tree (TabsController.attach). It must happen
-        // before the hosting view exists: the sidebar's first render otherwise sees no private
-        // tree, pages through the regular spaces, and keeps showing them.
-        windowRegistry.register(windowState)
-        tabs.open(url: TabsController.homeURL, in: windowState, placement: .newTab)
-
-        let newWindow = makeBrowserNSWindow(title: "Private - \(ProductDisplayName.current)")
-        let contentView = windowContent(ContentView(windowState: windowState), windowRegistry: windowRegistry, webViewCoordinator: webViewCoordinator)
-        newWindow.contentView = NSHostingView(rootView: contentView)
-        newWindow.center()
-
-        windowState.window = newWindow
-        windowRegistry.setActive(windowState)
-
-        newWindow.makeKeyAndOrderFront(nil)
-    }
-
-    /// Destroys a closed incognito window's ephemeral data store. Its pages were already ended by
-    /// TabsController.detach.
-    func closeIncognitoWindow(_ windowState: BrowserWindowState) async {
-        guard windowState.isIncognito, let profile = windowState.ephemeralProfile else { return }
-        windowState.ephemeralProfile = nil
-        windowState.spaceID = nil
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            let resume = OneShot(continuation)
-            // The store is gone either way once the window is; never block the close on WebKit.
-            Task {
-                try? await Task.sleep(for: .seconds(5))
-                resume.fire()
-            }
-            profile.destroyEphemeralDataStore { resume.fire() }
-        }
-    }
-
-    /// Resumes a continuation exactly once, whichever of two callbacks arrives first.
-    private final class OneShot: @unchecked Sendable {
-        private var continuation: CheckedContinuation<Void, Never>?
-        private let lock = NSLock()
-        init(_ continuation: CheckedContinuation<Void, Never>) { self.continuation = continuation }
-        func fire() {
-            lock.lock()
-            let pending = continuation
-            continuation = nil
-            lock.unlock()
-            pending?.resume()
-        }
+        nativeCreateIncognitoWindow?()
     }
 
     /// Toggle full screen for the active window
@@ -1438,61 +1079,6 @@ class BrowserManager: ObservableObject {
 // MARK: - Update Handling
 
 extension BrowserManager {
-    struct UpdateAvailability: Equatable {
-        let version: String
-        let shortVersion: String
-        let releaseNotesURL: URL?
-        var isDownloaded: Bool
-
-        init(version: String, shortVersion: String, releaseNotesURL: URL?, isDownloaded: Bool) {
-            self.version = version
-            self.shortVersion = shortVersion
-            self.releaseNotesURL = releaseNotesURL
-            self.isDownloaded = isDownloaded
-        }
-
-        init(item: SUAppcastItem, isDownloaded: Bool) {
-            self.init(
-                version: item.versionString,
-                shortVersion: item.displayVersionString,
-                releaseNotesURL: item.releaseNotesURL,
-                isDownloaded: isDownloaded
-            )
-        }
-    }
-
-    func handleUpdaterFoundValidUpdate(_ item: SUAppcastItem) {
-        updateAvailability = UpdateAvailability(
-            item: item,
-            isDownloaded: updateAvailability?.isDownloaded ?? false
-        )
-    }
-
-    func handleUpdaterFinishedDownloading(_ item: SUAppcastItem) {
-        if var availability = updateAvailability {
-            availability.isDownloaded = true
-            updateAvailability = availability
-        } else {
-            updateAvailability = UpdateAvailability(item: item, isDownloaded: true)
-        }
-    }
-
-    func handleUpdaterDidNotFindUpdate() {
-        updateAvailability = nil
-    }
-
-    func handleUpdaterAbortedUpdate() {
-        updateAvailability = nil
-    }
-
-    func handleUpdaterWillInstallOnQuit(_ item: SUAppcastItem) {
-        handleUpdaterFinishedDownloading(item)
-    }
-
-    func installPendingUpdateIfAvailable() {
-        appDelegate?.updaterController.checkForUpdates(nil)
-    }
-
     // MARK: - Default Browser
 
     func setAsDefaultBrowser() {
