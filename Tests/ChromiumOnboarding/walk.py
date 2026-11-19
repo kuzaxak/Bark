@@ -172,6 +172,8 @@ def run(app, output, contributor, console):
                     quit_locally(screen, proc)
                     check_local_setup(spaces)
 
+                # The previous Cmd+Q updates the same idle clock used at launch.
+                time.sleep(max(0, 10 - console.idle()))
                 with launch(app, root, profile, output / "return-launch.log",
                             console, owns_screen, contributor["stop"]) as (screen, proc):
                     browser_ready(screen, proc)
