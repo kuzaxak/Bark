@@ -12,7 +12,6 @@
 import Foundation
 import WebKit
 import Observation
-import OSLog
 
 @MainActor
 @Observable
@@ -26,17 +25,7 @@ public final class Profile: NSObject, Identifiable {
     }
 
     public let engine: Engine
-    @ObservationIgnored private let storedWebKitDataStore: WKWebsiteDataStore?
-    /// Capability access for WebKit-only services. Chromium owns its website
-    /// data through the native ProfileManager and never creates a WK store.
-    public var webKitDataStore: WKWebsiteDataStore? { storedWebKitDataStore }
-    /// Legacy WebKit features must explicitly check the capability before use.
-    public var dataStore: WKWebsiteDataStore {
-        guard let store = storedWebKitDataStore else {
-            preconditionFailure("WebKit storage is unavailable for a Chromium profile")
-        }
-        return store
-    }
+    @ObservationIgnored private let webKitStorage: WebKitProfileStorage?
     // Metadata (not yet persisted)
     public var createdDate: Date = Date()
     public var lastUsed: Date = Date()
@@ -52,41 +41,23 @@ public final class Profile: NSObject, Identifiable {
     public var cookieCount: Int { cachedCookieCount }
     public var hasStoredData: Bool { cachedCookieCount > 0 || cachedRecordCount > 0 }
 
-    @ObservationIgnored private var sessionCookieSave: Task<Void, Never>?
-    @ObservationIgnored private var savedSessionCookies: Data?
-
-    public init(
+    public convenience init(
         id: UUID = UUID(),
         name: String = "Default Profile",
         icon: String = "person.crop.circle",
         engine: Engine = .webKit
     ) {
+        // Only WebKit opens a data store or reads the saved session cookies.
+        self.init(id: id, name: name, icon: icon, engine: engine,
+                  storage: engine == .webKit ? WebKitProfileStorage(persistentID: id) : nil)
+    }
+
+    private init(id: UUID, name: String, icon: String, engine: Engine, storage: WebKitProfileStorage?) {
         self.id = id
         self.name = name
         self.icon = icon
         self.engine = engine
-        // Only WebKit opens a data store or reads the saved session cookies.
-        self.storedWebKitDataStore = engine == .webKit
-            ? WKWebsiteDataStore(forIdentifier: id) : nil
-        super.init()
-        if let dataStore = storedWebKitDataStore {
-            restoreSessionCookies()
-            dataStore.httpCookieStore.add(self)
-        }
-    }
-
-    /// Initialize with a custom data store (used for ephemeral profiles)
-    public init(
-        id: UUID = UUID(),
-        name: String,
-        icon: String,
-        dataStore: WKWebsiteDataStore
-    ) {
-        self.id = id
-        self.name = name
-        self.icon = icon
-        self.engine = .webKit
-        self.storedWebKitDataStore = dataStore
+        self.webKitStorage = storage
         super.init()
     }
 
@@ -114,135 +85,42 @@ public final class Profile: NSObject, Identifiable {
         return true
     }
 
-    @MainActor
+    /// Refreshes WebKit website-data stats when this profile has a WebKit store.
     public func refreshDataStoreStats() async {
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            dataStore.httpCookieStore.getAllCookies { cookies in
-                self.cachedCookieCount = cookies.count
-                cont.resume()
-            }
-        }
-        let types: Set<String> = [
-            WKWebsiteDataTypeDiskCache,
-            WKWebsiteDataTypeMemoryCache,
-            WKWebsiteDataTypeLocalStorage,
-            WKWebsiteDataTypeIndexedDBDatabases,
-            WKWebsiteDataTypeFetchCache,
-            WKWebsiteDataTypeServiceWorkerRegistrations
-        ]
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            self.dataStore.fetchDataRecords(ofTypes: types) { records in
-                self.cachedRecordCount = records.count
-                cont.resume()
-            }
-        }
+        guard let webKitStorage else { return }
+        let counts = await webKitStorage.dataCounts()
+        cachedCookieCount = counts.cookies
+        cachedRecordCount = counts.records
     }
 
-    // MARK: - Cleanup
-    public func clearAllData() async {
-        // Everything WebKit supports, not a hand-written list: the old one missed session
-        // storage, WebSQL and the origin-private filesystem, which survived "clear all data".
-        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
-            self.dataStore.removeData(ofTypes: allTypes, modifiedSince: .distantPast) {
-                cont.resume()
-            }
-        }
+    /// Clears WebKit data only. Chromium clearing is an engine operation.
+    @discardableResult
+    public func clearAllData() async -> Bool {
+        guard let webKitStorage else { return false }
+        await webKitStorage.clearAllData()
         await refreshDataStoreStats()
+        return true
     }
-    
-    /// Destroys the ephemeral data store by clearing all data.
-    /// This should be called before releasing an ephemeral profile to ensure
-    /// all incognito data is wiped and the store can be properly deallocated.
-    /// - Parameter completion: Optional completion handler called when destruction is complete
+
+    /// Clears a WebKit private store. Native private sessions are ended by their owning browser.
     public func destroyEphemeralDataStore(completion: (() -> Void)? = nil) {
-        guard isEphemeral else {
+        guard isEphemeral, let webKitStorage else {
             completion?()
             return
         }
-        
-        let allTypes = WKWebsiteDataStore.allWebsiteDataTypes()
-        
-        // Clear all data from the store
-        dataStore.removeData(ofTypes: allTypes, modifiedSince: .distantPast) { [weak self] in
-            guard let self = self else {
-                completion?()
-                return
-            }
-            
-            // Also clear cookies specifically
-            self.dataStore.httpCookieStore.getAllCookies { cookies in
-                for cookie in cookies {
-                    self.dataStore.httpCookieStore.delete(cookie)
-                }
-                
-                completion?()
-            }
-        }
+        webKitStorage.destroyEphemeralDataStore(completion: completion)
     }
 }
 
-// MARK: - Session Cookies
+// MARK: - WebKit storage capability
 
-/// WebKit keeps cookies without an expiry in memory only, so a relaunch signed people out of
-/// sites like App Store Connect. Each space saves its session cookies on change and restores them
-/// before its first page loads, as Chrome does with session restore.
-extension Profile: WKHTTPCookieStoreObserver {
-    private var sessionCookiesURL: URL {
-        TabsController.defaultDirectory.deletingLastPathComponent()
-            .appendingPathComponent("SessionCookies", isDirectory: true)
-            .appendingPathComponent("\(id.uuidString).plist")
-    }
+extension Profile {
+    /// Chromium owns its data through the native ProfileManager.
+    public var webKitDataStore: WKWebsiteDataStore? { webKitStorage?.dataStore }
 
-    /// Queued on the store's connection ahead of any load, so the first page already sends them.
-    fileprivate func restoreSessionCookies() {
-        guard let dataStore = webKitDataStore else { return }
-        guard let data = try? Data(contentsOf: sessionCookiesURL),
-              let list = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [[String: Any]]
-        else { return }
-        savedSessionCookies = data
-        for properties in list {
-            let keyed = Dictionary(uniqueKeysWithValues: properties.map { (HTTPCookiePropertyKey($0.key), $0.value) })
-            if let cookie = HTTPCookie(properties: keyed) {
-                dataStore.httpCookieStore.setCookie(cookie)
-            }
-        }
-    }
-
-    public func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
-        guard webKitDataStore != nil else { return }
-        sessionCookieSave?.cancel()
-        sessionCookieSave = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(1))
-            guard !Task.isCancelled, let self else { return }
-            let cookies = await self.dataStore.httpCookieStore.allCookies()
-            guard !Task.isCancelled else { return }
-            self.writeSessionCookies(cookies.filter(\.isSessionOnly))
-        }
-    }
-
-    private func writeSessionCookies(_ cookies: [HTTPCookie]) {
-        let url = sessionCookiesURL
-        guard !cookies.isEmpty else {
-            if savedSessionCookies != nil { try? FileManager.default.removeItem(at: url) }
-            savedSessionCookies = nil
-            return
-        }
-        let list = cookies.compactMap { cookie in
-            cookie.properties.map { Dictionary(uniqueKeysWithValues: $0.map { ($0.key.rawValue, $0.value) }) }
-        }
-        guard let data = try? PropertyListSerialization.data(fromPropertyList: list, format: .binary, options: 0),
-              data != savedSessionCookies
-        else { return }
-        do {
-            try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try data.write(to: url, options: [.atomic])
-            // Login tokens: owner only.
-            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            savedSessionCookies = data
-        } catch {
-            Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "Tabs")
-                .error("Saving session cookies failed: \(String(describing: error), privacy: .public)")
-        }
+    /// Uses the caller's WebKit store without persistent session-cookie backup.
+    public convenience init(id: UUID = UUID(), name: String, icon: String, dataStore: WKWebsiteDataStore) {
+        self.init(id: id, name: name, icon: icon, engine: .webKit,
+                  storage: WebKitProfileStorage(dataStore: dataStore))
     }
 }

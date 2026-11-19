@@ -913,7 +913,8 @@ public final class PageSession: NSObject, Identifiable {
         }
         let configuration: WKWebViewConfiguration
         if let resolvedProfile {
-            configuration = BrowserConfiguration.shared.webViewConfiguration(for: resolvedProfile)
+            guard let webConfiguration = BrowserConfiguration.webViewConfiguration(for: resolvedProfile) else { return }
+            configuration = webConfiguration
         } else {
             // Edge case: no profile yet. Delay creating WKWebView until one resolves.
             if profileAwaitCancellable == nil {

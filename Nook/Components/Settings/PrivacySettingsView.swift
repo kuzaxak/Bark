@@ -429,7 +429,7 @@ struct PrivacySettingsView: View {
     @MainActor
     private func removeWebsiteData(ofTypes dataTypes: Set<String>) async {
         let tabs = browserManager.tabs
-        let dataStores: [WKWebsiteDataStore] = tabs.profiles.compactMap { tabs.profile(forStore: $0.id)?.dataStore }
+        let dataStores: [WKWebsiteDataStore] = tabs.profiles.compactMap { tabs.profile(forStore: $0.id)?.webKitDataStore }
             + [WKWebsiteDataStore.default()]
         for dataStore in dataStores {
             await dataStore.removeData(ofTypes: dataTypes, modifiedSince: Date.distantPast)

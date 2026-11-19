@@ -97,6 +97,15 @@ struct ProfileEngineTests {
         #expect(privateProfile.isEphemeral && privateProfile.engine == .chromium)
         #expect(privateProfile.webKitDataStore == nil)
         #expect(privateProfile.id != id)
+        for identity in [profile, privateProfile] {
+            #expect(BrowserConfiguration.webViewConfiguration(for: identity) == nil)
+            await identity.refreshDataStoreStats()
+            #expect(await identity.clearAllData() == false)
+            var completed = false
+            identity.destroyEphemeralDataStore { completed = true }
+            #expect(completed && identity.webKitDataStore == nil)
+            #expect(identity.cachedCookieCount == 0 && identity.cachedRecordCount == 0)
+        }
     }
 
     @Test func nativeExtensionCommandCapturesSelectedProfileWithoutRetargetingOrPageCreation() throws {
@@ -579,14 +588,26 @@ struct ProfileEngineTests {
         let profile = Profile.createEphemeral()
         let store = try #require(profile.webKitDataStore)
         #expect(profile.engine == .webKit && profile.isEphemeral)
-        #expect(!store.isPersistent && profile.dataStore === store)
+        #expect(!store.isPersistent && profile.webKitDataStore === store)
+        let other = Profile.createEphemeral()
+        let otherStore = try #require(other.webKitDataStore)
+        #expect(other.id != profile.id && otherStore !== store)
+        let configuration = try #require(BrowserConfiguration.webViewConfiguration(for: profile))
+        #expect(configuration.websiteDataStore === store)
+        #expect(configuration.webExtensionController == nil)
         let cookie = try #require(HTTPCookie(properties: [
             .name: "owned-test", .value: "one", .domain: "profile.invalid", .path: "/"]))
         await store.httpCookieStore.setCookie(cookie)
+        await otherStore.httpCookieStore.setCookie(cookie)
         await profile.refreshDataStoreStats()
         #expect(profile.cachedCookieCount == 1)
-        await profile.clearAllData()
+        #expect(await profile.clearAllData())
         #expect(profile.cachedCookieCount == 0)
+        #expect(await otherStore.httpCookieStore.allCookies().count == 1)
+        await withCheckedContinuation { continuation in
+            other.destroyEphemeralDataStore { continuation.resume() }
+        }
+        #expect(await otherStore.httpCookieStore.allCookies().isEmpty)
     }
 }
 

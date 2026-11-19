@@ -628,8 +628,7 @@ public final class TabsController {
     public func clearData(of profile: Profile) async -> Bool {
         // Native data management must use that profile's Chromium settings.
         // False is explicit unavailability, not a successful empty clear.
-        guard profile.webKitDataStore != nil else { return false }
-        await profile.clearAllData()
+        guard await profile.clearAllData() else { return false }
         await translationCaches.erase(profile: profile.id)
         return true
     }

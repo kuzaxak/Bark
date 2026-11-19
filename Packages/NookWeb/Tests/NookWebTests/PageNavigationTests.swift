@@ -195,7 +195,7 @@ struct PageNavigationTests {
         let profile = Profile.createEphemeral()
         session.detachedProfile = profile
         let configuration = WKWebViewConfiguration()
-        configuration.websiteDataStore = profile.dataStore
+        configuration.websiteDataStore = try #require(profile.webKitDataStore)
         let view = WKWebView(frame: .zero, configuration: configuration)
         session.installPopupWebView(view)
         defer { session.unload() }

@@ -117,22 +117,19 @@ public class BrowserConfiguration {
     }
 
     // MARK: - Profile-Aware Configurations
-    // Derive from the shared config so extension controller + process pool are inherited
+    /// Refuse native identities before instantiating shared WebKit configuration.
     @MainActor
-    public func webViewConfiguration(for profile: Profile) -> WKWebViewConfiguration {
-        let config = webViewConfiguration.copy() as! WKWebViewConfiguration
+    public static func webViewConfiguration(for profile: Profile) -> WKWebViewConfiguration? {
+        guard let dataStore = profile.webKitDataStore else { return nil }
+        let browser = shared
+        let config = browser.webViewConfiguration.copy() as! WKWebViewConfiguration
+        config.userContentController = browser.freshUserContentController()
+        config.websiteDataStore = dataStore
 
-        // Fresh UCC per tab to avoid cross-tab handler conflicts (preserves shared scripts)
-        config.userContentController = freshUserContentController()
-
-        // Use the profile's website data store for isolation
-        config.websiteDataStore = profile.dataStore
-
-        // Extensions never run in private (ephemeral) profiles, matching Chrome's default.
+        // Extensions never run in private profiles.
         if profile.isEphemeral {
             config.webExtensionController = nil
         }
-
         return config
     }
 

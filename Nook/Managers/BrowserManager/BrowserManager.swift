@@ -606,8 +606,10 @@ class BrowserManager: ObservableObject {
         currentProfile = profile
         // No animation transaction: one here made the window render mid-switch. Settings loads
         // the cookie and data lists when it opens; reading them here stalled the switch.
-        cookieManager?.switchDataStore(profile.dataStore, profileId: profile.id, eagerLoad: false)
-        cacheManager?.switchDataStore(profile.dataStore, profileId: profile.id, eagerLoad: false)
+        if let store = profile.webKitDataStore {
+            cookieManager?.switchDataStore(store, profileId: profile.id, eagerLoad: false)
+            cacheManager?.switchDataStore(store, profileId: profile.id, eagerLoad: false)
+        }
         historyManager.switchProfile(profile.id)
         transitionEndTask?.cancel()
         transitionEndTask = Task { [weak self] in

@@ -1152,8 +1152,8 @@ extension TabsController {
     /// Pages whose item now belongs to another space reload on that space's data store.
     private func unloadPagesOnWrongDataStore(_ ids: [UUID]) {
         for id in ids {
-            guard let page = session(for: id), let view = page.webView, let profile = page.profile,
-                  view.configuration.websiteDataStore !== profile.dataStore else { continue }
+            guard let page = session(for: id), let view = page.webView, let dataStore = page.profile?.webKitDataStore,
+                  view.configuration.websiteDataStore !== dataStore else { continue }
             unload(id)
         }
     }
