@@ -254,8 +254,9 @@ public enum SpaceSyncAvailability: Equatable, Sendable {
     /// The zone that holds the spaces, in the owner's private database.
     public static let zoneName = "Spaces"
 
-    /// Whether levels can be set: not in an unsigned build, nor while the tabs are read-only.
-    public var takesLevels: Bool { self != .disabled && self != .notEnabled && self != .needsSignedBuild && self != .readOnlyTabs }
+    /// An established account can set levels even when CloudKit transport is offline.
+    /// While identity is unresolved, no dataset can own these edits.
+    public var takesLevels: Bool { self == .available }
 
     /// Whether the app's signature grants the container and CloudKit: the values of
     /// `com.apple.developer.icloud-container-identifiers` and `com.apple.developer.icloud-services`.

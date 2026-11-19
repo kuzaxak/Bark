@@ -152,14 +152,14 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     func setLevel(_ level: SpaceSyncLevel, for spaceID: UUID) {
         let inICloud = cloudSpaces.contains { $0.id == spaceID && $0.canSyncHere }
-        guard container != nil, tabs.tree.space(spaceID).map({ !$0.isAgent }) ?? inICloud else { return }
+        guard currentAccountClaim != nil, tabs.tree.space(spaceID).map({ !$0.isAgent }) ?? inICloud else { return }
         if state.setLevel(level, for: spaceID) { restartEngine() }
         queuePending()
         scheduleSave()
     }
 
     func removeFromICloud(_ spaceID: UUID) {
-        guard container != nil, state.catalog?.spaces[spaceID] != nil else { return }
+        guard currentAccountClaim != nil, state.catalog?.spaces[spaceID] != nil else { return }
         state.removeFromICloud(spaceID)
         queuePending()
         scheduleSave()
@@ -170,6 +170,10 @@ final class SpaceSyncManager: SpaceSyncControls {
     }
 
     // MARK: - Sharing
+
+    var currentAccountClaim: SpaceSyncAccountClaim? {
+        SpaceSyncAccountClaim(availability: status.availability, dataset: datasetID, account: state.account)
+    }
 
     private static let leaveBeforeInviting = "Leave the shared sync before inviting others."
 
@@ -266,18 +270,17 @@ final class SpaceSyncManager: SpaceSyncControls {
     }
 
     func stopSharing() {
-        guard let container, state.database == .private, state.sharing?.participants != nil else { return }
-        let dataset = datasetID
+        guard let container, let claim = currentAccountClaim, state.database == .private, state.sharing?.participants != nil else { return }
         Task {
-            guard dataset == datasetID else { return }
+            guard claim == currentAccountClaim else { return }
             do {
                 _ = try await container.privateCloudDatabase.deleteRecord(withID: state.shareRecordID)
             } catch let error as CKError where error.code == .unknownItem {
             } catch {
-                if dataset == datasetID { note(error) }
+                if claim == currentAccountClaim { note(error) }
                 return
             }
-            guard dataset == datasetID else { return }
+            guard claim == currentAccountClaim else { return }
             state.stoppedSharing()
             publish()
             scheduleSave()
@@ -285,16 +288,16 @@ final class SpaceSyncManager: SpaceSyncControls {
     }
 
     func joinSharedSync(link: String) {
-        guard let container else { return }
+        guard let container, let claim = currentAccountClaim else { return }
         guard let url = SpaceSyncShareLink.parse(link) else {
             state.lastError = "That is not an iCloud sharing link."
             return publish()
         }
-        let dataset = datasetID
         Task {
+            guard claim == currentAccountClaim else { return }
             do {
                 let metadata = try await container.shareMetadatas(for: [url])[url]?.get()
-                guard dataset == datasetID else { return }
+                guard claim == currentAccountClaim else { return }
                 if isJoiningSharedSync {
                     state.lastError = "Another invitation is being handled. Try this link again after it finishes."
                     publish()
@@ -304,9 +307,9 @@ final class SpaceSyncManager: SpaceSyncControls {
                     notifyMissingShare(url)
                 }
             } catch let error as CKError where error.code == .unknownItem {
-                if dataset == datasetID { notifyMissingShare(url) }
+                if claim == currentAccountClaim { notifyMissingShare(url) }
             } catch {
-                if dataset == datasetID { note(error) }
+                if claim == currentAccountClaim { note(error) }
             }
         }
     }
@@ -377,20 +380,20 @@ final class SpaceSyncManager: SpaceSyncControls {
     }
 
     func leaveSharedSync() {
-        guard let container, state.database == .shared, !leaving else { return }
+        guard let container, let claim = currentAccountClaim, state.database == .shared, !leaving else { return }
         leaving = true
         let dataset = datasetID
         Task {
-            guard dataset == datasetID else { return }
             defer { if dataset == datasetID { leaving = false } }
+            guard claim == currentAccountClaim else { return }
             do {
                 _ = try await container.sharedCloudDatabase.deleteRecord(withID: state.shareRecordID)
             } catch let error as CKError where error.code == .unknownItem || error.code == .zoneNotFound {
             } catch {
-                if dataset == datasetID { note(error) }
+                if claim == currentAccountClaim { note(error) }
                 return
             }
-            guard dataset == datasetID else { return }
+            guard claim == currentAccountClaim else { return }
             endSharedSync(message: nil)
         }
     }
@@ -436,17 +439,16 @@ final class SpaceSyncManager: SpaceSyncControls {
     }
 
     func removeOldCopies() {
-        guard let container, state.database == .shared else { return }
+        guard let container, let claim = currentAccountClaim, state.database == .shared else { return }
         let ids = state.oldCopyRecords
         guard !ids.isEmpty else { return }
-        let dataset = datasetID
         let zone = CKRecordZone.ID(zoneName: SpaceSyncAvailability.zoneName, ownerName: CKCurrentUserDefaultName)
         Task {
-            guard dataset == datasetID else { return }
+            guard claim == currentAccountClaim else { return }
             do {
                 let results = try await container.privateCloudDatabase.modifyRecords(
                     saving: [], deleting: ids.map { CKRecord.ID(recordName: $0.uuidString, zoneID: zone) }, atomically: false).deleteResults
-                guard dataset == datasetID else { return }
+                guard claim == currentAccountClaim else { return }
                 var removed: Set<UUID> = []
                 for (recordID, result) in results {
                     guard let id = UUID(uuidString: recordID.recordName) else { continue }
@@ -461,10 +463,10 @@ final class SpaceSyncManager: SpaceSyncControls {
                 }
                 state.removedOldCopies(removed)
             } catch let error as CKError where error.code == .zoneNotFound {
-                guard dataset == datasetID else { return }
+                guard claim == currentAccountClaim else { return }
                 state.removedOldCopies(ids)
             } catch {
-                guard dataset == datasetID else { return }
+                guard claim == currentAccountClaim else { return }
                 note(error)
             }
             publish()
@@ -890,7 +892,9 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// Tells the engine what differs from iCloud, and takes back what no longer does. `only`
     /// limits additions to those records.
     private func queuePending(only ids: Set<UUID>? = nil) {
-        guard !deferredChromiumInbox else { return }
+        // The retained state still belongs to the previous account while
+        // resolving identity. Reconcile ordinary local edits once it settles.
+        guard currentAccountClaim != nil, !deferredChromiumInbox else { return }
         state.prune(against: tabs.tree)
         let tooLarge = state.tooLarge(in: tabs.tree)
         if !tooLarge.isSubset(of: reportedTooLarge) {

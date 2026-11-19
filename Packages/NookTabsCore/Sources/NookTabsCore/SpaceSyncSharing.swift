@@ -13,6 +13,18 @@
 
 import Foundation
 
+/// A CloudKit action belongs to the resolved account and dataset that admitted it.
+public struct SpaceSyncAccountClaim: Equatable, Sendable {
+    private let dataset: UUID
+    private let account: String
+
+    public init?(availability: SpaceSyncAvailability, dataset: UUID, account: String?) {
+        guard availability.takesLevels, let account else { return nil }
+        self.dataset = dataset
+        self.account = account
+    }
+}
+
 /// Owns one join from consent through CloudKit acceptance and the local switch.
 public struct SpaceSyncJoinAdmission {
     public struct Claim: Equatable {

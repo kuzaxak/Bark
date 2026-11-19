@@ -17,6 +17,67 @@ struct SpaceSyncSharingTests {
 
     private func later(_ seconds: TimeInterval) -> Date { fixedNow.addingTimeInterval(seconds) }
 
+    @Test func pendingAccountCheckCannotAuthorizeWorkOnThePreviousDataset() throws {
+        #expect(SpaceSyncAvailability.available.takesLevels)
+        let unresolved: [SpaceSyncAvailability] = [.checking, .unavailable, .noAccount, .restricted]
+        for availability in unresolved {
+            #expect(!availability.takesLevels)
+        }
+        let previousDataset = UUID()
+        let nextDataset = UUID()
+        let previous = try #require(SpaceSyncAccountClaim(
+            availability: .available, dataset: previousDataset, account: Self.guestAccount))
+
+        // An old-copy confirmation can still be in front of Settings when the account
+        // changes. The old state remains on disk while identity is being checked.
+        let duringCheck = SpaceSyncAccountClaim(
+            availability: .checking, dataset: nextDataset, account: Self.guestAccount)
+        #expect(duringCheck == nil)
+        #expect(SpaceSyncAccountClaim(
+            availability: .unavailable, dataset: nextDataset, account: Self.guestAccount) == nil)
+        #expect(SpaceSyncAccountClaim(
+            availability: .available, dataset: nextDataset, account: nil) == nil)
+
+        let resumed = try #require(SpaceSyncAccountClaim(
+            availability: .available, dataset: nextDataset, account: Self.guestAccount))
+        let switched = try #require(SpaceSyncAccountClaim(
+            availability: .available, dataset: nextDataset, account: Self.ownerAccount))
+        #expect(previous != resumed)
+        #expect(previous != switched)
+        #expect(resumed != switched)
+        #expect(resumed == SpaceSyncAccountClaim(
+            availability: .available, dataset: nextDataset, account: Self.guestAccount))
+    }
+
+    @Test func resolvingAccountPreservesLocalEditsWithoutQueuingOldAccountRemoval() throws {
+        let work = try Work()
+        var mac = Mac(work.tree)
+        var cloud = Cloud()
+        mac.state.account = Self.guestAccount
+        mac.state.setLevel(.pinned, for: work.space)
+        mac.send(&cloud)
+        #expect(Set(cloud.records.keys) == work.pinnedIDs)
+
+        // A Remove From iCloud confirmation can outlive the account it showed.
+        // Without admission, this would queue the whole space for deletion.
+        var unguarded = mac.state
+        unguarded.removeFromICloud(work.space, now: later(1))
+        #expect(unguarded.pendingChanges(in: mac.tree).deletes == work.pinnedIDs)
+
+        let checking = SpaceSyncAccountClaim(
+            availability: .checking, dataset: UUID(), account: mac.state.account)
+        if checking != nil { mac.state.removeFromICloud(work.space, now: later(1)) }
+        try mac.tree.rename(work.wiki, customTitle: "Edited offline", now: later(2))
+        #expect(mac.state.level(of: work.space) == .pinned)
+        #expect(mac.pending.deletes.isEmpty)
+
+        // Identity resolves to the same account. Reconciliation sees the local
+        // edit now and leaves the rest of that account's records in place.
+        mac.send(&cloud, now: later(3))
+        #expect(Set(cloud.records.keys) == work.pinnedIDs)
+        #expect(cloud.records[work.wiki]?.record.fields[Key.customTitle] == .string("Edited offline"))
+    }
+
     @Test func invitationAndSettingsOfferShareOneJoinClaim() throws {
         var admission = SpaceSyncJoinAdmission()
         let dataset = UUID()

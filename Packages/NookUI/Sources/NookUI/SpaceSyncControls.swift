@@ -13,6 +13,7 @@ import NookTabsCore
 @MainActor public protocol SpaceSyncControls: AnyObject {
     var status: SpaceSyncStatus { get }
     var isSyncEnabled: Bool { get }
+    var currentAccountClaim: SpaceSyncAccountClaim? { get }
     func enableSync()
     func disableSync()
     func level(of spaceID: UUID) -> SpaceSyncLevel
@@ -39,6 +40,86 @@ import NookTabsCore
     func removeOldCopies()
     /// Joins, after asking, a zone this account already joined on another Mac.
     func joinOffer(_ owner: String)
+}
+
+extension SpaceSyncControls {
+    public var currentAccountClaim: SpaceSyncAccountClaim? { nil }
+}
+
+@MainActor
+struct SpaceSyncDialogOwner {
+    private let claim: SpaceSyncAccountClaim
+    private weak var owner: (any SpaceSyncControls)?
+
+    init?(_ owner: any SpaceSyncControls) {
+        guard let claim = owner.currentAccountClaim else { return nil }
+        self.claim = claim
+        self.owner = owner
+    }
+
+    func matches(_ current: (any SpaceSyncControls)?) -> Bool {
+        guard let owner, let current else { return false }
+        return owner === current && current.currentAccountClaim == claim
+    }
+
+    func join(link: String, using current: (any SpaceSyncControls)?) {
+        guard matches(current) else { return }
+        current?.joinSharedSync(link: link)
+    }
+
+    func invite(code: String, using current: () -> (any SpaceSyncControls)?) async -> SpaceSyncDialogInviteResult? {
+        guard let controls = current(), matches(controls) else { return nil }
+        let result = await controls.invite(code: code)
+        guard matches(current()) else { return nil }
+        return SpaceSyncDialogInviteResult(owner: self, value: result)
+    }
+}
+
+@MainActor
+struct SpaceSyncDialogInviteResult {
+    let owner: SpaceSyncDialogOwner
+    let value: SpaceSyncInviteResult
+
+    func copyLink(using current: (any SpaceSyncControls)?, copy: (String) -> Void) {
+        guard owner.matches(current), case .invited(let link) = value else { return }
+        copy(link.absoluteString)
+    }
+}
+
+@MainActor
+struct SpaceSyncConfirmation {
+    enum Action {
+        case removeSpace(UUID), stopSharing, removeOldCopies, leave
+    }
+
+    let title: String
+    let button: String
+    let message: String
+    private let action: Action
+    private let owner: SpaceSyncDialogOwner
+
+    init?(_ action: Action, title: String, button: String, message: String, owner: any SpaceSyncControls) {
+        guard let owner = SpaceSyncDialogOwner(owner) else { return nil }
+        self.action = action
+        self.title = title
+        self.button = button
+        self.message = message
+        self.owner = owner
+    }
+
+    func canConfirm(using current: (any SpaceSyncControls)?) -> Bool {
+        owner.matches(current)
+    }
+
+    func confirm(using current: (any SpaceSyncControls)?) {
+        guard let current, canConfirm(using: current) else { return }
+        switch action {
+        case .removeSpace(let id): current.removeFromICloud(id)
+        case .stopSharing: current.stopSharing()
+        case .removeOldCopies: current.removeOldCopies()
+        case .leave: current.leaveSharedSync()
+        }
+    }
 }
 
 extension SpaceSyncLevel {

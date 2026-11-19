@@ -23,27 +23,27 @@ public struct SpacesSettingsView: View {
     /// A move that would leave its profile with no space, waiting on keep, delete or cancel.
     @State private var pendingMove: (space: UUID, to: UUID?, profile: String)?
     @State private var profileChangeError: ProfileDeletionError?
-    /// A space in iCloud waiting on Remove or Cancel.
-    @State private var pendingRemoval: SpaceSyncCloudSpace?
-    @State private var joining = false
+    @State private var syncConfirmation: SpaceSyncConfirmation?
+    @State private var joinOwner: SpaceSyncDialogOwner?
     @State private var joinLink = ""
-    @State private var askingForInviteCode = false
+    @State private var inviteOwner: SpaceSyncDialogOwner?
     @State private var inviteCode = ""
     @State private var inviteRunning = false
-    @State private var inviteResult: SpaceSyncInviteResult?
-    @State private var confirmingStopSharing = false
-    @State private var confirmingLeave = false
-    @State private var confirmingOldCopyRemoval = false
+    @State private var inviteResult: SpaceSyncDialogInviteResult?
 
     public init() {}
 
     private var spaces: [SpaceRecord] { tabs.orderedSpaces.filter { !$0.isAgent } }
 
-    /// Sync controls when levels can be set; nil in an unsigned build and while the tabs are
-    /// read-only.
+    /// Controls whose actions require a resolved iCloud account.
     private var sync: (any SpaceSyncControls)? {
         guard let sync = actions?.spaceSync, sync.status.availability.takesLevels else { return nil }
         return sync
+    }
+
+    private var visibleInviteResult: SpaceSyncDialogInviteResult? {
+        guard let inviteResult, inviteResult.owner.matches(sync) else { return nil }
+        return inviteResult
     }
 
     public var body: some View {
@@ -70,71 +70,57 @@ public struct SpacesSettingsView: View {
             if let status = actions?.spaceSync?.status {
                 syncSection(status)
             }
-            if let sync, sync.status.availability == .available {
+            if let sync {
                 cloudSection(sync)
             }
         }
         .formStyle(.grouped)
-        .alert(
-            "Remove \u{201C}\(pendingRemoval?.name ?? "")\u{201D} from iCloud?",
-            isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } })
-        ) {
-            Button("Remove from iCloud", role: .destructive) {
-                if let space = pendingRemoval { sync?.removeFromICloud(space.id) }
-            }
+        .alert(syncConfirmation?.title ?? "",
+               isPresented: Binding(get: { syncConfirmation != nil }, set: { if !$0 { syncConfirmation = nil } }),
+               presenting: syncConfirmation) { confirmation in
+            Button(confirmation.button, role: .destructive) { confirmation.confirm(using: sync) }
+                .disabled(!confirmation.canConfirm(using: sync))
             Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(Self.removalWarning(itemCount: pendingRemoval?.itemCount ?? 0, mode: actions?.spaceSync?.status.mode ?? .own))
+        } message: { confirmation in
+            Text(confirmation.message)
         }
-        .alert("Join Shared Sync", isPresented: $joining) {
+        .alert("Join Shared Sync",
+               isPresented: Binding(get: { joinOwner != nil }, set: { if !$0 { joinOwner = nil } }),
+               presenting: joinOwner) { owner in
             TextField("https://www.icloud.com/share/\u{2026}", text: $joinLink)
-            Button("Join") { sync?.joinSharedSync(link: joinLink) }
-                .disabled(SpaceSyncShareLink.parse(joinLink) == nil)
+            Button("Join") { owner.join(link: joinLink, using: sync) }
+                .disabled(!owner.matches(sync) || SpaceSyncShareLink.parse(joinLink) == nil)
             Button("Cancel", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text("Paste the link someone on another iCloud account shared with you. Before anything syncs, \(ProductDisplayName.current) asks whether the spaces this Mac syncs now move in with theirs.")
         }
-        .alert("Invite with Code", isPresented: $askingForInviteCode) {
+        .alert("Invite with Code",
+               isPresented: Binding(get: { inviteOwner != nil }, set: { if !$0 { inviteOwner = nil } }),
+               presenting: inviteOwner) { owner in
             TextField("Invite code", text: $inviteCode)
-            Button("Invite") { invite(inviteCode) }
-                .disabled(SpaceSyncInviteCode.parse(inviteCode) == nil)
+            Button("Invite") { invite(inviteCode, owner: owner) }
+                .disabled(!owner.matches(sync) || SpaceSyncInviteCode.parse(inviteCode) == nil)
             Button("Cancel", role: .cancel) {}
-        } message: {
+        } message: { _ in
             Text("On the Mac you are inviting, open Settings \u{2192} Spaces and copy its invite code.")
         }
-        .alert(Self.title(inviteResult), isPresented: Binding(get: { inviteResult != nil }, set: { if !$0 { inviteResult = nil } }),
-               presenting: inviteResult) { result in
-            if case .invited(let link) = result {
-                Button("Copy Link") { Self.copy(link.absoluteString) }
+        .alert(Self.title(visibleInviteResult?.value),
+               isPresented: Binding(get: { visibleInviteResult != nil }, set: { if !$0 { inviteResult = nil } }),
+               presenting: visibleInviteResult) { result in
+            if case .invited = result.value {
+                Button("Copy Link") { result.copyLink(using: sync, copy: Self.copy) }
+                    .disabled(!result.owner.matches(sync))
                 Button("Done", role: .cancel) {}
             } else {
                 Button("OK", role: .cancel) {}
             }
         } message: { result in
-            switch result {
+            switch result.value {
             case .invited(let link):
                 Text("\(link.absoluteString)\n\nSend the copied link to the invited Mac. In Bark, paste it into Settings → Spaces → Join Shared Sync.")
             case .failed(let message):
                 Text(message)
             }
-        }
-        .alert("Stop sharing these spaces?", isPresented: $confirmingStopSharing) {
-            Button("Stop Sharing", role: .destructive) { sync?.stopSharing() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The people you shared with stop syncing these spaces, and their Macs keep every space, turned Off. Spaces they moved in stay in your iCloud.")
-        }
-        .alert("Remove the old copy from this iCloud account?", isPresented: $confirmingOldCopyRemoval) {
-            Button("Remove Old Copy", role: .destructive) { sync?.removeOldCopies() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(Self.oldCopyWarning(actions?.spaceSync?.status.oldCopies))
-        }
-        .alert("Leave the shared sync?", isPresented: $confirmingLeave) {
-            Button("Leave", role: .destructive) { sync?.leaveSharedSync() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text(Self.leaveWarning(actions?.spaceSync?.status.mode ?? .own))
         }
         .alert("Couldn’t Change Profile", isPresented: Binding(
             get: { profileChangeError != nil }, set: { if !$0 { profileChangeError = nil } }
@@ -325,12 +311,12 @@ public struct SpacesSettingsView: View {
                 }
             }
             #if os(macOS)
-            if let sync, status.availability != .needsSignedBuild {
+            if let controls = actions?.spaceSync, controls.isSyncEnabled {
                 HStack {
                     Spacer()
                     Button("Copy Sync Report") {
                         NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(sync.syncReport(), forType: .string)
+                        NSPasteboard.general.setString(controls.syncReport(), forType: .string)
                     }
                     .help("Copies what the last sync did with each record, by id, without names, addresses or titles")
                 }
@@ -378,19 +364,26 @@ public struct SpacesSettingsView: View {
         HStack {
             switch status.mode {
             case .own:
-                Button("Invite with Code\u{2026}", action: startInviting)
+                Button("Invite with Code\u{2026}", action: { startInviting(using: sync) })
                     .disabled(inviteRunning)
                 Button("Join Shared Sync\u{2026}") {
                     joinLink = ""
-                    joining = true
+                    joinOwner = SpaceSyncDialogOwner(sync)
                 }
             case .sharing:
-                Button("Invite with Code\u{2026}", action: startInviting)
+                Button("Invite with Code\u{2026}", action: { startInviting(using: sync) })
                     .disabled(inviteRunning)
-                Button("Stop Sharing\u{2026}", role: .destructive) { confirmingStopSharing = true }
+                Button("Stop Sharing\u{2026}", role: .destructive) {
+                    syncConfirmation = SpaceSyncConfirmation(.stopSharing, title: "Stop sharing these spaces?",
+                        button: "Stop Sharing", message: "The people you shared with stop syncing these spaces, and their Macs keep every space, turned Off. Spaces they moved in stay in your iCloud.",
+                        owner: sync)
+                }
                     .disabled(inviteRunning)
             case .joined:
-                Button("Leave Shared Sync\u{2026}", role: .destructive) { confirmingLeave = true }
+                Button("Leave Shared Sync\u{2026}", role: .destructive) {
+                    syncConfirmation = SpaceSyncConfirmation(.leave, title: "Leave the shared sync?",
+                        button: "Leave", message: Self.leaveWarning(status.mode), owner: sync)
+                }
             }
             if inviteRunning {
                 ProgressView().controlSize(.small)
@@ -403,24 +396,28 @@ public struct SpacesSettingsView: View {
                 Text(old.spaces == 1 ? "1 space" : "\(old.spaces) spaces").foregroundStyle(.secondary)
             }
             HStack {
-                Button("Remove Old Copy from This iCloud Account\u{2026}", role: .destructive) { confirmingOldCopyRemoval = true }
+                Button("Remove Old Copy from This iCloud Account\u{2026}", role: .destructive) {
+                    syncConfirmation = SpaceSyncConfirmation(.removeOldCopies, title: "Remove the old copy from this iCloud account?",
+                        button: "Remove Old Copy", message: Self.oldCopyWarning(old), owner: sync)
+                }
                 Spacer()
             }
         }
     }
 
-    private func startInviting() {
+    private func startInviting(using sync: any SpaceSyncControls) {
         inviteCode = ""
-        askingForInviteCode = true
+        inviteOwner = SpaceSyncDialogOwner(sync)
     }
 
-    private func invite(_ code: String) {
-        guard let sync, !inviteRunning else { return }
+    private func invite(_ code: String, owner: SpaceSyncDialogOwner) {
+        guard owner.matches(sync), !inviteRunning else { return }
         inviteRunning = true
         Task {
-            let result = await sync.invite(code: code)
-            if case .invited(let link) = result { Self.copy(link.absoluteString) }
-            inviteRunning = false
+            defer { inviteRunning = false }
+            guard let result = await owner.invite(code: code, using: { sync }) else { return }
+            guard result.owner.matches(sync) else { return }
+            result.copyLink(using: sync, copy: Self.copy)
             inviteResult = result
         }
     }
@@ -527,7 +524,11 @@ public struct SpacesSettingsView: View {
                 Button("Stop Syncing Here") { sync.setLevel(.off, for: space.id) }
                     .disabled(space.state == .offHere)
                 Divider()
-                Button("Remove from iCloud\u{2026}", role: .destructive) { pendingRemoval = space }
+                Button("Remove from iCloud\u{2026}", role: .destructive) {
+                    syncConfirmation = SpaceSyncConfirmation(.removeSpace(space.id), title: "Remove “\(space.name)” from iCloud?",
+                        button: "Remove from iCloud", message: Self.removalWarning(itemCount: space.itemCount, mode: sync.status.mode),
+                        owner: sync)
+                }
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
