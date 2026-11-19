@@ -199,6 +199,41 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
         precondition(view.boostHost == nil, "a private window saves no Boost for the site")
         precondition(manager.contentBlockerManager.allowed.isEmpty && manager.settings.developerSites.isEmpty)
 
+        view.windowState.isIncognito = false
+        let staleBlocker = view.contentBlockerToggle(for: "work.test")!
+        let staleDeveloperMode = view.developerModeToggle(for: "work.test")!
+        let blockerLabel = view.contentBlockerEnabled
+        view.currentTab = nil
+        manager.front = nil
+        staleBlocker()
+        staleDeveloperMode()
+        precondition(manager.contentBlockerManager.allowed.isEmpty && manager.settings.developerSites.isEmpty
+                     && view.contentBlockerEnabled == blockerLabel,
+                     "an action from the retired page cannot write settings with no current owner")
+        view.currentTab = page
+        manager.front = page
+        page.nativeNavigationSerial += 1
+        staleBlocker()
+        staleDeveloperMode()
+        precondition(manager.contentBlockerManager.allowed.isEmpty && manager.settings.developerSites.isEmpty
+                     && view.contentBlockerEnabled == blockerLabel,
+                     "a replacement document on the same site cannot reuse the older controls")
+        let transferredBlocker = view.contentBlockerToggle(for: "work.test")!
+        let transferredDeveloperMode = view.developerModeToggle(for: "work.test")!
+        native.nativeWindowID += 1
+        transferredBlocker()
+        transferredDeveloperMode()
+        let inactiveBlocker = view.contentBlockerToggle(for: "work.test")!
+        let inactiveDeveloperMode = view.developerModeToggle(for: "work.test")!
+        view.windowState.window?.isKeyWindow = false
+        inactiveBlocker()
+        inactiveDeveloperMode()
+        view.windowState.window?.isKeyWindow = true
+        precondition(manager.contentBlockerManager.allowed.isEmpty && manager.settings.developerSites.isEmpty
+                     && view.contentBlockerEnabled == blockerLabel,
+                     "a transferred page or inactive window cannot change saved site settings")
+        view.windowState.isIncognito = true
+
         let window = view.windowState, keyPage = PageSession()
         keyPage.url = URL(string: "https://keyed.test/")!
         manager.toggleDeveloperSite(of: keyPage, in: window)

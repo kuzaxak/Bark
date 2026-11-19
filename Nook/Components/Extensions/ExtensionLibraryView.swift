@@ -176,18 +176,37 @@ struct ExtensionLibraryView: View {
     /// A private window leaves no record, and both lists below are saved for every profile.
     private var isPrivate: Bool { windowState.isIncognito }
 
+    private func siteSettingAction(for host: String, perform: @escaping (PageSession) -> Void) -> (() -> Void)? {
+        guard !isPrivate, let page = currentTab, page.url.host == host, let window = windowState.window,
+              let navigation = page.navigation as? ChromiumPageNavigation else { return nil }
+        let document = page.nativeNavigationSerial
+        let client = navigation.nativeWindowID, tab = navigation.nativeTabID
+        return { [weak page, weak navigation, weak window] in
+            guard let page, let navigation, let window, !self.isPrivate,
+                  self.windowState.isExtensionLibraryVisible,
+                  self.windowState.window === window, window.isKeyWindow,
+                  self.browserManager.windowRegistry?.activeWindow === self.windowState,
+                  self.currentTab === page, page.navigation === navigation,
+                  page.nativeNavigationSerial == document, page.url.host == host,
+                  navigation.nativeWindowID == client, navigation.nativeTabID == tab else { return }
+            perform(page)
+        }
+    }
+
     private func contentBlockerToggle(for host: String) -> (() -> Void)? {
-        guard !isPrivate else { return nil }
-        return {
-            self.contentBlockerEnabled.toggle()
-            self.browserManager.contentBlockerManager.allowDomain(host, allowed: !self.contentBlockerEnabled, from: self.currentTab)
+        siteSettingAction(for: host) { page in
+            let allowed = self.contentBlockerEnabled
+            if self.browserManager.contentBlockerManager.allowDomain(host, allowed: allowed, from: page) {
+                self.contentBlockerEnabled = !allowed
+            }
         }
     }
 
     private func developerModeToggle(for host: String) -> (() -> Void)? {
-        guard !isPrivate else { return nil }
-        let developer = settings.isDeveloperSite(host)
-        return { self.browserManager.setDeveloperSite(host, on: !developer, in: self.windowState) }
+        siteSettingAction(for: host) { _ in
+            let developer = self.settings.isDeveloperSite(host)
+            self.browserManager.setDeveloperSite(host, on: !developer, in: self.windowState)
+        }
     }
 
     // MARK: - Footer
