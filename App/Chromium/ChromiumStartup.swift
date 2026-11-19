@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 
 /// Native stores are separate from legacy Nook. Explicit verification inputs
@@ -86,9 +87,18 @@ struct ChromiumStartupConfiguration {
     }
 
     private func validateChildDirectories() throws {
-        for name in ["App", "Engine"] {
-            let child = Self.canonicalURL(root.appendingPathComponent(name))
-            guard child.path.hasPrefix(root.path + "/") else {
+        guard Self.canonicalURL(root).path == root.path else {
+            throw StartupError.invalidConfiguration
+        }
+        // Check both slots before creating either. lstat rejects a link even
+        // when it targets its sibling or a path that does not exist yet.
+        for directory in [root, root.appendingPathComponent("App"), root.appendingPathComponent("Engine")] {
+            var metadata = stat()
+            if lstat(directory.path, &metadata) == 0 {
+                guard metadata.st_mode & mode_t(S_IFMT) == mode_t(S_IFDIR) else {
+                    throw StartupError.invalidConfiguration
+                }
+            } else if errno != ENOENT {
                 throw StartupError.invalidConfiguration
             }
         }

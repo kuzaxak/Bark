@@ -29,6 +29,10 @@ private final class MockBridge: ChromiumStartupBridge {
 
 @main
 struct StartupTests {
+    private enum PreflightRegression: Error {
+        case acceptedAliasedStore, acceptedNonDirectory
+    }
+
     @MainActor static func main() throws {
         let id = UUID()
         let config = try ChromiumStartupConfiguration(arguments: [
@@ -176,6 +180,48 @@ struct StartupTests {
             try safeConfig.prepare()
             preconditionFailure("Prepared escaped App child")
         } catch { }
+        try FileManager.default.removeItem(at: sandbox.appendingPathComponent("App"))
+        let appDirectory = sandbox.appendingPathComponent("App", isDirectory: true)
+        let engineDirectory = sandbox.appendingPathComponent("Engine", isDirectory: true)
+        try FileManager.default.createDirectory(at: engineDirectory, withIntermediateDirectories: true)
+        let engineFixture = engineDirectory.appendingPathComponent("fixture")
+        let engineBytes = Data("synthetic engine data".utf8)
+        try engineBytes.write(to: engineFixture)
+        try FileManager.default.createSymbolicLink(at: appDirectory, withDestinationURL: engineDirectory)
+        do {
+            try safeConfig.prepare()
+            throw PreflightRegression.acceptedAliasedStore
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
+        let retainedEngine = try Data(contentsOf: engineFixture)
+        precondition(retainedEngine == engineBytes)
+        try FileManager.default.removeItem(at: appDirectory)
+        try FileManager.default.removeItem(at: engineDirectory)
+
+        // A non-directory engine store must be refused before an otherwise
+        // valid App directory is created.
+        try engineBytes.write(to: engineDirectory)
+        do {
+            try safeConfig.prepare()
+            throw PreflightRegression.acceptedNonDirectory
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
+        precondition(!FileManager.default.fileExists(atPath: appDirectory.path))
+        let retainedFile = try Data(contentsOf: engineDirectory)
+        precondition(retainedFile == engineBytes)
+        try FileManager.default.removeItem(at: engineDirectory)
+
+        // Even a dangling link cannot occupy an app-owned directory slot.
+        try FileManager.default.createSymbolicLink(
+            at: engineDirectory, withDestinationURL: sandbox.appendingPathComponent("missing"))
+        do {
+            _ = try ChromiumStartupConfiguration(arguments: [
+                "Bark", "--barc-app-data-dir=\(sandbox.path)", "--barc-app-profile=\(id)"])
+            throw PreflightRegression.acceptedAliasedStore
+        } catch ChromiumStartupConfiguration.StartupError.invalidConfiguration {}
+        try FileManager.default.removeItem(at: engineDirectory)
+        try safeConfig.prepare()
+        precondition(FileManager.default.fileExists(atPath: appDirectory.path))
+        precondition(FileManager.default.fileExists(atPath: engineDirectory.path))
+
         let bridge = MockBridge()
         var failures: [String] = []
         let startup = ChromiumStartup(bridge: bridge, profile: id) { failures.append($0) }
