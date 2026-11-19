@@ -352,8 +352,10 @@ formats and macOS permission reason there. Changing a translatable message drops
 translations, so those strings show in English in every locale. The file's other
 messages still say Chromium.
 
-Application launch requires runtime-ready/lifecycle hooks and
-`NookNativeShell.framework`. `ChromiumApp/main.cc` links only libSystem. It registers
+Application launch requires runtime-ready/lifecycle hooks and the framework
+produced by the `BarkNativeShell` Xcode target. Its bundle retains the launcher’s
+compatibility name, `NookNativeShell.framework`. `ChromiumApp/main.cc` links
+only libSystem. It registers
 the early malloc zone, loads the engine framework, then the shell's fixed bundle-local
 entry; `ChromeMain` owns the sole application loop. Helpers keep Chromium's own main.
 There is no core-only application launch path or WebKit fallback. Its copy of the
@@ -584,9 +586,10 @@ python3 scripts/bark-check.py build
 The result is `build/Bark.app`. The command accepts an empty or absent `build/` directory and verifies the signed app against the engine pin before placing it at the destination. A successful rebuild replaces the previous app at the same path. The contributor commands default to the Mac’s native hardware architecture. Use `--arch` to select a different pinned architecture for `engine`, `build`, `verify`, or `package`. `smoke` and `launch` require the native hardware architecture.
 Keep build inputs in Git and the verified SDK in the versioned cache. The engine recipe, SDK headers, Xcode project, package lockfile, resources, staging and local signing code all live in the repository.
 
-Do not sign or launch a partially staged bundle. The framework requires its
-standard FMWK Info.plist, `ee.qdo.nook.NativeShell` identity, version-A executable,
-Assets.car, default.metallib and exported `barc_native_main`. Preserve sandbox,
+The contributor build stages and signs the complete bundle. It checks the
+native shell’s version-A executable, standard framework Info.plist,
+`ee.qdo.nook.NativeShell` identifier, Assets.car, default.metallib and exported
+`barc_native_main`. Preserve sandbox,
 hardened-runtime, helper entitlements and library validation throughout staging
 and signing. The signing patch retains pre-submission signature verification and
 moves Gatekeeper assessment after awaited notarization; it does not confer
@@ -918,40 +921,23 @@ the new browser cases remain unqualified by source/fixture checks.
 
 ### Installed signing proof
 
-The native product is a standard versioned
-`Contents/Frameworks/NookNativeShell.framework` bundle. The app's main opens
-`Versions/A/NookNativeShell` after loading the engine framework. Keep its
-Info.plist and native resources (including Assets.car) inside that framework's
-Resources, separate from Chromium's resources. The explicit native signing part
-signs the framework container and infers `ee.qdo.nook.NativeShell` from its
-Info.plist; it supplies no bare-library identifier override.
+The `BarkNativeShell` target ships inside Bark.app as
+`Contents/Frameworks/NookNativeShell.framework`. The launcher opens
+`Versions/A/NookNativeShell` after loading Chromium. Native resources live in
+the native framework's own Resources directory. Signing uses the framework
+container's `ee.qdo.nook.NativeShell` identifier from its Info.plist.
 
-After the candidate build succeeds, use the staged `Bark Packaging`
-tools with Python 3.11 or newer. Set `signing_identity` to the existing Developer
-ID Application identity and `notary_profile` to the existing notarytool Keychain
-profile. Keep credentials out of arguments and logs; the profile name is enough.
-After successful complete staging above, sign from the staged copy:
+Use the maintained [signed SDK build](#building-the-app) and
+[distribution preparation](#prepare-bark-distribution-files) for installed
+qualification. Package the signed app with the matching official SDK and
+the local notarytool profile. For bookmark sync, pass the
+[Bark production provisioning profile](#opt-in-to-bark-icloud-signing)
+when building the app.
 
-```fish
-set signed_out "$barc_repo/build/native-signed"
-python3 "$staging_input/Bark Packaging/sign_chrome.py" \
-    --identity "$signing_identity" --input "$staging_input" --output "$signed_out" \
-    --notarize staple --notary-arg=--keychain-profile --notary-arg="$notary_profile"
-```
-
-Use normal Developer ID signing for this gate. The upstream `--development`
-option injects `get-task-allow` and skips Gatekeeper assessment, so it cannot
-qualify the installed proof. Preserve the generated helper entitlements and
-complete versioned framework layout. When a release includes bookmark sync,
-use the Bark production provisioning profile through the iCloud signing steps above.
-
-Verify the produced DMG, install its complete app in an isolated location
-outside the build tree, and require strict signature checks, stapler validation
-and Gatekeeper acceptance there. Launch that exact executable with a fresh
-synthetic user-data directory and keep the Chromium sandbox enabled. Inspect
-helper ownership, resources, profile/extension behavior and clean shutdown.
-Repeat with native ARM artifacts on Apple Silicon. These commands are prepared
-inputs; no installed or notarized result is claimed by this document.
+Run [native SDK qualification](#upgrade-a-bridge-shared-by-two-pinned-architectures)
+with the finished DMG on each native architecture. The qualifier passes the
+installed copy through signature and Gatekeeper checks before exercising it
+with disposable data. Its receipt identifies the signed app, disk image and SDK.
 
 The private-session bridge creates a separate Guest parent and primary OTR for
 each independent session. The native app admits only that actual session identity,
