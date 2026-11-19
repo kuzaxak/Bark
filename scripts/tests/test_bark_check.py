@@ -122,8 +122,10 @@ class ArchitectureTests(unittest.TestCase):
                 fail = Mock(side_effect=AssertionError("The shell check must not select an engine"))
                 run = Mock()
                 unregister = Mock()
+                component = Mock()
                 with patch.dict(self.cli, {"pinned_engine": fail, "native_architecture": fail,
-                                           "run": run, "unregister_unsigned_shell": unregister}), \
+                                           "run": run, "verify_xcode_component": component,
+                                           "unregister_unsigned_shell": unregister}), \
                         patch.object(self.cli["platform"], "system", return_value="Darwin"), \
                         patch.dict(os.environ, {"BARK_ENGINE_SOURCE": "/missing/sdk"}), \
                         patch("sys.argv", [str(CLI), "shell", "--arch", architecture]):
@@ -143,6 +145,7 @@ class ArchitectureTests(unittest.TestCase):
                 self.assertEqual(framework, call(*check_args, products /
                                                  "NookNativeShell.framework/Versions/A/NookNativeShell"))
                 unregister.assert_called_once_with(app)
+                component.assert_called_once_with(app)
                 fail.assert_not_called()
 
     def test_explicit_cross_architecture_verification_remains_available(self):

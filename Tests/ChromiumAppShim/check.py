@@ -483,10 +483,19 @@ def launch_fixtures(work, arch):
 def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, arch):
     app_digest = headers_digest(MODULE)
     # All files used by this process must be thin native images, even under Rosetta.
-    def launch(name, framework=framework_lib, shell=shell_lib, main=shim, *, use_alias=False):
+    def launch(name, framework=framework_lib, shell=shell_lib, main=shim, *, use_alias=False, receipt="regular"):
         contents = work / name / 'Bark.app/Contents'
         (contents / 'MacOS').mkdir(parents=True)
         (contents / 'Frameworks').mkdir()
+        resources = contents / 'Resources'
+        resources.mkdir()
+        receipt_path = resources / 'BarkEngineSDK.sha256'
+        if receipt == "regular":
+            receipt_path.write_text("a" * 64 + "\n")
+        elif receipt == "directory":
+            receipt_path.mkdir()
+        elif receipt == "fifo":
+            os.mkfifo(receipt_path)
         shutil.copy2(main, contents / 'MacOS/Bark')
         if framework:
             versioned_framework(contents / 'Frameworks', framework)
@@ -506,6 +515,18 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
         run = subprocess.run([str(executable), '--barc-app-data-dir=/synthetic', 'last-argument'],
                              env={**os.environ, 'SHIM_LOG': str(log), 'DYLD_INSERT_LIBRARIES': str(quiet_lib)}, capture_output=True, text=True, timeout=30)
         return run, log.read_text().splitlines()
+
+    for name, options in (
+        ('unstaged-with-libraries', {'receipt': None}),
+        ('unstaged-without-libraries', {'receipt': None, 'framework': None, 'shell': None}),
+        ('unusable-receipt-directory', {'receipt': 'directory'}),
+        ('unusable-receipt-fifo', {'receipt': 'fifo'}),
+    ):
+        run, lines = launch(name, **options)
+        check(f'{name} exits before loading either library',
+              run.returncode == os.EX_CONFIG and lines == []
+              and 'Bark requires staging: missing or unusable BarkEngineSDK.sha256' in run.stderr,
+              (run.returncode, lines, run.stderr))
 
     run, lines = launch('normal')
     check('zone is the delegating one when the framework loads, with one thread',

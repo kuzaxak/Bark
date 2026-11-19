@@ -125,6 +125,10 @@ python3 scripts/bark-check.py vault
 To check the real unsigned Release build for both architectures, run the same
 commands as the hosted PR matrix after installing the Metal Toolchain.
 
+The Xcode product uses a background-only build identity. Staging supplies the
+SDK and the shipping browser registrations. Use the signed app produced by
+`bark-check.py build` to test normal browsing.
+
 ```fish
 python3 -B scripts/bark-check.py shell --arch x86_64
 python3 -B scripts/bark-check.py shell --arch arm64

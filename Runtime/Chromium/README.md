@@ -352,8 +352,12 @@ python3 "$barc_repo/Runtime/Chromium/replay_gate.py" "$engine_checkout/src"
 
 ### Native application
 
-`Bark.app` is the outer bundle: the `BarkApp` target owns its executable
-and `Info.plist`, and `Bark Framework.framework` is nested inside it. `BRANDING`
+`BarkApp` builds the outer executable. Xcode registers its intermediate bundle
+as the background-only `ee.qdo.bark.build`. It declares no URL or document
+handlers. The launcher exits before loading either framework when the staged
+SDK receipt is missing. Staging applies the browser identity and handlers from
+the app-owned `ChromiumApp/Info.plist` to its output copy and embeds
+`Bark Framework.framework`. The installed app uses `ee.qdo.bark`. `BRANDING`
 sets the product name, the integrated app and framework bundle identifier
 `ee.qdo.bark`, and the helper names. Its patch is
 `patches/chrome/app/theme/chromium/BRANDING.patch`.

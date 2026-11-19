@@ -32,6 +32,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, local_engine, native_architecture,
                                  read_pin, remove_work, swap)
 from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements, load_profile
+from bark_outer_info import verify_build_info
 from bark_release import (configure_release, expected_additions, make_distribution, make_personal_image,
                           production_settings, publish_new)
 from bark_shell_boundary import verify_shell_boundary
@@ -554,11 +555,18 @@ def release_shell_build_args(derived, architecture):
 
 
 def unregister_unsigned_shell(app):
-    # Xcode registers its intermediate app with Launch Services.
+    # Xcode registers its background build component even for unsigned builds.
     if app.exists():
         subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
                         "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister",
                         "-u", str(app)], capture_output=True)
+
+
+def verify_xcode_component(app):
+    verify_build_info(plistlib.loads((app / "Contents/Info.plist").read_bytes()))
+    receipt = app / "Contents/Resources/BarkEngineSDK.sha256"
+    if receipt.exists() or receipt.is_symlink():
+        raise ValueError("The Xcode build component already contains a staged SDK receipt")
 
 
 def check_release_shell(architecture):
@@ -568,6 +576,7 @@ def check_release_shell(architecture):
         app = products / "Bark.app"
         try:
             run(*release_shell_build_args(derived, architecture))
+            verify_xcode_component(app)
             for image in (app / "Contents/MacOS/Bark",
                           products / "NookNativeShell.framework/Versions/A/NookNativeShell"):
                 run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
@@ -596,6 +605,7 @@ def build_candidate(engine, output, identity, architecture, release_info=None, i
         try:
             source = shell_source_digest(REPO)
             run(*release_shell_build_args(derived, architecture))
+            verify_xcode_component(unsigned)
             run("/bin/bash", STAGE, "--arch", architecture, unsigned, engine, products, stage / "Bark.app",
                 REPO / "ChromiumApp/Additions.plist")
             if shell_source_digest(REPO) != source:

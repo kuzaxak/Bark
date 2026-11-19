@@ -7,6 +7,7 @@
 
 #include <dlfcn.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <libgen.h>
 #include <mach-o/dyld.h>
 #include <stdarg.h>
@@ -14,6 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <sysexits.h>
+#include <unistd.h>
 
 #include "BarcChromium/barc_bridge_api.h"
 #include "BarcChromium/barc_public_headers_sha256.h"
@@ -74,6 +78,24 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   const char* parent_dir = dirname(canonical_path);
   if (!parent_dir) {
     FatalError("dirname %s: %s.", canonical_path, strerror(errno));
+  }
+
+  char* receipt_path = JoinPath(parent_dir, "../Resources/BarkEngineSDK.sha256");
+  // A FIFO must not block an attempt to open an unstaged bundle.
+  const int receipt = open(receipt_path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW);
+  free(receipt_path);
+  struct stat receipt_info;
+  const bool staged =
+      receipt >= 0 && fstat(receipt, &receipt_info) == 0 &&
+      S_ISREG(receipt_info.st_mode);
+  if (receipt >= 0) {
+    close(receipt);
+  }
+  if (!staged) {
+    fputs("Bark requires staging: missing or unusable BarkEngineSDK.sha256.\n",
+          stderr);
+    free(canonical_path);
+    return EX_CONFIG;
   }
 
   char* framework_path = JoinPath(

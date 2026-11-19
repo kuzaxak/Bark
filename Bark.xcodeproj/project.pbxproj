@@ -40,6 +40,7 @@
 		C1B000000000000000000012 /* early_zone_registration_apple.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = early_zone_registration_apple.h; sourceTree = "<group>"; };
 		C1B000000000000000000013 /* early_zone_registration_utils_apple.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = early_zone_registration_utils_apple.h; sourceTree = "<group>"; };
 		C1B000000000000000000014 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		C1B00000000000000000001F /* Build-Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Build-Info.plist; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -197,6 +198,7 @@
 				C1B000000000000000000012 /* early_zone_registration_apple.h */,
 				C1B000000000000000000013 /* early_zone_registration_utils_apple.h */,
 				C1B000000000000000000014 /* Info.plist */,
+				C1B00000000000000000001F /* Build-Info.plist */,
 			);
 			path = ChromiumApp;
 			sourceTree = "<group>";
@@ -593,9 +595,9 @@
 				GCC_PREPROCESSOR_DEFINITIONS = "ENGINE_VERSION_STRING=\\\"$(CHROMIUM_ENGINE_VERSION)\\\"";
 				GENERATE_INFOPLIST_FILE = NO;
 				GENERATE_PKGINFO_FILE = YES;
-				INFOPLIST_FILE = ChromiumApp/Info.plist;
+				INFOPLIST_FILE = ChromiumApp/Build-Info.plist;
 				OTHER_LDFLAGS = "-nostdlib++";
-				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.bark;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.bark.build;
 				PRODUCT_NAME = Bark;
 				SDKROOT = macosx;
 			};
@@ -619,9 +621,9 @@
 				GCC_PREPROCESSOR_DEFINITIONS = "ENGINE_VERSION_STRING=\\\"$(CHROMIUM_ENGINE_VERSION)\\\"";
 				GENERATE_INFOPLIST_FILE = NO;
 				GENERATE_PKGINFO_FILE = YES;
-				INFOPLIST_FILE = ChromiumApp/Info.plist;
+				INFOPLIST_FILE = ChromiumApp/Build-Info.plist;
 				OTHER_LDFLAGS = "-nostdlib++";
-				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.bark;
+				PRODUCT_BUNDLE_IDENTIFIER = ee.qdo.bark.build;
 				PRODUCT_NAME = Bark;
 				SDKROOT = macosx;
 			};

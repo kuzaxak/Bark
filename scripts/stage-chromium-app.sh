@@ -286,11 +286,6 @@ ENGINE_ENTITLEMENTS="$ARTIFACT/Bark Packaging/app-entitlements.plist"
 
 [[ -f "$APP_MAIN" && $(plist "$APP_INFO" CFBundleExecutable) == Bark ]] || refuse 'Missing app target executable'
 [[ ! -e "$APP/Contents/_CodeSignature" ]] || refuse 'App already has a code signature: build it with CODE_SIGNING_ALLOWED=NO'
-[[ $(plist "$APP_INFO" CFBundleIdentifier) == ee.qdo.bark ]] || refuse 'App bundle identifier must be exactly ee.qdo.bark'
-[[ $(plist "$APP_INFO" NSPrincipalClass) == BrowserCrApplication ]] ||
-  refuse 'App principal class must be BrowserCrApplication: Chromium owns NSApplication'
-check_outer_metadata "$APP" "$ENGINE_INFO" source
-additions validate "$ADDITIONS" "$APP_INFO" "$ENGINE_ENTITLEMENTS"
 
 [[ -f "$NATIVE" ]] || refuse 'Missing versioned native shell framework executable'
 [[ -f "$NATIVE_FRAMEWORK/Versions/A/Resources/Assets.car" ]] || refuse 'Missing framework-owned native asset catalog'
@@ -346,6 +341,15 @@ done
   refuse "Native shell names an engine symbol: only main resolves the engine: $NATIVE"
 trap '/bin/rm -rf "$OUTPUT" "$PACKAGING"' EXIT
 /usr/bin/ditto "$APP" "$OUTPUT"
+APP_INFO="$OUTPUT/Contents/Info.plist"
+if [[ $(plist "$APP_INFO" CFBundleIdentifier) == ee.qdo.bark.build ]]; then
+  python3 -B "$REPO/scripts/bark_outer_info.py" "$APP_INFO"
+fi
+[[ $(plist "$APP_INFO" CFBundleIdentifier) == ee.qdo.bark ]] || refuse 'App bundle identifier must be exactly ee.qdo.bark'
+[[ $(plist "$APP_INFO" NSPrincipalClass) == BrowserCrApplication ]] ||
+  refuse 'App principal class must be BrowserCrApplication: Chromium owns NSApplication'
+check_outer_metadata "$OUTPUT" "$ENGINE_INFO" source
+additions validate "$ADDITIONS" "$APP_INFO" "$ENGINE_ENTITLEMENTS"
 if [[ -n "$(plist "$APP_INFO" BarkEngineSDKResource)" ]]; then
   python3 -B "$LAYOUT" digest "$PACKAGE" "$ARCH" "$PRODUCTS/include/BarcChromium" > "$OUTPUT/Contents/Resources/BarkEngineSDK.sha256"
 fi

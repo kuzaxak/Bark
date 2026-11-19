@@ -220,7 +220,7 @@ class BuildContractTests(unittest.TestCase):
 
             install = Mock()
             with patch.dict(cli, {"run": fake_run, "configure_release": configure, "verify_candidate": verify,
-                                  "install_local_build": install, "unregister_unsigned_shell": Mock(),
+                                  "install_local_build": install, "unregister_unsigned_shell": Mock(), "verify_xcode_component": Mock(),
                                   "shell_source_digest": Mock(side_effect=[source, "b" * 64 if changed else source])}), \
                  redirect_stdout(StringIO()):
                 if changed:
