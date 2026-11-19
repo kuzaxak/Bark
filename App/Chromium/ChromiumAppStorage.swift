@@ -38,7 +38,7 @@ final class ChromiumAppStorage {
         } else {
             vault = VaultService(settings: settings, pawlEnabledAtLaunch: pawlEnabledAtLaunch)
         }
-        downloads = DownloadManager(historyFileURL: app.appendingPathComponent("Downloads.json"), usesNativeDownloads: true)
+        downloads = DownloadManager()
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)
         aiConfig = AIConfigService(configURL: configuration.aiConfigURL,
                                    keychainService: configuration.aiKeychainService,

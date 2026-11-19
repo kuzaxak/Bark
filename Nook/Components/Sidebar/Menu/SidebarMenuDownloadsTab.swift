@@ -183,24 +183,14 @@ struct DownloadItem: View {
                 .frame(width: iconSize, height: iconSize)
 
             VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: NookDesign.Spacing.xs) {
-                    Text(download.displayName)
-                        .font(NookDesign.Font.title)
-                        .fontWeight(.medium)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .id(download.displayName)
-                        .transition(.blurReplace)
-                    if download.renamedFrom != nil {
-                        Image(systemName: "sparkles")
-                            .font(NookDesign.Font.caption)
-                            .foregroundStyle(.secondary)
-                            .symbolEffect(.bounce, value: download.displayName)
-                            .transition(.scale(scale: 0.5).combined(with: .opacity))
-                            .help("Renamed by Tidy Downloads")
-                    }
-                }
+                Text(download.displayName)
+                    .font(NookDesign.Font.title)
+                    .fontWeight(.medium)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .id(download.displayName)
+                    .transition(.blurReplace)
 
                 Text(download.nativeIdentity == nil ? subtitle : "\(download.statusDescription) • \(subtitle)")
                     .font(NookDesign.Font.body)
@@ -233,13 +223,6 @@ struct DownloadItem: View {
                         }
                         Button("Remove from List", systemImage: "minus.circle") {
                             browserManager.downloadManager.removeDownload(download.id)
-                        }
-                    }
-                    if download.renamedFrom != nil {
-                        Button {
-                            browserManager.downloadManager.undoTidy(download)
-                        } label: {
-                            Label("Restore Original Name", systemImage: "arrow.uturn.backward")
                         }
                     }
                     Button(action: moveToTrash) {

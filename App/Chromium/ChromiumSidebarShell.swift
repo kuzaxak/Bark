@@ -107,9 +107,6 @@ struct ChromiumSidebarShell: View {
                 if browserManager.showTabClosureToast && browserManager.tabClosureToastCount > 0 {
                     TabClosureToast()
                 }
-                if let tidied = browserManager.downloadManager.lastTidied, registry.activeWindowId == window.id {
-                    TidyDownloadToast(download: tidied, downloads: browserManager.downloadManager)
-                }
                 if window.isShowingCopyURLToast {
                     CopyURLToast(title: window.copyToastText)
                 }
@@ -118,7 +115,6 @@ struct ChromiumSidebarShell: View {
             .padding(.vertical, 10)
             .animation(.smooth(duration: 0.25), value: browserManager.showTabClosureToast)
             .animation(.smooth(duration: 0.25), value: window.isShowingCopyURLToast)
-            .animation(.smooth(duration: 0.25), value: browserManager.downloadManager.lastTidied?.id)
             CommandPaletteView()
             ForEach(translationPages, id: \.itemID) { page in
                 TranslationTaskHost(session: page)

@@ -1,3 +1,6 @@
+#if BARK_CATALOG_FRAMEWORK
+@testable import NookNativeShell
+#endif
 import AppKit
 import BarcChromium
 import Foundation
@@ -51,18 +54,9 @@ import NookWeb
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("NativeDownloads-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let history = root.appendingPathComponent("Downloads.json"), old = Data("untouched legacy history".utf8)
-        try old.write(to: history)
         let fileA = root.appendingPathComponent("A.txt"), fileB = root.appendingPathComponent("B.txt")
         try Data("A".utf8).write(to: fileA); try Data("B".utf8).write(to: fileB)
-        let legacy = DownloadManager(historyFileURL: root.appendingPathComponent("legacy.json"))
-        let legacyRow = Download(download: nil, originalURL: fileB, suggestedFilename: "B.txt", origin: DownloadOrigin(isPrivate: false, profileID: nil, pageTitle: nil), state: .completed)
-        legacyRow.destinationURL = fileB
-        legacy.preview(legacyRow, in: BrowserWindowState())
-        precondition(legacy.previewTarget(for: legacyRow, in: nil) == fileB,
-                     "Legacy WindowView preview lost its nil-window target")
-        legacy.previewing = nil
-        let manager = DownloadManager(historyFileURL: history, usesNativeDownloads: true)
+        let manager = DownloadManager()
         precondition(manager.allDownloads.isEmpty)
         let bridge = ChromiumDownloads(bridge: Native.bridge)
         precondition(bridge.start(manager: manager))
@@ -129,7 +123,11 @@ import NookWeb
         precondition(personalRow.completedFile == nil && personalRow.validatedCompletedFile() == fileB)
         manager.preview(personalRow, in: regularWindow)
         precondition(manager.previewFileURL == fileB)
+        precondition(manager.previewTarget(for: personalRow, in: regularWindow) == fileB)
+        precondition(manager.previewTarget(for: personalRow, in: BrowserWindowState()) == nil)
+        // A fresh action must recheck the engine even before the next observation arrives.
         Native.safe[22] = [:]
+        precondition(manager.previewTarget(for: personalRow, in: regularWindow) == nil)
         precondition(personalRow.validatedCompletedFile() == nil)
         Native.emit(profile: personal, source: 22, guid: guid, state: 1, flags: 2, target: fileB.path)
         precondition(personalRow.completedFile == nil && manager.previewing == nil)
@@ -186,8 +184,6 @@ import NookWeb
         Native.emit(profile: work, source: 44, guid: "late")
         Native.callback = nil; Native.context = nil
         precondition(Native.token == token && manager.allDownloads.isEmpty)
-        let preservedHistory = try Data(contentsOf: history)
-        precondition(preservedHistory == old, "Native or private history touched the legacy file")
         print("Native downloads: scoped identity, confirmed actions, current safe target and shutdown PASS")
     }
 }

@@ -155,7 +155,7 @@ struct SidebarMenuHoverDownloadItem: View {
                         Text(download.statusDescription)
                     } else if download.state == .downloading {
                         Text(
-                            "\(download.formattedDownloadedSize)/\(download.formattedFileSize) • \(download.formattedTimeRemaining)"
+                            "\(download.formattedDownloadedSize)/\(download.formattedFileSize)"
                         )
                     } else {
                         Text(statusText)

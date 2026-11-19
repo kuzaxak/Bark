@@ -15,17 +15,10 @@ import NookDesign
 import NookUI
 import NookWeb
 
-extension DownloadManager {
-    /// Finished downloads still on disk, newest first: what the preview steps through.
-    var previewable: [Download] {
-        allDownloads.filter { $0.completedFile != nil }
-    }
-}
-
 struct DownloadPreviewOverlay: View {
     let downloads: DownloadManager
     let download: Download
-    var window: BrowserWindowState? = nil
+    let window: BrowserWindowState
 
     @State private var appeared = false
 
@@ -67,7 +60,7 @@ struct DownloadPreviewOverlay: View {
     }
 
     private var header: some View {
-        let list = window.map { downloads.visibleDownloads(in: $0).filter { $0.completedFile != nil } } ?? downloads.previewable
+        let list = downloads.visibleDownloads(in: window).filter { $0.completedFile != nil }
         let index = list.firstIndex { $0 === download }
         return HStack(spacing: NookDesign.Spacing.sm) {
             Button("Close", systemImage: "xmark", action: close)
@@ -94,18 +87,19 @@ struct DownloadPreviewOverlay: View {
 
             Menu {
                 Button("Show in Finder", systemImage: "folder") {
-                    if let file = download.validatedCompletedFile() { NSWorkspace.shared.activateFileViewerSelecting([file]) }
+                    if let file = downloads.previewTarget(for: download, in: window) { NSWorkspace.shared.activateFileViewerSelecting([file]) }
                 }
                 Button("Copy", systemImage: "doc.on.doc") {
-                    if let file = download.validatedCompletedFile() {
+                    if let file = downloads.previewTarget(for: download, in: window) {
                         NSPasteboard.general.clearContents()
                         NSPasteboard.general.writeObjects([file as NSURL])
                     }
                 }
                 Divider()
                 Button("Move to Trash", systemImage: "trash") {
+                    guard let file = downloads.previewTarget(for: download, in: window) else { return }
                     close()
-                    downloads.moveToTrash(download)
+                    downloads.moveToTrash(download, expectedFile: file)
                 }
             } label: {
                 Image(systemName: "ellipsis")
@@ -150,7 +144,7 @@ struct DownloadPreviewOverlay: View {
     }
 
     private func openExternally() {
-        guard let file = download.validatedCompletedFile() else { return }
+        guard let file = downloads.previewTarget(for: download, in: window) else { return }
         if opensInPreview {
             NSWorkspace.shared.open([file], withApplicationAt: Self.previewApp, configuration: NSWorkspace.OpenConfiguration())
         } else {
@@ -160,17 +154,15 @@ struct DownloadPreviewOverlay: View {
 
     private func step(_ by: Int, in list: [Download], from index: Int?) {
         guard let index, list.indices.contains(index + by) else { return }
-        if let window { downloads.preview(list[index + by], in: window) }
-        else { downloads.previewing = list[index + by] }
+        downloads.preview(list[index + by], in: window)
     }
 
     private func close() {
         withAnimation(.interpolatingSpring(Spring(response: 0.25, dampingRatio: 1))) { appeared = false }
-        let expectedOwner = downloads.previewWindowID
         Task {
             try? await Task.sleep(for: .milliseconds(180))
-            guard downloads.previewing === download, downloads.previewWindowID == expectedOwner else { return }
-            downloads.previewing = nil
+            guard downloads.previewing === download, downloads.previewWindowID == window.id else { return }
+            downloads.dismissPreview(in: window)
         }
     }
 }

@@ -79,7 +79,8 @@ def check_native_harness(command):
         # SwiftPM bundle lookup uses the executable directory for command-line tools.
         suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
                  "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
-                 "live-fetch": "ChromiumLiveFetch", "vault": "ChromiumVaultSave"}[command]
+                 "live-fetch": "ChromiumLiveFetch", "vault": "ChromiumVaultSave",
+                 "downloads": "ChromiumDownloads"}[command]
         sys.path.insert(0, str(REPO / "Tests/Shared"))
         from bridge_fixture import write_bridge_fixture
 
@@ -602,6 +603,7 @@ def main():
     commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
     commands.add_parser("live-fetch", help="check Chromium live fetch and profile ownership")
     commands.add_parser("vault", help="check Pawl consent and picker ownership in the native shell")
+    commands.add_parser("downloads", help="check Chromium download ownership and file actions")
     pair = commands.add_parser("pair-sdk", help="stage matching Intel and ARM64 official SDK metadata together")
     pair.add_argument("--x86-64", type=Path, required=True, help="published Intel Engine or its transfer metadata directory")
     pair.add_argument("--arm64", type=Path, required=True, help="published ARM64 Engine or its transfer metadata directory")
@@ -644,7 +646,7 @@ def main():
     if args.command == "interaction":
         run(sys.executable, REPO / "Tests/ChromiumShortcuts/check.py")
         return
-    if args.command in ("catalog", "page-host", "profile-pages", "extension-actions", "live-fetch", "vault"):
+    if args.command in ("catalog", "page-host", "profile-pages", "extension-actions", "live-fetch", "vault", "downloads"):
         check_native_harness(args.command)
         return
     if args.command == "shell":

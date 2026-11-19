@@ -2652,7 +2652,7 @@ private struct NoTokens: KagiTokenStore {
         windowRegistry: registry,
         importManager: ImportManager(sources: .fixtures(in: root), workDirectory: root),
         persistence: try Persistence(directory: root), userDefaults: defaults,
-        downloadManager: DownloadManager(historyFileURL: root.appendingPathComponent("Downloads.json"), usesNativeDownloads: true),
+        downloadManager: DownloadManager(),
         tabsDirectory: root.appendingPathComponent("Tabs"))
     let window = BrowserWindowState()
     registry.register(window)
