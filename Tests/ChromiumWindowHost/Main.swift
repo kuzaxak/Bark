@@ -69,6 +69,16 @@ private enum Engine {
 
 /// A page view whose first subview takes keys, as a renderer's view does.
 fileprivate final class PageView: NSView {
+    var onSuperviewChange: (() -> Void)?
+    private(set) var nilWindowTransitions = 0
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window == nil { nilWindowTransitions += 1 }
+    }
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        onSuperviewChange?()
+    }
     let input = Focusable()
     override init(frame: NSRect) { super.init(frame: frame); addSubview(input) }
     required init?(coder: NSCoder) { nil }
@@ -89,6 +99,8 @@ fileprivate final class PageView: NSView {
         layoutCases()
         libraryLayoutCases()
         peekLayoutCases()
+        reentrantPresentationCases()
+        reentrantSelectionOfRetiredPane()
         lightsCases()
 
         Engine.rootAccepted = 0
@@ -291,6 +303,75 @@ fileprivate final class PageView: NSView {
         precondition(Engine.unobserved == [Engine.token], "a released root stops observing")
         compactCases()
         print("Window host root: Arc's sidebar, page frame and lights; the Library in the sidebar's column; hides, reveals and full screen; one page at a time, crashed and retired pages, observes until released")
+    }
+
+    @MainActor static func reentrantPresentationCases() {
+        for (opensSplit, onRemoval) in [(false, false), (true, false), (false, true), (true, true)] {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+                                  styleMask: [.titled], backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            let root = ChromiumWindowRoot(bridge: table(), client: 5)
+            window.contentView = root
+            defer { window.contentView = nil; Engine.pages = [:] }
+            let first = PageView(), entering = PageView(), extra = PageView()
+            let newerPage = PageView(), newerSibling = PageView()
+            Engine.pages = [10: first, 11: entering, 12: extra, 13: newerPage, 14: newerSibling]
+            func pane(_ tab: Int32) -> ChromiumWindowRoot.Pane { .init(client: 5, tab: tab) }
+            let outer = ChromiumWindowRoot.Split(panes: onRemoval ? [pane(11), pane(12)] : [pane(10), pane(11), pane(12)],
+                                                  vertical: true, dividers: onRemoval ? [0.5] : [0.3, 0.7], focused: 11)
+            let newer = ChromiumWindowRoot.Split(panes: [pane(13), pane(14)],
+                                                  vertical: false, dividers: [0.5], focused: 13)
+            precondition(root.show(tab: 10, of: 5))
+            var installedNewer = false
+            let watched = onRemoval ? first : entering
+            watched.onSuperviewChange = {
+                guard (watched.superview == nil) == onRemoval else { return }
+                watched.onSuperviewChange = nil
+                installedNewer = opensSplit ? root.showSplit(newer) : root.show(tab: 13, of: 5)
+                precondition(installedNewer && root.showsPage(tab: 13, of: 5) && window.firstResponder === newerPage.input)
+            }
+
+            precondition(!root.showSplit(outer) && installedNewer, "A superseded split must refuse the outer request")
+            precondition(root.shownTab == 13 && root.showsPage(tab: 13, of: 5) && window.firstResponder === newerPage.input)
+            precondition(opensSplit ? root.showsSplit(newer) : root.split == nil)
+            precondition([first, entering, extra].allSatisfy { $0.superview == nil },
+                         "Superseded views cannot remain mounted or steal focus")
+        }
+    }
+
+    @MainActor static func reentrantSelectionOfRetiredPane() {
+        for endsSplit in [false, true] {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+                                  styleMask: [.titled], backing: .buffered, defer: true)
+            window.isReleasedWhenClosed = false
+            let root = ChromiumWindowRoot(bridge: table(), client: 5)
+            window.contentView = root
+            defer { window.contentView = nil; Engine.pages = [:] }
+            let first = PageView(), second = PageView(), third = PageView(), fourth = PageView()
+            Engine.pages = [10: first, 11: second, 12: third, 13: fourth]
+            func split(_ a: Int32, _ b: Int32) -> ChromiumWindowRoot.Split {
+                .init(panes: [.init(client: 5, tab: a), .init(client: 5, tab: b)],
+                      vertical: true, dividers: [0.5], focused: a)
+            }
+            if endsSplit {
+                precondition(root.show(tab: 10, of: 5))
+            } else {
+                precondition(root.showSplit(split(10, 11)))
+            }
+            var installed = false
+            let watched = endsSplit ? third : second
+            watched.onSuperviewChange = {
+                guard (watched.superview != nil) == endsSplit else { return }
+                watched.onSuperviewChange = nil
+                if !endsSplit { precondition(first.superview == nil) }
+                installed = endsSplit ? root.endSplit() : root.show(tab: 10, of: 5)
+            }
+            precondition(!root.showSplit(split(12, 13)) && installed,
+                         "A newer single-page request must win even after the old slot was removed")
+            precondition(root.split == nil && root.showsPage(tab: 10, of: 5) &&
+                         window.firstResponder === first.input &&
+                         [second, third, fourth].allSatisfy { $0.superview == nil })
+        }
     }
 
     @MainActor static func layoutCases() {
@@ -816,6 +897,7 @@ fileprivate final class PageView: NSView {
 
         let beforePromotion = root.showPeek(overSplit, header: header, actions: actions, dismiss: {})
         let promotionMoves = panes.map(\.windowMoves)
+        let nilWindowTransitions = page.nilWindowTransitions
         precondition(beforePromotion != 0 && root.showSplit(.init(
             panes: [Pane(client: 5, tab: 60), overSplit.source, overSplit.page, Pane(client: 5, tab: 62)],
             vertical: false, dividers: [0.25, 0.5, 0.75], focused: overSplit.page.tab)))
@@ -823,6 +905,25 @@ fileprivate final class PageView: NSView {
                      && page.window === window && window.firstResponder === page.input
                      && panes.map(\.windowMoves) == promotionMoves,
                      "promoting the card to a pane preserves each mounted document and keeps the Peek focused")
+
+        precondition(page.nilWindowTransitions == nilWindowTransitions,
+                     "Same-window Peek promotion must never report a nil window to the renderer")
+
+        precondition(root.showSplit(originalSplit))
+        let interrupted = root.showPeek(overSplit, header: header, actions: actions, dismiss: {})
+        precondition(interrupted != 0)
+        let cardContainer = page.superview
+        let beforeInterruptedMove = page.nilWindowTransitions
+        var installedSingle = false
+        page.onSuperviewChange = {
+            guard page.superview != nil, page.superview !== cardContainer else { return }
+            page.onSuperviewChange = nil
+            installedSingle = root.show(tab: overSplit.page.tab, of: overSplit.page.client)
+        }
+        precondition(!root.showSplit(splitWithPromotedPage) && installedSingle &&
+                     root.split == nil && root.showsPage(tab: overSplit.page.tab, of: overSplit.page.client) &&
+                     window.firstResponder === page.input && page.nilWindowTransitions == beforeInterruptedMove,
+                     "A nested single-page presentation wins the atomic promotion and keeps the renderer in its window")
 
         precondition(root.show(tab: 11, of: 5))
         let retiring = root.showPeek(peek, header: header, actions: actions, dismiss: {})

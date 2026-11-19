@@ -101,16 +101,29 @@ final class ChromiumPageSlot {
     }
 
     /// Puts `view` in the container, taking out the page this slot held before.
-    func place(_ view: NSView, hidden: Bool, crashed isCrashed: Bool) {
-        if view !== self.view, heldView != nil { self.view?.removeFromSuperview() }
+    @discardableResult
+    func place(_ view: NSView, hidden: Bool, crashed isCrashed: Bool, while isCurrent: () -> Bool = { true }) -> Bool {
+        if view !== self.view, let old = heldView {
+            old.removeFromSuperview()
+            guard isCurrent() else { return false }
+        }
         if view.superview !== container {
+            // Let AppKit move an already-mounted view directly. Detaching
+            // first would tell a same-window renderer that its window closed.
             view.frame = container.bounds
+            guard isCurrent() else { return false }
             view.autoresizingMask = [.width, .height]
+            guard isCurrent() else { return false }
+            self.view = view
             container.addSubview(view, positioned: .below, relativeTo: crashed)
+            guard isCurrent() else { return false }
+        } else {
+            self.view = view
         }
         view.isHidden = hidden
-        self.view = view
+        guard isCurrent() else { return false }
         crashed.isHidden = !isCrashed
+        return isCurrent()
     }
 
     /// Autoresizing rounds a fractional container size; the page takes it exactly.
@@ -120,13 +133,16 @@ final class ChromiumPageSlot {
         empty?.frame = container.bounds
     }
 
-    func showEmpty(_ make: () -> NSView) {
-        guard empty == nil else { return }
+    func showEmpty(_ make: () -> NSView, while isCurrent: () -> Bool) -> Bool {
+        guard empty == nil else { return true }
         let view = make()
+        guard isCurrent() else { return false }
         view.frame = container.bounds
         view.autoresizingMask = [.width, .height]
-        container.addSubview(view)
+        guard isCurrent() else { return false }
         empty = view
+        container.addSubview(view)
+        return isCurrent()
     }
 
     final class FlippedView: NSView {

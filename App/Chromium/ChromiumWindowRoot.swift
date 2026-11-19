@@ -130,6 +130,8 @@ final class ChromiumWindowRoot: NSView {
     private(set) var shownTab: Int32 = 0
     /// One slot for one page, one per pane in a split, in the panes' order.
     private var slots: [Slot] = []
+    private var presentationRevision: UInt64 = 0
+    private var presentationDepth = 0
     private lazy var link = ChromiumWindowHostLink(bridge: bridge) { [weak self] in self?.handle($0) }
     private let pageFrame = Container()
     private let dividerLayer = ControlLayer()
@@ -268,22 +270,33 @@ final class ChromiumWindowRoot: NSView {
               zip([0] + split.dividers, split.dividers + [1]).allSatisfy({ $0 < $1 }),
               Set(panes.map(\.tab)).count == panes.count,
               let focused = panes.first(where: { $0.tab == split.focused }) else { return false }
+        let before = presentationRevision
         var views: [Int32: NSView] = [:]
         for pane in panes {
             guard let view = pageView(pane) else { return false }
             views[pane.tab] = view
         }
+        guard presentationRevision == before else { return false }
+        presentationRevision &+= 1
+        let revision = presentationRevision
+        presentationDepth += 1
+        defer { presentationDepth -= 1 }
+        func current() -> Bool { presentationRevision == revision }
         var free = slots
         let next = split.panes.map { pane -> Slot in
             if let index = free.firstIndex(where: { $0.pane == pane }) { return free.remove(at: index) }
             return Slot(pane: pane, bridge: bridge)
         }
         let focusChanged = shownTab != split.focused || slots.first(where: { $0.pane?.tab == split.focused }) == nil
-        self.split = split
-        use(next)
+        guard use(next, while: current) else { return false }
         for slot in next {
-            if let pane = slot.pane, let view = views[pane.tab] { place(view, in: slot) } else { slot.showEmpty(makeEmptyPane) }
+            if let pane = slot.pane, let view = views[pane.tab] {
+                guard place(view, in: slot, while: current) else { return false }
+            } else {
+                guard slot.showEmpty(makeEmptyPane, while: current) else { return false }
+            }
         }
+        self.split = split
         shownTab = split.focused
         client = focused.client
         // A promoted page is already in its new slot, even when the source
@@ -292,11 +305,13 @@ final class ChromiumWindowRoot: NSView {
             card.peek.source != focused || views[card.peek.page.tab] != nil ? card : nil
         }
         if retiredCard != nil { removePeek() }
+        guard current() else { return false }
         layoutPageArea()
+        guard current() else { return false }
         if focusChanged || retiredCard != nil {
             focusPage(preferred: retiredCard?.peek.source == focused ? retiredCard?.sourceResponder : nil)
         }
-        return true
+        return current()
     }
 
     /// A slot can outlive its native view, even while the tab IDs and layout match.
@@ -311,9 +326,8 @@ final class ChromiumWindowRoot: NSView {
     /// Ends the split shown: the focused page fills the page frame, the others leave the window.
     @discardableResult
     func endSplit() -> Bool {
-        guard split != nil else { return shownTab != 0 }
-        split = nil
-        return show(tab: shownTab, of: client)
+        guard split != nil || presentationDepth > 0 else { return shownTab != 0 }
+        return show(tab: shownTab, of: client, keepingSplit: false)
     }
 
     func showsCrashedPage(tab: Int32) -> Bool {
@@ -408,33 +422,47 @@ final class ChromiumWindowRoot: NSView {
     /// was shown before, the split's other pages leaving the window. False when `owner` has no page
     /// view for that tab.
     @discardableResult
-    func show(tab: Int32, of owner: Int32, while isCurrent: () -> Bool = { true }) -> Bool {
+    func show(tab: Int32, of owner: Int32, keepingSplit: Bool = true, while isCurrent: () -> Bool = { true }) -> Bool {
         let pane = Pane(client: owner, tab: tab)
-        if let split, split.panes.contains(pane) {
-            guard let slot = slots.first(where: { $0.pane == pane }), let view = pageView(pane),
-                  isCurrent(), self.split == split, slot.container.superview === pageFrame else { return false }
+        let before = presentationRevision
+        // During a nested request the old split may already have lost slots.
+        // Prefer the requested page alone if that layout cannot be kept intact.
+        var retainedSlot: Slot?
+        if keepingSplit, let split, split.panes.contains(pane), presentationDepth == 0 || showsSplit(split) {
+            guard let slot = slots.first(where: { $0.pane == pane }),
+                  slot.container.superview === pageFrame else { return false }
+            retainedSlot = slot
+        }
+        guard let view = pageView(pane), isCurrent(), presentationRevision == before else { return false }
+        presentationRevision &+= 1
+        let revision = presentationRevision
+        presentationDepth += 1
+        defer { presentationDepth -= 1 }
+        func current() -> Bool { isCurrent() && presentationRevision == revision }
+        if let slot = retainedSlot {
             let replaced = slot.heldView !== view
             let changed = shownTab != tab || replaced
-            if replaced { place(view, in: slot) }
+            if replaced, !place(view, in: slot, while: current) { return false }
             self.split?.focused = tab
             shownTab = tab
             client = owner
             if let card = peekCard, card.peek.source != pane { removePeek() }
+            guard current() else { return false }
             if pageFullscreen { layoutPageArea() }
+            guard current() else { return false }
             if changed { focusPage() }
-            return true
+            return current()
         }
-        guard let view = pageView(pane), isCurrent() else { return false }
         let slot = slots.first { $0.pane == pane } ?? Slot(pane: pane, bridge: bridge)
         let changed = view !== slot.view || view.superview !== slot.container || slots.count != 1 || shownTab != tab
+        guard use([slot], while: current), place(view, in: slot, while: current) else { return false }
         split = nil
-        use([slot])
-        place(view, in: slot)
         shownTab = tab
         client = owner
         layoutPageArea()
+        guard current() else { return false }
         if changed { focusPage() }
-        return true
+        return current()
     }
 
     func showsPage(tab: Int32, of owner: Int32) -> Bool {
@@ -450,20 +478,30 @@ final class ChromiumWindowRoot: NSView {
     }
 
     /// Makes `next` the slots shown: a slot that goes takes its page out of the window.
-    private func use(_ next: [Slot]) {
+    private func use(_ next: [Slot], while isCurrent: () -> Bool) -> Bool {
         for slot in slots where !next.contains(where: { $0 === slot }) {
-            if slot.heldView != nil { slot.view?.removeFromSuperview() }
+            if let view = slot.heldView {
+                view.removeFromSuperview()
+                guard isCurrent() else { return false }
+            }
             slot.container.removeFromSuperview()
+            guard isCurrent() else { return false }
+            slots.removeAll { $0 === slot }
         }
         for slot in next where slot.container.superview !== pageFrame {
+            // Keep partial mounts discoverable to a nested presentation.
+            if !slots.contains(where: { $0 === slot }) { slots.append(slot) }
             pageFrame.addSubview(slot.container, positioned: .below, relativeTo: dividerLayer)
+            guard isCurrent() else { return false }
         }
         slots = next
         if let card = peekCard, !next.contains(where: { $0.pane == card.peek.source }) { removePeek() }
+        return isCurrent()
     }
 
-    private func place(_ view: NSView, in slot: Slot) {
-        slot.place(view, hidden: pageHidden, crashed: crashedTabs.contains(slot.pane?.tab ?? 0))
+    @discardableResult
+    private func place(_ view: NSView, in slot: Slot, while isCurrent: () -> Bool = { true }) -> Bool {
+        slot.place(view, hidden: pageHidden, crashed: crashedTabs.contains(slot.pane?.tab ?? 0), while: isCurrent)
     }
 
     /// The optional bar above the page, inside the page frame. `expected` is the bar the caller
