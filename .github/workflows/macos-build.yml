@@ -77,6 +77,13 @@ jobs:
           python3 -B Tests/ChromiumSiteControls/check.py
           test ! -e build
 
+      - name: Check profile history import and page-text migration
+        run: |
+          python3 -B Tests/ChromiumImport/check.py
+          swiftc Packages/NookWeb/Sources/NookWeb/HistoryTextIndex.swift \
+            Packages/NookWeb/Checks/HistoryTextIndexCheck.swift -o "$RUNNER_TEMP/history-text-check"
+          "$RUNNER_TEMP/history-text-check"
+
   release-shell:
     name: Bark Release shell (${{ matrix.arch }})
     runs-on: macos-26
