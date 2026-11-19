@@ -39,12 +39,23 @@ Bark SHALL preserve the user's provider selection across disconnects, locks and 
 - **THEN** Chromium does not deliver a stored password to the document
 
 ### Requirement: Bound consent
-Bark SHALL honor a Pawl credential selection only for the requesting foreground field, document, profile and native owner.
+Bark SHALL honor a Pawl credential selection only for the chosen account in the requesting foreground field, document, profile and native owner.
 
 #### Scenario: Account chooser outlives the field
 - **GIVEN** passwords or one-time codes exist for an embedded sign-in form
 - **WHEN** the user opens the chooser and switches space, pane or profile before Pawl replies
 - **THEN** the result is discarded and neither page receives a secret
+
+#### Scenario: A login changes while the vault is authorizing a fill
+- **GIVEN** the user picked an account for a password field
+- **WHEN** Pawl returns a different username for that entry
+- **THEN** the field stays untouched
+- **AND** the user can reopen the chooser and approve the updated account
+
+#### Scenario: The site accepts both personal and work passkeys
+- **GIVEN** both accounts can sign in to the same site and the user chooses the personal account
+- **WHEN** Pawl returns an assertion for the work credential
+- **THEN** Bark cancels the request and the site receives no assertion
 
 #### Scenario: Script focuses the login field
 - **WHEN** a page puts focus on a password field without user interaction
