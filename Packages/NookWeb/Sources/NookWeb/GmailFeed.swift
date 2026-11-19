@@ -30,23 +30,9 @@ public enum GmailFeed {
         case inbox(Inbox)
         /// No one is signed in to that account in the favorite's profile.
         case signedOut
-        /// This profile has no supported cookie-reading capability.
+        /// This profile has no native authenticated fetch capability.
         case unavailable
         case failed
-    }
-
-    /// Google's sign-in cookies and Gmail's own; no other site's.
-    private static let cookieDomains: Set<String> = ["google.com", ".google.com", "mail.google.com", ".mail.google.com"]
-
-    static func fetch(account: Int, cookies: [HTTPCookie]) async -> Outcome {
-        do {
-            let (data, status) = try await LiveFetch.get(GoogleFavorite.mailFeed(account: account), cookies: cookies, domains: cookieDomains)
-            return outcome(status: status, data: data)
-        } catch LiveFetch.Failure.signedOut {
-            return .signedOut
-        } catch {
-            return .failed
-        }
     }
 
     /// Signed out, the feed answers 401 or redirects to the sign-in page.
@@ -154,23 +140,18 @@ public enum GmailFeed {
 }
 
 extension TabsController {
-    /// A Gmail favorite's unread mail, read with the cookies of its space's profile.
+    /// A Gmail favorite's unread mail, fetched by the Chromium profile of its space.
     public func gmailInbox(inSpace spaceID: UUID, account: Int, forFavorite itemID: UUID? = nil) async -> GmailFeed.Outcome {
         guard let profile = profile(forSpace: spaceID) else { return .failed }
-        if profile.engine == .chromium {
-            guard !profile.isEphemeral, account >= 0, nativeLiveFetch != nil else { return .unavailable }
-            do {
-                let response = try await nativeLiveResponse(.gmail(account: account), profileID: profile.id, spaceID: spaceID) {
-                    guard let itemID else { return true }
-                    return self.tree.spaceID(of: itemID) == spaceID &&
-                        GoogleFavorite(url: self.tree.item(itemID)?.url) == .mail(account: account)
-                }
-                return GmailFeed.outcome(status: response.status, data: response.data)
-            } catch ProfileLiveFailure.unavailable { return .unavailable }
-            catch { return .failed }
-        }
-        guard let store = profile.webKitStorage?.dataStore else { return .unavailable }
-        let cookies = await store.httpCookieStore.allCookies()
-        return await GmailFeed.fetch(account: account, cookies: cookies)
+        guard profile.engine == .chromium, !profile.isEphemeral, account >= 0 else { return .unavailable }
+        do {
+            let response = try await nativeLiveResponse(.gmail(account: account), profileID: profile.id, spaceID: spaceID) {
+                guard let itemID else { return true }
+                return self.tree.spaceID(of: itemID) == spaceID &&
+                    GoogleFavorite(url: self.tree.item(itemID)?.url) == .mail(account: account)
+            }
+            return GmailFeed.outcome(status: response.status, data: response.data)
+        } catch ProfileLiveFailure.unavailable { return .unavailable }
+        catch { return .failed }
     }
 }

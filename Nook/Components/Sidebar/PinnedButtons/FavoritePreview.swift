@@ -142,7 +142,7 @@ final class FavoritePreview {
            Date().timeIntervalSince(cached.at) < Self.cacheAge { return cached.rows }
         // Only sites with something of their own to show get a card. github.com is the one so far.
         guard item.url?.host == "github.com" else { return [] }
-        let pulls = await tabs.pullRequests(inSpace: expected.spaceID)
+        let pulls = await tabs.pullRequests(inSpace: expected.spaceID, forFavorite: expected.itemID)
         guard !Task.isCancelled, Self.source(for: item, tabs: tabs) == expected else { return [] }
         let rows = pulls.prefix(Self.rowLimit).map { Row(url: $0.url, title: $0.title) }
         cache[item.id] = (Date(), rows, expected)

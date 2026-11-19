@@ -37,6 +37,99 @@ struct ProfileEngineTests {
         #expect(tabs.profile(forSpace: work)?.webKitStorage == nil && tabs.profile(forSpace: personal)?.webKitStorage == nil)
     }
 
+    @Test func nativeLivePullPreviewUsesExactProfileAndNeverCreatesAPage() async throws {
+        let f = try ProfileFixture(); defer { f.cleanup() }
+        let tabs = f.makeTabs(engine: .chromium)
+        let work = try #require(tabs.tree.orderedSpaces.first?.id)
+        let personal = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
+        let profile = try #require(tabs.tree.dataStoreID(for: personal))
+        let body = Data("""
+        {"payload":{"pullsDashboardSurfaceContentRoute":{"results":[
+            {"permalink":"https://github.com/synthetic/repo/pull/1","title":"Synthetic change"}
+        ]}}}
+        """.utf8)
+        var requests: [UUID] = []
+        tabs.nativeLiveFetch = { id, source in
+            #expect(source == .githubPulls)
+            requests.append(id)
+            return ProfileLiveResponse(data: body, status: id == profile ? 200 : 404)
+        }
+        #expect(await tabs.pullRequests(inSpace: work).isEmpty)
+        #expect(await tabs.pullRequests(inSpace: personal).map(\.title) == ["Synthetic change"])
+        #expect(requests == [tabs.tree.dataStoreID(for: work), profile].compactMap { $0 })
+        #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
+    }
+
+    @Test(arguments: [false, true])
+    func nativeLivePullPreviewCancelsForMovedOrRenamedSource(moving: Bool) async throws {
+        let f = try ProfileFixture(); defer { f.cleanup() }
+        let tabs = f.makeTabs(engine: .chromium)
+        let work = try #require(tabs.tree.orderedSpaces.first?.id)
+        let other = try #require(tabs.createSpace(name: "Other", icon: "", accentHex: "#123456", after: work))
+        let profile = try #require(tabs.tree.dataStoreID(for: work))
+        let favorite = UUID()
+        let url = URL(string: "https://github.com/pulls")!
+        try #require(tabs.perform(.main, "seedFavorite", undoable: false) {
+            try $0.createTab(id: favorite, url: url, title: "GitHub", in: .favorites(spaceID: work), after: nil)
+        } != nil)
+
+        var pending: CheckedContinuation<ProfileLiveResponse, Error>?
+        var cancelled = false
+        tabs.nativeLiveFetch = { id, source in
+            #expect(id == profile && source == .githubPulls)
+            return try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { pending = $0 }
+            } onCancel: { Task { @MainActor in cancelled = true } }
+        }
+        let preview = Task { await tabs.pullRequests(inSpace: work, forFavorite: favorite) }
+        defer {
+            preview.cancel()
+            pending?.resume(throwing: CancellationError())
+        }
+        await liveCallbacks()
+        try #require(pending != nil)
+        if moving {
+            try #require(tabs.perform(.main, "moveFavorite", undoable: false) {
+                try $0.move(favorite, to: .favorites(spaceID: other), after: nil)
+            } != nil)
+        } else {
+            try #require(tabs.perform(.main, "replaceFavoriteURL", undoable: false) {
+                try $0.setURL(favorite, URL(string: "https://github.com/issues")!)
+            } != nil)
+        }
+        await liveCallbacks()
+        #expect(cancelled)
+        let stale = Data("""
+        {"payload":{"pullsDashboardSurfaceContentRoute":{"results":[
+            {"permalink":"https://github.com/synthetic/repo/pull/2","title":"Stale change"}
+        ]}}}
+        """.utf8)
+        pending?.resume(returning: ProfileLiveResponse(data: stale, status: 200))
+        pending = nil
+        #expect(await preview.value.isEmpty)
+        #expect(tabs.sessions.isEmpty)
+    }
+
+    @Test func nativeLiveRefusesAnOwnerThatExpiresBeforeTransportStarts() async throws {
+        let f = try ProfileFixture(); defer { f.cleanup() }
+        let tabs = f.makeTabs(engine: .chromium)
+        let space = try #require(tabs.tree.orderedSpaces.first?.id)
+        let profile = try #require(tabs.tree.dataStoreID(for: space))
+        var checks = 0
+        var requests = 0
+        tabs.nativeLiveFetch = { _, _ in
+            requests += 1
+            return ProfileLiveResponse(data: Data(), status: 200)
+        }
+        await #expect(throws: ProfileLiveFailure.cancelled) {
+            try await tabs.nativeLiveResponse(.githubPulls, profileID: profile, spaceID: space) {
+                checks += 1
+                return checks == 1
+            }
+        }
+        #expect(checks > 1 && requests == 0 && tabs.sessions.isEmpty)
+    }
+
     @Test func nativeLiveFolderReassignmentCancelsAndCannotPublishOldProfileReply() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
         let tabs = f.makeTabs(engine: .chromium)
@@ -316,7 +409,7 @@ struct ProfileEngineTests {
         #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
     }
 
-    @Test func nativeLiveSourcesReportUnavailableWithoutStartingLegacyFetches() async throws {
+    @Test func nativeLiveSourcesReportUnavailableWithoutAnInstalledBridge() async throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
         let tabs = fixture.makeTabs(engine: .chromium)
