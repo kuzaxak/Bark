@@ -1,0 +1,43 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Profile Storage Fixture</title>
+<h1>Profile Storage Fixture</h1>
+<button id="work">Write work marker</button>
+<button id="personal">Write personal marker</button>
+<button id="read">Read site storage</button>
+<script>
+const documentID = crypto.randomUUID();
+function report(fields) {
+    fetch("/events", {method: "POST", keepalive: true, body: JSON.stringify({
+        documentID, origin: location.origin, page: location.pathname + location.hash,
+        visibility: document.visibilityState, ...fields
+    })});
+}
+let frames = 0;
+function layout() {
+    if (++frames % 6 === 0 && !document.hidden) {
+        const points = {};
+        for (const button of document.querySelectorAll("button")) {
+            const rect = button.getBoundingClientRect();
+            points[button.id] = [rect.x + rect.width / 2, rect.y + rect.height / 2];
+        }
+        report({event: "layout", viewport: innerWidth, points});
+    }
+    requestAnimationFrame(layout);
+}
+requestAnimationFrame(layout);
+for (const button of document.querySelectorAll("button")) {
+    button.addEventListener("click", event => {
+        if (!event.isTrusted) return;
+        if (button.id !== "read") {
+            localStorage.setItem("bark-profile-fixture", button.id);
+            document.cookie = "barkProfile=" + button.id + "; Path=/; Max-Age=3600; SameSite=Lax";
+        }
+        report({
+            event: button.id,
+            local: localStorage.getItem("bark-profile-fixture"),
+            cookie: document.cookie.split("; ").find(entry => entry.startsWith("barkProfile="))?.split("=")[1] ?? null,
+        });
+    });
+}
+</script>

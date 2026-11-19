@@ -43,3 +43,14 @@ permission controls with the same document and persistence assertions.
 This mode uses keyboard events for draft text, and clicks the location
 denial only after macOS hit-testing confirms the visible control belongs
 to the requesting site.
+
+Use the storage walk to verify that two spaces in one profile share
+same-origin cookies and local storage, while a second profile has its
+own values. It renames the shared profile in Settings, relaunches with
+the same disposable data, and checks both markers, the saved name, and
+the original UUID-backed directories.
+
+```fish
+set -l evidence (mktemp -d /private/tmp/bark-profile-storage.XXXXXX)
+"$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python" -B Tests/ChromiumProfilePages/storage_walk.py --app build/Bark.app --output "$evidence/walk" --verify-sdk
+```
