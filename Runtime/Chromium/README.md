@@ -1074,10 +1074,12 @@ the relying party and origin and produces the client data. Bark checks the
 current document, profile, selected page and physical window before delivering
 consent or a reply. Switching profiles cancels an outstanding request.
 
-Platform-authenticator availability reflects Pawl readiness for the requesting
-frame. Disconnected and guest contexts retain Chromium's ordinary availability
-behavior. Conditional account discovery, real Pawl authentication, hardware
-security keys and server-side signature verification still need qualification.
+On the pinned Intel SDK, a loopback site verified the selected account's modal
+assertion from a disposable provider. Signing and authentication with the
+installed Pawl companion, conditional account suggestions and physical
+security keys remain to be qualified. The source recipe adds exclusive
+launch-time selection. The app exposes that capability when its SDK supports
+it. See the [provider design](../../openspec/changes/select-pawl-vault-provider/design.md).
 
 Opt-in history text capture uses the current native page's text snapshot and the
 existing search index. It coalesces captures and rejects late results after a
