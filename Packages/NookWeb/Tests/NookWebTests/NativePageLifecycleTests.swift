@@ -249,7 +249,8 @@ struct NativePageLifecycleTests {
         let capture = try #require(page.nativePageTextTask)
         await capture.value
         _ = await history.getHistory()
-        let found = await history.searchPageText(query: "chromiummarker", limit: 10)
+        let found = await history.searchPageText(query: "chromiummarker", limit: 10, profile: native.profileID)
+        #expect(await history.searchPageText(query: "chromiummarker", limit: 10, profile: UUID()).isEmpty)
         #expect(found.map(\.url) == [url] && native.pageTextCaptures == 1)
         #expect(page.primaryWebView == nil && f.host.creates.count == 1)
 
@@ -327,7 +328,7 @@ struct NativePageLifecycleTests {
         native.completePageText()
         await capture.value
         _ = await history.getHistory()
-        #expect(await history.searchPageText(query: "chromiummarker", limit: 10).isEmpty)
+        #expect(await history.searchPageText(query: "chromiummarker", limit: 10, profile: native.profileID).isEmpty)
         #expect(page.primaryWebView == nil && native.pageTextCaptures == 1)
     }
 

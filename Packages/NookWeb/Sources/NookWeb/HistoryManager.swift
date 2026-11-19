@@ -163,8 +163,10 @@ public final class HistoryManager {
         enqueue { store in
             await store.clear(before: cutoff, profile: profile)
             await index?.clear(before: cutoff, profile: profile)
-            // Page text goes with its history row, whichever space cleared it.
-            if let pageText { await pageText.retain(only: await store.allURLs()) }
+            // Page text stays only where the same profile still has a visit.
+            if let pageText, let keys = await store.pageTextKeys(profile: profile) {
+                await pageText.retain(only: keys, profile: profile)
+            }
         }
     }
 
@@ -176,7 +178,7 @@ public final class HistoryManager {
         enqueue { store in
             await store.deleteProfile(profile)
             await index?.deleteProfile(profile)
-            if let pageText { await pageText.retain(only: await store.allURLs()) }
+            await pageText?.delete(profile: profile)
         }
     }
 
@@ -185,7 +187,7 @@ public final class HistoryManager {
         let index = index
         enqueue { store in
             guard let row = await store.delete(entryId) else { return }
-            await pageText?.delete(url: row.url)
+            if let profile = row.profile { await pageText?.delete(url: row.url, profile: profile) }
             await index?.delete(url: row.url, profile: row.profile)
         }
     }
@@ -199,7 +201,7 @@ public final class HistoryManager {
         enqueue { store in
             await store.delete(url: key, profile: profile)
             await index?.delete(url: key, profile: profile)
-            if let pageText, !(await store.allURLs().contains(key)) { await pageText.delete(url: key) }
+            await pageText?.delete(url: key, profile: profile)
         }
     }
 
@@ -237,17 +239,21 @@ public final class HistoryManager {
     // MARK: - Page Text
 
     /// Queued behind history writes, so a Clear issued after a capture also removes it.
-    public func recordPageText(url: URL, title: String, body: String) {
+    public func recordPageText(url: URL, profile: UUID, title: String, body: String) {
         guard let pageText, url.scheme == "http" || url.scheme == "https" else { return }
         let key = HistoryIndex.cleanURL(url).absoluteString, date = Date()
-        enqueue { _ in await pageText.record(url: key, title: title, body: body, visitedAt: date) }
+        enqueue { store in
+            guard !(await store.entries(forURLs: [key], profile: profile)).isEmpty else { return }
+            await pageText.record(url: key, profile: profile, title: title, body: body, visitedAt: date)
+        }
     }
 
     /// History rows whose page text matches every word of `query`, best match first.
-    public func searchPageText(query: String, limit: Int) async -> [HistoryEntry] {
-        guard let pageText else { return [] }
-        let profile = currentProfileId
-        let urls = await pageText.search(query, limit: limit * 3).map(\.url)
+    public func searchPageText(query: String, limit: Int, profile: UUID? = nil) async -> [HistoryEntry] {
+        let profile = profile ?? currentProfileId
+        guard let pageText, let profile, limit > 0, limit <= Int.max / 3 else { return [] }
+        await pendingWrite?.value
+        let urls = await pageText.search(query, profile: profile, limit: limit * 3).map(\.url)
         guard !Task.isCancelled, !urls.isEmpty else { return [] }
         // Through the history store, so only rows this space can see come back.
         return Array(await storeTask.value.entries(forURLs: urls, profile: profile).prefix(limit))
@@ -480,21 +486,25 @@ actor HistoryStore {
         return rows.map { HistorySeed(url: $0.url, title: $0.title, profile: $0.profileId, visitCount: $0.visitCount, lastVisited: $0.lastVisited) }
     }
 
-    /// Every URL still in history, across spaces.
-    func allURLs() -> Set<String> {
-        var descriptor = FetchDescriptor<HistoryEntity>()
-        descriptor.propertiesToFetch = [\.url]
-        return Set(((try? modelContext.fetch(descriptor)) ?? []).map(\.url))
-    }
-
-    /// The rows `profile` sees for `urls`, in the order given, one per URL.
-    func entries(forURLs urls: [String], profile: UUID?) -> [HistoryEntry] {
+    /// Exact profile/URL identities still in history for the affected scope.
+    func pageTextKeys(profile: UUID?) -> Set<PageTextKey>? {
         let predicate: Predicate<HistoryEntity>
         if let profile {
-            predicate = #Predicate { urls.contains($0.url) && ($0.profileId == profile || $0.profileId == nil) }
+            predicate = #Predicate { $0.profileId == profile }
         } else {
-            predicate = #Predicate { urls.contains($0.url) }
+            predicate = #Predicate { $0.profileId != nil }
         }
+        var descriptor = FetchDescriptor(predicate: predicate)
+        descriptor.propertiesToFetch = [\.url, \.profileId]
+        guard let rows = try? modelContext.fetch(descriptor) else { return nil }
+        return Set(rows.compactMap { row in
+            row.profileId.map { PageTextKey(profile: $0, url: row.url) }
+        })
+    }
+
+    /// Exact-profile rows in match order. Untagged visits are not evidence of text ownership.
+    func entries(forURLs urls: [String], profile: UUID) -> [HistoryEntry] {
+        let predicate = #Predicate<HistoryEntity> { urls.contains($0.url) && $0.profileId == profile }
         let rows = (try? modelContext.fetch(FetchDescriptor(predicate: predicate))) ?? []
         let byURL = Dictionary(rows.map { ($0.url, $0) }, uniquingKeysWith: { $0.lastVisited >= $1.lastVisited ? $0 : $1 })
         return urls.compactMap { byURL[$0].map(HistoryEntry.init) }

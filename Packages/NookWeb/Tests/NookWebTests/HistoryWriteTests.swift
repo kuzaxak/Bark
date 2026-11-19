@@ -25,6 +25,48 @@ struct HistoryWriteTests {
         var isRaised: Bool { lock.withLock { raised } }
     }
 
+    @Test func pageTextForTheSameURLFollowsItsCapturingProfileAndDeletion() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("PageTextOwners-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let container = try ModelContainer(for: HistoryEntity.self,
+            configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+        let personal = UUID(), work = UUID(), unrelated = UUID()
+        let page = URL(string: "https://fixture.invalid/shared")!
+        let historical = Date().addingTimeInterval(-3 * 86_400)
+        let history = HistoryManager(context: container.mainContext, profileId: personal,
+            pageTextURL: root.appendingPathComponent("PageText.sqlite"))
+        history.addVisit(url: page, title: "Work history", timestamp: historical, tabId: nil, profileId: work)
+        history.addVisit(url: page, title: "Personal history", tabId: nil, profileId: personal)
+        history.recordPageText(url: page, profile: work, title: "Work page", body: "worktoken")
+        history.recordPageText(url: page, profile: personal, title: "Personal page", body: "personaltoken")
+        history.recordPageText(url: page, profile: unrelated, title: "Unknown owner", body: "unrelatedtoken")
+
+        #expect(await history.searchPageText(query: "personaltoken", limit: 8).map(\.title) == ["Personal history"])
+        #expect(await history.searchPageText(query: "worktoken", limit: 8).isEmpty)
+        #expect(await history.searchPageText(query: "worktoken", limit: 8, profile: work).map(\.title) == ["Work history"])
+        #expect(await history.searchPageText(query: "personaltoken", limit: 8, profile: work).isEmpty)
+        #expect(await history.searchPageText(query: "unrelatedtoken", limit: 8, profile: unrelated).isEmpty)
+
+        history.clearHistory(olderThan: 1, profileId: work)
+        #expect(await history.searchPageText(query: "worktoken", limit: 8, profile: work).isEmpty)
+        #expect(await history.searchPageText(query: "personaltoken", limit: 8).count == 1)
+        history.addVisit(url: page, title: "Work returned", tabId: nil, profileId: work)
+        #expect(await history.searchPageText(query: "worktoken", limit: 8, profile: work).isEmpty)
+        history.recordPageText(url: page, profile: work, title: "Work returned", body: "worktoken")
+        let workRows = await history.searchPageText(query: "worktoken", limit: 8, profile: work)
+        history.deleteHistoryEntry(try #require(workRows.first).id)
+        #expect(await history.searchPageText(query: "worktoken", limit: 8, profile: work).isEmpty)
+        #expect(await history.searchPageText(query: "personaltoken", limit: 8).count == 1)
+
+        history.addVisit(url: page, title: "Another Work visit", tabId: nil, profileId: work)
+        history.recordPageText(url: page, profile: work, title: "Work page", body: "worktoken")
+        history.forget(page)
+        #expect(await history.searchPageText(query: "personaltoken", limit: 8).isEmpty)
+        #expect(await history.searchPageText(query: "worktoken", limit: 8, profile: work).count == 1)
+        history.deleteHistory(forProfile: work)
+        #expect(await history.searchPageText(query: "worktoken", limit: 8, profile: work).isEmpty)
+    }
+
     @Test func aWriteLandsWhileTheMainActorIsBusy() async throws {
         let (history, directory) = try manager()
         defer { try? FileManager.default.removeItem(at: directory) }

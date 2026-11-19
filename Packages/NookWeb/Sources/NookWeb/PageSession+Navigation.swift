@@ -495,7 +495,7 @@ extension PageSession {
 
     /// Same opt-in delay and coalescing as WebKit; no page creation or retry loop.
     func scheduleNativePageTextCapture(sameDocument: Bool) {
-        guard usesNativePageHost, let page = navigation, let controller,
+        guard usesNativePageHost, let page = navigation, let controller, let profileID = page.profileID,
               let url = page.state.url, url.scheme == "http" || url.scheme == "https" else { return }
         let serial = nativeNavigationSerial
         guard nativePageTextCaptureIsCurrent(page, url: url, serial: serial, controller: controller) else { return }
@@ -513,7 +513,7 @@ extension PageSession {
             let text = await page.capturePageText()
             guard !Task.isCancelled, let self, let controller, let text, text.body.utf16.count >= 100,
                   self.nativePageTextCaptureIsCurrent(page, url: url, serial: serial, controller: controller) else { return }
-            controller.history?.recordPageText(url: url, title: text.title, body: text.body)
+            controller.history?.recordPageText(url: url, profile: profileID, title: text.title, body: text.body)
         }
     }
 
@@ -526,20 +526,27 @@ extension PageSession {
     /// navigation reads again only when the path changed.
     func schedulePageTextCapture(in webView: WKWebView, sameDocument: Bool) {
         guard let url = webView.url, url.scheme == "http" || url.scheme == "https",
-              !isPrivate, !isAgentPage, controller?.settings.searchPageTextInHistory == true else { return }
+              !isPrivate, !isAgentPage, let profile, !profile.isEphemeral,
+              controller?.settings.searchPageTextInHistory == true else { return }
+        let profileID = profile.id, expectedNavigation = navigation
         DispatchQueue.main.asyncAfter(deadline: .now() + (sameDocument ? 1.5 : 1)) { [weak self, weak webView] in
             guard let self, let webView, webView.url == url, !webView.isLoading, !self.isDisplayingPDF,
-                  self.profile?.isEphemeral != true,
+                  self.isCurrentWebKitCallback(from: webView, navigation: expectedNavigation),
+                  self.profile?.id == profileID, self.profile?.isEphemeral == false,
                   self.controller?.settings.searchPageTextInHistory == true else { return }
             if let last = self.lastTextCapture {
                 if sameDocument, last.url.host == url.host, last.url.path == url.path { return }
                 if !sameDocument, last.url == url, Date().timeIntervalSince(last.at) < 5 { return }
             }
             self.lastTextCapture = (url, Date())
-            webView.evaluateJavaScript(Self.pageTextScript, in: nil, in: Self.pageTextWorld) { [weak self] result in
-                guard case .success(let value) = result, let parts = value as? [String], parts.count == 2,
+            webView.evaluateJavaScript(Self.pageTextScript, in: nil, in: Self.pageTextWorld) { [weak self, weak webView] result in
+                guard let self, let webView, webView.url == url, !webView.isLoading, !self.isDisplayingPDF,
+                      self.isCurrentWebKitCallback(from: webView, navigation: expectedNavigation),
+                      self.profile?.id == profileID, self.profile?.isEphemeral == false,
+                      self.controller?.settings.searchPageTextInHistory == true,
+                      case .success(let value) = result, let parts = value as? [String], parts.count == 2,
                       parts[1].utf16.count >= 100 else { return }
-                self?.controller?.history?.recordPageText(url: url, title: parts[0], body: parts[1])
+                self.controller?.history?.recordPageText(url: url, profile: profileID, title: parts[0], body: parts[1])
             }
         }
     }

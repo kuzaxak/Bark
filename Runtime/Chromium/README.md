@@ -1098,11 +1098,12 @@ security keys remain to be qualified. The source recipe adds exclusive
 launch-time selection. The app exposes that capability when its SDK supports
 it. See the [provider design](../../openspec/changes/select-pawl-vault-provider/design.md).
 
-Opt-in history text capture uses the current native page's text snapshot and the
-existing search index. It coalesces captures and rejects late results after a
-document, profile, owner or setting change. Private and Agent pages are excluded;
-capture does not instantiate a WebKit page. Ordinary interactive qualification
-and the release matrix remain separate from focused native regression tests.
+Opt-in history text capture indexes the current native page's text within its
+own profile. It coalesces captures and rejects late results after a document,
+profile, owner or setting change. Private and Agent pages are excluded. Older
+page-text indexes with no profile ownership are rebuilt as pages are revisited.
+Saved history visits remain available during that rebuild. Ordinary interactive
+qualification and the release matrix remain separate from focused regression tests.
 
 The page-tweak hooks reuse the exact-document resource receiver for fixed
 YouTube/Facebook/Reddit configuration independently of blocker enablement. The

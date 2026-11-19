@@ -3,7 +3,7 @@
 //  HistoryTextIndex.swift
 //  Nook
 //
-//  Visited pages' text in an SQLite FTS5 file beside the history store, one row per URL.
+//  Visited pages' text in an SQLite FTS5 file beside the history store, one row per profile and URL.
 //  Kept out of SwiftData so the shared store's schema stays put.
 //
 
@@ -15,6 +15,11 @@ public struct PageTextMatch: Sendable, Equatable {
     public let url: String
     public let title: String
     public let snippet: String
+}
+
+struct PageTextKey: Hashable, Sendable {
+    let profile: UUID
+    let url: String
 }
 
 public actor HistoryTextIndex {
@@ -32,35 +37,58 @@ public actor HistoryTextIndex {
 
     // MARK: - Writes
 
-    public func record(url: String, title: String, body: String, visitedAt: Date) {
+    public func record(url: String, profile: UUID, title: String, body: String, visitedAt: Date) {
         guard let db = open(create: true) else { return }
         let sql = """
-            INSERT INTO pages(url, title, body, visitedAt) VALUES(?, ?, ?, ?)
-            ON CONFLICT(url) DO UPDATE SET title = excluded.title, body = excluded.body, visitedAt = excluded.visitedAt
+            INSERT INTO pages(profile, url, title, body, visitedAt) VALUES(?, ?, ?, ?, ?)
+            ON CONFLICT(profile, url) DO UPDATE SET title = excluded.title, body = excluded.body, visitedAt = excluded.visitedAt
             """
         run(db, sql) { stmt in
-            sqlite3_bind_text(stmt, 1, url, -1, Self.transient)
-            sqlite3_bind_text(stmt, 2, title, -1, Self.transient)
-            sqlite3_bind_text(stmt, 3, body, -1, Self.transient)
-            sqlite3_bind_double(stmt, 4, visitedAt.timeIntervalSince1970)
+            sqlite3_bind_text(stmt, 1, profile.uuidString, -1, Self.transient)
+            sqlite3_bind_text(stmt, 2, url, -1, Self.transient)
+            sqlite3_bind_text(stmt, 3, title, -1, Self.transient)
+            sqlite3_bind_text(stmt, 4, body, -1, Self.transient)
+            sqlite3_bind_double(stmt, 5, visitedAt.timeIntervalSince1970)
         }
     }
 
-    public func delete(url: String) {
+    /// A nil profile denotes an explicit all-profile URL deletion.
+    public func delete(url: String, profile: UUID?) {
         guard let db = open(create: false) else { return }
-        run(db, "DELETE FROM pages WHERE url = ?") { sqlite3_bind_text($0, 1, url, -1, Self.transient) }
-    }
-
-    /// Drops every row whose URL is not in `urls`, so text never outlives its history row.
-    public func retain(only urls: Set<String>) {
-        guard let db = open(create: false) else { return }
-        let stale = allURLs(db).subtracting(urls)
-        guard !stale.isEmpty else { return }
-        sqlite3_exec(db, "BEGIN", nil, nil, nil)
-        for url in stale {
+        if let profile {
+            delete(PageTextKey(profile: profile, url: url), from: db)
+        } else {
             run(db, "DELETE FROM pages WHERE url = ?") { sqlite3_bind_text($0, 1, url, -1, Self.transient) }
         }
+    }
+
+    public func delete(profile: UUID) {
+        guard let db = open(create: false) else { return }
+        run(db, "DELETE FROM pages WHERE profile = ?") { sqlite3_bind_text($0, 1, profile.uuidString, -1, Self.transient) }
+    }
+
+    /// Prunes rows with no surviving authoritative visit in the affected scope.
+    func retain(only keys: Set<PageTextKey>, profile: UUID?) {
+        guard let db = open(create: false) else { return }
+        var stale: [PageTextKey] = []
+        let sql = profile == nil ? "SELECT profile, url FROM pages" : "SELECT profile, url FROM pages WHERE profile = ?"
+        run(db, sql, bind: { stmt in
+            if let profile { sqlite3_bind_text(stmt, 1, profile.uuidString, -1, Self.transient) }
+        }, row: { stmt in
+            guard let owner = UUID(uuidString: Self.text(stmt, 0)) else { return }
+            let key = PageTextKey(profile: owner, url: Self.text(stmt, 1))
+            if !keys.contains(key) { stale.append(key) }
+        })
+        guard !stale.isEmpty, sqlite3_exec(db, "BEGIN", nil, nil, nil) == SQLITE_OK else { return }
+        for key in stale { delete(key, from: db) }
         sqlite3_exec(db, "COMMIT", nil, nil, nil)
+    }
+
+    private func delete(_ key: PageTextKey, from db: OpaquePointer) {
+        run(db, "DELETE FROM pages WHERE profile = ? AND url = ?") {
+            sqlite3_bind_text($0, 1, key.profile.uuidString, -1, Self.transient)
+            sqlite3_bind_text($0, 2, key.url, -1, Self.transient)
+        }
     }
 
     /// Closes and removes the file.
@@ -75,17 +103,18 @@ public actor HistoryTextIndex {
     // MARK: - Search
 
     /// Pages whose title or text holds every word of `query` as a prefix, best bm25 first, then newest.
-    public func search(_ query: String, limit: Int) -> [PageTextMatch] {
+    public func search(_ query: String, profile: UUID, limit: Int) -> [PageTextMatch] {
         guard limit > 0, let match = Self.matchExpression(for: query), let db = open(create: false) else { return [] }
         let sql = """
             SELECT p.url, p.title, snippet(page_fts, -1, '', '', '…', 12)
             FROM page_fts JOIN pages p ON p.rowid = page_fts.rowid
-            WHERE page_fts MATCH ? ORDER BY bm25(page_fts), p.visitedAt DESC LIMIT ?
+            WHERE page_fts MATCH ? AND p.profile = ? ORDER BY bm25(page_fts), p.visitedAt DESC LIMIT ?
             """
         var results: [PageTextMatch] = []
         run(db, sql, bind: { stmt in
             sqlite3_bind_text(stmt, 1, match, -1, Self.transient)
-            sqlite3_bind_int(stmt, 2, Int32(limit))
+            sqlite3_bind_text(stmt, 2, profile.uuidString, -1, Self.transient)
+            sqlite3_bind_int64(stmt, 3, Int64(limit))
         }, row: { stmt in
             results.append(PageTextMatch(url: Self.text(stmt, 0), title: Self.text(stmt, 1), snippet: Self.text(stmt, 2)))
         })
@@ -115,10 +144,23 @@ public actor HistoryTextIndex {
             unavailable = true
             return nil
         }
-        // External-content FTS5 over a URL-keyed table; the triggers keep the two in step.
+        guard let handle else { return nil }
+        sqlite3_busy_timeout(handle, 2_000)
+        guard sqlite3_exec(handle, "PRAGMA secure_delete = ON; BEGIN IMMEDIATE;", nil, nil, nil) == SQLITE_OK else {
+            sqlite3_close_v2(handle)
+            return nil
+        }
+        var version = -1
+        run(handle, "PRAGMA user_version", bind: { _ in }, row: { version = Int(sqlite3_column_int($0, 0)) })
+        // This file only contains derived text. URL-only captures have no reliable owner.
+        let resetLegacy = """
+            DROP TABLE IF EXISTS page_fts;
+            DROP TABLE IF EXISTS pages;
+            """
+        // External-content FTS5 over per-profile rows; the triggers keep the two in step.
         let schema = """
-            PRAGMA secure_delete = ON;
-            CREATE TABLE IF NOT EXISTS pages(url TEXT PRIMARY KEY, title TEXT, body TEXT, visitedAt REAL);
+            CREATE TABLE IF NOT EXISTS pages(profile TEXT NOT NULL, url TEXT NOT NULL, title TEXT, body TEXT,
+                visitedAt REAL, PRIMARY KEY(profile, url));
             CREATE VIRTUAL TABLE IF NOT EXISTS page_fts USING fts5(title, body, content='pages', content_rowid='rowid',
                 tokenize='unicode61 remove_diacritics 2');
             CREATE TRIGGER IF NOT EXISTS pages_ai AFTER INSERT ON pages BEGIN
@@ -132,20 +174,16 @@ public actor HistoryTextIndex {
                 INSERT INTO page_fts(rowid, title, body) VALUES (new.rowid, new.title, new.body);
             END;
             """
-        guard sqlite3_exec(handle, schema, nil, nil, nil) == SQLITE_OK else {
+        let migration = (version == 0 ? resetLegacy : "") + schema + "PRAGMA user_version = 1; COMMIT;"
+        guard (version == 0 || version == 1), sqlite3_exec(handle, migration, nil, nil, nil) == SQLITE_OK else {
             Self.logger.error("Page text index unavailable (FTS5): \(String(cString: sqlite3_errmsg(handle)), privacy: .public)")
+            sqlite3_exec(handle, "ROLLBACK", nil, nil, nil)
             sqlite3_close_v2(handle)
             unavailable = true
             return nil
         }
         db = handle
         return handle
-    }
-
-    private func allURLs(_ db: OpaquePointer) -> Set<String> {
-        var urls = Set<String>()
-        run(db, "SELECT url FROM pages", bind: { _ in }, row: { urls.insert(Self.text($0, 0)) })
-        return urls
     }
 
     private func run(_ db: OpaquePointer, _ sql: String, bind: (OpaquePointer) -> Void) {
