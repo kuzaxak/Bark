@@ -186,12 +186,18 @@ struct ChromiumPrivacySettingsView: View {
     @State private var pageError: ProfilePageOpenError?
 
     var body: some View {
+        let profile = browserManager.tabs.displayedHistoryProfile(browserManager.historyManager)
         Form {
             PrivacyPreferenceSections()
 
             Section {
                 LabeledContent("Browsing history") {
-                    Button("Clear History", action: clearHistory)
+                    if let profile {
+                        Text(profile.name)
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Clear History") { clearHistory(profileID: profile?.id) }
+                        .disabled(profile == nil)
                 }
                 LabeledContent("Cookies and cache") {
                     Button("Open Profiles") { SettingsNavigation.shared.currentSettingsTab = .profiles }
@@ -199,7 +205,7 @@ struct ChromiumPrivacySettingsView: View {
             } header: {
                 Text("Website Data")
             } footer: {
-                Text("Clear History removes the current profile’s history from the sidebar and command bar, then opens Chromium’s Delete Browsing Data to clear the history Chromium keeps.")
+                Text("Clear History opens Chromium’s Delete Browsing Data for the profile shown here. After the controls open, Bark clears that profile’s sidebar and command bar history.")
                     .settingsFooter()
             }
         }
@@ -211,11 +217,8 @@ struct ChromiumPrivacySettingsView: View {
         }
     }
 
-    private func clearHistory() {
-        let history = browserManager.historyManager
-        history.clearHistory()
-        guard let profile = history.currentProfileId else { return }
-        browserManager.tabs.openProfilePage(profileID: profile, destination: .clearData) { result in
+    private func clearHistory(profileID: UUID?) {
+        browserManager.tabs.clearDisplayedProfileHistory(profileID, history: browserManager.historyManager) { result in
             if case .failure(let error) = result { pageError = error }
         }
     }

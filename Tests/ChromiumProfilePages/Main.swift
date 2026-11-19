@@ -5,7 +5,11 @@ import AppKit
 import BarcChromium
 import SwiftUI
 import NookTabsCore
+import NookBlocker
+import NookSettings
+import NookTweaks
 import NookWeb
+import SwiftData
 
 @MainActor
 private enum Native {
@@ -138,6 +142,100 @@ private enum Native {
         }
         if flags & 128 != 0 { roots[window] = nil; members[window] = nil; activeTabs[window] = nil }
     }
+}
+
+private struct NoHistoryFixtureToken: KagiTokenStore {
+    func load() -> String? { nil }
+    func save(_ token: String?) {}
+}
+
+@MainActor
+private func checkScopedHistoryClear() async throws {
+    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("BarkProfileHistory-" + UUID().uuidString)
+    let defaults = UserDefaults(suiteName: folder.lastPathComponent)!
+    defer {
+        defaults.removePersistentDomain(forName: folder.lastPathComponent)
+        try? FileManager.default.removeItem(at: folder)
+    }
+    let settings = NookSettingsService(kagiTokenStore: NoHistoryFixtureToken(), userDefaults: defaults,
+                                       boostStore: BoostStore(fileURL: folder.appendingPathComponent("Boosts.json")))
+    let registry = WindowRegistry()
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+                              blocker: ContentBlockerManager(settings: settings),
+                              sponsorBlock: SponsorBlockManager(settings: settings),
+                              siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium,
+                              directory: folder.appendingPathComponent("Tabs"))
+    let first = tabs.tree.orderedSpaces.first!.id
+    let second = tabs.createSpace(name: "Personal", icon: "house", accentHex: "#222222", after: first)!
+    let workID = tabs.tree.dataStoreID(for: first)!
+    let personalID = tabs.tree.dataStoreID(for: second)!
+    precondition(workID != personalID)
+
+    let window = BrowserWindowState()
+    window.spaceID = first
+    registry.register(window)
+    registry.setActive(window)
+    let container = try ModelContainer(for: HistoryEntity.self, configurations: ModelConfiguration(isStoredInMemoryOnly: true))
+    let history = HistoryManager(context: ModelContext(container))
+    let urlA = URL(string: "https://fixture.test/work")!
+    let urlB = URL(string: "https://fixture.test/personal")!
+    await history.importVisitsAndWait([
+        HistoryVisit(url: urlA, title: "Work visit", timestamp: Date(), tabId: nil, profileId: workID),
+        HistoryVisit(url: urlB, title: "Personal visit", timestamp: Date(), tabId: nil, profileId: personalID),
+    ])
+    var admittedCompletions: [Result<Void, ProfilePageOpenError>] = []
+    var clears: [UUID?] = []
+    history.onHistoryCleared = { profile, _ in clears.append(profile) }
+
+    func clear(_ target: UUID?) {
+        tabs.clearDisplayedProfileHistory(target, history: history) { admittedCompletions.append($0) }
+    }
+
+    func expectFailure(_ expected: ProfilePageOpenError) {
+        guard case .failure(let actual) = admittedCompletions.removeLast(), actual == expected else {
+            preconditionFailure("Expected \(expected)")
+        }
+    }
+
+    precondition(tabs.displayedHistoryProfile(history) == nil)
+    clear(nil); expectFailure(.profileUnavailable)
+    let allRecords = await history.getHistory()
+    precondition(Set(allRecords.entries.map(\.url)) == [urlA, urlB] && clears.isEmpty)
+
+    history.switchProfile(workID)
+    precondition(tabs.displayedHistoryProfile(history)?.id == workID)
+    window.isIncognito = true
+    precondition(tabs.displayedHistoryProfile(history) == nil)
+    clear(workID); expectFailure(.profileUnavailable)
+    window.isIncognito = false
+    clear(UUID()); expectFailure(.profileUnavailable)
+
+    tabs.onOpenProfilePage = { profile, destination, _, completion in
+        precondition(profile.id == workID && destination == .clearData)
+        completion(.failure(.presentationFailed))
+    }
+    clear(workID); expectFailure(.presentationFailed)
+    let workBefore = await history.getHistory()
+    precondition(workBefore.entries.map(\.url) == [urlA] && clears.isEmpty)
+
+    var finish: ((Result<Void, ProfilePageOpenError>) -> Void)?
+    tabs.onOpenProfilePage = { profile, destination, canPresent, completion in
+        precondition(profile.id == workID && destination == .clearData && canPresent())
+        finish = completion
+    }
+    clear(workID)
+    precondition(finish != nil && clears.isEmpty && admittedCompletions.isEmpty)
+    window.spaceID = second
+    history.switchProfile(personalID)
+    precondition(tabs.displayedHistoryProfile(history)?.id == personalID)
+    clear(workID); expectFailure(.profileUnavailable)
+    finish?(.success(()))
+    try admittedCompletions.removeLast().get()
+    let personalAfter = await history.getHistory()
+    history.switchProfile(workID)
+    let workAfter = await history.getHistory()
+    precondition(personalAfter.entries.map(\.url) == [urlB] && workAfter.entries.isEmpty && clears == [workID])
+    print("Clear History preserves other profiles and waits for admission of the captured regular profile")
 }
 
 @main
@@ -439,6 +537,7 @@ private enum ProfileChecks {
             guard case .failure(.presentationUnavailable) = result else { preconditionFailure() }
         }
         precondition(Native.observers.isEmpty)
+        try await checkScopedHistoryClear()
         print("Chromium profile page checks passed")
     }
 }
