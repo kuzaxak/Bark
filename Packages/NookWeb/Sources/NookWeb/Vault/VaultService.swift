@@ -3,10 +3,7 @@
 //  VaultService.swift
 //  Nook
 //
-//  The app-wide side of the Pawl Vault bridge: the setting, the socket client, the status
-//  Settings shows, and the per-web-view bridges. Status comes from `hello`, asked when the
-//  setting turns on, at most every few seconds on navigation, and before every passkey request.
-//  The bridges also carry passkey requests to USB security keys while that setting is on.
+//  Pawl connection and consent for Chromium credential requests.
 //
 
 #if os(macOS)
@@ -93,29 +90,20 @@ public final class VaultService {
     public private(set) var status: VaultStatus? {
         didSet {
             guard oldValue != status else { return }
-            if (oldValue == .connected) != (status == .connected) { VaultBridge.syncAll() }
             NotificationCenter.default.post(name: Self.nativeStateChanged, object: self)
         }
     }
     fileprivate static let nativeStateChanged = Notification.Name("NookVaultNativeStateChanged")
 
     @ObservationIgnored public weak var presenter: VaultPresenter?
-    @ObservationIgnored public weak var securityKeyPresenter: SecurityKeyPresenter?
     @ObservationIgnored let client: any VaultRequests
     @ObservationIgnored private let openPawlApplication: @MainActor () -> Bool
     @ObservationIgnored fileprivate let passkeyKeyWindow: @MainActor () -> NSWindow?
     @ObservationIgnored private let settings: NookSettingsService
     @ObservationIgnored private var lastNavigationRefresh: ContinuousClock.Instant?
     @ObservationIgnored private var settingObserver: NSObjectProtocol?
-    @ObservationIgnored private var securityKeysObserver: NSObjectProtocol?
 
     @ObservationIgnored fileprivate var supportsConditionalLoginWrites = false
-
-    /// The bundled Public Suffix List, read on the first passkey request.
-    static let suffixes: PublicSuffixList = {
-        let url = Bundle.module.url(forResource: "public_suffix_list", withExtension: "dat", subdirectory: "Resources")
-        return PublicSuffixList(text: url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "")
-    }()
 
     /// Set by Chromium engines that select one password provider for their process lifetime.
     public let pawlEnabledAtLaunch: Bool?
@@ -140,12 +128,11 @@ public final class VaultService {
                 MainActor.assumeIsolated { self?.settingChanged() }
             }
         }
-        securityKeysObserver = NotificationCenter.default.addObserver(
-            forName: NookSettingsService.securityKeysEnabledDidChange, object: nil, queue: .main
-        ) { _ in
-            MainActor.assumeIsolated { VaultBridge.syncAll() }
-        }
         if isEnabled { Task { await refresh() } }
+    }
+
+    isolated deinit {
+        if let settingObserver { NotificationCenter.default.removeObserver(settingObserver) }
     }
 
     public var isEnabled: Bool { pawlEnabledAtLaunch ?? settings.pawlVaultEnabled }
@@ -153,13 +140,10 @@ public final class VaultService {
     /// Opens the installed vault at the person's request.
     public func openPawlVault() -> Bool { isEnabled && openPawlApplication() }
 
-    public var securityKeysEnabled: Bool { settings.securityKeysEnabled }
-
     /// Paired and unlocked as of the last `hello`.
     public var isConnected: Bool { isEnabled && status == .connected }
 
-    /// Asks the vault for its status and swaps the passkey scripts on every page when the
-    /// answer changes whether passkeys go to the vault.
+    /// Refreshes the signed provider’s status and the capabilities available to native pages.
     @discardableResult
     public func refresh(profile: String? = nil) async -> VaultStatus? {
         guard isEnabled else { return nil }
@@ -267,7 +251,6 @@ public final class VaultService {
             status = nil
             Task { await client.disconnect() }
         }
-        VaultBridge.syncAll()
         NotificationCenter.default.post(name: Self.nativeStateChanged, object: self)
     }
 }

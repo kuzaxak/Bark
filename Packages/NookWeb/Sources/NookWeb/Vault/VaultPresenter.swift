@@ -8,8 +8,7 @@
 //
 
 #if os(macOS)
-import Foundation
-import WebKit
+import AppKit
 
 public struct VaultPickerItem: Identifiable, Sendable {
     public enum Kind: Sendable {
@@ -63,11 +62,6 @@ public enum VaultLoginOffer: Equatable, Sendable {
 
 @MainActor
 public protocol VaultPresenter: AnyObject {
-    /// Lists `items` in a popover pointing at `anchor`, in `webView`'s coordinates. `host` names
-    /// the site asking. An empty list shows that the vault has nothing for it. `completion` gets
-    /// the pick, or nil when the popover closes without one.
-    func presentPicker(host: String, items: [VaultPickerItem], anchor: CGRect, in webView: NSView,
-                       completion: @escaping (VaultPickerItem?) -> Void)
     /// Native picker selection may restore only its original owned view, at
     /// the user's direct action and while this exact request remains valid.
     func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
@@ -76,8 +70,6 @@ public protocol VaultPresenter: AnyObject {
     func ownsNativePicker(in view: NSView) -> Bool
     /// Closes a picker shown over `webView`, calling its completion with nil.
     func dismissPicker(in webView: NSView)
-    /// The non-modal "Save password to Pawl Vault?" offer. `completion(true)` means Save.
-    func offerSave(host: String, username: String, in webView: NSView, completion: @escaping (Bool) -> Void)
     /// Native consent belongs to the exact page that submitted the login.
     func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
                           in view: NSView, completion: @escaping (Bool) -> Void)
@@ -87,9 +79,6 @@ public protocol VaultPresenter: AnyObject {
                                       completion: @escaping (Bool) -> Void)
     func dismissNativePasskey(in view: NSView)
     func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool
-    /// Asks before the vault creates a passkey. `completion(true)` means go ahead.
-    func confirmPasskeyCreation(rpId: String, userName: String, in webView: NSView,
-                                completion: @escaping (Bool) -> Void)
 }
 #endif
 
@@ -99,8 +88,6 @@ extension VaultPresenter {
                                              completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissNativePasskey(in view: NSView) { dismissPicker(in:view) }
     public func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool { false }
-    public func offerSave(host: String, username: String, in webView: NSView,
-                          completion: @escaping (Bool) -> Void) { completion(false) }
     public func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
                                  in view: NSView, completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissSave(in view: NSView) {}

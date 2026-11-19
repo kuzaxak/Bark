@@ -4754,9 +4754,9 @@ struct NativeVaultFormTests {
         native.focusVault()
         for await _ in transport.lookupStarted.stream { break }
         native.focusVault(code:true); await agentCallbacks()
-        #expect(presenter.completion != nil)
+        #expect(presenter.nativeCompletion != nil)
         await transport.failLookup(); await agentCallbacks()
-        #expect(presenter.completion != nil)
+        #expect(presenter.nativeCompletion != nil)
         presenter.pick(); await agentCallbacks()
         #expect(native.vaultFills.first?.2 == "123456")
     }
@@ -4779,10 +4779,6 @@ struct NativeVaultFormTests {
 @MainActor
 private final class SyntheticVaultPresenter: VaultPresenter {
     var items: [VaultPickerItem] = []
-    var completion: ((VaultPickerItem?) -> Void)?
-    func presentPicker(host:String,items:[VaultPickerItem],anchor:CGRect,in view:NSView,completion:@escaping(VaultPickerItem?)->Void) {
-        self.items = items; self.completion = completion
-    }
     var nativeValidation: (@MainActor () -> Bool)?
     var nativeCompletion: ((VaultNativePickerResult) -> Void)?
     var restore: (() -> Bool)?
@@ -4791,22 +4787,20 @@ private final class SyntheticVaultPresenter: VaultPresenter {
                              validateSelection:@escaping @MainActor ()->Bool,
                              completion:@escaping(VaultNativePickerResult)->Void) {
         self.items = items; nativeValidation = validateSelection; nativeCompletion = completion
-        self.completion = { _ in }
     }
     func ownsNativePicker(in view:NSView)->Bool { owns && nativeCompletion != nil }
     func pick() {
         if let done = nativeCompletion {
             let valid = nativeValidation?() == true
-            nativeCompletion = nil; completion = nil
+            nativeCompletion = nil
             guard valid else { done(.cancelled); return }
             guard restore?() ?? true else { done(.focusUnavailable); return }
             if let item = items.first { done(.selected(item)) } else { done(.cancelled) }
-        } else { let done = completion; completion = nil; done?(items.first) }
+        }
     }
     func dismissPicker(in view:NSView) {
         let native = nativeCompletion; nativeCompletion = nil
-        let done = completion; completion = nil
-        native?(.cancelled); done?(nil)
+        native?(.cancelled)
     }
     var creationConsent: ((Bool)->Void)?
     weak var creationView: NSView?
@@ -4831,8 +4825,6 @@ private final class SyntheticVaultPresenter: VaultPresenter {
         guard saveView === view else { return }
         let old = saveCompletion; saveCompletion = nil; saveView = nil; old?(false)
     }
-    func offerSave(host:String,username:String,in view:NSView,completion:@escaping(Bool)->Void) { completion(false) }
-    func confirmPasskeyCreation(rpId:String,userName:String,in view:NSView,completion:@escaping(Bool)->Void) { completion(false) }
 }
 
 private actor SyntheticVaultRequests: VaultRequests {

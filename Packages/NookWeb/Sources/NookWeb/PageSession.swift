@@ -993,11 +993,6 @@ public final class PageSession: NSObject, Identifiable {
         controller.add(webKitDelegate, contentWorld: Self.translateWorld, name: Self.translateHandlerName)
         controller.addUserScript(WKUserScript(source: MediaScript.reporter(handler: "mediaStateChange_\(itemID.uuidString)"),
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: false))
-        #if os(macOS)
-        if let vault = self.controller?.vault {
-            VaultBridge.install(on: webView, session: self, service: vault)
-        }
-        #endif
         webView.customUserAgent = PlatformUserAgent.custom
         // Let the web content control its own background so extension styles (like Dark
         // Reader) can paint dark backgrounds. The themed background shows only while loading.
@@ -1113,9 +1108,6 @@ public final class PageSession: NSObject, Identifiable {
         }
         controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
         controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-        #if os(macOS)
-        VaultBridge.uninstall(from: controller)
-        #endif
         detachDevCaptureHandler(from: webView)
         controller.removeScriptMessageHandler(
             forName: AdvancedRulesEngine.messageHandlerName, contentWorld: .page)

@@ -35,28 +35,15 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
     @ObservationIgnored private weak var popoverWebView: NSView?
     @ObservationIgnored private weak var pickerOwnerWindow: NSWindow?
     @ObservationIgnored private var nativePickerOpening = false
-    @ObservationIgnored private var pickerCompletion: ((VaultPickerItem?) -> Void)?
+    @ObservationIgnored private var pickerCompletion: ((VaultNativePickerResult) -> Void)?
     @ObservationIgnored private var pickerShownAt = Date.distantPast
     @ObservationIgnored private var nativeSelectionCheck: (@MainActor () -> Bool)?
     @ObservationIgnored private var pickerGeneration = 0
     @ObservationIgnored private var saveGeneration = 0
-    @ObservationIgnored private var nativeFocusFailure: (() -> Void)?
     @ObservationIgnored private static let saveOfferLifetime: Duration = .seconds(120)
 
     // MARK: - Picker
 
-    func presentPicker(host: String, items: [VaultPickerItem], anchor: CGRect, in webView: NSView,
-                       completion: @escaping (VaultPickerItem?) -> Void) {
-        showPicker(host:host,items:items,anchor:anchor,in:webView,nativeCheck:nil,nativeFailure:nil,completion:completion)
-    }
-    func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
-                             validateSelection: @escaping @MainActor () -> Bool,
-                             completion: @escaping (VaultNativePickerResult) -> Void) {
-        showPicker(host:host,items:items,anchor:anchor,in:view,nativeCheck:validateSelection,
-            nativeFailure:{ completion(.focusUnavailable) }) { item in
-                completion(item.map(VaultNativePickerResult.selected) ?? .cancelled)
-            }
-    }
     func ownsNativePicker(in view: NSView) -> Bool {
         guard nativeSelectionCheck != nil, popoverWebView === view,
               let shown = popover, (shown.isShown || nativePickerOpening),
@@ -64,30 +51,34 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
               let picker = shown.contentViewController?.view.window else { return false }
         return NSApp.keyWindow === picker || NSApp.keyWindow === owner
     }
-    private func showPicker(host: String, items: [VaultPickerItem], anchor: CGRect, in webView: NSView,
-                            nativeCheck: (@MainActor () -> Bool)?, nativeFailure: (() -> Void)?,
-                            completion: @escaping (VaultPickerItem?) -> Void) {
-        closePicker(with: nil)
-        guard let window = webView.window else { return completion(nil) }
-        if let nativeCheck, !window.isVisible || !nativeCheck() { nativeFailure?(); return }
+    func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
+                             validateSelection: @escaping @MainActor () -> Bool,
+                             completion: @escaping (VaultNativePickerResult) -> Void) {
         pickerGeneration += 1
         let generation = pickerGeneration
+        closePicker(with: nil)
+        guard generation == pickerGeneration else { completion(.cancelled); return }
+        guard let window = view.window else { completion(.cancelled); return }
+        guard window.isVisible, validateSelection(), generation == pickerGeneration,
+              view.window === window else {
+            completion(.focusUnavailable)
+            return
+        }
         let popover = NSPopover()
         popover.behavior = .transient
         popover.delegate = self
         popover.contentViewController = NSHostingController(
             rootView: VaultPickerView(host: host, items: items) { [weak self] item in self?.pick(item, generation:generation) })
         self.popover = popover
-        popoverWebView = webView
+        popoverWebView = view
         pickerOwnerWindow = window
         pickerCompletion = completion
-        nativeSelectionCheck = nativeCheck
-        nativeFocusFailure = nativeFailure
+        nativeSelectionCheck = validateSelection
         pickerShownAt = .now
-        nativePickerOpening = nativeCheck != nil
-        popover.show(relativeTo: anchor, of: webView, preferredEdge: webView.isFlipped ? .maxY : .minY)
+        nativePickerOpening = true
+        popover.show(relativeTo: anchor, of: view, preferredEdge: view.isFlipped ? .maxY : .minY)
         nativePickerOpening = false
-        if nativeCheck != nil, self.popover === popover {
+        if self.popover === popover {
             // Chromium can retain keyboard focus in the page while the account list is visible.
             pickerEscapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak popover] event in
                 MainActor.assumeIsolated {
@@ -121,8 +112,8 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
     private func pick(_ item: VaultPickerItem?, generation: Int) {
         guard generation == pickerGeneration else { return }
         if item != nil, !VaultPrompt.acceptsPick(shownAt: pickerShownAt, now: .now) { return }
-        if item != nil, let check = nativeSelectionCheck {
-            guard let view = popoverWebView, ownsNativePicker(in:view), check() else { closePicker(with:nil); return }
+        if item != nil {
+            guard let view = popoverWebView, ownsNativePicker(in:view), nativeSelectionCheck?() == true else { closePicker(with:nil); return }
         }
         closePicker(with: item)
     }
@@ -135,26 +126,26 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
         let shown = popover, view = popoverWebView, window = pickerOwnerWindow
         let pickerWindow = shown?.contentViewController?.view.window
         let check = nativeSelectionCheck, generation = pickerGeneration
-        let failed = nativeFocusFailure
-        nativeFocusFailure = nil
         nativeSelectionCheck = nil
         popover = nil
         popoverWebView = nil
         pickerOwnerWindow = nil
         nativePickerOpening = false
         shown?.close()
-        if item != nil, let check {
+        if let item {
             // Only the direct, still-current user choice may restore focus.
             // RPC completions never enter this path or activate a window.
-            guard pickerGeneration == generation, popover == nil, check(),
+            guard pickerGeneration == generation, popover == nil, let check, check(),
                   let view, let window, let pickerWindow, view.window === window,
-                  NSApp.keyWindow === window || NSApp.keyWindow === pickerWindow else { failed?(); return }
+                  NSApp.keyWindow === window || NSApp.keyWindow === pickerWindow else { completion?(.focusUnavailable); return }
             if NSApp.keyWindow === pickerWindow { window.makeKey() }
             guard pickerGeneration == generation, popover == nil, check(),
                   view.window === window, NSApp.keyWindow === window,
-                  window.makeFirstResponder(view) else { failed?(); return }
+                  window.makeFirstResponder(view) else { completion?(.focusUnavailable); return }
+            completion?(.selected(item))
+        } else {
+            completion?(.cancelled)
         }
-        completion?(item)
     }
 
     // MARK: - Save offer
@@ -222,17 +213,5 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
                           !request.view.isHiddenOrHasHiddenAncestor &&
                           (NSApp.keyWindow == nil || NSApp.keyWindow === request.owner || NSApp.keyWindow === request.alert.window))
         }
-    }
-    func confirmPasskeyCreation(rpId: String, userName: String, in webView: NSView, completion: @escaping (Bool) -> Void) {
-        guard let window = webView.window else { return completion(false) }
-        let alert = NSAlert()
-        alert.messageText = "Create a passkey for \(rpId)?"
-        alert.informativeText = userName.isEmpty
-            ? "Pawl Vault will save the new passkey."
-            : "Pawl Vault will save a passkey for \(userName)."
-        // The Return that submitted the site's form must not also confirm the passkey.
-        alert.addButton(withTitle: "Continue").keyEquivalent = ""
-        alert.addButton(withTitle: "Cancel")
-        alert.beginSheetModal(for: window) { completion($0 == .alertFirstButtonReturn) }
     }
 }

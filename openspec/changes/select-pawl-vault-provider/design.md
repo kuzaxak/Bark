@@ -15,7 +15,7 @@ Give the existing opt-in a consistent meaning on normal launch, after an unlock 
 | Option | Fit for this project |
 | --- | --- |
 | Complete the native integration | Reuses the existing signed peer, Chromium's field and submission identities, its WebAuthn request lifetime, and Bark's native picker. Requires a companion trust update and provider routing in the engine. Selected. |
-| Port the WebKit form and passkey scripts | The WebKit adapter uses an isolated script world for forms and a page-world shim for passkeys. Porting those scripts would leave Chromium free to fill a saved login or write a submitted one. Chromium already supplies the frame, field and request identities needed by the shared Swift service. |
+| Port the WebKit form and passkey scripts | The former WebKit adapter used an isolated script world for forms and a page-world shim for passkeys. Porting those scripts would leave Chromium free to fill a saved login or write a submitted one. Chromium already supplies the frame, field and request identities needed by the shared Swift service. |
 | Build a Chromium extension and native-messaging host | Adds an extension, host registration, permissions and another identity per install. It would duplicate existing field and passkey integration. Keep interoperability with deliberately installed extensions. |
 | Rely on Apple's system Autofill or a Chrome policy | Platform Authenticators remain valuable separate choices, but this does not route every Bark save, OTP and prompt through Pawl. Chromium's PasswordManagerEnabled policy can still fill previously saved passwords. |
 
@@ -73,8 +73,6 @@ Ship the narrowly compatible Pawl companion first. Offer exclusive mode in a Bar
 
 ## Implementation references
 
-The WebKit adapter supplies form events through script handlers. In Chromium, the page adapter receives typed events through the C SDK. Both use the same Swift service for the account picker, consent and signed connection to Pawl. [WebKit adapter](../../../Packages/NookWeb/Sources/NookWeb/Vault/VaultBridge.swift) · [Chromium adapter](../../../App/Chromium/ChromiumPageNavigation.swift) · [Signed socket client](../../../Packages/NookWeb/Sources/NookWeb/Vault/VaultClient.swift)
-
-The shell already forwards frame-bound focus, validated submission and WebAuthn events. The pre-existing migration describes the earlier optional save path. [Native adapter](../../../App/Chromium/ChromiumPageNavigation.swift) · [Native request lifetimes](../../../Packages/NookWeb/Sources/NookWeb/Vault/VaultService.swift) · [Original migration design](../decouple-fork-and-migrate-to-chromium/design.md)
+Chromium sends focused-field, validated submission and WebAuthn events through the C SDK. The Swift service owns each picker or consent request and checks its page again before using the signed Pawl connection. Chromium handles relying-party validation, client-data construction and external security keys. [Chromium adapter](../../../App/Chromium/ChromiumPageNavigation.swift) · [Native request lifetimes](../../../Packages/NookWeb/Sources/NookWeb/Vault/VaultService.swift) · [Signed socket client](../../../Packages/NookWeb/Sources/NookWeb/Vault/VaultClient.swift)
 
 Chromium documents the existing-credential behavior of its enterprise policy. Native messaging uses an installed host manifest and an extension allowlist. [PasswordManagerEnabled policy](https://github.com/chromium/chromium/blob/main/components/policy/resources/templates/policy_definitions/PasswordManager/PasswordManagerEnabled.yaml) · [Chromium native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging)

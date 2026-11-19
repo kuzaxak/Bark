@@ -90,7 +90,6 @@ public final class NookSettingsService {
     private let facebookHideSuggestedKey = "settings.facebookHideSuggested"
     private let redditSortHotKey = "settings.redditSortHot"
     private static let pawlVaultEnabledKey = "settings.pawlVaultEnabled"
-    private let securityKeysEnabledKey = "settings.securityKeysEnabled"
 
     public var searchEngineId: String {
         didSet {
@@ -743,18 +742,6 @@ public final class NookSettingsService {
         }
     }
 
-    public static let securityKeysEnabledDidChange = Notification.Name("NookSecurityKeysEnabledDidChange")
-
-    /// Sites can use USB security keys (FIDO2) for passkeys, through Nook's own CTAP2 client.
-    public var securityKeysEnabled: Bool {
-        didSet {
-            userDefaults.set(securityKeysEnabled, forKey: securityKeysEnabledKey)
-            if securityKeysEnabled != oldValue {
-                NotificationCenter.default.post(name: Self.securityKeysEnabledDidChange, object: nil)
-            }
-        }
-    }
-
     public init(kagiTokenStore: KagiTokenStore = KeychainKagiTokenStore(), userDefaults: UserDefaults = .standard, boostStore: BoostStore = BoostStore(),
                 keepsSidebarLeft: Bool = false) {
         self.boostStore = boostStore
@@ -805,7 +792,6 @@ public final class NookSettingsService {
             tidyDownloadsKey: false,
             sponsorBlockEnabledKey: false,
             autoPictureInPictureKey: false,
-            securityKeysEnabledKey: true,
         ])
 
         // Initialize properties from UserDefaults
@@ -967,7 +953,6 @@ public final class NookSettingsService {
         self.facebookHideSuggested = userDefaults.bool(forKey: facebookHideSuggestedKey)
         self.redditSortHot = userDefaults.bool(forKey: redditSortHotKey)
         self.pawlVaultEnabled = Self.savedPawlVaultSelection(in: userDefaults)
-        self.securityKeysEnabled = userDefaults.bool(forKey: securityKeysEnabledKey)
 
         if let data = userDefaults.data(forKey: siteSearchEntriesKey),
            let decoded = try? JSONDecoder().decode([SiteSearchEntry].self, from: data) {

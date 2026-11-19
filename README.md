@@ -38,6 +38,8 @@ Choose Pawl Vault in **Settings → Privacy → Passwords** and check its connec
 status there. Pawl uses the same unlocked vault across Bark profiles. With a
 compatible vault connected, Bark asks before saving a new login or updating an
 existing one. Older connected vaults offer manual management in Pawl.
+Chromium identifies the field and site. Bark presents the account picker and
+asks Pawl for the password or one-time code after you select an account.
 
 The pinned Chromium build supports Pawl alongside its built-in manager. Pawl
 Vault 0.1.2 (build 7) accepts the legacy Nook signing identity and refuses Bark.

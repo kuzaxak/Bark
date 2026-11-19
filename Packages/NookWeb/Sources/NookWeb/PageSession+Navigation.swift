@@ -54,9 +54,6 @@ extension PageSession {
         seenMediaFrames = [:]
         applyMediaFrames()
         resetTranslation()
-        #if os(macOS)
-        VaultBridge.bridge(for: webView)?.pageCommitted(origin: webView.url.flatMap(WebAuthnPolicy.origin(of:)))
-        #endif
     }
 
     // MARK: - Loading Success
@@ -149,9 +146,6 @@ extension PageSession {
 
         Self.log.error("WebContent process terminated for item \(self.itemID.uuidString, privacy: .public) (crash #\(self.webProcessCrashCount) in window)")
         loadingState = .idle
-        #if os(macOS)
-        VaultBridge.bridge(for: webView)?.documentChanged()
-        #endif
 
         // No window shows this tab: unload instead of respawning a process in the background
         // (often the system reclaiming memory). Selecting the tab restores its saved URL.

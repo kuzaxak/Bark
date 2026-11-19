@@ -479,7 +479,7 @@ struct ProfileEngineTests {
 
     #if os(macOS)
     @Test(arguments: [Profile.Engine.webKit, .chromium])
-    func vaultBridgeFollowsWebKitViewLifetime(engine: Profile.Engine) throws {
+    func vaultAccessIsExclusiveToNativePageEvents(engine: Profile.Engine) async throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
         let tabs = fixture.makeTabs(engine: engine)
@@ -487,7 +487,7 @@ struct ProfileEngineTests {
         let webViews = RecordingWebViews()
         tabs.webViews = webViews
         tabs.vault = VaultService(settings: tabs.settings,
-            client: VerificationVault(origin: nil, profile: profile.id), pawlEnabledAtLaunch: false)
+            client: VerificationVault(origin: nil, profile: profile.id), pawlEnabledAtLaunch: true)
         let page = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Vault",
                                isPrivate: true, controller: tabs)
         page.detachedProfile = profile
@@ -496,9 +496,17 @@ struct ProfileEngineTests {
 
         if engine == .webKit {
             let view = try #require(WebKitPageAccess.existingView(for: page))
-            #expect(VaultBridge.bridge(for: view) != nil)
+            let scripts = view.configuration.userContentController.userScripts
+            #expect(!scripts.contains { $0.source.hasPrefix("// Nook Vault Autofill") })
+            #expect(!scripts.contains { $0.source.hasPrefix("// Nook Vault Passkeys") })
+            for (name, world) in [("nookAutofill", WKContentWorld.world(name: "NookAutofill")),
+                                  ("nookPasskey", WKContentWorld.page)] {
+                let installed = try await view.callAsyncJavaScript(
+                    "return Boolean(window.webkit?.messageHandlers?.[name])",
+                    arguments: ["name": name], in: nil, contentWorld: world)
+                #expect(installed as? Bool == false)
+            }
             page.unload()
-            #expect(VaultBridge.bridge(for: view) == nil)
         } else {
             #expect(page.primaryWebView == nil && page.isUnloaded)
         }

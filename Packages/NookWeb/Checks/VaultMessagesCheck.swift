@@ -4,11 +4,10 @@
 //  Nook
 //
 //  Bridge protocol v1 messages: each request against the protocol's examples, each reply and
-//  error envelope, per-method timeouts, the status line, and vault errors as DOMException names.
+//  error envelope, per-method timeouts, and the provider status.
 //  Amendment 4 adds `hasCode` on logins (absent from older vaults) and the `code` method:
 //
 //    swiftc -parse-as-library Packages/NookWeb/Sources/NookWeb/Vault/VaultMessages.swift \
-//           Packages/NookWeb/Sources/NookWeb/Vault/WebAuthnError.swift \
 //           Packages/NookWeb/Checks/VaultMessagesCheck.swift -o /tmp/vault-messages && /tmp/vault-messages
 //
 
@@ -136,22 +135,6 @@ struct VaultMessagesCheck {
         precondition(VaultStatus(VaultClientError.notPawlVault) == .notPawlVault)
         precondition(VaultStatus(VaultClientError.server(.unpaired, "")) == .notTeamSigned)
         precondition(VaultStatus(VaultClientError.server(.locked, "")) == .locked)
-
-        // Vault errors as DOMException names. Only an excluded credential on create differs.
-        let notAllowed: [VaultClientError] = [.server(.denied, "Touch ID cancelled"), .server(.locked, ""),
-                                              .server(.unpaired, ""), .server(.notFound, ""), .server(.badRequest, ""),
-                                              .server(.internal, ""), .notRunning, .notPawlVault, .timeout,
-                                              .connectionClosed, .malformedResponse]
-        for error in notAllowed {
-            precondition(WebAuthnError(error, creating: false) == .notAllowed && WebAuthnError(error, creating: true) == .notAllowed, "\(error)")
-        }
-        precondition(WebAuthnError(.server(.denied, "excluded"), creating: true) == .invalidState)
-        precondition(WebAuthnError(.server(.denied, "excluded"), creating: false) == .notAllowed)
-        precondition(WebAuthnError.notAllowed.rawValue == "NotAllowedError")
-        precondition(WebAuthnError.security.rawValue == "SecurityError")
-        precondition(WebAuthnError.invalidState.rawValue == "InvalidStateError")
-        precondition(WebAuthnError.abort.rawValue == "AbortError")
-        precondition(WebAuthnError.notSupported.rawValue == "NotSupportedError")
 
         print("VaultMessagesCheck passed")
     }

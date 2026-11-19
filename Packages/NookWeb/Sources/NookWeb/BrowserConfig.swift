@@ -72,8 +72,7 @@ public class BrowserConfiguration {
     // MARK: Passkey suppression
     // Pending Apple approval of com.apple.developer.web-browser.public-key-credential,
     // tell websites we don't support platform authenticators so they won't prompt for passkeys.
-    // While Pawl Vault is connected, VaultBridge swaps this for its own passkey shim.
-    public static var passkeySuppressionScript: WKUserScript {
+    private static var passkeySuppressionScript: WKUserScript {
         WKUserScript(source: passkeySuppressionSource, injectionTime: .atDocumentStart, forMainFrameOnly: false)
     }
 
