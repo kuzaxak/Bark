@@ -13,6 +13,50 @@
 
 import Foundation
 
+/// Owns one join from consent through CloudKit acceptance and the local switch.
+public struct SpaceSyncJoinAdmission {
+    public struct Claim: Equatable {
+        fileprivate let id: UUID
+        fileprivate let dataset: UUID
+        fileprivate let account: String
+    }
+
+    private var active: Claim?
+    public var isPending: Bool { active != nil }
+
+    public init() {}
+
+    public mutating func begin(dataset: UUID, account: String) -> Claim? {
+        guard active == nil else { return nil }
+        let claim = Claim(id: UUID(), dataset: dataset, account: account)
+        active = claim
+        return claim
+    }
+
+    public func owns(_ claim: Claim, dataset: UUID, account: String?) -> Bool {
+        active == claim && claim.dataset == dataset && claim.account == account
+    }
+
+    public mutating func finish(_ claim: Claim) {
+        if active == claim { active = nil }
+    }
+
+    public enum AcceptanceError: LocalizedError, Equatable {
+        case missingShareResult
+
+        public var errorDescription: String? {
+            "iCloud did not confirm this invitation. Try joining again."
+        }
+    }
+
+    public static func requireAcceptance<Key: Hashable, Value, Failure: Error>(
+        of share: Key, in results: [Key: Result<Value, Failure>]
+    ) throws {
+        guard let result = results[share] else { throw AcceptanceError.missingShareResult }
+        _ = try result.get()
+    }
+}
+
 /// The database a Mac's sync engine works in.
 public enum SpaceSyncDatabase: String, Codable, Sendable {
     /// This account's own zone.

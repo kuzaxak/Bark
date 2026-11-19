@@ -730,13 +730,23 @@ final class ChromiumApplication: ChromiumStartupBridge {
               let row = bridge.windowState(window), row.flags & BARC_DISCOVERY_OWNER_ENDING.rawValue == 0 else { return }
         admission?.reflectInitialActivation(row)
         didPresentInitialWindow = true
-        cloudShareInbox.ready { [weak self] metadata in
-            guard let self, self.acceptsWindows, let manager = self.browserManager else { return }
-            if manager.spaceSyncManager.isSyncEnabled {
-                manager.spaceSyncManager.accept(metadata)
-            } else {
-                manager.openSettings(tab: .spaces)
-            }
+        if let manager = browserManager {
+            cloudShareInbox.ready(when: { [weak manager] in
+                guard let sync = manager?.spaceSyncManager else { return .waiting }
+                switch sync.status.availability {
+                case .available: return sync.isJoiningSharedSync ? .waiting : .ready
+                case .checking: return .waiting
+                default: return .needsSettings
+                }
+            }, showSettings: { [weak self, weak manager] in
+                guard self?.acceptsWindows == true else { return }
+                manager?.openSettings(tab: .spaces)
+            }, accept: { [weak self, weak manager] metadata in
+                guard let manager else { return true }
+                return await manager.spaceSyncManager.acceptSystemInvitation(metadata) {
+                    self?.acceptsWindows == true
+                }
+            })
         }
         updater?.start()
         if let manager = browserManager { spaceFiles.ready { [weak manager] in manager?.importSpaceFile(at: $0) } }

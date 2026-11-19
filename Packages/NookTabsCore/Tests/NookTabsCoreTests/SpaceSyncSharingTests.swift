@@ -17,6 +17,62 @@ struct SpaceSyncSharingTests {
 
     private func later(_ seconds: TimeInterval) -> Date { fixedNow.addingTimeInterval(seconds) }
 
+    @Test func invitationAndSettingsOfferShareOneJoinClaim() throws {
+        var admission = SpaceSyncJoinAdmission()
+        let dataset = UUID()
+        let pendingInvitation = admission.begin(dataset: dataset, account: "guest")
+        let invitation = try #require(pendingInvitation)
+        #expect(admission.isPending)
+        let overlap = admission.begin(dataset: dataset, account: "guest")
+        #expect(overlap == nil)
+        #expect(admission.owns(invitation, dataset: dataset, account: "guest"))
+
+        // Consent cancelled. A Settings offer can now claim the same dataset.
+        admission.finish(invitation)
+        let pendingSettingsOffer = admission.begin(dataset: dataset, account: "guest")
+        let settingsOffer = try #require(pendingSettingsOffer)
+        let repeatInvitation = admission.begin(dataset: dataset, account: "guest")
+        #expect(repeatInvitation == nil)
+        admission.finish(invitation)
+        #expect(admission.owns(settingsOffer, dataset: dataset, account: "guest"))
+        admission.finish(settingsOffer)
+        #expect(!admission.isPending)
+    }
+
+    @Test func accountAndDatasetChangesInvalidateAPendingJoin() throws {
+        var admission = SpaceSyncJoinAdmission()
+        let original = UUID()
+        let replacement = UUID()
+        let pendingClaim = admission.begin(dataset: original, account: "owner")
+        let claim = try #require(pendingClaim)
+        #expect(!admission.owns(claim, dataset: original, account: nil))
+        #expect(!admission.owns(claim, dataset: original, account: "other"))
+        #expect(!admission.owns(claim, dataset: replacement, account: "owner"))
+        // A suspended old write retains the serial slot until it has settled.
+        let overlap = admission.begin(dataset: replacement, account: "other")
+        #expect(overlap == nil)
+        admission.finish(claim)
+        let pendingNext = admission.begin(dataset: replacement, account: "other")
+        let next = try #require(pendingNext)
+        admission.finish(claim)
+        #expect(admission.owns(next, dataset: replacement, account: "other"))
+    }
+
+    @Test func cloudAcceptanceRequiresSuccessfulResultForTheExactShare() throws {
+        enum Response: Error, Equatable { case declined }
+        let results: [String: Result<String, Response>] = [
+            "other": .success("accepted"),
+            "denied": .failure(.declined)
+        ]
+        #expect(throws: SpaceSyncJoinAdmission.AcceptanceError.missingShareResult) {
+            try SpaceSyncJoinAdmission.requireAcceptance(of: "requested", in: results)
+        }
+        #expect(throws: Response.declined) {
+            try SpaceSyncJoinAdmission.requireAcceptance(of: "denied", in: results)
+        }
+        try SpaceSyncJoinAdmission.requireAcceptance(of: "other", in: results)
+    }
+
     /// The owner's zone, which it shares, and the guest account's own zone.
     struct Zones {
         var owner = Cloud()

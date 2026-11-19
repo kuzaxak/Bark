@@ -2,6 +2,7 @@
 @testable import NookNativeShell
 #endif
 import AppKit
+import Observation
 import BarcChromium
 import CloudKit
 import SwiftUI
@@ -11,6 +12,11 @@ import NookSettings
 import NookTweaks
 import NookWeb
 import SwiftData
+
+@MainActor @Observable
+private final class ShareDeliveryGate {
+    var state: ChromiumCloudShareInbox<String>.Readiness = .needsSettings
+}
 
 @MainActor
 private enum Native {
@@ -656,18 +662,45 @@ private enum ProfileChecks {
         inbox.receive("cold")
         await Task.yield()
         precondition(delivered.isEmpty)
-        inbox.ready { invitation in
+        let gate = ShareDeliveryGate()
+        var settingsOpened = 0
+        var lookups = 0
+        inbox.ready(when: { gate.state }, showSettings: { settingsOpened += 1 }) { invitation in
+            if invitation == "next" {
+                lookups += 1
+                if lookups == 1 {
+                    gate.state = .waiting
+                    return false
+                }
+            }
             delivered.append(invitation)
-            if invitation == "cold" { inbox.receive("next") }
+            if invitation == "cold" { gate.state = .waiting }
+            return true
         }
-        precondition(delivered.isEmpty, "Acceptance must not run on the AppKit call stack")
-        for _ in 0..<20 where delivered.count < 2 { await Task.yield() }
-        precondition(delivered == ["cold", "next"])
+        precondition(delivered.isEmpty, "Acceptance must run outside the AppKit callback")
+        for _ in 0..<100 where settingsOpened == 0 { await Task.yield() }
+        precondition(delivered.isEmpty && settingsOpened == 1)
+        inbox.receive("next")
+        gate.state = .waiting
+        await Task.yield()
+        precondition(delivered.isEmpty && settingsOpened == 1)
+        gate.state = .ready
+        for _ in 0..<100 where delivered.isEmpty { await Task.yield() }
+        precondition(delivered == ["cold"], "A join in progress keeps the next invitation queued")
+        gate.state = .ready
+        for _ in 0..<100 where lookups == 0 { await Task.yield() }
+        precondition(lookups == 1 && delivered == ["cold"], "Account changes retain the pending invitation")
+        gate.state = .ready
+        for _ in 0..<100 where delivered.count < 2 { await Task.yield() }
+        precondition(delivered == ["cold", "next"] && settingsOpened == 1)
+        gate.state = .waiting
         inbox.receive("cancelled")
+        await Task.yield()
         inbox.stop()
+        gate.state = .ready
         inbox.receive("after shutdown")
         await Task.yield()
         precondition(delivered == ["cold", "next"])
-        print("System CloudKit share activation checks exact Bark zone and defers cold delivery")
+        print("System shares survive startup and opt-in, wait for the current join, and clear on quit")
     }
 }

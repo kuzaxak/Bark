@@ -26,6 +26,7 @@ import Security
 final class SpaceSyncManager: SpaceSyncControls {
     private(set) var status: SpaceSyncStatus
     private(set) var isSyncEnabled = false
+    var isJoiningSharedSync: Bool { joinAdmission.isPending }
     private(set) var cloudSpaces: [SpaceSyncCloudSpace] = []
     private(set) var cloudDevices: [String] = []
     private var levels: [UUID: SpaceSyncLevel] = [:]
@@ -34,6 +35,7 @@ final class SpaceSyncManager: SpaceSyncControls {
     @ObservationIgnored private let store: SpaceSyncStore
     @ObservationIgnored private var accountObserver: NSObjectProtocol?
     @ObservationIgnored private var datasetID = UUID()
+    private var joinAdmission = SpaceSyncJoinAdmission()
     @ObservationIgnored private var accountCheck: Task<Void, Never>?
     @ObservationIgnored private var state = SpaceSyncState()
     @ObservationIgnored private var container: CKContainer?
@@ -303,13 +305,12 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// A share the person opened from a link, accepted in the system's prompt, or pasted in
     /// Settings. Nothing is accepted or sent before the person agrees.
     func accept(_ metadata: CKShare.Metadata) {
-        guard let container else { return }
+        guard let container, !joinAdmission.isPending else { return }
         if metadata.containerIdentifier == "iCloud.ee.qdo.nook" {
             state.lastError = Self.legacyShareNotice
             publish()
             return
         }
-        let dataset = datasetID
         let zone = metadata.share.recordID.zoneID
         switch state.acceptance(containerID: metadata.containerIdentifier, zoneName: zone.zoneName, zoneOwner: zone.ownerName,
                                 isOwner: metadata.participantRole == .owner,
@@ -317,18 +318,10 @@ final class SpaceSyncManager: SpaceSyncControls {
                                 readWrite: metadata.participantPermission == .readWrite) {
         case .join(let owner):
             let ownerName = metadata.ownerIdentity.nameComponents.flatMap(Self.name)
-            guard let moving = askToJoin(ownerName: ownerName) else { return }
-            Task {
-                guard dataset == datasetID else { return }
-                do {
-                    if metadata.participantStatus != .accepted {
-                        _ = try await container.accept([metadata])[metadata]?.get()
-                    }
-                    guard dataset == datasetID else { return }
-                    try await join(owner: owner, ownerName: ownerName, moving: moving, in: container)
-                } catch {
-                    if dataset == datasetID { note(error) }
-                }
+            startJoin(owner: owner, ownerName: ownerName, in: container) {
+                guard metadata.participantStatus != .accepted else { return }
+                let results = try await container.accept([metadata])
+                try SpaceSyncJoinAdmission.requireAcceptance(of: metadata, in: results)
             }
             return
         case .ownShare:
@@ -343,6 +336,34 @@ final class SpaceSyncManager: SpaceSyncControls {
             state.lastError = "Stop sharing this account's spaces before joining another account's."
         }
         publish()
+    }
+
+    /// AppKit may supply metadata before opt-in or an account change. Verify
+    /// the recipient before presenting consent. A changed account or a pending
+    /// join leaves the invitation in the window's delivery queue.
+    func acceptSystemInvitation(_ metadata: CKShare.Metadata, canPresent: () -> Bool) async -> Bool {
+        guard canPresent() else { return true }
+        guard let container, status.availability == .available, let account = state.account,
+              !isJoiningSharedSync else { return false }
+        if metadata.share.currentUserParticipant?.userIdentity.userRecordID?.recordName == account {
+            accept(metadata)
+            return true
+        }
+        let dataset = datasetID
+        var verified: CKShare.Metadata?
+        if let url = metadata.share.url {
+            verified = try? await container.shareMetadatas(for: [url])[url]?.get()
+        }
+        guard !Task.isCancelled, canPresent() else { return true }
+        guard datasetID == dataset, state.account == account, !isJoiningSharedSync else { return false }
+        guard let verified, verified.containerIdentifier == metadata.containerIdentifier,
+              verified.share.recordID == metadata.share.recordID else {
+            state.lastError = "Bark could not verify this invitation for the current iCloud account. Open the sharing link again in Spaces settings."
+            publish()
+            return true
+        }
+        accept(verified)
+        return true
     }
 
     func leaveSharedSync() {
@@ -443,17 +464,35 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     /// A zone this account already joined on another Mac, which this Mac joins without a link.
     func joinOffer(_ owner: String) {
-        guard let container, let offer = state.joinOffers.first(where: { $0.owner == owner }),
-              let moving = askToJoin(ownerName: offer.name) else { return }
-        let dataset = datasetID
+        guard let container, let offer = state.joinOffers.first(where: { $0.owner == owner }) else { return }
+        startJoin(owner: owner, ownerName: offer.name, in: container)
+    }
+
+    private func startJoin(owner: String, ownerName: String?, in container: CKContainer,
+                           acceptShare: @escaping () async throws -> Void = {}) {
+        guard isSyncEnabled, status.availability == .available, engine != nil,
+              state.mode == .own, let account = state.account,
+              let claim = joinAdmission.begin(dataset: datasetID, account: account) else { return }
+        guard let moving = askToJoin(ownerName: ownerName) else {
+            joinAdmission.finish(claim)
+            return
+        }
         Task {
-            guard dataset == datasetID else { return }
+            defer { joinAdmission.finish(claim) }
+            guard joinIsCurrent(claim, in: container) else { return }
             do {
-                try await join(owner: owner, ownerName: offer.name, moving: moving, in: container)
+                try await acceptShare()
+                guard joinIsCurrent(claim, in: container) else { return }
+                try await join(owner: owner, ownerName: ownerName, moving: moving, claim: claim, in: container)
             } catch {
-                if dataset == datasetID { note(error) }
+                if joinIsCurrent(claim, in: container) { note(error) }
             }
         }
+    }
+
+    private func joinIsCurrent(_ claim: SpaceSyncJoinAdmission.Claim, in container: CKContainer) -> Bool {
+        self.container === container && status.availability == .available && state.mode == .own &&
+            joinAdmission.owns(claim, dataset: datasetID, account: state.account)
     }
 
     /// An iCloud sharing link opened from another app while Bark is the default browser. A share of
@@ -536,35 +575,39 @@ final class SpaceSyncManager: SpaceSyncControls {
     /// Joins after the person agreed: moving marks the spaces in this account's zone first,
     /// with this account's engine stopped so it cannot fetch those marks and turn the spaces
     /// Off here before they move.
-    private func join(owner: String, ownerName: String?, moving: Bool, in container: CKContainer) async throws {
+    private func join(owner: String, ownerName: String?, moving: Bool, claim: SpaceSyncJoinAdmission.Claim,
+                      in container: CKContainer) async throws {
         applyInbox()
+        guard joinIsCurrent(claim, in: container) else { return }
         guard !deferredChromiumInbox else {
             throw CocoaError(.userCancelled, userInfo: [
                 NSLocalizedDescriptionKey: "Close the affected tabs before joining another iCloud sync.",
             ])
         }
-        let dataset = datasetID
         let running = engine != nil
         if moving {
             let marked = state.markedOnMove(in: tabs.tree)
             dropEngine()
             do {
-                try await markMoved(marked, to: owner, in: container)
+                try await markMoved(marked, to: owner, claim: claim, in: container)
             } catch {
-                if dataset == datasetID, running, let account = state.account { start(account: account) }
+                if joinIsCurrent(claim, in: container), running, let account = state.account { start(account: account) }
                 throw error
             }
         }
-        guard dataset == datasetID else { return }
+        guard joinIsCurrent(claim, in: container) else { return }
         var joined = state
         let inbound = joined.join(owner: owner, ownerName: ownerName, moving: moving,
                                   tree: tabs.tree, kept: tabs.device.keptProfiles ?? [])
         if !inbound.isEmpty && !tabs.applyNativeSpaceSync(inbound) {
-            if running, engine == nil, let account = state.account { start(account: account) }
+            if joinIsCurrent(claim, in: container), running, engine == nil, let account = state.account {
+                start(account: account)
+            }
             throw CocoaError(.fileWriteUnknown, userInfo: [
                 NSLocalizedDescriptionKey: "Bark could not save the pending tab changes before joining shared sync.",
             ])
         }
+        guard joinIsCurrent(claim, in: container) else { return }
         datasetID = UUID()
         state = joined
         dropEngine()
@@ -593,9 +636,9 @@ final class SpaceSyncManager: SpaceSyncControls {
 
     /// Marks each moved space's record in this account's zone with the owner of the zone it moves
     /// into, so this account's other Macs turn the space Off and keep it.
-    private func markMoved(_ ids: Set<UUID>, to owner: String, in container: CKContainer) async throws {
+    private func markMoved(_ ids: Set<UUID>, to owner: String, claim: SpaceSyncJoinAdmission.Claim,
+                           in container: CKContainer) async throws {
         guard !ids.isEmpty else { return }
-        let dataset = datasetID
         let database = container.privateCloudDatabase
         let zone = CKRecordZone.ID(zoneName: SpaceSyncAvailability.zoneName, ownerName: CKCurrentUserDefaultName)
         var marked: [CKRecord] = []
@@ -610,7 +653,7 @@ final class SpaceSyncManager: SpaceSyncControls {
                 throw error
             }
         }
-        guard dataset == datasetID else { throw CancellationError() }
+        guard joinIsCurrent(claim, in: container) else { throw CancellationError() }
         for (_, result) in try await database.modifyRecords(saving: marked, deleting: [], atomically: false).saveResults {
             _ = try result.get()
         }
