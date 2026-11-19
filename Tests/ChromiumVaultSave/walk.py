@@ -333,6 +333,27 @@ def exercise(screen, process, events, output):
             raise RuntimeError("Only the approved new save and its readback may add vault operations")
         if "leak_detection_request" in log.read_text(errors="replace"):
             raise RuntimeError("Chromium attempted a password leak check in the disposable fixture")
+
+        screen.keys[","] = 43
+        screen.key(",", screen.command)
+        general = controls.require("General", ("AXWindow",))
+        controls.press("Privacy", root=general)
+        settings = controls.require("Privacy", ("AXWindow",))
+        controls.require("Connected", root=settings, partial=True)
+        manage = controls.require("Open Pawl Vault", ("AXButton",), root=settings)
+        if not controls.attribute(manage, "AXEnabled"):
+            raise RuntimeError("A connected vault could not be opened from Passwords settings")
+        screen.screenshot(output / "pawl-settings.png", include_owned_windows=True)
+        # The in-memory provider deliberately has no installed-app launcher.
+        screen.press_button(manage)
+        controls.require("Open Pawl Vault from Applications")
+        controls.press("OK")
+        print("Used the connected vault’s management action and verified its fallback in the disposable app", flush=True)
+        close_settings = controls.attribute(settings, "AXCloseButton")
+        if close_settings is None:
+            raise RuntimeError("Missing native Settings window close button")
+        screen.press_button(close_settings)
+        wait_for("Privacy settings stayed open after Close", lambda: not controls.find("Privacy", ("AXWindow",)), process)
         screen.key("q", screen.command)
         controls.press("Quit")
     except Exception:

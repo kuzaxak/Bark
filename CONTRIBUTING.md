@@ -182,7 +182,8 @@ To exercise the Chromium password UI, run the Pawl walk with the same Python
 environment. It uses an in-memory vault and a loopback sign-in form. It checks
 the filled fields, dismisses an existing-login card, approves a new login,
 reads it back, fills a one-time-code field while preserving both login fields,
-and cancels a passkey request.
+and cancels a passkey request. In Privacy settings it exercises the connected
+provider's management button using the disposable vault's unavailable launcher.
 
 ```fish
 python3 Tests/ChromiumVaultSave/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/vault

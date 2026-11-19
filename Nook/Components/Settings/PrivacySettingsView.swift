@@ -85,15 +85,13 @@ private struct PrivacyPreferenceSections: View {
                         try? await Task.sleep(for: .seconds(3))
                     }
                 }
-                if vault.status == .locked || vault.status == .notRunning {
-                    Button("Open Pawl Vault") {
-                        showVaultOpenFailure = !vault.openPawlVault()
-                    }
-                    .alert("Open Pawl Vault from Applications", isPresented: $showVaultOpenFailure) {
-                        Button("OK") {}
-                    } message: {
-                        Text("Bark couldn’t open a verified copy of Pawl Vault. Open the edition that holds your database, then return here to check its status.")
-                    }
+                Button("Open Pawl Vault") {
+                    showVaultOpenFailure = !vault.openPawlVault()
+                }
+                .alert("Open Pawl Vault from Applications", isPresented: $showVaultOpenFailure) {
+                    Button("OK") {}
+                } message: {
+                    Text("Bark couldn’t open a verified copy of Pawl Vault. Open the edition that holds your database, then return here to check its status.")
                 }
             }
         }
