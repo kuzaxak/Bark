@@ -97,11 +97,15 @@ private struct HistoryToolbar: ViewModifier {
         ToolbarItem(placement: .navigation) {
             HStack(spacing: NookDesign.Spacing.xxs) {
                 Button("Back", systemImage: "chevron.backward", action: goBack)
+                    .accessibilityLabel("Back")
                     .disabled(!canGoBack)
                 Button("Forward", systemImage: "chevron.forward", action: goForward)
+                    .accessibilityLabel("Forward")
                     .disabled(!canGoForward)
             }
             .nookIconButtons()
+            // Keep each control's label when AppKit hosts this group as a toolbar item.
+            .accessibilityElement(children: .contain)
         }
     }
 }
