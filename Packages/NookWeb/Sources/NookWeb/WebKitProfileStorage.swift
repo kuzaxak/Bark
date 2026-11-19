@@ -35,22 +35,10 @@ public final class WebKitProfileStorage: NSObject, WKHTTPCookieStoreObserver {
         super.init()
     }
 
-    func dataCounts() async -> (cookies: Int, records: Int) {
-        let cookies = await dataStore.httpCookieStore.allCookies()
-        let types: Set<String> = [
-            WKWebsiteDataTypeDiskCache, WKWebsiteDataTypeMemoryCache,
-            WKWebsiteDataTypeLocalStorage, WKWebsiteDataTypeIndexedDBDatabases,
-            WKWebsiteDataTypeFetchCache, WKWebsiteDataTypeServiceWorkerRegistrations,
-        ]
-        let records = await withCheckedContinuation { continuation in
-            dataStore.fetchDataRecords(ofTypes: types) { continuation.resume(returning: $0.count) }
-        }
-        return (cookies.count, records)
-    }
-
-    func clearAllData() async {
+    func clearDeletedProfileData() async {
         await withCheckedContinuation { continuation in
-            dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(), modifiedSince: .distantPast) {
+            dataStore.removeData(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+                                 modifiedSince: .distantPast) {
                 continuation.resume()
             }
         }

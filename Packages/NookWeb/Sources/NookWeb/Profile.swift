@@ -34,13 +34,6 @@ public final class Profile: NSObject, Identifiable {
     /// Whether this is an ephemeral/incognito profile (no disk persistence)
     public var isEphemeral: Bool = false
     
-    // Cached stats
-    public private(set) var cachedCookieCount: Int = 0
-    public private(set) var cachedRecordCount: Int = 0
-    public var estimatedDataSize: String { "Cookies: \(cachedCookieCount), Records: \(cachedRecordCount)" }
-    public var cookieCount: Int { cachedCookieCount }
-    public var hasStoredData: Bool { cachedCookieCount > 0 || cachedRecordCount > 0 }
-
     public convenience init(
         id: UUID = UUID(),
         name: String = "Default Profile",
@@ -76,31 +69,6 @@ public final class Profile: NSObject, Identifiable {
         }
         profile.isEphemeral = true
         return profile
-    }
-
-    // MARK: - Validation & Stats
-    public func validateDataStore() async -> Bool {
-        // Basic check: store exists and is persistent
-        guard let webKitStorage, webKitStorage.dataStore.isPersistent else { return false }
-        await refreshDataStoreStats()
-        return true
-    }
-
-    /// Refreshes WebKit website-data stats when this profile has a WebKit store.
-    public func refreshDataStoreStats() async {
-        guard let webKitStorage else { return }
-        let counts = await webKitStorage.dataCounts()
-        cachedCookieCount = counts.cookies
-        cachedRecordCount = counts.records
-    }
-
-    /// Clears WebKit data only. Chromium clearing is an engine operation.
-    @discardableResult
-    public func clearAllData() async -> Bool {
-        guard let webKitStorage else { return false }
-        await webKitStorage.clearAllData()
-        await refreshDataStoreStats()
-        return true
     }
 
     /// Clears a WebKit private store. Native private sessions are ended by their owning browser.

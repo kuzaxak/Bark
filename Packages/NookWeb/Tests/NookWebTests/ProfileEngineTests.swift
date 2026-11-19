@@ -196,7 +196,7 @@ struct ProfileEngineTests {
         #expect(BrowserConfiguration.webKitAdapter(for: .chromium) == nil)
     }
 
-    @Test func chromiumMetadataHasNoWebKitStorageOrCookieConnection() async {
+    @Test func chromiumMetadataHasNoWebKitStorageOrCookieConnection() {
         let id = UUID()
         let profile = Profile(id: id, name: "Work", icon: "person", engine: .chromium)
         #expect(profile.engine == .chromium)
@@ -205,19 +205,15 @@ struct ProfileEngineTests {
         profile.icon = "folder"
         #expect(profile.id == id && profile.name == "Renamed")
         #expect(profile.webKitStorage == nil)
-        #expect(await profile.validateDataStore() == false)
         let privateProfile = Profile.createEphemeral(engine: .chromium)
         #expect(privateProfile.isEphemeral && privateProfile.engine == .chromium)
         #expect(privateProfile.webKitStorage == nil)
         #expect(privateProfile.id != id)
         for identity in [profile, privateProfile] {
             #expect(BrowserConfiguration.webViewConfiguration(for: identity) == nil)
-            await identity.refreshDataStoreStats()
-            #expect(await identity.clearAllData() == false)
             var completed = false
             identity.destroyEphemeralDataStore { completed = true }
             #expect(completed && identity.webKitStorage == nil)
-            #expect(identity.cachedCookieCount == 0 && identity.cachedRecordCount == 0)
         }
     }
 
@@ -509,7 +505,7 @@ struct ProfileEngineTests {
     }
     #endif
 
-    @Test func nativePageConstructionAndDataClearingDoNotEnterWebKit() async throws {
+    @Test func nativePageConstructionDoesNotEnterWebKit() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
         let tabs = fixture.makeTabs(engine: .chromium)
@@ -519,7 +515,6 @@ struct ProfileEngineTests {
         page.loadWebViewIfNeeded()
         #expect(page.primaryWebView == nil && page.isUnloaded)
         let profile = Profile(name: "Native", engine: .chromium)
-        #expect(await tabs.clearData(of: profile) == false)
         #expect(profile.webKitStorage == nil)
         page.unload()
     }
@@ -791,10 +786,12 @@ struct ProfileEngineTests {
             .name: "owned-test", .value: "one", .domain: "profile.invalid", .path: "/"]))
         await store.httpCookieStore.setCookie(cookie)
         await otherStore.httpCookieStore.setCookie(cookie)
-        await profile.refreshDataStoreStats()
-        #expect(profile.cachedCookieCount == 1)
-        #expect(await profile.clearAllData())
-        #expect(profile.cachedCookieCount == 0)
+        #expect(await store.httpCookieStore.allCookies().count == 1)
+        #expect(await otherStore.httpCookieStore.allCookies().count == 1)
+        await withCheckedContinuation { continuation in
+            profile.destroyEphemeralDataStore { continuation.resume() }
+        }
+        #expect(await store.httpCookieStore.allCookies().isEmpty)
         #expect(await otherStore.httpCookieStore.allCookies().count == 1)
         await withCheckedContinuation { continuation in
             other.destroyEphemeralDataStore { continuation.resume() }

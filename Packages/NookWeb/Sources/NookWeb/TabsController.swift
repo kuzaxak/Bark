@@ -642,16 +642,6 @@ public final class TabsController {
         save()
     }
 
-    /// Clears a profile's website data, and with it the translations made on its pages.
-    @discardableResult
-    public func clearData(of profile: Profile) async -> Bool {
-        // Native data management must use that profile's Chromium settings.
-        // False is explicit unavailability, not a successful empty clear.
-        guard await profile.clearAllData() else { return false }
-        await translationCaches.erase(profile: profile.id)
-        return true
-    }
-
     /// Keeps a data store no space uses any more, with its history, for a space to use again.
     func keepProfile(_ profile: ProfileSummary) {
         device.keep(profile)

@@ -1109,7 +1109,7 @@ extension TabsController {
                 keepProfile(left)
             } else {
                 forgetProfile(old.id)
-                Task { await clearData(of: old) }
+                Task { await clearDeletedWebKitProfileData(of: old) }
             }
         }
         completion?(.success(()))
@@ -1122,7 +1122,13 @@ extension TabsController {
         guard device.keptProfiles?.contains(where: { $0.id == storeID }) == true,
               let store = profile(forStore: storeID) else { return }
         forgetProfile(storeID)
-        Task { await clearData(of: store) }
+        Task { await clearDeletedWebKitProfileData(of: store) }
+    }
+
+    private func clearDeletedWebKitProfileData(of profile: Profile) async {
+        guard let storage = profile.webKitStorage else { return }
+        await storage.clearDeletedProfileData()
+        await translationCaches.erase(profile: profile.id)
     }
 
     public func renameProfile(_ storeID: UUID, to name: String) {
@@ -1231,7 +1237,7 @@ extension TabsController {
             } else {
                 // Its cookies and logins go with it, since no other space uses this data store.
                 forgetProfile(profile.id)
-                Task { await clearData(of: profile) }
+                Task { await clearDeletedWebKitProfileData(of: profile) }
             }
             // The Agent space may have borrowed its logins from this one.
             if let agent = agentSpaceID { unloadPagesOnWrongDataStore(items(inSpace: agent).map(\.id)) }
