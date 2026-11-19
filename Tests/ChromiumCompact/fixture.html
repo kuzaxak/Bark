@@ -26,11 +26,15 @@
         const r = draft.getBoundingClientRect();
         report("ready", { point: [r.left + r.width / 2, r.top + r.height / 2],
                           hasOpener: window.opener !== null });
-        if (window.opener) window.opener.postMessage({ documentID }, openerOrigin);
+        if (window.opener && location.pathname !== "/returned") {
+            window.opener.postMessage({ documentID, kind: "opened" }, openerOrigin);
+        }
     }
     addEventListener("message", e => {
         if (opened && e.source === opened && [openerOrigin, otherOrigin].includes(e.origin)) {
-            report("message", { sender: e.data.documentID, senderOrigin: e.origin });
+            report("message", {
+                sender: e.data.documentID, senderOrigin: e.origin, kind: e.data.kind
+            });
         }
     });
     draft.addEventListener("input", e => report("input", { trusted: e.isTrusted }));
@@ -43,6 +47,10 @@
             opened = window.open(count === 2 ? "/redirect" : "/popup", "_blank", "popup,width=480,height=306");
             report("opened", { count, trusted: e.isTrusted, hasHandle: opened !== null });
         } else if (window.opener) {
+            if (location.pathname === "/returned") {
+                report("completed", { trusted: e.isTrusted });
+                window.opener.postMessage({ documentID, kind: "authorization-complete" }, openerOrigin);
+            }
             report("closing", { trusted: e.isTrusted });
             window.close();
         }

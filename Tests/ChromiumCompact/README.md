@@ -11,8 +11,11 @@ python3 Tests/ChromiumCompact/walk.py --app /path/to/Bark.app --output /private/
 
 The runner opens a disposable profile and uses two loopback origins. A keyboard
 action opens three popups asking for a 480 by 306 viewport, including one that
-redirects to the second origin. Each popup must message its opener, receive input,
-and close itself. Typing again must extend the original opener draft.
+redirects to the second origin. The redirected popup models an authentication
+flow locally. After trusted input completes the form, it posts a synthetic
+acknowledgement to its exact original opener and closes. The other popups
+acknowledge opening. Typing after each close must extend the original opener
+document's draft without clicking it again.
 
 The runner checks that the Open in Space button's accessibility frame fits within
 the 44-point header. It then sends a macOS open-URL event to the running

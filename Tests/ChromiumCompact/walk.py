@@ -99,9 +99,9 @@ def header_button_point(screen, button):
 def exercise(screen, proc, events, output):
     steps = []
 
-    def event(page, kind, since=0, *, minimum_frames=0, **values):
-        return wait_for(f"Missing {kind} from {page} matching {values}",
-                        lambda: next((r for r in events[since:] if r["page"] == page and r["event"] == kind
+    def event(page, name, since=0, *, minimum_frames=0, **values):
+        return wait_for(f"Missing {name} from {page} matching {values}",
+                        lambda: next((r for r in events[since:] if r["page"] == page and r["event"] == name
                                       and r.get("frames", 0) >= minimum_frames
                                       and all(r.get(k) == v for k, v in values.items())), None), proc)
 
@@ -131,19 +131,29 @@ def exercise(screen, proc, events, output):
         popup = event(path, "ready", since, hasOpener=True)
         assert popup["documentID"] not in documents
         documents.add(popup["documentID"])
-        event("/source", "message", since, documentID=source["documentID"],
-              sender=popup["documentID"], senderOrigin=popup["origin"])
-        assert (popup["origin"] != source["origin"]) == (path == "/returned")
+        redirected = path == "/returned"
+        if not redirected:
+            event("/source", "message", since, documentID=source["documentID"],
+                  sender=popup["documentID"], senderOrigin=popup["origin"], kind="opened")
+        assert (popup["origin"] != source["origin"]) == redirected
         wait_for("Popup did not show its compact header and its requested 480 by 306 page area",
                  lambda: len(screen.windows()) == 2 and screen.button("Open in Space") and
                  any(r["documentID"] == popup["documentID"] and abs(r["width"] - 480) <= 1
                      and abs(r["height"] - 306) <= 1 for r in events[since:]), proc)
         header_button_point(screen, screen.button("Open in Space"))
-        note("Popup opened at the requested viewport and messaged its opener", popup)
+        note("Popup opened at the requested viewport", popup)
         type_value(popup, "child", "child")
         screen.screenshot(output / f"popup-{count}.png")
+        before_completion = len(events)
         screen.key("Return")
-        event(path, "closing", since, documentID=popup["documentID"], trusted=True, value="child")
+        if redirected:
+            event(path, "completed", before_completion, documentID=popup["documentID"],
+                  trusted=True, value="child")
+            acknowledgement = event("/source", "message", before_completion, documentID=source["documentID"],
+                                    sender=popup["documentID"], senderOrigin=popup["origin"],
+                                    kind="authorization-complete")
+            note("Cross-origin completion reached the exact opener", acknowledgement)
+        event(path, "closing", before_completion, documentID=popup["documentID"], trusted=True, value="child")
         wait_for("Closing the popup left its window onscreen", lambda: len(screen.windows()) == 1, proc)
         draft += "x"
         note("Closing the popup returned input to the opener's existing draft", type_value(source, "x", draft))
