@@ -17,6 +17,7 @@ The user accepted fresh local/cloud state under a new Bark App ID and CloudKit c
 - [x] 2.4 Initialize fresh zones, subscriptions, account binding and sync state; test that old `Sync/spaces.json`, tokens, shares and device metadata are never loaded.
 - [ ] 2.5 Handle first versus subsequent Bark devices and account changes; test that joining an existing Bark account fetches its records without wiping or duplicating the dataset.
 - [ ] 2.6 Update sharing validation and invitation UX; test old-link rejection plus new owner/participant invitations across two accounts using the new container.
+  Two signed Macs on distinct iCloud accounts reached Bark production. The owner resolved the ARM Mac's invitation code and saved encrypted Space and Item fixtures. Saving the invite-only zone share failed because production lacks the system record type `cloudkit.share`. The owner deleted the fixture zone. Development seeding, production deployment and the full participant edit round trip remain open.
 - [x] 2.7 Document the reset and old/new-client separation in onboarding and release notes; verify sync remains opt-in and the notice precedes enabling it. Signed Intel Bark displayed the notice during resumed first-run setup. Completing setup locally and reopening preserved the same space without creating a sync store. The user guide, Spaces settings and unreleased changelog also describe the separate datasets.
 
 ## 3. Local fresh start and integrations (B1)
