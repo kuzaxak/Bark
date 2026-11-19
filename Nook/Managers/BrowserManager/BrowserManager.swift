@@ -400,8 +400,6 @@ class BrowserManager: ObservableObject {
     var dialogManager: DialogManager
     var downloadManager: DownloadManager
     var historyManager: HistoryManager
-    let cookieManager: CookieManager? = nil
-    let cacheManager: CacheManager? = nil
     var splitManager: SplitViewManager
     var gradientColorManager: GradientColorManager
     var contentBlockerManager: ContentBlockerManager
@@ -580,8 +578,7 @@ class BrowserManager: ObservableObject {
     }
     // MARK: - Space Switching
 
-    /// A window changed space. A space owns its login context, so cookies, cache and history
-    /// follow it. Only the active window's space sets the app-wide managers.
+    /// App-owned history follows the active window’s profile. Chromium owns its site data.
     func windowSpaceChanged(_ windowState: BrowserWindowState) {
         if engine == .chromium {
             cancelNativeStartupWarming()
@@ -594,12 +591,6 @@ class BrowserManager: ObservableObject {
 
         isSwitchingSpace = true
         currentProfile = profile
-        // No animation transaction: one here made the window render mid-switch. Settings loads
-        // the cookie and data lists when it opens; reading them here stalled the switch.
-        if let store = profile.webKitDataStore {
-            cookieManager?.switchDataStore(store, profileId: profile.id, eagerLoad: false)
-            cacheManager?.switchDataStore(store, profileId: profile.id, eagerLoad: false)
-        }
         historyManager.switchProfile(profile.id)
         transitionEndTask?.cancel()
         transitionEndTask = Task { [weak self] in
@@ -880,27 +871,6 @@ class BrowserManager: ObservableObject {
         NotificationCenter.default.removeObserver(self)
     }
 
-    // MARK: - Privacy-Compliant Management
-
-    func clearThirdPartyCookies() {
-        Task {
-            await cookieManager?.deleteThirdPartyCookies()
-        }
-    }
-
-    func clearHighRiskCookies() {
-        Task {
-            await cookieManager?.deleteHighRiskCookies()
-        }
-    }
-
-    func performPrivacyCleanup() {
-        Task {
-            await cookieManager?.performPrivacyCleanup()
-            await cacheManager?.performPrivacyCompliantCleanup()
-        }
-    }
-
     /// History written before entries carried a space belongs to the first space.
     func migrateUnassignedDataToDefaultProfile() {
         guard let firstSpace = tabs.orderedSpaces.first?.id else { return }
@@ -927,16 +897,6 @@ class BrowserManager: ObservableObject {
             print("⚠️ [BrowserManager] Failed to assign default profile to existing data: \(error)")
             #endif
         }
-    }
-
-    func clearPersonalDataCache() {
-        Task {
-            await cacheManager?.clearPersonalDataCache()
-        }
-    }
-
-    func clearFaviconCache() {
-        cacheManager?.clearFaviconCache()
     }
 
     // MARK: - Extension Management

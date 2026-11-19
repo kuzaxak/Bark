@@ -5,7 +5,6 @@
 //
 
 import AppKit
-import SwiftUI
 import WebKit
 import NookWeb
 
@@ -38,76 +37,7 @@ extension BrowserManager {
     /// Runs `command` on the active window's page in front.
     func perform(_ command: PageCommand) {
         guard let window = windowRegistry?.activeWindow, let page = frontPage(in: window) else { return }
-        if tabs.profileEngine == .chromium {
-            _ = performNativePageCommand(command, in: window, page: page)
-            return
-        }
-        let webView = frontWebView(in: window)
-        switch command {
-        case .goBack:
-            WebKitPageCommands.goBack(on: page, in: webView)
-        case .goForward:
-            if webView?.canGoForward == true { webView?.goForward() }
-        case .reload:
-            page.refresh()
-        case .clearCookiesAndReload:
-            clearCookies(of: page)
-            page.refresh()
-        case .hardReload:
-            guard let host = page.url.host else { return }
-            Task { @MainActor in
-                await cacheManager?.clearCacheForDomainExcludingCookies(host)
-                webView?.reloadFromOrigin()
-            }
-        case .reloadWithStandardProtection:
-            page.reloadWithoutEnhancedFingerprintingProtection()
-        case .find:
-            if findManager.isFindBarVisible {
-                findManager.hideFindBar()
-            } else {
-                findManager.showFindBar(for: page)
-            }
-        case .zoomIn:
-            guard let webView else { return }
-            zoomManager.zoomIn(for: webView, tabId: page.itemID)
-            shouldShowZoomPopup = true
-        case .zoomOut:
-            guard let webView else { return }
-            zoomManager.zoomOut(for: webView, tabId: page.itemID)
-            shouldShowZoomPopup = true
-        case .actualSize:
-            guard let webView else { return }
-            zoomManager.resetZoom(for: webView, tabId: page.itemID)
-            shouldShowZoomPopup = true
-        case .copyURL:
-            copyURL(of: page, in: window)
-        case .print:
-            webView?.nookPrint()
-        case .developerConsole: toggleDevPanel(.console)
-        case .developerNetwork: toggleDevPanel(.network)
-        case .developerPerformance: toggleDevPanel(.perf)
-        case .webInspector:
-            openWebInspector(on: page.activeWebView)
-        case .pickElement:
-            withDeveloperCapture { page.startDevPicker() }
-        case .copyScreenshot:
-            copyScreenshot(of: webView, in: window)
-        case .developerMode:
-            toggleDeveloperSite(of: page, in: window)
-        case .pictureInPicture:
-            page.requestPictureInPicture()
-        case .mute:
-            page.toggleMute()
-        case .translate:
-            page.toggleTranslation()
-        case .clearSiteCookies:
-            clearCookies(of: page)
-        case .clearSiteCache:
-            guard let host = page.url.host else { return }
-            Task { await cacheManager?.clearCacheForDomain(host) }
-        case .boost:
-            openBoostPanel(in: window)
-        }
+        performNativePageCommand(command, in: window, page: page)
     }
 
     /// Product page commands never fall through to a lazy WebKit surface.
@@ -216,11 +146,6 @@ extension BrowserManager {
         return copied
     }
 
-    private func clearCookies(of page: PageSession) {
-        guard let host = page.url.host else { return }
-        Task { await cookieManager?.deleteCookiesForDomain(host) }
-    }
-
     func copyURL(of page: PageSession, in window: BrowserWindowState) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(page.storableURL.absoluteString, forType: .string)
@@ -229,81 +154,6 @@ extension BrowserManager {
         Task { [weak window] in
             try? await Task.sleep(for: .seconds(2))
             window?.isShowingCopyURLToast = false
-        }
-    }
-
-    private func openWebInspector(on webView: WKWebView) {
-        // `_inspector` is WebKit SPI with no public spelling; the alert covers a WebKit without it.
-        let selector = NSSelectorFromString("_inspector")
-        guard webView.responds(to: selector),
-              let inspector = webView.perform(selector)?.takeUnretainedValue() as? NSObject else {
-            showWebInspectorAlert()
-            return
-        }
-        inspector.perform(NSSelectorFromString("show"))
-        inspector.perform(NSSelectorFromString("attach"))
-    }
-
-    private func showWebInspectorAlert() {
-        let alert = NSAlert()
-        alert.messageText = "Open Web Inspector"
-        alert.informativeText = "To open the Web Inspector:\n\n1. Right-click on the page and select 'Inspect Element'\n\nOr enable the Develop menu in Safari Settings → Advanced, then use Develop → [Your App]"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "OK")
-        alert.runModal()
-    }
-
-    // MARK: - Cookie Management Methods
-
-    func clearAllCookies() {
-        Task {
-            await cookieManager?.deleteAllCookies()
-        }
-    }
-
-    func clearExpiredCookies() {
-        Task {
-            await cookieManager?.deleteExpiredCookies()
-        }
-    }
-
-    // MARK: - Cache Management
-
-    func clearStaleCache() {
-        Task {
-            await cacheManager?.clearStaleCache()
-        }
-    }
-
-    func clearDiskCache() {
-        Task {
-            await cacheManager?.clearDiskCache()
-        }
-    }
-
-    func clearMemoryCache() {
-        Task {
-            await cacheManager?.clearMemoryCache()
-        }
-    }
-
-    func clearAllCache() {
-        Task {
-            await cacheManager?.clearAllCache()
-        }
-    }
-
-    /// An Escape the page left alone (`EscapeKey`). Closes the innermost thing the window shows:
-    /// a page's own full screen, then Peek. The window itself stays as it is.
-    func escapePressed(in nsWindow: NSWindow) {
-        guard let state = windowRegistry?.windows.values.first(where: { $0.window === nsWindow }) else { return }
-        let peek = peekManager.page(in: state)
-        let shown = [peek, tabs.selectedSession(in: state)]
-            + (state.split?.itemIDs ?? []).map(tabs.session(for:))
-        if let view = shown.compactMap({ $0?.webView }).first(where: { $0.fullscreenState != .notInFullscreen }) {
-            view.evaluateJavaScript("document.exitFullscreen()")
-        } else if peek != nil {
-            peekManager.dismissPeek(in: state)
         }
     }
 

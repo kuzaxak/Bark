@@ -8,7 +8,7 @@ with TemporaryDirectory(prefix='bark-chromium-clipboard-check-') as directory:
     out = Path(directory)
     source = (root / 'Nook/Managers/BrowserManager/BrowserManager+ActivePage.swift').read_text()
     start = source.index('    func captureNativeScreenshot(')
-    end = source.index('    private func clearCookies(', start)
+    end = source.index('    func copyURL(of ', start)
     # Compile the shipped asynchronous operation; only AppKit and page owners are fakes.
     (out / 'Operation.swift').write_text('import Foundation\nextension BrowserManager {\n' + source[start:end] + '}\n')
     portrait = (root / 'Nook/Components/DevTools/PortraitCaptureView.swift').read_text()

@@ -5,11 +5,7 @@
 //
 
 import AppKit
-import os
-import Security
-import SecurityInterface
 import SwiftUI
-import WebKit
 
 import NookBlocker
 import NookDesign
@@ -28,15 +24,10 @@ struct ExtensionLibraryView: View {
     let onDismiss: () -> Void
     let onShowMoreMenu: () -> Void
 
-
-    private let logger = Logger(subsystem: "com.nook.browser", category: "ExtensionLibrary")
-
     @Environment(\.chromiumExtensionActions) private var nativeExtensions
 
-    private var isChromium: Bool { browserManager.engine == .chromium }
-
     private var currentTab: PageSession? {
-        isChromium ? browserManager.frontPage(in: windowState) : browserManager.tabs.selectedSession(in: windowState)
+        browserManager.frontPage(in: windowState)
     }
 
     private var currentHost: String? {
@@ -142,21 +133,6 @@ struct ExtensionLibraryView: View {
                     if let newHost { contentBlockerEnabled = !browserManager.contentBlockerManager.isDomainAllowed(newHost) }
                 }
 
-                if !isChromium, let tab = currentTab, tab.enhancedFingerprintingProtectionApplies {
-                    SiteSettingRow(
-                        icon: "hand.raised.fill",
-                        title: "Fingerprinting Protection",
-                        subtitle: tab.usesEnhancedFingerprintingProtection ? "Enhanced" : "Standard until you leave this site",
-                        isOn: tab.usesEnhancedFingerprintingProtection
-                    ) {
-                        if tab.usesEnhancedFingerprintingProtection {
-                            tab.reloadWithoutEnhancedFingerprintingProtection()
-                        } else {
-                            tab.reloadWithEnhancedFingerprintingProtection()
-                        }
-                    }
-                }
-
                 let developer = !isPrivate && settings.isDeveloperSite(host)
                 SiteSettingRow(
                     icon: "hammer.fill",
@@ -168,19 +144,8 @@ struct ExtensionLibraryView: View {
                 .opacity(isPrivate ? NookDesign.Surface.unloadedOpacity : 1)
             }
 
-            if !isChromium {
-                SiteSettingRow(
-                    icon: "pip",
-                    title: "Automatic Picture-in-Picture",
-                    subtitle: settings.autoPictureInPicture ? "Allowed" : "Off",
-                    isOn: settings.autoPictureInPicture
-                ) {
-                    settings.autoPictureInPicture.toggle()
-                }
-            }
-
-            if currentTab != nil {
-                let percent = isChromium ? nativeZoomPercent : browserManager.zoomManager.currentZoomPercentage
+            if let page = currentTab {
+                let percent = nativeZoomPercent
                 SiteSettingRow(
                     icon: "plus.magnifyingglass",
                     title: "Zoom",
@@ -197,7 +162,11 @@ struct ExtensionLibraryView: View {
                     .labelStyle(.iconOnly)
                     .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.rowButton + NookDesign.Spacing.xs))
                 }
-                .task(id: currentTab?.itemID) { if isChromium { await refreshNativeZoom() } }
+                .task(id: page.nativeNavigationSerial) {
+                    nativeZoomPercent = nil
+                    await refreshNativeZoom()
+                }
+                .id(page.itemID)
             }
         }
     }
@@ -223,39 +192,16 @@ struct ExtensionLibraryView: View {
 
     // MARK: - Footer
 
-    private func webKitCertificateView(for page: PageSession) -> WKWebView? {
-        guard let window = windowState.windowHandle as? NSWindow,
-              let view = browserManager.getWebView(for: page.itemID, in: windowState.id),
-              view.window === window, view.url == page.url, page.url.scheme == "https",
-              !view.isLoading, view.serverTrust != nil else { return nil }
-        return view
-    }
-
     private var certificateState: SiteCertificateState {
         guard let page = currentTab, !page.isLoading else { return .unavailable }
-        if isChromium {
-            return (page.navigation as? ChromiumPageNavigation)?.certificateState ?? .unavailable
-        }
-        guard let view = webKitCertificateView(for: page), let trust = view.serverTrust else { return .unavailable }
-        var result = SecTrustResultType.invalid
-        let trusted = SecTrustGetTrustResult(trust, &result) == errSecSuccess
-            && (result == .unspecified || result == .proceed)
-        return trusted && view.hasOnlySecureContent ? .secure : .available
+        return (page.navigation as? ChromiumPageNavigation)?.certificateState ?? .unavailable
     }
 
     private func showCertificate(for itemID: UUID, at url: URL) {
         guard let page = currentTab, page.itemID == itemID, page.url == url, !page.isLoading else { return }
-        if isChromium {
-            guard (page.navigation as? ChromiumPageNavigation)?.showCertificate() == true else {
-                browserManager.showWindowToast("No certificate is available for this page.", in: windowState)
-                return
-            }
-        } else {
-            guard let view = webKitCertificateView(for: page), let trust = view.serverTrust,
-                  let window = view.window, window.attachedSheet == nil else { return }
-            let panel = SFCertificatePanel.shared()
-            panel?.certificateView()?.setDisplayTrust(false)
-            panel?.beginSheet(for: window, modalDelegate: nil, didEnd: nil, contextInfo: nil, trust: trust, showGroup: true)
+        guard (page.navigation as? ChromiumPageNavigation)?.showCertificate() == true else {
+            browserManager.showWindowToast("No certificate is available for this page.", in: windowState)
+            return
         }
         onDismiss()
     }
@@ -303,7 +249,7 @@ struct ExtensionLibraryView: View {
                 }
                 .disabled(boostHost == nil)
                 Divider()
-                if ShortcutAction.manageExtensions.isOffered(chromium: isChromium, privateWindow: isPrivate) {
+                if ShortcutAction.manageExtensions.isOffered(chromium: true, privateWindow: isPrivate) {
                     Button("Manage Extensions…") {
                         browserManager.manageExtensions()
                         onDismiss()
@@ -354,15 +300,15 @@ struct ExtensionLibraryView: View {
     // MARK: - Zoom Helpers
 
     private func zoomIn() {
-        if isChromium { browserManager.perform(.zoomIn); followNativeZoom(); return }
-        guard let tab = currentTab, let webView = tab.webView else { return }
-        browserManager.zoomManager.zoomIn(for: webView, tabId: tab.itemID)
+        guard let page = currentTab,
+              browserManager.performNativePageCommand(.zoomIn, in: windowState, page: page) else { return }
+        followNativeZoom()
     }
 
     private func zoomOut() {
-        if isChromium { browserManager.perform(.zoomOut); followNativeZoom(); return }
-        guard let tab = currentTab, let webView = tab.webView else { return }
-        browserManager.zoomManager.zoomOut(for: webView, tabId: tab.itemID)
+        guard let page = currentTab,
+              browserManager.performNativePageCommand(.zoomOut, in: windowState, page: page) else { return }
+        followNativeZoom()
     }
 
     /// The renderer takes the new zoom a moment after the command.
@@ -377,14 +323,18 @@ struct ExtensionLibraryView: View {
 
     /// The isolated world, so a page's own script cannot change what the row reads.
     private func refreshNativeZoom() async {
-        guard let native = currentTab?.navigation as? ChromiumPageNavigation,
-              let scale = windowState.window?.backingScaleFactor,
-              let reply = try? await native.evaluateScript("devicePixelRatio", mode: .expression, world: .isolated),
-              let ratio = Double(reply.json) else {
+        guard let page = currentTab, let native = page.navigation as? ChromiumPageNavigation,
+              let window = windowState.window else {
             nativeZoomPercent = nil
             return
         }
-        nativeZoomPercent = ChromiumPageZoom.percent(devicePixelRatio: ratio, backingScale: Double(scale))
+        let document = page.nativeNavigationSerial
+        let reply = try? await native.evaluateScript("devicePixelRatio", mode: .expression, world: .isolated)
+        guard !Task.isCancelled, currentTab === page, page.navigation === native,
+              page.nativeNavigationSerial == document, windowState.window === window else { return }
+        nativeZoomPercent = reply.flatMap { Double($0.json) }.flatMap {
+            ChromiumPageZoom.percent(devicePixelRatio: $0, backingScale: Double(window.backingScaleFactor))
+        }
     }
 }
 

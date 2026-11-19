@@ -10,7 +10,6 @@
 
 import AppKit
 import SwiftUI
-import WebKit
 import NookDesign
 import NookWeb
 import NookUI
@@ -84,16 +83,6 @@ extension BrowserManager {
             DevMCPServer.shared.applyEnabledSetting(settings.browserControlServerEnabled)
             if let windowState { self.showWindowToast("Developer Mode on. Reload to capture this page", in: windowState) }
             action()
-        }
-    }
-
-    func copyScreenshot(of webView: WKWebView?, in windowState: BrowserWindowState) {
-        guard let webView else { return }
-        webView.takeSnapshot(with: nil) { [weak self, weak windowState] image, _ in
-            guard let image, let windowState else { return }
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.writeObjects([image])
-            self?.showWindowToast("Screenshot copied", in: windowState)
         }
     }
 

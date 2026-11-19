@@ -18,32 +18,19 @@ struct SettingsWindow: View {
     private let windowSize = CGSize(width: 780, height: 540)
     @State private var query = ""
 
-    // Back/forward walk every place visited, sidebar picks and sub-pane pushes alike.
-    @State private var paths: [SettingsTabs: [SettingsSubPane]] = [:]
-    @State private var back: [SettingsLocation] = []
-    @State private var forward: [SettingsLocation] = []
+    @State private var back: [SettingsTabs] = []
+    @State private var forward: [SettingsTabs] = []
     @State private var restoring = false
 
-    private var location: SettingsLocation {
-        let tab = SettingsNavigation.shared.currentSettingsTab
-        return SettingsLocation(tab: tab, path: paths[tab] ?? [])
-    }
-
     var body: some View {
-        let navigation = SettingsNavigation.shared
+        @Bindable var navigation = SettingsNavigation.shared
         let tab = navigation.currentSettingsTab
-        // A sidebar pick lands on the tab's root, like System Settings.
-        let selection = Binding(
-            get: { navigation.currentSettingsTab },
-            set: { paths[$0] = []; navigation.currentSettingsTab = $0 }
-        )
         // A fixed sidebar beside the page, not a NavigationSplitView, whose sidebar is glass.
         HStack(spacing: 0) {
-            SettingsSidebar(selection: selection, query: $query)
+            SettingsSidebar(selection: $navigation.currentSettingsTab, query: $query)
             Divider()
             SettingsDetailPane(
                 tab: tab,
-                path: Binding(get: { paths[tab] ?? [] }, set: { paths[tab] = $0 }),
                 history: HistoryToolbar(
                     canGoBack: !back.isEmpty,
                     canGoForward: !forward.isEmpty,
@@ -57,7 +44,7 @@ struct SettingsWindow: View {
             .id(tab)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onChange(of: location) { old, _ in
+        .onChange(of: tab) { old, _ in
             if restoring { restoring = false; return }
             // A fresh move abandons the forward history, like a browser.
             back.append(old)
@@ -69,12 +56,11 @@ struct SettingsWindow: View {
         .background(UnifiedToolbarWindow())
     }
 
-    private func go(from stack: inout [SettingsLocation], to other: inout [SettingsLocation]) {
+    private func go(from stack: inout [SettingsTabs], to other: inout [SettingsTabs]) {
         guard let target = stack.popLast() else { return }
-        other.append(location)
+        other.append(SettingsNavigation.shared.currentSettingsTab)
         restoring = true
-        paths[target.tab] = target.path
-        SettingsNavigation.shared.currentSettingsTab = target.tab
+        SettingsNavigation.shared.currentSettingsTab = target
     }
 }
 
@@ -86,12 +72,6 @@ private struct SettingsSwitch: ToggleStyle {
             .toggleStyle(.switch)
             .controlSize(.small)
     }
-}
-
-/// One place the window can show: a sidebar tab and whatever is pushed on top of it.
-private struct SettingsLocation: Hashable {
-    let tab: SettingsTabs
-    let path: [SettingsSubPane]
 }
 
 /// Both buttons always show, disabled when there is nowhere to go, as standalone icon buttons
@@ -217,52 +197,17 @@ private struct SettingsSidebarRow: View {
     }
 }
 
-// MARK: - Sub-Panes
-
-/// Pages shown in place of a tab's own page. Typed so back/forward can replay them.
-enum SettingsSubPane: Hashable {
-    case cookies
-    case cache
-
-    @MainActor @ViewBuilder
-    func view(_ browserManager: BrowserManager) -> some View {
-        switch self {
-        case .cookies:
-            if let manager = browserManager.cookieManager {
-                CookieManagementView(cookieManager: manager)
-            } else { Text("Cookie controls are unavailable in this build.") }
-        case .cache:
-            if let manager = browserManager.cacheManager {
-                CacheManagementView(cacheManager: manager)
-            } else { Text("Cache controls are unavailable in this build.") }
-        }
-    }
-}
-
-extension EnvironmentValues {
-    @Entry var showSettingsSubPane: (SettingsSubPane) -> Void = { _ in }
-}
-
 // MARK: - Detail Pane
 
 private struct SettingsDetailPane: View {
     let tab: SettingsTabs
-    @Binding var path: [SettingsSubPane]
     let history: HistoryToolbar
-    @EnvironmentObject var browserManager: BrowserManager
 
     var body: some View {
         NavigationStack {
-            Group {
-                if let pane = path.last {
-                    pane.view(browserManager)
-                } else {
-                    tabPage
-                        .navigationTitle(tab.name)
-                }
-            }
-            .environment(\.showSettingsSubPane) { path.append($0) }
-            .modifier(history)
+            tabPage
+                .navigationTitle(tab.name)
+                .modifier(history)
         }
     }
 
@@ -276,9 +221,7 @@ private struct SettingsDetailPane: View {
         case .ai:
             SettingsAITab()
         case .privacy:
-            if let cookies = browserManager.cookieManager, let cache = browserManager.cacheManager {
-                PrivacySettingsView(cookieManager: cookies, cacheManager: cache)
-            } else { ChromiumPrivacySettingsView() }
+            ChromiumPrivacySettingsView()
         case .adBlocker:
             SettingsAdBlockerTab()
         case .tweaks:

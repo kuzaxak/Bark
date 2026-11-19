@@ -4,14 +4,15 @@
 import Foundation
 
 enum PageCommand { case clearSiteCookies, clearSiteCache, zoomIn, zoomOut }
-final class WKWebView {}
 @MainActor final class ChromiumPageNavigation {
     enum ScriptMode { case expression }; enum ScriptWorld { case isolated }
     struct ScriptResult { let json: String }
     var ratio = "2", calls = 0
+    var beforeReply: (() -> Void)?
     func evaluateScript(_ source: String, mode: ScriptMode, world: ScriptWorld) async throws -> ScriptResult {
         calls += 1
         precondition(source == "devicePixelRatio")
+        beforeReply?()
         return ScriptResult(json: ratio)
     }
 }
@@ -19,7 +20,6 @@ final class WKWebView {}
     let itemID = UUID()
     var url = URL(string: "https://work.test/a")!
     var nativeNavigationSerial: UInt64 = 1
-    var webView: WKWebView?
     var navigation: AnyObject? = ChromiumPageNavigation()
 }
 @MainActor final class NSWindowStub { var backingScaleFactor = 2.0 }
@@ -42,17 +42,11 @@ final class WKWebView {}
     func setDeveloperSite(_ host: String, on: Bool) { if on { developerSites.insert(host) } else { developerSites.remove(host) } }
 }
 enum Boost { static func normalizeHost(_ host: String) -> String { host } }
-@MainActor final class ZoomManager {
-    var calls = 0
-    func zoomIn(for webView: WKWebView, tabId: UUID) { calls += 1 }
-    func zoomOut(for webView: WKWebView, tabId: UUID) { calls += 1 }
-}
 @MainActor final class BrowserManager {
     enum Engine { case chromium, webKit }
     var engine = Engine.chromium
     var performed: [PageCommand] = []
     var onPerform: (() -> Void)?
-    let zoomManager = ZoomManager()
     let contentBlockerManager = ContentBlockerManager()
     let settings = NookSettingsService()
     func perform(_ command: PageCommand) { performed.append(command); onPerform?() }
@@ -113,7 +107,7 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
 
         manager.onPerform = { native.ratio = "2.5" }
         view.zoomIn()
-        precondition(manager.performed == [.zoomIn] && manager.zoomManager.calls == 0, "Chromium zooms natively")
+        precondition(manager.performed == [.zoomIn], "Chromium zooms natively")
         for _ in 0..<40 where view.nativeZoomPercent != 125 { try? await Task.sleep(for: .milliseconds(25)) }
         precondition(view.nativeZoomPercent == 125, "the row shows the page's zoom")
         manager.onPerform = { native.ratio = "1.8" }
@@ -130,6 +124,15 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
         await view.refreshNativeZoom()
         precondition(view.nativeZoomPercent == nil, "no window, no scale to read against")
         view.windowState.window = NSWindowStub()
+        view.nativeZoomPercent = 160
+        native.beforeReply = { view.currentTab = replacement }
+        await view.refreshNativeZoom()
+        precondition(view.nativeZoomPercent == 160, "a previous pane cannot replace the new pane’s zoom")
+        view.currentTab = page
+        native.beforeReply = { page.nativeNavigationSerial += 1 }
+        await view.refreshNativeZoom()
+        precondition(view.nativeZoomPercent == 160, "a reload retires the original document’s zoom reply")
+        native.beforeReply = nil
 
         precondition(ChromiumPageZoom.percent(devicePixelRatio: 2, backingScale: 2) == 100)
         precondition(ChromiumPageZoom.percent(devicePixelRatio: 1.34, backingScale: 2) == 67)
@@ -180,11 +183,6 @@ enum Boost { static func normalizeHost(_ host: String) -> String { host } }
         window.isBoostPanelVisible = false; window.boostPanelOpensLibrary = false
         manager.settings.developerSites = []
 
-        manager.engine = .webKit
-        manager.performed = []
-        page.webView = WKWebView()
-        view.zoomIn()
-        precondition(manager.zoomManager.calls == 1 && manager.performed.isEmpty, "WebKit keeps its zoom")
         print("Site controls passed for document-bound clearing, zoom and private-window settings")
     }
 }

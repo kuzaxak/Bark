@@ -30,7 +30,6 @@ with TemporaryDirectory(prefix='bark-site-controls-') as directory:
  var dismissals=0
  var contentBlockerEnabled=true
  var settings:NookSettingsService{browserManager.settings}
- var isChromium:Bool{browserManager.engine == .chromium}
  func onDismiss(){dismissals+=1}
  init(_ manager:BrowserManager){browserManager=manager}
 '''+clear+toggles+boost+zoom+'\n}\n'
