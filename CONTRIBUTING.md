@@ -115,6 +115,7 @@ python3 scripts/bark-check.py page-host
 python3 scripts/bark-check.py blocker
 python3 scripts/bark-check.py page-tweaks
 python3 scripts/bark-check.py profile-pages
+python3 scripts/bark-check.py profile-deletion
 python3 scripts/bark-check.py downloads
 python3 scripts/bark-check.py extension-actions
 python3 scripts/bark-check.py live-fetch

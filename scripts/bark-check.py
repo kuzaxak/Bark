@@ -54,6 +54,7 @@ CODESIGN_LINKEDIT_ALIGNMENT = 16 * 1024
 NATIVE_CHECKS = {
     "catalog": ("ChromiumCatalog", "run catalog and initial-window activation regressions"),
     "page-host": ("ChromiumPageHost", "check page ownership, transfer and close"),
+    "profile-deletion": ("ChromiumProfileDeletion", "check asynchronous profile deletion and durable assignment"),
     "profile-pages": ("ChromiumProfilePages", "check profile utility window ownership"),
     "extension-actions": ("ChromiumExtensionActions", "check Chrome extension action snapshot ownership"),
     "live-fetch": ("ChromiumLiveFetch", "check Chromium live fetch and profile ownership"),
