@@ -267,10 +267,39 @@ enum Check {
         let unversioned = ChromiumAppMenu.aboutOptions(chromiumVersion: nil)
         precondition((unversioned[.credits] as? NSAttributedString)?.string.hasPrefix("Chromium\n") == true)
         verifyUpdateConfiguration()
-        precondition(ChromiumAppMenu.buildInformation(in: .main).hasSuffix("Engine SDK identity unavailable"),
-                     "The standalone shell must not invent an engine identity")
+        try! verifyBuildInformation()
         print("PASS chromium-app-menu")
     }
+    private static func verifyBuildInformation() throws {
+        let standalone = ChromiumAppMenu.buildInformation(in: .main)
+        precondition(standalone.hasSuffix("Shell source identity unavailable\nEngine SDK identity unavailable"),
+                     "The standalone shell has no signed build metadata")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = String(repeating: "2ab4", count: 16)
+        let engine = String(repeating: "c6d8", count: 16)
+
+        for value in [source, String(repeating: "A", count: 64)] {
+            let bundleURL = root.appendingPathComponent(UUID().uuidString + ".app")
+            let contents = bundleURL.appendingPathComponent("Contents")
+            let resources = contents.appendingPathComponent("Resources")
+            try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+            let info: [String: Any] = [
+                "CFBundleIdentifier": "ee.qdo.bark.fixture." + UUID().uuidString,
+                "CFBundlePackageType": "APPL", "CFBundleShortVersionString": "1.2.3", "CFBundleVersion": "42",
+                "BarkChromiumVersion": "154.0.1.2", "BarkShellSourceSHA256": value,
+                "BarkEngineSDKResource": "BarkEngineSDK.sha256",
+            ]
+            try PropertyListSerialization.data(fromPropertyList: info, format: .xml, options: 0)
+                .write(to: contents.appendingPathComponent("Info.plist"))
+            try Data((engine + "\n").utf8).write(to: resources.appendingPathComponent("BarkEngineSDK.sha256"))
+            let report = ChromiumAppMenu.buildInformation(in: Bundle(url: bundleURL)!)
+            precondition(report.hasPrefix("Bark 1.2.3 (build 42)\nChromium 154.0.1.2\nArchitecture "))
+            let shell = value == source ? "Shell source SHA-256\n" + source : "Shell source identity unavailable"
+            precondition(report.hasSuffix(shell + "\nEngine SDK SHA-256\n" + engine))
+        }
+    }
+
     private static func verifyUpdateConfiguration() {
         let key = Data(repeating: 7, count: 32).base64EncodedString()
         let feedPath = ChromiumUpdateConfiguration.rehearsalFeedPath

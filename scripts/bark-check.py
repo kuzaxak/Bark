@@ -35,6 +35,7 @@ from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements
 from bark_release import (configure_release, expected_additions, make_distribution, make_personal_image,
                           production_settings, publish_new)
 from bark_shell_boundary import verify_shell_boundary
+from bark_shell_source import shell_source_digest, verify_shell_source, write_shell_source
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "Runtime/Chromium"))
@@ -341,8 +342,10 @@ def verify_signed_shell(app, architecture=None):
     return require_host_only_image(engine, architecture)
 
 
-def verify_candidate(app, engine, working, architecture, release_info=None):
+def verify_candidate(app, engine, working, architecture, release_info=None, *,
+                     shell_source=None, require_shell_source=False):
     verify_signed_shell(app, architecture)
+    verify_shell_source(app, expected=shell_source, required=require_shell_source)
     run("/bin/bash", STAGE, "--arch", architecture, "--check-signed", app,
         expected_additions(release_info, working), engine)
     expected = framework_files(engine / FRAMEWORK)
@@ -580,9 +583,13 @@ def build_candidate(engine, output, identity, architecture, release_info=None, i
         stage.mkdir()
         unsigned = products / "Bark.app"
         try:
+            source = shell_source_digest(REPO)
             run(*release_shell_build_args(derived, architecture))
             run("/bin/bash", STAGE, "--arch", architecture, unsigned, engine, products, stage / "Bark.app",
                 REPO / "ChromiumApp/Additions.plist")
+            if shell_source_digest(REPO) != source:
+                raise ValueError("Bark shell source inputs changed during the build. Run the build again.")
+            write_shell_source(stage / "Bark.app", source)
             if release_info:
                 configure_release(stage / "Bark.app", release_info)
             signed = work / "signed"
@@ -591,7 +598,7 @@ def build_candidate(engine, output, identity, architecture, release_info=None, i
                 signing.extend(("--icloud-profile", icloud_profile))
             run(*signing, stage, signed)
             app = signed / "stable/Bark.app"
-            verify_candidate(app, engine, work, architecture, release_info)
+            verify_candidate(app, engine, work, architecture, release_info, shell_source=source)
             if icloud_profile is not None and not filecmp.cmp(
                     stage / "Bark.app/Contents" / PROFILE_NAME,
                     app / "Contents" / PROFILE_NAME, shallow=False):
@@ -620,6 +627,8 @@ def main():
     pair.add_argument("--x86-64", type=Path, required=True, help="published Intel Engine or its transfer metadata directory")
     pair.add_argument("--arm64", type=Path, required=True, help="published ARM64 Engine or its transfer metadata directory")
     pair.add_argument("--package", type=Path, required=True, help="receiver checkout's Packages/BarkEngine")
+    fingerprint = commands.add_parser("shell-source", help="print the SHA-256 of local Bark shell inputs")
+    fingerprint.add_argument("--source", type=Path, default=REPO, help="Bark checkout or source archive extracted to a directory")
     shell = commands.add_parser("shell", help="build and check the unsigned Bark Release shell")
     shell.add_argument("--arch", required=True, choices=ARCHITECTURES)
     for command in ("engine", "build", "verify", "smoke", "launch", "dmg", "package"):
@@ -641,6 +650,8 @@ def main():
             sub.add_argument("--feed-base-url", help="HTTPS directory serving the architecture-specific Bark feed")
         else:
             sub.add_argument("app", type=Path, help="path to a signed Bark.app")
+            if command == "verify":
+                sub.add_argument("--shell-source", metavar="SHA256", help="require this signed shell source SHA-256")
             if command == "dmg":
                 sub.add_argument("--output", type=Path, required=True, help="new signed DMG for normal browsing")
                 sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"))
@@ -651,6 +662,9 @@ def main():
                 sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"))
                 sub.add_argument("--notary-profile", help="notarytool Keychain profile for submission and stapling")
     args = parser.parse_args()
+    if args.command == "shell-source":
+        print(shell_source_digest(args.source))
+        return
     if platform.system() != "Darwin":
         parser.error("Bark contributor checks require macOS.")
     if args.command == "pair-sdk":
@@ -695,14 +709,18 @@ def main():
             elif args.command == "package":
                 make_distribution(args.app.resolve(strict=True), args.output, architecture, args.identity,
                                   args.download_base_url, None, args.ed_key_file, working, args.notary_profile,
-                                  verify_staged=lambda staged: verify_candidate(staged, engine, working, architecture))
+                                  verify_staged=lambda staged: verify_candidate(staged, engine, working, architecture,
+                                                                                 require_shell_source=True))
             else:
                 app = args.app.resolve(strict=True)
                 if launching:
                     launch_candidate(app, engine, working, architecture, interactive=args.command == "launch")
                 else:
                     with app_output_lock(app):
-                        verify_candidate(app, engine, working, architecture)
+                        if args.shell_source is None:
+                            verify_candidate(app, engine, working, architecture)
+                        else:
+                            verify_candidate(app, engine, working, architecture, shell_source=args.shell_source)
 
 
 if __name__ == "__main__":

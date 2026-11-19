@@ -15,6 +15,12 @@ final class ChromiumAppMenu: NSObject {
         let architecture = "x86_64"
         #endif
         var lines = ["Bark \(version) (build \(build))", "Chromium \(chromium)", "Architecture \(architecture)"]
+        if let source = info["BarkShellSourceSHA256"] as? String, source.utf8.count == 64,
+           source.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) {
+            lines.append("Shell source SHA-256\n" + source)
+        } else {
+            lines.append("Shell source identity unavailable")
+        }
         if let name = info["BarkEngineSDKResource"] as? String, name == "BarkEngineSDK.sha256",
            let url = bundle.url(forResource: name, withExtension: nil),
            let data = try? Data(contentsOf: url), data.count == 65, data.last == 10,

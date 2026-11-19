@@ -140,8 +140,9 @@ checks and, when the build allows it, automatic downloads.
 The app owns the executable, menus and window layout. The engine owns Chromium
 profiles, documents and renderer processes. A versioned C interface connects the
 two. A shell change can use the pinned engine without rebuilding Chromium.
-For a bug report, open **Bark → About Bark** to find the app build and exact
-Chromium version.
+For a bug report, open **Help → Build Information** and copy the app build,
+Chromium version, shell source SHA-256 and engine SDK pin. The two digests
+distinguish releases that share a version number.
 [App entry point](ChromiumApp) · [Swift window code](App/Chromium) ·
 [Engine SDK](Packages/BarkEngine) · [Chromium integration](Runtime/Chromium)
 

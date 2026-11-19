@@ -10,6 +10,7 @@ HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
 sys.path.insert(0, str(REPO / "scripts"))
 sys.path.insert(0, str(HERE.parent / "Shared"))
+from bark_shell_source import verify_shell_source
 from chromium_sdk_layout import native_architecture, read_pin
 from signed_walk import Accessibility, run_walk, wait_for
 
@@ -24,9 +25,11 @@ def main():
         framework = contents / "Frameworks/Bark Framework.framework/Versions/Current/Resources/Info.plist"
         engine = plistlib.loads(framework.read_bytes())
         arch = native_architecture()
+        source = verify_shell_source(app)
         expected.extend([f"Bark {info['CFBundleShortVersionString']} (build {info['CFBundleVersion']})",
-                         f"Chromium {engine['CFBundleShortVersionString']}", f"Architecture {arch}",
-                         "Engine SDK SHA-256", read_pin(REPO / "Packages/BarkEngine", arch)])
+                         f"Chromium {engine['CFBundleShortVersionString']}", f"Architecture {arch}"])
+        expected.extend(["Shell source SHA-256", source] if source else ["Shell source identity unavailable"])
+        expected.extend(["Engine SDK SHA-256", read_pin(REPO / "Packages/BarkEngine", arch)])
 
     def exercise(screen, process, events, output):
         access = Accessibility(screen, process)
@@ -37,7 +40,7 @@ def main():
             window = access.owner("Done", ("AXButton",))
             labels = {name for element in access.tree(window) for name in access.names(element)}
             if "\n".join(expected) not in labels:
-                raise RuntimeError("Build Information differs from the app, engine or checkout pin")
+                raise RuntimeError("Build Information differs from the signed shell, engine or checkout pin")
             copy = access.control("Copy", ("AXButton",), root=window)
             if not access.attribute(copy, "AXEnabled"):
                 raise RuntimeError("Build Information cannot be copied")

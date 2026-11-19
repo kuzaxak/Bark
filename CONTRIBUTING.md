@@ -137,6 +137,23 @@ python3 scripts/bark-check.py launch build/Bark.app
 `build` creates its output directory, compiles the Release shell, stages the pinned engine and signs the app locally. A successful rebuild replaces `build/Bark.app` after verification. Quit that copy before replacing it. Temporary compilation, staging and signing files are removed at the end of each build. Use `--output /path/to/Bark.app` to choose a different destination. Local signing leaves notarization to the distribution workflow.
 
 To verify an existing signed app, use `python3 scripts/bark-check.py verify /path/to/Bark.app`.
+**Help → Build Information** reports a shell source SHA-256 separately from the engine SDK pin.
+To identify matching shell inputs, calculate the digest from a checkout or an extracted source
+archive. To check the signed bundle against a reported digest, pass that value to the verifier.
+
+```fish
+python3 scripts/bark-check.py shell-source --source /path/to/source
+python3 scripts/bark-check.py verify --shell-source REPORTED_SHA256 /path/to/Bark.app
+```
+
+This digest includes local app and package sources, resources, the Release project and package
+lock, and the SDK compile interface. It excludes the runtime engine, engine pins, tests,
+generated output and documentation outside the build input paths. Inputs must be regular
+files or directories. Symlinks inside those paths are refused. The digest describes the files
+on disk, including local edits. The build refuses when the fingerprints taken before compilation
+and after staging differ. Build from an isolated source snapshot when reproducibility matters.
+The digest does not encode the compiler, signing identity or a Git commit. Older signed apps
+can still be verified without `--shell-source`. Release packaging requires the field.
 
 `--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Packages/BarkEngine/RuntimeArtifacts/<architecture>/Engine/` directory.
 Existing Intel artifacts in the former `macos-x86_64/Engine/` location remain usable. The install command keeps a verified copy under `~/Library/Caches/BarkSDK/<pin>/Engine`. A fresh checkout can then build using that pin. The verifier compares the signed app’s embedded files with the selected SDK.
@@ -281,7 +298,7 @@ python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)
 The bulk unload walk edits a disposable form, switches tabs, and invokes
 **Unload All Inactive Tabs** in Settings. It checks the reported counts and
 returns to the same editable document. The Build Information walk checks the
-native Help dialog against the signed app, its framework and the checkout’s
+native Help dialog against the signed shell source identity, its framework and the checkout’s
 architecture-specific SDK pin.
 
 ```fish
