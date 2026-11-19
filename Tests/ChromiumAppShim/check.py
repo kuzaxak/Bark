@@ -714,7 +714,8 @@ def paired_publication_case(work, accepted):
     scripts = receiver / 'scripts'
     scripts.mkdir(parents=True)
     for name in (PUBLISH.name, STAGE.name, 'publish_chromium_sdk.py', 'bark-check.py',
-                 'bark_release.py', 'bark_icloud_signing.py', 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
+                 'bark_release.py', 'bark_icloud_signing.py', 'bark_shell_boundary.py',
+                 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
         shutil.copy2(ROOT / 'scripts' / name, scripts / name)
     chromium = receiver / 'Runtime/Chromium'
     bridge = chromium / 'bark/bridge'
@@ -1562,6 +1563,12 @@ def arm_artifact_cases(work):
         return
     check('the staged ARM64 diagnostic identifies its own verified engine manifest',
           (out / 'Contents/Resources/BarkEngineSDK.sha256').read_text().strip() == sha256(artifact / 'SHA256SUMS'))
+    unnamed = fixture / 'arm-unnamed-allocator.dylib'
+    fake_framework(unnamed, arch=arch, zone='UnrecognizedAllocator')
+    inputs = make_inputs(fixture / 'unknown-allocator', shim, unnamed, shell, architecture='arm64')
+    result = stage(*inputs, fixture / 'rejected-zone/Bark.app', architecture='arm64')
+    check('a pinned ARM64 framework with no verifiable malloc zone is refused',
+          result.returncode != 0 and 'same malloc zone name' in result.stderr, result.stderr)
     result = stage(app, artifact, products, fixture / 'mislabelled/Bark.app')
     check('the ARM64 SDK cannot stage as Intel',
           result.returncode != 0 and 'another engine artifact' in result.stderr, result.stderr)

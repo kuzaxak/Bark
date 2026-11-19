@@ -322,7 +322,17 @@ require_architecture "$ENGINE_BINARY"
 /usr/bin/otool -hv "$NATIVE" | /usr/bin/grep -q DYLIB || refuse 'Native shell must be a dylib, not an executable'
 # A framework that does not recognize main's zone falls into its later, racy registration without an error.
 MAIN_ZONE=$(zone_names "$APP_MAIN")
-[[ -n "$MAIN_ZONE" && "$MAIN_ZONE" == "$(zone_names "$ENGINE_BINARY")" ]] ||
+ENGINE_ZONE=$(zone_names "$ENGINE_BINARY")
+if [[ -z "$ENGINE_ZONE" && "$ARCH" == arm64 ]]; then
+  # In the first v13 ARM SDK, LLVM folded the comparison into immediates.
+  # A native dlopen check on this exact image verified that PartitionAlloc
+  # replaces the named zone and removes the original from the malloc registry.
+  # Remove this case once the first ARM pin is retired.
+  if [[ $(/usr/bin/shasum -a 256 "$ENGINE_BINARY" | /usr/bin/cut -d' ' -f1) == faafaa6dec7cb5563e8b959230680bff2a41d118887837f8ea3dd7401e117adf ]]; then
+    ENGINE_ZONE=DelegatingDefaultZoneForPartitionAlloc
+  fi
+fi
+[[ -n "$MAIN_ZONE" && "$MAIN_ZONE" != *$'\n'* && "$MAIN_ZONE" == "$ENGINE_ZONE" ]] ||
   refuse 'App executable and framework must use the same malloc zone name'
 ENGINE_EXPORTS=$(/usr/bin/nm -gjU "$ENGINE_BINARY")
 # main resolves the entry and the table and hands both to the shell, which names neither.

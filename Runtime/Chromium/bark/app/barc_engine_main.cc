@@ -2,6 +2,19 @@
 #include "bark/bridge/barc_bridge_api.h"
 #include "bark/bridge/barc_bridge_functions.h"
 #include "base/compiler_specific.h"
+#include "partition_alloc/buildflags.h"
+
+#if PA_BUILDFLAG(USE_PARTITION_ALLOC_AS_MALLOC)
+#include "partition_alloc/shim/early_zone_registration_utils_apple.h"
+
+namespace {
+
+// Keep the allocator's canonical C string in the image for staging checks.
+[[gnu::used, gnu::retain]] constexpr const char* kBarkDelegatingZoneName =
+    allocator_shim::kDelegatingZoneName.data();
+
+}  // namespace
+#endif
 
 extern "C" int ChromeMain(int argc, const char** argv);
 

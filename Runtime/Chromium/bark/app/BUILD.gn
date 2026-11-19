@@ -14,6 +14,7 @@ source_set("app") {
   deps = [
     ":public_headers_sha256",
     "//base",
+    "//base/allocator/partition_allocator:buildflags",
   ]
 }
 
