@@ -289,6 +289,14 @@ python3 Tests/ChromiumInactiveUnload/walk.py --verify-sdk --app build/Bark.app -
 python3 Tests/ChromiumAppMenu/walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/build-info
 ```
 
+The address-edit walk opens Command+L, reloads the same URL while the address is
+being edited, and checks which document receives Return. A fresh edit must
+navigate the original tab.
+
+```fish
+python3 Tests/ChromiumNavigation/address_edit.py --verify-sdk --app build/Bark.app --output (mktemp -d)/address-edit
+```
+
 The animation walk counts frames before parking, while a different tab is
 visible, and after returning to the same edited document. Add `--split` to
 keep two other panes visible and check that both continue to animate.
