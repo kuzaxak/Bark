@@ -17,3 +17,8 @@ Add `--split` to promote a disposable Peek sibling into a split and require
 both visible panes to advance while the source stays parked. The walk exercises
 tab selection in a single unoccluded window and leaves its observations in
 `animation.json` and `events.json`.
+
+After checking draft recovery, the walk parks the source again. The loopback
+server releases a navigation response only after that document reports it is
+hidden. The replacement must start hidden with a new document ID, then become
+visible and animate when the original tab is selected.

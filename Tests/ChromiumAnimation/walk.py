@@ -2,10 +2,12 @@
 """Verify a parked Bark document stops animating and resumes without losing its draft."""
 
 from contextlib import contextmanager
+from http.server import ThreadingHTTPServer
 import json
 from pathlib import Path
 import runpy
 import sys
+from threading import Event, Thread
 import time
 
 HERE = Path(__file__).resolve().parent
@@ -17,15 +19,52 @@ source_point = startup["source_point"]
 HIDDEN_SECONDS = 1.5
 
 
+peek = startup["peek_fixture"]
+
+
+class Fixture(peek["Fixture"]):
+    def do_GET(self):
+        if self.path == "/navigate-while-hidden":
+            self.server.navigation_requested.set()
+            if not self.server.release_navigation.wait(timeout=15):
+                self.send_error(408)
+                return
+            self.send_response(204)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            return
+        if self.path == "/target?parked-navigation=1":
+            self.path = "/target"
+        super().do_GET()
+
+
 @contextmanager
 def serve():
-    with startup["serve"]() as server:
-        server.html += (HERE / "animation.html").read_text()
-        yield server
+    with ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
+        server.html = (Path(peek["HERE"]) / "fixture.html").read_text() + (HERE / "animation.html").read_text()
+        server.events = []
+        server.navigation_requested = Event()
+        server.release_navigation = Event()
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            yield server
+        finally:
+            server.release_navigation.set()
+            server.shutdown()
+            thread.join()
 
 
 def main():
     check_split = False
+    server = None
+
+    @contextmanager
+    def fixture():
+        nonlocal server
+        with serve() as current:
+            server = current
+            yield current
 
     def options(parser):
         nonlocal check_split
@@ -110,6 +149,23 @@ def main():
             event("input", before_return, documentID=document, value=draft + "s", trusted=True, wasDiscarded=False)
             if sum(row["page"] == "/source" and row["event"] == "ready" for row in events) != 1:
                 raise RuntimeError("Returning to the animated page created a new document")
+            # Only after proving the original draft survives a normal return,
+            # park it again and release a loopback response to its hidden page.
+            before_navigation = len(events)
+            screen.key("2", screen.command)
+            event("animation-hidden", before_navigation, documentID=document, period=hidden["period"] + 1,
+                  visibility="hidden", value=draft + "s", wasDiscarded=False)
+            wait_for("The parked source did not request navigation", server.navigation_requested.is_set, process)
+            server.release_navigation.set()
+            navigated = event("parked-navigation-started", before_navigation, page="/target",
+                              visibility="hidden", wasDiscarded=False)
+            new_document = navigated["documentID"]
+            if new_document in {document, target_id, *siblings}:
+                raise RuntimeError("The parked navigation did not create a distinct document")
+            before_navigation_return = len(events)
+            screen.key("1", screen.command)
+            event("visibility", before_navigation_return, documentID=new_document, visibility="visible")
+            event("animation-visible", before_navigation_return, documentID=new_document, visibility="visible")
             (output / "animation.json").write_text(json.dumps({
                 "document_id": document,
                 "draft_still_editable": True,
@@ -121,6 +177,8 @@ def main():
                 "alternate_visible_frames": [alternate["frames"], advance["frames"]],
                 "split_sibling_visible_frames": split_frames,
                 "frames_after_return": resumed["frames"] - returned["frames"],
+                "parked_navigation_document_id": new_document,
+                "parked_navigation_initial_visibility": navigated["visibility"],
             }, indent=2) + "\n")
             screen.key("q", screen.command)
             screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process))
@@ -128,7 +186,7 @@ def main():
             access.dump(output / "accessibility.json")
             raise
 
-    return run_walk(__doc__, "parked-animation", serve, exercise,
+    return run_walk(__doc__, "parked-animation", fixture, exercise,
                     [("settings.peekOnShiftClick", "-bool", "true")],
                     prepare_fixture=startup["prepare_fixture"], parse_options=options, official_qualification=True)
 

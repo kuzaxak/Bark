@@ -9,12 +9,22 @@
         let lateFrames = 0;
         let period = 0;
 
-        document.addEventListener("visibilitychange", () => {
+        if (location.pathname === "/target" && location.search === "?parked-navigation=1") {
+            report("parked-navigation-started");
+        }
+
+        document.addEventListener("visibilitychange", async () => {
             const now = performance.now();
             if (document.hidden) {
                 hiddenAt = now;
                 hiddenFrames = lateFrames = 0;
                 report("animation-hidden", {frames, period: ++period});
+                if (location.pathname === "/source" && period === 2) {
+                    const response = await fetch("/navigate-while-hidden", {cache: "no-store"});
+                    if (response.status === 204 && document.hidden) {
+                        location.assign("/target?parked-navigation=1");
+                    }
+                }
             } else if (hiddenAt !== null) {
                 report("animation-returned", {
                     frames, period, hiddenFrames, lateFrames, graceMs, durationMs: now - hiddenAt
