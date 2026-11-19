@@ -515,8 +515,9 @@ copied from that DMG after Gatekeeper assessment. The walk checks three
 fresh launches, first input, and typing in the original draft on return.
 It then installs and updates disposable versions of that signed candidate
 using a local Sparkle feed. A successful run writes `qualification.json`
-with the architecture, SDK pin, candidate CDHash, timings and signed
-update identities. App-only runs record `installation: signed-app`. Runs with
+with the architecture, SDK pin, candidate CDHash, native hardware and macOS,
+three timings with their distinct document and parked-tab observations, and
+signed update identities. App-only runs record `installation: signed-app`. Runs with
 a notarized disk image record `installation: notarized-dmg` and the exact
 image’s SHA-256. The release workflow checks the DMG-backed receipt against
 the release architecture, disk image, and signed app before uploading artifacts.

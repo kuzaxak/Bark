@@ -39,28 +39,47 @@ def walk(script, arguments, output):
         child.check_returncode()
 
 
+def validate_machine(hardware, macos):
+    if (not isinstance(hardware, dict) or not isinstance(hardware.get("model"), str)
+            or not hardware["model"].strip() or type(hardware.get("memory_bytes")) is not int
+            or hardware["memory_bytes"] <= 0):
+        raise ValueError("Native hardware model and memory are required.")
+    if not isinstance(macos, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", macos):
+        raise ValueError("The native macOS version is required.")
+
+
 def checked_measurements(observations, candidate):
-    documents = set()
     samples = []
     for result in observations:
-        if result["candidate"] != candidate or result["was_discarded"] is not False:
-            raise ValueError("A parked-tab observation belongs to another candidate or lost its document.")
-        if not result["document_id"] or result["document_id"] in documents:
-            raise ValueError("Each startup sample must use a fresh document.")
-        documents.add(result["document_id"])
-        samples.append({key: result[key] for key in MEASUREMENTS})
+        if result["candidate"] != candidate:
+            raise ValueError("A parked-tab observation belongs to another candidate.")
+        if result["hardware"] != observations[0]["hardware"] or result["macos"] != observations[0]["macos"]:
+            raise ValueError("Startup samples must use the same native hardware and macOS version.")
+        samples.append({key: result[key] for key in
+                        (*MEASUREMENTS, "document_id", "parked_window_web_areas", "was_discarded")})
     validate_samples(samples)
+    validate_machine(observations[0]["hardware"], observations[0]["macos"])
     return samples
 
 
 def validate_samples(samples):
     if not isinstance(samples, list) or len(samples) != 3:
         raise ValueError("Three successful native startup samples are required.")
+    documents = set()
     for sample in samples:
         for key in MEASUREMENTS:
             value = sample.get(key) if isinstance(sample, dict) else None
             if isinstance(value, bool) or not isinstance(value, (float, int)) or not math.isfinite(value) or value <= 0:
                 raise ValueError("A startup or parked-tab measurement is missing.")
+        document = sample.get("document_id")
+        if not isinstance(document, str) or not document.strip() or document in documents:
+            raise ValueError("Each startup sample must use a fresh document.")
+        documents.add(document)
+        areas = sample.get("parked_window_web_areas")
+        if (not isinstance(areas, list) or any(not isinstance(title, str) for title in areas)
+                or "Peek fixture target" not in areas or "Peek fixture source" in areas
+                or sample.get("was_discarded") is not False):
+            raise ValueError("Each startup sample must show the source tab was unmounted and stayed live.")
 
 
 def check_update(update, candidate):
@@ -177,6 +196,7 @@ def check_release_receipt(receipt, image, architecture, app):
     if (result.get("build"), result.get("version")) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
         raise ValueError("The release receipt belongs to a different Bark build.")
     validate_samples(result.get("startup"))
+    validate_machine(result.get("hardware"), result.get("macos"))
     checked_update_identities(result["installed_update"])
     verify_release_signature(app)
 
