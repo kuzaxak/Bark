@@ -159,8 +159,8 @@ def compile_c(source, output, *extra):
                     str(source_file), '-o', str(output), *extra], check=True)
 
 
-def headers_digest():
-    lines = ''.join(f'{hashlib.sha256((RUNTIME / name).read_bytes()).hexdigest()}  {name}\n' for name in HEADER_NAMES)
+def headers_digest(directory=RUNTIME):
+    lines = ''.join(f'{hashlib.sha256((directory / name).read_bytes()).hexdigest()}  {name}\n' for name in HEADER_NAMES)
     return hashlib.sha256(lines.encode()).hexdigest()
 
 
@@ -274,7 +274,6 @@ def header_cases(work):
         return re.sub(r'//.*', '', text)
     for name in HEADER_NAMES:
         public = (MODULE / name).read_text()
-        check(f'{name} matches its recipe source', public == (RUNTIME / name).read_text())
         run = subprocess.run(['xcrun', 'clang', '-arch', 'x86_64', '-x', 'c', '-std=c11', '-Werror', '-fsyntax-only', str(MODULE / name)],
                              capture_output=True, text=True)
         check(f'{name} compiles as plain C', run.returncode == 0, run.stderr)
@@ -306,8 +305,10 @@ def header_cases(work):
     check('after its size every table member is a function pointer the engine fills',
           re.match(r'\s*size_t size;', table_body) is not None and len(members) == len(set(members)) > 0 and
           table_body.count('(*') == len(members), (len(members), table_body.count('(*')))
-    check('the package holds the digest of exactly these public headers', digest_in(MODULE / DIGEST_HEADER) == headers_digest(),
-          (digest_in(MODULE / DIGEST_HEADER), headers_digest()))
+    # Consumer pins may lag the producer recipe. Check the packaged bytes here;
+    # publish_cases checks the recipe against the headers emitted by the publisher.
+    check('the package holds the digest of exactly these public headers', digest_in(MODULE / DIGEST_HEADER) == headers_digest(MODULE),
+          (digest_in(MODULE / DIGEST_HEADER), headers_digest(MODULE)))
 
     source = work / 'linkage.cc'
     source.write_text(f'#include "BarcChromium/barc_bridge_api.h"\nint {ENTRY}(int argc, const char** argv) {{ return argc; }}\n'
@@ -329,7 +330,7 @@ def header_cases(work):
     check('C imports the size-checked space request and callback', run.returncode == 0, run.stderr[-600:])
 
     provider = work / 'password-provider'
-    subprocess.run(['xcrun', 'clang', '-std=c11', '-Werror', f'-I{PUBLIC_HEADERS}',
+    subprocess.run(['xcrun', 'clang', '-arch', native_architecture(), '-std=c11', '-Werror', f'-I{PUBLIC_HEADERS}',
                     f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',
                     str(ROOT / 'Tests/ChromiumAppShim/password_provider.c'), '-o', str(provider)], check=True)
     check('the password provider choice follows the paired SDK capability',
@@ -467,7 +468,7 @@ def launch_fixtures(work, arch):
     no_entry = work / 'shell-no-entry.dylib'
     quiet = work / 'quiet-abort.dylib'
     assert compile_shim(shim, extra=arch)
-    fake_framework(framework, arch=arch)
+    fake_framework(framework, arch=arch, digest=headers_digest(MODULE))
     fake_shell(shell, arch=arch)
     compile_c(FAKE_SHELL_NO_ENTRY, no_entry, '-dynamiclib', *arch)
     compile_c(QUIET_ABORT, quiet, '-dynamiclib', f'-DABORT_STATUS={ABORT_STATUS}', *arch)
@@ -475,6 +476,7 @@ def launch_fixtures(work, arch):
 
 
 def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, arch):
+    app_digest = headers_digest(MODULE)
     # All files used by this process must be thin native images, even under Rosetta.
     def launch(name, framework=framework_lib, shell=shell_lib, main=shim):
         contents = work / name / 'Bark.app/Contents'
@@ -514,7 +516,7 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
     check('shell without its entry aborts before ChromeMain', run.returncode == ABORT_STATUS and 'chrome-main' not in lines, (run.returncode, lines))
 
     old_engine = work / 'framework-without-entry.dylib'
-    fake_framework(old_engine, arch=arch, entry=None)
+    fake_framework(old_engine, arch=arch, entry=None, digest=app_digest)
     run, lines = launch('engine-without-entry', framework=old_engine)
     check('an engine without the versioned entry aborts before the shell loads',
           run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
@@ -536,7 +538,7 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
               and old_entry in run.stderr and f'needs version {previous}' in run.stderr, (run.stderr, lines))
 
     no_table = work / 'framework-without-table.dylib'
-    fake_framework(no_table, arch=arch, table=None)
+    fake_framework(no_table, arch=arch, table=None, digest=app_digest)
     run, lines = launch('engine-without-table', framework=no_table)
     check('an engine without the table aborts before the shell loads', run.returncode == ABORT_STATUS and 'shell' not in lines,
           (run.returncode, lines))
@@ -544,14 +546,14 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
 
     short = table_size() - 8
     small_table = work / 'framework-small-table.dylib'
-    fake_framework(small_table, arch=arch, size=short)
+    fake_framework(small_table, arch=arch, size=short, digest=app_digest)
     run, lines = launch('engine-small-table', framework=small_table)
     check('a table smaller than the app expects aborts before the shell loads',
           run.returncode == ABORT_STATUS and lines[1:] == ['bridge-table'], (run.returncode, lines))
     check('that error names both sizes', f'is {short} bytes' in run.stderr and f'needs at least {table_size()}' in run.stderr, run.stderr)
 
     large_table = work / 'framework-large-table.dylib'
-    fake_framework(large_table, arch=arch, size=table_size() + 64)
+    fake_framework(large_table, arch=arch, size=table_size() + 64, digest=app_digest)
     run, lines = launch('engine-large-table', framework=large_table)
     check('a larger table from a newer engine is accepted', run.returncode == 23 and 'chrome-main' in lines, (run.returncode, lines))
 
@@ -561,7 +563,7 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
         fake_framework(engine, arch=arch, digest=digest)
         run, lines = launch(name, framework=engine)
         check(f'{why} aborts before the shell loads', run.returncode == ABORT_STATUS and 'shell' not in lines, (run.returncode, lines))
-        check(f'that error names both digests', 'other public headers' in run.stderr and headers_digest() in run.stderr and
+        check(f'that error names both digests', 'other public headers' in run.stderr and app_digest in run.stderr and
               (digest or 'none') in run.stderr, run.stderr)
 
     other_headers = work / 'other-headers/BarcChromium'
@@ -1761,6 +1763,9 @@ def main():
             assert compile_shim(shim)
             fake_framework(framework_lib)
             fake_shell(shell_lib)
+        elif headers_digest(MODULE) != headers_digest():
+            framework_lib = work / 'recipe-framework.dylib'
+            fake_framework(framework_lib)
         publish_cases(work, framework_lib)
         stage_cases(work, shim, framework_lib, shell_lib)
         arm_artifact_cases(work)
