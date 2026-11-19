@@ -45,10 +45,25 @@ to save. Choosing Chromium again restores access to its existing logins.
 ### Sync bookmarks between Macs
 
 In a Bark build with iCloud support, open **Settings → Spaces → iCloud Sync**
-and choose **Enable Sync** on each Mac. Both Macs can use the same iCloud
-account. Choose **Favorites & Pinned** for a space to sync its bookmarks,
+and choose **Enable Sync** on each Mac. Macs on the same iCloud account can
+use its synced spaces directly. Choose **Favorites & Pinned** for a space to sync its bookmarks,
 folders and their order. **Everything** also syncs its open tabs. **Off**
 keeps a space local to that Mac if it has never been uploaded.
+
+For two different iCloud accounts, use the controls in **Settings → Spaces**.
+
+1. On the Mac joining the shared spaces, click **Copy** beside **Invite code**
+   and send the code to the owner.
+2. On the owner's Mac, choose **Invite with Code…** and paste the code.
+   Send the resulting iCloud link back to the invited Mac.
+3. On the invited Mac, paste the link into **Join Shared Sync…** and confirm.
+   If this Mac already syncs spaces of its own, Bark asks whether to move them
+   into the shared sync. **Join Without Moving** keeps them in their original
+   account and turns off their sync on this Mac. Both accounts can edit the
+   shared spaces.
+
+Bark's production iCloud container still needs Apple's `cloudkit.share` record
+type before the owner can issue the link.
 
 Bark starts with a fresh iCloud dataset. Existing Nook cloud bookmarks and
 invitations stay in Nook. Turning sync off on a Mac keeps its local bookmarks.

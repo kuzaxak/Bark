@@ -345,7 +345,7 @@ public struct SpacesSettingsView: View {
         } footer: {
             Text(status.availability == .needsSignedBuild
                  ? "This copy of \(ProductDisplayName.current) is not signed for iCloud, so its spaces stay on this Mac."
-                 : "Pick what each space syncs to your other Macs with the cloud beside it. Favorites & Pinned sends its favorites, pinned tabs and folders; Everything also sends its open tabs. Logins, cookies, history, site data, Boosts, private windows and the Agent space never sync. Off stops this Mac syncing a space and leaves it in iCloud; deleting a space deletes it from iCloud. To sync with a Mac on another iCloud account, share with it: it joins these spaces and its own synced spaces move in, and leaving turns them Off there without deleting any.")
+                 : "Use the cloud beside each space to choose what it syncs. Favorites & Pinned syncs favorites, pinned tabs and folders. Everything also syncs open tabs. Logins, cookies, history, site data, Boosts, private windows and the Agent space stay on this Mac. Off stops syncing a space on this Mac and keeps its copy in iCloud. Deleting a space also deletes its iCloud copy. To share across iCloud accounts, ask the other Mac for its invite code. When it joins, it can choose whether to move its own synced spaces into the shared sync. Leaving keeps the spaces on that Mac with sync turned off.")
                 .settingsFooter()
         }
     }
