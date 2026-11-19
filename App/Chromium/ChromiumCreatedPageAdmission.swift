@@ -361,7 +361,10 @@ final class ChromiumCreatedPageAdmission {
             product.state.isIncognito == session.isPrivate &&
             (!session.isPrivate || product.state.ephemeralProfile?.id == profile.id)
         }
-        var product = matching.first(where: { $0.state === registry.activeWindow }) ?? matching.first
+        // A popup's default destination follows the exact live opener, even
+        // if another Bark window or another space of this profile is active.
+        let opener = requestedSpace == nil ? popupOpener(of: page, in: snapshot) : nil
+        var product = opener?.product ?? matching.first(where: { $0.state === registry.activeWindow }) ?? matching.first
         var destination: Int32 = 0
         var created = false
         if let existing = product,
@@ -399,7 +402,7 @@ final class ChromiumCreatedPageAdmission {
             profile.isEphemeral || tabs.tree.dataStoreID(for: id) == profile.id ? id : nil
         }
         guard destination > 0, let product,
-              let space = requestedSpace ?? selectedSpace ?? space(for: profile.id, opener: nil, in: product.state),
+              let space = requestedSpace ?? opener?.space ?? selectedSpace ?? space(for: profile.id, opener: nil, in: product.state),
               session.navigation === page, page.nativeWindowID == source, session.isDetached else {
             if created && destination > 0 { _ = close(destination) }
             return false
@@ -408,7 +411,9 @@ final class ChromiumCreatedPageAdmission {
         let accepted = host.promoteDetachedPage(page, profile: profile, to: target, in: product.state) { [weak self, weak session, weak page, weak product] in
             guard let self, let session, let page, let product,
                   self.registry.windows[product.state.id] === product.state,
+                  opener.map({ self.isCurrentPopupOpener($0) }) ?? true,
                   self.host.acceptNativeSelection(page, in: product.state),
+                  opener.map({ self.isCurrentPopupOpener($0) }) ?? true,
                   let id = self.tabs.adoptDetachedNativePage(session, through: self.host,
                       in: product.state, spaceID: space, select: false),
                   self.registry.windows[product.state.id] === product.state,
@@ -428,6 +433,34 @@ final class ChromiumCreatedPageAdmission {
             _ = close(target)
         }
         return accepted
+    }
+
+    private typealias PopupOpener = (session: PageSession, page: ChromiumPageNavigation,
+                                     product: ChromiumProductWindow, space: UUID)
+
+    private func popupOpener(of page: ChromiumPageNavigation, in snapshot: ChromiumDiscoverySnapshot) -> PopupOpener? {
+        guard let openerID = snapshot.tabs.first(where: { $0.window == page.nativeWindowID && $0.tab == page.nativeTabID })?.opener_tab,
+              openerID > 0, let profile = page.profileID,
+              let session = tabs.sessions.first(where: {
+                  ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == openerID
+              }),
+              let opener = session.navigation as? ChromiumPageNavigation, opener.profileID == profile,
+              opener.isPrivateSession == page.isPrivateSession,
+              let row = bridge.windowState(opener.nativeWindowID), let product = products[row.physical_group],
+              let space = space(for: profile, opener: session, in: product.state) else { return nil }
+        let candidate: PopupOpener = (session, opener, product, space)
+        return isCurrentPopupOpener(candidate) ? candidate : nil
+    }
+
+    private func isCurrentPopupOpener(_ opener: PopupOpener) -> Bool {
+        let state = opener.product.state
+        guard registry.windows[state.id] === state,
+              tabs.session(for: opener.session.itemID) === opener.session,
+              opener.session.navigation === opener.page,
+              tabs.isNativePageOwner(opener.session, in: state),
+              host.canAdoptPage(opener.page, in: state),
+              let profile = opener.page.profileID else { return false }
+        return space(for: profile, opener: opener.session, in: state) == opener.space
     }
 
     /// Derived model choices only: menu rendering must not instantiate profile

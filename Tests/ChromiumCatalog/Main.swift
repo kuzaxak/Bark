@@ -619,6 +619,7 @@ private final class CatalogApplication: NSApplication {
         try checkDetachedMiniPromotion()
         try checkMiniInBarkWindow()
         try checkMiniPagesAdmitOrClose()
+        try checkPopupPromotesIntoItsOpenerSpace()
         try checkMixedProfileSplitAdmission()
         try checkSavedSplitInBarkWindow()
         try checkPeekWithoutAnEngineDocument()
@@ -2273,6 +2274,76 @@ private final class CatalogApplication: NSApplication {
                  "while the app accepts no windows a selected waiting window closes its background tab and then its active tab")
     for owner in Array(Native.windows.keys) { Native.end(owner) }
     withExtendedLifetime(openerShell) {}
+    tabs.saveNow()
+}
+
+@MainActor private func checkPopupPromotesIntoItsOpenerSpace() throws {
+    let suite = "BarcPopupPromotion-\(UUID())"
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+    let defaults = UserDefaults(suiteName: suite)!
+    let registry = WindowRegistry()
+    defer {
+        for owner in Array(Native.windows.keys) { Native.end(owner) }
+        Native.transfersEnabled = false
+        Native.transferCount = 0
+        Native.pageViews = [:]; Native.roots = [:]
+        defaults.removePersistentDomain(forName: suite)
+        try? FileManager.default.removeItem(at: root)
+    }
+    var tree = TabTree()
+    tree.createSpace(id: Native.work, name: "Work", icon: "", accentHex: "#123456", after: nil)
+    var device = DeviceState(); device.firstLaunchCompleted = true
+    let store = TabStore(directory: root); store.save(tree, device); store.flush()
+    let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
+    let tabs = TabsController(settings: settings, windowRegistry: registry,
+        blocker: ContentBlockerManager(settings: settings), sponsorBlock: SponsorBlockManager(settings: settings),
+        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+    let secondSpace = tabs.createSpace(name: "Shared", icon: "", accentHex: "#123456",
+        after: Native.work, sharingLoginsWith: Native.work)!
+    let bridge = Native.bridge
+    let host = ChromiumNativePageHost(bridge: bridge)
+    tabs.nativePageHost = host
+    let admission = ChromiumCreatedPageAdmission(bridge: bridge, host: host, tabs: tabs,
+        registry: registry, isUtility: { _ in false }, makeShell: { _ in NSView() })
+    Native.windows[2251] = Native.window(2251, group: 2251, profile: Native.work, active: 22510)
+    Native.windows[2252] = Native.window(2252, group: 2252, profile: Native.work, active: 22520)
+    Native.tabs = [Native.tab(22510, window: 2251), Native.tab(22520, window: 2252)]
+    admission.apply(bridge.readSnapshot()!)
+    func existing(_ tab: Int32) -> PageSession {
+        tabs.sessions.first { ($0.navigation as? ChromiumPageNavigation)?.nativeTabID == tab }!
+    }
+    let opener = existing(22510), unrelated = existing(22520)
+    let openerWindow = registry.allWindows.first { $0.selectedItemID == opener.itemID }!
+    let unrelatedWindow = registry.allWindows.first { $0.selectedItemID == unrelated.itemID }!
+    tabs.move(unrelated.itemID, to: .tabs(spaceID: secondSpace), after: nil)
+    tabs.select(unrelated.itemID, in: unrelatedWindow)
+    precondition(unrelatedWindow.spaceID == secondSpace && unrelatedWindow.selectedItemID == unrelated.itemID)
+    registry.setActive(unrelatedWindow)
+
+    let waiting = UInt32(BARC_DISCOVERY_AWAITING_ADMISSION.rawValue) | UInt32(BARC_DISCOVERY_COMPACT_MINI.rawValue) | 4
+    Native.windows[2253] = Native.window(2253, group: 2253, profile: Native.work, kind: 1, flags: waiting, active: 22530)
+    Native.tabs.append(Native.tab(22530, window: 2253, opener: 22510))
+    Native.transfersEnabled = true
+    Native.transferCount = 0
+    var api = ChromiumMiniWindowAPI(bridge: bridge, canUse: miniWindowSelects)
+    api.installCommandOMonitor = { _, _ in NSObject() }; api.removeCommandOMonitor = { _ in }
+    let minis = MiniRegistry()
+    let pages = ChromiumMiniPages(bridge: bridge, tabs: tabs, registry: minis) { profile, navigation, origin in
+        ChromiumMiniWindowController(tabs: tabs, profile: profile, navigation: navigation, origin: origin, api: api,
+            promote: { page, space in
+                admission.promoteDetached(page, spaceID: space, peerInGroup: bridge.window_new_peer_in_native_window,
+                    newPeer: bridge.window_new_peer, close: bridge.window_close)
+            }, onEnd: { _ in })
+    }
+    pages.apply(bridge.readSnapshot()!, accepting: { true }, activeWindow: unrelatedWindow)
+    let controller = minis.nativeController(tab: 22530) as! ChromiumMiniWindowController
+    let popup = controller.page, navigation = popup.navigation as! ChromiumPageNavigation
+    precondition(controller.isPresented && popup.detachedWindow === openerWindow)
+    controller.openInSpace()
+    precondition(Native.transferCount == 1 && !popup.isDetached && popup.navigation === navigation)
+    precondition(tabs.isNativePageOwner(popup, in: openerWindow) && tabs.spaceID(of: popup.itemID) == Native.work,
+                 "Open in Space must follow the popup's verified opener, even with another window active")
+    precondition(unrelatedWindow.selectedItemID == unrelated.itemID && unrelatedWindow.spaceID == secondSpace)
     tabs.saveNow()
 }
 
