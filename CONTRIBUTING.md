@@ -79,6 +79,20 @@ python3 scripts/bark-check.py profile-pages
 python3 scripts/bark-check.py extension-actions
 ```
 
+To check the real unsigned Release build for both architectures, run the same
+commands as the hosted PR matrix after installing the Metal Toolchain.
+
+```fish
+python3 -B scripts/bark-check.py shell --arch x86_64
+python3 -B scripts/bark-check.py shell --arch arm64
+```
+
+These commands build the Bark scheme with the committed bridge headers and
+locked Swift packages in temporary DerivedData. Each verifies that the outer
+app executable and native shell framework are thin Mach-O images for the
+requested architecture. The check needs no installed Chromium SDK, signing
+identity, or repository `build/` directory and never launches the app.
+
 With Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin for your Mac. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
 
 ```fish

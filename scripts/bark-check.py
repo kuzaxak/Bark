@@ -296,11 +296,8 @@ def unsigned_mach_digest(path, payload_size, architecture, original_vmsize=None,
 def verify_signed_shell(app, architecture=None):
     architecture = architecture or native_architecture()
     engine = app / "Contents/Frameworks" / TEST_FRAMEWORK
-    for image in (app / "Contents/MacOS/Bark",
-                  app / "Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell",
-                  engine):
-        run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
-            "--arch", architecture, "--image", image)
+    run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
+        "--arch", architecture, "--app", app)
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)
     return require_host_only_image(engine, architecture)
 
@@ -503,6 +500,30 @@ def release_shell_build_args(derived, architecture):
             "-jobs", "2", "build")
 
 
+def unregister_unsigned_shell(app):
+    # Xcode registers its intermediate app with Launch Services.
+    if app.exists():
+        subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
+                        "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister",
+                        "-u", str(app)], capture_output=True)
+
+
+def check_release_shell(architecture):
+    with TemporaryDirectory(prefix="bark-shell-", dir="/private/tmp") as directory:
+        derived = Path(directory) / "DerivedData"
+        products = derived / "Build/Products/Release"
+        app = products / "Bark.app"
+        try:
+            run(*release_shell_build_args(derived, architecture))
+            for image in (app / "Contents/MacOS/Bark",
+                          products / "NookNativeShell.framework/Versions/A/NookNativeShell"):
+                run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
+                    "--arch", architecture, "--image", image)
+        finally:
+            unregister_unsigned_shell(app)
+    print(f"Built and verified the unsigned {architecture} Bark Release shell.")
+
+
 def build_candidate(engine, output, identity, architecture, release_info=None, icloud_profile=None):
     if not identity:
         raise ValueError("Supply --identity or BARK_SIGN_IDENTITY for local Developer ID signing.")
@@ -541,11 +562,7 @@ def build_candidate(engine, output, identity, architecture, release_info=None, i
                 raise ValueError("The signed bundle differs from the requested release settings.")
             install_local_build(app, output, signed_info["CFBundleIdentifier"])
         finally:
-            # Xcode registers its intermediate app with Launch Services.
-            if unsigned.exists():
-                subprocess.run(["/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
-                                "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister",
-                                "-u", str(unsigned)], capture_output=True)
+            unregister_unsigned_shell(unsigned)
     print(f"Built and verified {output}")
 
 
@@ -557,6 +574,8 @@ def main():
     commands.add_parser("page-host", help="check page ownership, transfer and close")
     commands.add_parser("profile-pages", help="check profile utility window ownership")
     commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
+    shell = commands.add_parser("shell", help="build and check the unsigned Bark Release shell")
+    shell.add_argument("--arch", required=True, choices=ARCHITECTURES)
     for command in ("engine", "build", "verify", "smoke", "launch", "package"):
         sub = commands.add_parser(command)
         sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture (default: native hardware)")
@@ -590,6 +609,9 @@ def main():
         return
     if args.command in ("catalog", "page-host", "profile-pages", "extension-actions"):
         check_native_harness(args.command)
+        return
+    if args.command == "shell":
+        check_release_shell(args.arch)
         return
     launching = args.command in ("smoke", "launch")
     native = native_architecture()

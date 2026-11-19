@@ -47,6 +47,11 @@ Native Apple Silicon qualification and an official Bark download are pending.
 The repository’s earlier releases are published under the Nook name.
 [Earlier Nook releases](https://github.com/kuzaxak/Nook/releases)
 
+To compile the native window and sidebar without installing an engine, run
+`python3 -B scripts/bark-check.py shell --arch arm64` or select `x86_64`.
+This checks the Release app executable and Swift framework. Running the browser
+also requires the matching Chromium SDK.
+
 Use a checkout containing `scripts/bark-check.py`, Xcode 26 with its Metal
 toolchain, a local Developer ID Application signing identity, and the engine SDK
 matching the checkout’s pin. The current runtime pin is for Intel. The engine

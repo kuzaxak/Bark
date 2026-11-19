@@ -409,6 +409,20 @@ holds the exact framework, `Bark Packaging`, engine `Info.plist`, public header 
 The Intel pin is available. The app executable and full Swift/AppKit shell have
 been built for both architectures from the universal headers. A signed ARM64 app
 requires a separately published and qualified ARM64 runtime pin.
+
+| Component | Intel | Apple Silicon |
+| --- | --- | --- |
+| Bark launcher and Swift/AppKit framework | Thin Release build, signed with the Intel SDK | Thin Release cross-build on Intel |
+| Chromium and its child processes | Pinned x86_64 SDK | Native SDK receipt and on-device testing pending |
+| Rust adblock library and C SDK link library | x86_64 slice | arm64 slice |
+| Sparkle framework, updater and XPC services | x86_64 slice | arm64 slice |
+
+Staging and signed verification inspect every Mach-O file in the app. The launcher,
+native shell and Chromium framework must match the target architecture exactly.
+Other embedded frameworks and services can be universal if they include that
+architecture. The Release shell weak-links FoundationModels and checks system
+model availability on macOS 26 or later. Its locked package graph has no MLX dependency.
+
 The existing Intel SDK cache at `~/Library/Caches/BarkSDK/<digest>/Engine` is unchanged.
 The resolver also accepts an existing local Intel `Engine/` directory and legacy Intel
 digest under `BarkEngine.xcframework/macos-x86_64/`.

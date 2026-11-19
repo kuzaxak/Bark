@@ -217,10 +217,8 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   ENGINE_ENTITLEMENTS="$engine/Bark Packaging/app-entitlements.plist"
   [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
   [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
-  require_architecture "$2/Contents/MacOS/Bark"
-  require_architecture "$2/Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell"
   python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" \
-    --engine-info "$engine/engine-Info.plist" "$2/Contents/Frameworks/Bark Framework.framework"
+    --engine-info "$engine/engine-Info.plist" --app "$2"
   check_outer_metadata "$2" "$engine/engine-Info.plist"
   check_bundle "$2" signed
   additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS"
@@ -329,5 +327,6 @@ done
 /bin/chmod -R u+w "$PACKAGING"
 additions apply "$ADDITIONS" "$OUTPUT/Contents/Info.plist" "$PACKAGING/app-entitlements.plist"
 check_outer_metadata "$OUTPUT" "$ENGINE_INFO"
+python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" --app "$OUTPUT" --engine-info "$ENGINE_INFO"
 trap - EXIT
 printf '%s\n' "Staged unsigned candidate: $OUTPUT" "Staged its packaging: $PACKAGING" 'Chromium signing is required before launch; no signing was performed.'

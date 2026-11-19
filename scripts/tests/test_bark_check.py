@@ -61,6 +61,35 @@ class ArchitectureTests(unittest.TestCase):
                         self.assertEqual(calls["launch_candidate"].call_args.kwargs,
                                          {"interactive": args[0] == "launch"})
 
+    def test_release_shell_checks_both_thin_images_without_selecting_an_sdk(self):
+        for architecture in ("arm64", "x86_64"):
+            with self.subTest(architecture=architecture):
+                fail = Mock(side_effect=AssertionError("The shell check must not select an engine"))
+                run = Mock()
+                unregister = Mock()
+                with patch.dict(self.cli, {"pinned_engine": fail, "native_architecture": fail,
+                                           "run": run, "unregister_unsigned_shell": unregister}), \
+                        patch.object(self.cli["platform"], "system", return_value="Darwin"), \
+                        patch.dict(os.environ, {"BARK_ENGINE_SOURCE": "/missing/sdk"}), \
+                        patch("sys.argv", [str(CLI), "shell", "--arch", architecture]):
+                    self.cli["main"]()
+                build, launcher, framework = run.call_args_list
+                arguments = build.args
+                derived = arguments[arguments.index("-derivedDataPath") + 1]
+                self.assertFalse(derived.parent.exists())
+                self.assertIn(f"ARCHS={architecture}", arguments)
+                self.assertIn("CODE_SIGNING_ALLOWED=NO", arguments)
+                self.assertIn("-onlyUsePackageVersionsFromResolvedFile", arguments)
+                products = derived / "Build/Products/Release"
+                app = products / "Bark.app"
+                checker = CLI.parent / "check-chromium-architectures.py"
+                check_args = (sys.executable, "-B", checker, "--arch", architecture, "--image")
+                self.assertEqual(launcher, call(*check_args, app / "Contents/MacOS/Bark"))
+                self.assertEqual(framework, call(*check_args, products /
+                                                 "NookNativeShell.framework/Versions/A/NookNativeShell"))
+                unregister.assert_called_once_with(app)
+                fail.assert_not_called()
+
     def test_explicit_cross_architecture_verification_remains_available(self):
         calls = self.invoke(["verify", "--arch", "x86_64", "--require-official", str(self.app)], "arm64")
         self.assertEqual(calls["pinned_engine"].call_args.args[2:], ("x86_64", True))

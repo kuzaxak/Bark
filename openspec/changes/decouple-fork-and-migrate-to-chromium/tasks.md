@@ -13,6 +13,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 
 - [x] 1.1 Record the implementation base and release baseline; verify the intended branch contains the profile and tab behavior described in this plan. See the implementation baseline in `design.md`; universal unsigned Release compilation passed, while platform/runtime qualification remains in 1.2/1.4 and later gates.
 - [ ] 1.2 Audit arm64/x86_64 slices for the engine candidates and app dependencies, including MLX; deliver a dual-architecture build matrix with optional feature handling documented.
+  The [SDK architecture matrix](../../../Runtime/Chromium/README.md#publishing-the-engine) records shell and dependency coverage. The ARM64 engine receipt and native qualification remain open.
 - [ ] 1.3 Freeze website workflows and extension versions/capabilities in a maintained acceptance matrix; verify all required spec scenarios have a case and assigned owner.
 - [ ] 1.4 Capture repeatable baseline measurements on real Intel and Apple Silicon Macs using existing performance hooks; record hardware, build, workload and aggregate process metrics outside source commits.
 - [ ] 1.5 Agree performance budgets, package-size budget procedure and engine-security response ownership before candidate measurement; verify the release checklist records those decisions.
@@ -33,6 +34,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 
 - [x] 3.1 Introduce engine profile/page/event contracts and lifetime rules; add contract tests for cancellation and callbacks arriving after close. `Profile`, `PageNavigation` and `NativePageHost` define the ownership boundary; `ProfileEngineTests` and `NativePageLifecycleTests` verify cancelled creation, close veto, owner teardown and rejection of late callbacks.
 - [ ] 3.2 Move `BrowserConfiguration` and profile storage access behind a WebKit adapter; verify shared-profile spaces and private-session isolation with regression tests.
+  Profile storage and per-profile configuration now reject Chromium identities before opening a WebKit store. Shared-configuration users in the legacy blocker, extensions and developer tools still need review.
 - [ ] 3.3 Adapt `PageSession`, `WebViewProvider`, and `PageSessionDelegate`; verify navigation, URL/title state and close behavior using existing package checks.
 - [ ] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
 - [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.

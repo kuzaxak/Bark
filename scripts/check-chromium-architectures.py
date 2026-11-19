@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 # Licensed under GPL-3.0. See LICENSE.
-"""Check every Mach-O image in the architecture-specific Bark engine framework."""
+"""Check the CPU architecture of Bark and its embedded runtime dependencies."""
 
 import argparse
+import os
 from pathlib import Path
 import plistlib
 import stat
@@ -23,16 +24,19 @@ def image_header(path):
         return handle.read(16)
 
 
-def check_image(path, architecture, header):
+def check_image(path, architecture, header, *, allow_universal=False):
     result = subprocess.run(
         ["/usr/bin/lipo", "-archs", path], capture_output=True, text=True, check=False
     )
     archs = result.stdout.strip() if result.returncode == 0 else "unreadable"
-    if header[:4] != THIN_64 or archs != architecture:
+    if allow_universal:
+        if architecture not in archs.split():
+            raise ValueError(f"App dependency must include {architecture}: {path} (found {archs})")
+    elif header[:4] != THIN_64 or archs != architecture:
         raise ValueError(f"Engine Mach-O must be exactly {architecture} and thin: {path} (found {archs})")
     # MH_EXECUTE images are launched as processes. Their bytes can match
     # SHA256SUMS even when an archive has lost the owner's execute bit.
-    if int.from_bytes(header[12:16], "little") == 2 and not path.stat().st_mode & stat.S_IXUSR:
+    if header[:4] == THIN_64 and int.from_bytes(header[12:16], "little") == 2 and not path.stat().st_mode & stat.S_IXUSR:
         raise ValueError(f"Mach-O executable is missing owner execute permission: {path}")
 
 
@@ -81,16 +85,44 @@ def check_framework(framework, architecture, engine_info=None):
             check_image(path, architecture, header)
 
 
+def check_app(app, architecture, engine_info=None):
+    contents = app / "Contents"
+    frameworks = contents / "Frameworks"
+    engine = frameworks / "Bark Framework.framework"
+    shell_images = (contents / "MacOS/Bark", frameworks / "NookNativeShell.framework/Versions/A/NookNativeShell")
+    for path in shell_images:
+        check_image(path, architecture, image_header(path))
+    check_framework(engine, architecture, engine_info)
+
+    # Sparkle and other app dependencies may ship universal binaries. Inspect
+    # nested services and helpers as well as the framework loaded by the shell.
+    for directory, children, files in os.walk(contents):
+        parent = Path(directory)
+        if parent == frameworks:
+            children.remove(engine.name)
+        for name in files:
+            path = parent / name
+            if path in shell_images or path.is_symlink() or not path.is_file():
+                continue
+            header = image_header(path)
+            if header[:4] in MACH_O:
+                check_image(path, architecture, header, allow_universal=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("path", type=Path)
-    parser.add_argument("--image", action="store_true", help="require a specific Mach-O executable or dylib")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--app", action="store_true", help="check the complete staged or signed application bundle")
+    mode.add_argument("--image", action="store_true", help="require a specific Mach-O executable or dylib")
     parser.add_argument("--engine-info", type=Path, help="require the engine metadata version")
     parser.add_argument("--arch", choices=ARCHITECTURES, help="defaults to native hardware")
     args = parser.parse_args()
     try:
         architecture = args.arch or native_architecture()
-        if args.image:
+        if args.app:
+            check_app(args.path, architecture, args.engine_info)
+        elif args.image:
             check_image(args.path, architecture, image_header(args.path))
         else:
             check_framework(args.path, architecture, args.engine_info)

@@ -55,6 +55,31 @@ jobs:
           python3 -B -m unittest discover -s Tests/ChromiumUpdate
           python3 -B Tests/ChromiumAppShim/check.py
 
+  release-shell:
+    name: Bark Release shell (${{ matrix.arch }})
+    runs-on: macos-26
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [x86_64, arm64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Make Metal available
+        run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Build and inspect the unsigned Release shell
+        env:
+          BARK_SHELL_ARCH: ${{ matrix.arch }}
+        run: |
+          test ! -e build
+          python3 -B scripts/bark-check.py shell --arch "$BARK_SHELL_ARCH"
+          test ! -e build
+
   signed-smoke:
     name: Smoke-test the pinned signed Bark candidate
     if: >-

@@ -1229,6 +1229,14 @@ def stage_cases(work, shim, framework_lib, shell_lib):
 
     refused('no-engine-framework', 'an engine without its framework', 'Missing Bark framework',
             lambda a, e, p: shutil.rmtree(e / FRAMEWORK))
+    def wrong_dependency(app, engine, products):
+        destination = products / 'Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater'
+        destination.parent.mkdir(parents=True)
+        shutil.copy2(arm_helper(work, 'unsigned-arm-updater'), destination)
+
+    refused('wrong-updater', 'an updater built only for the other architecture', 'must include x86_64',
+            wrong_dependency)
+
     refused('stock-app', 'an app executable that does not load the shell', 'lacks the required native bootstrap',
             lambda a, e, p: shutil.copy2(framework_lib, a / 'Contents/MacOS/Bark'))
 
@@ -1554,6 +1562,16 @@ def arm_artifact_cases(work):
     command = ['bash', str(STAGE), '--arch', 'arm64', '--check-signed', str(out), str(SHIPPED_ADDITIONS), str(artifact)]
     result = subprocess.run(command, capture_output=True, text=True)
     check('the signed ARM64 fixture passes the selected-architecture gate', result.returncode == 0, result.stderr)
+    intel_image = fixture / 'IntelOnly.dylib'
+    compile_c('int fixture(void) { return 0; }\n', intel_image, '-dynamiclib', '-arch', 'x86_64')
+    subprocess.run(['codesign', '--force', '--sign', '-', intel_image], capture_output=True, check=True)
+    intel_dependency = out / 'Contents/Frameworks' / intel_image.name
+    shutil.copy2(intel_image, intel_dependency)
+    result = subprocess.run(command, capture_output=True, text=True)
+    check('signed ARM64 candidates reject an Intel-only app dependency',
+          result.returncode != 0 and 'must include arm64' in result.stderr and 'IntelOnly.dylib' in result.stderr,
+          (result.returncode, result.stderr))
+    intel_dependency.unlink()
     command[3] = 'x86_64'
     result = subprocess.run(command, capture_output=True, text=True)
     check('signed ARM64 binaries cannot satisfy Intel verification',
@@ -1625,6 +1643,17 @@ def signed_cases(work, mach_o):
           run.returncode == 0, run.stderr)
 
     wrong_helper = arm_helper(work, 'signed-arm-helper')
+
+    def add_wrong_updater(app):
+        updater = app / 'Contents/Frameworks/Sparkle.framework/Versions/B/Updater.app/Contents/MacOS/Updater'
+        updater.parent.mkdir(parents=True)
+        shutil.copy2(wrong_helper, updater)
+        subprocess.run(['codesign', '--force', '--sign', '-', str(updater)], capture_output=True, check=True)
+
+    run = check_signed('signed-wrong-updater', add_wrong_updater)
+    check('--check-signed refuses an ARM64-only updater in an Intel app',
+          run.returncode != 0 and 'must include x86_64' in run.stderr and 'Updater.app' in run.stderr,
+          (run.returncode, run.stderr))
 
     def add_wrong_helper(app):
         helper = add_helper(app / 'Contents/Frameworks' / FRAMEWORK, wrong_helper)
