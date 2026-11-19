@@ -11,8 +11,9 @@ from unittest import mock
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from bark_release import (SPARKLE, check_distribution_settings, configure_release,
-                          expected_additions, production_settings, verify_installed_image, write_appcast)
+from bark_release import (SPARKLE, TEAM, check_distribution_settings, configure_release,
+                          expected_additions, make_distribution, production_settings,
+                          verify_installed_image, write_appcast)
 
 
 class ReleaseTests(unittest.TestCase):
@@ -147,6 +148,93 @@ class ReleaseTests(unittest.TestCase):
         check_distribution_settings(info, "x86_64", "http://127.0.0.1:8791/releases/")
         with self.assertRaises(ValueError):
             check_distribution_settings(info, "x86_64", "http://127.0.0.1:9911/releases/")
+
+    def test_distribution_uses_verified_staged_team_for_rehearsal_only(self):
+        other = "ABC123DE45"
+        for rehearsal, app_team, image_team, succeeds in (
+            (True, other, other, True),
+            (True, other, TEAM, False),
+            (True, "not set", TEAM, False),
+            (False, other, other, False),
+            (False, TEAM, TEAM, True),
+        ):
+            with self.subTest(rehearsal=rehearsal, app_team=app_team, image_team=image_team):
+                self.info_path.write_bytes(plistlib.dumps(self.base))
+                settings = dict(self.release)
+                origin = "https://downloads.example"
+                if rehearsal:
+                    origin = "http://127.0.0.1:8791"
+                    settings.update({
+                        "CFBundleIdentifier": "ee.qdo.bark.test.00000000-0000-0000-0000-000000000001",
+                        "BarkUpdateRehearsal": {
+                            "DataRoot": "/private/tmp/fixture",
+                            "Profile": "00000000-0000-0000-0000-000000000002",
+                        },
+                        "SUFeedURL": origin + "/bark-macos-x86_64.xml",
+                        "SUEnableAutomaticChecks": False,
+                    })
+                configure_release(self.app, settings)
+                staged = []
+                verified = mock.Mock()
+                output = self.root / "release"
+                bundle_id = settings.get("CFBundleIdentifier", self.base["CFBundleIdentifier"])
+
+                def read(command, **kwargs):
+                    tool = Path(command[0]).name
+                    if tool == "codesign":
+                        self.assertTrue(rehearsal, "Production must use the fixed release team")
+                        self.assertEqual(command[-1], staged[0])
+                        return f"TeamIdentifier={app_team}\n"
+                    if tool == "du":
+                        return b"1"
+                    self.assertEqual(tool, "sign_update")
+                    return "signature"
+
+                def run(command, **kwargs):
+                    tool = Path(command[0]).name
+                    if tool == "ditto":
+                        self.assertEqual(command[-2], self.app)
+                        staged.append(command[-1])
+                        shutil.copytree(command[-2], command[-1])
+                    elif tool == "codesign" and "--verify" in command:
+                        requirement = command[command.index("-R") + 1]
+                        self.assertIn("anchor apple generic", requirement)
+                        self.assertIn("certificate leaf[field.1.2.840.113635.100.6.1.13] exists", requirement)
+                        target = command[-1]
+                        if target.suffix == ".app":
+                            self.assertEqual(target, staged[0])
+                            self.assertIn(f'identifier "{bundle_id}"', requirement)
+                            self.assertIn("--deep", command)
+                            team = app_team
+                        else:
+                            self.assertEqual(target.suffix, ".dmg")
+                            self.assertNotIn("identifier", requirement)
+                            team = image_team
+                        expected_team = app_team if rehearsal else TEAM
+                        self.assertIn(f'certificate leaf[subject.OU] = "{expected_team}"', requirement)
+                        if team != expected_team:
+                            raise subprocess.CalledProcessError(1, command)
+                    elif tool == "hdiutil":
+                        command[-1].write_bytes(b"DMG fixture")
+
+                with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
+                    "bark_release.subprocess.check_output", side_effect=read,
+                ):
+                    args = self.app, output, "x86_64", "fixture signer", origin, self.root, "fixture key", self.root
+                    if succeeds:
+                        make_distribution(*args, verify_staged=verified)
+                        verified.assert_called_once_with(staged[0])
+                        self.assertTrue((output / "bark-macos-x86_64.xml").is_file())
+                        shutil.rmtree(output)
+                    else:
+                        failure = ValueError if app_team == "not set" else subprocess.CalledProcessError
+                        with self.assertRaises(failure):
+                            make_distribution(*args, verify_staged=verified)
+                        if rehearsal and app_team != "not set":
+                            verified.assert_called_once_with(staged[0])
+                        else:
+                            verified.assert_not_called()
+                        self.assertFalse(output.exists())
 
     def test_feed_describes_the_signed_app_and_final_archive(self):
         path = self.root / "bark-macos-x86_64.xml"

@@ -1,6 +1,6 @@
 # Installed Bark update walk
 
-Use the architecture's pinned Bark SDK, Xcode, a local Developer ID Application identity and a Python interpreter with PyObjC and Accessibility access. The display must be unlocked and idle. By default, the walk builds the checkout's unsigned Release shell with locked packages in temporary storage.
+Use the architecture's pinned Bark SDK, Xcode, a Developer ID Application identity from your team and a Python interpreter with PyObjC, Accessibility and event-posting access. The packager verifies that your team signed both the staged rehearsal app and its disk image. Production releases require Bark’s release team. The display must be unlocked and idle. By default, the walk builds the checkout's unsigned Release shell with locked packages in temporary storage.
 
 The [UI walk setup](../../CONTRIBUTING.md#run-the-signed-ui-walks) installs the pinned Python bindings.
 

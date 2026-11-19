@@ -158,6 +158,8 @@ python3 Tests/ChromiumQuitSave/walk.py --app build/Bark.app --output (mktemp -d)
 
 To measure first input and return to a parked tab on an official candidate,
 install its pinned native SDK and run the startup walk on the same Mac.
+Grant Screen Recording access to the process running the walk, in addition
+to Accessibility and event-posting access.
 The walk checks the signed app against the SDK before timing and records
 the verified SDK digest with the measurements. For local measurements
 with a pinned developer SDK, use `--verify-sdk` in place of `--require-official`.

@@ -177,6 +177,22 @@ def bundle_cdhash(app):
     return match.group(1)
 
 
+def distribution_requirement(app, bundle_id):
+    team = TEAM
+    if bundle_id != "ee.qdo.bark":
+        # Metadata has already restricted this to a UUID-scoped rehearsal.
+        # The displayed team is only a candidate until verification checks
+        # the Apple Developer ID certificate and the app's sealed identity.
+        details = subprocess.check_output(["/usr/bin/codesign", "--display", "--verbose=4", app],
+                                          stderr=subprocess.STDOUT, text=True)
+        match = re.search(r"^TeamIdentifier=([A-Z0-9]{10})$", details, re.MULTILINE)
+        if match is None:
+            raise ValueError("The rehearsal app must be signed by a Developer ID Application team.")
+        team = match.group(1)
+    return (f'=anchor apple generic and certificate leaf[subject.OU] = "{team}" '
+            'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
+
+
 def verify_installed_image(image, staged_app, working, requirement, verify_staged):
     """Assess the notarized disk image and a clean copy of its app."""
     subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
@@ -215,9 +231,6 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
     bundle_id, version, build = check_distribution_settings(info, architecture, download_base_url)
     if not identity:
         raise ValueError("Supply a Developer ID identity for signing the disk image.")
-    requirement = (f'=anchor apple generic and certificate leaf[subject.OU] = "{TEAM}" '
-                   'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
-    app_requirement = requirement + f' and identifier "{bundle_id}"'
     output_directory = Path(output_directory).absolute()
     if os.path.lexists(output_directory):
         raise ValueError(f"Choose a new distribution output directory: {output_directory}")
@@ -240,6 +253,8 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
             raise ValueError("The source app changed while the release was being staged.")
         if info.get("BarkChromiumVersion") != framework_version(installed):
             raise ValueError("The declared Chromium version differs from the embedded engine.")
+        requirement = distribution_requirement(installed, bundle_id)
+        app_requirement = requirement + f' and identifier "{bundle_id}"'
         subprocess.run(["codesign", "--verify", "--deep", "--strict", "-R",
                         app_requirement, installed], check=True)
         if verify_staged:
