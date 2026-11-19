@@ -526,8 +526,7 @@ final class ChromiumCreatedPageAdmission {
         return registry.windows[state.id] === state
     }
 
-    /// New Window as WebKit's `TabsController.attach` opens it: a saved window nobody has
-    /// claimed, else the first space with its first tab selected. It adds no tab.
+    /// New Window claims an available saved window, or selects the first tab of the first space.
     @discardableResult
     func openNewWindow(open: SavedOpen, close: @escaping (Int32) -> Int32,
                        canPresent: @escaping () -> Bool) -> Bool {
@@ -1105,7 +1104,7 @@ final class ChromiumCreatedPageAdmission {
             if row.profile_kind == BARC_DISCOVERY_GUEST.rawValue {
                 state.isIncognito = true
                 state.ephemeralProfile = tabs.privateWindows.compactMap(\.ephemeralProfile)
-                    .first(where: { $0.id == profileID }) ?? Profile.createEphemeral(id: profileID, engine: .chromium)
+                    .first(where: { $0.id == profileID }) ?? Profile.createEphemeral(id: profileID)
             } else {
                 guard let space = space(for: profileID, opener: nil, in: state) else { continue }
                 state.spaceID = space

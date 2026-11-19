@@ -77,20 +77,13 @@ final class SplitViewManager: ObservableObject {
         case .split(let edge):
             guard let current = window.selectedItemID,
                   let record = SplitRecord(edge == .leading ? [itemID, current] : [current, itemID]) else { return }
-            if presentNative(record, selecting: current, in: window) { return }
-            window.split = record
-            // Selecting again saves the window record with its new split.
-            tabs.select(current, in: window)
+            tabs.presentNativeSplit(record, activeItemID: current, in: window)
         case .insert(let pane, let edge):
             guard let record = shownSplit(in: window)?.inserting(itemID, beside: pane, after: edge == .trailing) else { return }
-            if presentNative(record, selecting: itemID, in: window) { return }
-            window.split = record
-            tabs.select(itemID, in: window)
+            tabs.presentNativeSplit(record, activeItemID: itemID, in: window)
         case .replace(let pane):
             guard let record = shownSplit(in: window)?.replacing(pane, with: itemID) else { return }
-            if presentNative(record, selecting: itemID, in: window) { return }
-            window.split = record
-            tabs.select(itemID, in: window)
+            tabs.presentNativeSplit(record, activeItemID: itemID, in: window)
         case .move(let pane, let edge):
             guard let record = shownSplit(in: window)?.moving(itemID, beside: pane, after: edge == .trailing) else { return }
             update(window, to: record)
@@ -136,9 +129,7 @@ final class SplitViewManager: ObservableObject {
         guard let tabs, let filled = addSplit.filling(choosing: itemID, selectedItemID: window.selectedItemID, split: window.splitLayout),
               let record = shownSplit(in: window).map({ $0.inserting(filled, at: addSplit.index) }) ?? SplitRecord(addSplit.panes + [filled])
         else { return }
-        if presentNative(record, selecting: filled, in: window) { return }
-        window.split = record
-        tabs.select(filled, in: window)
+        tabs.presentNativeSplit(record, activeItemID: filled, in: window)
     }
 
     // MARK: - A Pane's Menu
@@ -162,9 +153,7 @@ final class SplitViewManager: ObservableObject {
         let remaining = split.removing(itemID)
         guard window.selectedItemID == itemID else { return update(window, to: remaining) }
         let next = split.itemIDs[index + 1 < split.itemIDs.count ? index + 1 : index - 1]
-        if presentNative(remaining, selecting: next, in: window) { return }
-        window.split = remaining
-        tabs.select(next, in: window)
+        tabs.presentNativeSplit(remaining, activeItemID: next, in: window)
     }
 
     /// Ends the split and keeps all its tabs open. The active pane stays selected.
@@ -175,14 +164,7 @@ final class SplitViewManager: ObservableObject {
 
     /// Divider `index` dragged to `position`, a fraction of the page's width or height.
     func moveDivider(_ index: Int, to position: CGFloat, length: CGFloat, in window: BrowserWindowState) {
-        if tabs?.profileEngine == .chromium {
-            (tabs?.nativePageHost as? ChromiumNativePageHost)?.moveSplitDivider(index, to: position, length: length, in: window)
-            return
-        }
-        guard var record = window.split, length > 0 else { return }
-        record.moveDivider(index, to: Double(position),
-                           minimum: SplitRecord.minimumPaneFraction(count: record.itemIDs.count, length: Double(length)))
-        window.split = record
+        (tabs?.nativePageHost as? ChromiumNativePageHost)?.moveSplitDivider(index, to: position, length: length, in: window)
     }
 
     /// A divider let go: the window record keeps where it was left.
@@ -191,18 +173,7 @@ final class SplitViewManager: ObservableObject {
     }
 
     private func update(_ window: BrowserWindowState, to record: SplitRecord?) {
-        if presentNative(record, selecting: window.selectedItemID, in: window) { return }
-        window.split = record
-        tabs?.mirror(window)
-        window.refreshCompositor()
-    }
-
-    /// Native refusal is handled without falling through to WebKit presentation.
-    private func presentNative(_ record: SplitRecord?, selecting active: UUID?,
-                               in window: BrowserWindowState) -> Bool {
-        guard let tabs, tabs.profileEngine == .chromium else { return false }
-        tabs.presentNativeSplit(record, activeItemID: active, in: window)
-        return true
+        tabs?.presentNativeSplit(record, activeItemID: window.selectedItemID, in: window)
     }
 
     func cleanupWindow(_ windowId: UUID) {

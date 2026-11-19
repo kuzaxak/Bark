@@ -1,7 +1,6 @@
 // Licensed under GPL-3.0. See LICENSE.
 import Foundation
 import Testing
-import WebKit
 import NookBlocker
 import NookSettings
 import NookTabsCore
@@ -17,7 +16,7 @@ struct ProfileEngineTests {
 
     @Test func nativeLiveGmailUsesExactRegularProfileWithoutWindowsOrWebKit() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let work = try #require(tabs.tree.orderedSpaces.first?.id)
         let personal = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
         let workID = try #require(tabs.tree.dataStoreID(for: work)), personalID = try #require(tabs.tree.dataStoreID(for: personal))
@@ -34,12 +33,11 @@ struct ProfileEngineTests {
         #expect(calls[0].0 == workID && calls[0].1 == .gmail(account: 2) && calls[1].0 == personalID)
         #expect(await tabs.gmailInbox(inSpace: UUID(), account: 0) == .failed && calls.count == 2)
         #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
-        #expect(tabs.profile(forSpace: work)?.webKitStorage == nil && tabs.profile(forSpace: personal)?.webKitStorage == nil)
     }
 
     @Test func nativeLivePullPreviewUsesExactProfileAndNeverCreatesAPage() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let work = try #require(tabs.tree.orderedSpaces.first?.id)
         let personal = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
         let profile = try #require(tabs.tree.dataStoreID(for: personal))
@@ -63,7 +61,7 @@ struct ProfileEngineTests {
     @Test(arguments: [false, true])
     func nativeLivePullPreviewCancelsForMovedOrRenamedSource(moving: Bool) async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let work = try #require(tabs.tree.orderedSpaces.first?.id)
         let other = try #require(tabs.createSpace(name: "Other", icon: "", accentHex: "#123456", after: work))
         let profile = try #require(tabs.tree.dataStoreID(for: work))
@@ -112,7 +110,7 @@ struct ProfileEngineTests {
 
     @Test func nativeLiveRefusesAnOwnerThatExpiresBeforeTransportStarts() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let space = try #require(tabs.tree.orderedSpaces.first?.id)
         let profile = try #require(tabs.tree.dataStoreID(for: space))
         var checks = 0
@@ -132,7 +130,7 @@ struct ProfileEngineTests {
 
     @Test func nativeLiveFolderReassignmentCancelsAndCannotPublishOldProfileReply() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let space = try #require(tabs.tree.orderedSpaces.first?.id)
         let other = try #require(tabs.createSpace(name: "Other", icon: "", accentHex: "#123456", after: space))
         let oldProfile = try #require(tabs.tree.dataStoreID(for: space)), nextProfile = try #require(tabs.tree.dataStoreID(for: other))
@@ -156,7 +154,7 @@ struct ProfileEngineTests {
 
     @Test func nativeLiveCallerCancellationAndDeletedSourceReleaseWithoutPublishing() async throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let space = try #require(tabs.tree.orderedSpaces.first?.id)
         var pending: CheckedContinuation<ProfileLiveResponse, Error>?, cancellations = 0
         tabs.nativeLiveFetch = { _, _ in
@@ -176,30 +174,20 @@ struct ProfileEngineTests {
         await liveCallbacks(); #expect(tabs.tree.item(folder) == nil)
     }
 
-    @Test func chromiumMetadataHasNoWebKitStorageOrCookieConnection() {
+    @Test func renamingARegularProfilePreservesItsIdentityAndPrivateProfilesAreDistinct() {
         let id = UUID()
-        let profile = Profile(id: id, name: "Work", icon: "person", engine: .chromium)
-        #expect(profile.engine == .chromium)
-        #expect(profile.webKitStorage == nil)
+        let profile = Profile(id: id, name: "Work", icon: "person")
         profile.name = "Renamed"
         profile.icon = "folder"
         #expect(profile.id == id && profile.name == "Renamed")
-        #expect(profile.webKitStorage == nil)
-        let privateProfile = Profile.createEphemeral(engine: .chromium)
-        #expect(privateProfile.isEphemeral && privateProfile.engine == .chromium)
-        #expect(privateProfile.webKitStorage == nil)
+        let privateProfile = Profile.createEphemeral()
+        #expect(privateProfile.isEphemeral)
         #expect(privateProfile.id != id)
-        for identity in [profile, privateProfile] {
-            #expect(BrowserConfiguration.webViewConfiguration(for: identity) == nil)
-            var completed = false
-            identity.destroyEphemeralDataStore { completed = true }
-            #expect(completed && identity.webKitStorage == nil)
-        }
     }
 
     @Test func nativeExtensionCommandCapturesSelectedProfileWithoutRetargetingOrPageCreation() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let work = try #require(tabs.tree.orderedSpaces.first?.id)
         let personal = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
         let personalID = try #require(tabs.tree.dataStoreID(for: personal))
@@ -229,7 +217,7 @@ struct ProfileEngineTests {
 
     @Test func nativeExtensionCommandRefusesPrivateMissingAndDeletedOwners() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let work = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: nil))
         let window = BrowserWindowState(); window.spaceID = work
         var calls = 0, failures = 0
@@ -252,7 +240,7 @@ struct ProfileEngineTests {
 
     @Test func nativeExtensionCommandQueuedDeletionCannotOpenAnotherProfile() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let work = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: nil))
         let window = BrowserWindowState(); window.spaceID = work
         tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
@@ -270,7 +258,7 @@ struct ProfileEngineTests {
     @Test func profileControlsRouteEveryDestinationToRequestedInactiveProfileWithoutTreeEdits() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let work = try #require(tabs.createSpace(name: "Work", icon: "person", accentHex: "#123456", after: nil))
         let personal = try #require(tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: work))
         let profileID = try #require(tabs.tree.dataStoreID(for: work))
@@ -301,7 +289,7 @@ struct ProfileEngineTests {
     func keptProfileControlsNeedNoWindowOrSpaceAssignment(destination: ProfilePageDestination) throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let work = try #require(tabs.createSpace(name: "Work", icon: "person", accentHex: "#123456", after: nil))
         let profileID = try #require(tabs.tree.dataStoreID(for: work))
         tabs.deleteSpace(work, keepingLeftProfile: true)
@@ -325,7 +313,7 @@ struct ProfileEngineTests {
     func staleProfileAdmissionFailsOnceWithoutFallback(destination: ProfilePageDestination) throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let work = try #require(tabs.createSpace(name: "Work", icon: "person", accentHex: "#123456", after: nil))
         let profileID = try #require(tabs.tree.dataStoreID(for: work))
         var canPresent: (@MainActor () -> Bool)?
@@ -355,10 +343,10 @@ struct ProfileEngineTests {
 
     @Test func passwordManagerRefusesPrivateSessionIdentityWithoutRegularFallback() throws {
         let fixture = try ProfileFixture(); defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let window = BrowserWindowState()
         window.isIncognito = true
-        window.ephemeralProfile = Profile.createEphemeral(engine: .chromium)
+        window.ephemeralProfile = Profile.createEphemeral()
         tabs.windowRegistry.register(window)
         let id = try #require(window.ephemeralProfile?.id)
         let original = tabs.tree
@@ -374,7 +362,7 @@ struct ProfileEngineTests {
     @Test func absentProfilePresenterReportsUnavailableWithoutOpeningOrMutating() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let profile = try #require(tabs.profiles.first)
         let original = tabs.tree
         var error: ProfilePageOpenError?
@@ -388,7 +376,7 @@ struct ProfileEngineTests {
     @Test func nativeLiveSourcesReportUnavailableWithoutAnInstalledBridge() async throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let space = try #require(tabs.tree.orderedSpaces.first?.id)
         let profile = try #require(tabs.profile(forSpace: space))
         let sources: [LiveSource] = [.githubPulls, .githubIssues, .githubNotifications, .asanaTasks]
@@ -405,7 +393,6 @@ struct ProfileEngineTests {
         #expect(await tabs.pullRequests(inSpace: space) == [])
         #expect(await tabs.gmailInbox(inSpace: space, account: 0) == .unavailable)
         await Task.yield()
-        #expect(profile.webKitStorage == nil)
         #expect(tabs.liveRefreshing.isEmpty && tabs.liveRefreshed.isEmpty)
         #expect(folders.allSatisfy { tabs.liveStatus[$0] == .unavailable })
     }
@@ -413,7 +400,7 @@ struct ProfileEngineTests {
     @Test func nativeFactoriesReuseStoreUUIDAndKeepNativeMetadataAfterRestart() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let work = try #require(tabs.createSpace(name: "Work", icon: "person",
             accentHex: "#123456", after: nil))
         let shared = try #require(tabs.createSpace(name: "Shared", icon: "folder",
@@ -424,25 +411,23 @@ struct ProfileEngineTests {
         #expect(profile === tabs.profile(forSpace: shared))
         #expect(profile !== tabs.profile(forSpace: personal))
         #expect(profile.id == tabs.tree.dataStoreID(for: work))
-        #expect(profile.webKitStorage == nil)
         tabs.updateSpace(work, name: "Renamed", icon: nil, accentHex: nil)
         #expect(tabs.profile(forSpace: work) === profile)
-        #expect(profile.name == "Renamed" && profile.webKitStorage == nil)
+        #expect(profile.name == "Renamed")
         let id = profile.id
         tabs.deleteSpace(work, keepingLeftProfile: true)
         tabs.deleteSpace(shared, keepingLeftProfile: true)
         tabs.saveNow()
-        let reloaded = fixture.makeTabs(engine: .chromium)
+        let reloaded = fixture.makeTabs()
         let kept = try #require(reloaded.profile(forStore: id))
-        #expect(kept.id == id && kept.engine == .chromium)
-        #expect(kept.webKitStorage == nil)
+        #expect(kept.id == id)
         #expect(kept === reloaded.profile(forStore: id))
     }
 
     @Test func unsupportedNativeDestructionAndReassignmentPreserveMetadata() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let space = try #require(tabs.createSpace(name: "Work", icon: "person",
             accentHex: "#123456", after: nil))
         let profile = try #require(tabs.profile(forSpace: space))
@@ -452,64 +437,45 @@ struct ProfileEngineTests {
         tabs.deleteSpace(space)
         #expect(tabs.tree.space(space) == nil)
         #expect(tabs.device.keptProfiles?.contains { $0.id == profile.id } == true, "Chromium keeps the profile of a last space")
-        tabs.deleteKeptProfile(profile.id)
+        let survivor = try #require(tabs.profiles.first { $0.id != profile.id }?.id)
+        var rejected = false
+        tabs.deleteKeptProfile(profile.id, surviving: survivor) { result in
+            if case .failure = result { rejected = true }
+        }
+        #expect(rejected)
         #expect(tabs.device.keptProfiles?.contains { $0.id == profile.id } == true)
         #expect(tabs.profile(forStore: profile.id) === profile)
     }
 
-    #if os(macOS)
-    @Test(arguments: [Profile.Engine.webKit, .chromium])
-    func vaultAccessIsExclusiveToNativePageEvents(engine: Profile.Engine) async throws {
+    @Test func configuringVaultForAPrivateIdentityLeavesItsPageUnloaded() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: engine)
-        let profile = Profile.createEphemeral(engine: engine)
-        let webViews = RecordingWebViews()
-        tabs.webViews = webViews
+        let tabs = fixture.makeTabs()
+        let profile = Profile.createEphemeral()
         tabs.vault = VaultService(settings: tabs.settings,
             client: VerificationVault(origin: nil, profile: profile.id), pawlEnabledAtLaunch: true)
         let page = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Vault",
                                isPrivate: true, controller: tabs)
         page.detachedProfile = profile
-
-        withExtendedLifetime(webViews) { page.loadWebViewIfNeeded() }
-
-        if engine == .webKit {
-            let view = try #require(WebKitPageAccess.existingView(for: page))
-            let scripts = view.configuration.userContentController.userScripts
-            #expect(!scripts.contains { $0.source.hasPrefix("// Nook Vault Autofill") })
-            #expect(!scripts.contains { $0.source.hasPrefix("// Nook Vault Passkeys") })
-            for (name, world) in [("nookAutofill", WKContentWorld.world(name: "NookAutofill")),
-                                  ("nookPasskey", WKContentWorld.page)] {
-                let installed = try await view.callAsyncJavaScript(
-                    "return Boolean(window.webkit?.messageHandlers?.[name])",
-                    arguments: ["name": name], in: nil, contentWorld: world)
-                #expect(installed as? Bool == false)
-            }
-            page.unload()
-        } else {
-            #expect(page.primaryWebView == nil && page.isUnloaded)
-        }
+        page.loadWebViewIfNeeded()
+        #expect(page.isUnloaded && page.profile === profile)
     }
-    #endif
 
-    @Test func nativePageConstructionDoesNotEnterWebKit() throws {
+    @Test func nativePageConstructionWaitsForAnOwningHost() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let url = URL(string: "https://native-profile.invalid/page")!
         let page = PageSession(itemID: UUID(), url: url, title: "Native",
                                isPrivate: false, controller: tabs)
         page.loadWebViewIfNeeded()
-        #expect(page.primaryWebView == nil && page.isUnloaded)
-        let profile = Profile(name: "Native", engine: .chromium)
-        #expect(profile.webKitStorage == nil)
+        #expect(page.isUnloaded)
         page.unload()
     }
-    @Test func nativeAndUnownedPagesDoNotFallBackToWebKitAfterControllerRelease() throws {
+    @Test func releasingTheControllerLeavesItsPageUnloaded() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        var tabs: TabsController? = fixture.makeTabs(engine: .chromium)
+        var tabs: TabsController? = fixture.makeTabs()
         let url = URL(string: "about:blank")!
         let page = PageSession(itemID: UUID(), url: url, title: "Native",
                                isPrivate: false, controller: tabs)
@@ -517,27 +483,24 @@ struct ProfileEngineTests {
         #expect(page.controller == nil)
         #expect(page.usesNativePageHost)
         page.loadWebViewIfNeeded()
-        #expect(page.primaryWebView == nil)
+        #expect(page.navigation == nil)
 
         let orphan = PageSession(itemID: UUID(), url: url, title: "Unowned",
                                  isPrivate: false, controller: nil)
         orphan.loadWebViewIfNeeded()
-        #expect(orphan.primaryWebView == nil)
-        orphan.detachedProfile = Profile.createEphemeral(engine: .chromium)
+        #expect(orphan.navigation == nil)
+        orphan.detachedProfile = Profile.createEphemeral()
         orphan.detachedProfile = nil
         #expect(orphan.usesNativePageHost)
 
-        let legacy = fixture.makeTabs(engine: .webKit)
-        page.controller = legacy
-        #expect(page.controller == nil && page.usesNativePageHost)
-        page.loadWebViewIfNeeded()
-        #expect(page.primaryWebView == nil)
+        orphan.loadWebViewIfNeeded()
+        #expect(orphan.navigation == nil)
     }
 
     @Test func keptDeletionPersistsBeforeAdmissionAndCancellationPreservesEverything() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let survivorSpace = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: nil))
         let keptSpace = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: survivorSpace))
         let target = try #require(tabs.tree.dataStoreID(for: keptSpace))
@@ -573,7 +536,7 @@ struct ProfileEngineTests {
     @Test func interruptedKeptDeletionDoesNotReopenAfterRestartOrFailedRecovery() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let survivorSpace = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: nil))
         let keptSpace = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: survivorSpace))
         let target = try #require(tabs.tree.dataStoreID(for: keptSpace))
@@ -581,7 +544,7 @@ struct ProfileEngineTests {
         tabs.deleteSpace(keptSpace, keepingLeftProfile: true)
         tabs.onDeleteProfile = { _, _, _, done in done(.pending) }
         tabs.deleteKeptProfile(target, surviving: survivor) { _ in }
-        let recovered = fixture.makeTabs(engine: .chromium)
+        let recovered = fixture.makeTabs()
         #expect(recovered.device.pendingProfileDeletion == PendingProfileDeletion(target: target, survivor: survivor))
         #expect(recovered.profile(forStore: target) == nil)
         var controlOpened = false
@@ -599,7 +562,7 @@ struct ProfileEngineTests {
         recovered.resumePendingProfileDeletion { if case .success = $0 { succeeded = true } }
         #expect(succeeded && recovered.device.pendingProfileDeletion == nil)
         #expect(recovered.device.keptProfiles?.contains { $0.id == target } == false)
-        let terminal = fixture.makeTabs(engine: .chromium)
+        let terminal = fixture.makeTabs()
         #expect(terminal.device.pendingProfileDeletion == nil)
         #expect(terminal.profile(forStore: target) == nil)
         #expect(terminal.isProfileAvailable(survivor))
@@ -608,7 +571,7 @@ struct ProfileEngineTests {
     @Test func cancelledDeletionWriteFailureRetainsIntentAndRecoveryCannotAuthorizeDeletion() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let keptSpace = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: nil))
         let survivorSpace = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: keptSpace))
         let target = try #require(tabs.tree.dataStoreID(for: keptSpace))
@@ -630,7 +593,7 @@ struct ProfileEngineTests {
         #expect(!tabs.isProfileAvailable(target))
         try FileManager.default.removeItem(at: path)
         try FileManager.default.moveItem(at: saved, to: path)
-        let recovered = fixture.makeTabs(engine: .chromium)
+        let recovered = fixture.makeTabs()
         var reconciled = false
         recovered.onDeleteProfile = { _, reconcileOnly, _, done in
             #expect(reconcileOnly, "Automatic recovery must not authorize marking after a veto/crash")
@@ -650,7 +613,7 @@ struct ProfileEngineTests {
     @Test func deletionPersistenceFailureNeverCallsNativeAndDoesNotForgetProfile() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
-        let tabs = fixture.makeTabs(engine: .chromium)
+        let tabs = fixture.makeTabs()
         let space = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: nil))
         let survivorSpace = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: space))
         let target = try #require(tabs.tree.dataStoreID(for: space))
@@ -674,7 +637,7 @@ struct ProfileEngineTests {
 
     @Test func nativeSearchDeletedCustomSeedUsesExistingGoogleFallback() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let id = try #require(tabs.profiles.first?.id)
         tabs.settings.searchEngineId = "deleted-custom-id"
         var selected: String?
@@ -690,7 +653,7 @@ struct ProfileEngineTests {
 
     @Test func nativeSearchSeedIsExactProfileTokenFreeAndCompactQueriesStayCompact() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let id = try #require(tabs.profiles.first?.id)
         tabs.settings.searchEngineId = SearchProvider.kagi.rawValue
         var seen = false
@@ -713,7 +676,7 @@ struct ProfileEngineTests {
 
     @Test func nativeSearchLateReplyCannotReviveDeletedIdentity() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
-        let tabs = f.makeTabs(engine: .chromium)
+        let tabs = f.makeTabs()
         let id = try #require(tabs.profiles.first?.id)
         var reply: ((Result<ProfileSearchState, Error>) -> Void)?
         tabs.onProfileSearch = { _, _, _, _, _, done in reply = done }
@@ -731,21 +694,11 @@ struct ProfileEngineTests {
         #expect(!accepted)
     }
 
-    @Test func customWebKitStorageAdapterUsesTheSuppliedStore() throws {
-        let id = UUID()
-        let store = WKWebsiteDataStore.nonPersistent()
-        let profile = WebKitProfileStorage.makeProfile(id: id, name: "Imported", icon: "person", dataStore: store)
-        #expect(profile.id == id && profile.engine == .webKit && profile.name == "Imported")
-        #expect(profile.webKitStorage?.dataStore === store)
-        let configuration = try #require(BrowserConfiguration.webViewConfiguration(for: profile))
-        #expect(configuration.websiteDataStore === store)
-    }
-
-    @Test func defaultRegularAndPrivateProfilesUseChromiumWithoutOpeningAWebKitStore() throws {
+    @Test func defaultProfilesHaveDistinctRegularAndPrivateIdentities() throws {
         let regular = Profile()
         let incognito = Profile.createEphemeral()
-        #expect(regular.engine == .chromium && !regular.isEphemeral && regular.webKitStorage == nil)
-        #expect(incognito.engine == .chromium && incognito.isEphemeral && incognito.webKitStorage == nil)
+        #expect(!regular.isEphemeral)
+        #expect(incognito.isEphemeral)
 
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
@@ -755,37 +708,11 @@ struct ProfileEngineTests {
             siteRouting: SiteRoutingManager(settings: settings), directory: fixture.directory)
         let space = try #require(tabs.orderedSpaces.first)
         let profile = try #require(tabs.profile(forSpace: space.id))
-        #expect(tabs.profileEngine == .chromium && profile.engine == .chromium && profile.webKitStorage == nil)
+        #expect(profile.id == tabs.tree.dataStoreID(for: space.id) && !profile.isEphemeral)
+        #expect(incognito.id != regular.id && incognito.id != profile.id)
         #expect(tabs.sessions.isEmpty)
     }
 
-    @Test func explicitPrivateWebKitStorageOwnsAndClearsItsCookies() async throws {
-        let profile = Profile.createEphemeral(engine: .webKit)
-        let store = try #require(profile.webKitStorage?.dataStore)
-        #expect(profile.engine == .webKit && profile.isEphemeral)
-        #expect(!store.isPersistent && profile.webKitStorage?.dataStore === store)
-        let other = Profile.createEphemeral(engine: .webKit)
-        let otherStore = try #require(other.webKitStorage?.dataStore)
-        #expect(other.id != profile.id && otherStore !== store)
-        let configuration = try #require(BrowserConfiguration.webViewConfiguration(for: profile))
-        #expect(configuration.websiteDataStore === store)
-        #expect(configuration.webExtensionController == nil)
-        let cookie = try #require(HTTPCookie(properties: [
-            .name: "owned-test", .value: "one", .domain: "profile.invalid", .path: "/"]))
-        await store.httpCookieStore.setCookie(cookie)
-        await otherStore.httpCookieStore.setCookie(cookie)
-        #expect(await store.httpCookieStore.allCookies().count == 1)
-        #expect(await otherStore.httpCookieStore.allCookies().count == 1)
-        await withCheckedContinuation { continuation in
-            profile.destroyEphemeralDataStore { continuation.resume() }
-        }
-        #expect(await store.httpCookieStore.allCookies().isEmpty)
-        #expect(await otherStore.httpCookieStore.allCookies().count == 1)
-        await withCheckedContinuation { continuation in
-            other.destroyEphemeralDataStore { continuation.resume() }
-        }
-        #expect(await otherStore.httpCookieStore.allCookies().isEmpty)
-    }
 }
 
 @MainActor
@@ -803,12 +730,12 @@ private final class ProfileFixture {
         NookSettingsService(kagiTokenStore: NoTokenStore(), userDefaults: defaults,
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
     }
-    func makeTabs(engine: Profile.Engine) -> TabsController {
+    func makeTabs() -> TabsController {
         let settings = makeSettings()
         return TabsController(settings: settings, windowRegistry: WindowRegistry(),
             blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings),
-            profileEngine: engine, directory: directory.appendingPathComponent("Tabs"))
+            directory: directory.appendingPathComponent("Tabs"))
     }
     func cleanup() {
         defaults.removePersistentDomain(forName: suite)

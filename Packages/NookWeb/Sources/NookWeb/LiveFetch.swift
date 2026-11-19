@@ -25,11 +25,12 @@ public typealias ProfileLiveFetch = @MainActor (UUID, ProfileLiveSource) async t
 enum LiveFetch {
     enum Failure: Error { case signedOut, failed }
 
-    /// Feeds follow redirects and carry no browser cookies.
+    /// Feeds follow redirects and use no browser cookies or stored credentials.
     private static let feedSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
         configuration.httpShouldSetCookies = false
+        configuration.urlCredentialStorage = nil
         configuration.urlCache = nil
         configuration.timeoutIntervalForRequest = 20
         return URLSession(configuration: configuration)
@@ -63,7 +64,6 @@ enum LiveFetch {
     static func feed(_ url: URL) async throws -> (title: String?, pages: [LivePage]) {
         var request = URLRequest(url: url)
         request.setValue("application/rss+xml, application/atom+xml, application/xml;q=0.9, */*;q=0.8", forHTTPHeaderField: "Accept")
-        if let agent = PlatformUserAgent.custom { request.setValue(agent, forHTTPHeaderField: "User-Agent") }
         guard let (data, response) = try? await feedSession.data(for: request),
               (response as? HTTPURLResponse)?.statusCode == 200,
               let parsed = LiveParse.feed(data, base: response.url ?? url) else { throw Failure.failed }
@@ -78,7 +78,7 @@ extension TabsController {
                             while ownsSource: @escaping @MainActor () -> Bool) async throws -> ProfileLiveResponse {
         guard let fetch = nativeLiveFetch else { throw ProfileLiveFailure.unavailable }
         func current() -> Bool {
-            profileEngine == .chromium && !isTerminating && isProfileAvailable(profileID) &&
+            !isTerminating && isProfileAvailable(profileID) &&
                 tree.space(spaceID) != nil && profile(forSpace: spaceID)?.id == profileID && ownsSource()
         }
         let changes = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))

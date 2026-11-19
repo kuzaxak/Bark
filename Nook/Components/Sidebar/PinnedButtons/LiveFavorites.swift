@@ -90,9 +90,7 @@ final class LiveFavorites {
         guard tabs.settings.favoriteMeetingsAndMail, !window.isIncognito,
               let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false,
               let kind = GoogleFavorite(url: item.url) else { return nil }
-        if tabs.profileEngine == .chromium {
-            guard kind.isLiveInChromium(engineFetch: tabs.nativeLiveFetch != nil, declaresCalendarAccess: Self.declaresCalendarAccess) else { return nil }
-        }
+        guard kind.isLiveInChromium(engineFetch: tabs.nativeLiveFetch != nil, declaresCalendarAccess: Self.declaresCalendarAccess) else { return nil }
         return kind
     }
 
@@ -227,9 +225,7 @@ final class LiveFavorites {
         return tabs.orderedSpaces.filter { !$0.isAgent }.flatMap { tabs.favorites(of: $0.id) }.compactMap { item in
             guard seen.insert(item.id).inserted, let kind = GoogleFavorite(url: item.url),
                   let spaceID = tabs.spaceID(of: item.id), tabs.space(spaceID)?.isAgent == false else { return nil }
-            if tabs.profileEngine == .chromium {
-                guard kind.isLiveInChromium(engineFetch: tabs.nativeLiveFetch != nil, declaresCalendarAccess: Self.declaresCalendarAccess) else { return nil }
-            }
+            guard kind.isLiveInChromium(engineFetch: tabs.nativeLiveFetch != nil, declaresCalendarAccess: Self.declaresCalendarAccess) else { return nil }
             return (item.id, spaceID, kind)
         }
     }
@@ -266,7 +262,7 @@ final class LiveFavorites {
         // Reuse the existing per-favorite task as its admission claim. Native
         // mail batches (and individual refreshes) run one source at a time,
         // leaving the other profile slot available to the folder batch.
-        let previous = tabs.profileEngine == .chromium ? nativeMailTail : nil
+        let previous = nativeMailTail
         let task = Task { @MainActor in
             if let previous { await previous.value }
             guard !Task.isCancelled,
@@ -292,7 +288,7 @@ final class LiveFavorites {
             if let profile { mail[itemID] = MailRead(outcome: outcome, at: sent, spaceID: spaceID, profileID: profile, account: account) }
         }
         mailFetches[itemID]?.task = task
-        if tabs.profileEngine == .chromium { nativeMailTail = task }
+        nativeMailTail = task
         return task
     }
 

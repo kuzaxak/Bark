@@ -34,20 +34,18 @@ enum Check {
         precondition(ShortcutAction.allCases.filter { $0 != .organizeTabs }.allSatisfy { $0.isAvailable(organizerModel: false, organizerEnabled: false) },
                      "No other action depends on the organizer")
 
-        precondition(!ShortcutAction.installExtension.isOffered(chromium: true, privateWindow: false), "Install Extension stays out of the command bar and Settings")
-        precondition(!ShortcutAction.manageExtensions.isOffered(chromium: true, privateWindow: true),
+        precondition(!ShortcutAction.installExtension.isOffered(privateWindow: false), "Install Extension stays out of the command bar and Settings")
+        precondition(!ShortcutAction.manageExtensions.isOffered(privateWindow: true),
                      "Manage Extensions stays out of a private window, where it cannot open")
-        precondition(ShortcutAction.manageExtensions.isOffered(chromium: true, privateWindow: false), "Manage Extensions is offered in a regular window")
-        precondition(ShortcutAction.allCases.filter { $0 != .installExtension }.allSatisfy { $0.isOffered(chromium: true, privateWindow: false) },
+        precondition(ShortcutAction.manageExtensions.isOffered(privateWindow: false), "Manage Extensions is offered in a regular window")
+        precondition(ShortcutAction.allCases.filter { $0 != .installExtension }.allSatisfy { $0.isOffered(privateWindow: false) },
                      "Every other action is offered")
-        precondition(ShortcutAction.allCases.filter { $0 != .installExtension && $0 != .manageExtensions }.allSatisfy { $0.isOffered(chromium: true, privateWindow: true) },
+        precondition(ShortcutAction.allCases.filter { $0 != .installExtension && $0 != .manageExtensions }.allSatisfy { $0.isOffered(privateWindow: true) },
                      "Every other action is offered in a private window")
-        precondition(ShortcutAction.allCases.allSatisfy { $0.isOffered(chromium: false, privateWindow: true) }, "WebKit offers every action")
-        precondition(!ShortcutAction.undoCloseTab.showsKey(commandZ, chromium: true), "Undo Close Tab shows no Command-Z on Chromium")
-        precondition(ShortcutAction.undoCloseTab.showsKey(commandZ, chromium: false), "WebKit shows Command-Z")
-        precondition(ShortcutAction.undoCloseTab.showsKey(KeyCombination(key: "t", modifiers: [.command, .shift]), chromium: true),
+        precondition(!ShortcutAction.undoCloseTab.showsKey(commandZ), "Undo Close Tab shows no Command-Z on Chromium")
+        precondition(ShortcutAction.undoCloseTab.showsKey(KeyCombination(key: "t", modifiers: [.command, .shift])),
                      "A key the person bound to Undo Close Tab shows")
-        precondition(ShortcutAction.zoomIn.showsKey(KeyCombination(key: "=", modifiers: [.command]), chromium: true), "Other actions show their keys")
+        precondition(ShortcutAction.zoomIn.showsKey(KeyCombination(key: "=", modifiers: [.command])), "Other actions show their keys")
 
         let defaults = KeyboardShortcut.defaultShortcuts
         let bound = defaults.filter { !$0.keyCombination.key.isEmpty }
@@ -203,8 +201,6 @@ enum Check {
         var activeWindow: ExtensionWindowFixture?
     }
     final class Tabs {
-        enum Engine { case chromium }
-        let profileEngine = Engine.chromium
         var opened: [UUID] = []
         @MainActor func extensionControlsProfileID(in window: ExtensionWindowFixture) -> UUID? {
             window.profileID

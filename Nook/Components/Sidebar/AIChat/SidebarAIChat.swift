@@ -157,12 +157,9 @@ struct SidebarAIChat: View {
                     showClearMessagesDialog()
                 }
                 .disabled(aiService.messages.isEmpty)
-                // With Developer Mode on, the panel's tab bar has the close button. Chromium has no such bar.
-                if !nookSettings.developerModeEnabled || browserManager.engine == .chromium {
-                    Button("Close", systemImage: "xmark") {
-                        withAnimation(NookDesign.Motion.standard) {
-                            windowState.isSidebarAIChatVisible = false
-                        }
+                Button("Close", systemImage: "xmark") {
+                    withAnimation(NookDesign.Motion.standard) {
+                        windowState.isSidebarAIChatVisible = false
                     }
                 }
             }

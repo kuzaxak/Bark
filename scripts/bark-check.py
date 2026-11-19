@@ -570,7 +570,7 @@ def check_release_shell(architecture):
             for image in (app / "Contents/MacOS/Bark",
                           products / "NookNativeShell.framework/Versions/A/NookNativeShell"):
                 run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
-                    "--arch", architecture, "--image", image)
+                    "--arch", architecture, "--shell-image", image)
         finally:
             unregister_unsigned_shell(app)
     print(f"Built and verified the unsigned {architecture} Bark Release shell.")

@@ -6,8 +6,7 @@ import NookWeb
 import AppKit
 import SwiftUI
 
-/// The existing tab-tree sidebar only. Chromium owns the adjacent web surface;
-/// constructing WindowView/WebsiteView here would reinstate WebKit hosting.
+/// The native tab-tree sidebar. Chromium mounts the web surface beside it.
 struct ChromiumSidebarShell: View {
     @ObservedObject var browserManager: BrowserManager
     let storage: ChromiumAppStorage

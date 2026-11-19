@@ -35,12 +35,9 @@ class ShellBoundaryTests(unittest.TestCase):
                 verify_shell_boundary(root)
             self.assertEqual(str(caught.exception).count("Handler.swift:1:"), 3)
 
-    def test_allows_legacy_page_adapter_and_read_only_import_paths(self):
+    def test_allows_read_only_import_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            shared = root / "Packages/NookWeb/Sources/WebKitAdapter.swift"
-            shared.parent.mkdir(parents=True)
-            shared.write_text("import WebKit\nlet page: WKWebView? = nil\n")
             migration = root / "App/LegacyDataMigration.swift"
             migration.parent.mkdir()
             migration.write_text('import Foundation\n// WKWebsiteDataStore is unnecessary here.\n'

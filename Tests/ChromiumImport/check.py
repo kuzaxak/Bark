@@ -44,7 +44,7 @@ with TemporaryDirectory(prefix='bark-import-check-') as directory:
     c = ['xcrun', 'swiftc', '-swift-version', '5', '-target', target, '-parse-as-library', '-I', str(debug / 'Modules'),
          '-I', str(root / 'Nook/ThirdParty/AdblockRustFFI/NookAdblock.xcframework/macos-arm64_x86_64/Headers'),
          *sources, str(root / 'App/Chromium/ChromiumStartup.swift'), *sorted(str(p) for p in (root / 'Tests/ChromiumImport').glob('*.swift')),
-         *objects, str(debug / 'libnook_adblock.a'), '-framework', 'AppKit', '-framework', 'WebKit', '-framework', 'Security',
+         *objects, str(debug / 'libnook_adblock.a'), '-framework', 'AppKit', '-framework', 'Security',
          '-lc++', '-lsqlite3', '-o', str(binary)]
     p = subprocess.run(c, capture_output=True, text=True)
     if p.returncode:

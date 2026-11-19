@@ -78,9 +78,9 @@ import NookWeb
         let personalRow = manager.allDownloads.first { $0.origin.profileID == personal }!
         precondition(Set(manager.allDownloads.map(\.id)).count == 3)
         let regularWindow = BrowserWindowState(), privateA = BrowserWindowState(), privateB = BrowserWindowState()
-        privateA.isIncognito = true; privateA.ephemeralProfile = .createEphemeral(id: work, engine: .chromium)
+        privateA.isIncognito = true; privateA.ephemeralProfile = .createEphemeral(id: work)
         let otherPrivate = UUID()
-        privateB.isIncognito = true; privateB.ephemeralProfile = .createEphemeral(id: otherPrivate, engine: .chromium)
+        privateB.isIncognito = true; privateB.ephemeralProfile = .createEphemeral(id: otherPrivate)
         Native.emit(profile: otherPrivate, source: 34, guid: guid, flags: 1)
         precondition(manager.visibleDownloads(in: regularWindow).count == 2 &&
             manager.visibleDownloads(in: regularWindow).allSatisfy { !$0.origin.isPrivate })

@@ -39,7 +39,7 @@ extension TabsController {
             }
             return isProfileAvailable(profileID) && (page == nil || page?.profile?.id == profileID)
         }
-        guard profileEngine == .chromium, valid(), let action = onProfileSearch else {
+        guard valid(), let action = onProfileSearch else {
             completion(.failure(ProfileSearchError.unavailable)); return
         }
         struct Seed: Encodable {
@@ -79,7 +79,7 @@ extension TabsController {
     /// selected; native metadata owns URL/POST dispatch when its blank is ready.
     @discardableResult
     public func openSearch(_ query: String, in window: BrowserWindowState, placement: Placement) -> UUID? {
-        guard profileEngine == .chromium, isSearchInput(query),
+        guard isSearchInput(query),
               placement == .newTab || placement == .background,
               windowRegistry.windows[window.id] === window,
               let id = open(url: URL(string: "about:blank")!, in: window, placement: .background, title: query),

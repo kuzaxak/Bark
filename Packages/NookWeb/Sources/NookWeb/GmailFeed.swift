@@ -143,7 +143,7 @@ extension TabsController {
     /// A Gmail favorite's unread mail, fetched by the Chromium profile of its space.
     public func gmailInbox(inSpace spaceID: UUID, account: Int, forFavorite itemID: UUID? = nil) async -> GmailFeed.Outcome {
         guard let profile = profile(forSpace: spaceID) else { return .failed }
-        guard profile.engine == .chromium, !profile.isEphemeral, account >= 0 else { return .unavailable }
+        guard !profile.isEphemeral, account >= 0 else { return .unavailable }
         do {
             let response = try await nativeLiveResponse(.gmail(account: account), profileID: profile.id, spaceID: spaceID) {
                 guard let itemID else { return true }

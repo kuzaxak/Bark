@@ -17,10 +17,8 @@ import NookWeb
 
 extension BrowserManager: TabActions {
     var spaceSync: (any SpaceSyncControls)? {
-        if engine == .chromium {
-            guard nookSettings?.didFinishOnboarding == true,
-                  spaceSyncManager.status.availability != .disabled else { return nil }
-        }
+        guard nookSettings?.didFinishOnboarding == true,
+              spaceSyncManager.status.availability != .disabled else { return nil }
         return spaceSyncManager
     }
 
@@ -95,7 +93,7 @@ extension BrowserManager: TabActions {
     }
 
     private func ownsPasswordManagementCommand(_ window: BrowserWindowState) -> Bool {
-        guard engine == .chromium, let nativeWindow = window.window, nativeWindow.isKeyWindow,
+        guard let nativeWindow = window.window, nativeWindow.isKeyWindow,
               let registry = windowRegistry, registry.activeWindow === window,
               registry.windows[window.id] === window, !window.isIncognito, window.privateTree == nil else { return false }
         return window.spaceID.flatMap(tabs.space)?.isAgent == false

@@ -4,8 +4,6 @@ import Foundation
 
 @MainActor
 public protocol PageSessionDelegate: AnyObject {
-    /// Fallback profile for a legacy session without a per-page profile.
-    var currentProfile: Profile? { get }
     func windowSpaceChanged(_ window: BrowserWindowState)
     func presentPeek(url: URL, from session: PageSession)
     func cleanupZoom(for itemID: UUID)

@@ -3,11 +3,9 @@
 
 import re
 
-# NookWeb still owns the legacy page adapter. Blocker and tweak policy cross
-# the Chromium bridge and must stay independent of that adapter.
-SHELL_ROOTS = ("App", "Nook", "Navigation", "CommandPalette", "Onboarding", "UI", "Settings", "ChromiumApp",
-               "Packages/NookBlocker/Sources", "Packages/NookTweaks/Sources",
-               "Packages/NookWeb/Sources/NookWeb/DevTools")
+# Check app sources and each package's production Swift sources. The legacy
+# data reader uses file URLs and never needs a WebKit page or data store.
+SHELL_ROOTS = ("App", "Nook", "Navigation", "CommandPalette", "Onboarding", "UI", "Settings", "ChromiumApp")
 PAGE_TYPE = re.compile(
     r"\b(?:WKWebView(?:Configuration)?|WKWebsiteDataStore|WKNavigationDelegate|WKUIDelegate|"
     r"WKScriptMessageHandler(?:WithReply)?|WebKitPageAccess|WebKitPageNavigation|"
@@ -21,8 +19,10 @@ WEBKIT_IMPORT = re.compile(
 
 def shell_source_violations(root):
     violations = []
-    for directory in SHELL_ROOTS:
-        for source in sorted((root / directory).rglob("*.swift")):
+    directories = [root / directory for directory in SHELL_ROOTS]
+    directories.extend(sorted((root / "Packages").glob("*/Sources")))
+    for directory in directories:
+        for source in sorted(directory.rglob("*.swift")):
             for number, line in enumerate(source.read_text().splitlines(), start=1):
                 if line.lstrip().startswith(("//", "/*", "*")):
                     continue

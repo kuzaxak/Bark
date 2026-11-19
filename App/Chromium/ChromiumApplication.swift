@@ -465,7 +465,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
             }, keyBrowserWindow: { [weak shortcuts] in
                 shortcuts?.keyBrowserWindow.map { window in
                     .init(showsSidebar: window.isSidebarVisible, canManageExtensions:
-                        ShortcutAction.manageExtensions.isOffered(chromium: true, privateWindow: window.isIncognito))
+                        ShortcutAction.manageExtensions.isOffered(privateWindow: window.isIncognito))
                 }
             }, isToolbarShown: { [weak manager] in
                 manager?.nookSettings?.topBarAddressView == true

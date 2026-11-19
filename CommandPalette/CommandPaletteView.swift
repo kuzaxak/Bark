@@ -52,7 +52,6 @@ struct CommandPaletteView: View {
     @Environment(\.nookSettings) var nookSettings
     @Environment(\.colorScheme) private var colorScheme
 
-    @FocusState private var isSearchFocused: Bool
     @State private var pickedTabFocus: PaletteTabFocus?
     @State private var text: String = ""
     @State private var selectedSuggestionIndex: Int = -1
@@ -115,7 +114,7 @@ struct CommandPaletteView: View {
     /// than submitting, and the arrow keys pick candidates rather than moving through
     /// suggestions. Handlers return `.ignored` while this is true so the IME gets them.
     private var isComposing: Bool {
-        let responder = isNative ? windowState.window?.firstResponder : NSApp.keyWindow?.firstResponder
+        let responder = windowState.window?.firstResponder
         return (responder as? NSTextInputClient)?.hasMarkedText() ?? false
     }
 
@@ -217,8 +216,7 @@ struct CommandPaletteView: View {
     
     /// Active window width
     private var currentWindowWidth: CGFloat {
-        if isNative { return paletteFrame.width > 0 ? paletteFrame.width : windowState.window?.contentView?.bounds.width ?? 0 }
-        return NSApplication.shared.keyWindow?.frame.width ?? 0
+        paletteFrame.width > 0 ? paletteFrame.width : windowState.window?.contentView?.bounds.width ?? 0
     }
     
     /// Check if the command palette fits in the window
@@ -242,7 +240,7 @@ struct CommandPaletteView: View {
     /// Add Split View's empty pane in global coordinates; nil while the bar is not filling one.
     private var emptyPane: CGRect? {
         guard let addSplit = commandPalette.addSplit,
-              !isNative || !commandPalette.pageFrame.isEmpty else { return nil }
+              !commandPalette.pageFrame.isEmpty else { return nil }
         let layout = SplitViewManager.PageLayout(slots: addSplit.slots, vertical: addSplit.vertical,
                                                  dividers: SplitDrop.equalDividers(addSplit.slots.count))
         return SplitViewManager.paneFrames(in: commandPalette.pageFrame, of: layout)[addSplit.index]
@@ -254,87 +252,39 @@ struct CommandPaletteView: View {
         let barWidth = pane.map { max(200, min(effectiveCommandPaletteWidth, $0.width - commandPaletteHorizontalPadding * 2)) }
             ?? effectiveCommandPaletteWidth
 
-        return Group {
-            if isNative {
-                AddressAnchoredPanel(width: barWidth, centered: true, isPresented: isVisible,
-                    canPresent: { nativeWindow in
-                        windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState
-                    }, onWindowBounds: { bounds in if paletteFrame != bounds { paletteFrame = bounds } },
-                    onRetire: {
-                        commandPalette.close()
-                        pickedTabFocus?.panelDidClose()
-                    }) {
-                    VStack(spacing: 4) {
-                        if commandPalette.addSplit != nil {
-                            HStack {
-                                Spacer()
-                                SplitPaneButton(systemImage: "xmark", help: "Close Split View") { commandPalette.close() }
-                            }
-                        }
-                        paletteCard(width: barWidth)
-                    }
-                        .environmentObject(browserManager).environmentObject(gradientColorManager)
-                        .environment(browserManager.tabs).environment(windowState).environment(commandPalette)
-                        .environment(nookSettings).environment(\.nookSettings, nookSettings)
-                        .environment(\.tabActions, browserManager).environment(\.colorScheme, colorScheme)
-                        .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
-                        .background(AddressOutsideClickRegion(onOutsideClick: { commandPalette.close() }))
-                }
-            } else {
-                ZStack {
-                    Color.clear
-                        .ignoresSafeArea()
-                        .contentShape(Rectangle())
-                        .backgroundDraggable(onClick: {
-                            commandPalette.close()
-                        })
-
-                    VStack {
-                        // A pane below the others takes the bar near its top; one beside them, at the middle.
-                        if let pane, commandPalette.addSplit?.vertical == true {
-                            Spacer().frame(height: max(0, pane.minY - paletteFrame.minY + NookDesign.Size.navRow + NookDesign.Spacing.sm * 2))
-                        } else {
-                            Spacer()
-                        }
-                        HStack(spacing: 0) {
-                            if let pane {
-                                Spacer().frame(width: max(0, pane.midX - barWidth / 2 - paletteFrame.minX))
-                            } else {
-                                Spacer()
-                            }
-                            VStack {
-                                paletteCard(width: barWidth)
-                                Spacer()
-                            }
-                            .frame(
-                                width: barWidth,
-                                height: 560
-                            )
-
-                            Spacer()
-                        }
+        AddressAnchoredPanel(width: barWidth, centered: true, isPresented: isVisible,
+            canPresent: { nativeWindow in
+                windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState
+            }, onWindowBounds: { bounds in if paletteFrame != bounds { paletteFrame = bounds } },
+            onRetire: {
+                commandPalette.close()
+                pickedTabFocus?.panelDidClose()
+            }) {
+            VStack(spacing: 4) {
+                if commandPalette.addSplit != nil {
+                    HStack {
                         Spacer()
-                    }
-
-                    // The empty pane's close button, above the bar's click-away background.
-                    if let pane {
                         SplitPaneButton(systemImage: "xmark", help: "Close Split View") { commandPalette.close() }
-                            .position(x: pane.maxX - paletteFrame.minX - NookDesign.Spacing.sm - NookDesign.Size.rowButton / 2,
-                                      y: pane.minY - paletteFrame.minY + NookDesign.Spacing.sm + NookDesign.Size.navRow / 2)
                     }
                 }
+                paletteCard(width: barWidth)
             }
+                .environmentObject(browserManager).environmentObject(gradientColorManager)
+                .environment(browserManager.tabs).environment(windowState).environment(commandPalette)
+                .environment(nookSettings).environment(\.nookSettings, nookSettings)
+                .environment(\.tabActions, browserManager).environment(\.colorScheme, colorScheme)
+                .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
+                .background(AddressOutsideClickRegion(onOutsideClick: { commandPalette.close() }))
         }
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { if !isNative { paletteFrame = $0 } }
         .allowsHitTesting(isVisible)
         .opacity(isVisible ? 1.0 : 0.0)
         .onModifierKeysChanged(mask: .command) { _, keys in commandHeld = keys.contains(.command) }
-        .onChange(of: presentation, initial: isNative) { previous, current in
+        .onChange(of: presentation, initial: true) { previous, current in
             if current != .closed {
                 pickedTabFocus = nil
                 searchManager.setTabs(browserManager.tabs, window: windowState)
                 searchManager.setHistoryManager(browserManager.historyManager)
-                if isNative, let editor = commandPalette.addressEdit, let page = browserManager.frontPage(in: windowState) {
+                if let editor = commandPalette.addressEdit, let page = browserManager.frontPage(in: windowState) {
                     searchManager.setWebSuggestionTarget(for: page) { editor.isCurrent }
                 } else {
                     searchManager.clearWebSuggestionTarget()
@@ -342,21 +292,7 @@ struct CommandPaletteView: View {
                 searchManager.updateSpaceContext()
 
                 text = commandPalette.prefilledText
-
-                if !isNative {
-                    DispatchQueue.main.async {
-                        isSearchFocused = true
-                        DispatchQueue.main.async {
-                            NSApplication.shared.sendAction(
-                                #selector(NSText.selectAll(_:)),
-                                to: nil,
-                                from: nil
-                            )
-                        }
-                    }
-                }
             } else {
-                isSearchFocused = false
                 // Without this the field editor keeps first responder and Space no longer scrolls the page.
                 if previous != .closed, pickedTabFocus == nil, nativeOwnerCurrent, !windowState.nativePresentationIsPreparing,
                    let page = browserManager.frontPage(in: windowState),
@@ -411,16 +347,10 @@ struct CommandPaletteView: View {
         .onChange(of: commandPalette.prefilledText) { _, newValue in
             if isVisible {
                 text = newValue
-                if !isNative {
-                    DispatchQueue.main.async {
-                        isSearchFocused = true
-                    }
-                }
             }
         }
     }
 
-    private var isNative: Bool { browserManager.engine == .chromium }
     private var nativeOwnerCurrent: Bool {
         guard let nativeWindow = windowState.window else { return false }
         return nativeWindow.isKeyWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState &&
@@ -482,8 +412,7 @@ struct CommandPaletteView: View {
                                 .allowsHitTesting(false)
                         }
                     }
-                    .modifier(PaletteFieldFocus(native: isNative, legacy: $isSearchFocused,
-                        requested: commandPalette.isVisible, prefill: commandPalette.prefilledText,
+                    .modifier(PaletteFieldFocus(requested: commandPalette.isVisible, prefill: commandPalette.prefilledText,
                         ownerWindow: { windowState.window },
                         canFocus: { nativeOwnerCurrent && commandPalette.isVisible }))
                     .onKeyPress(phases: .down) { press in handleKey(press) }
@@ -561,7 +490,7 @@ struct CommandPaletteView: View {
                     },
                     tabDestination: { browserManager.tabs.tabSwitchDestination(for: $0, in: windowState) },
                     hoveredIndex: $hoveredSuggestionIndex,
-                    maximumHeight: isNative ? min(470, max(80, (paletteFrame.height > 0 ? paletteFrame.height : windowState.window?.contentView?.bounds.height ?? 600) - (commandPalette.addSplit == nil ? 100 : 140))) : 470,
+                    maximumHeight: min(470, max(80, (paletteFrame.height > 0 ? paletteFrame.height : windowState.window?.contentView?.bounds.height ?? 600) - (commandPalette.addSplit == nil ? 100 : 140))),
                     onSelect: { suggestion in
                         selectSuggestion(suggestion)
                     }
@@ -687,7 +616,7 @@ struct CommandPaletteView: View {
 
     private var returnPlacement: String {
         if commandPalette.addSplit != nil { return "the new pane" }
-        if commandPalette.shouldNavigateCurrentTab, commandPalette.addressEdit?.isCurrent != false,
+        if commandPalette.addressEdit?.isCurrent == true,
            let page = browserManager.frontPage(in: windowState) {
             return page.isDetached ? "this Peek" : "this tab"
         }
@@ -696,9 +625,8 @@ struct CommandPaletteView: View {
     }
 
     private func maySubmit() -> Bool {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return false }
-        if isNative && commandPalette.shouldNavigateCurrentTab,
-           commandPalette.addressEdit?.isCurrent != true {
+        guard nativeOwnerCurrent, commandPalette.isVisible else { return false }
+        if commandPalette.addressEdit?.isCurrent == false {
             commandPalette.close()
             return false
         }
@@ -749,10 +677,8 @@ struct CommandPaletteView: View {
             if commandPalette.addSplit != nil {
                 fillEmptyPane(with: match.itemID)
             } else {
-                if isNative {
-                    pickedTabFocus = PaletteTabFocus(item: match.itemID, manager: browserManager,
-                                                     window: windowState, palette: commandPalette)
-                }
+                pickedTabFocus = PaletteTabFocus(item: match.itemID, manager: browserManager,
+                                                 window: windowState, palette: commandPalette)
                 browserManager.tabs.select(match.itemID, in: windowState)
             }
         case .folder(let folder):
@@ -762,7 +688,7 @@ struct CommandPaletteView: View {
             guard searchManager.recordPick(prefix: text, url: historyEntry.url) else { return }
             open(historyEntry.url)
         case .url, .search:
-            if isNative, browserManager.openPasswordManagementCommand(
+            if browserManager.openPasswordManagementCommand(
                 suggestion.text, in: windowState, hasSearchOrPlacementOverride: hasPasswordCommandOverride(suggestion.text),
                 dismissEditor: finishSubmission
             ) {
@@ -771,7 +697,7 @@ struct CommandPaletteView: View {
             // Explicit site-search templates remain URLs, including mouse picks.
             if activeSiteSearch != nil, case .search = suggestion.type, let url = url(for: suggestion) {
                 open(url)
-            } else if commandPalette.shouldNavigateCurrentTab, let session = browserManager.frontPage(in: windowState) {
+            } else if commandPalette.addressEdit != nil, let session = browserManager.frontPage(in: windowState) {
                 session.typedVisitPending = true
                 session.navigate(to: suggestion.text)
             } else if let query = nativeSearchQuery(for: suggestion) {
@@ -800,7 +726,7 @@ struct CommandPaletteView: View {
     /// Loads `url` in the page in front when the palette was opened to navigate it, else in a new tab.
     private func open(_ url: URL) {
         guard maySubmit() else { return }
-        guard commandPalette.shouldNavigateCurrentTab, let page = browserManager.frontPage(in: windowState) else { return openInNewTab(url) }
+        guard commandPalette.addressEdit != nil, let page = browserManager.frontPage(in: windowState) else { return openInNewTab(url) }
         if page.isDetached {
             page.typedVisitPending = true
             page.load(url)
@@ -829,7 +755,7 @@ struct CommandPaletteView: View {
     /// Every key the field sees, ahead of the text view. While an input method composes, all go
     /// to it. Keys left `.ignored` get the text view's own behaviour.
     private func handleKey(_ press: KeyPress) -> KeyPress.Result {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return .ignored }
+        guard nativeOwnerCurrent, commandPalette.isVisible else { return .ignored }
         if isComposing { return .ignored }
         // Arrow keys arrive flagged as keypad and function keys, and Caps Lock rides along with
         // anything, so neither counts as a modifier here.
@@ -987,15 +913,14 @@ struct CommandPaletteView: View {
     private func actionRows(matching query: String, wordPrefixOnly: Bool) -> [SearchManager.SearchSuggestion] {
         let manager = browserManager.keyboardShortcutManager
         let canAddSplit = browserManager.splitManager.offersAddSplitView(in: windowState) && commandPalette.addSplit == nil
-        let chromium = browserManager.tabs.profileEngine == .chromium
         let scored = Self.barActions.filter {
-            ($0 != .addSplitView || canAddSplit) && $0.isOffered(chromium: chromium, privateWindow: windowState.isIncognito) &&
+            ($0 != .addSplitView || canAddSplit) && $0.isOffered(privateWindow: windowState.isIncognito) &&
                 $0.isAvailable(organizerModel: TabOrganizationModel.isAvailable, organizerEnabled: nookSettings.tabOrganizerEnabled)
         }.compactMap { action -> (row: SearchManager.SearchSuggestion, score: Int)? in
             guard let score = PaletteText.matchScore(query: query, title: action.displayName, detail: nil),
                   !wordPrefixOnly || score == 2 else { return nil }
             let shortcut = manager?.shortcut(for: action).flatMap {
-                $0.isEnabled && !$0.keyCombination.key.isEmpty && action.showsKey($0.keyCombination, chromium: chromium)
+                $0.isEnabled && !$0.keyCombination.key.isEmpty && action.showsKey($0.keyCombination)
                     ? $0.keyCombination.displayString : nil
             }
             let match = SearchManager.ActionMatch(id: action.rawValue, title: action.displayName, detail: shortcut,
@@ -1032,7 +957,7 @@ struct CommandPaletteView: View {
     /// Runs an action row on the tab selected when the bar opened, through the same handler as
     /// its shortcut. An action that needs a choice lists the choices instead.
     private func runAction(_ match: SearchManager.ActionMatch) {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
+        guard nativeOwnerCurrent, commandPalette.isVisible else { return }
         let parts = match.id.split(separator: ":", maxSplits: 1).map(String.init)
         guard let action = ShortcutAction(rawValue: parts[0]) else { return }
         if match.takesChoice {
@@ -1125,7 +1050,7 @@ struct CommandPaletteView: View {
     }
 
     private var fieldEditor: NSTextView? {
-        (isNative ? windowState.window?.firstResponder : NSApp.keyWindow?.firstResponder) as? NSTextView
+        windowState.window?.firstResponder as? NSTextView
     }
 
     /// UTF-16 range from the start of the word before the caret to the caret.
@@ -1202,7 +1127,7 @@ struct CommandPaletteView: View {
     /// Explicit URLs and site-search templates keep their existing URL path.
     /// Ordinary native queries stay text until the exact profile dispatches them.
     private func nativeSearchQuery(for row: SearchManager.SearchSuggestion) -> String? {
-        guard isNative, activeSiteSearch == nil else { return nil }
+        guard activeSiteSearch == nil else { return nil }
         switch row.type {
         case .url, .search: return isSearchInput(row.text) ? row.text : nil
         default: return nil
@@ -1333,8 +1258,6 @@ private final class PaletteTabFocus {
 /// The native card has a separate hosting root. Only field focus belongs here;
 /// palette text/scope/actions stay in CommandPaletteView's single existing owner.
 private struct PaletteFieldFocus: ViewModifier {
-    let native: Bool
-    var legacy: FocusState<Bool>.Binding
     let requested: Bool
     let prefill: String
     let ownerWindow: () -> NSWindow?
@@ -1342,15 +1265,13 @@ private struct PaletteFieldFocus: ViewModifier {
     @FocusState private var nativeFocused: Bool
 
     func body(content: Content) -> some View {
-        if native {
-            content.focused($nativeFocused)
-                .onAppear { requestFocus() }
-                .onChange(of: requested) { _, value in
-                    if value { requestFocus() } else { nativeFocused = false }
-                }
-                .onChange(of: prefill) { _, _ in if requested { requestFocus() } }
-                .onDisappear { nativeFocused = false }
-        } else { content.focused(legacy) }
+        content.focused($nativeFocused)
+            .onAppear { requestFocus() }
+            .onChange(of: requested) { _, value in
+                if value { requestFocus() } else { nativeFocused = false }
+            }
+            .onChange(of: prefill) { _, _ in if requested { requestFocus() } }
+            .onDisappear { nativeFocused = false }
     }
     private func requestFocus() {
         DispatchQueue.main.async {

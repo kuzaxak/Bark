@@ -14,7 +14,6 @@ public final class SiteRoutingManager {
     private let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "SiteRouting")
 
     private let settings: NookSettingsService
-    public weak var host: SiteRoutingHost?
 
     public init(settings: NookSettingsService) {
         self.settings = settings
@@ -24,22 +23,6 @@ public final class SiteRoutingManager {
 
     public func resolve(url: URL) -> SiteRoutingRule? {
         SiteRoutingRule.best(for: url, in: settings.siteRoutingRules)
-    }
-
-    /// Opens `url` as a new tab in the rule's target space, in the window showing `page`, or
-    /// for a link from another app in the window such links open in. Private windows never route.
-    public func applyRoute(url: URL, from page: AnyObject?) -> Bool {
-        // A sign-in started by a page has to finish in that page's space, where the login belongs.
-        if page != nil, OAuthDetector.isLikelyOAuthURL(url) { return false }
-        guard let host else { return false }
-        return applyRule(to: url) { host.route(url: url, toSpace: $0, from: page) }
-    }
-
-    /// A navigation of `page` from `current` to `url` that the app itself starts, such as a typed
-    /// one, routed as WebKit's navigation policy routes its pages: only when it leaves the site.
-    public func applyRoute(navigating current: URL?, to url: URL, page: AnyObject) -> Bool {
-        guard let host else { return false }
-        return applyRoute(navigating: current, to: url) { host.route(url: url, toSpace: $0, from: page) }
     }
 
     /// Apply a typed route through the caller that owns the editing window.
@@ -84,9 +67,7 @@ public final class SiteRoutingManager {
     /// and the space that took over its login is the one the old profile id names, so that becomes
     /// the target. Rules pointing nowhere are dropped. Runs once per launch and writes only when
     /// something changed.
-    public func dropMergedProfileTargets() {
-        guard let host else { return }
-        let live = host.liveSpaceIDs()
+    public func dropMergedProfileTargets(liveSpaceIDs live: Set<UUID>) {
         var changed = false
         let updated = settings.siteRoutingRules.compactMap { rule -> SiteRoutingRule? in
             guard !live.contains(rule.targetSpaceId) else { return rule }

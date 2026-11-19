@@ -341,7 +341,7 @@ public class DownloadManager: NSObject {
 
     func isVisible(_ item: Download, in window: BrowserWindowState) -> Bool {
         if window.isIncognito {
-            guard let profile = window.ephemeralProfile, profile.engine == .chromium, profile.isEphemeral else { return false }
+            guard let profile = window.ephemeralProfile, profile.isEphemeral else { return false }
             return item.origin.isPrivate && item.origin.profileID == profile.id
         }
         return !item.origin.isPrivate

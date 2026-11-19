@@ -3,9 +3,7 @@
 //  TrackingParamStripper.swift
 //  Nook
 //
-//  Implements `$removeparam` for main-frame navigations. SafariConverterLib drops these rules
-//  (WebKit content blockers cannot rewrite URLs), so they are parsed here from the raw filter
-//  lines and applied in Tab.decidePolicyFor by restarting the navigation without the parameters.
+//  Parses $removeparam rules for main-frame navigations.
 //
 //  Supported forms (uBO/AdGuard):
 //    ||host^$removeparam=name           ||host/path$removeparam=/regex/

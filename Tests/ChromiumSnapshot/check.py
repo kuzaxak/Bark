@@ -38,7 +38,21 @@ with TemporaryDirectory(prefix='bark-snapshot-') as directory:
     if '/WebKit.framework/' in linked:
         raise SystemExit('Chromium snapshot harness links WebKit')
     # Export the actual maintained Swift script source, not a separate JS copy.
-    export=out/'Export.swift';export.write_text('import Foundation\n@main struct Export {static func main(){FileHandle.standardOutput.write(Data(DevPickerScript.source.utf8))}}\n')
+    export = out / 'Export.swift'
+    export.write_text("""import Foundation
+@main struct Export {
+    static func main() throws {
+        let scripts = [
+            "source": DevPickerScript.source,
+            "describe": DevPickerScript.describeScript(selector: "#save")!,
+            "describeMissing": DevPickerScript.describeScript(selector: "#missing")!,
+            "hints": DevPickerScript.hintsScript(selector: "#save")!,
+            "hintsMissing": DevPickerScript.hintsScript(selector: "#missing")!
+        ]
+        FileHandle.standardOutput.write(try JSONEncoder().encode(scripts))
+    }
+}
+""")
     cmd=['swiftc','-swift-version','5','-parse-as-library',str(picker),str(export),'-o',str(out/'export')]
     p=subprocess.run(cmd,capture_output=True,text=True);(out/'export-compile.log').write_text(p.stdout+p.stderr)
     if p.returncode:print(p.stderr);raise SystemExit(p.returncode)
@@ -46,8 +60,8 @@ with TemporaryDirectory(prefix='bark-snapshot-') as directory:
     if p.returncode:
         print(p.stderr.decode(errors='replace'))
         raise SystemExit(p.returncode)
-    (out/'picker.js').write_bytes(p.stdout)
+    (out/'picker-scripts.json').write_bytes(p.stdout)
     node=sys.argv[1] if len(sys.argv)>1 else 'node'
-    node_command=[node,str(root/'Tests/ChromiumSnapshot/Script.cjs'),str(out/'picker.js')]
+    node_command=[node,str(root/'Tests/ChromiumSnapshot/Script.cjs'),str(out/'picker-scripts.json')]
     (out/'node-command.json').write_text(json.dumps(node_command,indent=2))
     p=subprocess.run(node_command,capture_output=True,text=True);(out/'script.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr);raise SystemExit(p.returncode)

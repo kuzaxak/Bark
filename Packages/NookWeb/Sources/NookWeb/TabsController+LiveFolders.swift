@@ -122,7 +122,7 @@ extension TabsController {
               let spaceID = tree.spaceID(of: folderID), let profile = profile(forSpace: spaceID) else { return nil }
         let feedURL = source.feedURL
         let authenticated = feedURL == nil
-        guard !authenticated || (profile.engine == .chromium && !profile.isEphemeral && nativeLiveFetch != nil) else {
+        guard !authenticated || (!profile.isEphemeral && nativeLiveFetch != nil) else {
             liveStatus[folderID] = .unavailable
             return nil
         }
@@ -187,7 +187,7 @@ extension TabsController {
     /// when signed out or when the list could not be read.
     public func pullRequests(inSpace spaceID: UUID, forFavorite itemID: UUID? = nil) async -> [LivePage] {
         guard let profile = profile(forSpace: spaceID),
-              profile.engine == .chromium, !profile.isEphemeral else { return [] }
+              !profile.isEphemeral else { return [] }
         let favoriteURL = itemID.flatMap { tree.item($0)?.url }
         if itemID != nil, favoriteURL?.host != "github.com" { return [] }
         return (try? await fetchNative(.githubPulls, profileID: profile.id, spaceID: spaceID) {

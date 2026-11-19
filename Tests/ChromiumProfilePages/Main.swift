@@ -201,8 +201,7 @@ private func checkScopedHistoryClear() async throws {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
                               blocker: ContentBlockerManager(settings: settings, storageDirectory: folder.appendingPathComponent("Blocker")),
-                              siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium,
-                              directory: folder.appendingPathComponent("Tabs"))
+                              siteRouting: SiteRoutingManager(settings: settings), directory: folder.appendingPathComponent("Tabs"))
     let first = tabs.tree.orderedSpaces.first!.id
     let second = tabs.createSpace(name: "Personal", icon: "house", accentHex: "#222222", after: first)!
     let workID = tabs.tree.dataStoreID(for: first)!

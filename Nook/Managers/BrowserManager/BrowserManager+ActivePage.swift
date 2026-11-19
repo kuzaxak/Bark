@@ -37,7 +37,7 @@ extension BrowserManager {
     @discardableResult
     func performNativePageCommand(_ command: PageCommand, in window: BrowserWindowState,
                                   page: PageSession) -> Bool {
-        guard tabs.profileEngine == .chromium, windowRegistry?.windows[window.id] === window,
+        guard windowRegistry?.windows[window.id] === window,
               windowRegistry?.activeWindow === window, let keyWindow = CommandWindow.key,
               window.window === keyWindow,
               frontPage(in: window) === page,
@@ -102,7 +102,7 @@ extension BrowserManager {
         let owner = native.nativeWindowID, tab = native.nativeTabID, profile = native.profileID
         let current: @MainActor () -> Bool = { [weak self, weak page, weak window, weak native] in
             guard let self, let page, let window, let native else { return false }
-            return !Task.isCancelled && self.tabs.profileEngine == .chromium &&
+            return !Task.isCancelled &&
                 self.windowRegistry?.windows[window.id] === window &&
                 self.windowRegistry?.activeWindow === window &&
                 window.window != nil && window.window === CommandWindow.key &&

@@ -445,7 +445,6 @@ class BrowserManager: ObservableObject {
     var splitManager: SplitViewManager
     var gradientColorManager: GradientColorManager
     var contentBlockerManager: ContentBlockerManager
-    var findManager: FindManager
     let importManager: ImportManager
     let importSession: BrowserImportSession
     var keyboardShortcutManager: KeyboardShortcutManager?
@@ -473,8 +472,6 @@ class BrowserManager: ObservableObject {
         return entities.map { ($0.id, $0.name) }
     }
 
-    let engine: Profile.Engine = .chromium
-
     init(
         settings: NookSettingsService,
         windowRegistry: WindowRegistry,
@@ -499,7 +496,6 @@ class BrowserManager: ObservableObject {
             siteRouting: siteRouting,
             legacyProfiles: Self.legacyProfileRecords(in: modelContext),
             legacyTree: { [modelContext] in LegacyTabImport.tree(from: modelContext) },
-            profileEngine: .chromium,
             directory: tabsDirectory)
         self.tabs = tabs
         self.spaceSyncManager = SpaceSyncManager(tabs: tabs, enabled: cloudSyncEnabled)
@@ -520,7 +516,6 @@ class BrowserManager: ObservableObject {
             wordStops: PaletteText.stops(from: settings.paletteWordStops))
         self.splitManager = SplitViewManager()
         self.gradientColorManager = GradientColorManager()
-        self.findManager = FindManager()
         self.importManager = importManager
         self.importSession = BrowserImportSession()
 
@@ -550,7 +545,6 @@ class BrowserManager: ObservableObject {
         self.gradientColorManager.setImmediate(.default)
         self.contentBlockerManager.attach(host: self)
         self.contentBlockerManager.prepareLinkCleaning()
-        self.siteRoutingManager.host = self
         self.peekManager.attach(browserManager: self)
         // Migrate legacy history entries (with nil profile) to default profile to avoid cross-profile leakage
         self.migrateUnassignedDataToDefaultProfile()
@@ -594,7 +588,6 @@ class BrowserManager: ObservableObject {
     }
 
     private func updateNativeStartupWarming(_ event: NativeStartupWarmTrigger.Event, in window: BrowserWindowState?) {
-        guard engine == .chromium else { return }
         let context: NativeStartupWarmTrigger.Context? = window.flatMap { window in
             guard !window.isIncognito, windowRegistry?.windows[window.id] === window else { return nil }
             return .init(window: window.id, space: window.spaceID,
@@ -983,20 +976,14 @@ class BrowserManager: ObservableObject {
         if windowState.isSidebarMenuVisible { LibraryMotion.close(windowState) } else { LibraryMotion.present(windowState) }
     }
 
-    /// Shows History as a page over the web content, as Arc does; again hides it.
+    /// Toggles the History section of this window’s Library.
     func showHistory() {
         guard let windowState = windowRegistry?.activeWindow else { return }
-        if engine == .chromium {
-            if windowState.isSidebarMenuVisible, windowState.sidebarMenuSelectedTab == .history {
-                LibraryMotion.close(windowState)
-            } else {
-                windowState.sidebarMenuSelectedTab = .history
-                LibraryMotion.present(windowState)
-            }
-            return
-        }
-        withAnimation(NookDesign.Motion.standard) {
-            windowState.isHistoryPageVisible.toggle()
+        if windowState.isSidebarMenuVisible, windowState.sidebarMenuSelectedTab == .history {
+            LibraryMotion.close(windowState)
+        } else {
+            windowState.sidebarMenuSelectedTab = .history
+            LibraryMotion.present(windowState)
         }
     }
 

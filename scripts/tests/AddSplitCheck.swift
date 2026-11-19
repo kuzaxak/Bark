@@ -89,12 +89,14 @@ struct AddSplitCheck {
         // else (Cmd+T, Cmd+L) drops it too.
         let palette = CommandPalette()
         palette.open(addSplit: adding)
-        precondition(palette.addSplit == adding && !palette.shouldNavigateCurrentTab)
+        precondition(palette.addSplit == adding && palette.addressEdit == nil)
         palette.close()
         precondition(palette.addSplit == nil, "cancel")
         palette.open(addSplit: adding)
-        palette.open(prefill: "https://example.com", navigateCurrentTab: true)
-        precondition(palette.addSplit == nil, "the bar opened for something else")
+        palette.open(prefill: "> Move to Space")
+        precondition(palette.addSplit == nil && palette.addressEdit == nil && palette.prefilledText == "> Move to Space",
+                     "Prefilling an action replaces Add Split without creating an address edit")
+        palette.close()
         await checkAddressEdit()
         print("AddSplitCheck passed")
     }
@@ -133,6 +135,7 @@ struct AddSplitCheck {
 
         front = owner(window: window)
         palette.openAddressEdit(edit)
+        precondition(palette.addressEdit?.id == edit.id && palette.prefilledText == sameURL.absoluteString)
         front = owner(window: window, page: otherTab)
         await finishPresentation()
         precondition(!palette.isVisible && palette.addressEdit == nil,
@@ -152,7 +155,7 @@ struct AddSplitCheck {
         palette.close()
         palette.open()
         await finishPresentation()
-        precondition(palette.isVisible && !palette.shouldNavigateCurrentTab && palette.addressEdit == nil,
+        precondition(palette.isVisible && palette.addressEdit == nil,
                      "A new-tab invocation is independent of the prior edit")
         palette.close()
         palette.open()

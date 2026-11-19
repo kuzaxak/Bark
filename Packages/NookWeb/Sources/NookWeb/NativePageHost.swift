@@ -140,7 +140,7 @@ extension PageSession {
         // completeNativeRelease resumes it only after the ending guard clears.
         guard !nativeIsEnding else { return }
         guard let controller, controller.session(for: itemID) === self,
-              let profile, profile.engine == .chromium,
+              let profile,
               let host = controller.nativePageHost,
               let window = nativePreparationWindow ?? controller.nativePageWindow(for: self),
               controller.windowRegistry.windows[window.id] === window else {
@@ -309,7 +309,7 @@ extension TabsController {
     /// never consults this ceiling, and no admitted page is evicted to meet it.
     public func warmNativeStartupPages(in window: BrowserWindowState,
                                       while canWarm: @escaping @MainActor () -> Bool) async {
-        guard profileEngine == .chromium, !window.isIncognito, window.privateTree == nil,
+        guard !window.isIncognito, window.privateTree == nil,
               let spaceID = window.spaceID, let profileID = tree.dataStoreID(for: spaceID),
               isProfileAvailable(profileID), settings.startupLoadMode != .nothing else { return }
         let startup = settings.startupLoadMode, mode = settings.tabManagementMode
@@ -434,12 +434,12 @@ extension TabsController {
                                   completion: @escaping @MainActor (Bool) -> Void) -> (@MainActor () -> Void) {
         var callback: (@MainActor (Bool) -> Void)? = completion
         func finish(_ ready: Bool) { let done = callback; callback = nil; done?(ready) }
-        guard profileEngine == .chromium, windowRegistry.windows[window.id] === window,
+        guard windowRegistry.windows[window.id] === window,
               !window.isIncognito,
               let target = nativeStartupTarget(for: id), ["http", "https"].contains(target.scheme?.lowercased() ?? ""),
               let page = ensureSession(for: id), !page.isDetached,
               !page.isPrivate, page.navigation == nil, page.nativeCreation == nil,
-              let profile = page.profile, profile.engine == .chromium, !profile.isEphemeral,
+              let profile = page.profile, !profile.isEphemeral,
               window.spaceID.flatMap({ tree.dataStoreID(for: $0) }) == profile.id,
               canAdmit() else { finish(false); return {} }
         page.ensureNativePage(in: window, backgroundAdmission: { [weak self] in

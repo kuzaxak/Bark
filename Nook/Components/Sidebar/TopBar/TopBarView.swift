@@ -21,10 +21,8 @@ enum TopBarMetrics {
 struct TopBarView: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(BrowserWindowState.self) private var windowState
-    @Environment(CommandPalette.self) private var commandPalette
     @Environment(\.nookSettings) var nookSettings
     @Environment(\.colorScheme) private var colorScheme
-    @State private var isHovering: Bool = false
     @State private var previousTabId: UUID? = nil
 
     var body: some View {
@@ -34,7 +32,7 @@ struct TopBarView: View {
             // Main content
             ZStack {
                 HStack(spacing: 8) {
-                    if browserManager.engine == .chromium, !windowState.isSidebarVisible {
+                    if !windowState.isSidebarVisible {
                         Button("Toggle Sidebar", systemImage: "sidebar.left") {
                             browserManager.toggleSidebar(for: windowState)
                         }
@@ -43,11 +41,7 @@ struct TopBarView: View {
                     }
                     SidebarHistoryButtons(atTop: true)
 
-                    if browserManager.engine == .chromium {
-                        URLBarView(isSidebarHovered: false, nativeTopBar: true)
-                    } else {
-                        urlBar
-                    }
+                    URLBarView(isSidebarHovered: false, nativeTopBar: true)
 
                     Spacer()
 
@@ -114,62 +108,6 @@ struct TopBarView: View {
         }
     }
 
-    private var urlBar: some View {
-        HStack(spacing: 8) {
-            if browserManager.tabs.selectedSession(in: windowState) != nil {
-                // URL text area — tappable to open command palette
-                // Two texts so a narrow bar cuts the path or title first and then the host's
-                // head: `accounts.google.com.x.evil.tld` must keep `evil.tld`.
-                HStack(spacing: 0) {
-                    Text(displayURL.host)
-                        .truncationMode(.head)
-                        .layoutPriority(1)
-                    Text(displayURL.rest)
-                        .truncationMode(.tail)
-                }
-                    .font(NookDesign.Font.body)
-                    .foregroundStyle(.primary)
-                    .tracking(-0.1)
-                    .lineLimit(1)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        if let currentTab = browserManager.tabs.selectedSession(in: windowState) {
-                            commandPalette.openWithCurrentURL(currentTab.url)
-                        } else {
-                            commandPalette.open()
-                        }
-                    }
-
-                Button("Copy URL", systemImage: "link") {
-                    if let page = browserManager.tabs.controllableSession(in: windowState) { browserManager.copyURL(of: page, in: windowState) }
-                }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.iconButton, radius: NookDesign.Radius.sm))
-                    .help(browserManager.help("Copy URL", shortcut: .copyCurrentURL))
-                    .opacity(isHovering ? 1 : 0)
-                    .allowsHitTesting(isHovering)
-            } else {
-                EmptyView()
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .padding(6)
-        .background(urlBarBackgroundColor)
-        .animation(
-            shouldAnimateColorChange ? NookDesign.Motion.standard : nil,
-            value: urlBarBackgroundColor
-        )
-        .clipShape(NookDesign.Radius.shape(NookDesign.Radius.md))
-        // SwiftUI's hover, not the tracking-area one: the bar lies under the window's unified
-        // toolbar, where an NSTrackingArea loses the pointer partway across.
-        .onHover { hovering in
-            withAnimation(NookDesign.Motion.quick) {
-                isHovering = hovering
-            }
-        }
-    }
-
     // Determine if we should animate color changes (within same tab) or snap (tab switch)
     private var shouldAnimateColorChange: Bool {
         let selectedItemID = browserManager.tabs.selectedSession(in: windowState)?.id
@@ -178,55 +116,12 @@ struct TopBarView: View {
 
     /// The colour the page reports for its top edge, else its background; nil before it loads.
     private var pageColor: NSColor? {
-        let session = browserManager.engine == .chromium
-            ? browserManager.frontPage(in: windowState)
-            : browserManager.tabs.selectedSession(in: windowState)
+        let session = browserManager.frontPage(in: windowState)
         return session?.topBarBackgroundColor ?? session?.pageBackgroundColor
     }
 
     private var topBarBackgroundColor: Color {
         pageColor.map { Color(nsColor: $0) } ?? Color(nsColor: .windowBackgroundColor)
-    }
-
-    // URL bar background color - slightly adjusted for visual distinction
-    private var urlBarBackgroundColor: Color {
-        if let currentTab = browserManager.tabs.selectedSession(in: windowState),
-            let topBarColor = currentTab.topBarBackgroundColor
-        {
-            let baseColor = Color(nsColor: topBarColor)
-            if isHovering {
-                // Slightly lighter/darker on hover
-                return adjustColorBrightness(
-                    baseColor,
-                    factor: topBarColor.isPerceivedDark ? 1.15 : 0.95
-                )
-            } else {
-                // Slightly darker/lighter for subtle distinction from top bar
-                //                return adjustColorBrightness(baseColor, factor: topBarColor.isPerceivedDark ? 1.1 : 0.98)
-                return .clear
-            }
-        }
-        // Fallback to page background color
-        if let currentTab = browserManager.tabs.selectedSession(in: windowState),
-            let pageColor = currentTab.pageBackgroundColor
-        {
-            let baseColor = Color(nsColor: pageColor)
-            if isHovering {
-                // Slightly lighter/darker on hover
-                return adjustColorBrightness(
-                    baseColor,
-                    factor: pageColor.isPerceivedDark ? 1.15 : 0.95
-                )
-            } else {
-                // Slightly darker/lighter for subtle distinction from top bar
-                return adjustColorBrightness(
-                    baseColor,
-                    factor: pageColor.isPerceivedDark ? 1.1 : 0.98
-                )
-            }
-        }
-        // Fallback to a surface token when no webview color available
-        return isHovering ? NookDesign.Surface.fillPressed : NookDesign.Surface.fill
     }
 
     // Bottom border color - lighter when dark, darker when light
@@ -279,65 +174,6 @@ struct TopBarView: View {
         #else
             return color
         #endif
-    }
-
-    private var displayURL: (host: AttributedString, rest: AttributedString) {
-        guard let currentTab = browserManager.tabs.selectedSession(in: windowState)
-        else {
-            return ("", "")
-        }
-
-        return formatURL(
-            currentTab.url,
-            title: currentTab.title,
-            isHovering: isHovering
-        )
-    }
-
-    /// The host apart from what follows it, so each can truncate its own way.
-    private func formatURL(_ url: URL, title: String?, isHovering: Bool)
-        -> (host: AttributedString, rest: AttributedString)
-    {
-        if isHovering {
-            guard let host = url.host else {
-                return (AttributedString(url.absoluteString), "")
-            }
-
-            let cleanHost =
-                host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-
-            let hostString = AttributedString(cleanHost)
-
-            var pathString = AttributedString()
-
-            if !url.path.isEmpty {
-                pathString += AttributedString(url.path)
-            }
-
-            if let query = url.query {
-                pathString += AttributedString("?" + query)
-            }
-
-            pathString.foregroundColor = .secondary
-
-            return (hostString, pathString)
-        }
-
-        guard let host = url.host else {
-            return (AttributedString(url.absoluteString), "")
-        }
-
-        let cleanHost =
-            host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
-
-        if url.path.isEmpty || url.path == "/" {
-            return (AttributedString(cleanHost), "")
-        } else {
-            let displayTitle = title ?? cleanHost
-            var titlePart = AttributedString(" / " + displayTitle)
-            titlePart.foregroundColor = .secondary
-            return (AttributedString(cleanHost), titlePart)
-        }
     }
 }
 

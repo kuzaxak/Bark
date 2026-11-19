@@ -202,9 +202,7 @@ class KeyboardShortcutManager {
             return true
         }
 
-        if browserManager?.tabs.profileEngine == .chromium {
-            guard keyBrowserWindow != nil else { return false }
-        }
+        guard let browserManager, keyBrowserWindow != nil else { return false }
 
         let keyCode = event.keyCode
         if keyCode == 36 || keyCode == 76 { // 36 = Return, 76 = Enter (numpad)
@@ -253,18 +251,16 @@ class KeyboardShortcutManager {
         }
         
 
-        if browserManager?.tabs.profileEngine == .chromium {
-            if let command = shortcut.action.pageCommand {
-                guard command.supportsNativePage else { return false }
-            } else {
-                switch shortcut.action {
-                case .newTab, .focusAddressBar, .openCommandPalette: break
-                default:
-                    guard shortcut.action.takesKeyInChromium(shortcut.keyCombination),
-                          shortcut.action.isOffered(chromium: true, privateWindow: windowRegistry?.activeWindow?.isIncognito == true),
-                          shortcut.action.isAvailable(organizerModel: TabOrganizationModel.isAvailable,
-                              organizerEnabled: browserManager?.nookSettings?.tabOrganizerEnabled == true) else { return false }
-                }
+        if let command = shortcut.action.pageCommand {
+            guard command.supportsNativePage else { return false }
+        } else {
+            switch shortcut.action {
+            case .newTab, .focusAddressBar, .openCommandPalette: break
+            default:
+                guard shortcut.action.takesKeyInChromium(shortcut.keyCombination),
+                      shortcut.action.isOffered(privateWindow: windowRegistry?.activeWindow?.isIncognito == true),
+                      shortcut.action.isAvailable(organizerModel: TabOrganizationModel.isAvailable,
+                          organizerEnabled: browserManager.nookSettings?.tabOrganizerEnabled == true) else { return false }
             }
         }
 
@@ -274,8 +270,7 @@ class KeyboardShortcutManager {
 
     /// Handles the standard reopen shortcut when the shortcut table leaves it unbound.
     private func reopenClosedTabInChromium(for key: KeyCombination) -> Bool {
-        guard let browserManager, browserManager.tabs.profileEngine == .chromium,
-              key == KeyCombination(key: "t", modifiers: [.command, .shift]) else { return false }
+        guard browserManager != nil, key == KeyCombination(key: "t", modifiers: [.command, .shift]) else { return false }
         reopenClosedTab()
         return true
     }
@@ -298,7 +293,7 @@ class KeyboardShortcutManager {
     private var certificateCloseHold = CloseShortcut.CertificateHold()
 
     private func handleCertificateClose(isRepeat: Bool) -> Bool {
-        guard let browserManager, browserManager.tabs.profileEngine == .chromium,
+        guard let browserManager,
               let owner = CommandWindow.key,
               let window = windowRegistry?.windows.values.first(where: { $0.window === owner }) else { return false }
         return certificateCloseHold.consume(in: ObjectIdentifier(owner), isRepeat: isRepeat) { dismiss in
@@ -340,11 +335,11 @@ class KeyboardShortcutManager {
 
     private func executeAction(_ action: ShortcutAction, isRepeat: Bool = false, isControlTab: Bool = false) {
         guard let browserManager = browserManager else { return }
-        if browserManager.tabs.profileEngine == .chromium, action == .manageExtensions {
+        if action == .manageExtensions {
             browserManager.manageExtensions(deferred: true)
             return
         }
-        if browserManager.tabs.profileEngine == .chromium, action == .addSplitView {
+        if action == .addSplitView {
             guard !isRepeat, let window = windowRegistry?.activeWindow,
                   let keyWindow = CommandWindow.key, window.window === keyWindow else { return }
             let source = window.selectedItemID
@@ -363,7 +358,7 @@ class KeyboardShortcutManager {
             }
             return
         }
-        if browserManager.tabs.profileEngine == .chromium, let command = action.pageCommand {
+        if let command = action.pageCommand {
             guard let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key, window.window === keyWindow,
                   let page = browserManager.frontPage(in: window),
                   let native = page.navigation as? ChromiumPageNavigation else { return }
@@ -375,8 +370,7 @@ class KeyboardShortcutManager {
             }
             return
         }
-        if browserManager.tabs.profileEngine == .chromium,
-           action == .newTab || action == .focusAddressBar || action == .openCommandPalette {
+        if action == .newTab || action == .focusAddressBar || action == .openCommandPalette {
             guard let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key,
                   window.window === keyWindow else { return }
             if action == .focusAddressBar {
@@ -393,7 +387,7 @@ class KeyboardShortcutManager {
             }
             return
         }
-        if browserManager.tabs.profileEngine == .chromium, !action.runsInChromium {
+        if !action.runsInChromium {
             if let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key, window.window === keyWindow {
                 browserManager.showWindowToast("This action is not available yet", in: window)
             }
@@ -503,8 +497,8 @@ class KeyboardShortcutManager {
                 if let spaceID = window?.spaceID { tabs.setAllFolders(open: true, space: spaceID) }
 
             case .focusAddressBar:
-                let currentURL = browserManager.frontPage?.url.absoluteString ?? ""
-                self.windowRegistry?.activeWindow?.commandPalette?.open(prefill: currentURL, navigateCurrentTab: true)
+                // Captured synchronously by the address actions above.
+                break
 
             // NEW: Menu actions that were missing ShortcutAction definitions
             case .toggleSidebar:

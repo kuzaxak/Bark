@@ -467,7 +467,7 @@ private final class CatalogApplication: NSApplication {
         registry.onActiveWindowChange = { _ in focusChanges += 1 }
         let tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+            siteRouting: SiteRoutingManager(settings: settings), directory: root)
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         tabs.nativePageHost = host
         registry.onWindowClose = { [weak tabs, weak registry] id in
@@ -646,7 +646,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -755,7 +755,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -805,7 +805,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -866,7 +866,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -1191,7 +1191,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     registry.onWindowClose = { id in
@@ -1228,7 +1228,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     registry.onWindowClose = { id in if let window = registry.windows[id] { tabs.detach(window: window) } }
@@ -1252,7 +1252,7 @@ private final class CatalogApplication: NSApplication {
     precondition(!Native.admitted.contains(703) && !Native.admitted.contains(704))
     let source = tabs.privateWindows.first { $0.ephemeralProfile?.id == a }!
     let originalSession = tabs.selectedSession(in: source)!, page = originalSession.navigation as! ChromiumPageNavigation
-    precondition(page.isPrivateSession && originalSession.isPrivate && originalSession.profile?.webKitStorage == nil)
+    precondition(page.isPrivateSession && originalSession.isPrivate && originalSession.profile?.isEphemeral == true)
     add(711, session: a)
     Native.tabs[Native.tabs.firstIndex { $0.tab == 7110 }!].opener_tab = 7010
     admission.apply(Native.bridge.readSnapshot()!)
@@ -1430,7 +1430,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -1450,7 +1450,7 @@ private final class CatalogApplication: NSApplication {
         let initialStore = TabStore(directory: initialRoot); initialStore.save(tree, device); initialStore.flush()
         let initialTabs = TabsController(settings: settings, windowRegistry: initialRegistry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: initialRoot.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: initialRoot)
+            siteRouting: SiteRoutingManager(settings: settings), directory: initialRoot)
         let initialHost = ChromiumNativePageHost(bridge: Native.bridge)
         initialTabs.nativePageHost = initialHost
         let initialAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: initialHost, tabs: initialTabs,
@@ -1499,7 +1499,7 @@ private final class CatalogApplication: NSApplication {
         let splitRegistry = WindowRegistry()
         let splitTabs = TabsController(settings: settings, windowRegistry: splitRegistry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: splitRoot.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: splitRoot)
+            siteRouting: SiteRoutingManager(settings: settings), directory: splitRoot)
         let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete)
         splitTabs.nativePageHost = delivery
@@ -1555,7 +1555,7 @@ private final class CatalogApplication: NSApplication {
         let savedRegistry = WindowRegistry()
         let savedTabs = TabsController(settings: settings, windowRegistry: savedRegistry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: savedRoot.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: savedRoot)
+            siteRouting: SiteRoutingManager(settings: settings), directory: savedRoot)
         let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete); delivery.delayedItem = splitOther
         savedTabs.nativePageHost = delivery
@@ -1598,7 +1598,7 @@ private final class CatalogApplication: NSApplication {
         let initialRegistry = WindowRegistry()
         let initialTabs = TabsController(settings: settings, windowRegistry: initialRegistry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: initialRoot.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: initialRoot)
+            siteRouting: SiteRoutingManager(settings: settings), directory: initialRoot)
         let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete); delivery.delayedItem = splitOther
         initialTabs.nativePageHost = delivery
@@ -1691,7 +1691,7 @@ private final class CatalogApplication: NSApplication {
         let openingRegistry = WindowRegistry()
         let openingTabs = TabsController(settings: settings, windowRegistry: openingRegistry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: openingRoot.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: openingRoot)
+            siteRouting: SiteRoutingManager(settings: settings), directory: openingRoot)
         let openingAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: openingTabs,
             registry: openingRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
         let pending = openingAdmission.prepareInitialWindow()!
@@ -1850,7 +1850,7 @@ private final class CatalogApplication: NSApplication {
         let registry = WindowRegistry()
         let tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
+            siteRouting: SiteRoutingManager(settings: settings), directory: directory)
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         tabs.nativePageHost = host
         let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -1988,7 +1988,7 @@ private final class CatalogApplication: NSApplication {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
         registry: registry, isUtility: { _ in false }, makeShell: { _ in preconditionFailure("Recovery must not attach before native admission") })
@@ -2017,7 +2017,7 @@ private final class CatalogApplication: NSApplication {
     let nextRegistry = WindowRegistry()
     let nextTabs = TabsController(settings: settings, windowRegistry: nextRegistry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: alternate.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: alternate)
+        siteRouting: SiteRoutingManager(settings: settings), directory: alternate)
     let nextAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: nextTabs,
         registry: nextRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     precondition(nextAdmission.prepareInitialWindow()?.id == eligible.id)
@@ -2030,7 +2030,7 @@ private final class CatalogApplication: NSApplication {
     let keptRegistry = WindowRegistry()
     let keptTabs = TabsController(settings: settings, windowRegistry: keptRegistry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: keptRoot.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: keptRoot)
+        siteRouting: SiteRoutingManager(settings: settings), directory: keptRoot)
     let keptAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: keptTabs,
         registry: keptRegistry, isUtility: { _ in false }, makeShell: { _ in preconditionFailure() })
     precondition(keptAdmission.prepareInitialWindow() == nil && keptRegistry.windows.isEmpty)
@@ -2044,7 +2044,7 @@ private final class CatalogApplication: NSApplication {
     let staleRegistry = WindowRegistry()
     let staleTabs = TabsController(settings: settings, windowRegistry: staleRegistry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: staleRoot.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: staleRoot)
+        siteRouting: SiteRoutingManager(settings: settings), directory: staleRoot)
     let staleAdmission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: staleTabs,
         registry: staleRegistry, isUtility: { _ in false }, makeShell: { _ in NSView() })
     let normalized = staleAdmission.prepareInitialWindow()
@@ -2099,7 +2099,7 @@ private final class CatalogApplication: NSApplication {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let profile = tabs.profile(forSpace: Native.work)!
     Native.windows[2101] = Native.window(2101, group: 2101, profile: Native.work, kind: 1,
                                          flags: 4 | UInt32(BARC_DISCOVERY_COMPACT_MINI.rawValue), active: 21001)
@@ -2206,7 +2206,7 @@ private final class CatalogApplication: NSApplication {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     let opener = BrowserWindowState(); opener.spaceID = Native.work
@@ -2339,7 +2339,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let secondSpace = tabs.createSpace(name: "Shared", icon: "", accentHex: "#123456",
         after: Native.work, sharingLoginsWith: Native.work)!
     let bridge = Native.bridge
@@ -2412,7 +2412,7 @@ private final class CatalogApplication: NSApplication {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let sharedSpace = tabs.createSpace(name: "Shared Work", icon: "folder", accentHex: "#123456",
                                       after: Native.work, sharingLoginsWith: Native.work)!
     let window = BrowserWindowState(); window.spaceID = Native.work
@@ -2556,7 +2556,7 @@ private final class CatalogApplication: NSApplication {
     Native.tabs.append(Native.tab(40001, window: 4001))
     tabs.deleteSpace(keptSpace, keepingLeftProfile: true)
     let kept = tabs.profile(forStore: keptID)!
-    precondition(kept.id == keptID && kept.webKitStorage == nil && tabs.profiles.first(where: { $0.id == keptID })?.spaceIDs.isEmpty == true)
+    precondition(kept.id == keptID && tabs.profiles.first(where: { $0.id == keptID })?.spaceIDs.isEmpty == true)
     let keptTree = tabs.tree, keptDevice = tabs.device
     let keptPage = try ChromiumPageNavigation(profileID: keptID, window: 4001, tab: 40001, bridge: Native.bridge)
     let keptController = ChromiumMiniWindowController(tabs: tabs, profile: kept, navigation: keptPage,
@@ -2700,7 +2700,7 @@ private final class CatalogApplication: NSApplication {
     Native.privateIDs[5001] = privateID
     Native.windows[5001] = Native.window(5001, group: 5001, profile: nil, kind: BARC_DISCOVERY_POPUP.rawValue, profileKind: BARC_DISCOVERY_GUEST.rawValue, flags: BARC_DISCOVERY_COMPACT_MINI.rawValue, active: 50001)
     Native.tabs.append(Native.tab(50001, window: 5001))
-    let privateProfile = Profile.createEphemeral(id: privateID, engine: .chromium)
+    let privateProfile = Profile.createEphemeral(id: privateID)
     let privatePage = try ChromiumPageNavigation(profileID: privateID, window: 5001, tab: 50001, bridge: Native.bridge, privateSession: true)
     var privatePromotions = 0, privateCopies = 0
     let privateController = ChromiumMiniWindowController(tabs: tabs, profile: privateProfile, navigation: privatePage,
@@ -2741,7 +2741,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     Native.windows = [7101: Native.window(7101, group: 7101, profile: Native.work, flags: 1 | 4, active: 71010),
@@ -2811,7 +2811,7 @@ private final class CatalogApplication: NSApplication {
         let registry = WindowRegistry()
         let tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
+            siteRouting: SiteRoutingManager(settings: settings), directory: directory)
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         tabs.nativePageHost = host
         let admission = ChromiumCreatedPageAdmission(bridge: Native.bridge, host: host, tabs: tabs,
@@ -2913,7 +2913,7 @@ private final class CatalogApplication: NSApplication {
     let settings = NookSettingsService(kagiTokenStore: NoTokens(), userDefaults: defaults)
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
     tabs.nativePageHost = host
     Native.windows = [7001: Native.window(7001, group: 7001, profile: Native.work, active: 70010),
@@ -3209,7 +3209,7 @@ private final class CatalogApplication: NSApplication {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let window = BrowserWindowState(); window.spaceID = Native.work
     registry.register(window); registry.setActive(window); tabs.attach(window: window, restoringSavedState: false)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
@@ -3353,7 +3353,7 @@ private final class CatalogApplication: NSApplication {
     let registry = WindowRegistry()
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
-        siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: root)
+        siteRouting: SiteRoutingManager(settings: settings), directory: root)
     let window = BrowserWindowState(); window.spaceID = Native.work
     registry.register(window); registry.setActive(window); tabs.attach(window: window, restoringSavedState: false)
     let host = ChromiumNativePageHost(bridge: Native.bridge)
@@ -3494,7 +3494,7 @@ private final class CatalogApplication: NSApplication {
         let tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: root.appendingPathComponent("Blocker")),
             siteRouting: SiteRoutingManager(settings: settings),
-            profileEngine: .chromium, directory: root)
+            directory: root)
         let concrete = ChromiumNativePageHost(bridge: Native.bridge)
         let delivery = DelayedCreationHost(concrete); delivery.delayedItem = selected
         tabs.nativePageHost = delivery

@@ -142,7 +142,7 @@ struct MiniPlayerTests {
 @MainActor
 struct MiniPlayerTrackingTests {
     @Test func followsTheWindowsPagesWithNoViewOnScreen() async throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let music = try #require(host.tabs.open(url: URL(string: "https://music.invalid")!, in: host.window,
                                                 placement: .newTab, parent: .tabs(spaceID: spaceID)))
@@ -160,7 +160,7 @@ struct MiniPlayerTrackingTests {
 
     /// The unload policy keeps the page a bar shows loaded, so its controls keep working.
     @Test func tellsWhichPageABarShows() async throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let music = try #require(host.tabs.open(url: URL(string: "https://music.invalid")!, in: host.window,
                                                 placement: .newTab, parent: .tabs(spaceID: spaceID)))
@@ -173,11 +173,9 @@ struct MiniPlayerTrackingTests {
         #expect(!host.tabs.isInMiniPlayer(other))
     }
 
-    /// Music holds the bar; another tab with a paused video plays a notification chime. WebKit
-    /// hears that page, so its row shows the speaker, but its frames report no player playing,
-    /// and the bar stays with the music.
-    @Test func aChimeBesideAPausedVideoNeverTakesTheBar() async throws {
-        let host = try Host()
+    /// A paused media session does not take the mini player from a playing tab.
+    @Test func aPausedVideoDoesNotTakeTheBarFromPlayingMusic() async throws {
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let tabs = try ["music", "video", "reading"].map { name in
             try #require(host.tabs.open(url: URL(string: "https://\(name).invalid")!, in: host.window,
@@ -185,30 +183,23 @@ struct MiniPlayerTrackingTests {
         }
         let music = try #require(host.tabs.session(for: tabs[0]))
         let video = try #require(host.tabs.session(for: tabs[1]))
-        music.report(PageMedia(hasMedia: true, isAudible: true, isPlaying: true))
-        video.report(PageMedia(hasMedia: true, hasVideo: true))
+        try music.report(PageMedia(hasMedia: true, isAudible: true, isPlaying: true))
         for _ in 0..<100 where host.window.miniPlayer.itemID != music.itemID { await Task.yield() }
         #expect(host.window.miniPlayer.itemID == music.itemID)
 
-        video.webKitAudible = true
-        video.applyMediaFrames()
+        try video.report(PageMedia(hasMedia: true, hasVideo: true))
         host.tabs.trackMiniPlayer(of: host.window)
-        for _ in 0..<100 { await Task.yield() }
-
-        #expect(video.hasAudioContent, "the row's speaker")
-        #expect(!video.media.isAudible && !video.media.isPlaying, "the bar's play state")
+        #expect(video.media.hasVideo && !video.media.isPlaying)
         #expect(host.window.miniPlayer.itemID == music.itemID)
     }
 }
 
 extension PageSession {
-    /// Feeds a report the way the page's media script posts one.
-    func report(_ media: PageMedia, frame: String = "main") {
-        receiveMediaReport([
-            "frame": frame, "hasMedia": media.hasMedia, "isAudible": media.isAudible, "isPlaying": media.isPlaying,
-            "isMuted": media.isMuted, "hasVideo": media.hasVideo, "isPlayingVideo": media.isPlayingVideo,
-            "previousTrack": media.handlesPreviousTrack, "nextTrack": media.handlesNextTrack,
-        ], from: nil)
+    /// Feeds the same native media event received by the production model.
+    func report(_ media: PageMedia) throws {
+        let page = try #require(navigation as? NativeTestPage)
+        let receive = try #require(page.onEvent)
+        receive(.mediaChanged(media))
     }
 }
 
@@ -231,7 +222,7 @@ struct MiniPlayerPagesTests {
     }
 
     @Test func listsThisWindowsTabsInEverySpaceOnAnySite() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let first = try #require(host.window.spaceID)
         let second = try #require(host.tabs.createSpace(name: "Second", icon: "", accentHex: "#000000", after: first))
         let music = try openTab("https://music.invalid", in: host.window, space: first, host)
@@ -246,7 +237,7 @@ struct MiniPlayerPagesTests {
     }
 
     @Test func aTabMovesToTheWindowThatSelectsIt() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let other = BrowserWindowState()
         host.registry.register(other)
         host.tabs.attach(window: other)
@@ -262,10 +253,10 @@ struct MiniPlayerPagesTests {
     }
 
     @Test func aPrivateWindowsPagesStayInIt() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let privateWindow = BrowserWindowState()
         privateWindow.isIncognito = true
-        privateWindow.ephemeralProfile = Profile.createEphemeral(engine: host.tabs.profileEngine)
+        privateWindow.ephemeralProfile = Profile.createEphemeral()
         host.registry.register(privateWindow)
         host.tabs.attach(window: privateWindow)
         let privateSpace = try #require(privateWindow.spaceID)
@@ -277,7 +268,7 @@ struct MiniPlayerPagesTests {
     }
 
     @Test func leavesOutTheAgentSpace() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let agent = try #require(host.tabs.ensureAgentSpace(loginsFrom: host.window))
         host.tabs.setSpace(agent, in: host.window)
         let agentTab = try openTab("https://agent.invalid", in: host.window, space: agent, host)
@@ -287,7 +278,7 @@ struct MiniPlayerPagesTests {
     }
 
     @Test func marksEveryPaneOnScreen() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let left = try openTab("https://left.invalid", in: host.window, space: spaceID, host)
         let right = try openTab("https://right.invalid", in: host.window, space: spaceID, host)
@@ -302,7 +293,7 @@ struct MiniPlayerPagesTests {
 
     /// A split shows only while one of its panes is selected; selecting another tab hides it.
     @Test func aHiddenSplitsPanesAreOffScreen() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let left = try openTab("https://left.invalid", in: host.window, space: spaceID, host)
         let right = try openTab("https://right.invalid", in: host.window, space: spaceID, host)
@@ -315,19 +306,20 @@ struct MiniPlayerPagesTests {
         #expect(onScreen == [other])
     }
 
-    /// A new document has no media until its own script says so; a PDF never does.
+    /// A new document retires the previous document's media.
     @Test func navigatingToAnotherPageDropsTheOldPagesMedia() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let tab = try openTab("https://video.invalid", in: host.window, space: try #require(host.window.spaceID), host)
         try play(tab, host)
         let page = try #require(host.tabs.session(for: tab))
 
-        page.webKitDelegate.webView(page.activeWebView, didCommit: nil)
+        let native = try #require(page.navigation as? NativeTestPage)
+        native.onEvent?(.committed(URL(string: "https://video.invalid/other")))
         #expect(!(host.tabs.miniPlayerPages(for: host.window).first { $0.id == tab }?.hasMedia ?? true))
     }
 
     @Test func aLinkOpenedInTheBackgroundBelongsToItsWindow() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let opener = try #require(host.window.selectedItemID)
         let child = try #require(host.tabs.open(url: URL(string: "https://link.invalid/video")!, in: host.window,
                                                 placement: .background, from: opener))

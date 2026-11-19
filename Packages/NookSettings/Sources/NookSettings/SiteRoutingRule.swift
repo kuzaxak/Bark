@@ -13,7 +13,7 @@ public struct SiteRoutingRule: Codable, Identifiable, Equatable {
     public var targetSpaceId: UUID
     public var isEnabled: Bool
     /// Only set on rules written before spaces owned their data, where the target was a space
-    /// inside a profile. `SiteRoutingManager.dropMergedProfileTargets()` resolves and clears it.
+    /// inside a profile. `SiteRoutingManager.dropMergedProfileTargets(liveSpaceIDs:)` resolves and clears it.
     public var legacyProfileId: UUID?
 
     public init(

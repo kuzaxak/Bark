@@ -66,7 +66,7 @@ private final class SuggestionFixture {
         let registry = WindowRegistry()
         tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory.appendingPathComponent("Tabs"))
+            siteRouting: SiteRoutingManager(settings: settings), directory: directory.appendingPathComponent("Tabs"))
         workSpace = try #require(tabs.tree.orderedSpaces.first?.id)
         let personalSpace = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: workSpace))
         workProfile = try #require(tabs.tree.dataStoreID(for: workSpace))

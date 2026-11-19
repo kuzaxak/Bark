@@ -170,7 +170,7 @@ struct NativePageLifecycleTests {
         await agentCallbacks()
         #expect(native.loaded.count == count + 1 && native.loaded.last == target)
         #expect(native.blockingPolicies.last?.continuedHost == "blocked.invalid")
-        #expect(page.blockedURL == nil && page.primaryWebView == nil)
+        #expect(page.blockedURL == nil)
     }
 
     @Test(arguments: ["navigation", "owner", "adapter", "profile"])
@@ -188,7 +188,7 @@ struct NativePageLifecycleTests {
         case "navigation": native.onEvent?(.started(URL(string: "https://replacement.invalid/")))
         case "owner": page.nativeOwnerEnded()
         case "adapter": page.navigation = NativeTestPage(profileID: profileID)
-        case "profile": page.detachedProfile = Profile.createEphemeral(id: UUID(), engine: .chromium)
+        case "profile": page.detachedProfile = Profile.createEphemeral(id: UUID())
         default: break
         }
         await agentCallbacks()
@@ -222,7 +222,7 @@ struct NativePageLifecycleTests {
         page.nativeOwnerEnded()
         let calls = native.blockingPolicies.count
         page.isOAuthFlow = false
-        #expect(native.blockingPolicies.count == calls && page.primaryWebView == nil)
+        #expect(native.blockingPolicies.count == calls)
     }
 
     @Test func nativeHistoryTextUsesExistingOptInAndCoalescesSamePath() async throws {
@@ -252,7 +252,7 @@ struct NativePageLifecycleTests {
         let found = await history.searchPageText(query: "chromiummarker", limit: 10, profile: native.profileID)
         #expect(await history.searchPageText(query: "chromiummarker", limit: 10, profile: UUID()).isEmpty)
         #expect(found.map(\.url) == [url] && native.pageTextCaptures == 1)
-        #expect(page.primaryWebView == nil && f.host.creates.count == 1)
+        #expect(f.host.creates.count == 1)
 
         let fragment = URL(string: "https://fixture.invalid/article#section")!
         native.state.url = fragment; native.onStateChanged?(native.state)
@@ -263,7 +263,7 @@ struct NativePageLifecycleTests {
         native.state.url = next; native.onStateChanged?(native.state)
         native.onEvent?(.committed(next, sameDocument: true))
         await page.nativePageTextTask?.value
-        #expect(native.pageTextCaptures == 2 && page.primaryWebView == nil)
+        #expect(native.pageTextCaptures == 2)
         _ = await history.getHistory()
     }
 
@@ -293,7 +293,7 @@ struct NativePageLifecycleTests {
         privateNative.onEvent?(.finished(url, title: "Private", isReload: false))
         #expect(privatePage.isPrivate && privatePage.profile?.isEphemeral == true)
         #expect(privatePage.nativePageTextTask == nil && privateNative.pageTextCaptures == 0)
-        #expect(agent.primaryWebView == nil && privatePage.primaryWebView == nil)
+
     }
 
     @Test(arguments: ["setting", "navigation", "ephemeral", "owner", "controller", "cancel", "closing"])
@@ -329,7 +329,7 @@ struct NativePageLifecycleTests {
         await capture.value
         _ = await history.getHistory()
         #expect(await history.searchPageText(query: "chromiummarker", limit: 10, profile: native.profileID).isEmpty)
-        #expect(page.primaryWebView == nil && native.pageTextCaptures == 1)
+        #expect(native.pageTextCaptures == 1)
     }
 
     private func agentCallbacks() async {
@@ -674,14 +674,14 @@ struct NativePageLifecycleTests {
         let next = page.nativeNavigationSerial
         native.onEvent?(.committed(URL(string: "https://agent.test/new#fragment"), sameDocument: true))
         #expect(page.nativeNavigationSerial != next)
-        #expect(page.primaryWebView == nil && f.host.creates.count == 2)
+        #expect(f.host.creates.count == 2)
     }
 
     @Test func nativePageCacheFlushIsColdSafeAndHonoursCloseRefusal() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let id = try #require(f.window.selectedItemID)
         let page = try #require(f.tabs.session(for: id))
-        #expect(!page.clearPageCache() && page.primaryWebView == nil)
+        #expect(!page.clearPageCache())
         #expect(f.host.creates.count == 1)
         let native = f.host.finishCreate(0)
         native.acceptsCacheFlush = false
@@ -690,7 +690,7 @@ struct NativePageLifecycleTests {
         let selected = f.window.selectedItemID, space = f.window.spaceID, url = page.url
         #expect(page.clearPageCache() && native.cacheFlushes == 2)
         #expect(f.host.creates.count == 1 && f.host.selectionCount == 1 && native.loaded.count == 1)
-        #expect(f.window.selectedItemID == selected && f.window.spaceID == space && page.url == url && page.primaryWebView == nil)
+        #expect(f.window.selectedItemID == selected && f.window.spaceID == space && page.url == url)
         f.tabs.close(id)
         #expect(page.nativeIsEnding && !page.clearPageCache() && native.cacheFlushes == 2)
         f.host.finishClose(0, admitted: false)
@@ -736,7 +736,7 @@ struct NativePageLifecycleTests {
         let native = f.host.finishCreate(1)
         let page = try #require(await prepare.value)
         #expect(f.tabs.existingNativeAgentPage(in: f.window) === page)
-        #expect(f.tabs.agentItem == id && page.primaryWebView == nil)
+        #expect(f.tabs.agentItem == id)
         let other = BrowserWindowState()
         f.registry.register(other)
         #expect(f.tabs.existingNativeAgentPage(in: other) == nil)
@@ -781,7 +781,7 @@ struct NativePageLifecycleTests {
         let page = try #require(await prepare.value)
         #expect(page.itemID == id && page.navigation === native && f.tabs.isNativePageOwner(page, in: f.window))
         #expect(native.profileID == f.host.creates[0].profileID)
-        #expect(f.window.selectedItemID == selected && f.window.spaceID == space && page.primaryWebView == nil)
+        #expect(f.window.selectedItemID == selected && f.window.spaceID == space)
         let wait = Task { await page.waitForNativeAgentNavigation(in: f.window, reload: false, while: { true }) }
         await agentCallbacks()
         #expect(page.nativeAgentWaitID != nil)
@@ -924,13 +924,13 @@ struct NativePageLifecycleTests {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let session = try #require(f.tabs.selectedSession(in: f.window))
         #expect(session.blockingURL == session.url)
-        #expect(!session.reloadForBlocking() && session.primaryWebView == nil)
+        #expect(!session.reloadForBlocking())
         let native = f.host.finishCreate(0)
         let current = URL(string: "https://actual-native.test/current")!
         native.state = PageNavigationState(url: current, canGoBack: false, canGoForward: false)
         #expect(session.blockingURL == current)
         #expect(!session.reloadForBlocking() && native.blockerReloads == 1)
-        #expect(session.primaryWebView == nil && f.host.creates.count == 1)
+        #expect(f.host.creates.count == 1)
     }
 
     private func settleWarmingCallbacks() async {
@@ -1334,7 +1334,7 @@ struct NativePageLifecycleTests {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let page = f.host.finishCreate(0)
         let session = try #require(f.tabs.selectedSession(in: f.window))
-        let delegate = RecordingCertificateDelegate()
+        let delegate = NativeOnlyPageDelegate()
         f.tabs.sessionDelegate = delegate
         var links: [URL] = []
         delegate.onPeek = { url, source in
@@ -1357,7 +1357,7 @@ struct NativePageLifecycleTests {
         page.onEvent?(.ownerEnded)
         stale?(.peekRequested(latest))
         for _ in 0..<10 { await Task.yield() }
-        #expect(links == [latest] && session.navigation == nil && session.primaryWebView == nil)
+        #expect(links == [latest] && session.navigation == nil)
         #expect(f.host.creates.count == 1 && f.host.closes.isEmpty)
     }
 
@@ -1404,7 +1404,7 @@ struct NativePageLifecycleTests {
         page.translations[1].completion(PageTranslationResult())
         oldSink?([.init(id: "late", text: "stale")])
         #expect(session.translationBacklog.isEmpty)
-        #expect(page.loaded.count == loadedBefore && session.primaryWebView == nil)
+        #expect(page.loaded.count == loadedBefore)
     }
 
     @Test(arguments: [false, true])
@@ -1511,7 +1511,7 @@ struct NativePageLifecycleTests {
         f.tabs.settings.boosts[0].css = "body { color: black; }"
         for _ in 0..<10 { await Task.yield() }
         #expect(page.styles.count == 6 && session.navigation == nil && page.invalidated)
-        #expect(f.host.creates.count == creates && session.primaryWebView == nil)
+        #expect(f.host.creates.count == creates)
     }
 
     @Test func savedNativeBoostCSSUpdatesRemovesAndSkipsSameDocumentDuplicates() async throws {
@@ -1534,7 +1534,7 @@ struct NativePageLifecycleTests {
         f.tabs.settings.boosts[0].isEnabled = false
         for _ in 0..<10 { await Task.yield() }
         #expect(native.styles.last?.css == "" && native.styles.count == 3)
-        #expect(f.tabs.selectedSession(in: f.window)?.primaryWebView == nil)
+        #expect(f.tabs.selectedSession(in: f.window)?.navigation === native)
         #expect(f.host.creates.count == 1)
     }
 
@@ -1573,7 +1573,7 @@ struct NativePageLifecycleTests {
         f.tabs.settings.boosts.removeAll()
         for _ in 0..<10 { await Task.yield() }
         #expect(native.styles.last?.css == "")
-        #expect(session.primaryWebView == nil && f.host.creates.count == 1)
+        #expect(f.host.creates.count == 1)
     }
 
     @Test func nativeBoostPickerResultBelongsOnlyToItsPreviewAndDocument() async throws {
@@ -1692,7 +1692,7 @@ struct NativePageLifecycleTests {
         native.styles.last?.completion(true)
         f.tabs.settings.boosts[0].css = "body { color: black; }"
         for _ in 0..<10 { await Task.yield() }
-        #expect(native.styles.count == 2 && session.navigation == nil && session.primaryWebView == nil)
+        #expect(native.styles.count == 2 && session.navigation == nil)
     }
 
     @Test func savedBoostCSSUsesExactPrivateSessionAndOnlyExistingPages() async throws {
@@ -1790,7 +1790,7 @@ struct NativePageLifecycleTests {
                 "Metadata reapplied an old committed navigation snapshot")
         #expect(playbackChanges.withLock { $0 } == 1 && !session.media.isPlaying)
         session.togglePlayback()
-        #expect(native.playbackRequests == [true, false] && session.primaryWebView == nil)
+        #expect(native.playbackRequests == [true, false])
         let late = native.onEvent
         session.nativeOwnerEnded()
         session.togglePlayback(); session.skipTrack(forward: true); session.toggleSound()
@@ -1798,18 +1798,16 @@ struct NativePageLifecycleTests {
         #expect(native.playbackRequests == [true, false] && session.media.title == nil && !session.media.hasMedia)
     }
 
-    @Test func nativePictureInPictureWithoutNavigationNeverDelegatesToWebKit() throws {
+    @Test func pictureInPictureRequiresALiveNativeOwner() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
-        let delegate = RecordingCertificateDelegate()
-        f.tabs.sessionDelegate = delegate
         let session = try #require(f.tabs.selectedSession(in: f.window))
         #expect(session.navigation == nil)
         session.requestPictureInPicture()
-        #expect(delegate.pictureInPictureRequests == 0 && session.primaryWebView == nil && f.host.creates.count == 1)
+        #expect(f.host.creates.count == 1)
         _ = f.host.finishCreate(0)
         session.nativeOwnerEnded()
         session.requestPictureInPicture()
-        #expect(delegate.pictureInPictureRequests == 0 && session.navigation == nil && session.primaryWebView == nil)
+        #expect(session.navigation == nil)
     }
 
     @Test func nativePictureInPictureDispatchAndObservedKindsAvoidWebKit() throws {
@@ -1818,7 +1816,7 @@ struct NativePageLifecycleTests {
         let session = try #require(f.tabs.selectedSession(in: f.window))
         #expect(native.state.hasVideoPictureInPicture == nil && native.state.hasDocumentPictureInPicture == nil)
         session.requestPictureInPicture()
-        #expect(native.pipRequests == 1 && !session.hasPiPActive && session.primaryWebView == nil)
+        #expect(native.pipRequests == 1 && !session.hasPiPActive)
         native.allowsPiP = true
         session.requestPictureInPicture()
         #expect(native.pipRequests == 2 && !session.hasPiPActive)
@@ -1827,7 +1825,7 @@ struct NativePageLifecycleTests {
         #expect(session.hasPiPActive)
         native.state.hasVideoPictureInPicture = false; native.state.hasDocumentPictureInPicture = true
         native.onStateChanged?(native.state)
-        #expect(session.hasPiPActive && session.primaryWebView == nil)
+        #expect(session.hasPiPActive)
         // Unavailable observation must not overwrite a previously protected state.
         native.state.hasDocumentPictureInPicture = nil
         native.onStateChanged?(native.state)
@@ -1837,7 +1835,7 @@ struct NativePageLifecycleTests {
         #expect(!session.hasPiPActive && session.navigation == nil)
         late?(PageNavigationState(canGoBack: false, canGoForward: false,
             hasVideoPictureInPicture: true, hasDocumentPictureInPicture: false))
-        #expect(!session.hasPiPActive && session.primaryWebView == nil)
+        #expect(!session.hasPiPActive)
     }
 
     @Test func searchTabIconsFollowExistingSessionsWithoutWakingColdTabs() throws {
@@ -2264,7 +2262,7 @@ struct NativePageLifecycleTests {
         #expect(f.host.creates.count == 2 && f.host.creates[1].profileID == destination)
         let replacement = f.host.finishCreate(1)
         #expect(replacement !== old && replacement.loaded == [url])
-        #expect(session.navigation === replacement && session.primaryWebView == nil)
+        #expect(session.navigation === replacement)
         #expect(f.tabs.device.pendingProfileDeletion == nil)
     }
 
@@ -2474,7 +2472,7 @@ struct NativePageLifecycleTests {
         }
         _ = f.tabs.open(url: URL(string: "about:blank")!, in: f.window, placement: .newTab)
         _ = f.host.finishCreate(1)
-        #expect(capturedBeforeSelection && first.primaryWebView == nil)
+        #expect(capturedBeforeSelection)
         #expect(first.switcherCaptureInFlight != nil)
     }
 
@@ -2538,7 +2536,7 @@ struct NativePageLifecycleTests {
         let late = native.thumbnailCompletions[3]
         page.nativeOwnerEnded()
         late(png)
-        #expect(page.switcherSnapshot == nil && page.navigation == nil && page.primaryWebView == nil)
+        #expect(page.switcherSnapshot == nil && page.navigation == nil)
     }
 
     @Test func privateNativeAdoptionIsEphemeralAndOwnerEndNeverDeletesSavedState() throws {
@@ -2913,7 +2911,7 @@ struct NativePageLifecycleTests {
         let originalSpace = try #require(fixture.window.spaceID)
         let personal = try #require(fixture.tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: nil))
         let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: personal)))
-        let delegate = RecordingCertificateDelegate()
+        let delegate = NativeOnlyPageDelegate()
         fixture.tabs.sessionDelegate = delegate
         delegate.onSpaceChanged = { _ in
             delegate.onSpaceChanged = nil
@@ -3161,7 +3159,6 @@ struct NativePageLifecycleTests {
         defer { fixture.cleanup() }
         let delegate = NativeOnlyPageDelegate()
         fixture.tabs.sessionDelegate = delegate
-        #expect(fixture.tabs.webKitSessionDelegate == nil)
         fixture.host.finishCreate(0)
         let space = try #require(fixture.window.spaceID)
         let native = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
@@ -3175,7 +3172,7 @@ struct NativePageLifecycleTests {
         let url = URL(string: "https://fixture.invalid/native-only")!
         native.onEvent?(.committed(url, sameDocument: false))
         native.onEvent?(.finished(url, title: "Native page", isReload: false))
-        #expect(session.url == url && session.title == "Native page" && session.primaryWebView == nil)
+        #expect(session.url == url && session.title == "Native page")
         let retired = native.onEvent
         fixture.tabs.close(adopted)
         #expect(fixture.tabs.tree.item(adopted) != nil && fixture.host.closes.count == 1)
@@ -3187,11 +3184,11 @@ struct NativePageLifecycleTests {
         #expect(session.title == "Native page")
     }
 
-    @Test func chromiumSelectionKeepsActivationWithoutWebKitExtensionHooks() throws {
+    @Test func chromiumSelectionReportsTheActivatedItem() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }
         fixture.host.finishCreate(0)
-        let observer = RecordingWebKitTabEvents()
+        let observer = RecordingTabActivations()
         fixture.tabs.tabEvents = observer
         let space = try #require(fixture.window.spaceID)
         let page = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
@@ -3203,8 +3200,6 @@ struct NativePageLifecycleTests {
         page.onEvent?(.titleChanged("Native title"))
         fixture.tabs.close(id)
         fixture.host.finishClose(0, admitted: true)
-        #expect(observer.opened.isEmpty && observer.changed.isEmpty &&
-                observer.granted.isEmpty && observer.closed.isEmpty)
     }
 
     @Test func adoptionUsesExplicitInactiveProfileWithoutAnotherCreateOrLoad() throws {
@@ -3497,7 +3492,6 @@ struct NativePageLifecycleTests {
         let navigation = fixture.host.finishCreate(0)
         #expect(navigation.loaded == [target])
         #expect(navigation.profileID == page.profile?.id)
-        #expect(page.primaryWebView == nil)
         fixture.tabs.select(id, in: fixture.window)
         #expect(fixture.host.creates.count == 1 && navigation.loaded == [target])
         let space = try #require(fixture.tabs.createSpace(name: "Personal", icon: "house",
@@ -3782,7 +3776,7 @@ struct NativePageLifecycleTests {
         #expect(f.window.selectedItemID == first)
         let other = BrowserWindowState()
         f.registry.register(other); f.tabs.attach(window: other)
-        #expect(other.selectedItemID == first, "New Window selects the first tab, as in WebKit mode")
+        #expect(other.selectedItemID == first, "New Window selects the first tab")
         #expect(f.tabs.showsPageElsewhere(in: other) && !f.tabs.showsPageElsewhere(in: f.window))
         #expect(f.tabs.nativeSelectionIsSettling(in: other), "Chromium's page there is no one's choice")
         let selections = f.host.selectionCount
@@ -4315,7 +4309,7 @@ struct NativeVaultFormTests {
         case "profile":
             let selected = try #require(f.window.selectedItemID)
             let page = try #require(f.tabs.session(for:selected))
-            page.detachedProfile = Profile.createEphemeral(id:UUID(),engine:.chromium)
+            page.detachedProfile = Profile.createEphemeral(id:UUID())
         default: native.vaultCurrent = false; native.vaultFocus?(nil)
         }
         await transport.releaseSecret()
@@ -5225,7 +5219,7 @@ private final class NativeModelFixture {
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
         tabs = TabsController(settings: settings, windowRegistry: registry,
             blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium,
+            siteRouting: SiteRoutingManager(settings: settings),
             directory: directory.appendingPathComponent("Tabs"))
         registry.register(window)
         registry.setActive(window)
@@ -5235,7 +5229,7 @@ private final class NativeModelFixture {
     }
     func privateWindow(sharing profile: Profile? = nil) -> BrowserWindowState {
         let window = BrowserWindowState(); window.isIncognito = true
-        window.ephemeralProfile = profile ?? Profile.createEphemeral(id: UUID(), engine: .chromium)
+        window.ephemeralProfile = profile ?? Profile.createEphemeral(id: UUID())
         registry.register(window); tabs.attach(window: window, restoringSavedState: false)
         return window
     }
@@ -5244,7 +5238,7 @@ private final class NativeModelFixture {
             boostStore: BoostStore(fileURL: directory.appendingPathComponent("Boosts.json")))
         return TabsController(settings: settings, windowRegistry: WindowRegistry(),
             blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Blocker")),
-            siteRouting: SiteRoutingManager(settings: settings), profileEngine: .chromium, directory: directory)
+            siteRouting: SiteRoutingManager(settings: settings), directory: directory)
     }
     func cleanup() {
         tabs.settings.flushBoosts()
@@ -5276,7 +5270,7 @@ private final class DetachedNativeOwner: NativePageResourceOwner {
 }
 
 @MainActor
-private final class ControlledNativeHost: NativePageHost {
+final class ControlledNativeHost: NativePageHost {
     final class Creation {
         let profileID: UUID
         var cancelled = false
@@ -5417,7 +5411,7 @@ private final class ControlledNativeHost: NativePageHost {
 }
 
 @MainActor
-private final class NativeTestPage: PageNavigation, VaultNativePage {
+final class NativeTestPage: PageNavigation, VaultNativePage {
     var passkeyCallback: (@MainActor (VaultNativePasskeyRequest?) -> Void)?
     var passkeyValid = false
     var passkeySerial: UInt64 = 0
@@ -5602,7 +5596,15 @@ private final class NativeTestPage: PageNavigation, VaultNativePage {
 private final class NativeOnlyPageDelegate: PageSessionDelegate {
     var currentProfile: Profile? { nil }
     private(set) var cleanedZoom: [UUID] = []
-    func windowSpaceChanged(_ window: BrowserWindowState) {}
-    func presentPeek(url: URL, from session: PageSession) {}
+    var onSpaceChanged: ((BrowserWindowState) -> Void)?
+    var onPeek: ((URL, PageSession) -> Void)?
+    func windowSpaceChanged(_ window: BrowserWindowState) { onSpaceChanged?(window) }
+    func presentPeek(url: URL, from session: PageSession) { onPeek?(url, session) }
     func cleanupZoom(for itemID: UUID) { cleanedZoom.append(itemID) }
+}
+
+@MainActor
+private final class RecordingTabActivations: TabEventObserver {
+    private(set) var activated: [UUID] = []
+    func tabActivated(new session: PageSession, previous: PageSession?) { activated.append(session.itemID) }
 }

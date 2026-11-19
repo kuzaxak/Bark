@@ -78,9 +78,6 @@ public class BrowserWindowState {
     /// The Control-Tab switcher while it is open over this window.
     public var tabSwitcher: TabSwitcherState?
 
-    /// Whether the full History page covers the web content (Cmd-Y), as Arc's history tab does.
-    public var isHistoryPageVisible: Bool = false
-
     /// The selected tab in the sidebar menu (history or downloads)
     public var sidebarMenuSelectedTab: SidebarMenuTab = .history
 

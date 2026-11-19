@@ -55,7 +55,7 @@ final class FavoritePreview {
         guard tabs.windowRegistry.windows[window.id] === window, windowID == window.id,
               let itemID, let item = tabs.item(itemID),
               let source, window.spaceID == source.spaceID,
-              !(tabs.profileEngine == .chromium && window.isIncognito) else { return false }
+              !window.isIncognito else { return false }
         return Self.source(for: item, tabs: tabs) == source
     }
 
@@ -70,7 +70,7 @@ final class FavoritePreview {
     private static let rowLimit = 8
 
     func tileHover(_ item: Item, hovering: Bool, in window: BrowserWindowState, tabs: TabsController) {
-        if tabs.profileEngine == .chromium && window.isIncognito { if hovering { dismiss() }; return }
+        if window.isIncognito { if hovering { dismiss() }; return }
         if itemID != nil && !isCurrent(in: window, tabs: tabs) { dismiss() }
         // The card lies over other tiles, whose tracking areas still report the pointer.
         guard !pointerOverCard || item.id == itemID else { return }

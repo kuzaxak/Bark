@@ -11,7 +11,7 @@ import NookTabsCore
 @MainActor
 struct SpaceRowsTests {
     @Test func askingAgainForUnchangedRowsIsCheap() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         host.tabs.perform(.main, "seed", undoable: false) { tree in
             var after: UUID?
@@ -34,7 +34,7 @@ struct SpaceRowsTests {
     /// A navigation or a page title changes the tree; the three space pages then ask for their
     /// rows, and the tree's items are grouped by parent once for all of them.
     @Test func aTitleChangeGroupsTheTreeOnceForEverySpace() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let first = try #require(host.window.spaceID)
         host.tabs.perform(.main, "seed", undoable: false) { tree in
             var after = first
@@ -62,7 +62,7 @@ struct SpaceRowsTests {
     }
 
     @Test func rowsFollowTabsAndFolders() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         func ids() -> [UUID] { host.tabs.rows(space: spaceID).map(\.id) }
         let before = ids()
@@ -87,7 +87,7 @@ struct SpaceRowsTests {
     }
 
     @Test func aViewReadingRowsHearsChanges() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let folder = try #require(host.tabs.createFolder(title: "Folder", in: .tabs(spaceID: spaceID), after: nil))
         _ = host.tabs.rows(space: spaceID)

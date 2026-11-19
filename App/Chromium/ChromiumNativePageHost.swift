@@ -1280,7 +1280,6 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
     }
 
     private func supports(_ profile: Profile, in window: BrowserWindowState) -> Bool {
-        guard profile.engine == .chromium else { return false }
         return profile.isEphemeral
             ? window.isIncognito && window.ephemeralProfile === profile && window.privateTree != nil
             : !window.isIncognito && window.privateTree == nil

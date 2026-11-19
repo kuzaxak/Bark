@@ -453,7 +453,7 @@ private enum Native {
 }
 
 @MainActor private func lastPageKeepsItsWindow() throws {
-    let profile = Profile(id: Native.first, engine: .chromium)
+    let profile = Profile(id: Native.first)
     let session = { PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil) }
     var shells: [NSView] = []
     func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
@@ -560,7 +560,7 @@ private enum Native {
 /// In host mode the window's root view holds the sidebar and the selected page; none of the old
 /// path's sidebar, header or hidden-page calls reach Chromium.
 @MainActor private func hostWindowPresents() throws {
-    let profile = Profile(id: Native.first, engine: .chromium)
+    let profile = Profile(id: Native.first)
     Native.profiles[80] = Native.first; Native.tabs[80] = [800]; Native.groups[80] = 80; Native.selected = 80
     let page800 = FocusableHostPage(), page801 = FocusableHostPage()
     Native.pageViews = [800: page800, 801: page801]
@@ -618,7 +618,7 @@ private enum Native {
     Native.pageViews[810] = page810
     var other: ChromiumPageNavigation!
     _ = host.createPage(for: PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil),
-                        profile: Profile(id: Native.second, engine: .chromium), in: window) { other = try? $0.get() as? ChromiumPageNavigation }
+                        profile: Profile(id: Native.second), in: window) { other = try? $0.get() as? ChromiumPageNavigation }
     precondition(Native.opens == opens + 1 && Native.openedFrom.last == 80, "a page of another profile joins that profile to the window")
     Native.opened(profile: Native.second, window: 81, blank: 810)
     precondition(other?.nativeWindowID == 81 && other?.nativeTabID == 810, "its page is the new client's")
@@ -876,8 +876,8 @@ private enum HostChecks {
         let window = BrowserWindowState()
         let shell = NSView()
         precondition(host.registerWindow(window, nativeOwner: 10, shell: shell, initialBlankTab: 100))
-        let firstProfile = Profile(id: Native.first, engine: .chromium)
-        let secondProfile = Profile(id: Native.second, engine: .chromium)
+        let firstProfile = Profile(id: Native.first)
+        let secondProfile = Profile(id: Native.second)
         func session() -> PageSession {
             PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil)
         }
@@ -1066,7 +1066,7 @@ private enum HostChecks {
         precondition(outcomes == [.cancelled, .closed, .closed])
         // If all requests cancel during open, deliver exactly one real late
         // resource for package cleanup, not a successful imaginary close.
-        let thirdProfile = Profile(engine: .chromium)
+        let thirdProfile = Profile()
         var late: ChromiumPageNavigation!
         let cancelLate = host.createPage(for: session(), profile: thirdProfile, in: window) {
             late = try! $0.get() as? ChromiumPageNavigation
@@ -1084,7 +1084,7 @@ private enum HostChecks {
         // A dead original logical Browser is not reused as the shared root.
         Native.profiles[20] = nil; Native.tabs[20] = nil
         Native.profiles[30] = nil; Native.tabs[30] = nil
-        let fourthProfile = Profile(engine: .chromium)
+        let fourthProfile = Profile()
         var fourth: ChromiumPageNavigation!
         _ = host.createPage(for: session(), profile: fourthProfile, in: window) {
             fourth = try! $0.get() as? ChromiumPageNavigation
@@ -1137,7 +1137,7 @@ private func checkActualModelAdoption() throws {
     let tabs = TabsController(settings: settings, windowRegistry: registry,
         blocker: ContentBlockerManager(settings: settings, storageDirectory: directory.appendingPathComponent("Filters")),
         siteRouting: SiteRoutingManager(settings: settings),
-        profileEngine: .chromium, directory: directory.appendingPathComponent("Tabs"))
+        directory: directory.appendingPathComponent("Tabs"))
     registry.register(window)
     registry.setActive(window)
     tabs.attach(window: window)
@@ -1177,7 +1177,7 @@ private func checkActualModelAdoption() throws {
 /// No production client mirror: every guard reads the fake native C row.
 @MainActor
 private func checkAuthoritativeGroups() throws {
-    let profile = Profile(engine: .chromium)
+    let profile = Profile()
     for owner: Int32 in [120, 121, 122] {
         Native.profiles[owner] = profile.id; Native.tabs[owner] = [owner * 10]
         Native.groups[owner] = 50
@@ -1417,7 +1417,7 @@ private func checkAuthoritativeGroups() throws {
         let store = TabStore(directory: tabsDirectory); store.save(tree, device); store.flush()
         let tabs = TabsController(settings: settings, windowRegistry: registry, blocker: manager,
             siteRouting: SiteRoutingManager(settings: settings),
-            profileEngine: .chromium, directory: tabsDirectory)
+            directory: tabsDirectory)
         registry.register(window); registry.setActive(window); window.spaceID = Native.first
         tabs.attach(window: window, restoringSavedState: false)
         Native.profiles = [10: Native.first]; Native.tabs = [10: [100]]; Native.groups = [:]

@@ -17,7 +17,6 @@ struct SpaceSwitcherTitle: View {
     @Environment(TabsController.self) private var tabs
     @Environment(BrowserWindowState.self) private var windowState
     @Environment(\.nookSettings) private var nookSettings
-    @Environment(\.openSettings) private var openSettings
     @ObservedObject private var dragSession = NookDragSessionManager.shared
     @State private var isHovering = false
 
@@ -105,17 +104,11 @@ struct SpaceSwitcherTitle: View {
         }
         Divider()
         Button("New Space…", systemImage: "plus", action: onNewSpace)
-        if tabs.profileEngine == .chromium {
-            Button("Profile Settings", systemImage: "person.crop.circle") {
-                browserManager.openSettings(tab: .profiles)
-            }
+        Button("Profile Settings", systemImage: "person.crop.circle") {
+            browserManager.openSettings(tab: .profiles)
         }
         Button("Space Settings", systemImage: "gearshape") {
-            if tabs.profileEngine == .chromium { browserManager.openSpaceSettings() }
-            else {
-                SettingsNavigation.shared.currentSettingsTab = .spaces
-                openSettings()
-            }
+            browserManager.openSpaceSettings()
         }
     }
 }

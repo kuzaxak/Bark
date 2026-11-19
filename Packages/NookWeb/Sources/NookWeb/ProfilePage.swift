@@ -60,8 +60,7 @@ extension TabsController {
 
     /// The regular profile actually shown by the browser and its app history.
     public func displayedHistoryProfile(_ history: HistoryManager) -> ProfileSummary? {
-        guard profileEngine == .chromium,
-              let window = windowRegistry.activeWindow, !window.isIncognito, window.privateTree == nil,
+        guard let window = windowRegistry.activeWindow, !window.isIncognito, window.privateTree == nil,
               let spaceID = window.spaceID, let profileID = tree.dataStoreID(for: spaceID),
               history.currentProfileId == profileID, isProfileAvailable(profileID) else { return nil }
         return profiles.first { $0.id == profileID }
@@ -86,7 +85,7 @@ extension TabsController {
             completion(.failure(.profileUnavailable))
             return
         }
-        guard profileEngine == .chromium, let action = onOpenProfilePage else {
+        guard let action = onOpenProfilePage else {
             completion(.failure(.presentationUnavailable))
             return
         }

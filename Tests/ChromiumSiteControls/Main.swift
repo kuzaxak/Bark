@@ -49,8 +49,6 @@ enum PageCommand { case clearSiteCookies, clearSiteCache, zoomIn, zoomOut }
 }
 enum Boost { static func normalizeHost(_ host: String) -> String { host } }
 @MainActor final class BrowserManager {
-    enum Engine { case chromium, webKit }
-    var engine = Engine.chromium
     var performed: [PageCommand] = []
     var onPerform: (() -> Void)?
     let contentBlockerManager = ContentBlockerManager()

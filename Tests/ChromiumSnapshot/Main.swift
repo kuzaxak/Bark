@@ -65,10 +65,8 @@ import Foundation
     func existingNativeAgentPage(in window:BrowserWindowState)->PageSession? {available && !page.nativeIsEnding ? page:nil}
 }
 @MainActor final class BrowserManager {
-    enum Engine { case chromium }
     struct Settings { var developerModeEnabled = true }
     let tabs=Tabs();var windowRegistry:Registry?=Registry()
-    let engine = Engine.chromium
     var nookSettings: Settings? = Settings()
     var handedOff: [DevPick] = []
     func frontPage(in window: BrowserWindowState) -> PageSession? { tabs.page }

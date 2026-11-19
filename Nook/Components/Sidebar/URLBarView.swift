@@ -28,11 +28,8 @@ struct URLBarView: View {
     @State private var selectedSuggestion: SearchManager.SearchSuggestion?
     @State private var prefilledAddress = ""
     @State private var searchManager = SearchManager()
-    @FocusState private var addressFocused: Bool
     var isSidebarHovered: Bool
-    var splitItemID: UUID? = nil
     var nativeTopBar: Bool = false
-    private var usesNativeEditor: Bool { nativeTopBar || (browserManager.engine == .chromium && splitItemID == nil) }
     @State private var nativeEditPage: PageSession?
     @State private var nativeEditTarget: AddressEditTarget?
 
@@ -47,21 +44,8 @@ struct URLBarView: View {
                 self.selectedSuggestion = nil
             }
         }
-        .onChange(of: addressFocused) { _, focused in
-            if splitItemID == nil, !focused {
-                // Let a suggestion button's click finish before removing its overlay.
-                DispatchQueue.main.async {
-                    if !addressFocused { cancelEditing() }
-                }
-            }
-        }
         .onChange(of: windowState.selectedItemID) { _, _ in cancelEditing() }
-        .onChange(of: usesNativeEditor ? browserManager.frontPage(in: windowState)?.itemID : nil) { _, _ in cancelEditing() }
-        .onChange(of: windowState.split) { _, split in
-            if let splitItemID, split?.contains(splitItemID) != true {
-                cancelEditing()
-            }
-        }
+        .onChange(of: browserManager.frontPage(in: windowState)?.itemID) { _, _ in cancelEditing() }
         .onChange(of: windowState.spaceID) { _, _ in cancelEditing() }
         .onChange(of: nativeEditTarget?.isCurrent) { _, current in
             if current == false { cancelEditing() }
@@ -70,7 +54,7 @@ struct URLBarView: View {
             if visible == true && windowState.commandPalette?.addressEdit == nil { cancelEditing() }
         }
         .onChange(of: windowState.commandPalette?.visibleAddressEditID) { _, request in
-            guard request != nil, usesNativeEditor, nativeAddressIsAvailable,
+            guard request != nil, nativeAddressIsAvailable,
                   let palette = windowState.commandPalette, let target = palette.addressEdit else { return }
             palette.close()
             guard target.isCurrent else { return }
@@ -88,10 +72,8 @@ struct URLBarView: View {
     
     @ViewBuilder
     private var addressPresentation: some View {
-        let session = usesNativeEditor ? browserManager.frontPage(in: windowState)
-            : (splitItemID == nil ? browserManager.tabs.selectedSession(in: windowState)
-               : splitItemID.flatMap { browserManager.tabs.session(for: $0) })
-        collapsedAddress(session: session)
+        let session = browserManager.frontPage(in: windowState)
+        sidebarAddress(session: session)
         .frame(maxWidth: .infinity, minHeight: controlHeight, maxHeight: controlHeight)
         .overlay(alignment: .bottom) {
             NativePageLoadingBar(isLoading: session?.isLoading == true, progress: session?.loadProgress)
@@ -99,32 +81,21 @@ struct URLBarView: View {
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .background {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(splitItemID == nil ? Self.fieldFill(dark: colorScheme == .dark, hovering: isHovering) : .clear)
+                .fill(Self.fieldFill(dark: colorScheme == .dark, hovering: isHovering))
         }
-        // Report the frame in the window space so we can overlay the mini palette above all content
+        // Report the frame in the window space so we can overlay the mini palette above all content.
         .background {
-            if splitItemID == nil {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: URLBarFramePreferenceKey.self,
-                        value: proxy.frame(in: .named("WindowSpace"))
-                    )
-                }
-            }
-        }
-        .overlay(alignment: nookSettings.sidebarPosition == .right ? .topTrailing : .topLeading) {
-            if isEditing, splitItemID == nil, !usesNativeEditor {
-                expandedAddressPanel
-                    .frame(width: expandedPanelWidth)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .background(AddressOutsideClickRegion(onOutsideClick: cancelEditing))
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: URLBarFramePreferenceKey.self,
+                    value: proxy.frame(in: .named("WindowSpace"))
+                )
             }
         }
         .background {
-            if isEditing, splitItemID != nil || usesNativeEditor {
+            if isEditing {
                 AddressAnchoredPanel(width: expandedPanelWidth, canPresent: { nativeWindow in
-                    browserManager.engine != .chromium ||
-                        (windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState)
+                    windowState.window === nativeWindow && browserManager.windowRegistry?.windows[windowState.id] === windowState
                 }, onRetire: cancelEditing) {
                     expandedAddressPanel
                         .frame(width: expandedPanelWidth)
@@ -135,38 +106,6 @@ struct URLBarView: View {
             }
         }
         .zIndex(isEditing ? 100 : 0)
-    }
-
-    @ViewBuilder
-    private func collapsedAddress(session: PageSession?) -> some View {
-        ZStack {
-            if let splitItemID, let item = browserManager.tabs.item(splitItemID) {
-                HStack(spacing: NookDesign.Spacing.sm) {
-                    ItemFavicon(session: session)
-                        .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
-                        .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
-                    Text(browserManager.tabs.title(for: item))
-                        .font(NookDesign.Font.secondary)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                }
-                .padding(.horizontal, NookDesign.Spacing.rowPadding)
-                .frame(height: NookDesign.Size.navRow)
-                .contentShape(Rectangle())
-                .pointerStyle(.horizontalText)
-                .onTapGesture {
-                    guard !isEditing else { return }
-                    beginEditing(session?.url.absoluteString ?? item.url?.absoluteString ?? "")
-                }
-                .modifier(AddressActivationAccessibility(enabled: !isEditing) {
-                    beginEditing(session?.url.absoluteString ?? item.url?.absoluteString ?? "")
-                })
-                .help("Search or Enter URL...")
-                .nookFloatingSurface(in: NookDesign.Radius.shape(NookDesign.Radius.md))
-            } else {
-                sidebarAddress(session: session)
-            }
-        }
     }
 
     private func sidebarAddress(session: PageSession?) -> some View {
@@ -236,12 +175,10 @@ struct URLBarView: View {
                 // Copy link button (show on hover when tab is selected)
                 if !isEditing, isHovering, let session {
                     Button("Copy URL", systemImage: showCheckmark ? "checkmark" : "link") {
-                        if usesNativeEditor {
-                            guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
-                                  browserManager.frontPage(in: windowState) === session,
-                                  let navigation = session.navigation,
-                                  browserManager.tabs.nativePageHost?.isNativeSelection(navigation, in: windowState) == true else { return }
-                        }
+                        guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
+                              browserManager.frontPage(in: windowState) === session,
+                              let navigation = session.navigation,
+                              browserManager.tabs.nativePageHost?.isNativeSelection(navigation, in: windowState) == true else { return }
                         copyURLToClipboard(session.url.absoluteString)
                     }
                     .help(browserManager.help("Copy URL", shortcut: .copyCurrentURL))
@@ -253,7 +190,7 @@ struct URLBarView: View {
                 }
 
                 // Pinned extension buttons + library button
-                if !isEditing, browserManager.engine == .chromium {
+                if !isEditing {
                     if nativeAddressIsAvailable, let nativeExtensions,
                        let session, session === browserManager.frontPage(in: windowState) {
                         ChromiumPinnedExtensionActions(actions: nativeExtensions)
@@ -276,7 +213,7 @@ struct URLBarView: View {
 
     private var controlHeight: CGFloat {
         if nativeTopBar { return TopBarMetrics.height - 2 * TopBarMetrics.verticalPadding }
-        return splitItemID == nil ? NookDesign.Size.chromeControl : NookDesign.Size.navRow
+        return NookDesign.Size.chromeControl
     }
 
     private var nativeAddressIsAvailable: Bool {
@@ -313,41 +250,13 @@ struct URLBarView: View {
         selectedSuggestion = index < 0 || (!showsInitialSuggestions && index == 0) ? nil : suggestions[index]
     }
 
-    @ViewBuilder
     private var inlineAddressField: some View {
-        if splitItemID != nil || usesNativeEditor {
-            SplitAddressSearchField(text: $addressText,
-                                    onSubmit: { submitAddress() },
-                                    onCancel: cancelEditing,
-                                    onMove: moveSuggestionSelection,
-                                    onEndEditing: cancelEditing)
-                .frame(height: 22)
-        } else {
-            TextField("Search or Enter URL...", text: $addressText)
-                .textFieldStyle(.plain)
-                .font(NookDesign.Font.secondary)
-                .focused($addressFocused)
-                .onSubmit { submitAddress() }
-                .onExitCommand { cancelEditing() }
-                .onKeyPress(.downArrow) {
-                    guard !isComposingAddress else { return .ignored }
-                    moveSuggestionSelection(by: 1)
-                    return .handled
-                }
-                .onKeyPress(.upArrow) {
-                    guard !isComposingAddress else { return .ignored }
-                    moveSuggestionSelection(by: -1)
-                    return .handled
-                }
-                .onAppear {
-                    addressFocused = true
-                    DispatchQueue.main.async {
-                        guard isEditing, addressFocused,
-                              let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return }
-                        editor.selectAll(nil)
-                    }
-                }
-        }
+        SplitAddressSearchField(text: $addressText,
+                                onSubmit: { submitAddress() },
+                                onCancel: cancelEditing,
+                                onMove: moveSuggestionSelection,
+                                onEndEditing: cancelEditing)
+            .frame(height: 22)
     }
 
     private var showsInitialSuggestions: Bool {
@@ -359,7 +268,7 @@ struct URLBarView: View {
     private var initialLocalSuggestions: [SearchManager.SearchSuggestion] {
         guard let spaceID = windowState.spaceID else { return [] }
         return browserManager.tabs.items(inSpace: spaceID)
-            .filter { !$0.isFolder && $0.id != (splitItemID ?? windowState.selectedItemID) }
+            .filter { !$0.isFolder && $0.id != windowState.selectedItemID }
             .prefix(6).compactMap { item in
                 let session = browserManager.tabs.session(for: item.id)
                 guard let url = session?.url ?? item.url, url.absoluteString != prefilledAddress else { return nil }
@@ -467,16 +376,14 @@ struct URLBarView: View {
     }
 
     private func beginEditing(_ address: String, target: AddressEditTarget? = nil) {
-        if usesNativeEditor {
-            guard nativeAddressIsAvailable,
-                  let target = target ?? AddressEditTarget.capture(in: windowState, manager: browserManager),
-                  target.address == address, target.isCurrent else { return }
-            nativeEditTarget = target
-            nativeEditPage = browserManager.frontPage(in: windowState)
-        }
+        guard nativeAddressIsAvailable,
+              let target = target ?? AddressEditTarget.capture(in: windowState, manager: browserManager),
+              target.address == address, target.isCurrent else { return }
+        nativeEditTarget = target
+        nativeEditPage = browserManager.frontPage(in: windowState)
         searchManager.setTabs(browserManager.tabs, window: windowState)
         searchManager.setHistoryManager(browserManager.historyManager)
-        if usesNativeEditor, let target = nativeEditTarget, let page = nativeEditPage {
+        if let page = nativeEditPage {
             searchManager.setWebSuggestionTarget(for: page) { [weak window = windowState] in
                 window?.isAddressEditing == true && target.isCurrent
             }
@@ -497,7 +404,6 @@ struct URLBarView: View {
         hoverManager.setAddressEditing(false, in: windowState.id)
         isEditing = false
         nativeEditPage = nil; nativeEditTarget = nil
-        addressFocused = false
         searchManager.clearWebSuggestionTarget()
     }
 
@@ -514,8 +420,8 @@ struct URLBarView: View {
         // Capture before cancelEditing: retiring the editor may itself change
         // selection. Never retarget a stale address submission to its successor.
         let editPage = nativeEditPage, editTarget = nativeEditTarget
-        let currentTarget = { !usesNativeEditor || editTarget?.isCurrent == true }
-        guard !usesNativeEditor || isEditing, !isComposingAddress else { return }
+        let currentTarget = { editTarget?.isCurrent == true }
+        guard isEditing, !isComposingAddress else { return }
         guard currentTarget() else { cancelEditing(); return }
         if chosen == nil, case .folder(let folder)? = selectedSuggestion?.type,
            !searchManager.isCurrentFolderMatch(folder) {
@@ -527,7 +433,7 @@ struct URLBarView: View {
         let typed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
         let fallback = typed.isEmpty ? nil : SearchManager.SearchSuggestion(text: typed, type: isLikelyURL(typed) ? .url : .search)
         guard let suggestion = chosen ?? selected ?? fallback else { return }
-        if splitItemID == nil, case .tab(let match) = suggestion.type {
+        if case .tab(let match) = suggestion.type {
             guard browserManager.tabs.item(match.itemID) != nil else { return }
             cancelEditing()
             guard currentTarget() else { return }
@@ -550,39 +456,28 @@ struct URLBarView: View {
         case .history(let entry): url = entry.url
         case .tab(let match): url = match.url
         case .url, .search:
-            if usesNativeEditor,
-               browserManager.openPasswordManagementCommand(
+            if browserManager.openPasswordManagementCommand(
                 suggestion.text, in: windowState, hasSearchOrPlacementOverride: suggestion.text != typed,
                 dismissEditor: cancelEditing
                ) {
                 return
             }
-            if browserManager.tabs.profileEngine == .chromium, isSearchInput(suggestion.text) {
+            if isSearchInput(suggestion.text) {
                 cancelEditing()
                 guard currentTarget() else { return }
-                if usesNativeEditor, let page = editPage {
+                if let page = editPage {
                     page.navigate(to: suggestion.text)
                 } else {
-                    browserManager.tabs.search(suggestion.text, in: windowState, splitItemID: splitItemID)
+                    browserManager.tabs.search(suggestion.text, in: windowState)
                 }
                 return
             }
-            let template = browserManager.tabs.profileEngine == .chromium
-                ? "nook-search:%@" : browserManager.tabs.searchTemplate(forSpace: windowState.spaceID)
-            url = URL(string: normalizeURL(suggestion.text, queryTemplate: template))
+            url = URL(string: normalizeURL(suggestion.text, queryTemplate: "nook-search:%@"))
         }
         guard let url else { return }
         cancelEditing()
         guard currentTarget() else { return }
-        if let splitItemID {
-            guard windowState.split?.contains(splitItemID) == true,
-                  !browserManager.tabs.isPageShownElsewhere(splitItemID, from: windowState),
-                  let session = browserManager.tabs.ensureSession(for: splitItemID) else { return }
-            session.load(url)
-            browserManager.tabs.select(splitItemID, in: windowState)
-            return
-        }
-        if usesNativeEditor, let page = editPage {
+        if let page = editPage {
             browserManager.submitTypedAddress(url, from: page, in: windowState, whileCurrent: currentTarget)
             return
         }

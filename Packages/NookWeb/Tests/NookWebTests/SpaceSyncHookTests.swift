@@ -9,7 +9,7 @@ import NookTabsCore
 @MainActor
 struct SpaceSyncHookTests {
     @Test func treeEditsAreReportedAndWindowStateIsNot() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         var reports = 0
         host.tabs.onTreeChanged = { reports += 1 }
@@ -23,13 +23,13 @@ struct SpaceSyncHookTests {
 
     @Test(arguments: [true, false])
     func aSpaceDeletedOnAnotherMacKeepsItsProfileHere(keepingLeftProfile: Bool) throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let other = try #require(host.tabs.createSpace(name: "Work", icon: "", accentHex: "#000000", after: nil, profileName: "Job"))
         let store = try #require(host.tabs.tree.dataStoreID(for: other))
 
         host.tabs.deleteSpace(other, keepingLeftProfile: keepingLeftProfile)
 
         #expect(host.tabs.tree.space(other) == nil)
-        #expect((host.tabs.device.keptProfiles?.contains { $0.id == store && $0.name == "Job" } ?? false) == keepingLeftProfile)
+        #expect(host.tabs.device.keptProfiles?.contains { $0.id == store && $0.name == "Job" } == true)
     }
 }

@@ -280,7 +280,7 @@ struct ExtensionLibraryView: View {
                 }
                 .disabled(boostHost == nil)
                 Divider()
-                if ShortcutAction.manageExtensions.isOffered(chromium: true, privateWindow: isPrivate) {
+                if ShortcutAction.manageExtensions.isOffered(privateWindow: isPrivate) {
                     Button("Manage Extensions…") {
                         browserManager.manageExtensions()
                         onDismiss()

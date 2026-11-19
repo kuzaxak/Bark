@@ -60,7 +60,7 @@ extension TabsController {
         let entryGeneration = window.nativeSelectionGeneration
         let entrySelection = window.selectedItemID, entrySpace = window.spaceID
         let entrySplit = window.split
-        guard profileEngine == .chromium, !isTerminating, let host = nativePageHost,
+        guard !isTerminating, let host = nativePageHost,
               windowRegistry.windows[window.id] === window,
               liveAdmission?() ?? true,
               liveAdmission == nil || (window.nativeSelectionGeneration == entryGeneration &&
@@ -87,7 +87,7 @@ extension TabsController {
                 ordered.append(page)
             }
             guard ordered.allSatisfy({ page in
-                guard let profile = page.profile, profile.engine == .chromium,
+                guard let profile = page.profile,
                       profile.isEphemeral == window.isIncognito,
                       !window.isIncognito || profile.id == window.ephemeralProfile?.id else { return false }
                 return page.navigation == nil || page.navigation?.profileID == profile.id
@@ -263,7 +263,7 @@ extension TabsController {
     @discardableResult
     public func reflectNativeSplit(_ record: SplitRecord?, in window: BrowserWindowState,
                                    validateNative: () -> Bool) -> Bool {
-        guard profileEngine == .chromium, !isTerminating, let host = nativePageHost,
+        guard !isTerminating, let host = nativePageHost,
               windowRegistry.windows[window.id] === window, validateNative() else { return false }
         if window.split == record { return validateNative() }
         guard cancelNativeSplit(in: window), validateNative() else { return false }
@@ -285,7 +285,7 @@ extension TabsController {
     @discardableResult
     public func restoreSavedNativeSplitIfNeeded(in window: BrowserWindowState,
                                                completion: (@MainActor (Bool) -> Void)? = nil) -> Bool {
-        guard profileEngine == .chromium, !isTerminating,
+        guard !isTerminating,
               window.nativeSelectionGeneration == nil, window.nativeSplitPreparation == nil,
               let record = window.split, let active = window.selectedItemID, record.contains(active),
               let host = nativePageHost else { return false }

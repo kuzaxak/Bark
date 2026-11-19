@@ -4,33 +4,21 @@
 //  Nook
 //
 //  Whole-page translation with the Translation framework on the Mac, or with the AI model chosen
-//  in Settings (AIPageTranslation.swift). The script and its handler live in the NookTranslate
-//  world, so a page can neither read nor feed them.
+//  in Settings (AIPageTranslation.swift). Chromium owns document sampling and text replacement.
 //
 
 import Foundation
 import Translation
-import WebKit
 
 extension PageSession {
-    static let translateWorld = WKContentWorld.world(name: "NookTranslate")
-    static let translateHandlerName = "nookTranslate"
-
     /// Hosts that got "Not Now" this session.
     private static var declinedTranslationHosts: Set<String> = []
     private static let minimumTextForOffer = 200
     private static let translationBatchSize = AIPageTranslation.batchSize
 
-    private static let translateScript: String = {
-        guard let url = Bundle.module.url(forResource: "page-translate", withExtension: "js", subdirectory: "Resources"),
-              let source = try? String(contentsOf: url, encoding: .utf8)
-        else { return "" }
-        return source
-    }()
-
     /// An ordinary web page that is not a PDF.
     public var canTranslate: Bool {
-        guard !isDisplayingPDF, (!usesNativePageHost || (navigation?.supportsTranslation == true && navigation?.state.isLoading == false)),
+        guard navigation?.supportsTranslation == true, navigation?.state.isLoading == false,
               let scheme = url.scheme?.lowercased() else { return false }
         return scheme == "http" || scheme == "https"
     }
@@ -165,34 +153,25 @@ extension PageSession {
     func runTranslation(onDevice translator: TranslationSession?) async {
         let generation = translationGeneration
         guard isTranslated else { return }
-        let native = usesNativePageHost
-        let (stream, feed) = AsyncStream.makeStream(of: [[String: Any]].self,
-            bufferingPolicy: native ? .bufferingOldest(4) : .unbounded)
+        let (stream, feed) = AsyncStream.makeStream(of: [[String: Any]].self, bufferingPolicy: .bufferingOldest(4))
         translationFeed?.finish()
-        // start() streams its bounded initial document before replying. Stage
-        // those batches in the existing document-sized backlog, then publish
-        // one initial batch; the translator cannot consume the stream yet.
-        translationFeed = native ? nil : feed
-        if !native, !translationBacklog.isEmpty {
-            feed.yield(translationBacklog)
-            translationBacklog = []
-        }
-        if let first = await callTranslateScript("start()") as? [[String: Any]] {
-            if native {
-                guard !Task.isCancelled, generation == translationGeneration, isTranslated else {
-                    feed.finish(); return
-                }
-                guard appendNativeTranslationBacklog(first) else { showOriginal(); return }
-                let initial = translationBacklog
-                translationBacklog = []
-                translationFeed = feed
-                feed.yield(initial)
-            } else { feed.yield(first) }
-        } else if native {
-            if !Task.isCancelled, generation == translationGeneration { showOriginal() }
+        // start() streams the bounded initial document before replying. Stage
+        // those batches before the translator starts consuming the stream.
+        translationFeed = nil
+        let first = await callTranslateScript("start()") as? [[String: Any]]
+        guard !Task.isCancelled, generation == translationGeneration, isTranslated else {
             feed.finish()
             return
         }
+        guard let first, appendNativeTranslationBacklog(first) else {
+            feed.finish()
+            showOriginal()
+            return
+        }
+        let initial = translationBacklog
+        translationBacklog = []
+        translationFeed = feed
+        feed.yield(initial)
 
         for await nodes in stream {
             guard generation == translationGeneration, !Task.isCancelled else { return }
@@ -277,62 +256,50 @@ extension PageSession {
         return true
     }
 
-    /// Installs the script in the main frame's NookTranslate world if needed, then runs `call`.
+    /// Sends one translation command to the current document's native owner.
     func callTranslateScript(_ call: String, arguments: [String: Any] = [:]) async -> Any? {
-        if usesNativePageHost {
-            guard let page = navigation, page.supportsTranslation else { return nil }
-            let command: PageTranslationCommand
-            switch call {
-            case "sample()": command = .sample
-            case "start()": command = .start
-            case "restore()": command = .restore
-            case "apply(pairs)":
-                guard let pairs = arguments["pairs"] as? [[String]], pairs.count <= 128,
-                      pairs.allSatisfy({ $0.count == 2 }) else { return nil }
-                command = .apply(pairs.map { PageTranslationNode(id: $0[0], text: $0[1]) })
-            default: return nil
-            }
-            let generation = translationGeneration
-            if call == "start()" {
-                page.onTranslationNodes = { [weak self, weak page] nodes in
-                    guard let self, let page, self.navigation === page,
-                          generation == self.translationGeneration, self.isTranslated else { return }
-                    guard let nodes else { self.showOriginal(); return }
-                    guard nodes.count <= 128,
-                          nodes.reduce(0, { $0 + $1.id.utf8.count + $1.text.utf8.count }) <= 512 * 1024 else {
-                        self.showOriginal(); return
-                    }
-                    let batch = nodes.map { ["id": $0.id, "text": $0.text] }
-                    if let feed = self.translationFeed {
-                        switch feed.yield(batch) {
-                        case .enqueued: return
-                        case .dropped: self.showOriginal(); return
-                        case .terminated: break
-                        @unknown default: self.showOriginal(); return
-                        }
-                    }
-                    if !self.appendNativeTranslationBacklog(batch) { self.showOriginal() }
-                }
-            }
-            let result = await withCheckedContinuation { continuation in
-                if !page.translate(command, completion: { continuation.resume(returning: $0) }) {
-                    continuation.resume(returning: nil)
-                }
-            }
-            guard navigation === page, generation == translationGeneration,
-                  let result else { return nil }
-            if call == "sample()" { return ["text": result.text, "lang": result.lang] }
-            return result.nodes.map { ["id": $0.id, "text": $0.text] }
+        guard let page = navigation, page.supportsTranslation else { return nil }
+        let command: PageTranslationCommand
+        switch call {
+        case "sample()": command = .sample
+        case "start()": command = .start
+        case "restore()": command = .restore
+        case "apply(pairs)":
+            guard let pairs = arguments["pairs"] as? [[String]], pairs.count <= 128,
+                  pairs.allSatisfy({ $0.count == 2 }) else { return nil }
+            command = .apply(pairs.map { PageTranslationNode(id: $0[0], text: $0[1]) })
+        default: return nil
         }
-        guard let webView = primaryWebView, !Self.translateScript.isEmpty else { return nil }
-        let body = "if (!window.__nookTranslate) { window.__nookTranslate = (" + Self.translateScript +
-            ")(nodes => window.webkit.messageHandlers.nookTranslate.postMessage({nodes}), false); }\n" +
-            "return window.__nookTranslate.\(call);"
-        do {
-            return try await webView.callAsyncJavaScript(body, arguments: arguments, in: nil, contentWorld: Self.translateWorld)
-        } catch {
-            Self.log.error("Translate script failed: \(error.localizedDescription, privacy: .public)")
-            return nil
+        let generation = translationGeneration
+        if call == "start()" {
+            page.onTranslationNodes = { [weak self, weak page] nodes in
+                guard let self, let page, self.navigation === page,
+                      generation == self.translationGeneration, self.isTranslated else { return }
+                guard let nodes else { self.showOriginal(); return }
+                guard nodes.count <= 128,
+                      nodes.reduce(0, { $0 + $1.id.utf8.count + $1.text.utf8.count }) <= 512 * 1024 else {
+                    self.showOriginal(); return
+                }
+                let batch = nodes.map { ["id": $0.id, "text": $0.text] }
+                if let feed = self.translationFeed {
+                    switch feed.yield(batch) {
+                    case .enqueued: return
+                    case .dropped: self.showOriginal(); return
+                    case .terminated: break
+                    @unknown default: self.showOriginal(); return
+                    }
+                }
+                if !self.appendNativeTranslationBacklog(batch) { self.showOriginal() }
+            }
         }
+        let result = await withCheckedContinuation { continuation in
+            if !page.translate(command, completion: { continuation.resume(returning: $0) }) {
+                continuation.resume(returning: nil)
+            }
+        }
+        guard navigation === page, generation == translationGeneration,
+              let result else { return nil }
+        if call == "sample()" { return ["text": result.text, "lang": result.lang] }
+        return result.nodes.map { ["id": $0.id, "text": $0.text] }
     }
 }

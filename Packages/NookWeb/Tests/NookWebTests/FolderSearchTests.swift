@@ -7,7 +7,7 @@ import Testing
 @MainActor
 struct FolderSearchTests {
     @Test func duplicateFolderNamesExposeTheirPathsAlongsideMatchingTabs() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let first = try #require(host.window.spaceID)
         let space = try #require(host.tabs.createSpace(name: "QDO", icon: "folder", accentHex: "#445566",
                                                        after: first, profileName: "Work"))
@@ -46,7 +46,7 @@ struct FolderSearchTests {
         #expect(renamed.path == "Work › QDO › Pinned › Repositories › Insly")
     }
     @Test func movedFolderWithTheSameDisplayedPathRequiresARefreshedMatch() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let first = try #require(host.tabs.createSpace(name: "Projects", icon: "folder", accentHex: "#445566",
                                                        after: host.window.spaceID, profileName: "Work"))
         let second = try #require(host.tabs.createSpace(name: "Projects", icon: "folder", accentHex: "#446655",

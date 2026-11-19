@@ -49,9 +49,6 @@ class CommandPalette {
     /// Text to prefill in the command palette
     var prefilledText: String = ""
 
-    /// Whether pressing Return should navigate the current tab (vs creating new tab)
-    var shouldNavigateCurrentTab: Bool = false
-
     private(set) var addressEdit: AddressEditTarget?
     var visibleAddressEditID: UUID? { isVisible ? addressEdit?.id : nil }
     @ObservationIgnored private var pendingPresentation: UUID?
@@ -65,23 +62,17 @@ class CommandPalette {
     // MARK: - Actions
 
     /// Open the command palette with optional prefill text.
-    func open(prefill: String = "", navigateCurrentTab: Bool = false, addSplit: AddSplit? = nil) {
-        present(prefill: prefill, navigateCurrentTab: navigateCurrentTab, addSplit: addSplit, target: nil)
-    }
-
-    /// Retained WebKit toolbar path.
-    func openWithCurrentURL(_ url: URL) {
-        open(prefill: url.absoluteString, navigateCurrentTab: true)
+    func open(prefill: String = "", addSplit: AddSplit? = nil) {
+        present(prefill: prefill, addSplit: addSplit, target: nil)
     }
 
     func openAddressEdit(_ target: AddressEditTarget) {
         guard target.isCurrent else { return }
-        present(prefill: target.address, navigateCurrentTab: true, addSplit: nil, target: target)
+        present(prefill: target.address, addSplit: nil, target: target)
     }
 
-    private func present(prefill: String, navigateCurrentTab: Bool, addSplit: AddSplit?, target: AddressEditTarget?) {
+    private func present(prefill: String, addSplit: AddSplit?, target: AddressEditTarget?) {
         prefilledText = prefill
-        shouldNavigateCurrentTab = navigateCurrentTab
         addressEdit = target
         self.addSplit = addSplit
         let pending = UUID()
@@ -98,7 +89,6 @@ class CommandPalette {
         pendingPresentation = nil
         isVisible = false
         addressEdit = nil
-        shouldNavigateCurrentTab = false
         prefilledText = ""
         addSplit = nil
     }

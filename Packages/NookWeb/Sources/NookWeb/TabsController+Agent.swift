@@ -79,11 +79,11 @@ extension TabsController {
     /// Read-only access for native tools: never materialize a cold page or borrow
     /// another window/profile's live document.
     public func existingNativeAgentPage(in window: BrowserWindowState) -> PageSession? {
-        guard profileEngine == .chromium, !isTerminating, !window.isIncognito, window.privateTree == nil,
+        guard !isTerminating, !window.isIncognito, window.privateTree == nil,
               windowRegistry.windows[window.id] === window, let expected = nativeAgentProfileID,
               let id = agentItem, let page = session(for: id), page.controller === self,
               !page.isPrivate, !page.isDetached, !page.nativeIsEnding, isNativePageOwner(page, in: window),
-              let profile = page.profile, profile.engine == .chromium, !profile.isEphemeral, profile.id == expected,
+              let profile = page.profile, !profile.isEphemeral, profile.id == expected,
               let navigation = page.navigation, navigation.profileID == expected,
               let host = nativePageHost, host.canAdoptPage(navigation, in: window) else { return nil }
         return page
@@ -92,11 +92,11 @@ extension TabsController {
     /// Prepare the existing Agent item without selecting a tab or creating a
     /// window. The native host binds its exact persistent profile in this group.
     public func prepareNativeAgentPage(in window: BrowserWindowState) async -> PageSession? {
-        guard profileEngine == .chromium, !Task.isCancelled, !isTerminating,
+        guard !Task.isCancelled, !isTerminating,
               !window.isIncognito, window.privateTree == nil, windowRegistry.windows[window.id] === window,
               let expectedProfile = nativeAgentProfileID,
               let id = agentItem, let page = ensureSession(for: id), !page.isDetached,
-              let profile = page.profile, profile.engine == .chromium, !profile.isEphemeral,
+              let profile = page.profile, !profile.isEphemeral,
               profile.id == expectedProfile, isProfileAvailable(profile.id), let host = nativePageHost else { return nil }
         let events = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let cancelled = OSAllocatedUnfairLock(initialState: false)

@@ -173,7 +173,6 @@ public final class FilterListManager {
         return anyUpdated
     }
 
-    /// Load all cached filter lists and return as individual rule lines for SafariConverterLib.
     /// One entry per list, carrying whether it may use `trusted-*` scriptlets.
     /// The engine is built from these rather than one blob because
     /// `ParseOptions.permissions` is applied per parse.

@@ -292,8 +292,7 @@ extension ShortcutAction {
 
     /// Chromium installs extensions from its Extensions page, which Manage Extensions opens and a
     /// private window cannot.
-    func isOffered(chromium: Bool, privateWindow: Bool) -> Bool {
-        guard chromium else { return true }
+    func isOffered(privateWindow: Bool) -> Bool {
         switch self {
         case .installExtension: return false
         case .manageExtensions: return !privateWindow
@@ -302,8 +301,8 @@ extension ShortcutAction {
     }
 
     /// The key the command bar shows beside the action: one that runs it.
-    func showsKey(_ key: KeyCombination, chromium: Bool) -> Bool {
-        !chromium || self != .undoCloseTab || takesKeyInChromium(key)
+    func showsKey(_ key: KeyCombination) -> Bool {
+        self != .undoCloseTab || takesKeyInChromium(key)
     }
 
     /// Actions on the sidebar and its windows, whose keys the app takes before Chromium. Chromium's

@@ -49,7 +49,6 @@ public class SearchManager {
     }
 
     // Native suggestions need no credentials, cookies or persistent cache.
-    // Select from the real model engine, keeping WebKit's session unchanged.
     private static let nativeSuggestionSession: URLSession = {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil
@@ -59,7 +58,7 @@ public class SearchManager {
         return URLSession(configuration: configuration)
     }()
     private var session: URLSession {
-        tabs?.profileEngine == .chromium ? suggestionSessionOverride ?? Self.nativeSuggestionSession : .shared
+        suggestionSessionOverride ?? Self.nativeSuggestionSession
     }
     private var searchTask: Task<Void, Never>?
     private var historyTask: Task<Void, Never>?
@@ -84,7 +83,7 @@ public class SearchManager {
         guard let tabs, let window, !window.isIncognito,
               tabs.windowRegistry.windows[window.id] === window else { return nil }
         let profile: UUID?
-        if tabs.profileEngine == .chromium, let target = webSuggestionTarget {
+        if let target = webSuggestionTarget {
             guard let page = target.page, target.isCurrent(),
                   webSuggestionTarget === target, !page.isPrivate,
                   page.profile?.id == target.profileID else { return nil }
@@ -255,8 +254,7 @@ public class SearchManager {
         // Internal management addresses can include the user's password search.
         // Keep them local from the first scheme delimiter, including while typing.
         let lowercaseInput = input.lowercased()
-        let internalAddress = tabs?.profileEngine == .chromium &&
-            (lowercaseInput.hasPrefix("chrome:") || lowercaseInput.hasPrefix("about:"))
+        let internalAddress = lowercaseInput.hasPrefix("chrome:") || lowercaseInput.hasPrefix("about:")
         let requestWebSuggestions = includeWebSuggestions && !internalAddress
         if !requestWebSuggestions { webRows = [] }
         let space = currentSpaceId
@@ -604,7 +602,7 @@ public class SearchManager {
     }
     
     private func fetchWebSuggestions(for query: String, profileID: UUID) async -> [SearchSuggestion] {
-        guard let window, let tabs else { return [] }
+        guard let tabs else { return [] }
         func current() -> Bool { !Task.isCancelled && suggestionProfileID == profileID }
         guard current() else { return [] }
         func effective() async -> ProfileSearchState? {
@@ -612,14 +610,9 @@ public class SearchManager {
                 tabs.profileSearchState(profileID: profileID, includeChoices: false) { continuation.resume(returning: try? $0.get()) }
             }
         }
-        let nativeState = tabs.profileEngine == .chromium ? await effective() : nil
-        let engine: String
-        if tabs.profileEngine == .chromium {
-            guard current() else { return [] }
-            guard let nativeState else { return [] }; engine = nativeState.suggestions
-        } else { engine = tabs.searchEngineId(forSpace: window.spaceID) }
+        guard let nativeState = await effective(), current() else { return [] }
         var components: URLComponents
-        switch engine {
+        switch nativeState.suggestions {
         case SearchProvider.google.rawValue:
             components = URLComponents(string: "https://suggestqueries.google.com/complete/search")!
             components.queryItems = [URLQueryItem(name: "client", value: "firefox"), URLQueryItem(name: "q", value: query)]
@@ -630,17 +623,14 @@ public class SearchManager {
         default:
             return []
         }
-        guard let url = components.url,
-              tabs.profileEngine != .chromium || current() else { return [] }
+        guard let url = components.url, current() else { return [] }
         do {
             let (data, _) = try await session.data(from: url)
             try Task.checkCancellation()
             guard let jsonArray = try JSONSerialization.jsonObject(with: data) as? [Any],
                   jsonArray.count >= 2, let strings = jsonArray[1] as? [String] else { return [] }
-            if let nativeState {
-                guard current(), let state = await effective(), state == nativeState,
-                      current() else { return [] }
-            }
+            guard current(), let state = await effective(), state == nativeState,
+                  current() else { return [] }
             return strings.prefix(5).map {
                 SearchSuggestion(text: $0, type: isLikelyURL($0) ? .url : .search, section: "Suggestions")
             }

@@ -89,7 +89,7 @@ final class ChromiumMiniPages {
         guard let id = bridge.identity(row) else { return nil }
         if row.profile_kind == BARC_DISCOVERY_GUEST.rawValue {
             return tabs.privateWindows.compactMap(\.ephemeralProfile).first(where: { $0.id == id }) ??
-                Profile.createEphemeral(id: id, engine: .chromium)
+                Profile.createEphemeral(id: id)
         }
         guard row.profile_kind == BARC_DISCOVERY_REGULAR.rawValue, tabs.isProfileAvailable(id) else { return nil }
         return tabs.profile(forStore: id)

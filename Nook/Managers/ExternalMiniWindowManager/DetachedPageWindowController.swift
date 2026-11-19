@@ -1,6 +1,6 @@
 import NookWeb
 
-/// The existing mini-window manager retains both native and WebKit presenters.
+/// A detached Chromium page and its window controller.
 @MainActor
 protocol DetachedPageWindowController: AnyObject {
     var page: PageSession { get }
@@ -9,11 +9,4 @@ protocol DetachedPageWindowController: AnyObject {
     func relinquishNativeHeader()
     func releaseAfterAdoption()
     func close()
-}
-
-extension DetachedPageWindowController {
-    var nativeWindowID: Int32? { nil }
-    var nativeTabID: Int32? { nil }
-    func relinquishNativeHeader() {}
-    func releaseAfterAdoption() { close() }
 }

@@ -6,7 +6,7 @@ import Testing
 @MainActor
 struct TabSwitchDestinationTests {
     @Test func duplicateTitlesUseTheirExactDestinationsInTheInvokingWindow() throws {
-        let host = try Host()
+        let host = try Host(); defer { host.cleanup() }
         let current = try #require(host.window.spaceID)
         let sibling = try #require(host.tabs.createSpace(name: "Inbox", icon: "tray",
             accentHex: "#123456", after: current, sharingLoginsWith: current))

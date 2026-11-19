@@ -52,12 +52,12 @@ There is no app test target. Logic with its own checks lives in `Checks/` folder
 
 ### Working on page and window behavior
 
-A tab’s saved state lives in `NookTabsCore`. `PageSession` follows a live
-page through the engine-neutral `PageNavigation` protocol. Implement a new
-Chromium operation in the native adapter using Bark’s public C bridge. Regular and private
-profiles default to Chromium. A page keeps its engine when its window or controller goes away. Bark’s shell
-and signing builds check app-owned Swift sources for direct WebKit page
-access. The shared package still has an explicit WebKit adapter and tests.
+A tab’s saved state lives in `NookTabsCore`. `PageSession` follows its live
+Chromium document through `PageNavigation`. Implement engine operations in
+the native adapter using Bark’s public C bridge. Regular profiles share a
+Chromium store by ID. A private window owns its ephemeral profile.
+The build checks Swift app and package sources for WebKit page access. It also
+checks the launcher and Swift shell load commands for direct WebKit linkage.
 [Profile identity](Packages/NookWeb/Sources/NookWeb/Profile.swift) ·
 [Shell source check](scripts/bark_shell_boundary.py)
 
@@ -69,9 +69,8 @@ that owns the next command. [Page navigation](Packages/NookWeb/Sources/NookWeb/P
 
 `ChromiumWindowRoot` mounts live page views in normal panes and Peek. Shared
 tab activation updates the app’s zoom and title-bar color. Chromium routes
-extension events through its own browser context. WebKit hosts that need
-extension callbacks implement `WebKitTabEventObserver`, and hosts that
-present WebKit dialogs supply `WebKitAlertPresenter`.
+extension events through the page’s browser context. The shared tab observer
+updates app chrome when the selected tab changes.
 [Window surfaces](App/Chromium/ChromiumWindowRoot.swift) ·
 [Tab observers](Packages/NookWeb/Sources/NookWeb/TabEventObserver.swift)
 

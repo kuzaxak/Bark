@@ -23,7 +23,8 @@ let package = Package(
                 .product(name: "NookBlocker", package: "NookBlocker"),
                 .product(name: "NookTweaks", package: "NookTweaks"),
             ],
-            resources: [.copy("Resources")],
+            // The Chromium recipe owns these resources; Swift does not bundle them.
+            exclude: ["Resources"],
             swiftSettings: [.swiftLanguageMode(.v5)]
         ),
         .testTarget(

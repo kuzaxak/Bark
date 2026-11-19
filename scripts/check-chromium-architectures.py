@@ -40,6 +40,17 @@ def check_image(path, architecture, header, *, allow_universal=False):
         raise ValueError(f"Mach-O executable is missing owner execute permission: {path}")
 
 
+def check_shell_image(path, architecture):
+    check_image(path, architecture, image_header(path))
+    dependencies = subprocess.run(["/usr/bin/otool", "-L", path], capture_output=True, text=True)
+    if dependencies.returncode:
+        raise ValueError(f"Cannot read load commands from Bark shell image: {path}")
+    for line in dependencies.stdout.splitlines()[1:]:
+        library = line.strip().partition(" (")[0]
+        if any(framework in Path(library).parts for framework in ("WebKit.framework", "WebKitLegacy.framework")):
+            raise ValueError(f"Bark shell links a retired WebKit framework: {path} -> {library}")
+
+
 def check_framework(framework, architecture, engine_info=None):
     """Require the versioned image and framework aliases used by consumers."""
     if not framework.is_dir():
@@ -91,7 +102,7 @@ def check_app(app, architecture, engine_info=None):
     engine = frameworks / "Bark Framework.framework"
     shell_images = (contents / "MacOS/Bark", frameworks / "NookNativeShell.framework/Versions/A/NookNativeShell")
     for path in shell_images:
-        check_image(path, architecture, image_header(path))
+        check_shell_image(path, architecture)
     check_framework(engine, architecture, engine_info)
 
     # Sparkle and other app dependencies may ship universal binaries. Inspect
@@ -114,6 +125,7 @@ def main():
     parser.add_argument("path", type=Path)
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--app", action="store_true", help="check the complete staged or signed application bundle")
+    mode.add_argument("--shell-image", action="store_true", help="check the Bark launcher or Swift shell and its engine boundary")
     mode.add_argument("--image", action="store_true", help="require a specific Mach-O executable or dylib")
     parser.add_argument("--engine-info", type=Path, help="require the engine metadata version")
     parser.add_argument("--arch", choices=ARCHITECTURES, help="defaults to native hardware")
@@ -122,6 +134,8 @@ def main():
         architecture = args.arch or native_architecture()
         if args.app:
             check_app(args.path, architecture, args.engine_info)
+        elif args.shell_image:
+            check_shell_image(args.path, architecture)
         elif args.image:
             check_image(args.path, architecture, image_header(args.path))
         else:

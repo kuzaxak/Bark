@@ -59,7 +59,7 @@ final class SpaceSyncManager: SpaceSyncControls {
     init(tabs: TabsController, enabled: Bool) {
         self.tabs = tabs
         store = SpaceSyncStore(tabsDirectory: tabs.directory)
-        guard enabled, tabs.profileEngine == .chromium else {
+        guard enabled else {
             status = SpaceSyncStatus(availability: .disabled)
             return
         }

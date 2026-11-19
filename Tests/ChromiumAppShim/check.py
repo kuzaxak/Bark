@@ -701,7 +701,7 @@ def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architectur
                 CFBundleIdentifier='ee.qdo.nook.NativeShell')
     (products / 'PackageFrameworks/Packaged.framework').mkdir(parents=True)
     (products / 'Sparkle.framework').mkdir()
-    (products / 'NookWeb_NookWeb.bundle').mkdir()
+    (products / 'NookBlocker_NookBlocker.bundle').mkdir()
     (products / 'include').mkdir()
     shutil.copytree(package / f'BarkEngine.xcframework/{SLICE_NAME}/Headers/BarcChromium', products / 'include/BarcChromium')
     return root / 'app/Bark.app', artifact, products
@@ -1189,7 +1189,7 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     check('shell and package frameworks are inside',
           all((contents / 'Frameworks' / n).is_dir() for n in ['NookNativeShell.framework', 'Sparkle.framework', 'Packaged.framework']))
     check('the app\'s own resources and native bundles are inside',
-          all((contents / 'Resources' / n).exists() for n in ['app.icns', 'en.lproj/InfoPlist.strings', 'NookWeb_NookWeb.bundle']))
+          all((contents / 'Resources' / n).exists() for n in ['app.icns', 'en.lproj/InfoPlist.strings', 'NookBlocker_NookBlocker.bundle']))
     shipped = read_plist(SHIPPED_ADDITIONS) if SHIPPED_ADDITIONS.is_file() else {}
     staged_info = read_plist(info)
     check('the staged app identifies legacy .nookspace files as Bark Space',
@@ -1323,7 +1323,7 @@ def stage_cases(work, shim, framework_lib, shell_lib):
     refused('framework-collision', 'a product named like the engine framework', 'Framework collision',
             lambda a, e, p: (p / FRAMEWORK).mkdir())
     refused('resource-collision', 'a product bundle named like an app resource', 'Resource collision',
-            lambda a, e, p: (a / 'Contents/Resources/NookWeb_NookWeb.bundle').mkdir())
+            lambda a, e, p: (a / 'Contents/Resources/NookBlocker_NookBlocker.bundle').mkdir())
 
     def declare_icons(app, named=False):
         edit_plist(app / 'Contents/Info.plist',

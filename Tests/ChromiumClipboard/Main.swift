@@ -56,9 +56,7 @@ enum ChromiumNavigationError: Error { case screenshotUnavailable }
     var selected = true
     func isNativeSelection(_ page: ChromiumPageNavigation, in window: BrowserWindowState) -> Bool { selected }
 }
-enum ProfileEngine { case chromium, webKit }
 @MainActor final class Tabs {
-    var profileEngine: ProfileEngine = .chromium
     var nativePageHost: NativeHost? = NativeHost()
 }
 @MainActor final class BrowserManager {
@@ -121,7 +119,7 @@ enum ProfileEngine { case chromium, webKit }
             { $0.manager.tabs.nativePageHost?.selected = false },
             { _ in NSApp.keyWindow = NativeWindow() },
             { $0.window.window = nil },
-            { $0.manager.tabs.profileEngine = .webKit },
+            { $0.manager.tabs.nativePageHost = nil },
             { _ in NSPasteboard.general.changeCount += 1 }
         ]
         for change in changes {

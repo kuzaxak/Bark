@@ -8,14 +8,12 @@
 //  the session reports committed URLs and titles to its TabsController.
 //
 
-import Combine
 import NookBlocker
 import NookTabsCore
 import NookSettings
 import OSLog
 import SwiftUI
 import Translation
-import WebKit
 
 @MainActor
 @Observable
@@ -28,27 +26,14 @@ public final class PageSession: NSObject, Identifiable {
     /// A session in a private window: ephemeral profile, never saved, no extensions.
     public let isPrivate: Bool
 
-    // A session keeps the runtime of its first owner across detachment,
-    // including when ARC clears the weak controller without calling didSet.
-    @ObservationIgnored private var runtimeEngine: Profile.Engine?
+    // A page keeps its native eligibility when its weak controller disappears.
+    @ObservationIgnored private var admittedNativeOwner = false
 
-    var usesNativePageHost: Bool {
-        runtimeEngine == .chromium || detachedProfile?.engine == .chromium
-    }
-
-    private var usesWebKitPageHost: Bool {
-        runtimeEngine == .webKit && !usesNativePageHost && controller?.profileEngine == .webKit
-    }
+    var usesNativePageHost: Bool { admittedNativeOwner }
 
     @ObservationIgnored public weak var controller: TabsController? {
         didSet {
-            if let engine = controller?.profileEngine {
-                if let runtimeEngine, runtimeEngine != engine {
-                    controller = oldValue
-                    return
-                }
-                runtimeEngine = engine
-            }
+            if controller != nil { admittedNativeOwner = true }
             if controller !== oldValue {
                 cancelNativePageTextCapture()
                 resetNativeBoostCSS()
@@ -68,7 +53,7 @@ public final class PageSession: NSObject, Identifiable {
     /// it uses and the window it belongs to. Cleared when the page becomes a tab.
     @ObservationIgnored public internal(set) var detachedProfile: Profile? {
         didSet {
-            if runtimeEngine == nil { runtimeEngine = detachedProfile?.engine }
+            if detachedProfile != nil { admittedNativeOwner = true }
         }
     }
     @ObservationIgnored public internal(set) weak var detachedWindow: BrowserWindowState?
@@ -87,10 +72,6 @@ public final class PageSession: NSObject, Identifiable {
     }
     /// A page the ad blocker stopped from loading. The blocked-page card shows while it is set.
     public internal(set) var blockedURL: URL?
-    /// A page whose server's certificate failed the check. The certificate warning card shows while it is set.
-    public internal(set) var certificateWarning: CertificateWarning?
-    /// The site enhanced fingerprinting protection is off for until the tab leaves it.
-    var enhancedFingerprintingProtectionOffHost: String?
 
     public enum LoadingState: Equatable {
         case idle
@@ -149,8 +130,6 @@ public final class PageSession: NSObject, Identifiable {
     public var isLoading: Bool { loadingState.isLoading }
     public var canGoBack: Bool = false
     public var canGoForward: Bool = false
-    /// Whether the current WebKit document is a PDF, for text capture and translation.
-    var isDisplayingPDF = false
     /// A small picture of the page taken as the window left it, for the Control-Tab switcher.
     public var switcherSnapshot: PlatformImage? {
         didSet { if switcherSnapshot == nil { switcherSnapshotGeneration &+= 1 } }
@@ -178,11 +157,6 @@ public final class PageSession: NSObject, Identifiable {
     /// The AI engine's requests in flight; resetting the translation cancels them.
     @ObservationIgnored var aiTranslationWork: Task<Void, Never>?
 
-    // MARK: - Web Process Crash Tracking
-
-    public var webProcessCrashCount: Int = 0
-    public var lastWebProcessCrashDate: Date = .distantPast
-
     /// The last page whose text went to history search, so a re-commit does not read it again.
     @ObservationIgnored var lastTextCapture: (url: URL, at: Date)?
     @ObservationIgnored var nativePageTextTask: Task<Void, Never>?
@@ -195,41 +169,13 @@ public final class PageSession: NSObject, Identifiable {
     public var hasPiPActive: Bool = false
     public var hasPlayingAudio: Bool = false
     public internal(set) var media = PageMedia()
-    @ObservationIgnored var mediaFrames = MediaFrames<WKFrameInfo?>()
-    /// Subframes navigations named, by frame handle, asked again with those that reported.
-    @ObservationIgnored var seenMediaFrames: [AnyHashable: WKFrameInfo] = [:]
-    @ObservationIgnored var mediaReask = ReaskGate()
-    /// WebKit's own word on whether the page plays sound; nil until the web view reports it.
-    @ObservationIgnored var webKitAudible: Bool?
-    /// WebKit's private, KVO-compliant `_isPlayingAudio`: what Safari's tab speaker follows. It
-    /// covers every frame, Web Audio and elements outside the document, stays on while the tab is
-    /// muted (`_setPageMuted:`), and goes off when the page mutes or pauses its media.
-    static let isPlayingAudioKey = "_isPlayingAudio"
-    static let isPlayingAudioSelector = NSSelectorFromString(isPlayingAudioKey)
     public var isAudioMuted: Bool = false
-    public var hasAudioContent: Bool = false {
-        didSet {
-            // Native engine snapshots are authoritative; legacy device-output
-            // monitoring cannot identify a Chromium tab's activity.
-            if usesNativePageHost || (navigation != nil && !(navigation is WebKitPageNavigation)) { return }
-            if oldValue != hasAudioContent {
-                if hasAudioContent {
-                    startNativeAudioMonitoring()
-                } else {
-                    stopNativeAudioMonitoring()
-                }
-            }
-        }
-    }
+    public var hasAudioContent: Bool = false
 
     // MARK: - Chrome
 
     public var pageBackgroundColor: PlatformColor? = nil
     public var topBarBackgroundColor: PlatformColor? = nil
-    /// Option key state for Peek on link click.
-    @ObservationIgnored public var isOptionKeyDown: Bool = false
-    @ObservationIgnored public var onLinkHover: ((String?) -> Void)? = nil
-    @ObservationIgnored public var onCommandHover: ((String?) -> Void)? = nil
 
     // MARK: - OAuth Flow State
 
@@ -242,37 +188,15 @@ public final class PageSession: NSObject, Identifiable {
 
     // MARK: - Internal State
 
-    /// Back and forward history kept across an unload, so the next view comes back with it.
-    @ObservationIgnored var savedHistory: Any?
     /// The page's address as it may be stored, copied or shown: without a Kagi session token.
     public var storableURL: URL { KagiSession.withoutToken(url) }
 
     /// The palette chose this page's next load, so its visit counts double in history ranking.
     @ObservationIgnored public var typedVisitPending = false
-    /// How the latest main-frame navigation started; a reload adds nothing to history ranking.
-    @ObservationIgnored var mainFrameNavigationType: WKNavigationType = .other
-    /// JavaScript dialogs since the last commit, and whether the user silenced the page.
-    @ObservationIgnored var jsDialogCount = 0
-    @ObservationIgnored var jsDialogsSuppressed = false
-
     @ObservationIgnored var lastSampledDomain: String? = nil
     @ObservationIgnored var lastTopBarDomain: String? = nil
-    @ObservationIgnored var pendingThemeColorUpdate: DispatchWorkItem? = nil
 
-    @ObservationIgnored var audioDeviceListenerProc: AudioDeviceListenerProc?
-    @ObservationIgnored var audioListenerHelper: AudioListenerHelper?
-    @ObservationIgnored var isMonitoringNativeAudio = false
-    @ObservationIgnored var hasAddedCoreAudioListener = false
-    /// AudioDeviceID the "is running somewhere" listener is currently attached to.
-    /// UInt32 rather than AudioDeviceID so this file stays free of a macOS-only type.
-    @ObservationIgnored var audioRunningListenerDevice: UInt32?
-    @ObservationIgnored var profileAwaitCancellable: AnyCancellable?
-    @ObservationIgnored var didNotifyOpenToExtensions: Bool = false
-
-    @ObservationIgnored let themeColorObservedWebViews = NSHashTable<AnyObject>.weakObjects()
-    @ObservationIgnored let navigationStateObservedWebViews = NSHashTable<AnyObject>.weakObjects()
-
-    // MARK: - Web View Ownership
+    // MARK: - Page Ownership
 
     @ObservationIgnored private var nativeBoostTask: Task<Void, Never>?
     @ObservationIgnored private var nativeBoostObserver: NSObjectProtocol?
@@ -323,39 +247,13 @@ public final class PageSession: NSObject, Identifiable {
             resetTranslation()
         }
     }
-    @ObservationIgnored lazy var webKitDelegate = WebKitPageDelegateAdapter(session: self)
-
-    var primaryWebView: WKWebView? {
-        didSet {
-            guard primaryWebView !== oldValue else { return }
-            navigation?.invalidate()
-            navigation = nil
-            resetNativeBoostCSS()
-            guard let primaryWebView else { return }
-            let adapter = WebKitPageNavigation(webView: primaryWebView, profileID: profile?.id)
-            navigation = adapter
-            adapter.onEvent = { [weak self, weak adapter] event in
-                guard let self, let adapter, self.navigation === adapter else { return }
-                self.navigationChanged(event)
-            }
-            adapter.onStateChanged = { [weak self, weak adapter] state in
-                guard let self, let adapter, self.navigation === adapter else { return }
-                self.applyNavigationState(state)
-            }
-            updateNavigationState()
-        }
-    }
-
-    /// Attach an engine-owned page without creating a WebKit surface. An existing
-    /// WebKit page must first be unloaded; never keep two live engines for one item.
+    /// Attach the already created engine page.
     public func installNavigation(_ page: any PageNavigation) {
-        precondition(primaryWebView == nil, "Unload the WebKit page before replacing its engine")
         precondition(profile?.id == nil || profile?.id == page.profileID,
                      "Navigation must belong to this page's profile")
         navigation?.stop()
         navigation?.invalidate()
         navigation = page
-        isDisplayingPDF = false
         if usesNativePageHost { nativeNavigationPendingStart = false }
         page.onEvent = { [weak self, weak page] event in
             guard let self, let page, self.navigation === page else { return }
@@ -505,7 +403,7 @@ public final class PageSession: NSObject, Identifiable {
                   self.navigation === page, self.controller === controller,
                   !controller.isTerminating, !self.nativeIsEnding,
                   (controller.session(for: self.itemID) === self ||
-                   (self.detachedProfile?.engine == .chromium && self.nativeResourceHost != nil)),
+                   (self.detachedProfile != nil && self.nativeResourceHost != nil)),
                   self.nativeBoostDocument == document,
                   (self.navigationDocumentURL ?? page.state.url) == url,
                   self.profile?.id == page.profileID else { return }
@@ -540,7 +438,7 @@ public final class PageSession: NSObject, Identifiable {
         if let audible = state.isAudible {
             if hasAudioContent != audible { hasAudioContent = audible }
             if hasPlayingAudio != audible { hasPlayingAudio = audible }
-            if navigation != nil, !(navigation is WebKitPageNavigation), media.isAudible != audible {
+            if navigation != nil, media.isAudible != audible {
                 var observed = media; observed.isAudible = audible; media = observed
             }
         }
@@ -562,7 +460,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     private func applyNativeMedia(_ snapshot: PageMedia?) {
-        guard navigation != nil, !(navigation is WebKitPageNavigation) else { return }
+        guard navigation != nil else { return }
         let known = snapshot.flatMap { $0.isKnown ? $0 : nil }
         var observed = known ?? media
         if known == nil {
@@ -585,7 +483,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     private func clearNativeMediaForDocumentEnd() {
-        guard navigation != nil, !(navigation is WebKitPageNavigation) else { return }
+        guard navigation != nil else { return }
         let empty = PageMedia(isKnown: false, canPlay: false, canPause: false)
         if media != empty { media = empty }
     }
@@ -626,8 +524,6 @@ public final class PageSession: NSObject, Identifiable {
             navigationCancelled = false
             loadingState = .didStartProvisionalNavigation
             blockedURL = nil
-            certificateWarning = nil
-            controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
             if let newURL {
                 if newURL != navigationDocumentURL {
                     hasAudioContent = false
@@ -662,8 +558,6 @@ public final class PageSession: NSObject, Identifiable {
                 navigationFinishedReported = false
                 navigationCancelled = false
                 loadingState = .didCommit
-                certificateWarning = nil
-                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
             }
             if let newURL {
                 url = newURL
@@ -673,14 +567,12 @@ public final class PageSession: NSObject, Identifiable {
                 // an actual commit still settles their page-local cold query.
                 if privateSearchCommit { nativePrivatePendingSearch = nil }
                 controller?.pageCommitted(itemID: itemID, url: newURL, resolvingPrivateSearch: privateSearchCommit)
-                controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
-                if !isDetached { controller?.webKitSessionDelegate?.shortcutDetectorDidNavigate(to: newURL) }
-                controller?.webKitTabEvents?.grantAccess(to: newURL)
-                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
             }
             if sameDocument { scheduleNativePageTextCapture(sameDocument: true) }
         case .finished(let newURL, let finalTitle, let isReload):
             guard !navigationCancelled else { return }
+            let finishedNavigation = navigation
+            let finishedSerial = nativeNavigationSerial
             if usesNativePageHost { nativeNavigationFinishedWasReload = isReload }
             if let newURL { navigationDocumentURL = newURL }
             if newURL != nil { navigationHasCommittedPage = true }
@@ -689,28 +581,25 @@ public final class PageSession: NSObject, Identifiable {
                 navigationFinishedReported = true
                 scheduleNativePageTextCapture(sameDocument: false)
                 if usesNativePageHost { offerTranslationIfNeeded() }
-                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
                 if let newURL {
                     url = newURL
-                    controller?.webKitTabEvents?.grantAccess(to: newURL)
-                    controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
-                    controller?.webKitTabEvents?.wakeBackgroundWorkers()
                     controller?.pageCommitted(itemID: itemID, url: newURL)
-                    controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
                 }
                 sampleNativeTopBarColor()
             }
             if let finalTitle, let newURL {
+                guard navigation === finishedNavigation, nativeNavigationSerial == finishedSerial else { return }
                 updateTitle(finalTitle)
-                guard !navigationVisitRecorded else { return }
+                guard navigation === finishedNavigation, nativeNavigationSerial == finishedSerial,
+                      !navigationVisitRecorded else { return }
                 navigationVisitRecorded = true
-                let boundProfile = profile
-                let profileID = navigation?.profileID ?? boundProfile?.id ?? controller?.sessionDelegate?.currentProfile?.id
-                let ephemeral = isPrivate || isAgentPage || boundProfile?.isEphemeral == true
                 let weight: Double = typedVisitPending ? 2 : isReload ? 0 : 1
                 typedVisitPending = false
+                guard !isPrivate, !isAgentPage, !nativeIsEnding, let boundProfile = profile,
+                      !boundProfile.isEphemeral, let profileID = finishedNavigation?.profileID,
+                      profileID == boundProfile.id else { return }
                 controller?.history?.addVisit(url: newURL, title: finalTitle, timestamp: Date(),
-                    tabId: id, profileId: profileID, isEphemeral: ephemeral, weight: weight)
+                    tabId: id, profileId: profileID, weight: weight)
             }
         case .failed(let error, let provisional, let committedURL):
             cancelNativePageTextCapture()
@@ -718,7 +607,6 @@ public final class PageSession: NSObject, Identifiable {
             if let committedURL { navigationDocumentURL = committedURL }
             if let committedURL, committedURL != url {
                 url = committedURL
-                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
                 controller?.pageCommitted(itemID: itemID, url: committedURL)
             }
             loadingState = provisional ? .didFailProvisionalNavigation(error) : .didFail(error)
@@ -732,10 +620,8 @@ public final class PageSession: NSObject, Identifiable {
             loadingState = .idle
             if let committedURL, committedURL != url {
                 url = committedURL
-                controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
                 controller?.pageCommitted(itemID: itemID, url: committedURL)
             }
-            controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
         case .nativeBlocked(let target):
             guard usesNativePageHost, !nativeIsEnding, !nativeNavigationPendingStart,
                   navigation?.profileID == profile?.id else { return }
@@ -794,46 +680,14 @@ public final class PageSession: NSObject, Identifiable {
         }
     }
 
-    @discardableResult
-    func navigationChanged(_ event: PageNavigationEvent, from view: WKWebView,
-                           navigation token: WKNavigation? = nil) -> Bool {
-        guard acceptsNavigationCallbacks(from: view) else { return false }
-        if view === primaryWebView, let adapter = navigation as? WebKitPageNavigation {
-            return adapter.report(event, navigation: token)
-        }
-        // Legacy secondary windows remain WebKit-specific until hosting is ported.
-        navigationChanged(event)
-        return true
-    }
-
-    func acceptsNavigationCallbacks(from view: WKWebView) -> Bool {
-        guard !usesNativePageHost, navigation is WebKitPageNavigation else { return false }
-        return view === primaryWebView ||
-            controller?.webViews?.allWebViews(for: itemID).contains(where: { $0 === view }) == true
-    }
-
-    /// The window that owns the primary web view; nil until a window displays the page.
-    @ObservationIgnored var primaryWindowId: UUID?
-
     public var isUnloaded: Bool { navigation == nil }
 
     /// Drop cached history documents, preserving history and the current live page.
     /// Returns acceptance, not a cached-entry count or reclaimed-memory claim.
     @discardableResult public func clearPageCache() -> Bool {
-        if usesNativePageHost {
-            guard !nativeIsEnding, let navigation, let profile,
-                  navigation.profileID == profile.id else { return false }
-            return navigation.clearBackForwardCache()
-        }
-        return primaryWebView?.nookClearBackForwardCache() ?? false
-    }
-
-    /// The web view, created on first access.
-    var activeWebView: WKWebView {
-        if primaryWebView == nil {
-            setupWebView()
-        }
-        return primaryWebView!
+        guard usesNativePageHost, !nativeIsEnding, let navigation, let profile,
+              navigation.profileID == profile.id else { return false }
+        return navigation.clearBackForwardCache()
     }
 
     // MARK: - Init
@@ -850,7 +704,7 @@ public final class PageSession: NSObject, Identifiable {
         self.title = title
         self.isPrivate = isPrivate
         self.controller = controller
-        self.runtimeEngine = controller?.profileEngine
+        self.admittedNativeOwner = controller != nil
         super.init()
     }
 
@@ -859,171 +713,21 @@ public final class PageSession: NSObject, Identifiable {
         nativeTopBarSample?.cancel()
         nativeBoostTask?.cancel()
         if let nativeBoostObserver { NotificationCenter.default.removeObserver(nativeBoostObserver) }
-        profileAwaitCancellable?.cancel()
-        themeColorObservedWebViews.removeAllObjects()
     }
 
-    // MARK: - Web View Lifecycle
+    // MARK: - Page Lifecycle
 
     public func loadWebViewIfNeeded() {
-        if usesNativePageHost {
-            guard let controller, let window = controller.nativePageWindow(for: self) else { return }
-            if (navigation == nil || nativeIsEnding), window.selectedItemID == itemID,
-               window.nativeSelectionGeneration == nil {
-                controller.select(itemID, in: window)
-            } else {
-                ensureNativePage(in: window)
-            }
-            return
-        }
-        if navigation == nil {
-            setupWebView()
-        }
-    }
-
-    /// Makes `webView` the primary view, owned by the window that displays it first.
-    func assignWebView(_ webView: WKWebView, toWindow windowId: UUID) {
-        primaryWebView = webView
-        primaryWindowId = windowId
-    }
-
-    private func setupWebView(initialLoad: Bool = true) {
-        guard usesWebKitPageHost, navigation == nil else { return }
-        let interval = BrowserPerformance.signposter.beginInterval("WebViewCreation")
-        defer { BrowserPerformance.signposter.endInterval("WebViewCreation", interval) }
-        let resolvedProfile = profile
-        guard resolvedProfile?.engine != .chromium else { return }
-        let configuration: WKWebViewConfiguration
-        if let resolvedProfile {
-            guard let webConfiguration = BrowserConfiguration.webViewConfiguration(for: resolvedProfile) else { return }
-            configuration = webConfiguration
+        guard usesNativePageHost, let controller, let window = controller.nativePageWindow(for: self) else { return }
+        if (navigation == nil || nativeIsEnding), window.selectedItemID == itemID,
+           window.nativeSelectionGeneration == nil {
+            controller.select(itemID, in: window)
         } else {
-            // Edge case: no profile yet. Delay creating WKWebView until one resolves.
-            if profileAwaitCancellable == nil {
-                profileAwaitCancellable = controller?.webKitSessionDelegate?
-                    .currentProfilePublisher
-                    .receive(on: RunLoop.main)
-                    .sink { [weak self] value in
-                        guard let self else { return }
-                        if value != nil && self.primaryWebView == nil {
-                            self.profileAwaitCancellable?.cancel()
-                            self.profileAwaitCancellable = nil
-                            self.setupWebView()
-                            if self.primaryWebView != nil {
-                                for (_, windowState) in self.controller?.windowRegistry.windows ?? [:] {
-                                    windowState.refreshCompositor()
-                                }
-                            }
-                        }
-                    }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 5) { [weak self] in
-                    self?.profileAwaitCancellable?.cancel()
-                    self?.profileAwaitCancellable = nil
-                }
-            }
-            return
-        }
-
-        // Private and Agent pages never get the extension controller: extensions could open
-        // windows and activate the app from an Agent page.
-        if isPrivate || isAgentPage {
-            configuration.webExtensionController = nil
-        } else if configuration.webExtensionController == nil,
-                  let extensionController = controller?.webKitTabEvents?.nativeController {
-            configuration.webExtensionController = extensionController
-        }
-
-        // An agent page cannot take the person's screen for element full screen. Its own copy of
-        // the preferences, so other pages keep full screen.
-        if isAgentPage, let preferences = configuration.preferences.copy() as? WKPreferences {
-            preferences.isElementFullscreenEnabled = false
-            configuration.preferences = preferences
-        }
-        let created = controller?.webViews?.makeWebView(configuration: configuration)
-        primaryWebView = created
-
-        guard let webView = primaryWebView else {
-            Self.log.error("No web view created for item \(self.itemID.uuidString, privacy: .public)")
-            return
-        }
-        webView.navigationDelegate = webKitDelegate
-        webView.uiDelegate = webKitDelegate
-        webView.allowsBackForwardNavigationGestures = true
-        webView.allowsMagnification = true
-        setupThemeColorObserver(for: webView)
-        setupNavigationStateObservers(for: webView)
-        configure(webView)
-
-        // Inform extensions before loading so content scripts and messaging can resolve this
-        // page during early document phases.
-        if !didNotifyOpenToExtensions {
-            controller?.webKitTabEvents?.tabOpened(self)
-            if controller?.activeWindowSession === self {
-                controller?.tabEvents?.tabActivated(new: self, previous: nil)
-            }
-            didNotifyOpenToExtensions = true
-        }
-        let history = savedHistory
-        savedHistory = nil
-        if initialLoad, let history {
-            webView.interactionState = history
-            // Restoring shows the cached copy, as Back does; reload revalidates it like a fresh load.
-            if webView.reload() == nil { load(url) }
-        } else if initialLoad {
-            load(url)
+            ensureNativePage(in: window)
         }
     }
 
-    /// Handlers, user agent and preferences shared by primary, clone and popup views.
-    /// The view's controller must belong to this view alone: handlers are keyed by name.
-    private func configure(_ webView: WKWebView) {
-        let controller = webView.configuration.userContentController
-        for name in messageHandlerNames {
-            controller.removeScriptMessageHandler(forName: name)
-            controller.add(webKitDelegate, name: name)
-        }
-        controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
-        controller.add(webKitDelegate, contentWorld: Self.pipStateWorld, name: "pipStateChange")
-        controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-        controller.add(webKitDelegate, contentWorld: Self.translateWorld, name: Self.translateHandlerName)
-        controller.addUserScript(WKUserScript(source: MediaScript.reporter(handler: "mediaStateChange_\(itemID.uuidString)"),
-                                              injectionTime: .atDocumentEnd, forMainFrameOnly: false))
-        webView.customUserAgent = PlatformUserAgent.custom
-        // Let the web content control its own background so extension styles (like Dark
-        // Reader) can paint dark backgrounds. The themed background shows only while loading.
-        webView.setDrawsPageBackground(true)
-        webView.isInspectable = true
-        webView.allowsLinkPreview = true
-        webView.configuration.preferences.isFraudulentWebsiteWarningEnabled = true
-    }
-
-    /// Installs a WebKit-created popup view as this session's primary view. WebKit drives the
-    /// popup's first navigation.
-    func installPopupWebView(_ webView: WKWebView) {
-        webView.navigationDelegate = webKitDelegate
-        webView.uiDelegate = webKitDelegate
-        webView.allowsBackForwardNavigationGestures = true
-        webView.allowsMagnification = true
-        primaryWebView = webView
-        configure(webView)
-        setupThemeColorObserver(for: webView)
-        setupNavigationStateObservers(for: webView)
-        if !didNotifyOpenToExtensions, !isPrivate {
-            controller?.webKitTabEvents?.tabOpened(self)
-            didNotifyOpenToExtensions = true
-        }
-    }
-
-    /// Updates the extension controller on the existing web view.
-    func applyConfigurationOverride(_ configuration: WKWebViewConfiguration) {
-        guard let existing = primaryWebView else { return }
-        if let extensionController = configuration.webExtensionController {
-            existing.configuration.webExtensionController = extensionController
-        }
-    }
-
-    /// Releases every web view for this page (primary and window clones) and resets
-    /// live state. The item and its URL stay; selecting it again loads a fresh view.
+    /// Releases the page and resets its live state. The item and its URL stay.
     public func unload() {
         if requiresNativeResourceRelease {
             guard !nativeUnloadPending else { return }
@@ -1043,28 +747,11 @@ public final class PageSession: NSObject, Identifiable {
         controller?.onPageUnloaded?(itemID)
         let interval = BrowserPerformance.signposter.beginInterval("TabEviction")
         defer { BrowserPerformance.signposter.endInterval("TabEviction", interval) }
-        let primary = primaryWebView
-        if let primary, primary.backForwardList.currentItem != nil {
-            savedHistory = primary.interactionState
-        }
         navigation?.stop()
         navigation?.invalidate()
         navigation = nil
         resetNativeBoostCSS()
         navigationHasCommittedPage = false
-        let coordinator = controller?.webViews
-        let primaryIsPooled = primary.map { view in
-            coordinator?.allWebViews(for: itemID).contains(where: { $0 === view }) == true
-        } ?? false
-        coordinator?.releaseWebViews(for: self)
-        if let primary, !primaryIsPooled { cleanupClone(primary) }
-        primaryWebView = nil
-        primaryWindowId = nil
-        // The next view announces itself again (activation included).
-        didNotifyOpenToExtensions = false
-        stopNativeAudioMonitoring()
-        profileAwaitCancellable?.cancel()
-        profileAwaitCancellable = nil
         resetTranslation()
         loadingState = .idle
         hasPiPActive = false
@@ -1072,9 +759,6 @@ public final class PageSession: NSObject, Identifiable {
         hasPlayingAudio = false
         hasAudioContent = false
         hasVideoContent = false
-        mediaFrames = MediaFrames()
-        seenMediaFrames = [:]
-        webKitAudible = nil
         media = PageMedia()
         // Also covers `tearDown`, which unloads first.
         switcherSnapshot = nil
@@ -1084,40 +768,11 @@ public final class PageSession: NSObject, Identifiable {
     func tearDown() {
         hasPiPActive = false
         unload()
-        savedHistory = nil
         isAudioMuted = false
         controller?.sessionDelegate?.cleanupZoom(for: itemID)
     }
 
-    /// Detaches a view from this session: handlers, observers, delegates, superview.
-    private func cleanupClone(_ webView: WKWebView) {
-        webView.stopLoading()
-        // Stop playback through WebKit; releasing the view tears down its document.
-        webView.pauseAllMediaPlayback(completionHandler: nil)
-
-        let controller = webView.configuration.userContentController
-        for handlerName in messageHandlerNames {
-            controller.removeScriptMessageHandler(forName: handlerName)
-        }
-        controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
-        controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-
-        removeThemeColorObserver(from: webView)
-        removeNavigationStateObservers(from: webView)
-        webView.navigationDelegate = nil
-        webView.uiDelegate = nil
-        webView.removeFromSuperview()
-        self.controller?.webViews?.removeFromContainers(webView)
-    }
-
     // MARK: - Navigation
-
-    /// Loads a URL into a specific view. File URLs get read access to their directory so local
-    /// subresources load. Uses the protocol cache policy: restoring an evicted page with
-    /// returnCacheDataElseLoad served the stale cached document without revalidation.
-    static func loadPage(_ url: URL, in webView: WKWebView) {
-        WebKitPageNavigation.load(url, in: webView)
-    }
 
     public func load(_ newURL: URL) {
         nativePrivatePendingSearch = nil
@@ -1128,12 +783,7 @@ public final class PageSession: NSObject, Identifiable {
             nativeAgentWaitID = nil
         }
         url = newURL
-        // A new page on an unloaded session starts fresh instead of restoring, then leaving, the old one.
-        savedHistory = nil
         loadingState = .didStartProvisionalNavigation
-
-        // Grant extension access before loading so content scripts inject at document_start.
-        controller?.webKitTabEvents?.grantAccess(to: newURL)
 
         // Reset audio tracking for the new page; the mute preference is preserved.
         hasAudioContent = false
@@ -1147,12 +797,8 @@ public final class PageSession: NSObject, Identifiable {
                 ensureNativePage()
             }
         } else {
-            if navigation == nil { setupWebView(initialLoad: false) }
             navigation?.load(newURL)
         }
-
-        // Keep other windows displaying this page on the same URL.
-        controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
     }
 
     private func performNativeSearch(_ intent: (id: UUID, query: String, serial: UInt64?), through page: any PageNavigation) {
@@ -1222,7 +868,6 @@ public final class PageSession: NSObject, Identifiable {
             nativeNavigationPendingStart = true
             loadingState = .didStartProvisionalNavigation
             nativeRequestedURL = URL(string: "about:blank")!
-            savedHistory = nil
             if let page = navigation, let intent = nativeSearchIntent {
                 performNativeSearch(intent, through: page)
             } else {
@@ -1266,22 +911,7 @@ public final class PageSession: NSObject, Identifiable {
             return
         }
         loadingState = .didStartProvisionalNavigation
-        if primaryWebView == nil {
-            if navigation?.reload() != true { navigation?.load(url) }
-            return
-        }
-        // The primary view can also belong to the coordinator. Reload each view once.
-        var views = controller?.webViews?.allWebViews(for: itemID) ?? []
-        if let primary = primaryWebView { views.append(primary) }
-        var reloaded = Set<ObjectIdentifier>()
-        for view in views where reloaded.insert(ObjectIdentifier(view)).inserted {
-            // reload() does nothing when no page ever committed (first load failed).
-            if view === primaryWebView {
-                if navigation?.reload() != true { navigation?.load(url) }
-            } else if !WebKitPageNavigation.reload(view) {
-                WebKitPageNavigation.load(url, in: view)
-            }
-        }
+        if navigation?.reload() != true { navigation?.load(url) }
     }
 
     public func stop() {
@@ -1301,55 +931,10 @@ public final class PageSession: NSObject, Identifiable {
         load(blockedURL)
     }
 
-    /// Asks the person to confirm, then loads the page under the certificate warning on its certificate.
-    public func visitDespiteCertificateWarning() {
-        guard let certificateWarning, certificateWarning.allowsVisit else { return }
-        controller?.webKitSessionDelegate?.confirmVisit(despite: certificateWarning, in: self)
-    }
-
-    /// Loads the page under `warning` again the way the failed navigation asked for it, so the
-    /// history ends up as if the first try had worked. A failed load leaves the committed page
-    /// current, so a plain reload would reload that page instead.
-    public func retryLoad(of warning: CertificateWarning) {
-        let webView = activeWebView
-        let list = webView.backForwardList
-        let offset = Self.retryOffset(
-            for: warning.url, after: mainFrameNavigationType, current: list.currentItem?.url,
-            back: list.backList.map(\.url), forward: list.forwardList.map(\.url))
-        if offset == 0 {
-            webView.reload()
-        } else if let offset, let item = list.item(at: offset) {
-            webView.go(to: item)
-        } else {
-            load(warning.url)
-        }
-    }
-
-    /// Where `url` sits in the history for retrying a navigation of `navigationType` to it: 0 to
-    /// reload the current page, the nearest entry back (negative) or forward for a Back or Forward
-    /// step, nil to load it as a new page.
-    nonisolated static func retryOffset(
-        for url: URL, after navigationType: WKNavigationType, current: URL?, back: [URL], forward: [URL]
-    ) -> Int? {
-        switch navigationType {
-        case .reload:
-            return current == url ? 0 : nil
-        case .backForward:
-            for distance in 1...max(1, back.count, forward.count) {
-                if back.count >= distance, back[back.count - distance] == url { return -distance }
-                if forward.count >= distance, forward[distance - 1] == url { return distance }
-            }
-            return nil
-        default:
-            return nil
-        }
-    }
-
-    /// Back to the page still showing under the blocked-page or certificate card, or closes a page that has none.
+    /// Return to the committed page under the blocker card or close a page with no commit.
     public func leaveBlockedPage() {
         if hasCommittedPage {
             blockedURL = nil
-            certificateWarning = nil
         } else if isDetached {
             onClose?()
         } else {
@@ -1358,10 +943,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     /// False until a page commits: a blocked first load leaves nothing to go back to.
-    public var hasCommittedPage: Bool {
-        if let primaryWebView { return primaryWebView.backForwardList.currentItem != nil }
-        return navigationHasCommittedPage
-    }
+    public var hasCommittedPage: Bool { navigationHasCommittedPage }
 
     /// Selects this page in the active window (a click inside the web view).
     public func activate() {
@@ -1379,80 +961,11 @@ public final class PageSession: NSObject, Identifiable {
         }
     }
 
-    /// KVO on canGoBack/canGoForward gives real-time updates. A single delayed check catches
-    /// WebKit's back-forward list settling asynchronously after a commit.
-    func updateNavigationStateEnhanced(source: String = "unknown") {
-        updateNavigationState()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-            self?.updateNavigationState()
-        }
-    }
-
     public func updateTitle(_ newTitle: String) {
         let resolved = newTitle.isEmpty ? url.host ?? "New Tab" : newTitle
         guard resolved != title else { return }
         title = resolved
         controller?.pageTitleChanged(itemID: itemID, title: resolved)
-        controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.title])
-    }
-
-    // MARK: - Observation
-
-    private func setupNavigationStateObservers(for webView: WKWebView) {
-        if !navigationStateObservedWebViews.contains(webView) {
-            webView.addObserver(self, forKeyPath: "fullscreenState", options: [.new], context: nil)
-            let observesAudio = webView.responds(to: Self.isPlayingAudioSelector)
-            mediaLog.info("""
-                media audio signal observed item=\(self.itemID, privacy: .public) responds=\(observesAudio, privacy: .public) \
-                primary=\(webView === self.primaryWebView, privacy: .public)
-                """)
-            if observesAudio {
-                webView.addObserver(self, forKeyPath: Self.isPlayingAudioKey, options: [.new, .old, .initial], context: nil)
-            }
-            // No URL observer: it fired during setup and overwrote restored URLs.
-            // didCommit/didFinish own URL updates.
-            navigationStateObservedWebViews.add(webView)
-        }
-    }
-
-    func removeNavigationStateObservers(from webView: WKWebView) {
-        if navigationStateObservedWebViews.contains(webView) {
-            webView.removeObserver(self, forKeyPath: "fullscreenState")
-            if webView.responds(to: Self.isPlayingAudioSelector) {
-                webView.removeObserver(self, forKeyPath: Self.isPlayingAudioKey)
-            }
-            navigationStateObservedWebViews.remove(webView)
-        }
-    }
-
-    public override func observeValue(
-        forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?,
-        context: UnsafeMutableRawPointer?
-    ) {
-        if keyPath == "themeColor", let webView = object as? WKWebView {
-            // Debounce: themeColor KVO fires several times during a page load.
-            pendingThemeColorUpdate?.cancel()
-            let item = DispatchWorkItem { [weak self, weak webView] in
-                guard let self, let webView else { return }
-                self.updateBackgroundColor(from: webView)
-            }
-            pendingThemeColorUpdate = item
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: item)
-        } else if keyPath == Self.isPlayingAudioKey, let webView = object as? WKWebView {
-            let audible = webView.value(forKey: Self.isPlayingAudioKey) as? Bool
-            let applied = webView === primaryWebView && audible != nil
-            mediaLog.info("""
-                media audio signal item=\(self.itemID, privacy: .public) \
-                value=\(audible.map(String.init) ?? "nil", privacy: .public) \
-                initial=\(change?[.oldKey] == nil, privacy: .public) applied=\(applied, privacy: .public)
-                """)
-            if applied, let audible { webKitAudioChanged(audible) }
-        } else if keyPath == "fullscreenState", let webView = object as? WKWebView {
-            // The compositor skips its passes while fullscreen; catch up once the page is back.
-            if webView.fullscreenState == .notInFullscreen { controller?.refreshWindows(showing: itemID) }
-        } else {
-            super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-        }
     }
 
     // MARK: - Equality
@@ -1463,17 +976,6 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     public override var hash: Int { itemID.hashValue }
-}
-
-private extension WKWebView {
-    /// `_clearBackForwardCache`, private on both platforms.
-    func nookClearBackForwardCache() -> Bool {
-        let selector = NSSelectorFromString("_clearBackForwardCache")
-        guard responds(to: selector) else { return false }
-        typealias Call = @convention(c) (AnyObject, Selector) -> Void
-        unsafeBitCast(method(for: selector), to: Call.self)(self, selector)
-        return true
-    }
 }
 
 extension PageSession {

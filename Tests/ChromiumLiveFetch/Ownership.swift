@@ -15,7 +15,7 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   let settings=NookSettingsService(kagiTokenStore:NoToken(),userDefaults:defaults,boostStore:BoostStore(fileURL:root.appendingPathComponent("Boosts.json")))
   let registry=WindowRegistry()
   let tabs=TabsController(settings:settings,windowRegistry:registry,blocker:ContentBlockerManager(settings:settings),
-   siteRouting:SiteRoutingManager(settings:settings),profileEngine:.chromium,directory:root.appendingPathComponent("Tabs"))
+   siteRouting:SiteRoutingManager(settings:settings),directory:root.appendingPathComponent("Tabs"))
   let work=tabs.tree.orderedSpaces.first!.id
   let personal=tabs.createSpace(name:"Personal",icon:"",accentHex:"#123456",after:work)!
   let a=tabs.tree.dataStoreID(for:work)!,b=tabs.tree.dataStoreID(for:personal)!
@@ -61,7 +61,7 @@ private struct NoToken: KagiTokenStore {func load()->String? {nil};func save(_ t
   window.isIncognito=true;precondition(!preview.isCurrent(in:window,tabs:tabs));window.isIncognito=false
   registry.unregister(window.id);precondition(!preview.isCurrent(in:window,tabs:tabs))
   preview.dismiss()
-  precondition(tabs.sessions.isEmpty && tabs.profile(forSpace:work)?.webKitStorage == nil)
+  precondition(tabs.sessions.isEmpty && tabs.profile(forSpace:work)?.id == tabs.tree.dataStoreID(for: work))
   // Actual shipped folder and Gmail source tasks share a transport with the
   // native two-per-profile admission bound. No fake batch implementation.
   let work2=tabs.createSpace(name:"Work 2",icon:"",accentHex:"#123456",after:personal)!

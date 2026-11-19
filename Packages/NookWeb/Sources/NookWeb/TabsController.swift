@@ -15,7 +15,6 @@ import NookSettings
 import NookTabsCore
 import NookTweaks
 import OSLog
-import WebKit
 
 @MainActor
 @Observable
@@ -86,14 +85,12 @@ public final class TabsController {
 
     // MARK: - Injected
 
-    @ObservationIgnored public let profileEngine: Profile.Engine
     @ObservationIgnored public let settings: NookSettingsService
     @ObservationIgnored public let windowRegistry: WindowRegistry
     @ObservationIgnored public let blocker: ContentBlockerManager
     @ObservationIgnored public let siteRouting: SiteRoutingManager
     /// Set once the SwiftData context has produced it; nil in a host without history.
     @ObservationIgnored public var history: HistoryManager?
-    @ObservationIgnored public weak var webViews: WebKitWebViewProvider?
     @ObservationIgnored public weak var nativePageHost: (any NativePageHost)? {
         didSet {
             guard nativePageHost != nil else { return }
@@ -103,24 +100,7 @@ public final class TabsController {
         }
     }
     @ObservationIgnored public weak var sessionDelegate: PageSessionDelegate?
-    var webKitSessionDelegate: (any WebKitPageSessionDelegate)? {
-        guard profileEngine == .webKit else { return nil }
-        return sessionDelegate as? any WebKitPageSessionDelegate
-    }
     @ObservationIgnored public weak var tabEvents: TabEventObserver?
-    var webKitTabEvents: (any WebKitTabEventObserver)? {
-        guard profileEngine == .webKit else { return nil }
-        return tabEvents as? any WebKitTabEventObserver
-    }
-    @ObservationIgnored private weak var webKitAlerts: (any WebKitAlertPresenter)?
-    /// Native Chromium presents page prompts through its own mounted browser host.
-    public var webKitAlertPresenter: (any WebKitAlertPresenter)? {
-        get { profileEngine == .webKit ? webKitAlerts : nil }
-        set {
-            guard profileEngine == .webKit else { return }
-            webKitAlerts = newValue
-        }
-    }
     #if os(macOS)
     /// Pawl Vault passwords and passkeys; set by the app.
     @ObservationIgnored public var vault: VaultService?
@@ -176,10 +156,8 @@ public final class TabsController {
         legacyProfiles: [(id: UUID, name: String)] = [],
         /// A tree built from a pre-1.1 store; asked for only on a first launch.
         legacyTree: () -> TabTree? = { nil },
-        profileEngine: Profile.Engine = .chromium,
         directory: URL = TabsController.defaultDirectory
     ) {
-        self.profileEngine = profileEngine
         self.settings = settings
         self.windowRegistry = windowRegistry
         self.blocker = blocker
@@ -228,8 +206,7 @@ public final class TabsController {
         }
     }
 
-    /// One space per profile left over from before spaces owned their data (same UUID, so each
-    /// WKWebsiteDataStore keeps its cookies and logins), each with one tab.
+    /// Seeds one space and tab for each legacy profile, preserving its UUID.
     public static func seed(from legacyProfiles: [(id: UUID, name: String)], now: Date = Date()) -> TabTree {
         guard !legacyProfiles.isEmpty else { return TabTree.firstLaunch(homeURL: homeURL, now: now) }
         var tree = TabTree()
@@ -491,7 +468,6 @@ public final class TabsController {
             guard !page.isPrivate, page.detachedProfile?.isEphemeral != true,
                   let space = tree.spaceID(of: page.itemID),
                   let store = tree.dataStoreID(for: space) else { return false }
-            guard profileEngine == .chromium else { return true }
             guard isProfileAvailable(store), profileSpaceIsReady(space),
                   page.detachedProfile.map({ $0.id == store }) ?? true else { return false }
             return page.navigation.map { $0.profileID == store } ?? true
@@ -588,16 +564,13 @@ public final class TabsController {
         device.openPages[itemID] = nil
         guard let session else { return }
         session.tearDown()
-        if !session.isPrivate {
-            webKitTabEvents?.tabClosed(itemID: itemID)
-        }
     }
 
     /// The website data store of a space, made on first use and shared by every space that uses
     /// the same store (the Agent space borrows one). Its name and icon follow the space asked for.
     public func profile(forSpace spaceID: UUID) -> Profile? {
         guard let space = tree.space(spaceID), let storeID = tree.dataStoreID(for: spaceID),
-              (profileEngine != .chromium || (isProfileAvailable(storeID) && profileSpaceIsReady(spaceID))) else { return nil }
+              isProfileAvailable(storeID), profileSpaceIsReady(spaceID) else { return nil }
         if let existing = spaceProfiles[storeID] {
             if !space.isAgent {
                 existing.name = space.name
@@ -605,7 +578,7 @@ public final class TabsController {
             }
             return existing
         }
-        let profile = Profile(id: storeID, name: space.name, icon: space.icon, engine: profileEngine)
+        let profile = Profile(id: storeID, name: space.name, icon: space.icon)
         spaceProfiles[storeID] = profile
         return profile
     }
@@ -624,7 +597,7 @@ public final class TabsController {
         }
         guard let kept = device.keptProfiles?.first(where: { $0.id == storeID }) else { return nil }
         if let existing = spaceProfiles[storeID] { return existing }
-        let profile = Profile(id: storeID, name: kept.name, icon: "", engine: profileEngine)
+        let profile = Profile(id: storeID, name: kept.name, icon: "")
         spaceProfiles[storeID] = profile
         return profile
     }
@@ -659,12 +632,7 @@ public final class TabsController {
         if session.isPrivate {
             return privateWindows.first { $0.privateSessions[session.itemID] === session }?.ephemeralProfile
         }
-        if let id = tree.spaceID(of: session.itemID) {
-            if profileEngine == .chromium { return profile(forSpace: id) }
-            if let profile = profile(forSpace: id) { return profile }
-        }
-        if profileEngine == .chromium { return nil }
-        return sessionDelegate?.currentProfile ?? tree.orderedSpaces.first.flatMap { profile(forSpace: $0.id) }
+        return tree.spaceID(of: session.itemID).flatMap { profile(forSpace: $0) }
     }
 
     /// The window a session's actions belong to: its private window, else the active window
@@ -683,7 +651,6 @@ public final class TabsController {
     /// Change stores the previous touched records; additions and metadata edits cannot
     /// invalidate an existing page's owner. Moving a folder can affect its descendants.
     func nativeOwnershipChanged(by change: Change, in proposed: TabTree) -> Bool {
-        guard profileEngine == .chromium else { return false }
         for (id, previous) in change.items {
             guard let previous, previous.deletedAt == nil else { continue }
             guard let current = proposed.item(id), current.parent == previous.parent else { return true }
@@ -731,7 +698,6 @@ public final class TabsController {
     /// Explicit close/remove release first; unsupported destructive replacements
     /// leave the current tree intact. Pending creations can still be canceled.
     func nativeEditIsAdmissible(_ proposed: TabTree, owner: Owner) -> Bool {
-        guard profileEngine == .chromium else { return true }
         for page in sessions {
             nativeOwnershipVisits += 1
             guard page.navigation != nil else { continue }
@@ -757,7 +723,6 @@ public final class TabsController {
     }
 
     private func cancelInvalidNativeCreations() {
-        guard profileEngine == .chromium else { return }
         for page in sessions {
             nativeOwnershipVisits += 1
             guard let pending = page.nativeCreation else { continue }
@@ -939,7 +904,7 @@ public final class TabsController {
 
     /// Once no other window shows this window's selected page, this window shows it.
     public func showSelectedPageHere(in window: BrowserWindowState) {
-        guard profileEngine == .chromium, windowRegistry.windows[window.id] === window,
+        guard windowRegistry.windows[window.id] === window,
               window.nativeSelectionGeneration == nil, !window.nativeSplitIsPreparing,
               let selected = window.selectedItemID, window.split?.contains(selected) != true,
               !isPageShownElsewhere(selected, from: window) else { return }
@@ -950,13 +915,9 @@ public final class TabsController {
 
     /// Moves the item's live page to `window`.
     public func takeControl(_ itemID: UUID, in window: BrowserWindowState) {
-        if profileEngine == .chromium {
-            prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
-                guard let self, let window else { return }
-                self.recordPageOwner(itemID, in: window)
-            }
-        } else {
-            recordPageOwner(itemID, in: window)
+        prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
+            guard let self, let window else { return }
+            self.recordPageOwner(itemID, in: window)
         }
     }
 
@@ -968,7 +929,6 @@ public final class TabsController {
     /// Pure model ownership for catalog reconciliation; unlike presentation
     /// lookup this also identifies a background page without scanning sessions.
     public func isNativePageOwner(_ session: PageSession, in window: BrowserWindowState) -> Bool {
-        profileEngine == .chromium &&
         (session.isPrivate ? window.privateSessions[session.itemID] === session : liveSessions[session.itemID] === session) &&
         pageOwners[session.itemID] == window.id && windowRegistry.windows[window.id] === window
     }
@@ -1032,7 +992,7 @@ public final class TabsController {
         let summary = [String(pages.count), started, shows, onScreen, notAudible, String(noMedia)].joined(separator: "|")
         guard miniPlayerLogged[window.id] != summary else { return }
         miniPlayerLogged[window.id] = summary
-        mediaLog.info("""
+        log.info("""
             media mini player window=\(window.id, privacy: .public) pages=\(pages.count, privacy: .public) \
             started=\(started, privacy: .public) shows=\(shows, privacy: .public) onScreen=\(onScreen, privacy: .public) \
             notAudible=\(notAudible, privacy: .public) noMedia=\(noMedia, privacy: .public)
@@ -1171,8 +1131,7 @@ public final class TabsController {
     public func bindDetachedNativePage(_ navigation: any PageNavigation, profile: Profile,
                                        owner: any NativePageResourceOwner,
                                        in window: BrowserWindowState?) -> PageSession? {
-        guard profileEngine == .chromium, profile.engine == .chromium,
-              navigation.profileID == profile.id, !isTerminating,
+        guard navigation.profileID == profile.id, !isTerminating,
               !sessions.contains(where: { $0.navigation === navigation }) else { return nil }
         let state = navigation.state
         guard !isTerminating, !sessions.contains(where: { $0.navigation === navigation }) else { return nil }
@@ -1233,7 +1192,7 @@ public final class TabsController {
         }) else { return nil }
         func isCurrent() -> Bool {
             (detachedSession == nil || (detachedSession?.navigation === page && detachedSession?.nativeIsEnding == false &&
-                detachedSession?.nativeRelease == nil)) && profileEngine == .chromium && !isTerminating && nativePageHost === host &&
+                detachedSession?.nativeRelease == nil)) && !isTerminating && nativePageHost === host &&
             windowRegistry.windows[window.id] === window && !window.isIncognito && window.privateTree == nil &&
             tree.space(spaceID) != nil && tree.dataStoreID(for: spaceID) == page.profileID &&
             page.profileID != nil && host.canAdoptPage(page, in: window)
@@ -1356,7 +1315,7 @@ public final class TabsController {
         guard let profileID else { return false }
         if window.isIncognito {
             return window.privateTree?.space(spaceID) != nil && window.ephemeralProfile?.isEphemeral == true &&
-                window.ephemeralProfile?.engine == .chromium && window.ephemeralProfile?.id == profileID
+                window.ephemeralProfile?.id == profileID
         }
         return window.privateTree == nil && tree.dataStoreID(for: spaceID) == profileID
     }
@@ -1368,7 +1327,7 @@ public final class TabsController {
                                        from opener: UUID?, select shouldSelect: Bool) -> UUID? {
         func current() -> Bool {
             (detachedSession == nil || (detachedSession?.navigation === page &&
-                detachedSession?.nativeIsEnding == false && detachedSession?.nativeRelease == nil)) && profileEngine == .chromium && !isTerminating && nativePageHost === host &&
+                detachedSession?.nativeIsEnding == false && detachedSession?.nativeRelease == nil)) && !isTerminating && nativePageHost === host &&
             windowRegistry.windows[window.id] === window && window.isIncognito &&
             nativeProfile(page.profileID, matches: spaceID, in: window) && host.canAdoptPage(page, in: window)
         }
@@ -1534,7 +1493,7 @@ public final class TabsController {
     @discardableResult
     public func reflectNativeSelection(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
         guard !window.nativeSpaceSwitchIsPending, cancelNativeSplit(in: window) else { return false }
-        guard profileEngine == .chromium, !isTerminating,
+        guard !isTerminating,
               windowRegistry.windows[window.id] === window,
               let session = session(for: itemID), let page = session.navigation,
               let host = nativePageHost, session.nativeResourceHost === host,
@@ -1661,8 +1620,7 @@ public final class TabsController {
                 // During a native move the session map is handed off before
                 // observable tree publication. A window retired in that gap
                 // must not close contents its tree does not own.
-                if profileEngine == .chromium,
-                   window.privateSessions[itemID]?.nativeTransfer?.destination == window.id,
+                if window.privateSessions[itemID]?.nativeTransfer?.destination == window.id,
                    window.privateTree?.item(itemID) == nil, window.privateSessions[itemID]?.navigation != nil {
                     window.privateSessions.removeValue(forKey: itemID)
                     continue
@@ -1713,7 +1671,7 @@ extension TabsController {
     /// must be an existing model identity, never a default profile selected by native code.
     public func deleteKeptProfile(_ target: UUID, surviving survivor: UUID,
                                   completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
-        guard profileEngine == .chromium, !profileDeletionInFlight, device.pendingProfileDeletion?.change == nil,
+        guard !profileDeletionInFlight, device.pendingProfileDeletion?.change == nil,
               device.pendingProfileDeletion.map({ $0.target == target && $0.survivor == survivor }) ?? true,
               target != survivor, let action = onDeleteProfile,
               device.keptProfiles?.contains(where: { $0.id == target }) == true,
@@ -1738,7 +1696,7 @@ extension TabsController {
             resumeProfileChange(intent, automatic: true, completion: completion)
             return
         }
-        guard profileEngine == .chromium, let action = onDeleteProfile, !isReadOnly else {
+        guard let action = onDeleteProfile, !isReadOnly else {
             completion(.failure(.pending)); return
         }
         dispatchProfileDeletion(intent, action: action, reconcileOnly: true, wasPending: true, completion: completion)
@@ -1858,7 +1816,7 @@ extension TabsController {
     private func beginProfileChange(_ spaces: [UUID], target: ProfileSummary, destination: UUID?, name: String?,
                                     kind: PendingProfileChange.Kind,
                                     completion: @escaping @MainActor (Result<Void, ProfileDeletionError>) -> Void) {
-        guard profileEngine == .chromium, !isReadOnly, !profileDeletionInFlight, device.pendingProfileDeletion == nil,
+        guard !isReadOnly, !profileDeletionInFlight, device.pendingProfileDeletion == nil,
               (kind == .deleteProfile ? onDeleteProfile != nil : nativePageHost != nil),
               !spaces.isEmpty, spaces.allSatisfy({ tree.space($0)?.isAgent == false && tree.dataStoreID(for: $0) == target.id }),
               destination != target.id, destination == nil || profiles.contains(where: { $0.id == destination }) else {
