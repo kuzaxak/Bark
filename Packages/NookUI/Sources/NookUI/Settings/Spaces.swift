@@ -113,7 +113,7 @@ public struct SpacesSettingsView: View {
         } message: { result in
             switch result {
             case .invited(let link):
-                Text("\(link.absoluteString)\n\nThe link is copied. Send it to that Mac and open it there, or paste it in Join Shared Sync\u{2026}")
+                Text("\(link.absoluteString)\n\nSend the copied link to the invited Mac. In Bark, paste it into Settings → Spaces → Join Shared Sync.")
             case .failed(let message):
                 Text(message)
             }
