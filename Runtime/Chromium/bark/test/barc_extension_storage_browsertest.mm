@@ -184,13 +184,13 @@ class BarcExtensionStorageBrowserTest : public InProcessBrowserTest {
               barc_window_profile_uuid(personal_id, uuid.data(), uuid.size()));
     EXPECT_STREQ(kPersonal, uuid.data());
   }
-  void MountPage(int32_t id) {
+  void MountPage(int32_t id, int32_t tab = 0) {
     auto* host = bark::BarkWindowHost::ForBrowser(Window(id));
     ASSERT_TRUE(host);
     NSView* root = host->root_view().GetNativeNSView();
     ASSERT_NE(nil, root);
     NSView* page = (__bridge NSView*)barc_tab_native_view(
-        id, barc_window_tab_at(id, 0));
+        id, tab ? tab : barc_window_tab_at(id, 0));
     ASSERT_NE(nil, page);
     for (NSView* mounted in root.subviews) {
       [mounted removeFromSuperview];
@@ -736,7 +736,16 @@ IN_PROC_BROWSER_TEST_F(
   auto* personal_window = Window(personal_id);
   auto* work = work_window->GetProfile();
   auto* personal = personal_window->GetProfile();
+  auto* host = bark::BarkWindowHost::ForBrowser(work_window);
+  ASSERT_TRUE(host);
+  ASSERT_EQ(host, bark::BarkWindowHost::ForBrowser(personal_window));
+  auto* personal_page = personal_window->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(personal_page);
+  ASSERT_TRUE(content::WaitForLoadStop(personal_page));
+  ASSERT_EQ(GURL("chrome://settings/"), personal_page->GetLastCommittedURL());
+  ASSERT_EQ(personal, personal_page->GetBrowserContext());
   auto* page = work_window->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(page);
   ASSERT_TRUE(content::WaitForLoadStop(page));
   ASSERT_EQ(work, page->GetBrowserContext());
   ASSERT_EQ(GURL("chrome://extensions/"), page->GetLastCommittedURL());
@@ -790,6 +799,9 @@ IN_PROC_BROWSER_TEST_F(
                        .GetString());
 
   ASSERT_EQ(1, barc_window_select(personal_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(personal_id));
+  ASSERT_TRUE(host->IsPageMounted(personal_page));
+  EXPECT_FALSE(host->IsPageMounted(page));
   {
     int created = 0;
     views::AnyWidgetObserver observed(views::test::AnyWidgetTestPasskey{});
@@ -813,10 +825,15 @@ IN_PROC_BROWSER_TEST_F(
 
   // Positive real consent UI, without auto-confirm or disabling click guards.
   ASSERT_EQ(1, barc_window_select(work_id));
+  ASSERT_NO_FATAL_FAILURE(MountPage(work_id));
+  ASSERT_TRUE(host->IsPageMounted(page));
+  EXPECT_FALSE(host->IsPageMounted(personal_page));
   base::WeakPtr<views::Widget> consent;
   views::AnyWidgetObserver observed(views::test::AnyWidgetTestPasskey{});
   observed.set_shown_callback(
       base::BindLambdaForTesting([&](views::Widget* widget) {
+        if (!widget->widget_delegate())
+          return;
         auto* view = views::AsViewClass<ExtensionInstallDialogView>(
             widget->widget_delegate()->GetContentsView());
         if (view)
@@ -835,6 +852,8 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(view);
   EXPECT_EQ(work_window, view->GetShowParamsForTesting()->GetBrowserOwner());
   EXPECT_EQ(page, view->GetShowParamsForTesting()->GetParentWebContents());
+  EXPECT_EQ(host->widget()->GetNativeWindow(),
+            view->GetShowParamsForTesting()->GetParentWindow());
   EXPECT_TRUE(work_window->IsSelectedForNativeWindow());
   EXPECT_FALSE(
       prefs->GetGrantedPermissions(extension_id)
@@ -861,6 +880,7 @@ IN_PROC_BROWSER_TEST_F(
   const int32_t source_tab = barc_window_tab_at(work_id, 0);
   const int32_t survivor_tab = barc_tab_create(work_id, "about:blank", 0);
   ASSERT_NE(0, survivor_tab);
+  ASSERT_TRUE(host->IsPageMounted(page));
   scoped_refptr<const extensions::Extension> high =
       registry->disabled_extensions().GetByID(extension_id);
   ASSERT_TRUE(high);
@@ -913,6 +933,10 @@ IN_PROC_BROWSER_TEST_F(
   auto* survivor_contents = tabs::TabHandle(survivor_tab).Get()->GetContents();
   ASSERT_EQ(work_window,
             tabs::TabHandle(survivor_tab).Get()->GetBrowserWindowInterface());
+  ASSERT_EQ(1, barc_tab_select(work_id, survivor_tab));
+  ASSERT_NO_FATAL_FAILURE(MountPage(work_id, survivor_tab));
+  ASSERT_TRUE(host->IsPageMounted(survivor_contents));
+  EXPECT_FALSE(host->IsPageMounted(page));
   consent.reset();
   auto displayed = std::make_unique<ExtensionInstallPrompt>(
       survivor_contents, std::make_unique<extensions::InstallPromptData>(
@@ -927,6 +951,10 @@ IN_PROC_BROWSER_TEST_F(
   ASSERT_TRUE(closing_view);
   EXPECT_EQ(work_window,
             closing_view->GetShowParamsForTesting()->GetBrowserOwner());
+  EXPECT_EQ(survivor_contents,
+            closing_view->GetShowParamsForTesting()->GetParentWebContents());
+  EXPECT_EQ(host->widget()->GetNativeWindow(),
+            closing_view->GetShowParamsForTesting()->GetParentWindow());
   ASSERT_NE(nullptr, WidgetFor(work_window));
   const auto widget_alive = WidgetFor(work_window)->GetWeakPtr();
   const auto owner_alive = work_window->GetWeakPtr();
@@ -952,6 +980,9 @@ IN_PROC_BROWSER_TEST_F(
   // peer. Wait for the ordinary button guard; this is consent routing, not a
   // native click or store-install qualification.
   ASSERT_EQ(1, barc_window_select(peer_id));
+  ASSERT_EQ(1, barc_tab_select(peer_id, source_tab));
+  ASSERT_NO_FATAL_FAILURE(MountPage(peer_id, source_tab));
+  ASSERT_TRUE(host->IsPageMounted(page));
   consent.reset();
   ASSERT_EQ(true, content::EvalJs(page, content::JsReplace(R"(
     globalThis.finalReenable = chrome.management.setEnabled($1, true).then(
@@ -973,6 +1004,8 @@ IN_PROC_BROWSER_TEST_F(
   EXPECT_EQ(Window(peer_id),
             accepting->GetShowParamsForTesting()->GetBrowserOwner());
   EXPECT_EQ(page, accepting->GetShowParamsForTesting()->GetParentWebContents());
+  EXPECT_EQ(widget_alive->GetNativeWindow(),
+            accepting->GetShowParamsForTesting()->GetParentWindow());
   consent->widget_delegate()->AsDialogDelegate()->AcceptDialog();
   EXPECT_EQ(true, content::EvalJs(page, "globalThis.finalReenable"));
   EXPECT_TRUE(registry->enabled_extensions().Contains(extension_id));

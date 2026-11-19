@@ -713,8 +713,11 @@ migration work and are excluded from current host-only qualification claims.
 
 | Existing fixture | Required Bark test port |
 | --- | --- |
-| `BarcExtensionStorageBrowserTest` presentation-specific cases | Verify selected extension/settings pages are mounted during prompt visibility, ownership and close checks. The shared host widget and per-profile worker and storage assertions remain. |
+| Remaining `BarcExtensionStorageBrowserTest` presentation cases | Verify selected extension/settings pages are mounted during prompt visibility, ownership and close checks. The shared host widget and per-profile worker and storage assertions remain. |
 | Legacy cases in `barc_bridge_browsertest.mm` | Replace sidebar and header attachment, `BrowserWidget` lifetime and modal anchors, and composed split and Peek views with Bark root, page placement and discovery assertions. Old peer-BrowserView, classic toolbar, and physical split-layout expectations describe retired implementations. |
+
+The escalated extension re-enable fixture mounts the selected Bark page for
+consent, transfer, and logical-owner closure.
 
 The updated host fixtures cover enterprise capture on selected and mounted
 pages, detached-pane focus, extension sheets and logical-owner lifetime,
