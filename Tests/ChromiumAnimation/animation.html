@@ -4,13 +4,21 @@
     {
         const graceMs = 250;
         let frames = 0;
-        let hiddenAt = null;
+        let hiddenAt = document.hidden ? performance.now() : null;
         let hiddenFrames = 0;
         let lateFrames = 0;
-        let period = 0;
+        let period = document.hidden ? 1 : 0;
 
         if (location.pathname === "/target" && location.search === "?parked-navigation=1") {
-            report("parked-navigation-started");
+            report("parked-navigation-started", {frames, period});
+            link.href = "/target?background-created=1";
+            link.addEventListener("click", event => report("background-link", {
+                trusted: event.isTrusted, command: event.metaKey
+            }));
+        }
+        if (location.search === "?background-created=1") {
+            document.title = "Background animation fixture";
+            report("background-creation-started", {frames, period});
         }
 
         document.addEventListener("visibilitychange", async () => {

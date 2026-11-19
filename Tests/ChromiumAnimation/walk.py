@@ -33,7 +33,7 @@ class Fixture(peek["Fixture"]):
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             return
-        if self.path == "/target?parked-navigation=1":
+        if self.path in ("/target?parked-navigation=1", "/target?background-created=1"):
             self.path = "/target"
         super().do_GET()
 
@@ -162,10 +162,40 @@ def main():
             new_document = navigated["documentID"]
             if new_document in {document, target_id, *siblings}:
                 raise RuntimeError("The parked navigation did not create a distinct document")
-            before_navigation_return = len(events)
-            screen.key("1", screen.command)
-            event("visibility", before_navigation_return, documentID=new_document, visibility="visible")
-            event("animation-visible", before_navigation_return, documentID=new_document, visibility="visible")
+            def verify_initial_hidden(initial, positive_id, reveal):
+                since = len(events)
+                positive = event("animation-visible", since, documentID=positive_id, visibility="visible")
+                held_until = time.monotonic() + HIDDEN_SECONDS
+                wait_for("The initially hidden interval did not elapse",
+                         lambda: time.monotonic() >= held_until, process, timeout=HIDDEN_SECONDS + 2)
+                advancing(positive_id, len(events), positive)
+                before_reveal = len(events)
+                reveal()
+                revealed = event("animation-returned", before_reveal, documentID=initial["documentID"],
+                                 period=initial["period"], visibility="visible", wasDiscarded=False)
+                if (revealed["durationMs"] < HIDDEN_SECONDS * 1000 or revealed["lateFrames"] != 0
+                        or revealed["frames"] - initial["frames"] != revealed["hiddenFrames"]):
+                    raise RuntimeError(f"Initially hidden animation did not stop: {revealed}")
+                sample = advancing(initial["documentID"], before_reveal, revealed)
+                return revealed, sample
+
+            navigation_revealed, navigation_visible = verify_initial_hidden(navigated, target_id,
+                                                        lambda: screen.key("1", screen.command))
+
+            def select_new_background():
+                row = access.control("Background animation fixture")
+                x, y = access.center(row)
+                bounds = screen.windows()[0]["kCGWindowBounds"]
+                screen.click((x - bounds["X"], y - bounds["Y"]))
+
+            before_creation = len(events)
+            screen.click(source_point(navigation_visible, "linkPoint"), screen.command)
+            event("background-link", before_creation, documentID=new_document, trusted=True, command=True)
+            background = event("background-creation-started", before_creation, page="/target",
+                               visibility="hidden", wasDiscarded=False)
+            if background["documentID"] in {document, target_id, new_document, *siblings}:
+                raise RuntimeError("The background link did not create a distinct document")
+            background_revealed, _ = verify_initial_hidden(background, new_document, select_new_background)
             (output / "animation.json").write_text(json.dumps({
                 "document_id": document,
                 "draft_still_editable": True,
@@ -179,6 +209,10 @@ def main():
                 "frames_after_return": resumed["frames"] - returned["frames"],
                 "parked_navigation_document_id": new_document,
                 "parked_navigation_initial_visibility": navigated["visibility"],
+                "parked_navigation_late_frames": navigation_revealed["lateFrames"],
+                "background_creation_document_id": background["documentID"],
+                "background_creation_initial_visibility": background["visibility"],
+                "background_creation_late_frames": background_revealed["lateFrames"],
             }, indent=2) + "\n")
             screen.key("q", screen.command)
             screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process))
