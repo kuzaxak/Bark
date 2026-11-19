@@ -8,11 +8,12 @@
 const report = event => fetch("/event", {method: "POST", body: event});
 const main = document.querySelector("main");
 
-if (["/signed-in", "/passkey"].includes(location.pathname)) {
+if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname)) {
   main.innerHTML = `
     <p>Signed in to the disposable fixture</p>
     <button type="button" id="passkey">Start disposable passkey</button>
     <a href="/saved-form">Check the saved fixture account</a>
+    <a href="/new-form">Use a new fixture account</a>
   `;
   document.querySelector("#passkey").onclick = async function () {
     this.disabled = true;
@@ -34,7 +35,7 @@ if (["/signed-in", "/passkey"].includes(location.pathname)) {
   };
 } else {
   main.innerHTML = `
-    <form method="post" action="/signed-in">
+    <form method="post" action="${location.pathname === "/source" ? "/existing-signed-in" : "/signed-in"}">
       <label>Fixture account <input name="username" autocomplete="username" required></label>
       <label>Fixture password <input name="password" type="password" autocomplete="current-password" required></label>
       <button type="submit">Sign in to fixture</button>

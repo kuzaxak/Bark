@@ -18,6 +18,8 @@ from signed_walk import run_walk, wait_for
 
 ACCOUNT = "synthetic-new"
 PASSWORD = "disposable-new-password"
+EXISTING_ACCOUNT = "synthetic-existing"
+EXISTING_PASSWORD = "fixture-password"
 MARKER = "Bark verification vault: "
 
 
@@ -34,9 +36,12 @@ class Fixture(BaseHTTPRequestHandler):
             self.send_error(400)
             return
         data = self.rfile.read(length).decode()
-        if self.path == "/signed-in":
-            matches = parse_qs(data) == {"username": [ACCOUNT], "password": [PASSWORD]}
-            self.server.events.append("fixture-submitted" if matches else "unmatched-submission")
+        if self.path in ("/signed-in", "/existing-signed-in"):
+            existing = self.path == "/existing-signed-in"
+            account, password = (EXISTING_ACCOUNT, EXISTING_PASSWORD) if existing else (ACCOUNT, PASSWORD)
+            matches = parse_qs(data) == {"username": [account], "password": [password]}
+            event = "existing-fixture-submitted" if existing else "fixture-submitted"
+            self.server.events.append(event if matches else "unmatched-submission")
             if not matches:
                 self.send_error(400)
                 return
@@ -44,7 +49,7 @@ class Fixture(BaseHTTPRequestHandler):
             return
         if self.path != "/event" or data not in {
             "ready:/source", "ready:/new-form", "ready:/signed-in",
-            "ready:/saved-form", "ready:/passkey",
+            "ready:/saved-form", "ready:/passkey", "ready:/existing-signed-in",
             "typed-fields-filled", "saved-fields-filled", "passkey-started", "passkey-cancelled",
             "passkey-created", "passkey-error",
         }:
@@ -204,13 +209,31 @@ def exercise(screen, process, events, output):
         wait_for("Synthetic Pawl provider did not initialize",
                  lambda: method("ready"), process)
         controls.click("Fixture password", ("AXTextField", "AXSecureTextField"))
-        picker = controls.require("synthetic-existing", ("AXButton",), partial=True)
+        picker = controls.require(EXISTING_ACCOUNT, ("AXButton",), partial=True)
         time.sleep(0.5)
         screen.screenshot(output / "picker.png", include_owned_windows=True)
         screen.press_button(picker)
         seen("typed-fields-filled")
         wait_for("Synthetic password provider was not called", lambda: method("password"), process)
         print("Selected the synthetic Pawl login and verified both typed Chromium fields", flush=True)
+
+        reads_before_existing, saves_before_existing = method("password"), method("save")
+        controls.click("Sign in to fixture", ("AXButton",))
+        seen("existing-fixture-submitted")
+        seen("ready:/existing-signed-in")
+        card = "This login is already in Pawl Vault"
+        controls.require(card)
+        controls.require(f"{EXISTING_ACCOUNT} on localhost", partial=True)
+        controls.require("Open Pawl Vault", ("AXButton",))
+        if controls.find("Save password to Pawl Vault?", ()):
+            raise RuntimeError("The existing login offered a new password save")
+        screen.screenshot(output / "existing-login-card.png", include_owned_windows=True)
+        controls.press("Not Now")
+        wait_for("The existing-login card did not dismiss",
+                 lambda: not controls.find(card, ()), process)
+        if (method("password"), method("save")) != (reads_before_existing, saves_before_existing):
+            raise RuntimeError("The existing-login submission fetched or stored a secret")
+        print("Declined the existing-login card without a password fetch or save", flush=True)
 
         new_form = controls.require("Use a new fixture account", ("AXLink",))
         screen.press_button(new_form)
@@ -289,6 +312,8 @@ def exercise(screen, process, events, output):
             raise RuntimeError("Cancelled consent produced a synthetic registration")
         print("Cancelled the native Pawl passkey consent without registering", flush=True)
 
+        if (method("password"), method("save")) != (reads_before_existing + 1, saves_before_existing + 1):
+            raise RuntimeError("Only the approved new save and its readback may add vault operations")
         if "leak_detection_request" in log.read_text(errors="replace"):
             raise RuntimeError("Chromium attempted a password leak check in the disposable fixture")
         screen.key("q", screen.command)
@@ -324,8 +349,9 @@ def prepare_fixture(root, origin, app, profile):
 
 if __name__ == "__main__":
     sys.exit(run_walk(
-        "Signed Pawl vault fill, save and passkey cancellation", "vault", serve, exercise,
+        "Signed Pawl vault fill, existing login, save and passkey cancellation", "vault", serve, exercise,
         preferences=(("settings.pawlVaultEnabled", "-bool", "true"),),
         source_host="localhost",
         prepare_fixture=prepare_fixture,
+        official_qualification=True,
     ))
