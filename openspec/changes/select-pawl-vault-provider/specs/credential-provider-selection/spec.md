@@ -63,6 +63,17 @@ Bark SHALL offer an explicit, correctly targeted save or update for a validated 
 - **WHEN** matching the login yields multiple possible update targets or the selected entry changes before saving
 - **THEN** an unselected or changed entry cannot be silently overwritten
 
+#### Scenario: The connected vault only supports manual management
+- **GIVEN** the selected vault cannot condition a write on the state of an entry
+- **WHEN** a user submits a login for a new or existing account
+- **THEN** Bark offers to open Pawl so the user can manage the login there
+- **AND** accepting the offer shares neither the submitted password nor the site with the launcher
+
+#### Scenario: The vault reply is lost after consent
+- **WHEN** Bark sends an approved write and loses the reply while the submission is still current
+- **THEN** Bark tells the user to check the entry in Pawl
+- **AND** it sends no further write for that submission
+
 #### Scenario: Site used in a private window
 - **WHEN** a successful private-window login is submitted
 - **THEN** Bark offers no credential write from that submission and records no persistent browser-side login history for the integration

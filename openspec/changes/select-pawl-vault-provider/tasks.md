@@ -17,7 +17,7 @@
 - [ ] 3.2 Preserve native field, frame, origin and profile checks. Verify scripted focus alone cannot open the chooser, genuine keyboard and mouse input can, and a stale pane or private session cannot receive a late write.
   The engine candidate binds mouse or Tab focus to the document and field. A native Down Arrow on that field reopens the picker. The gesture and cross-frame regressions still need a run with that engine.
 - [ ] 3.3 Add a safely targeted password update with owner approval and explicit old-provider handling. Verify two matching usernames, a concurrent edit and a redirect, and check both stores after cancellation and success.
-  Legacy Pawl users can open the vault from an existing-login card. Creating or updating an entry with a write-time condition still requires companion support.
+  Bark implements conditional creates and updates after consent. A v1 companion offers manual management for new and existing accounts. The in-memory provider exercises expiry, conflicts and replay. Signed companion persistence and the joint two-store qualification remain open.
 - [ ] 3.4 Prove stock mode still works and unrelated address and payment Autofill retain their behavior in both modes. Run the pinned engine browser tests and a signed shell walk.
 
 - [ ] 3.5 Route direct password-manager URLs and any remaining context-menu actions to the running provider. Verify an existing Chromium login cannot be offered through those entry points.

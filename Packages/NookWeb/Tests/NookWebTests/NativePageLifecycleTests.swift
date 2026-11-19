@@ -4001,7 +4001,8 @@ struct NativeVaultFormTests {
         await agentCallbacks()
         #expect(presenter.saveCompletion != nil && native.vaultSaveValid)
         let before = await transport.methods
-        #expect(!before.contains("save"))
+        #expect(presenter.loginAction == .create)
+        #expect(before.contains("prepareLoginWrite") && !before.contains("commitLoginWrite") && !before.contains("save"))
         // A login redirect replaces the document, not Chromium's accepted submission.
         native.vaultDocumentCurrent = false
         native.onEvent?(.started(URL(string:"https://redirect.synthetic.invalid/done")))
@@ -4032,10 +4033,11 @@ struct NativeVaultFormTests {
     }
 
     @Test(arguments: ["open", "decline", "stale", "private", "ephemeral", "unavailable"])
-    func existingNativeLoginCanOnlyOpenPawlForManualUpdate(action: String) async throws {
+    func legacyVaultOnlyOffersManualManagement(action: String) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        await transport.advertiseConditionalWrites(false)
         var launches = 0
         let vault = VaultService(settings: f.tabs.settings, client: transport, openPawlApplication: {
             launches += 1
@@ -4055,10 +4057,10 @@ struct NativeVaultFormTests {
         native.submitVault(username: "synthetic-user")
         await agentCallbacks()
         if action == "private" || action == "ephemeral" {
-            #expect(!presenter.manualPasswordUpdate && presenter.saveCompletion == nil)
+            #expect(presenter.loginAction == nil && presenter.saveCompletion == nil)
             #expect(!(await transport.methods).contains("logins"))
         } else {
-            #expect(presenter.manualPasswordUpdate && launches == 0)
+            #expect(presenter.loginAction == .manageExisting && launches == 0)
             let answer = try #require(presenter.saveCompletion)
             if action == "stale" {
                 native.vaultSaveValid = false
@@ -4070,10 +4072,67 @@ struct NativeVaultFormTests {
         #expect(!native.vaultSaveValid)
         #expect(launches == (action == "open" || action == "unavailable" ? 1 : 0))
         #expect(await transport.saves.isEmpty)
-        #expect(!(await transport.methods).contains("password"))
+        let methods = await transport.methods
+        #expect(!methods.contains("password") && !methods.contains("save") && !methods.contains("commitLoginWrite"))
         if action == "unavailable" {
             #expect(f.tabs.selectedSession(in: f.window)?.nativeVaultNotice ==
                     "Open Pawl Vault directly to update this password.")
+        }
+    }
+
+    @Test(arguments: [true, false])
+    func oldVaultCannotOverwriteAnAccountCreatedAfterLookup(exclusiveSDK: Bool) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        f.tabs.settings.pawlVaultEnabled = true
+        let space = try #require(f.window.spaceID)
+        let profile = try #require(f.tabs.tree.dataStoreID(for: space))
+        let origin = "https://vault.synthetic.invalid"
+        let transport = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: false)
+        let presenter = SyntheticVaultPresenter()
+        var launches = 0
+        let vault = VaultService(settings: f.tabs.settings, client: transport, pawlEnabledAtLaunch: exclusiveSDK ? true : nil,
+                                 openPawlApplication: { launches += 1; return true })
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        native.submitVault(); await agentCallbacks()
+        #expect(presenter.loginAction == .manageNew)
+        let answer = try #require(presenter.saveCompletion)
+        let external = try await transport.send(VaultSave(origin: origin, username: "new-synthetic-user",
+                                                           password: "external-edit", profile: profile.uuidString))
+        answer(true); answer(true); await agentCallbacks()
+        let existing = try await transport.send(VaultPassword(id: external.id, origin: origin, profile: profile.uuidString))
+        #expect(existing.password == "external-edit" && launches == 1 && !native.vaultSaveValid)
+    }
+
+    @Test(arguments: ["approved", "ambiguous", "conflict", "lostReply", "invalidTicket", "unsupported", "stale"])
+    func checkedUpdateCommitsOnlyTheApprovedTicket(result: String) async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
+        await transport.checkedWriteScenario(result)
+        var launches = 0
+        let vault = VaultService(settings: f.tabs.settings, client: transport, pawlEnabledAtLaunch: true,
+                                 openPawlApplication: { launches += 1; return true })
+        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        native.submitVault(username: "synthetic-user"); await agentCallbacks()
+        if result == "invalidTicket" || result == "unsupported" {
+            #expect(presenter.saveCompletion == nil)
+        } else {
+            #expect(presenter.loginAction == (result == "ambiguous" ? .manageExisting : .update))
+            let answer = try #require(presenter.saveCompletion)
+            if result == "stale" { native.vaultSaveValid = false }
+            answer(true); answer(true); await agentCallbacks()
+        }
+        let methods = await transport.methods
+        #expect(!methods.contains("save") && !methods.contains("password") && !methods.contains("logins"))
+        let commits = methods.filter { $0 == "commitLoginWrite" }
+        #expect(commits.count == (["approved", "conflict", "lostReply"].contains(result) ? 1 : 0))
+        #expect(await transport.saves.count == (["approved", "lostReply"].contains(result) ? 1 : 0))
+        #expect(launches == (result == "ambiguous" ? 1 : 0))
+        if result == "conflict" || result == "lostReply" {
+            let notice = f.tabs.selectedSession(in: f.window)?.nativeVaultNotice
+            #expect(notice == (result == "conflict" ? "This login changed. Open Pawl Vault to review it."
+                                                    : "Save unconfirmed. Check this login in Pawl Vault."))
         }
     }
 
@@ -4437,16 +4496,13 @@ private final class SyntheticVaultPresenter: VaultPresenter {
         let done = creationConsent; creationConsent = nil; creationView = nil; done?(false)
     }
     var saveCompletion: ((Bool)->Void)?
-    var manualPasswordUpdate = false
+    var loginAction: VaultLoginOffer?
     weak var saveView: NSView?
-    func offerNativeSave(host:String,username:String,itemID:UUID,in view:NSView,completion:@escaping(Bool)->Void) {
+    func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
+                          in view: NSView, completion: @escaping (Bool) -> Void) {
         let old = saveCompletion; saveCompletion = nil; old?(false)
+        loginAction = action
         saveView = view; saveCompletion = completion
-    }
-    func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
-                                 completion: @escaping (Bool) -> Void) {
-        manualPasswordUpdate = true
-        offerNativeSave(host: host, username: username, itemID: itemID, in: view, completion: completion)
     }
     func dismissSave(in view:NSView) {
         guard saveView === view else { return }
@@ -4458,6 +4514,10 @@ private final class SyntheticVaultPresenter: VaultPresenter {
 
 private actor SyntheticVaultRequests: VaultRequests {
     var methods: [String] = []
+    var conditionalWrites = true
+    var writeScenario = "approved"
+    func advertiseConditionalWrites(_ enabled: Bool) { conditionalWrites = enabled }
+    func checkedWriteScenario(_ value: String) { writeScenario = value }
     var contexts: [(String,String?)] = []
     var holdEarlier = false
     var earlierPending = false
@@ -4535,7 +4595,18 @@ private actor SyntheticVaultRequests: VaultRequests {
         }
         let result: [String:Any]
         switch C.method {
-        case "hello": result = ["vault":"synthetic","version":1,"paired":true,"unlocked":!locked]
+        case "hello":
+            var hello: [String: Any] = ["vault": "synthetic", "version": 1, "paired": true, "unlocked": !locked]
+            if conditionalWrites { hello["capabilities"] = ["conditionalLoginWrites"] }
+            result = hello
+        case "prepareLoginWrite":
+            guard conditionalWrites && writeScenario != "unsupported" else { throw VaultClientError.server(.badRequest, "") }
+            if writeScenario == "ambiguous" {
+                result = ["disposition": "ambiguous"]
+            } else {
+                let exists = (params["username"] as? String) == "synthetic-user"
+                result = ["disposition": exists ? "update" : "create", "ticket": writeScenario == "invalidTicket" ? "" : "test-ticket"]
+            }
         case "logins": result = ["logins":[["id":"synthetic","username":"synthetic-user","title":"Fixture","hasCode":true]]]
         case "passkeys":
             passkeyAllowed.append(params["allowCredentials"] as? [String] ?? [])
@@ -4545,13 +4616,16 @@ private actor SyntheticVaultRequests: VaultRequests {
             var assertion: [String:Any] = ["credentialId":"AQ","authenticatorData":"AA","signature":"AA"]
             if let handle = assertionUserHandle { assertion["userHandle"] = handle }
             result = assertion
-        case "save":
+        case "commitLoginWrite":
+            guard conditionalWrites, params["ticket"] as? String == "test-ticket" else { throw VaultClientError.malformedResponse }
+            if writeScenario == "conflict" { result = ["outcome": "conflict"]; break }
             if heldSave {
                 heldSave = false; saveStarted.continuation.yield(())
                 await withCheckedContinuation { pendingSave = $0 }
             }
             saves.append((params["origin"] as! String,params["username"] as! String,params["password"] as! String,params["profile"] as? String))
-            result = ["saved":true,"id":"synthetic-saved"]
+            if writeScenario == "lostReply" { throw VaultClientError.connectionClosed }
+            result = ["outcome": "saved"]
         case "password": result = ["username":"synthetic-user","password":"synthetic-password"]
         case "code": result = ["code":"123456","period":30,"remaining":20]
         default: throw VaultClientError.malformedResponse

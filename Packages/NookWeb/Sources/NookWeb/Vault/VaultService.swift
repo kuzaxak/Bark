@@ -110,6 +110,8 @@ public final class VaultService {
     @ObservationIgnored private var settingObserver: NSObjectProtocol?
     @ObservationIgnored private var securityKeysObserver: NSObjectProtocol?
 
+    @ObservationIgnored fileprivate var supportsConditionalLoginWrites = false
+
     /// The bundled Public Suffix List, read on the first passkey request.
     static let suffixes: PublicSuffixList = {
         let url = Bundle.module.url(forResource: "public_suffix_list", withExtension: "dat", subdirectory: "Resources")
@@ -163,31 +165,39 @@ public final class VaultService {
     public func refresh(profile: String? = nil) async -> VaultStatus? {
         guard isEnabled else { return nil }
         let answer: VaultStatus
+        var conditionalWrites = false
         do {
-            answer = VaultStatus(try await client.send(VaultHello(profile: profile)))
+            let hello = try await client.send(VaultHello(profile: profile))
+            answer = VaultStatus(hello)
+            conditionalWrites = hello.capabilities?.contains(VaultPrepareLoginWrite.capability) == true
         } catch let error as VaultClientError {
             answer = VaultStatus(error)
         } catch {
             answer = .notRunning
         }
         guard isEnabled else { return nil }
+        supportsConditionalLoginWrites = answer == .connected && conditionalWrites
         status = answer
         return answer
     }
 
     func send<C: VaultCall>(_ call: C) async throws -> C.Reply {
         do { return try await client.send(call) }
-        catch let error as VaultClientError {
-            guard isEnabled else { throw error }
-            switch error {
-            case .server(.locked, _), .server(.unpaired, _):
-                status = VaultStatus(error)
-            case .server:
-                break // A refused request alone does not change the connection.
-            default:
-                status = VaultStatus(error)
-            }
+        catch {
+            recordRequestFailure(error)
             throw error
+        }
+    }
+
+    fileprivate func recordRequestFailure(_ error: Error) {
+        guard isEnabled, let error = error as? VaultClientError else { return }
+        switch error {
+        case .server(.locked, _), .server(.unpaired, _):
+            status = VaultStatus(error)
+        case .server:
+            break
+        default:
+            status = VaultStatus(error)
         }
     }
 
@@ -255,6 +265,7 @@ private final class NativeVaultAttachment {
     private var awaitingSecret = false
     private var submission: VaultNativeSubmission?
     private var saveGeneration: UInt64 = 0
+    private var saveTask: Task<Void, Never>?
     private var saveObserving = false
     private var passkeysObserving = false
     private var passkeyTask: Task<Void,Never>?
@@ -267,6 +278,7 @@ private final class NativeVaultAttachment {
         self.service = service; self.page = page; self.session = session
     }
     isolated deinit {
+        saveTask?.cancel()
         if !stopped {
             if let observer { NotificationCenter.default.removeObserver(observer) }
             if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
@@ -571,6 +583,8 @@ private final class NativeVaultAttachment {
     }
     private func cancelSave() {
         saveGeneration &+= 1
+        saveTask?.cancel()
+        saveTask = nil
         let old = submission; submission = nil
         let view = saveView; saveView = nil
         if let view { service?.presenter?.dismissSave(in: view) }
@@ -591,41 +605,84 @@ private final class NativeVaultAttachment {
         guard saveCurrent(offer,generation) else { cancelSave(); return }
         let profile = page?.vaultProfileID?.uuidString
         let itemID = session.itemID
-        Task { [weak self] in
+        saveTask = Task { [weak self] in
             do {
-                let logins = try await service.send(VaultLogins(origin:offer.origin,profile:profile)).logins
-                guard let self, self.requireCurrentSave(offer,generation) else { return }
+                let action: VaultLoginOffer
+                var ticket: String?
+                if service.supportsConditionalLoginWrites {
+                    let plan = try await service.send(VaultPrepareLoginWrite(origin: offer.origin, username: offer.username,
+                                                                           profile: profile))
+                    switch plan.disposition {
+                    case .ambiguous:
+                        action = .manageExisting
+                    case .create, .update:
+                        guard let prepared = plan.ticket, !prepared.isEmpty else { throw VaultClientError.malformedResponse }
+                        ticket = prepared
+                        action = plan.disposition == .create ? .create : .update
+                    }
+                } else {
+                    // A v1 save can overwrite an entry added after lookup. Only offer to open the vault.
+                    let logins = try await service.send(VaultLogins(origin: offer.origin, profile: profile)).logins
+                    action = logins.contains { $0.username == offer.username } ? .manageExisting : .manageNew
+                }
+                guard let self, self.requireCurrentSave(offer, generation) else { return }
                 guard let presenter = service.presenter else { self.cancelSave(); return }
                 self.saveView = view
-                if logins.contains(where: { $0.username == offer.username }) {
-                    presenter.offerNativeManualUpdate(host: url.host ?? "", username: VaultPrompt.displayText(offer.username),
-                                                      itemID: itemID, in: view) { [weak self, weak session] open in
-                        guard let self, self.requireCurrentSave(offer, generation) else { return }
-                        if open, !service.openPawlVault(), self.saveCurrent(offer, generation) {
-                            session?.nativeVaultNotice = "Open Pawl Vault directly to update this password."
+                var answered = false
+                presenter.offerNativeLogin(action, host: url.host ?? "", username: VaultPrompt.displayText(offer.username),
+                                           itemID: itemID, in: view) { [weak self] accepted in
+                    guard !answered else { return }
+                    answered = true
+                    guard let self, self.requireCurrentSave(offer, generation) else { return }
+                    guard accepted else { self.cancelSave(); return }
+                    if let ticket {
+                        self.commit(offer, ticket: ticket, profile: profile, generation: generation)
+                    } else {
+                        if !service.openPawlVault(), self.saveCurrent(offer, generation) {
+                            self.session?.nativeVaultNotice = action == .manageNew
+                                ? "Open Pawl Vault directly to save this login."
+                                : "Open Pawl Vault directly to update this password."
                         }
                         if self.saveGeneration == generation { self.cancelSave() }
                     }
-                    return
-                }
-                presenter.offerNativeSave(host:url.host ?? "",username:VaultPrompt.displayText(offer.username),
-                    itemID:itemID,in:view) { [weak self] accepted in
-                    guard let self, self.requireCurrentSave(offer,generation) else { return }
-                    if accepted {
-                        // The prompt belongs to a validated submission, not the redirected document.
-                        Task { [weak self] in
-                            guard let self, self.requireCurrentSave(offer,generation) else { return }
-                            _ = try? await service.send(VaultSave(origin:offer.origin,username:offer.username,
-                                password:offer.password,profile:profile))
-                            if self.saveGeneration == generation { self.cancelSave() }
-                        }
-                    } else { self.cancelSave() }
                 }
             } catch {
-                if let self, self.saveGeneration == generation { self.cancelSave() }
+                guard let self, self.requireCurrentSave(offer, generation) else { return }
+                self.session?.nativeVaultNotice = "Open Pawl Vault to manage this login."
+                self.cancelSave()
             }
         }
     }
+
+    private func commit(_ offer: VaultNativeSubmission, ticket: String, profile: String?, generation: UInt64) {
+        saveTask = Task { [weak self] in
+            guard let self, let service = self.service, self.requireCurrentSave(offer, generation) else { return }
+            let write = VaultCommitLoginWrite(origin: offer.origin, username: offer.username, profile: profile,
+                                              password: offer.password, ticket: ticket)
+            do {
+                let reply = try await service.client.send(write)
+                guard self.requireCurrentSave(offer, generation) else { return }
+                if reply.outcome == .conflict {
+                    self.session?.nativeVaultNotice = "This login changed. Open Pawl Vault to review it."
+                }
+            } catch {
+                // Report uncertain delivery to the original page before a disconnect retires its offer.
+                if self.saveCurrent(offer, generation) {
+                    switch error as? VaultClientError {
+                    case .server(.denied, _):
+                        self.session?.nativeVaultNotice = "Pawl Vault declined to save this login."
+                    case .server(.locked, _):
+                        self.session?.nativeVaultNotice = "Unlock Pawl Vault to save this login."
+                    default:
+                        self.session?.nativeVaultNotice = "Save unconfirmed. Check this login in Pawl Vault."
+                    }
+                }
+                service.recordRequestFailure(error)
+            }
+            if self.saveGeneration == generation { self.cancelSave() }
+        }
+    }
+
     private func cancel(showRetry: Bool = false) {
         let old = focus
         if showRetry, awaitingSecret, let old, let page, let session, !session.nativeIsEnding,

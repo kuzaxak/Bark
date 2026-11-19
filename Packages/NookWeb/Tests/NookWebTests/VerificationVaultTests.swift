@@ -37,8 +37,145 @@ struct VerificationVaultTests {
         }
     }
 
+    @Test func checkedWriteWireIsOptionalAndUsesDistinctMethods() async throws {
+        let old = try JSONDecoder().decode(VaultHello.Reply.self, from: Data(
+            #"{"vault":"Synthetic","version":1,"paired":true,"unlocked":true}"#.utf8))
+        #expect(old.capabilities == nil)
+        let legacy = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: false)
+        let checked = VerificationVault(origin: origin, profile: profile)
+        #expect(try await legacy.send(VaultHello(profile: profile.uuidString)).capabilities == nil)
+        #expect(try await checked.send(VaultHello(profile: profile.uuidString)).capabilities ==
+                [VaultPrepareLoginWrite.capability])
+        #expect(VaultPrepareLoginWrite.method == "prepareLoginWrite")
+        #expect(VaultCommitLoginWrite.method == "commitLoginWrite")
+        let prepare = VaultPrepareLoginWrite(origin: origin, username: "synthetic", profile: profile.uuidString)
+        let commit = VaultCommitLoginWrite(origin: origin, username: prepare.username,
+                                           profile: prepare.profile, password: "synthetic", ticket: "ticket")
+        func keys(_ value: some Encodable) throws -> Set<String> {
+            let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(value)) as? [String: Any])
+            return Set(object.keys)
+        }
+        #expect(try keys(prepare) == ["origin", "username", "profile"])
+        #expect(try keys(commit) == ["origin", "username", "profile", "password", "ticket"])
+        let reply = try JSONDecoder().decode(VaultPrepareLoginWrite.Reply.self, from: Data(
+            #"{"disposition":"ambiguous"}"#.utf8))
+        #expect(reply.disposition == .ambiguous && reply.ticket == nil)
+        await #expect(throws: VaultClientError.server(.denied, "")) {
+            try await legacy.send(prepare)
+        }
+        await #expect(throws: VaultClientError.server(.denied, "")) {
+            try await checked.send(VaultSave(origin: origin, username: "synthetic",
+                                             password: "fixture", profile: profile.uuidString))
+        }
+    }
+
+    @Test func fixtureCanOptIntoLegacyWireBehavior() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let fixture = root.appendingPathComponent("VaultFixture.json")
+        try Data(#"{"origin":"http://localhost:12345"}"#.utf8).write(to: fixture)
+        #expect(try VerificationVault.configuration(in: root)?.conditionalLoginWrites == nil)
+        try Data(#"{"origin":"http://localhost:12345","conditionalLoginWrites":false}"#.utf8).write(to: fixture)
+        #expect(try VerificationVault.configuration(in: root)?.conditionalLoginWrites == false)
+        try Data(#"{"origin":"http://localhost:12345","conditionalLoginWrites":"false"}"#.utf8).write(to: fixture)
+        #expect(throws: DecodingError.self) { try VerificationVault.configuration(in: root) }
+    }
+
+    @Test func checkedCreateAndUpdateRejectInterveningChanges() async throws {
+        let fixture = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: true)
+        let username = "synthetic-new"
+        let profileID = profile.uuidString
+        let request = VaultPrepareLoginWrite(origin: origin, username: username, profile: profileID)
+        func prepare(_ disposition: VaultPrepareLoginWrite.Disposition) async throws -> String {
+            let reply = try await fixture.send(request)
+            #expect(reply.disposition == disposition)
+            return try #require(reply.ticket?.isEmpty == false ? reply.ticket : nil)
+        }
+        func commit(_ ticket: String, _ password: String) async throws -> VaultCommitLoginWrite.Outcome {
+            try await fixture.send(VaultCommitLoginWrite(origin: origin, username: username, profile: profileID,
+                                                         password: password, ticket: ticket)).outcome
+        }
+
+        let abandonedCreate = try await prepare(.create)
+        let acceptedCreate = try await prepare(.create)
+        #expect(try await commit(acceptedCreate, "first") == .saved)
+        #expect(try await commit(abandonedCreate, "stale") == .conflict)
+        #expect(try await commit(acceptedCreate, "replay") == .conflict)
+        let created = try await fixture.send(VaultLogins(origin: origin, profile: profileID))
+        let entry = try #require(created.logins.first { $0.username == username })
+        #expect(created.logins.filter { $0.username == username }.count == 1)
+
+        let abandonedUpdate = try await prepare(.update)
+        let acceptedUpdate = try await prepare(.update)
+        #expect(try await commit(acceptedUpdate, "newer") == .saved)
+        #expect(try await commit(abandonedUpdate, "stale") == .conflict)
+        #expect(try await commit(acceptedUpdate, "replay") == .conflict)
+        let updated = try await fixture.send(VaultLogins(origin: origin, profile: profileID))
+        #expect(updated.logins == created.logins)
+        #expect(try await fixture.send(VaultPassword(id: entry.id, origin: origin,
+                                                     profile: profileID)).password == "newer")
+    }
+
+    @Test func checkedTicketsAreScopedAndInvalidateOnMisuse() async throws {
+        let fixture = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: true)
+        let other = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: true)
+        let username = "synthetic-existing"
+        let profileID = profile.uuidString
+        let prepare = VaultPrepareLoginWrite(origin: origin, username: username, profile: profileID)
+        let issued = try await fixture.send(prepare)
+        let ticket = try #require(issued.ticket)
+        let original = VaultCommitLoginWrite(origin: origin, username: username, profile: profileID,
+                                              password: "modified", ticket: ticket)
+        #expect(try await other.send(original).outcome == .conflict)
+
+        for (wrongOrigin, wrongUsername, wrongProfile) in [
+            (origin + "/", username, profileID), (origin, "different", profileID),
+            (origin, username, UUID().uuidString),
+        ] {
+            let issued = try await fixture.send(prepare)
+            let ticket = try #require(issued.ticket)
+            #expect(try await fixture.send(VaultCommitLoginWrite(origin: wrongOrigin, username: wrongUsername,
+                                                                profile: wrongProfile, password: "modified",
+                                                                ticket: ticket)).outcome == .conflict)
+            #expect(try await fixture.send(VaultCommitLoginWrite(origin: origin, username: username, profile: profileID,
+                                                                password: "modified", ticket: ticket)).outcome == .conflict)
+        }
+        #expect(try await fixture.send(VaultPassword(id: "fixture-existing", origin: origin,
+                                                     profile: profileID)).password == "fixture-password")
+        await fixture.disconnect()
+        #expect(try await fixture.send(original).outcome == .conflict)
+    }
+
+    @Test func checkedPreparationRefusesAmbiguityAndExpiresAbandonedTickets() async throws {
+        let username = "synthetic-duplicate"
+        let logins = ["first", "second"].map { VaultLogin(id: $0, username: username, title: "Synthetic") }
+        let ambiguous = VerificationVault(origin: origin, profile: profile,
+                                          conditionalLoginWrites: true, logins: logins)
+        let profileID = profile.uuidString
+        let request = VaultPrepareLoginWrite(origin: origin, username: username, profile: profileID)
+        let answer = try await ambiguous.send(request)
+        #expect(answer.disposition == .ambiguous && answer.ticket == nil)
+
+        let expiring = VerificationVault(origin: origin, profile: profile,
+                                         conditionalLoginWrites: true, ticketLifetime: .zero)
+        let expired = try await expiring.send(request)
+        let ticket = try #require(expired.ticket)
+        #expect(try await expiring.send(VaultCommitLoginWrite(origin: origin, username: username,
+                                                             profile: profileID, password: "fixture",
+                                                             ticket: ticket)).outcome == .conflict)
+
+        let bounded = VerificationVault(origin: origin, profile: profile)
+        let oldest = try await bounded.send(request)
+        let oldestTicket = try #require(oldest.ticket)
+        for _ in 0..<32 { _ = try await bounded.send(request) }
+        #expect(try await bounded.send(VaultCommitLoginWrite(origin: origin, username: username,
+                                                             profile: profileID, password: "fixture",
+                                                             ticket: oldestTicket)).outcome == .conflict)
+    }
+
     @Test func saveAndReadBackRequireExactOriginAndProfile() async throws {
-        let fixture = VerificationVault(origin: origin, profile: profile)
+        let fixture = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: false)
         let profileID = profile.uuidString
         let save = VaultSave(origin: origin, username: "synthetic-new", password: "disposable",
                              profile: profileID)
@@ -64,7 +201,7 @@ struct VerificationVaultTests {
     }
 
     @Test func onlyTheCodeEntryInTheFixtureProfileAndOriginCanReturnACode() async throws {
-        let fixture = VerificationVault(origin: origin, profile: profile)
+        let fixture = VerificationVault(origin: origin, profile: profile, conditionalLoginWrites: false)
         let profileID = profile.uuidString
         let saved = try await fixture.send(VaultSave(origin: origin, username: "no-code", password: "fixture",
                                                      profile: profileID))

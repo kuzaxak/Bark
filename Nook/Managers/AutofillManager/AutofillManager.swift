@@ -23,7 +23,7 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
         weak var window: NSWindow?
         let host: String
         let username: String
-        let manualUpdate: Bool
+        let action: VaultLoginOffer
         fileprivate let respond: (Bool) -> Void
     }
 
@@ -143,27 +143,18 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
 
     func offerSave(host: String, username: String, in webView: NSView, completion: @escaping (Bool) -> Void) {
         guard let itemID = (webView as? FocusableWKWebView)?.owningSession?.itemID else { return completion(false) }
-        offerNativeSave(host:host,username:username,itemID:itemID,in:webView,completion:completion)
-    }
-    func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView, completion: @escaping (Bool) -> Void) {
-        presentSaveOffer(host: host, username: username, itemID: itemID, in: view,
-                         manualUpdate: false, completion: completion)
+        offerNativeLogin(.create, host: host, username: username, itemID: itemID, in: webView, completion: completion)
     }
 
-    func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
-                                 completion: @escaping (Bool) -> Void) {
-        presentSaveOffer(host: host, username: username, itemID: itemID, in: view,
-                         manualUpdate: true, completion: completion)
-    }
-
-    private func presentSaveOffer(host: String, username: String, itemID: UUID, in view: NSView,
-                                  manualUpdate: Bool, completion: @escaping (Bool) -> Void) {
+    func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
+                          in view: NSView, completion: @escaping (Bool) -> Void) {
         // Remove old identity before its cancellation callback can reenter.
         saveGeneration &+= 1
         let generation = saveGeneration
         answerSaveOffer(false)
         guard saveGeneration == generation else { completion(false); return }
-        let offer = SaveOffer(itemID: itemID, view:view, window:view.window, host: host, username: username, manualUpdate: manualUpdate, respond: completion)
+        let offer = SaveOffer(itemID: itemID, view: view, window: view.window, host: host,
+                              username: username, action: action, respond: completion)
         saveOffer = offer
         let offerID = offer.id
         Task { [weak self] in

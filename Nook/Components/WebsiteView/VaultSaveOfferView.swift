@@ -15,10 +15,27 @@ struct VaultSaveOfferView: View {
     let offer: AutofillManager.SaveOffer
     let answer: (Bool) -> Void
 
+    private var title: LocalizedStringKey {
+        switch offer.action {
+        case .create: "Save password to Pawl Vault?"
+        case .update: "Update password in Pawl Vault?"
+        case .manageNew: "Open Pawl Vault to save this login"
+        case .manageExisting: "Review this login in Pawl Vault"
+        }
+    }
+
+    private var buttonLabel: LocalizedStringKey {
+        switch offer.action {
+        case .create: "Save"
+        case .update: "Update"
+        case .manageNew, .manageExisting: "Open Pawl Vault"
+        }
+    }
+
     var body: some View {
         HStack(spacing: NookDesign.Spacing.md) {
             VStack(alignment: .leading, spacing: NookDesign.Spacing.xxs) {
-                Text(offer.manualUpdate ? "This login is already in Pawl Vault" : "Save password to Pawl Vault?")
+                Text(title)
                     .font(NookDesign.Font.body)
                     .foregroundStyle(.primary)
                 Text("\(offer.username) on \(offer.host)")
@@ -30,7 +47,7 @@ struct VaultSaveOfferView: View {
             .padding(.leading, NookDesign.Spacing.sm)
             HStack(spacing: NookDesign.Spacing.xxs) {
                 Button("Not Now") { answer(false) }
-                Button(offer.manualUpdate ? "Open Pawl Vault" : "Save") { answer(true) }
+                Button(buttonLabel) { answer(true) }
             }
             .buttonStyle(RectNavButtonStyle())
             .controlSize(.small)

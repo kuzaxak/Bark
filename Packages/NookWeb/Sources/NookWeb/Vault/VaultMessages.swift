@@ -34,6 +34,16 @@ public struct VaultHello: VaultCall {
         public let version: Int
         public let paired: Bool
         public let unlocked: Bool
+        public let capabilities: [String]?
+
+        public init(vault: String, version: Int, paired: Bool, unlocked: Bool,
+                    capabilities: [String]? = nil) {
+            self.vault = vault
+            self.version = version
+            self.paired = paired
+            self.unlocked = unlocked
+            self.capabilities = capabilities
+        }
     }
 }
 
@@ -128,6 +138,40 @@ public struct VaultSave: VaultCall {
     public struct Reply: Decodable, Sendable {
         public let saved: Bool
         public let id: String
+    }
+}
+
+struct VaultPrepareLoginWrite: VaultCall {
+    static let method = "prepareLoginWrite"
+    static let capability = "conditionalLoginWrites"
+    static let timeout = lookupTimeout
+
+    let origin: String
+    let username: String
+    let profile: String?
+
+    enum Disposition: String, Decodable, Sendable { case create, update, ambiguous }
+
+    struct Reply: Decodable, Sendable {
+        let disposition: Disposition
+        let ticket: String?
+    }
+}
+
+struct VaultCommitLoginWrite: VaultCall {
+    static let method = "commitLoginWrite"
+    static let timeout = userPresenceTimeout
+
+    let origin: String
+    let username: String
+    let profile: String?
+    let password: String
+    let ticket: String
+
+    enum Outcome: String, Decodable, Sendable { case saved, conflict }
+
+    struct Reply: Decodable, Sendable {
+        let outcome: Outcome
     }
 }
 

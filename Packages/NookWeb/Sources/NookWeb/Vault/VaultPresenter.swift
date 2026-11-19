@@ -56,6 +56,11 @@ public enum VaultNativePickerResult {
     case selected(VaultPickerItem), cancelled, focusUnavailable
 }
 
+/// The action the user is authorizing for a validated website submission.
+public enum VaultLoginOffer: Equatable, Sendable {
+    case create, update, manageNew, manageExisting
+}
+
 @MainActor
 public protocol VaultPresenter: AnyObject {
     /// Lists `items` in a popover pointing at `anchor`, in `webView`'s coordinates. `host` names
@@ -73,12 +78,9 @@ public protocol VaultPresenter: AnyObject {
     func dismissPicker(in webView: NSView)
     /// The non-modal "Save password to Pawl Vault?" offer. `completion(true)` means Save.
     func offerSave(host: String, username: String, in webView: NSView, completion: @escaping (Bool) -> Void)
-    /// Exact model page identity for a Chromium-owned submission (no WK view cast).
-    func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
-                         completion: @escaping (Bool) -> Void)
-    /// A matching login requires manual management when a targeted update is unavailable.
-    func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
-                                 completion: @escaping (Bool) -> Void)
+    /// Native consent belongs to the exact page that submitted the login.
+    func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
+                          in view: NSView, completion: @escaping (Bool) -> Void)
     func dismissSave(in view: NSView)
     /// Request-owned native creation consent; cancellation ends only this view's sheet/picker.
     func confirmNativePasskeyCreation(rpId: String, userName: String, in view: NSView,
@@ -97,10 +99,8 @@ extension VaultPresenter {
                                              completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissNativePasskey(in view: NSView) { dismissPicker(in:view) }
     public func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool { false }
-    public func offerNativeSave(host: String, username: String, itemID: UUID, in view: NSView,
-                                completion: @escaping (Bool) -> Void) { completion(false) }
-    public func offerNativeManualUpdate(host: String, username: String, itemID: UUID, in view: NSView,
-                                        completion: @escaping (Bool) -> Void) { completion(false) }
+    public func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
+                                 in view: NSView, completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissSave(in view: NSView) {}
     public func presentNativePicker(host: String, items: [VaultPickerItem], anchor: CGRect, in view: NSView,
                                     validateSelection: @escaping @MainActor () -> Bool,

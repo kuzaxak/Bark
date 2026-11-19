@@ -9,15 +9,25 @@ extension VaultService {
     /// Disposable Chromium verification always uses this in-memory transport.
     public convenience init(verificationSettings settings: NookSettingsService, root: URL, profile: UUID,
                             pawlEnabledAtLaunch: Bool? = nil) throws {
-        let origin = try VerificationVault.origin(in: root)
-        if origin != nil { VerificationVault.record("Bark verification vault: ready") }
-        self.init(settings: settings, client: VerificationVault(origin: origin, profile: profile),
+        let fixture = try VerificationVault.configuration(in: root)
+        let conditionalLoginWrites = fixture?.conditionalLoginWrites ?? true
+        if fixture != nil {
+            VerificationVault.record("Bark verification vault: ready")
+            VerificationVault.record(conditionalLoginWrites
+                ? "Bark verification vault: conditional login writes"
+                : "Bark verification vault: legacy login writes")
+        }
+        self.init(settings: settings, client: VerificationVault(origin: fixture?.origin, profile: profile,
+                                                               conditionalLoginWrites: conditionalLoginWrites),
                   pawlEnabledAtLaunch: pawlEnabledAtLaunch)
     }
 }
 
 actor VerificationVault: VaultRequests {
-    private struct Fixture: Decodable { let origin: String }
+    struct Fixture: Decodable {
+        let origin: String
+        let conditionalLoginWrites: Bool?
+    }
     enum ConfigurationError: Error { case invalidFixture }
 
     static func record(_ marker: String) {
@@ -25,6 +35,10 @@ actor VerificationVault: VaultRequests {
     }
 
     static func origin(in root: URL) throws -> String? {
+        try configuration(in: root)?.origin
+    }
+
+    static func configuration(in root: URL) throws -> Fixture? {
         let fixture = root.appendingPathComponent("VaultFixture.json")
         // Read the same regular file that was validated. A swapped symlink or FIFO
         // in the disposable root cannot redirect or stall the startup read.
@@ -39,60 +53,94 @@ actor VerificationVault: VaultRequests {
               let data = try handle.read(upToCount: 1025), data.count <= 1024 else {
             throw ConfigurationError.invalidFixture
         }
-        let origin = try JSONDecoder().decode(Fixture.self, from: data).origin
+        let configuration = try JSONDecoder().decode(Fixture.self, from: data)
+        let origin = configuration.origin
         let prefix = "http://localhost:"
         guard origin.hasPrefix(prefix), let port = UInt16(origin.dropFirst(prefix.count)),
               port > 0, origin == prefix + String(port) else {
             throw ConfigurationError.invalidFixture
         }
-        return origin
+        return configuration
+    }
+
+    private struct StoredLogin {
+        let login: VaultLogin
+        var password: String
+        var revision = UUID()
+    }
+
+    private struct WriteTicket {
+        enum Match: Equatable {
+            case absent
+            case entry(id: String, revision: UUID)
+        }
+
+        let id: String
+        let origin: String
+        let username: String
+        let profile: String?
+        let match: Match
+        let expires: ContinuousClock.Instant
     }
 
     private let origin: String?
     private let profile: UUID
-    private var logins: [VaultLogin] = [
-        VaultLogin(id: "fixture-existing", username: "synthetic-existing", title: "Synthetic local vault",
-                   hasCode: true)
-    ]
-    private var passwords = ["fixture-existing": "fixture-password"]
+    private let conditionalLoginWrites: Bool
+    private let ticketLifetime: Duration
+    private var entries: [StoredLogin]
+    private var tickets: [WriteTicket] = []
+    private static let ticketLimit = 32
 
-    init(origin: String?, profile: UUID) {
+    init(origin: String?, profile: UUID, conditionalLoginWrites: Bool = true,
+         logins: [VaultLogin] = [.init(id: "fixture-existing", username: "synthetic-existing",
+                                      title: "Synthetic local vault", hasCode: true)],
+         ticketLifetime: Duration = .seconds(60)) {
         self.origin = origin
         self.profile = profile
+        self.conditionalLoginWrites = conditionalLoginWrites
+        self.ticketLifetime = ticketLifetime
+        entries = logins.map { StoredLogin(login: $0, password: "fixture-password") }
     }
 
-    func disconnect() async {}
+    func disconnect() async { tickets.removeAll() }
 
     func send<C: VaultCall>(_ call: C) async throws -> C.Reply {
         try Task.checkCancellation()
         guard let origin else { throw VaultClientError.notRunning }
+        if call is VaultCommitLoginWrite {
+            Self.record("Bark verification vault: checked commit attempted")
+        } else if call is VaultSave {
+            Self.record("Bark verification vault: save attempted")
+        }
         let reply: (any Sendable)
         switch call {
         case let request as VaultHello where request.profile == nil || matches(request.profile):
-            reply = VaultHello.Reply(vault: "Synthetic local vault", version: 1, paired: true, unlocked: true)
+            reply = VaultHello.Reply(vault: "Synthetic local vault", version: 1, paired: true, unlocked: true,
+                                     capabilities: conditionalLoginWrites ? [VaultPrepareLoginWrite.capability] : nil)
         case let request as VaultLogins where request.origin == origin && matches(request.profile):
-            reply = VaultLogins.Reply(logins: logins)
+            reply = VaultLogins.Reply(logins: entries.map(\.login))
         case let request as VaultPassword where request.origin == origin && matches(request.profile):
-            guard let login = logins.first(where: { $0.id == request.id }),
-                  let password = passwords[request.id] else {
+            guard let entry = entries.first(where: { $0.login.id == request.id }) else {
                 throw VaultClientError.server(.notFound, "")
             }
             Self.record("Bark verification vault: password")
-            reply = VaultPassword.Reply(username: login.username, password: password)
+            reply = VaultPassword.Reply(username: entry.login.username, password: entry.password)
         case let request as VaultCode where request.origin == origin && matches(request.profile):
-            guard logins.contains(where: { $0.id == request.id && $0.hasCode }) else {
+            guard entries.contains(where: { $0.login.id == request.id && $0.login.hasCode }) else {
                 throw VaultClientError.server(.notFound, "")
             }
             Self.record("Bark verification vault: code")
             reply = VaultCode.Reply(code: "246810", remaining: 30)
-        case let request as VaultSave where request.origin == origin && matches(request.profile):
-            let id = logins.first(where: { $0.username == request.username })?.id ?? UUID().uuidString
-            if passwords[id] == nil {
-                logins.append(VaultLogin(id: id, username: request.username, title: "Synthetic local vault"))
-            }
-            passwords[id] = request.password
+        case let request as VaultSave where !conditionalLoginWrites && request.origin == origin && matches(request.profile):
+            let index = entries.firstIndex(where: { $0.login.username == request.username })
+            let id = write(username: request.username, password: request.password, index: index)
             Self.record("Bark verification vault: save")
             reply = VaultSave.Reply(saved: true, id: id)
+        case let request as VaultPrepareLoginWrite
+            where conditionalLoginWrites && request.origin == origin && matches(request.profile):
+            reply = prepare(request)
+        case let request as VaultCommitLoginWrite where conditionalLoginWrites:
+            reply = commit(request)
         case let request as VaultPasskeys where request.rpId == "localhost" && matches(request.profile):
             reply = VaultPasskeys.Reply(passkeys: [])
         case let request as VaultRegister where request.origin == origin && matches(request.profile):
@@ -106,6 +154,66 @@ actor VerificationVault: VaultRequests {
         }
         guard let typed = reply as? C.Reply else { throw VaultClientError.malformedResponse }
         return typed
+    }
+
+    private func loginMatch(_ username: String) -> WriteTicket.Match? {
+        let matching = entries.filter { $0.login.username.utf8.elementsEqual(username.utf8) }
+        switch matching.count {
+        case 0: return .absent
+        case 1: return .entry(id: matching[0].login.id, revision: matching[0].revision)
+        default: return nil
+        }
+    }
+
+    private func prepare(_ request: VaultPrepareLoginWrite) -> VaultPrepareLoginWrite.Reply {
+        guard let match = loginMatch(request.username) else {
+            return .init(disposition: .ambiguous, ticket: nil)
+        }
+        let now = ContinuousClock.now
+        tickets.removeAll { $0.expires <= now }
+        if tickets.count == Self.ticketLimit { tickets.removeFirst() }
+        let id = UUID().uuidString
+        tickets.append(.init(id: id, origin: request.origin, username: request.username,
+                             profile: request.profile, match: match, expires: now + ticketLifetime))
+        return .init(disposition: match == .absent ? .create : .update, ticket: id)
+    }
+
+    private func commit(_ request: VaultCommitLoginWrite) -> VaultCommitLoginWrite.Reply {
+        guard let index = tickets.firstIndex(where: { $0.id == request.ticket }) else {
+            return .init(outcome: .conflict)
+        }
+        // Spend the ticket before testing the tuple or the revision. Every
+        // valid write updates its revision in this synchronous actor turn.
+        let ticket = tickets.remove(at: index)
+        guard ticket.expires > ContinuousClock.now, ticket.origin == request.origin,
+              ticket.profile == request.profile, ticket.username.utf8.elementsEqual(request.username.utf8),
+              loginMatch(request.username) == ticket.match else {
+            return .init(outcome: .conflict)
+        }
+        switch ticket.match {
+        case .absent:
+            _ = write(username: request.username, password: request.password, index: nil)
+            Self.record("Bark verification vault: checked create")
+        case .entry(let id, let revision):
+            guard let target = entries.firstIndex(where: { $0.login.id == id && $0.revision == revision }) else {
+                return .init(outcome: .conflict)
+            }
+            _ = write(username: request.username, password: request.password, index: target)
+            Self.record("Bark verification vault: checked update")
+        }
+        return .init(outcome: .saved)
+    }
+
+    private func write(username: String, password: String, index: Int?) -> String {
+        if let index {
+            entries[index].password = password
+            entries[index].revision = UUID()
+            return entries[index].login.id
+        }
+        let id = UUID().uuidString
+        entries.append(.init(login: .init(id: id, username: username, title: "Synthetic local vault"),
+                             password: password))
+        return id
     }
 
     private func matches(_ requestProfile: String?) -> Bool {
