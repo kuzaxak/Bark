@@ -527,10 +527,33 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
 
   EXPECT_TRUE(page->GetController().NeedsReload());
   EXPECT_FALSE(tab_flags & BARC_TAB_LOADING);
+  ASSERT_TRUE(base::test::RunUntil([&] { return host->widget()->IsActive(); }));
   SpaceOutcomes outcomes;
+  auto supersede_restore = home_owner->RegisterDidBecomeActive(
+      base::BindLambdaForTesting([&](BrowserWindowInterface*) {
+        EXPECT_EQ(1, outcomes.Switch(2, work, work, work_tab));
+      }));
   ASSERT_EQ(1, outcomes.Switch(1, work, home, home_tab));
-  ASSERT_EQ(1u, outcomes.entries.size());
-  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, outcomes.entries.front().result.status);
+  ASSERT_EQ(2u, outcomes.entries.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_SUPERSEDED, outcomes.entries[0].result.status);
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, outcomes.entries[1].result.status);
+  for (const auto& outcome : outcomes.entries) {
+    EXPECT_EQ(work, outcome.result.selected_client);
+    EXPECT_EQ(work_tab, outcome.result.active_tab);
+  }
+  EXPECT_TRUE(host->IsPageMounted(work_contents));
+  EXPECT_EQ(work_contents->GetPrimaryMainFrame(),
+            work_document.AsRenderFrameHostIfValid());
+  EXPECT_FALSE(host->IsPageMounted(page));
+  EXPECT_TRUE(page->GetController().NeedsReload());
+  EXPECT_FALSE(page->GetPrimaryMainFrame()->IsRenderFrameLive());
+  EXPECT_FALSE(page->IsLoading());
+  EXPECT_FALSE(tab_flags & BARC_TAB_LOADING);
+  supersede_restore = {};
+
+  ASSERT_EQ(1, outcomes.Switch(3, work, home, home_tab));
+  ASSERT_EQ(3u, outcomes.entries.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, outcomes.entries.back().result.status);
   ASSERT_EQ(selected_index, strip->active_index());
   ASSERT_EQ(page, strip->GetActiveWebContents());
 
