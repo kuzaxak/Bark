@@ -483,7 +483,7 @@ def launch_fixtures(work, arch):
 def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, arch):
     app_digest = headers_digest(MODULE)
     # All files used by this process must be thin native images, even under Rosetta.
-    def launch(name, framework=framework_lib, shell=shell_lib, main=shim):
+    def launch(name, framework=framework_lib, shell=shell_lib, main=shim, *, use_alias=False):
         contents = work / name / 'Bark.app/Contents'
         (contents / 'MacOS').mkdir(parents=True)
         (contents / 'Frameworks').mkdir()
@@ -497,7 +497,13 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
             assert actual == arch[1], f'{image}: expected thin {arch[1]}, got {actual}'
         log = work / name / 'log.txt'
         log.touch()
-        run = subprocess.run([str(contents / 'MacOS/Bark'), '--barc-app-data-dir=/synthetic', 'last-argument'],
+        executable = contents / 'MacOS/Bark'
+        if use_alias:
+            alias = work / name / 'bin/bark'
+            alias.parent.mkdir()
+            alias.symlink_to('../Bark.app/Contents/MacOS/Bark')
+            executable = alias
+        run = subprocess.run([str(executable), '--barc-app-data-dir=/synthetic', 'last-argument'],
                              env={**os.environ, 'SHIM_LOG': str(log), 'DYLD_INSERT_LIBRARIES': str(quiet_lib)}, capture_output=True, text=True, timeout=30)
         return run, log.read_text().splitlines()
 
@@ -508,6 +514,11 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
           lines[1:] == ['bridge-table', 'shell', f'native-main argc=3 last=last-argument table={table_size()}', 'engine-main', 'chrome-main'],
           lines)
     check('exit status is what the shell returned', run.returncode == 23, run.returncode)
+
+    aliased, alias_lines = launch('terminal-alias', use_alias=True)
+    check('a terminal symlink loads both frameworks from the real app bundle',
+          aliased.returncode == run.returncode and alias_lines == lines,
+          (aliased.returncode, alias_lines, aliased.stderr))
 
     run, lines = launch('no-shell', shell=None)
     check('missing shell aborts before ChromeMain', run.returncode == ABORT_STATUS and 'chrome-main' not in lines, (run.returncode, lines))

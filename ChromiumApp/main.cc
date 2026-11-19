@@ -64,9 +64,16 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
     FatalError("_NSGetExecutablePath: get path failed.");
   }
 
-  const char* parent_dir = dirname(exec_path);
+  // dyld can return the path of a terminal symlink instead of the executable
+  // inside Bark.app. Always resolve both frameworks from the actual bundle.
+  char* canonical_path = realpath(exec_path, nullptr);
+  if (!canonical_path) {
+    FatalError("realpath %s: %s.", exec_path, strerror(errno));
+  }
+  free(exec_path);
+  const char* parent_dir = dirname(canonical_path);
   if (!parent_dir) {
-    FatalError("dirname %s: %s.", exec_path, strerror(errno));
+    FatalError("dirname %s: %s.", canonical_path, strerror(errno));
   }
 
   char* framework_path = JoinPath(
