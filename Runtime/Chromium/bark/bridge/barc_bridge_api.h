@@ -31,6 +31,7 @@ extern "C" {
 // leading size. Version 11 adds the window host's calls. Version 12 adds
 // explicit space switch outcomes. Version 13 requires Bark-owned browser windows on macOS.
 #define BARC_BRIDGE_VERSION 13
+#define BARC_HAS_RENDERER_STATE 1
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.
@@ -1229,6 +1230,13 @@ struct BarcBridge {
                                             const char* extension_id, int pinned);
   int (* _Nonnull tab_invoke_extension)(int32_t window, int32_t tab,
                                         const char* extension_id);
+
+  // Read the live primary document of an exact regular Bark tab on the UI
+  // thread. Returns 1 with the OS renderer PID and 0/1 Blink document
+  // visibility. A refusal returns 0 and leaves both outputs unchanged.
+  // This never starts, activates or selects a tab.
+  int (* _Nonnull tab_renderer_state)(int32_t window, int32_t tab,
+                                        int32_t* pid, int32_t* document_visible);
 };
 
 #ifdef __cplusplus

@@ -119,6 +119,7 @@ constexpr BarcBridge kBridge = {
     .tab_list_extension_actions = &barc_tab_list_extension_actions,
     .tab_set_extension_pinned = &barc_tab_set_extension_pinned,
     .tab_invoke_extension = &barc_tab_invoke_extension,
+    .tab_renderer_state = &barc_tab_renderer_state,
 };
 }  // namespace
 

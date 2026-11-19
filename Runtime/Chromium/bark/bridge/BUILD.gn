@@ -76,6 +76,7 @@ source_set("bridge") {
     "//components/viz/common",
     "//components/web_modal",
     "//content/public/browser",
+    "//device/vr/buildflags",
     "//extensions/browser",
     "//mojo/public/cpp/bindings",
     "//net",

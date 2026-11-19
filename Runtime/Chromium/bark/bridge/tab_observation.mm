@@ -138,9 +138,12 @@
 #include "net/cookies/cookie_partition_key_collection.h"
 #include "services/network/public/mojom/cookie_manager.mojom.h"
 #include "third_party/blink/public/common/storage_key/storage_key.h"
+#include "build/build_config.h"
 #include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/render_process_host.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "device/vr/buildflags/buildflags.h"
 #include "ui/base/base_window.h"
 #include "ui/gfx/geometry/insets.h"
 #include "ui/gfx/codec/png_codec.h"
@@ -2240,6 +2243,49 @@ int barc_tab_enable_peek(uint64_t observation, int enabled) {
       enabled < 0 || enabled > (BARC_TAB_PEEK_CAPABLE | BARC_TAB_PEEK_ON_SHIFT_CLICK)) return 0;
   auto found = ObservationTable().find(observation);
   return found != ObservationTable().end() && found->second->EnablePeek(enabled);
+}
+
+int barc_tab_renderer_state(int32_t window, int32_t tab_id, int32_t* pid,
+                            int32_t* document_visible) {
+#if !BUILDFLAG(IS_MAC) || BUILDFLAG(ENABLE_VR)
+  return 0;
+#else
+  if (!pid || !document_visible || pid == document_visible)
+    return 0;
+  auto* owner = Window(window);  // Refuses off the UI thread.
+  if (!owner || !bark::BarkWindowHost::ForBrowser(owner) ||
+      !owner->GetProfile()->IsRegularProfile()) {
+    return 0;
+  }
+  auto* tab = LookupTab(owner, tab_id);
+  auto* contents = tab ? tab->GetContents() : nullptr;
+  if (!contents || contents->IsBeingDestroyed() ||
+      contents->GetBrowserContext() != owner->GetProfile() ||
+      contents->GetOuterWebContents()) {
+    return 0;
+  }
+  auto* frame = contents->GetPrimaryMainFrame();
+  if (!frame || !frame->IsActive() || !frame->IsRenderFrameLive())
+    return 0;
+  auto* host = frame->GetProcess();
+  if (!host || !host->IsInitializedAndNotDead() ||
+      !host->GetProcess().IsValid()) {
+    return 0;
+  }
+  const auto renderer_pid = host->GetProcess().Pid();
+  if (renderer_pid <= 0)
+    return 0;
+
+  // Match WebContentsImpl::CalculatePageVisibilityState for a top-level
+  // macOS document. Blink exposes kHiddenButPainting, including hidden capture
+  // and Picture-in-Picture, as document.hidden. The widget's visibility can
+  // differ from the page's visibility during visible capture.
+  const bool visible = contents->GetVisibility() == content::Visibility::VISIBLE ||
+                       contents->IsBeingVisiblyCaptured();
+  *pid = renderer_pid;
+  *document_visible = visible ? 1 : 0;
+  return 1;
+#endif
 }
 
 uint64_t barc_tab_observe(int32_t window, int32_t tab_id,

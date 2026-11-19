@@ -1577,6 +1577,81 @@ IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
 }
 
 IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       RendererStateReadsLiveRegularDocumentWithoutSelecting) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const auto url = embedded_test_server()->GetURL("/title1.html");
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  Navigate(work, url);
+  const int32_t tab = barc_window_tab_at(work_id, 0);
+  ASSERT_EQ(1, barc_tab_select(work_id, tab));
+  work->GetWindow()->Show();
+  auto* page = work->GetTabStripModel()->GetActiveWebContents();
+  ASSERT_TRUE(page);
+  content::WaitForCopyableViewInWebContents(page);
+  const auto expected_pid =
+      page->GetPrimaryMainFrame()->GetProcess()->GetProcess().Pid();
+  ASSERT_GT(expected_pid, 0);
+  const auto* bridge = barc_bridge_v13();
+  int32_t pid = -1;
+  int32_t visible = -1;
+  ASSERT_EQ(1, bridge->tab_renderer_state(work_id, tab, &pid, &visible));
+  EXPECT_EQ(expected_pid, pid);
+  EXPECT_EQ(1, visible);
+  EXPECT_EQ("visible", content::EvalJs(page, "document.visibilityState"));
+
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  Navigate(personal, url);
+  ASSERT_EQ(1, barc_tab_select(personal_id, barc_window_tab_at(personal_id, 0)));
+  ASSERT_TRUE(personal->IsSelectedForNativeWindow());
+  ASSERT_EQ(1, bridge->tab_renderer_state(work_id, tab, &pid, &visible));
+  EXPECT_EQ(expected_pid, pid);
+  EXPECT_EQ(0, visible);
+  EXPECT_EQ("hidden", content::EvalJs(page, "document.visibilityState"));
+  EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+
+  {
+    auto captured = page->IncrementCapturerCount(
+        gfx::Size(), /*stay_hidden=*/false, /*stay_awake=*/false,
+        /*is_activity=*/false);
+    ASSERT_EQ(1, bridge->tab_renderer_state(work_id, tab, &pid, &visible));
+    EXPECT_EQ(expected_pid, pid);
+    EXPECT_EQ(1, visible);
+    EXPECT_EQ("visible", content::EvalJs(page, "document.visibilityState"));
+    EXPECT_TRUE(personal->IsSelectedForNativeWindow());
+  }
+
+  SharedProfileResult opened;
+  barc_private_session_open_window(SharedProfileCompleted, &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t private_id = opened.Get<1>();
+  auto* private_owner = SharedWindow(private_id);
+  ASSERT_TRUE(private_owner);
+  ASSERT_TRUE(private_owner->GetProfile()->IsOffTheRecord());
+  Navigate(private_owner, url);
+  const int32_t private_tab = barc_window_tab_at(private_id, 0);
+
+  auto refuses = [&](int32_t window, int32_t candidate) {
+    pid = -17;
+    visible = -23;
+    EXPECT_EQ(0, bridge->tab_renderer_state(window, candidate, &pid, &visible));
+    EXPECT_EQ(-17, pid);
+    EXPECT_EQ(-23, visible);
+  };
+  refuses(private_id, private_tab);
+  refuses(personal_id, tab);
+  EXPECT_EQ(0, bridge->tab_renderer_state(work_id, tab, nullptr, &visible));
+  EXPECT_EQ(0, bridge->tab_renderer_state(work_id, tab, &pid, &pid));
+  EXPECT_EQ(-17, pid);
+  EXPECT_EQ(-23, visible);
+  ASSERT_EQ(1, barc_tab_close(work_id, tab));
+  refuses(work_id, tab);
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
                        ScreenshotCopiesHiddenRetainedViewportWithoutChangingOwner) {
   embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
       [](const net::test_server::HttpRequest& request)

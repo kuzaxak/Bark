@@ -121,6 +121,8 @@ int barc_tab_list_extension_actions(int32_t window, int32_t tab,
 int barc_tab_set_extension_pinned(int32_t window, int32_t tab,
                                   const char* extension_id, int pinned);
 int barc_tab_invoke_extension(int32_t window, int32_t tab, const char* extension_id);
+int barc_tab_renderer_state(int32_t window, int32_t tab, int32_t* pid,
+                            int32_t* document_visible);
 #ifdef __cplusplus
 }
 #endif
