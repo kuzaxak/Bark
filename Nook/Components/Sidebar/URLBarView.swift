@@ -570,8 +570,7 @@ struct URLBarView: View {
             return
         }
         if usesNativeEditor, let page = editPage {
-            if browserManager.siteRoutingManager.applyRoute(navigating: page.url, to: url, page: page) { return }
-            page.load(url)
+            browserManager.submitTypedAddress(url, from: page, in: windowState, whileCurrent: currentTarget)
             return
         }
         // Never navigate a live page owned by another window.

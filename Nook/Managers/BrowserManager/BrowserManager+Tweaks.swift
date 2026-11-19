@@ -17,6 +17,26 @@ import NookWeb
 private let tweaksLog = Logger(subsystem: Bundle.main.bundleIdentifier ?? "Nook", category: "SiteRouting")
 
 extension BrowserManager: SiteRoutingHost {
+    func submitTypedAddress(_ url: URL, from page: PageSession, in window: BrowserWindowState,
+                            whileCurrent: () -> Bool) {
+        guard let handle = window.window else { return }
+        let space = window.spaceID
+        func isCurrent() -> Bool {
+            whileCurrent() && windowRegistry?.windows[window.id] === window &&
+                windowRegistry?.activeWindow === window && window.window === handle &&
+                CommandWindow.key === handle && window.spaceID == space && frontPage(in: window) === page
+        }
+
+        guard isCurrent() else { return }
+        if !window.isIncognito, !page.isPrivate, !page.isAgentPage,
+           siteRoutingManager.applyRoute(navigating: page.url, to: url, openInSpace: { target in
+               guard target != space, tabs.space(target) != nil, isCurrent() else { return false }
+               return tabs.open(url: url, in: window, placement: .newTab, parent: .tabs(spaceID: target)) != nil
+           }) { return }
+        guard isCurrent() else { return }
+        page.load(url)
+    }
+
     func route(url: URL, toSpace spaceID: UUID, from page: AnyObject?) -> Bool {
         guard tabs.space(spaceID) != nil else {
             tweaksLog.debug("Route skipped: target space \(spaceID) no longer exists")

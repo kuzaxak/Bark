@@ -2977,6 +2977,60 @@ private final class CatalogApplication: NSApplication {
     first.spaceID = drafts
     second.spaceID = drafts
     precondition(first.selectedItemID == original && second.selectedItemID == other)
+    let edited = manager.tabs.ensureSession(for: original)!
+    let routedURL = URL(string: "https://routed.fixture.test/home")!
+    let rule = SiteRoutingRule(domain: "routed.fixture.test", targetSpaceId: destination)
+    manager.siteRoutingManager.addRule(rule)
+    defer { manager.siteRoutingManager.deleteRule(id: rule.id) }
+    let beforeRoute = manager.tabs.items(inSpace: destination).count
+    focus(first)
+    first.window = settings
+    manager.submitTypedAddress(routedURL, from: edited, in: first, whileCurrent: { true })
+    drain()
+    precondition(manager.tabs.items(inSpace: destination).count == beforeRoute,
+                 "A replaced physical address owner must not enqueue a cross-space route")
+    first.window = firstHandle
+    focus(first)
+
+    let sourceURL = edited.url
+    let unroutedURL = URL(string: "https://unrouted.fixture.test/home")!
+    var checkedEditor = false
+    manager.submitTypedAddress(unroutedURL, from: edited, in: first, whileCurrent: {
+        defer { checkedEditor = true }
+        return !checkedEditor
+    })
+    precondition(edited.url == sourceURL, "A superseded editor must not fall back to loading the source page")
+
+    let addressBridge = Native.bridge
+    let addressHost = ChromiumNativePageHost(bridge: addressBridge)
+    let firstShell = NSView(), secondShell = NSView()
+    Native.windows[710] = Native.window(710, group: 710, profile: drafts, active: 7100)
+    Native.windows[711] = Native.window(711, group: 710, profile: destination, flags: 0, active: 7110)
+    Native.windows[712] = Native.window(712, group: 712, profile: drafts, active: 7120)
+    Native.tabs = [Native.tab(7100, window: 710), Native.tab(7110, window: 711), Native.tab(7120, window: 712)]
+    manager.tabs.nativePageHost = addressHost
+    Native.restoring = true
+    let previouslyCreated = Native.privateCreatedClients
+    let previousLoads = Native.restoredURLs
+    precondition(addressHost.registerWindow(first, nativeOwner: 710, shell: firstShell))
+    precondition(addressHost.registerWindow(second, nativeOwner: 712, shell: secondShell))
+    defer {
+        manager.tabs.nativePageHost = nil
+        Native.restoring = false
+        Native.privateCreatedClients = previouslyCreated
+        Native.restoredURLs = previousLoads
+        for owner in [Int32(710), 711, 712] { Native.end(owner) }
+    }
+    manager.submitTypedAddress(routedURL, from: edited, in: first, whileCurrent: { true })
+    precondition(manager.tabs.items(inSpace: destination).count == beforeRoute + 1,
+                 "A current cross-space address route must submit before returning to the run loop")
+    precondition(first.spaceID == destination &&
+                 first.selectedItemID.flatMap { manager.tabs.item($0)?.url } == routedURL &&
+                 second.spaceID == drafts && second.selectedItemID == other && edited.url == sourceURL,
+                 "The admitted destination must belong to the exact submitting window")
+    manager.tabs.nativePageHost = nil
+    first.spaceID = drafts
+
     focus(first)
     shortcuts.perform(.toggleBookmark)
     focus(second)

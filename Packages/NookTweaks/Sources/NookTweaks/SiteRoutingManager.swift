@@ -31,22 +31,32 @@ public final class SiteRoutingManager {
     public func applyRoute(url: URL, from page: AnyObject?) -> Bool {
         // A sign-in started by a page has to finish in that page's space, where the login belongs.
         if page != nil, OAuthDetector.isLikelyOAuthURL(url) { return false }
-        guard let host, let rule = resolve(url: url) else { return false }
-        guard host.route(url: url, toSpace: rule.targetSpaceId, from: page) else { return false }
-        logger.info("Route matched: \(url.host ?? "", privacy: .public) → space \(rule.targetSpaceId, privacy: .public)")
-        return true
+        guard let host else { return false }
+        return applyRule(to: url) { host.route(url: url, toSpace: $0, from: page) }
     }
 
     /// A navigation of `page` from `current` to `url` that the app itself starts, such as a typed
     /// one, routed as WebKit's navigation policy routes its pages: only when it leaves the site.
     public func applyRoute(navigating current: URL?, to url: URL, page: AnyObject) -> Bool {
+        guard let host else { return false }
+        return applyRoute(navigating: current, to: url) { host.route(url: url, toSpace: $0, from: page) }
+    }
+
+    /// Apply a typed route through the caller that owns the editing window.
+    public func applyRoute(navigating current: URL?, to url: URL, openInSpace: (UUID) -> Bool) -> Bool {
         func site(_ url: URL?) -> String {
             let host = url?.host?.lowercased() ?? ""
             return host.hasPrefix("www.") ? String(host.dropFirst(4)) : host
         }
         let from = site(current), to = site(url)
-        guard !from.isEmpty, !to.isEmpty, from != to else { return false }
-        return applyRoute(url: url, from: page)
+        guard !from.isEmpty, !to.isEmpty, from != to, !OAuthDetector.isLikelyOAuthURL(url) else { return false }
+        return applyRule(to: url, openInSpace)
+    }
+
+    private func applyRule(to url: URL, _ route: (UUID) -> Bool) -> Bool {
+        guard let rule = resolve(url: url), route(rule.targetSpaceId) else { return false }
+        logger.info("Route matched: \(url.host ?? "", privacy: .public) → space \(rule.targetSpaceId, privacy: .public)")
+        return true
     }
 
     // MARK: - CRUD
