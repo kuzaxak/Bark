@@ -3,6 +3,7 @@
 
 from contextlib import nullcontext, redirect_stdout
 from io import StringIO
+import os
 from pathlib import Path
 import plistlib
 import runpy
@@ -132,6 +133,36 @@ class SourceTests(unittest.TestCase):
         alias.symlink_to("../..", target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "within the checkout"):
             shell.shell_source_digest(self.root)
+
+    def test_native_shell_omits_source_only_rust_and_webkit_reports(self):
+        checkout = SCRIPTS.parent
+        reports = {
+            Path("Nook/Managers/ExtensionManager/README-URLSchemeHandler.md"),
+            Path("Nook/Utils/Debug/NavigationRootCauseAnalysis.md"),
+        }
+        def rust_source_paths(root):
+            sources = set()
+            for directory, children, files in os.walk(root / shell._RUST):
+                children[:] = [name for name in children
+                               if name not in {"target", ".git", shell._ADBLOCK_BINARY.name}]
+                sources.update((Path(directory) / name).relative_to(root)
+                               for name in files if name != ".DS_Store")
+            return sources
+
+        source = shell._RUST / "src/fixture.rs"
+        self.write(source)
+        self.write(shell._RUST / "target/debug/build/ignored/generated.rs")
+        self.assertEqual(rust_source_paths(self.root), {source})
+
+        rust_sources = rust_source_paths(checkout)
+        self.assertTrue(rust_sources)
+        groups = shell._project_inputs(checkout)
+        self.assertLessEqual(reports | rust_sources | {shell._ADBLOCK_BINARY}, groups[Path("Nook")])
+        inputs = set(shell._inputs(checkout, {}))
+        self.assertFalse(inputs & (reports | rust_sources))
+        self.assertIn(shell._ADBLOCK_BINARY / "macos-arm64_x86_64/libnook_adblock.a", inputs)
+        self.assertTrue(any(path.suffix == ".metal" for path in inputs))
+        self.assertTrue(any("Assets.xcassets" in path.parts for path in inputs))
 
     def test_legacy_missing_invalid_and_verified_bundle_value(self):
         app = self.root / "Bark.app"

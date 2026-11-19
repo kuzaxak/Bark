@@ -47,6 +47,7 @@
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
 				Info.plist,
+				"Managers/ExtensionManager/README-URLSchemeHandler.md",
 				ThirdParty/AdblockRustFFI/Cargo.lock,
 				ThirdParty/AdblockRustFFI/Cargo.toml,
 				ThirdParty/AdblockRustFFI/README.md,
@@ -54,11 +55,15 @@
 				ThirdParty/AdblockRustFFI/include/nook_adblock.h,
 				ThirdParty/AdblockRustFFI/include/module.modulemap,
 				ThirdParty/AdblockRustFFI/NookAdblock.xcframework,
+				ThirdParty/AdblockRustFFI/nook_adblock.exports,
 				ThirdParty/AdblockRustFFI/src/content_blocking_ffi.rs,
 				ThirdParty/AdblockRustFFI/src/cosmetic_ffi.rs,
 				ThirdParty/AdblockRustFFI/src/lib.rs,
+				ThirdParty/AdblockRustFFI/src/urlskip_ffi.rs,
 				ThirdParty/AdblockRustFFI/tests/no_overbroad_rules.rs,
+				ThirdParty/AdblockRustFFI/tests/real_lists_scriptlets.rs,
 				ThirdParty/BigUIPaging/README.md,
+				Utils/Debug/NavigationRootCauseAnalysis.md,
 			);
 			target = C1A000000000000000000001 /* BarkNativeShell */;
 		};
