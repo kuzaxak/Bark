@@ -203,6 +203,18 @@ The two-profile walk opens the same inbox in Work and Personal. It checks
 which tab receives typed input and which page receives the decision on a
 pending location request. [Run the two-profile walk](Tests/ChromiumProfilePages/README.md)
 
+The download walks use a disposable Chromium profile and local attachments.
+They cover cancellation, Quick Look, history after relaunch and choosing another
+folder in Save As. The upload walk cancels and reopens the native file chooser,
+checks the uploaded bytes, and types into the page afterward.
+
+```fish
+set -l files_evidence (mktemp -d)
+python3 Tests/ChromiumDownloads/walk.py --verify-sdk --app build/Bark.app --output "$files_evidence/downloads"
+python3 Tests/ChromiumDownloads/walk.py --save-as --verify-sdk --app build/Bark.app --output "$files_evidence/save-as"
+python3 Tests/ChromiumDownloads/upload_walk.py --verify-sdk --app build/Bark.app --output "$files_evidence/upload"
+```
+
 The folder walk searches for two folders with the same name, selects one by its
 full path, and collapses and reopens it in the sidebar.
 

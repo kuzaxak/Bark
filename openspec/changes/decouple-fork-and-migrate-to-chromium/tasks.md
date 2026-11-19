@@ -92,7 +92,8 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 
 ## 6. Feature parity (G4)
 
-- [ ] 6.1 Adapt downloads/uploads and file panels; test cancellation, suggested names, destination selection and download history.
+- [x] 6.1 Adapt downloads/uploads and file panels; test cancellation, suggested names, destination selection and download history.
+  Signed Intel Bark cancelled an in-progress attachment and closed its connection, previewed a completed file, and restored both history entries after relaunch. Save As kept the suggested name and wrote only to the selected alternate folder. The upload chooser cancelled with no file selected, then sent the exact selected bytes to the fixture and returned keyboard input to the page. Native ARM qualification remains in 9.1.
 - [ ] 6.2 Adapt site permissions, certificate warnings and cookies/data deletion; test denied capture, exceptions and profile isolation.
 - [ ] 6.3 Port native navigation conveniences, back/forward history menus, find/zoom, context menus, shortcuts and drag/drop; run the corresponding existing UI checks and IME/accessibility smoke cases. Include the optional top address bar and per-site Developer bar in the actual Chromium shell; switching address placement must retain a visible, working address control, and enabling a site Developer bar must display its tools on that page.
 - [ ] 6.4 Implement Chromium blocker request integration using existing filter policy; test blocking, redirects, frame/worker ownership, exceptions, counters and coexistence with extension rules against `content-blocking/spec.md`. Preserve exact private-context ownership and qualify worker attribution separately from ordinary page requests. Verify saved whitelist/optional-list settings before first load, windowless service-worker wakes, private-menu first-request admission and superseded startup policy; ordinary-window checks alone do not qualify startup coverage.
@@ -139,7 +140,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 9.1 Run the complete compatibility, extension and migration matrices on both architectures; attach concise results to the review/ticket and keep transient logs outside commits.
 - [ ] 9.2 Compare candidate measurements against the frozen per-architecture budgets; record pass/fail and any explicitly accepted change before promotion.
 - [ ] 9.3 Prepare opt-in canary/beta rollout, recovery instructions and named security ownership; verify a release candidate can use the runbook without undocumented steps.
-- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite. The legacy app scene, desktop window, split compositor, mini-window presenter, extension host and app-owned cookie/cache managers have been removed. Bark's profile-specific Chromium controls handle site data. Shared WebKit services and fixtures remain.
+- [ ] 9.4 Remove the remaining WebKit paths and flags while retaining read-only import of the WebKit app's data; verify both architecture builds and the final runtime suite. The legacy app scene, desktop window, split compositor, mini-window presenter, extension host and app-owned cookie/cache managers have been removed. Bark's profile-specific Chromium controls handle site data. The app-owned WebKit view, context menu, inspector, sidebar video host and network-download delegate have also been removed. The legacy download-history reader accepts an explicit file and preserves its contents. Shared WebKit services and fixtures remain.
 
 ## Workflow follow-up
 
