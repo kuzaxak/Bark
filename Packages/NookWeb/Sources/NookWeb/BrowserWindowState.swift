@@ -94,6 +94,7 @@ public class BrowserWindowState {
 
     /// Whether the command palette is visible in this window
     public var isCommandPaletteVisible: Bool = false
+    @ObservationIgnored var sidebarRevealRequest: UUID?
     /// An item the sidebar scrolls to once, then clears.
     public var sidebarRevealItemID: UUID?
 
@@ -194,7 +195,11 @@ public class BrowserWindowState {
     // MARK: - Tab Model (TabsController)
 
     /// The space this window shows.
-    public var spaceID: UUID?
+    public var spaceID: UUID? {
+        didSet {
+            if oldValue != spaceID, sidebarRevealItemID != nil { sidebarRevealItemID = nil }
+        }
+    }
 
     /// While a swipe moves the space pages: the spaces either side of it and how far it is between them.
     public var spaceSwipe: SpaceSwipe?

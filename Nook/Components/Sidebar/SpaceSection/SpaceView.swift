@@ -84,11 +84,14 @@ struct SpaceView: View {
             guard isActive, let itemID, !dragSession.isDragging else { return }
             withAnimation(NookDesign.Motion.standard) { proxy.scrollTo(itemID) }
         }
-        .onChange(of: windowState.sidebarRevealItemID) { _, itemID in
+        .onChange(of: windowState.sidebarRevealItemID, initial: true) { _, itemID in
             guard isActive, let itemID else { return }
             // The folders just opened lay out their rows on the next pass.
             DispatchQueue.main.async {
-                withAnimation(NookDesign.Motion.standard) { proxy.scrollTo(itemID, anchor: .center) }
+                guard windowState.spaceID == spaceID, windowState.sidebarRevealItemID == itemID else { return }
+                if browserManager.tabs.spaceID(of: itemID) == spaceID {
+                    withAnimation(NookDesign.Motion.standard) { proxy.scrollTo(itemID, anchor: .center) }
+                }
                 windowState.sidebarRevealItemID = nil
             }
         }

@@ -3631,6 +3631,48 @@ struct NativePageLifecycleTests {
         #expect(page.profileID == fixture.tabs.profile(forSpace: fresh)?.id)
     }
 
+    @Test func folderRevealWaitsForBasicNativeHostSelection() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let initialSpace = try #require(f.window.spaceID)
+        f.host.finishCreate(0)
+        let space = try #require(f.tabs.createSpace(name: "Other", icon: "folder", accentHex: "#123456",
+            after: initialSpace))
+        let tab = try #require(f.tabs.open(url: URL(string: "about:blank#destination")!,
+            in: f.window, placement: .background, parent: .tabs(spaceID: space)))
+        let parent = try #require(f.tabs.createFolder(title: "Parent", in: .pinned(spaceID: space), after: nil))
+        let folder = try #require(f.tabs.createFolder(title: "Folder", in: .folder(itemID: parent), after: nil))
+        f.tabs.toggleFolder(folder)
+        f.tabs.toggleFolder(parent)
+
+        f.tabs.reveal(folder, in: f.window)
+        try #require(f.host.creates.count == 2)
+        #expect(f.window.spaceID == initialSpace && f.window.sidebarRevealItemID == nil)
+        #expect(!f.tabs.isOpen(folder: parent) && !f.tabs.isOpen(folder: folder))
+
+        f.host.finishCreate(1)
+        #expect(f.window.spaceID == space && f.window.selectedItemID == tab)
+        #expect(f.tabs.isOpen(folder: parent) && f.tabs.isOpen(folder: folder))
+        #expect(f.window.sidebarRevealItemID == folder)
+    }
+
+    @Test func folderRevealDoesNotSwitchToATombstonedItem() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let initialSpace = try #require(f.window.spaceID)
+        let initialItem = try #require(f.window.selectedItemID)
+        f.host.finishCreate(0)
+        let space = try #require(f.tabs.createSpace(name: "Other", icon: "folder", accentHex: "#123456",
+            after: initialSpace))
+        let folder = try #require(f.tabs.createFolder(title: "Deleted", in: .pinned(spaceID: space), after: nil))
+        f.tabs.remove(folder)
+        try #require(f.tabs.tree.item(folder) == nil && f.tabs.tree.spaceID(of: folder) == space)
+
+        f.tabs.reveal(folder, in: f.window)
+        #expect(f.window.spaceID == initialSpace && f.window.selectedItemID == initialItem)
+        #expect(f.window.sidebarRevealItemID == nil && f.host.creates.count == 1)
+    }
+
     @Test func closingLastTabLeavesItsSpaceEmptyAndIgnoresChromiumFallback() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }

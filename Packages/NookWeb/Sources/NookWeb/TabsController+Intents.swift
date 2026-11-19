@@ -133,7 +133,8 @@ extension TabsController {
     private func select(_ itemID: UUID, in window: BrowserWindowState, leaving previous: PageSession?,
                         nativeAdmitted: Bool = false, showingAgentSpace: Bool = false,
                         adoptionGeneration: UUID? = nil,
-                        validateNative: (() -> Bool)? = nil, preferredSpace: UUID? = nil) {
+                        validateNative: (() -> Bool)? = nil, preferredSpace: UUID? = nil,
+                        onApplied: (@MainActor () -> Void)? = nil) {
         func admissionIsCurrent() -> Bool {
             (adoptionGeneration == nil || (window.nativeSelectionGeneration == adoptionGeneration &&
                 windowRegistry.windows[window.id] === window && item(itemID) != nil)) &&
@@ -158,14 +159,14 @@ extension TabsController {
                let space = selectionSpaceID(for: itemID, currentSpaceID: window.spaceID, in: source) {
                 let changesSpace = !window.isIncognito && (space != window.spaceID || window.showsNativeEmptySpace)
                 if changesSpace || switchesPane || window.nativeSpaceSwitchIsPending {
-                    switchNativeSpace(space, itemID: itemID, in: window, through: host)
+                    switchNativeSpace(space, itemID: itemID, in: window, through: host, onApplied: onApplied)
                     return
                 }
             }
             prepareNativeSelection(itemID, in: window) { [weak self, weak window] in
                 guard let self, let window else { return }
                 self.select(itemID, in: window, leaving: self.selectedSession(in: window),
-                            nativeAdmitted: true, showingAgentSpace: showingAgentSpace)
+                            nativeAdmitted: true, showingAgentSpace: showingAgentSpace, onApplied: onApplied)
                 if window.selectedItemID == itemID { self.restoreSavedNativeSplitIfNeeded(in: window) }
             }
             return
@@ -229,6 +230,7 @@ extension TabsController {
         guard admissionIsCurrent() else { return }
         mirror(window)
         window.refreshCompositor()
+        if let onApplied, window.selectedItemID == itemID && admissionIsCurrent() { onApplied() }
     }
 
     /// Keeps switcher pictures only for each window's most recent tabs (what the card can show).
@@ -277,6 +279,10 @@ extension TabsController {
     /// Shows a space; its remembered selection (or first item) becomes selected. The space owns
     /// its login context, so this is also the data store, history and cookie switch.
     public func setSpace(_ spaceID: UUID, in window: BrowserWindowState) {
+        setSpace(spaceID, in: window, onApplied: nil)
+    }
+
+    private func setSpace(_ spaceID: UUID, in window: BrowserWindowState, onApplied: (@MainActor () -> Void)?) {
         let source = tree(owner(of: window))
         guard source.space(spaceID) != nil else { return }
         if profileEngine == .chromium {
@@ -284,13 +290,13 @@ extension TabsController {
             if !window.isIncognito, let host = nativePageHost as? any NativeSpaceSwitchHost {
                 let remembered = window.selectedItemBySpace[spaceID].flatMap { order.contains($0) ? $0 : nil }
                 let destination = remembered ?? (window.emptiedSpaces.contains(spaceID) ? nil : order.first)
-                switchNativeSpace(spaceID, itemID: destination, in: window, through: host)
+                switchNativeSpace(spaceID, itemID: destination, in: window, through: host, onApplied: onApplied)
                 return
             }
             if let remembered = window.selectedItemBySpace[spaceID], order.contains(remembered) {
-                select(remembered, in: window, leaving: selectedSession(in: window), showingAgentSpace: true)
+                select(remembered, in: window, leaving: selectedSession(in: window), showingAgentSpace: true, onApplied: onApplied)
             } else if !window.emptiedSpaces.contains(spaceID), let first = order.first {
-                select(first, in: window, leaving: selectedSession(in: window), showingAgentSpace: true)
+                select(first, in: window, leaving: selectedSession(in: window), showingAgentSpace: true, onApplied: onApplied)
             } else {
                 window.nativeSelectionGeneration = nil
                 window.nativeSelectionSession?.cancelNativePreparation(in: window)
@@ -302,6 +308,7 @@ extension TabsController {
                 if changed { sessionDelegate?.windowSpaceChanged(window) }
                 mirror(window)
                 window.refreshCompositor()
+                if window.spaceID == spaceID { onApplied?() }
             }
             return
         }
@@ -319,6 +326,7 @@ extension TabsController {
             mirror(window)
             window.refreshCompositor()
         }
+        if window.spaceID == spaceID { onApplied?() }
     }
 
     private func canSelect(_ profile: Profile, forSpace spaceID: UUID, in window: BrowserWindowState) -> Bool {
@@ -327,7 +335,7 @@ extension TabsController {
     }
 
     private func switchNativeSpace(_ spaceID: UUID, itemID: UUID?, in window: BrowserWindowState,
-                                   through host: any NativeSpaceSwitchHost) {
+                                   through host: any NativeSpaceSwitchHost, onApplied: (@MainActor () -> Void)? = nil) {
         guard !isTerminating, windowRegistry.windows[window.id] === window,
               let profile = window.isIncognito ? window.ephemeralProfile : profile(forSpace: spaceID),
               canSelect(profile, forSpace: spaceID, in: window) else { return }
@@ -429,7 +437,9 @@ extension TabsController {
             window.nativeSpaceSwitch = nil
             window.nativeSelectionGeneration = nil
             window.nativeSelectionSession = nil
-            if applied && presented, let selected, window.selectedItemID == selected.itemID {
+            if applied && presented && window.spaceID == spaceID { onApplied?() }
+            if applied && presented, window.nativeSelectionGeneration == nil,
+               let selected, window.selectedItemID == selected.itemID {
                 selected.resumeStagedNativeSearch()
                 if window.nativeSelectionGeneration == nil && window.selectedItemID == selected.itemID {
                     self.restoreSavedNativeSplitIfNeeded(in: window)
@@ -957,15 +967,37 @@ extension TabsController {
     /// open, and the sidebar scrolled to it.
     public func reveal(_ itemID: UUID, in window: BrowserWindowState) {
         let source = tree(owner(of: window))
-        guard let item = source.item(itemID) else { return }
-        if let spaceID = source.spaceID(of: itemID), spaceID != window.spaceID { setSpace(spaceID, in: window) }
-        var parent = item.parent
-        while case .folder(let hostID) = parent, let host = source.item(hostID) {
-            openFolder(hostID)
-            parent = host.parent
+        guard let spaceID = source.liveFolderChain(of: itemID)?.section.spaceID else { return }
+        let request = UUID()
+        window.sidebarRevealRequest = request
+        window.sidebarRevealItemID = nil
+        let show = { [weak self, weak window] in
+            guard let self, let window else { return }
+            let source = self.tree(self.owner(of: window))
+            guard let item = source.item(itemID), let chain = source.folderChain(of: itemID),
+                  chain.section.spaceID == spaceID else { return }
+
+            // Opening a live folder can call back into the model. Stop if another
+            // reveal, space switch, or move took ownership during expansion.
+            @MainActor func isCurrent() -> Bool {
+                guard window.sidebarRevealRequest == request, window.spaceID == spaceID,
+                      self.windowRegistry.windows[window.id] === window,
+                      !window.nativeSpaceSwitchIsPending, !window.nativeSpaceSwitchIsUnresolved else { return false }
+                let live = self.tree(self.owner(of: window))
+                guard let path = live.liveFolderChain(of: itemID) else { return false }
+                return path.section == chain.section && path.folders == chain.folders
+            }
+            for folder in chain.folders + (item.isFolder ? [itemID] : []) {
+                guard isCurrent() else { return }
+                self.openFolder(folder)
+            }
+            if isCurrent() { window.sidebarRevealItemID = itemID }
         }
-        if item.isFolder { openFolder(itemID) }
-        window.sidebarRevealItemID = itemID
+        if window.spaceID == spaceID && !window.nativeSpaceSwitchIsPending && !window.nativeSpaceSwitchIsUnresolved {
+            show()
+        } else {
+            setSpace(spaceID, in: window, onApplied: show)
+        }
     }
 
     // MARK: - Spaces

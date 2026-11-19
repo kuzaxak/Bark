@@ -65,6 +65,14 @@ public struct TabTree: Codable, Equatable, Sendable {
         return (folders, parent)
     }
 
+    /// The path the sidebar can display. Storage and sync can still ask for
+    /// the original folder chain of a deleted item.
+    public func liveFolderChain(of id: UUID) -> (folders: [UUID], section: Parent)? {
+        guard item(id) != nil, let chain = folderChain(of: id),
+              chain.folders.allSatisfy({ item($0) != nil }) else { return nil }
+        return chain
+    }
+
     /// The section an item ultimately belongs to.
     public func section(of id: UUID) -> Parent? { folderChain(of: id)?.section }
 

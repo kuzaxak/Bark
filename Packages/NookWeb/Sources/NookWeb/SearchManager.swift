@@ -429,7 +429,7 @@ public class SearchManager {
     @MainActor private func folderMatch(_ item: Item) -> FolderMatch? {
         guard let tabs, let window else { return nil }
         let tree = tabs.tree(tabs.owner(of: window))
-        guard let chain = tree.folderChain(of: item.id), let id = chain.section.spaceID,
+        guard let chain = tree.liveFolderChain(of: item.id), let id = chain.section.spaceID,
               let space = tree.space(id) else { return nil }
         let section: String
         switch chain.section {

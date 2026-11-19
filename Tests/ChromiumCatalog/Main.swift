@@ -933,6 +933,43 @@ private final class CatalogApplication: NSApplication {
         Native.settle(request, group: group, status: status, client: client, tab: tab,
                       callback: callback, context: context)
     }
+    // Search can reveal a folder in a different profile. Its ancestors belong
+    // to the winning space and may trigger live-folder refreshes when opened.
+    let parentFolder = tabs.createFolder(title: "Projects", in: .pinned(spaceID: Native.personal), after: nil)!
+    let folder = tabs.createFolder(title: "Inbox", in: .folder(itemID: parentFolder), after: nil)!
+    tabs.toggleFolder(folder)
+    tabs.toggleFolder(parentFolder)
+    func checkFolderHidden(line: UInt = #line) {
+        precondition(window.sidebarRevealItemID == nil && !tabs.isOpen(folder: folder) &&
+                     !tabs.isOpen(folder: parentFolder), "A pending or refused switch revealed a folder", line: line)
+    }
+    checkFolderHidden()
+    tabs.reveal(folder, in: window)
+    precondition(pending.count == 1 && window.spaceID == Native.work)
+    checkFolderHidden()
+    reply(0, status: BARC_SPACE_SWITCH_REFUSED, client: 640, tab: 6400)
+    checkFolderHidden()
+    pending.removeAll()
+    tabs.reveal(folder, in: window)
+    tabs.setSpace(researchSpace, in: window)
+    Native.selectClient(640, tab: 6401)
+    reply(1, status: BARC_SPACE_SWITCH_APPLIED, client: 640, tab: 6401)
+    reply(0, status: BARC_SPACE_SWITCH_SUPERSEDED, client: 640, tab: 6401)
+    checkFolderHidden()
+    pending.removeAll()
+    tabs.reveal(folder, in: window)
+    Native.selectClient(641, tab: 6410)
+    reply(0, status: BARC_SPACE_SWITCH_APPLIED, client: 641, tab: 6410)
+    precondition(window.spaceID == Native.personal && window.sidebarRevealItemID == folder &&
+                 tabs.isOpen(folder: folder) && tabs.isOpen(folder: parentFolder))
+    precondition(other.sidebarRevealItemID == nil)
+    pending.removeAll()
+    tabs.setSpace(Native.work, in: window)
+    Native.selectClient(640, tab: 6400)
+    reply(0, status: BARC_SPACE_SWITCH_APPLIED, client: 640, tab: 6400)
+    pending.removeAll()
+    precondition(window.sidebarRevealItemID == nil, "An unconsumed reveal must expire when its space leaves")
+
     precondition(tabs.selectNextSpace(in: window) && tabs.selectNextSpace(in: window))
     precondition(pending.map { $0.0.tab } == [6410, 6401], "Rapid Next Space must advance two spaces")
     precondition(window.spaceID == Native.work && window.selectedItemID == work.itemID)
