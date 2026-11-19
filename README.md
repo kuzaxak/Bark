@@ -29,10 +29,15 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 
 ### Website passwords
 
-Open **Settings → Privacy → Passwords** to see the Pawl Vault connection status.
+Choose Pawl Vault in **Settings → Privacy → Passwords** and check its connection
+status there. Pawl uses the same unlocked vault across Bark profiles. With a
+compatible vault connected, Bark asks before saving a new login or updating an
+existing one. Older connected vaults offer manual management in Pawl.
+
 The pinned Chromium build supports Pawl alongside its built-in manager. Pawl
-Vault build 7 accepts the legacy Nook signing identity and refuses Bark. Using
-Pawl as the sole manager requires a compatible Pawl release and a newer Bark engine.
+Vault 0.1.2 (build 7) accepts the legacy Nook signing identity and refuses Bark.
+Exclusive mode requires a Pawl release that accepts Bark and a provider-capable
+Chromium SDK. On that SDK, a provider change takes effect when Bark reopens.
 [Provider integration design](openspec/changes/select-pawl-vault-provider/design.md)
 
 ### Sync bookmarks between Macs
