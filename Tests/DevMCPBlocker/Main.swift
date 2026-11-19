@@ -1,10 +1,20 @@
 import Foundation
 @MainActor final class BrowserWindowState { var selected = UUID(); var profile = UUID() }
+@MainActor final class ChromiumPageNavigation {
+    var isPrivateSession = false
+    var resourceDiagnostics: (inWindow: Bool?, pid: Int32?, visibility: String?) = (nil, nil, nil)
+}
+typealias TabsController = BrowserManager.Tabs
 @MainActor final class PageSession {
     let itemID = UUID()
     let profile: UUID
     var url = URL(string: "https://agent.test/path")!
     var isOAuthFlow = false
+    var isUnloaded = false
+    var navigation: AnyObject?
+    var acceptsFlush = true
+    var flushes = 0
+    func clearPageCache() -> Bool { flushes += 1; return acceptsFlush }
     init(profile: UUID) { self.profile = profile }
 }
 @MainActor final class BrowserManager {
@@ -15,6 +25,9 @@ import Foundation
     func agentWebView() throws -> Never { throw WKPreparation.unexpected }
     enum WKPreparation: Error { case unexpected }
     @MainActor final class Tabs {
+        var regularDiagnosticSessions: [PageSession] = []
+        var displayed: UUID?
+        func isOnScreen(_ id: UUID) -> Bool { id == displayed }
         var page: PageSession?
         var owner: BrowserWindowState?
         func existingNativeAgentPage(in window: BrowserWindowState) -> PageSession? {
@@ -71,6 +84,38 @@ import Foundation
         manager.tabs.page = nil
         let cold = try server.dispatch("blocker_status", [:], browserManager: manager, window: window)
         precondition(cold["isError"] as? Bool == true)
+        let shown = PageSession(profile: profile)
+        let parked = PageSession(profile: profile)
+        let unloaded = PageSession(profile: profile)
+        unloaded.isUnloaded = true
+        let current = ChromiumPageNavigation(), older = ChromiumPageNavigation()
+        current.resourceDiagnostics = (true, 123, "visible")
+        older.resourceDiagnostics = (false, nil, nil)
+        shown.navigation = current
+        parked.navigation = older
+        parked.acceptsFlush = false
+        let privatePage = PageSession(profile: UUID()), privateOwner = ChromiumPageNavigation()
+        privateOwner.isPrivateSession = true
+        privatePage.navigation = privateOwner
+        manager.tabs.regularDiagnosticSessions = [shown, parked, unloaded, privatePage]
+        manager.tabs.displayed = shown.itemID
+        func replyText(_ name: String, _ args: [String: Any] = [:]) throws -> String {
+            let result = try server.dispatch(name, args, browserManager: manager, window: window)
+            precondition(result["isError"] as? Bool == false)
+            return (result["content"] as! [[String: String]])[0]["text"]!
+        }
+        let data = Data(try replyText("pages").utf8)
+        let rows = try JSONSerialization.jsonObject(with: data) as! [[String: Any]]
+        precondition(rows.count == 3 && rows[0]["onScreen"] as? Bool == true &&
+                     rows[0]["pid"] as? Int == 123 && rows[0]["visibility"] as? String == "visible")
+        precondition(rows[1]["inWindow"] as? Bool == false && rows[1]["pid"] == nil && rows[1]["visibility"] == nil)
+        precondition(rows[2]["loaded"] as? Bool == false && rows[2]["inWindow"] == nil)
+        let background = try replyText("clear_page_cache")
+        precondition(background.contains("0 of 1") && shown.flushes == 0 && parked.flushes == 1)
+        let all = try replyText("clear_page_cache", ["all": true])
+        precondition(all.contains("1 of 2") && shown.flushes == 1 && parked.flushes == 2 && unloaded.flushes == 0)
+        precondition(privatePage.flushes == 0)
+        print("Regular page diagnostics and cache requests preserve foreground selection and cold pages")
         print("PASS: three blocker dispatches bypass throwing WK preparation; exact page/profile refusal; no window selection change; policy/readiness labels")
     }
 }

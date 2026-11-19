@@ -1,6 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 import BarcChromium
 internal import BarkLoadProgress
+internal import BarkRendererState
 import Darwin
 import Foundation
 import AppKit
@@ -66,6 +67,21 @@ final class ChromiumPageNavigation: PageNavigation {
     private(set) var nativeCloseOutcome: PageCloseOutcome?
     var nativeWindowID: Int32 { window }
     var nativeTabID: Int32 { tab }
+
+    /// Sample the existing page without selecting it, running script, or starting a renderer.
+    var resourceDiagnostics: (inWindow: Bool?, pid: Int32?, visibility: String?) {
+        guard observation != 0, !invalidated, !isClosed, !isPrivateSession,
+              window > 0, matchesProfile(window) else { return (nil, nil, nil) }
+        let inWindow = bridge.tab_native_view(window, tab).map {
+            Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue().window != nil
+        }
+        var pid: Int32 = 0
+        var visible: Int32 = 0
+        let available = withUnsafePointer(to: bridge) { BarkReadRendererState($0, window, tab, &pid, &visible) }
+        guard available == 1,
+              pid > 0, visible == 0 || visible == 1 else { return (inWindow, nil, nil) }
+        return (inWindow, pid, visible == 1 ? "visible" : "hidden")
+    }
     // Host-only lifecycle channel. PageSession retains its event/state channels.
     var onNativeCloseOutcome: ((PageCloseOutcome) -> Void)?
     var onNativeOwnerChanged: ((Int32) -> Void)?

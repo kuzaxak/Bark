@@ -7,6 +7,7 @@ TAILS = (
     ("BARC_HAS_PASSWORD_PROVIDER",
      'set_password_provider: { _ in fatalError("set_password_provider") }'),
     ("BARC_HAS_LOAD_PROGRESS", "tab_observe_load_progress: nil"),
+    ("BARC_HAS_RENDERER_STATE", "tab_renderer_state: { _, _, _, _ in 0 }"),
 )
 
 

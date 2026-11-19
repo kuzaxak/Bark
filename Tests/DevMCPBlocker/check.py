@@ -1,8 +1,7 @@
 from pathlib import Path
-import json, subprocess
+import subprocess
+from tempfile import TemporaryDirectory
 root = Path(__file__).resolve().parents[2]
-out = root / 'build/devmcp-blocker/dispatch'
-out.mkdir(parents=True, exist_ok=True)
 s = (root / 'Nook/Managers/DevMCPServer/DevMCPServer.swift').read_text()
 a = s.index('    private func nativeBlockerTool(')
 b = s.index('    private func nativeEvaluate(', a)
@@ -20,12 +19,10 @@ fixture = '''import Foundation
     }
 }
 '''
-(out / 'Dispatch.swift').write_text(fixture)
-cmd = ['swiftc', '-swift-version', '5', '-parse-as-library', str(out / 'Dispatch.swift'), 'Tests/DevMCPBlocker/Main.swift', '-o', str(out / 'check')]
-(out / 'command.json').write_text(json.dumps(cmd, indent=2))
-for i, command in enumerate([cmd, [str(out / 'check')]]):
-    r = subprocess.run(command, cwd=root, capture_output=True, text=True, timeout=60)
-    (out / f'{i}.log').write_text(r.stdout + r.stderr)
-    print(r.stdout + r.stderr)
-    if r.returncode:
-        raise SystemExit(r.returncode)
+with TemporaryDirectory(prefix='bark-devmcp-dispatch-') as directory:
+    out = Path(directory)
+    source = out / 'Dispatch.swift'
+    source.write_text(fixture)
+    subprocess.run(['swiftc', '-swift-version', '5', '-parse-as-library', source,
+                    'Tests/DevMCPBlocker/Main.swift', '-o', out / 'check'], cwd=root, check=True, timeout=60)
+    subprocess.run([out / 'check'], cwd=root, check=True, timeout=60)

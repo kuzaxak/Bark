@@ -244,6 +244,67 @@ private enum Native {
 }
 
 #if !BLOCKER_HOST_CHECKS
+@MainActor private func checkResourceDiagnostics() throws {
+    let client: Int32 = 2091, tab: Int32 = 2092
+    Native.profiles[client] = Native.first
+    Native.tabs[client] = [tab]
+    let view = NSView()
+    Native.pageViews[tab] = view
+    var viewQueries = 0
+    Native.onPageView = { owner in
+        precondition(owner == client)
+        viewQueries += 1
+        return true
+    }
+    defer {
+        Native.onPageView = nil
+        Native.profiles[client] = nil
+        Native.tabs[client] = nil
+        Native.pageViews[tab] = nil
+        Native.viewless.remove(tab)
+    }
+    let page = try ChromiumPageNavigation(profileID: Native.first, window: client, tab: tab, bridge: Native.bridge)
+    defer { page.invalidate() }
+    func expect(_ mounted: Bool?, _ label: String) {
+        let sample = page.resourceDiagnostics
+        precondition(sample.inWindow == mounted, label)
+        precondition(sample.pid == nil && sample.visibility == nil, "Unsupported renderer state must be unknown: " + label)
+    }
+
+    expect(false, "Detached native view must report false")
+    _ = NSApplication.shared
+    let window = NSWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: true)
+    window.contentView?.addSubview(view)
+    precondition(!window.isVisible, "Test window must remain offscreen")
+    expect(true, "Native view mounted in a window must report true")
+    view.removeFromSuperview()
+    expect(false, "Previously mounted view must report false after detachment")
+
+    Native.viewless.insert(tab)
+    expect(nil, "An unknown native view must remain unknown")
+    Native.viewless.remove(tab)
+    precondition(viewQueries == 3, "Only existing views may be queried by this fixture")
+
+    Native.profiles[client] = Native.second
+    expect(nil, "A changed profile must invalidate diagnostics")
+    Native.profiles[client] = nil
+    expect(nil, "An unknown profile must invalidate diagnostics")
+    Native.profiles[client] = Native.first
+
+    let entry = Native.observations.first { $0.value.3 == tab }!
+    entry.value.0?(entry.value.1, entry.key, Int32(BARC_TAB_INITIAL.rawValue),
+                   0, tab, nil, nil, 0, 0)
+    precondition(page.nativeWindowID == 0, "Zero owner must detach the page")
+    expect(nil, "A detached owner must not query any native view")
+    Native.observations.removeValue(forKey: entry.key)
+    entry.value.0?(entry.value.1, entry.key, Int32(BARC_TAB_CLOSED.rawValue),
+                   client, tab, nil, nil, 0, 0)
+    precondition(page.isClosed, "Fixture must deliver an actual terminal event")
+    expect(nil, "A closed page must remain unknown even with its old profile and view present")
+    precondition(viewQueries == 3, "Invalidated ownership must avoid bridge view reads")
+    print("Chromium renderer resource diagnostics checks PASS")
+}
+
 @MainActor private func checkLoadProgress() throws {
     let window: Int32 = 10, tab: Int32 = 2090
     let page = try ChromiumPageNavigation(profileID: Native.first, window: window, tab: tab, bridge: Native.bridge)
@@ -714,6 +775,7 @@ private final class MoveCounter: NSView {
 @main
 private enum HostChecks {
     @MainActor static func main() throws {
+        try checkResourceDiagnostics()
         try checkLoadProgress()
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         let window = BrowserWindowState()

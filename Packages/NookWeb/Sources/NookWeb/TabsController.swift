@@ -492,6 +492,19 @@ public final class TabsController {
         Array(liveSessions.values) + privateWindows.flatMap { $0.privateSessions.values }
     }
 
+    /// Existing sessions in the regular tab tree. Reading diagnostics must never create a profile or page.
+    public var regularDiagnosticSessions: [PageSession] {
+        liveSessions.values.filter { page in
+            guard !page.isPrivate, page.detachedProfile?.isEphemeral != true,
+                  let space = tree.spaceID(of: page.itemID),
+                  let store = tree.dataStoreID(for: space) else { return false }
+            guard profileEngine == .chromium else { return true }
+            guard isProfileAvailable(store), profileSpaceIsReady(space),
+                  page.detachedProfile.map({ $0.id == store }) ?? true else { return false }
+            return page.navigation.map { $0.profileID == store } ?? true
+        }
+    }
+
     public func session(for webView: WKWebView) -> PageSession? {
         let coordinator = webViews
         return sessions.first { session in

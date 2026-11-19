@@ -696,6 +696,31 @@ struct NativePageLifecycleTests {
         #expect(page.navigation === native && page.url == url)
     }
 
+    @Test func regularPageDiagnosticsUseOnlyExistingRegularOwners() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.tabs
+        let regularID = try #require(fixture.window.selectedItemID)
+        _ = fixture.host.finishCreate(0)
+        let coldID = try #require(tabs.open(url: URL(string: "https://regular.test/parked")!,
+                                            in: fixture.window, placement: .background))
+        let cold = try #require(tabs.ensureSession(for: coldID))
+        let privateWindow = fixture.privateWindow()
+        let privatePage = NativeTestPage(profileID: try #require(privateWindow.ephemeralProfile?.id))
+        let privateSpace = try #require(privateWindow.spaceID)
+        let privateID = try #require(tabs.adoptNativePage(privatePage, through: fixture.host, in: privateWindow,
+                                                         spaceID: privateSpace, select: false))
+        let creations = fixture.host.creates.count
+        let selected = fixture.window.selectedItemID
+        #expect(tabs.sessions.contains { $0.itemID == privateID })
+        #expect(Set(tabs.regularDiagnosticSessions.map(\.itemID)) == [regularID, coldID])
+        cold.detachedProfile = privateWindow.ephemeralProfile
+        #expect(tabs.regularDiagnosticSessions.map(\.itemID) == [regularID])
+        cold.detachedProfile = nil
+        #expect(cold.isUnloaded && privatePage.cacheFlushes == 0 && fixture.host.creates.count == creations)
+        #expect(fixture.window.selectedItemID == selected && tabs.agentSpaceID == nil)
+    }
+
     @Test func existingNativeAgentToolPageNeverCreatesAndRequiresExactOwner() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         _ = f.host.finishCreate(0)

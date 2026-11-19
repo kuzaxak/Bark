@@ -501,12 +501,12 @@ final class DevMCPServer {
         ),
         AIToolDefinition(
             name: "pages",
-            description: "Every live page in every window: url, WebContent pid, loaded, on screen, in a window, document.visibilityState.",
+            description: "List existing regular pages with their URL, loaded state and on-screen selection. Includes native window attachment when available, and renderer PID and document visibility on supporting engines. Leaves parked pages alone.",
             parameters: ["type": "object", "properties": [:] as [String: Any]]
         ),
         AIToolDefinition(
             name: "clear_page_cache",
-            description: "Request eviction of cached Back/Forward documents for loaded pages not on screen (all: true also includes displayed pages). Preserves history, live documents and site data. Returns accepted page-request counts, not entries or reclaimed memory.",
+            description: "Request a Back/Forward cache flush for loaded regular pages off screen. Set all to true to include displayed regular pages. Preserves history, live documents and site data. Returns the count of accepted page requests.",
             parameters: ["type": "object", "properties": ["all": ["type": "boolean"]]]
         )
     ]
@@ -521,7 +521,7 @@ final class DevMCPServer {
     /// About the person's own page, so they act on the active window's tab, not the Agent space.
     private static let humanTools: Set<String> = ["pick", "selection"]
     /// Need no Agent page, so they neither create the Agent space nor load its tab.
-    private static let toolsWithoutAgentPage: Set<String> = ["pages", "clear_page_cache", "check_urls", "getTabList", "closeTabs", "pinTab"]
+    private static let toolsWithoutAgentPage: Set<String> = ["check_urls", "getTabList", "closeTabs", "pinTab"]
 
     private var humanWindow: BrowserWindowState? {
         guard let registry = browserManager?.windowRegistry else { return nil }
@@ -585,6 +585,31 @@ final class DevMCPServer {
                               "compiling": blocker.isCompiling, "lastBuildSucceeded": blocker.lastBuildSucceeded,
                               "hasExportedRules": blocker.networkRules != nil, "sourceURL": source, "matches": matches]))
         }
+    }
+
+    private func pageResourceTool(_ name: String, _ args: [String: Any], tabs: TabsController) -> [String: Any]? {
+        guard name == "pages" || name == "clear_page_cache" else { return nil }
+        let regular = tabs.regularDiagnosticSessions.filter {
+            ($0.navigation as? ChromiumPageNavigation)?.isPrivateSession != true
+        }
+        if name == "pages" {
+            let rows = regular.map { page -> [String: Any] in
+                var row: [String: Any] = ["url": page.url.absoluteString, "loaded": !page.isUnloaded,
+                                           "onScreen": tabs.isOnScreen(page.itemID)]
+                if let navigation = page.navigation as? ChromiumPageNavigation {
+                    let sample = navigation.resourceDiagnostics
+                    if let value = sample.inWindow { row["inWindow"] = value }
+                    if let value = sample.pid { row["pid"] = value }
+                    if let value = sample.visibility { row["visibility"] = value }
+                }
+                return row
+            }
+            return text(json(rows))
+        }
+        let all = args["all"] as? Bool ?? false
+        let pages = regular.filter { !$0.isUnloaded && (all || !tabs.isOnScreen($0.itemID)) }
+        let accepted = pages.filter { $0.clearPageCache() }.count
+        return text("Accepted BFCache flush for \(accepted) of \(pages.count) live pages; no reload or site-data deletion.")
     }
 
     private func nativeEvaluate(_ args: [String: Any], browserManager bm: BrowserManager,
@@ -835,6 +860,7 @@ final class DevMCPServer {
         }
         if bm.engine == .chromium,
            let result = nativeBlockerTool(name, args, browserManager: bm, window: window) { return result }
+        if let result = pageResourceTool(name, args, tabs: bm.tabs) { return result }
         // Model-only tools never create an Agent space or materialize a page.
         let agentSpace = forPerson ? nil
             : Self.toolsWithoutAgentPage.contains(name) ? bm.tabs.agentSpaceID : bm.tabs.ensureAgentSpace(loginsFrom: window)
@@ -1182,29 +1208,6 @@ final class DevMCPServer {
                 }
                 return text(json(scripts))
 
-            case "pages":
-                var pages: [[String: Any]] = []
-                for page in bm.tabs.sessions {
-                    var entry: [String: Any] = [
-                        "url": page.url.absoluteString,
-                        "loaded": !page.isUnloaded,
-                        "onScreen": bm.tabs.isOnScreen(page.itemID)
-                    ]
-                    if let wv = WebKitPageAccess.existingView(for: page) {
-                        entry["pid"] = wv.nookWebProcessIdentifier
-                        entry["inWindow"] = wv.window != nil
-                        entry["visibility"] = (try? await wv.evaluateJavaScript("document.visibilityState")) as? String ?? ""
-                    }
-                    pages.append(entry)
-                }
-                return text(json(pages))
-
-            case "clear_page_cache":
-                let all = args["all"] as? Bool ?? false
-                let views = bm.tabs.sessions.filter { !$0.isUnloaded && (all || !bm.tabs.isOnScreen($0.itemID)) }
-                let accepted = views.reduce(0) { $0 + ($1.clearPageCache() ? 1 : 0) }
-                return text("Accepted BFCache flush for \(accepted) of \(views.count) live pages; no reload or site-data deletion.")
-
             default:
                 return text("Unknown tool: \(name)", error: true)
             }
@@ -1242,15 +1245,5 @@ private struct HTTPRequest {
         path = String(start[1])
         self.headers = headers
         body = buffer.subdata(in: bodyStart..<(bodyStart + length))
-    }
-}
-
-private extension WKWebView {
-    /// `_webProcessIdentifier`: the pid of the WebContent process behind this view, 0 when it has none.
-    var nookWebProcessIdentifier: Int32 {
-        let selector = NSSelectorFromString("_webProcessIdentifier")
-        guard responds(to: selector) else { return 0 }
-        typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
-        return unsafeBitCast(method(for: selector), to: Getter.self)(self, selector)
     }
 }

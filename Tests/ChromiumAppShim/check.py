@@ -336,6 +336,17 @@ def header_cases(work):
     check('the password provider choice follows the paired SDK capability',
           subprocess.run([str(provider)]).returncode == 0)
 
+    recipe_headers = work / 'renderer-state-headers'
+    recipe_headers.mkdir()
+    (recipe_headers / 'BarcChromium').symlink_to(RUNTIME, target_is_directory=True)
+    for label, headers in [('packaged', PUBLIC_HEADERS), ('recipe', recipe_headers)]:
+        binary = work / f'renderer-state-{label}'
+        subprocess.run(['xcrun', 'clang', '-arch', native_architecture(), '-std=c11', '-Werror',
+                        f'-I{headers}', f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',
+                        str(ROOT / 'Tests/ChromiumAppShim/renderer_state.c'), '-o', binary], check=True)
+        check(f'renderer diagnostic adapter honors the {label} SDK table and size',
+              subprocess.run([binary]).returncode == 0)
+
     swift = work / 'import.swift'
     swift.write_text('import BarcChromium\n'
                      'let entry: String = BARC_ENGINE_MAIN_SYMBOL\n'

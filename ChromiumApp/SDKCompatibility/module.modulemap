@@ -7,3 +7,8 @@ module BarkLoadProgress {
   header "BarkLoadProgress.h"
   export *
 }
+
+module BarkRendererState {
+  header "BarkRendererState.h"
+  export *
+}
