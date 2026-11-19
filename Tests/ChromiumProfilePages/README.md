@@ -57,8 +57,10 @@ set -l evidence (mktemp -d /private/tmp/bark-profile-storage.XXXXXX)
 
 The quick links walk opens Settings → Profiles and selects a disposable
 profile with no spaces or existing Chromium window. It opens each
-profile control, checks the named owner and the loaded page in the
-utility window, and closes the window without changing browser data.
+profile control and verifies the named owner and exact Chromium URL in
+the utility window. It also checks the Location permission link and
+the Delete browsing data dialog’s Cancel button, then closes the
+window without changing browser data.
 The headless `profile-pages` check separately verifies exact navigation
 URLs and stale or deleted profile handling.
 
