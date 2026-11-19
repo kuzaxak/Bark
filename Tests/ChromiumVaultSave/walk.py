@@ -7,9 +7,7 @@ from contextlib import closing, contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
-import plistlib
 import sqlite3
-import subprocess
 import sys
 from threading import Thread
 import time
@@ -18,6 +16,8 @@ from urllib.parse import parse_qs
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "Shared"))
 from signed_walk import run_walk, wait_for
+sys.path.insert(0, str(HERE))
+from fixture_support import prepare_engine_profile, verification_shell_code
 
 ACCOUNT = "synthetic-new"
 PASSWORD = "disposable-new-password"
@@ -587,19 +587,10 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
 
 
 def prepare_fixture(root, origin, app, profile, *, legacy_provider):
-    shell = app / "Contents/Frameworks/NookNativeShell.framework/NookNativeShell"
-    code = shell.read_bytes()
-    markers = ["VaultFixture.json", *(MARKER + name for name in
-                                     ("ready", "password", "save", "code", "register"))]
+    code = verification_shell_code(app)
+    markers = [MARKER + name for name in ("ready", "password", "save", "code", "register")]
     if any(marker.encode() not in code for marker in markers):
         raise RuntimeError("The signed candidate has no synthetic Pawl fixture support")
-    report = subprocess.run(
-        ["codesign", "-d", "--entitlements", "-", "--xml", str(app)],
-        check=True, capture_output=True,
-    )
-    entitlements = plistlib.loads(report.stdout) if report.stdout else {}
-    if {"keychain-access-groups", "com.apple.developer.web-browser.public-key-credential"} & entitlements.keys():
-        raise RuntimeError("The vault fixture requires an app without platform credential entitlements")
     mode_markers = ("conditional login writes", "legacy login writes",
                     "checked create", "checked update", "checked commit attempted", "save attempted")
     if any((MARKER + name).encode() not in code for name in mode_markers):
@@ -610,14 +601,7 @@ def prepare_fixture(root, origin, app, profile, *, legacy_provider):
         "origin": origin, "conditionalLoginWrites": not legacy_provider,
         "modalPasskey": not legacy_provider,
     }) + "\n")
-    # The synthetic submission stays on loopback. Chromium otherwise schedules
-    # its own password leak check, independently of the selected save provider.
-    engine_profile = root / "Engine" / f"Barc-{profile.lower()}"
-    engine_profile.mkdir(parents=True)
-    (engine_profile / "Preferences").write_text(json.dumps({
-        "profile": {"password_manager_leak_detection": False},
-    }) + "\n")
-    return engine_profile
+    return prepare_engine_profile(root, profile)
 
 
 def check_chromium_stores(engine_profile, output):
