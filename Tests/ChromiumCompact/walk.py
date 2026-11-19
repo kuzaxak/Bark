@@ -8,10 +8,13 @@ from pathlib import Path
 import signal
 import sys
 from threading import Thread
+import time
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / "Shared"))
 from signed_walk import run_walk, wait_for
+
+HIDDEN_SECONDS = 1.5
 
 
 class Fixture(BaseHTTPRequestHandler):
@@ -96,9 +99,10 @@ def header_button_point(screen, button):
 def exercise(screen, proc, events, output):
     steps = []
 
-    def event(page, kind, since=0, **values):
+    def event(page, kind, since=0, *, minimum_frames=0, **values):
         return wait_for(f"Missing {kind} from {page} matching {values}",
                         lambda: next((r for r in events[since:] if r["page"] == page and r["event"] == kind
+                                      and r.get("frames", 0) >= minimum_frames
                                       and all(r.get(k) == v for k, v in values.items())), None), proc)
 
     def note(step, row):
@@ -151,15 +155,60 @@ def exercise(screen, proc, events, output):
     action = wait_for("The external URL did not open in its own mini window",
                       lambda: len(screen.windows()) == 2 and screen.button("Open in Space"), proc)
     type_value(external, "external", "external")
+    compact_frames = event("/external", "animation-visible", since, documentID=external["documentID"],
+                           visibility="visible", value="external", wasDiscarded=False)
     screen.screenshot(output / "external.png")
     screen.click(header_button_point(screen, action))
-    wait_for("Open in Space kept the external window open", lambda: len(screen.windows()) == 1, proc)
-    note("Open in Space kept the external document, draft and focus", type_value(external, "x", "externalx"))
+    wait_for("Open in Space did not retire the compact window", lambda: len(screen.windows()) == 1, proc)
+    promoted_input = type_value(external, "x", "externalx")
+    note("Open in Space kept the external document, draft and focus", promoted_input)
     screen.screenshot(output / "promoted.png")
+
+    event("/source", "animation-hidden", since, documentID=source["documentID"],
+          visibility="hidden", value=draft, wasDiscarded=False)
+    sample_start = len(events)
+    promoted_frames = event("/external", "animation-visible", sample_start, documentID=external["documentID"],
+                             minimum_frames=compact_frames["frames"] + 12, visibility="visible",
+                             value="externalx", wasDiscarded=False)
+    held_until = time.monotonic() + HIDDEN_SECONDS
+    wait_for("The parked interval did not elapse", lambda: time.monotonic() >= held_until, proc,
+             timeout=HIDDEN_SECONDS + 2)
+    live = event("/external", "animation-visible", len(events), documentID=external["documentID"],
+                 minimum_frames=promoted_frames["frames"] + 12, visibility="visible",
+                 value="externalx", wasDiscarded=False)
+    note("The same compact document animated before and after transfer",
+         {"compact_frames": compact_frames["frames"], "promoted_frames": promoted_frames["frames"], **live})
+
+    before_return = len(events)
+    screen.keys["1"] = 18
+    screen.key("1", flags=screen.command)
+    returned = event("/source", "animation-returned", before_return, documentID=source["documentID"],
+                     visibility="visible", value=draft, wasDiscarded=False)
+    parked = event("/source", "animation-hidden", since, documentID=source["documentID"],
+                   period=returned["period"], visibility="hidden", value=draft, wasDiscarded=False)
+    if (returned["durationMs"] < HIDDEN_SECONDS * 1000 or returned["lateFrames"] != 0
+            or returned["frames"] - parked["frames"] != returned["hiddenFrames"]):
+        raise RuntimeError(f"The previous main document did not stop animating while parked: {returned}")
+    resumed = event("/source", "animation-visible", before_return, documentID=source["documentID"],
+                    minimum_frames=returned["frames"] + 12, visibility="visible", value=draft, wasDiscarded=False)
+    type_value(source, "x", draft + "x")
+    note("The parked main document resumed animation and kept its editable draft",
+         {"resumed_frames": resumed["frames"], **returned})
     screen.key("q", flags=screen.command)
     screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), proc))
 
 
 if __name__ == "__main__":
     signal.signal(signal.SIGTERM, lambda *_: signal.raise_signal(signal.SIGINT))
-    sys.exit(run_walk(__doc__, "compact", serve, exercise))
+    preferences = []
+
+    def options(parser):
+        parser.add_argument("--disable-idle-unloading", action="store_true",
+                            help="check visibility with optional automatic unloading disabled")
+        args = parser.parse_args()
+        if args.disable_idle_unloading:
+            preferences.append(("settings.idleTabUnloadingEnabled", "-bool", "false"))
+        return args
+
+    sys.exit(run_walk(__doc__, "compact", serve, exercise, preferences,
+                      official_qualification=True, parse_options=options))

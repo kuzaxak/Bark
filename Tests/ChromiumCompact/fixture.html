@@ -18,7 +18,8 @@
         navigator.sendBeacon("/events", JSON.stringify({
             page: location.pathname, origin: location.origin, documentID, event,
             value: draft.value, width: innerWidth, height: innerHeight,
-            activeElement: document.activeElement?.tagName, ...details
+            activeElement: document.activeElement?.tagName,
+            visibility: document.visibilityState, wasDiscarded: document.wasDiscarded === true, ...details
         }));
     }
     function announce() {
@@ -48,4 +49,30 @@
     });
     addEventListener("resize", () => report("resize"));
     announce();
+    if (["/source", "/external"].includes(location.pathname)) {
+        const graceMs = 250;
+        let frames = 0, hiddenAt = null, hiddenFrames = 0, lateFrames = 0, period = 0;
+        document.addEventListener("visibilitychange", () => {
+            const now = performance.now();
+            if (document.hidden) {
+                hiddenAt = now;
+                hiddenFrames = lateFrames = 0;
+                report("animation-hidden", { frames, period: ++period });
+            } else if (hiddenAt !== null) {
+                report("animation-returned", { frames, period, hiddenFrames, lateFrames,
+                    durationMs: now - hiddenAt, graceMs });
+                hiddenAt = null;
+            }
+        });
+        function frame() {
+            frames++;
+            if (hiddenAt !== null) {
+                hiddenFrames++;
+                if (performance.now() - hiddenAt >= graceMs) lateFrames++;
+            }
+            if (!document.hidden && frames % 12 === 0) report("animation-visible", { frames });
+            requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+    }
 </script>
