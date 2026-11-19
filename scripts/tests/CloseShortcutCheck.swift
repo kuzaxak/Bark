@@ -25,6 +25,12 @@ struct CloseShortcutCheck {
                      "the command bar over a Peek closes first")
         precondition(CloseShortcut.target(in: .init(showsCommandBar: true, showsPeek: false, showsTab: false), isRepeat: false) == .commandBar,
                      "⌘T on the empty space, then ⌘W: the command bar closes, not the window")
+        for showsTab in [false, true] {
+            let changing = CloseShortcut.BrowserWindow(showsCommandBar: false, showsPeek: false,
+                                                       showsTab: showsTab, selectionIsSettled: false)
+            precondition(CloseShortcut.target(in: changing, isRepeat: false) == .nothing,
+                         "A switch in progress must preserve both the outgoing tab and its window")
+        }
         precondition(CloseShortcut.target(in: nil, isRepeat: false) == .window,
                      "Settings, a mini window, a Web Inspector or an extension popup closes itself")
         precondition(CloseShortcut.closesOtherWindow(lookupKey: key("ц", "w", 13, [.command])),

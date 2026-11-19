@@ -15,6 +15,7 @@ enum CloseShortcut {
         var showsCommandBar: Bool
         var showsPeek: Bool
         var showsTab: Bool
+        var selectionIsSettled = true
     }
 
     enum Target: Equatable {
@@ -33,6 +34,7 @@ enum CloseShortcut {
         guard let browserWindow else { return .window }
         if browserWindow.showsCommandBar { return .commandBar }
         if browserWindow.showsPeek { return .peek }
+        guard browserWindow.selectionIsSettled else { return .nothing }
         if browserWindow.showsTab { return .tab }
         return isRepeat ? .nothing : .window
     }

@@ -14,7 +14,7 @@ with tempfile.TemporaryDirectory(prefix='bark-shortcuts-') as directory:
     extension_action = manager[start:end].replace('CommandWindow.key', 'keyWindow')
     shortcuts = (root / 'Nook/Managers/KeyboardShortcutManager/KeyboardShortcutManager.swift').read_text()
     start = shortcuts.index('    private func executeAction(')
-    end = shortcuts.index('        let isRepeat = lastShortcutWasRepeat', start)
+    end = shortcuts.index('        if browserManager.tabs.profileEngine == .chromium, action == .addSplitView', start)
     dispatch = shortcuts[start:end].replace('private func executeAction', 'func executeAction')
     (out / 'ExtensionShortcut.swift').write_text(
         'import AppKit\nextension ExtensionBrowserFixture {\n' + extension_action +

@@ -2714,11 +2714,21 @@ private final class CatalogApplication: NSApplication {
         try? FileManager.default.removeItem(at: root)
     }
     // Empty spaces exercise command dispatch without requiring a renderer for a starter tab.
-    let initialSpace = UUID(), destination = UUID()
+    let initialSpace = UUID(), destination = UUID(), drafts = UUID()
+    let first = BrowserWindowState(), second = BrowserWindowState()
+    let original = UUID(), other = UUID()
     var tree = TabTree()
     tree.createSpace(id: initialSpace, name: "First", icon: "house", accentHex: "#225588", after: nil)
     tree.createSpace(id: destination, name: "Second", icon: "house", accentHex: "#225588", after: initialSpace)
+    tree.createSpace(id: drafts, name: "Drafts", icon: "folder", accentHex: "#225588", after: destination)
+    let url = URL(string: "https://fixture.invalid/draft")!
+    _ = try tree.createTab(id: original, url: url, title: "Draft", in: .tabs(spaceID: drafts), after: nil)
+    _ = try tree.createTab(id: other, url: url, title: "Draft", in: .tabs(spaceID: drafts), after: original)
     var device = DeviceState()
+    device.windows = [
+        WindowRecord(id: first.id, spaceID: initialSpace, selectedItemBySpace: [drafts: original]),
+        WindowRecord(id: second.id, spaceID: initialSpace, selectedItemBySpace: [drafts: other]),
+    ]
     device.firstLaunchCompleted = true
     let directory = root.appendingPathComponent("Tabs")
     let store = TabStore(directory: directory)
@@ -2733,13 +2743,12 @@ private final class CatalogApplication: NSApplication {
         tabsDirectory: directory)
     let shortcuts = KeyboardShortcutManager(userDefaults: defaults)
     shortcuts.setBrowserManager(manager)
-    let first = BrowserWindowState(), second = BrowserWindowState()
     let firstHandle = NSWindow(), secondHandle = NSWindow(), settings = NSWindow()
     first.window = firstHandle
     second.window = secondHandle
     for state in [first, second] {
         registry.register(state)
-        manager.tabs.attach(window: state, restoringSavedState: false)
+        manager.tabs.attach(window: state)
     }
     first.spaceID = initialSpace
     second.spaceID = initialSpace
@@ -2748,7 +2757,11 @@ private final class CatalogApplication: NSApplication {
         registry.setActive(state)
         application.simulatedKeyWindow = state.window
     }
-    func drain() { RunLoop.main.run(until: Date().addingTimeInterval(0.05)) }
+    func drain() {
+        var delivered = false
+        DispatchQueue.main.async { delivered = true }
+        while !delivered { RunLoop.main.run(until: Date().addingTimeInterval(0.01)) }
+    }
     focus(first)
     shortcuts.perform(.toggleSidebar)
     drain()
@@ -2785,6 +2798,17 @@ private final class CatalogApplication: NSApplication {
     application.simulatedKeyWindow = settings
     drain()
     precondition(!first.isSidebarVisible, "A replacement window inherited a stale command")
+
+    first.window = firstHandle
+    first.spaceID = drafts
+    second.spaceID = drafts
+    precondition(first.selectedItemID == original && second.selectedItemID == other)
+    focus(first)
+    shortcuts.perform(.closeTab)
+    focus(second)
+    drain()
+    precondition(manager.tabs.item(other) != nil, "Close Tab closed the other window's draft")
+    precondition(manager.tabs.item(original) == nil, "Close Tab should close the document where it was invoked")
 }
 
 @MainActor private func checkPeekWithoutAnEngineDocument() throws {

@@ -268,14 +268,7 @@ class KeyboardShortcutManager {
             }
         }
 
-        // The constrained Chromium WebUI has the key now. Check it before
-        // deferring an ordinary close to the browser model.
-        if shortcut.action == .closeTab, handleCertificateClose(isRepeat: event.isARepeat) { return true }
-
-        // Read now: the action runs on the next turn of the run loop, when this event is gone.
-        lastShortcutWasControlTab = Self.isControlTab(event)
-        lastShortcutWasRepeat = event.isARepeat
-        executeAction(shortcut.action)
+        executeAction(shortcut.action, isRepeat: event.isARepeat, isControlTab: Self.isControlTab(event))
         return true
     }
 
@@ -292,10 +285,6 @@ class KeyboardShortcutManager {
         DispatchQueue.main.async { browserManager.tabs.reopenLastClosed(in: window) }
     }
 
-    /// Whether the shortcut being run came from Control-Tab, which opens the tab switcher.
-    private var lastShortcutWasControlTab = false
-    private var lastShortcutWasRepeat = false
-    
     private static func isControlTab(_ event: NSEvent) -> Bool {
         guard event.type == .keyDown, event.keyCode == 48 else { return false } // Tab
         return event.modifierFlags.contains(.control) && !event.modifierFlags.contains(.command)
@@ -304,7 +293,6 @@ class KeyboardShortcutManager {
     /// Runs `action` on the active window, as its shortcut would. The command bar runs its
     /// actions through here too.
     func perform(_ action: ShortcutAction) {
-        lastShortcutWasRepeat = false
         executeAction(action)
     }
 
@@ -324,13 +312,13 @@ class KeyboardShortcutManager {
     /// Close Tab from its shortcut, the File menu or the command bar, in the key window (see
     /// `CloseShortcut`).
     func closeTab(isRepeat: Bool) {
-        guard !CommandWindow.keyKeepsKeys, !handleCertificateClose(isRepeat: isRepeat) else { return }
-        let keyWindow = CommandWindow.key ?? NSApp.mainWindow
-        let state = keyWindow.flatMap { key in windowRegistry?.windows.values.first { $0.window === key } }
+        guard let keyWindow = CommandWindow.key, !handleCertificateClose(isRepeat: isRepeat) else { return }
+        let state = windowRegistry?.windows.values.first { $0.window === keyWindow }
         let peeks = browserManager?.peekManager
         let shown = state.map {
             CloseShortcut.BrowserWindow(showsCommandBar: $0.commandPalette?.isVisible == true,
-                                        showsPeek: peeks?.page(in: $0) != nil, showsTab: $0.selectedItemID != nil)
+                                        showsPeek: peeks?.page(in: $0) != nil, showsTab: $0.selectedItemID != nil,
+                                        selectionIsSettled: !$0.nativePresentationIsPreparing && !$0.nativeSpaceSwitchIsUnresolved)
         }
         switch CloseShortcut.target(in: shown, isRepeat: isRepeat) {
         case .commandBar:
@@ -351,13 +339,12 @@ class KeyboardShortcutManager {
         NSApp.sendAction(#selector(NSWindow.performClose(_:)), to: nil, from: nil)
     }
 
-    private func executeAction(_ action: ShortcutAction) {
+    private func executeAction(_ action: ShortcutAction, isRepeat: Bool = false, isControlTab: Bool = false) {
         guard let browserManager = browserManager else { return }
         if browserManager.tabs.profileEngine == .chromium, action == .manageExtensions {
             browserManager.manageExtensions(deferred: true)
             return
         }
-        let isRepeat = lastShortcutWasRepeat
         if browserManager.tabs.profileEngine == .chromium, action == .addSplitView {
             guard !isRepeat, let window = windowRegistry?.activeWindow,
                   let keyWindow = CommandWindow.key, window.window === keyWindow else { return }
@@ -415,7 +402,7 @@ class KeyboardShortcutManager {
         let requiresSameWindow = action == .toggleSidebar || action == .nextSpace ||
             action == .previousSpace || action.spaceIndex != nil
         let source = requiresSameWindow ? keyBrowserWindow : nil
-        DispatchQueue.main.async { [weak self, weak source, weak owner = source?.window] in
+        let run = { [weak self, weak source, weak owner = source?.window] in
             guard let self else { return }
             let tabs = browserManager.tabs
             let window: BrowserWindowState?
@@ -445,7 +432,7 @@ class KeyboardShortcutManager {
                 let step = action == .nextTab ? 1 : -1
                 // Control-Tab is Arc's switcher over recent tabs; any other key a person gave these
                 // actions keeps stepping through the sidebar in order.
-                if self.lastShortcutWasControlTab {
+                if isControlTab {
                     TabSwitcher.step(step, in: window, tabs: tabs)
                 } else if step > 0 {
                     tabs.selectNext(in: window)
@@ -539,8 +526,10 @@ class KeyboardShortcutManager {
                     || (settings.appearanceMode == .system && NSApp.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua)
                 settings.appearanceMode = isDark ? .light : .dark
             }
-
         }
+        // Close has to resolve its layer while the invoking window and pane still own the key.
+        if action == .closeTab { run() }
+        else { DispatchQueue.main.async { run() } }
     }
 
     // MARK: - Global Event Monitoring
