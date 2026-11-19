@@ -1210,7 +1210,7 @@ index 6f3034c426..2d77bb89fb 100644
 +  // One async body at a time, as WK callAsyncJavaScript. No native binding is
 +  // installed in this separate user-code world. Blink owns the awaited reply.
 +  const std::string source = "(async()=>{try{\n" + nook_page_tweaks_->boost_scripts[index] +
-+      "\n}catch(e){console.error('Nook Boost script:',e)}})()";
++      "\n}catch(e){console.error('Bark Boost script:',e)}})()";
 +  const blink::WebScriptSource script(blink::WebString::FromUtf8(source));
 +  nook_boost_script_next_ = index + 1;
 +  frame->RequestExecuteScript(ISOLATED_WORLD_ID_NOOK_BOOST_SCRIPTS,

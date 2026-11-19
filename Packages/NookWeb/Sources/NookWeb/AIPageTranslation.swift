@@ -159,7 +159,7 @@ enum AIPageTranslation {
     }
 
     static let instructions = """
-    You translate the text of a web page for Nook, a web browser. The user message is JSON: \
+    You translate the text of a web page for Bark, a web browser. The user message is JSON: \
     target_language; the page's source_language, title and host, for context; and texts, an array \
     of {id, text} items in page order.
 
