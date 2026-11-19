@@ -138,12 +138,14 @@ python3 scripts/bark-check.py launch build/Bark.app
 
 To verify an existing signed app, use `python3 scripts/bark-check.py verify /path/to/Bark.app`.
 **Help → Build Information** reports a shell source SHA-256 separately from the engine SDK pin.
-To identify matching shell inputs, calculate the digest from a checkout or an extracted source
-archive. To check the signed bundle against a reported digest, pass that value to the verifier.
+To check a signed app against its source and engine, run the following from the candidate's
+checkout or extracted source archive. Set `arch` to the architecture of the app.
 
 ```fish
-python3 scripts/bark-check.py shell-source --source /path/to/source
-python3 scripts/bark-check.py verify --shell-source REPORTED_SHA256 /path/to/Bark.app
+set arch arm64
+set shell_source (python3 scripts/bark-check.py shell-source)
+and python3 scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
+    --engine /path/to/BarkSDK.tar.gz --shell-source "$shell_source"
 ```
 
 This digest includes local app and package sources, resources, the Release project and package
@@ -193,7 +195,11 @@ when Python runs under Rosetta. Use `--arch x86_64` or `--arch arm64` to work wi
 artifacts for another architecture. The checkout needs a pin for the selected
 architecture. Both developer pins are in the checkout.
 
-`smoke` and `launch` require a pinned engine matching the host’s native architecture. Add `--require-official` to either command to verify the optimized SDK before opening Bark. The automated smoke test uses the same desktop lock as the native walks. It opens its loopback page after ten seconds of desktop inactivity and stops Bark when the renderer acknowledges the page. Exit status 3 means the desktop was occupied, locked, or in use during the test. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
+To use your everyday Bark profile, open the installed **Bark.app** from Finder.
+For hands-on testing with a temporary profile, use `launch`. It keeps the fixture
+available and Bark running until you quit Bark or press Ctrl+C in the terminal.
+
+`smoke` and `launch` require a pinned engine matching the host’s native architecture. Add `--require-official` to either command to verify the optimized SDK before opening Bark. The automated smoke test uses the same desktop lock as the native walks. It opens its loopback page after ten seconds of desktop inactivity and stops Bark when the renderer acknowledges the page. Exit status 3 means the desktop was occupied, locked, or in use during the test. Both commands remove their disposable profiles when they finish.
 
 For the optional CI smoke, choose a trusted Mac with a logged-in desktop session and a verified SDK pin for its native CPU. Set `BARK_SMOKE_RUNNER` to a runner label unique to that configuration and `BARK_ENGINE_SOURCE` to the matching SDK directory or archive. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch.
 The job installs the SDK once in `~/Library/Caches/BarkSDK/<pin>/Engine`. It

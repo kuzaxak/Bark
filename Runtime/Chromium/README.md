@@ -160,10 +160,13 @@ present. The shared SDK headers must still match the other architecture’s
 pinned headers. Check the resulting metadata change before adopting the pin.
 
 For a private handoff, commit the published bridge header, generated header
-digest and architecture pin together on the local qualification branch. This
-lets a receiver reproduce the app when a bridge change also changes the
-generated header. Run the commands from `$barc_repo` with `BARK_SIGN_IDENTITY`
-set to a local Developer ID Application identity.
+digest and the pin for each architecture you distribute together on the local
+qualification branch. Both SDKs in a two-architecture handoff must supply the
+same public headers. Use one source archive for the pair and send each Mac its
+matching SDK. The example below packages one official architecture. For a
+developer SDK, omit `--require-official` throughout. Run the commands from
+`$barc_repo` with `BARK_SIGN_IDENTITY` set to a local Developer ID Application
+identity.
 
 ```fish
 set -l headers (python3 scripts/chromium_sdk_layout.py headers Packages/BarkEngine "$arch")
@@ -196,8 +199,15 @@ in their directory and check all three match. This distinguishes signed app
 builds that use the same SDK. Extract the source tarball into an empty directory
 or check out the revision recorded in its filename. From that source root, install
 the SDK with `python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$archive"`.
-Unpack the signed app and compare it against the installed SDK with
-`python3 scripts/bark-check.py verify --arch "$arch" --require-official /path/to/Bark.app`.
+Unpack the signed app and check its embedded engine and shell against the
+installed SDK and the source archive.
+
+```fish
+set shell_source (python3 scripts/bark-check.py shell-source)
+and python3 scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
+    --require-official --shell-source "$shell_source"
+```
+
 Run the native smoke and guarded walks against that app. Release preparation
 uses the approved revision of the qualification metadata.
 
