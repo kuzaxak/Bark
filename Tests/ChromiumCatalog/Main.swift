@@ -2832,6 +2832,19 @@ private final class CatalogApplication: NSApplication {
     drain()
     precondition(manager.tabs.item(other) != nil, "Close Tab closed the other window's draft")
     precondition(manager.tabs.item(original) == nil, "Close Tab should close the document where it was invoked")
+    shortcuts.reopenClosedTab()
+    focus(first)
+    drain()
+    precondition(manager.tabs.item(original) == nil, "A stale Reopen consumed the closed tab")
+    application.simulatedKeyWindow = settings
+    shortcuts.reopenClosedTab()
+    drain()
+    precondition(manager.tabs.item(original) == nil, "Settings reopened a tab behind its window")
+    focus(first)
+    shortcuts.reopenClosedTab()
+    drain()
+    precondition(manager.tabs.item(original) != nil && manager.tabs.item(other) != nil,
+                 "The invoking browser must still be able to reopen the original draft")
 }
 
 @MainActor private func checkPeekWithoutAnEngineDocument() throws {
