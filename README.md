@@ -94,6 +94,8 @@ choose individual `.nookspace` files to import.
 The app owns the executable, menus and window layout. The engine owns Chromium
 profiles, documents and renderer processes. A versioned C interface connects the
 two. A shell change can use the pinned engine without rebuilding Chromium.
+For a bug report, open **Bark → About Bark** to find the app build and exact
+Chromium version.
 [App entry point](ChromiumApp) · [Swift window code](App/Chromium) ·
 [Engine SDK](Packages/BarkEngine) · [Chromium integration](Runtime/Chromium)
 

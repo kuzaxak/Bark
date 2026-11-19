@@ -1,16 +1,18 @@
 // Licensed under GPL-3.0. See LICENSE.
 import AppKit
 
-/// Chromium builds the application menu for its own tab strip and toolbar, which Nook's windows do
-/// not render. This hides what only applies to them or has no effect in them, routes tab and
-/// address commands to the sidebar, and adds Nook's own commands.
+/// Routes the Chromium application menu to the controls in Bark's native window.
 @MainActor
 final class ChromiumAppMenu: NSObject {
-    static var aboutOptions: [NSApplication.AboutPanelOptionKey: Any] {
+    static func aboutOptions(chromiumVersion: String?) -> [NSApplication.AboutPanelOptionKey: Any] {
         let paragraph = NSMutableParagraphStyle()
         paragraph.alignment = .center
+        var engine = "Chromium"
+        if let chromiumVersion, !chromiumVersion.isEmpty {
+            engine += " " + chromiumVersion
+        }
         let credits = NSAttributedString(
-            string: "Bark is independently maintained and derives from Nook.\nChromium provides the browser engine.",
+            string: "\(engine)\nBark is independently maintained and derives from Nook.",
             attributes: [.paragraphStyle: paragraph]
         )
         return [.applicationName: "Bark", .credits: credits]

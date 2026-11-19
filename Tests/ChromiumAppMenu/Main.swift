@@ -218,11 +218,13 @@ enum Check {
 
         let empty = NSMenu()
         ChromiumAppMenu { _ in }.install(in: empty)
-        let about = ChromiumAppMenu.aboutOptions
+        let about = ChromiumAppMenu.aboutOptions(chromiumVersion: "156.1.2.3")
         precondition(Set(about.keys) == [.applicationName, .credits], "Keep bundle versions and copyright")
         precondition(about[.applicationName] as? String == "Bark")
         precondition((about[.credits] as? NSAttributedString)?.string ==
-            "Bark is independently maintained and derives from Nook.\nChromium provides the browser engine.")
+            "Chromium 156.1.2.3\nBark is independently maintained and derives from Nook.")
+        let unversioned = ChromiumAppMenu.aboutOptions(chromiumVersion: nil)
+        precondition((unversioned[.credits] as? NSAttributedString)?.string.hasPrefix("Chromium\n") == true)
         verifyUpdateConfiguration()
         print("PASS chromium-app-menu")
     }
