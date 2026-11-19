@@ -798,6 +798,22 @@ fileprivate final class PageView: NSView {
                      && page.window == nil && window.firstResponder === panes[2].input,
                      "selecting an uncovered sibling parks the Peek and leaves the sibling focused")
         precondition(root.show(tab: 61, of: 5))
+        let originalSplit = root.split!
+        let retainedFocusCard = root.showPeek(overSplit, header: header, actions: actions, dismiss: {})
+        precondition(retainedFocusCard != 0 && window.firstResponder === page.input)
+        let splitWithPromotedPage = ChromiumWindowRoot.Split(
+            panes: [Pane(client: 5, tab: 60), overSplit.source, overSplit.page, Pane(client: 5, tab: 62)],
+            vertical: false, dividers: [0.25, 0.5, 0.75], focused: overSplit.source.tab)
+        precondition(root.showSplit(splitWithPromotedPage))
+        precondition(header.superview == nil && actions.superview == nil && page.window === window &&
+                     window.firstResponder === sourcePane.input,
+                     "promotion retires the card and restores the source responder even when model focus is unchanged")
+        let promotedContainer = page.superview
+        precondition(root.showPeek(overSplit, header: header, actions: actions, dismiss: {}) == 0 &&
+                     page.superview === promotedContainer && root.split == splitWithPromotedPage,
+                     "a stale Peek presentation cannot take a live split pane back out of the split")
+        precondition(root.showSplit(originalSplit) && page.superview == nil)
+
         let beforePromotion = root.showPeek(overSplit, header: header, actions: actions, dismiss: {})
         let promotionMoves = panes.map(\.windowMoves)
         precondition(beforePromotion != 0 && root.showSplit(.init(

@@ -286,11 +286,16 @@ final class ChromiumWindowRoot: NSView {
         }
         shownTab = split.focused
         client = focused.client
-        // If the card was promoted to a pane, its view is already in the
-        // new slot. Removing the card now keeps the view in this window.
-        if let card = peekCard, card.peek.source != focused { removePeek() }
+        // A promoted page is already in its new slot, even when the source
+        // keeps model focus. Retire the card without detaching that page.
+        let retiredCard = peekCard.flatMap { card in
+            card.peek.source != focused || views[card.peek.page.tab] != nil ? card : nil
+        }
+        if retiredCard != nil { removePeek() }
         layoutPageArea()
-        if focusChanged { focusPage() }
+        if focusChanged || retiredCard != nil {
+            focusPage(preferred: retiredCard?.peek.source == focused ? retiredCard?.sourceResponder : nil)
+        }
         return true
     }
 
@@ -810,7 +815,7 @@ extension ChromiumWindowRoot: ChromiumPanelHost {
     @discardableResult
     func showPeek(_ peek: Peek, header: NSView, actions: NSView, dismiss: @escaping () -> Void) -> UInt64 {
         guard peek.page != peek.source, let source = slots.first(where: { $0.pane == peek.source })?.heldView,
-              let view = pageView(peek.page) else { return 0 }
+              let view = pageView(peek.page), !slots.contains(where: { $0.heldView === view }) else { return 0 }
         removePeek()
         peekGeneration = peekGeneration == .max ? 1 : peekGeneration + 1
         let card = PeekCard(peek: peek, generation: peekGeneration, slot: Slot(pane: peek.page, bridge: bridge),
