@@ -25,3 +25,14 @@ both physical **Close** and **Cmd+W** dismiss it while keeping the original
 page selected. It switches to the alternate tab and back to confirm both tabs
 survive, then quits Bark. The walk does not accept
 certificate exceptions or modify Keychain trust.
+
+The cookie walk uses two disposable loopback sites in the same Bark profile.
+It checks both cookies through browser requests, chooses **Site Controls →
+More → Clear Cookies** on the first site, and checks that only that site's
+cookie disappears. The evidence includes the server observations and the
+identity of the signed candidate.
+
+```fish
+set -l evidence (mktemp -d /private/tmp/bark-site-cookies.XXXXXX)
+"$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python" -B Tests/ChromiumSiteControls/cookies_walk.py --app build/Bark.app --verify-sdk --output "$evidence/walk"
+```
