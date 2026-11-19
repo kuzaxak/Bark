@@ -18,6 +18,7 @@ class OfficialQualificationTests(unittest.TestCase):
         (app / "Contents").mkdir(parents=True)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
             "CFBundleIdentifier": "ee.qdo.bark", "CFBundleVersion": "120", "CFBundleShortVersionString": "1.5",
+            "BarkShellSourceSHA256": "0" * 64 if mismatch == "stale-shell" else "f" * 64,
         }))
         image = root / "candidate.dmg"
         image.write_bytes(b"fixture image")
@@ -78,6 +79,7 @@ class OfficialQualificationTests(unittest.TestCase):
 
         tools = {"native_architecture": lambda: "arm64"}
         with patch.object(qualify.runpy, "run_path", return_value=tools), \
+                patch.object(qualify, "shell_source_digest", return_value="f" * 64), \
                 patch.object(qualify, "verify_official_sdk", return_value=(None, sdk)), \
                 patch.object(qualify, "bundle_cdhash", return_value=candidate["bundle_cdhash"]), \
                 patch.object(qualify.subprocess, "run"), patch.object(qualify.time, "sleep"), \
@@ -87,6 +89,14 @@ class OfficialQualificationTests(unittest.TestCase):
                             output, update_kit=update_kit)
         self.assertEqual(len(runs), 4)
         return json.loads((output / "qualification.json").read_text())
+
+    def test_older_signed_shell_with_the_same_sdk_cannot_qualify(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with self.assertRaisesRegex(ValueError, "different Bark shell source"):
+                self.run_candidate(root, mismatch="stale-shell", update_kit=root / "kit")
+            self.assertFalse((root / "evidence/qualification.json").exists())
+            self.assertFalse((root / "evidence/startup-1").exists())
 
     def test_all_four_walks_use_the_installed_candidate(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -132,9 +142,14 @@ class OfficialQualificationTests(unittest.TestCase):
                                    root / "candidate.dmg", root / "Bark.app")
             with patch.object(qualify, "bundle_cdhash", return_value=result["candidate"]["bundle_cdhash"]), \
                     patch.object(qualify, "read_pin", return_value=result["candidate"]["sdk_pin"]), \
+                    patch.object(qualify, "shell_source_digest", return_value="f" * 64) as source_digest, \
                     patch.object(qualify, "verify_release_signature") as verify_signature:
                 qualify.check_release_receipt(receipt, image, "arm64", app)
                 verify_signature.assert_called_once_with(app)
+                source_digest.return_value = "0" * 64
+                with self.assertRaisesRegex(ValueError, "different Bark shell source"):
+                    qualify.check_release_receipt(receipt, image, "arm64", app)
+                source_digest.return_value = "f" * 64
                 verify_signature.side_effect = subprocess.CalledProcessError(1, "codesign")
                 with self.assertRaises(subprocess.CalledProcessError):
                     qualify.check_release_receipt(receipt, image, "arm64", app)

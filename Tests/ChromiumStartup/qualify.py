@@ -22,6 +22,7 @@ from run_browser_tests import SCREEN_UNAVAILABLE, ScreenUnavailable
 import bark_release
 from publish_chromium_sdk import file_digest
 from chromium_sdk_layout import read_pin
+from bark_shell_source import shell_source_digest, verify_shell_source
 
 
 MEASUREMENTS = ("launch_to_pointer_ms", "switch_back_to_key_ms", "observed_hidden_ms")
@@ -127,6 +128,7 @@ def qualify(app, image, identity, output, *, update_kit=None):
     architecture = contributor["native_architecture"]()
     _, provenance = verify_official_sdk(contributor, architecture, app)
     requirement = verify_release_signature(app)
+    verify_shell_source(app, expected=shell_source_digest(REPO))
     candidate = {**provenance, "bundle_cdhash": bundle_cdhash(app)}
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     if info.get("CFBundleIdentifier") != "ee.qdo.bark":
@@ -199,6 +201,7 @@ def check_release_receipt(receipt, image, architecture, app):
     validate_machine(result.get("hardware"), result.get("macos"))
     checked_update_identities(result["installed_update"])
     verify_release_signature(app)
+    verify_shell_source(app, expected=shell_source_digest(REPO))
 
 
 def release_receipt_main(argv):
