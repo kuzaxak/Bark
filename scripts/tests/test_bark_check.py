@@ -139,6 +139,11 @@ class NativeHarnessTests(unittest.TestCase):
                             if architecture in caches:
                                 self.assertEqual(cache, caches[architecture])
                             caches[architecture] = cache
+                            headers = cache / "Build/Products/Debug/include/BarcChromium"
+                            headers.mkdir(parents=True, exist_ok=True)
+                            features = ("#define BARC_HAS_PASSWORD_PROVIDER 1\n#define BARC_HAS_LOAD_PROGRESS 1\n"
+                                        if architecture == "arm64" else "")
+                            (headers / "barc_bridge_api.h").write_text(features)
                             if architecture == "arm64":
                                 separate = os.open(caches["x86_64"], os.O_RDONLY)
                                 try:
@@ -152,11 +157,20 @@ class NativeHarnessTests(unittest.TestCase):
                         finally:
                             os.close(fd)
                         if args[0] == "xcrun":
+                            table = next(path for path in args if isinstance(path, Path) and path.name == "BridgeTable.swift")
+                            source = table.read_text()
+                            self.assertIn('fatalError("tab_invoke_extension")', source)
+                            if architecture == "arm64":
+                                self.assertIn('set_password_provider: { _ in fatalError("set_password_provider") }', source)
+                                self.assertIn('tab_observe_load_progress: nil', source)
+                            else:
+                                self.assertNotIn("tab_observe_load_progress", source)
                             binary = args[-1]
                             binary.parent.mkdir(parents=True, exist_ok=True)
                             binary.touch()
-                        elif isinstance(args[0], Path):
+                        elif isinstance(args[0], Path) or args[0] == "/usr/bin/env":
                             self.assertTrue(binary.is_file())
+                            self.assertEqual(args[-1], binary)
                             if command == "page-host":
                                 raise subprocess.CalledProcessError(1, args)
 
@@ -167,7 +181,8 @@ class NativeHarnessTests(unittest.TestCase):
                                 cli["check_native_harness"](command)
                         else:
                             cli["check_native_harness"](command)
-                    self.assertEqual([args[0] for args in stages], ["xcodebuild", "xcrun", binary])
+                    launcher = "/usr/bin/env" if command == "catalog" else binary
+                    self.assertEqual([args[0] for args in stages], ["xcodebuild", "xcrun", launcher])
                     self.assertFalse(binary.exists())
                     fd = os.open(caches[architecture], os.O_RDONLY)
                     try:

@@ -80,25 +80,31 @@ def check_native_harness(command):
         suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
                  "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
                  "live-fetch": "ChromiumLiveFetch"}[command]
-        checks = ("Main", "Ownership") if command == "live-fetch" else ("Main",)
-        for check in checks:
-            # Put the executable beside the package bundles for SwiftPM's resource lookup.
-            binary = products / f".bark-{command}-{check}-{uuid4()}"
-            try:
-                run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
-                    "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
-                    "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
-                    "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
-                    "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
-                    REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
-                if command == "catalog":
-                    # Background model tasks may hold the disposable database until exit.
-                    with TemporaryDirectory(prefix="bark-catalog-") as scratch:
-                        run("/usr/bin/env", f"TMPDIR={scratch}/", binary)
-                else:
-                    run(binary)
-            finally:
-                binary.unlink(missing_ok=True)
+        sys.path.insert(0, str(REPO / "Tests/Shared"))
+        from bridge_fixture import write_bridge_fixture
+
+        with TemporaryDirectory(prefix="bark-bridge-fixture-") as fixture:
+            table = write_bridge_fixture(products / "include/BarcChromium/barc_bridge_api.h",
+                                         Path(fixture) / "BridgeTable.swift")
+            checks = ("Main", "Ownership") if command == "live-fetch" else ("Main",)
+            for check in checks:
+                # Put the executable beside the package bundles for SwiftPM's resource lookup.
+                binary = products / f".bark-{command}-{check}-{uuid4()}"
+                try:
+                    run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
+                        "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
+                        "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
+                        "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
+                        "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
+                        table, REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
+                    if command == "catalog":
+                        # Background model tasks may hold the disposable database until exit.
+                        with TemporaryDirectory(prefix="bark-catalog-") as scratch:
+                            run("/usr/bin/env", f"TMPDIR={scratch}/", binary)
+                    else:
+                        run(binary)
+                finally:
+                    binary.unlink(missing_ok=True)
     finally:
         os.close(lock)
 
