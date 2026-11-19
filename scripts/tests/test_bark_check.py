@@ -17,6 +17,46 @@ from unittest.mock import Mock, call, patch
 CLI = Path(__file__).resolve().parents[1] / "bark-check.py"
 
 
+class ImplicitEngineTests(unittest.TestCase):
+    def setUp(self):
+        self.cli = runpy.run_path(str(CLI))["main"].__globals__
+        scratch = tempfile.TemporaryDirectory()
+        self.addCleanup(scratch.cleanup)
+        self.root = Path(scratch.name).resolve()
+        self.cache, self.local = self.root / "cache", self.root / "local"
+        for path in (self.cache, self.local):
+            path.mkdir()
+            (path / "SHA256SUMS").touch()
+
+    def resolve(self, source=None, *, broken=(), official=False):
+        def verified(path, *_):
+            if path in broken:
+                raise ValueError(f"damaged {path.name}")
+        verifier = Mock(side_effect=verified)
+        with patch.dict(self.cli, {"cached_engine": lambda _: self.cache,
+                                   "local_engine": lambda *_: self.local,
+                                   "verify_engine": verifier}):
+            with self.cli["pinned_engine"](source, self.root, "arm64", official) as engine:
+                return engine, verifier.call_args_list
+
+    def test_implicit_uses_cache_when_valid(self):
+        self.assertEqual(self.resolve(), (self.cache, [call(self.cache, "arm64", False)]))
+
+    def test_damaged_cache_falls_back_to_local_and_checks_same_official_requirement(self):
+        self.assertEqual(self.resolve(broken=(self.cache,), official=True),
+                         (self.local, [call(self.cache, "arm64", True), call(self.local, "arm64", True)]))
+        with self.assertRaisesRegex(ValueError, "damaged local"):
+            self.resolve(broken=(self.cache, self.local))
+
+    def test_explicit_source_and_missing_fallback_preserve_verification_error(self):
+        with self.assertRaisesRegex(ValueError, "damaged cache"):
+            self.resolve(str(self.cache), broken=(self.cache,))
+        (self.local / "SHA256SUMS").unlink()
+        self.local.rmdir()
+        with self.assertRaisesRegex(ValueError, "damaged cache"):
+            self.resolve(broken=(self.cache,))
+
+
 class ArchitectureTests(unittest.TestCase):
     def setUp(self):
         self.cli = runpy.run_path(str(CLI))["main"].__globals__

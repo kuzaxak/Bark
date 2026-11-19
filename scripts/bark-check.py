@@ -174,12 +174,24 @@ def install_engine(engine, architecture, require_official=False):
 
 @contextmanager
 def pinned_engine(source, working, architecture, require_official=False):
-    installed = cached_engine(architecture)
     if not source:
-        source = str(installed if (installed / "SHA256SUMS").is_file() else local_engine(PACKAGE, architecture))
-        if not Path(source).is_dir():
+        installed = cached_engine(architecture)
+        local = local_engine(PACKAGE, architecture)
+        if (installed / "SHA256SUMS").is_file():
+            try:
+                path = installed.resolve(strict=True)
+                verify_engine(path, architecture, require_official)
+            except (OSError, subprocess.CalledProcessError, ValueError):
+                if not local.is_dir() or local.resolve() == installed.resolve():
+                    raise
+                print(f"Cached SDK verification failed at {installed}; checking {local}", flush=True)
+            else:
+                yield path
+                return
+        if not local.is_dir():
             raise ValueError("The pinned SDK is missing. Install it with bark-check.py engine --install "
                              "--engine PATH, or build it using Runtime/Chromium/README.md.")
+        source = str(local)
     path = Path(source).expanduser()
     if not path.is_dir():
         if not hasattr(tarfile, "data_filter"):
