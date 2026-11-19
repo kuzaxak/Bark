@@ -333,7 +333,7 @@ def header_cases(work):
     recipe_headers.mkdir()
     (recipe_headers / 'BarcChromium').symlink_to(RUNTIME, target_is_directory=True)
     for label, headers in [('packaged', PUBLIC_HEADERS), ('recipe', recipe_headers)]:
-        for fixture in ('password_provider', 'renderer_state'):
+        for fixture in ('password_provider', 'renderer_state', 'tab_favicon'):
             binary = work / f'{fixture}-{label}'
             subprocess.run(['xcrun', 'clang', '-arch', native_architecture(), '-std=c11', '-Werror',
                             f'-I{headers}', f'-I{ROOT / "ChromiumApp/SDKCompatibility"}',

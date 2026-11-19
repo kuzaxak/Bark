@@ -3,6 +3,7 @@
 @testable import NookNativeShell
 #endif
 import AppKit
+import struct SwiftUI.Image
 import BarcChromium
 import NookWeb
 import NookTabsCore
@@ -303,6 +304,59 @@ private enum Native {
     expect(nil, "A closed page must remain unknown even with its old profile and view present")
     precondition(viewQueries == 3, "Invalidated ownership must avoid bridge view reads")
     print("Chromium renderer resource diagnostics checks PASS")
+}
+
+@MainActor private func checkTabFavicon() throws {
+    let window: Int32 = 10, tab: Int32 = 2092
+    let page = try ChromiumPageNavigation(profileID: Native.first, window: window, tab: tab, bridge: Native.bridge)
+    defer { page.invalidate() }
+    let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil)
+    session.installNavigation(page)
+    let observed = Native.observations.first { $0.value.3 == tab }!
+    let globe = Image(systemName: "globe")
+    func icon(width: Int) -> Data {
+        let bitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: 16,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)!
+        return bitmap.representation(using: .png, properties: [:])!
+    }
+    func deliver(_ bytes: Data, token: UInt64? = nil) {
+        bytes.withUnsafeBytes { buffer in
+            page.receiveFavicon(token: token ?? observed.key, bytes: buffer.bindMemory(to: UInt8.self).baseAddress,
+                                count: buffer.count)
+        }
+    }
+    func emit(_ event: BarcTabEvent, owner: Int32 = 10, flags: UInt32 = 0) {
+        observed.value.0?(observed.value.1, observed.key, Int32(event.rawValue), owner, tab, nil, nil, 0, flags)
+    }
+    let valid = icon(width: 20)
+    precondition(session.favicon == globe)
+    deliver(valid, token: observed.key + 1)
+    precondition(page.state.favicon == nil)
+    deliver(valid)
+    let first = page.state.favicon
+    precondition(first?.size == NSSize(width: 20, height: 16) && session.favicon != globe)
+    emit(BARC_TAB_TITLE)
+    emit(BARC_TAB_COMMITTED, flags: BARC_TAB_SAME_DOCUMENT.rawValue)
+    precondition(page.state.favicon === first)
+    emit(BARC_TAB_COMMITTED)
+    precondition(session.favicon == globe)
+    for malformed in [Data(), Data([0, 1]), icon(width: 33), Data(repeating: 0, count: 32_769)] {
+        deliver(valid)
+        deliver(malformed)
+        precondition(page.state.favicon == nil && session.favicon == globe)
+    }
+    deliver(valid)
+    emit(BARC_TAB_STATE, owner: 0)
+    deliver(valid)
+    precondition(session.favicon == globe)
+    emit(BARC_TAB_STATE)
+    deliver(valid)
+    precondition(session.favicon != globe)
+    session.installNavigation(try ChromiumPageNavigation(profileID: Native.first, window: window, tab: tab + 1, bridge: Native.bridge))
+    deliver(valid)
+    precondition(session.favicon == globe, "The old observation cannot change the replacement tab's icon")
+    print("Chromium site icons follow the observed tab, document and owner")
 }
 
 @MainActor private func checkLoadProgress() throws {
@@ -788,6 +842,7 @@ private enum HostChecks {
     @MainActor static func main() throws {
         try checkResourceDiagnostics()
         try checkLoadProgress()
+        try checkTabFavicon()
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         let window = BrowserWindowState()
         let shell = NSView()

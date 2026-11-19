@@ -95,7 +95,7 @@ def check_native_harness(command):
                 try:
                     run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
                         "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
-                        "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
+                        "-I", products / "include",
                         "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
                         "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
                         table, REPO / "Tests" / suite / f"{check}.swift", "-o", binary)

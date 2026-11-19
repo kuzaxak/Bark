@@ -39,8 +39,6 @@ public final class TabsController {
     /// How many times the main tree's items were grouped by parent for sidebar rows; tests read it.
     @ObservationIgnored private(set) var treeWalks = 0
     @ObservationIgnored private(set) var nativeOwnershipVisits = 0
-    /// Fixtures with recording views opt out of the separate favicon cache/network path.
-    @ObservationIgnored var loadsWebKitFavicons = true
     public let loadOutcome: LoadOutcome
     public let directory: URL
     var isReadOnly: Bool {

@@ -240,11 +240,6 @@ extension PageSession {
                         self.updateTitle(title)
                     }
 
-                    // Fetch favicon for new URL
-                    Task { @MainActor [weak self] in
-                        await self?.fetchAndSetFavicon(for: url)
-                    }
-
                     // The store coalesces writes, so SPA URL changes report directly.
                     controller?.pageCommitted(itemID: itemID, url: url)
                     controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])

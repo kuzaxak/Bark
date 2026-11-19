@@ -9,7 +9,6 @@
 /* Begin PBXBuildFile section */
 		2C16A0262E87430B0070894B /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 2C16A0252E87430B0070894B /* Sparkle */; };
 		564997D82E9B24CC00D89F78 /* Garnish in Frameworks */ = {isa = PBXBuildFile; productRef = 564997D72E9B24CC00D89F78 /* Garnish */; };
-		7FAFC5DA2E3ADDCD009D7DC4 /* FaviconFinder in Frameworks */ = {isa = PBXBuildFile; productRef = 7FAFC5D92E3ADDCD009D7DC4 /* FaviconFinder */; };
 		C0DE7AB50000000000000003 /* NookTabsCore in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE7AB50000000000000002 /* NookTabsCore */; };
 		C0DE7AB50000000000000013 /* NookSettings in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE7AB50000000000000012 /* NookSettings */; };
 		C0DE7AB50000000000000023 /* NookDesign in Frameworks */ = {isa = PBXBuildFile; productRef = C0DE7AB50000000000000022 /* NookDesign */; };
@@ -138,7 +137,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				564997D82E9B24CC00D89F78 /* Garnish in Frameworks */,
-				7FAFC5DA2E3ADDCD009D7DC4 /* FaviconFinder in Frameworks */,
 				2C16A0262E87430B0070894B /* Sparkle in Frameworks */,
 				C0DE7AB50000000000000003 /* NookTabsCore in Frameworks */,
 				C0DE7AB50000000000000013 /* NookSettings in Frameworks */,
@@ -222,7 +220,6 @@
 			);
 			name = BarkNativeShell;
 			packageProductDependencies = (
-				7FAFC5D92E3ADDCD009D7DC4 /* FaviconFinder */,
 				2C16A0252E87430B0070894B /* Sparkle */,
 				564997D72E9B24CC00D89F78 /* Garnish */,
 				C0DE7AB50000000000000002 /* NookTabsCore */,
@@ -279,7 +276,6 @@
 			mainGroup = 7F8340F32E37F39400674A5D;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
-				7FAFC5D82E3ADDCD009D7DC4 /* XCRemoteSwiftPackageReference "FaviconFinder" */,
 				2C16A0242E87430B0070894B /* XCRemoteSwiftPackageReference "Sparkle" */,
 				564997D62E9B24CC00D89F78 /* XCRemoteSwiftPackageReference "Garnish" */,
 				C0DE7AB50000000000000001 /* XCLocalSwiftPackageReference "Packages/NookTabsCore" */,
@@ -710,14 +706,6 @@
 				revision = ffbd0091ed25eb3e250ca47b5ccc8c4f9a6a3420;
 			};
 		};
-		7FAFC5D82E3ADDCD009D7DC4 /* XCRemoteSwiftPackageReference "FaviconFinder" */ = {
-			isa = XCRemoteSwiftPackageReference;
-			repositoryURL = "https://github.com/will-lumley/FaviconFinder";
-			requirement = {
-				kind = upToNextMajorVersion;
-				minimumVersion = 5.1.4;
-			};
-		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
@@ -730,11 +718,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = 564997D62E9B24CC00D89F78 /* XCRemoteSwiftPackageReference "Garnish" */;
 			productName = Garnish;
-		};
-		7FAFC5D92E3ADDCD009D7DC4 /* FaviconFinder */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = 7FAFC5D82E3ADDCD009D7DC4 /* XCRemoteSwiftPackageReference "FaviconFinder" */;
-			productName = FaviconFinder;
 		};
 		C0DE7AB50000000000000002 /* NookTabsCore */ = {
 			isa = XCSwiftPackageProductDependency;

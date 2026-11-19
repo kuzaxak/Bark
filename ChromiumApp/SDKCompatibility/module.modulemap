@@ -13,6 +13,11 @@ module BarkRendererState {
   export *
 }
 
+module BarkTabFavicon {
+  header "BarkTabFavicon.h"
+  export *
+}
+
 module BarkCloudShare {
   header "BarkCloudShare.h"
   export *

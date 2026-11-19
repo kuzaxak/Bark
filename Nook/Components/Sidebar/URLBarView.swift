@@ -148,7 +148,7 @@ struct URLBarView: View {
         ZStack {
             if let splitItemID, let item = browserManager.tabs.item(splitItemID) {
                 HStack(spacing: NookDesign.Spacing.sm) {
-                    ItemFavicon(item: item, session: session)
+                    ItemFavicon(session: session)
                         .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                         .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
                     Text(browserManager.tabs.title(for: item))
@@ -383,9 +383,7 @@ struct URLBarView: View {
                 let session = browserManager.tabs.session(for: item.id)
                 guard let url = session?.url ?? item.url, url.absoluteString != prefilledAddress else { return nil }
                 let title = item.customTitle ?? session?.title ?? item.displayTitle
-                let favicon = session?.favicon ?? (browserManager.engine == .webKit
-                    ? url.host.flatMap { FaviconCache.shared.swiftUIImage(for: $0) } : nil) ?? Image(systemName: "globe")
-                let match = SearchManager.TabMatch(itemID: item.id, title: title, url: url, favicon: favicon)
+                let match = SearchManager.TabMatch(itemID: item.id, title: title, url: url)
                 return SearchManager.SearchSuggestion(text: title, type: .tab(match))
             }
     }
@@ -423,7 +421,7 @@ struct URLBarView: View {
                     submitAddress(suggestion)
                 } label: {
                     HStack(spacing: 12) {
-                        AddressSuggestionFavicon(suggestion: suggestion, useLegacyCache: browserManager.engine == .webKit)
+                        AddressSuggestionFavicon(suggestion: suggestion, tabs: browserManager.tabs)
                             .frame(width: 20, height: 20)
                         if case .folder(let folder) = suggestion.type {
                             SuggestionLines(title: folder.title, detail: folder.path, detailLineLimit: nil)
@@ -732,8 +730,7 @@ private struct AddressActivationAccessibility: ViewModifier {
 
 private struct AddressSuggestionFavicon: View {
     let suggestion: SearchManager.SearchSuggestion
-    let useLegacyCache: Bool
-    @State private var cached: NSImage?
+    let tabs: TabsController
 
     private var url: URL? {
         switch suggestion.type {
@@ -747,17 +744,11 @@ private struct AddressSuggestionFavicon: View {
     var body: some View {
         Group {
             if case .tab(let match) = suggestion.type {
-                match.favicon.resizable().scaledToFit()
-            } else if let cached {
-                Image(nsImage: cached).resizable().scaledToFit()
+                match.favicon(in: tabs).resizable().scaledToFit()
             } else {
                 Image(systemName: url == nil ? "magnifyingglass" : "globe")
                     .font(.system(size: 16)).foregroundStyle(.secondary)
             }
-        }
-        .task(id: url?.host) {
-            cached = nil
-            if useLegacyCache, let host = url?.host { cached = await FaviconCache.shared.cachedImage(for: host) }
         }
     }
 }

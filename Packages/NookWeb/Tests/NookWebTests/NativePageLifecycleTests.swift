@@ -8,6 +8,7 @@ import NookSettings
 import NookTabsCore
 import NookTweaks
 import SwiftData
+import SwiftUI
 @testable import NookWeb
 
 #if os(macOS)
@@ -1800,22 +1801,76 @@ struct NativePageLifecycleTests {
         #expect(!session.hasPiPActive && session.primaryWebView == nil)
     }
 
+    @Test func searchTabIconsFollowExistingSessionsWithoutWakingColdTabs() throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        let main = try #require(f.window.spaceID)
+        let other = try #require(f.tabs.createSpace(name: "Personal", icon: "house",
+            accentHex: "#123456", after: main, profileName: "Personal"))
+        let url = URL(string: "https://tab-icons.invalid/inbox")!
+        func tab(in space: UUID) throws -> UUID {
+            try #require(f.tabs.open(url: url, in: f.window, placement: .background,
+                                    parent: .tabs(spaceID: space), title: "Icon Inbox"))
+        }
+        let local = try tab(in: main)
+        let separate = try tab(in: other)
+        let cold = try tab(in: main)
+        let localPage = try #require(f.tabs.ensureSession(for: local))
+        let separatePage = try #require(f.tabs.ensureSession(for: separate))
+        let localNavigation = NativeTestPage(profileID: try #require(localPage.profile?.id))
+        let separateNavigation = NativeTestPage(profileID: try #require(separatePage.profile?.id))
+        #expect(localNavigation.profileID != separateNavigation.profileID)
+        let localIcon = NSImage(size: NSSize(width: 16, height: 16))
+        let separateIcon = NSImage(size: NSSize(width: 24, height: 24))
+        localNavigation.state.url = url
+        separateNavigation.state.url = url
+        localNavigation.state.favicon = localIcon
+        separateNavigation.state.favicon = separateIcon
+        localPage.installNavigation(localNavigation)
+        separatePage.installNavigation(separateNavigation)
+
+        let search = SearchManager()
+        search.setTabs(f.tabs, window: f.window)
+        search.searchSuggestions(for: "Icon Inbox", scope: .tabs)
+        let matches = search.suggestions.compactMap { suggestion -> SearchManager.TabMatch? in
+            guard case .tab(let match) = suggestion.type else { return nil }
+            return match
+        }
+        let localMatch = try #require(matches.first { $0.itemID == local })
+        let separateMatch = try #require(matches.first { $0.itemID == separate })
+        let coldMatch = try #require(matches.first { $0.itemID == cold })
+        #expect([localMatch, separateMatch, coldMatch].allSatisfy { $0.url == url })
+        let creations = f.host.creates.count
+        #expect(f.tabs.session(for: cold) == nil)
+        #expect(localMatch.favicon(in: f.tabs) == Image(nsImage: localIcon))
+        #expect(separateMatch.favicon(in: f.tabs) == Image(nsImage: separateIcon))
+        #expect(coldMatch.favicon(in: f.tabs) == Image(systemName: "globe"))
+
+        let observed = OSAllocatedUnfairLock(initialState: false)
+        withObservationTracking {
+            _ = localMatch.favicon(in: f.tabs)
+        } onChange: {
+            observed.withLock { $0 = true }
+        }
+        let updated = NSImage(size: NSSize(width: 32, height: 32))
+        localNavigation.state.favicon = updated
+        localNavigation.onStateChanged?(localNavigation.state)
+        #expect(observed.withLock { $0 })
+        #expect(localMatch.favicon(in: f.tabs) == Image(nsImage: updated))
+        #expect(separateMatch.favicon(in: f.tabs) == Image(nsImage: separateIcon))
+        #expect(coldMatch.favicon(in: f.tabs) == Image(systemName: "globe"))
+        #expect(f.host.creates.count == creations && f.tabs.session(for: cold) == nil)
+    }
+
     @Test func detachedNativePageUsesCloseOnlyOwnerWithoutLoadingOrPublishing() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let profile = try #require(f.window.spaceID.flatMap { f.tabs.profile(forSpace: $0) })
         let owner = DetachedNativeOwner()
         let page = NativeTestPage(profileID: profile.id)
-        let host = "detached-native-\(UUID().uuidString.lowercased()).invalid"
-        let cachedIcon = NSImage(size: NSSize(width: 16, height: 16))
-        FaviconCache.shared.store(cachedIcon, for: host, toDisk: false)
-        #expect(FaviconCache.shared.image(for: host) === cachedIcon)
-        page.state = PageNavigationState(url: URL(string: "https://\(host)/already-loaded")!,
+        page.state = PageNavigationState(url: URL(string: "https://detached-native.invalid/already-loaded")!,
             title: "Loaded native document", canGoBack: false, canGoForward: false)
         let tree = f.tabs.tree, device = f.tabs.device, creates = f.host.creates.count
         let session = try #require(f.tabs.bindDetachedNativePage(page, profile: profile, owner: owner, in: f.window))
         #expect(session.navigation === page && session.isDetached && session.profile === profile)
-        #expect(!session.hasFavicon)
-        #expect(FaviconCache.shared.image(for: host) === cachedIcon)
         #expect(page.loaded.isEmpty && f.tabs.tree == tree && f.tabs.device == device)
         #expect(f.host.creates.count == creates && f.host.closes.isEmpty)
         session.unload()

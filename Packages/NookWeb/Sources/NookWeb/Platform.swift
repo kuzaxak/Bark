@@ -32,14 +32,6 @@ public typealias AudioDeviceListenerProc = AudioObjectPropertyListenerProc
 public typealias PlatformImage = NSImage
 public typealias PlatformColor = NSColor
 
-extension PlatformImage {
-    /// PNG encoding, for the favicon disk cache.
-    public func pngData() -> Data? {
-        guard let tiff = tiffRepresentation, let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
-        return bitmap.representation(using: .png, properties: [:])
-    }
-}
-
 extension Image {
     public init(platformImage: PlatformImage) { self.init(nsImage: platformImage) }
 }

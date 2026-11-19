@@ -95,7 +95,6 @@ final class Host {
             settings: settings, windowRegistry: registry, blocker: ContentBlockerManager(settings: settings),
             sponsorBlock: SponsorBlockManager(settings: settings), siteRouting: SiteRoutingManager(settings: settings),
             profileEngine: engine, directory: directory)
-        tabs.loadsWebKitFavicons = false
         if engine == .webKit { tabs.webViews = webViews }
         tabs.onPageLoadedInBackground = { [weak self] in self?.backgroundLoads.append($0.itemID) }
         if isPrivate {

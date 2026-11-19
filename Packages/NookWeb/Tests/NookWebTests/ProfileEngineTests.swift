@@ -509,20 +509,15 @@ struct ProfileEngineTests {
     }
     #endif
 
-    @Test func nativePageConstructionAndFaviconRequestsDoNotEnterWebKit() async throws {
+    @Test func nativePageConstructionAndDataClearingDoNotEnterWebKit() async throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
         let tabs = fixture.makeTabs(engine: .chromium)
-        let url = URL(string: "https://native-favicon.invalid/page")!
+        let url = URL(string: "https://native-profile.invalid/page")!
         let page = PageSession(itemID: UUID(), url: url, title: "Native",
                                isPrivate: false, controller: tabs)
-        #expect(page.faviconFetchAttempts == 0 && !page.faviconFetchInFlight)
         page.loadWebViewIfNeeded()
         #expect(page.primaryWebView == nil && page.isUnloaded)
-        page.ensureFaviconLoaded()
-        await page.fetchAndSetFavicon(for: url)
-        #expect(page.faviconFetchAttempts == 0 && !page.faviconFetchInFlight)
-        #expect(!page.hasFavicon)
         let profile = Profile(name: "Native", engine: .chromium)
         #expect(await tabs.clearData(of: profile) == false)
         #expect(profile.webKitStorage == nil)
@@ -539,12 +534,12 @@ struct ProfileEngineTests {
         #expect(page.controller == nil)
         #expect(page.usesNativePageHost)
         page.loadWebViewIfNeeded()
-        #expect(page.primaryWebView == nil && !page.faviconFetchInFlight)
+        #expect(page.primaryWebView == nil)
 
         let orphan = PageSession(itemID: UUID(), url: url, title: "Unowned",
                                  isPrivate: false, controller: nil)
         orphan.loadWebViewIfNeeded()
-        #expect(orphan.primaryWebView == nil && !orphan.faviconFetchInFlight)
+        #expect(orphan.primaryWebView == nil)
         orphan.detachedProfile = Profile.createEphemeral(engine: .chromium)
         orphan.detachedProfile = nil
         #expect(orphan.usesNativePageHost)
@@ -553,7 +548,7 @@ struct ProfileEngineTests {
         page.controller = legacy
         #expect(page.controller == nil && page.usesNativePageHost)
         page.loadWebViewIfNeeded()
-        #expect(page.primaryWebView == nil && !page.faviconFetchInFlight)
+        #expect(page.primaryWebView == nil)
     }
 
     @Test func keptDeletionPersistsBeforeAdmissionAndCancellationPreservesEverything() throws {

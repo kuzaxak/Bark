@@ -116,21 +116,18 @@ struct PageNavigationTests {
         #expect(legacyView.back == 1 && selected.back == 1)
     }
 
-    @Test func disabledFixtureFaviconWorkDoesNotOutliveItsController() throws {
+    @Test func loadedWebKitSessionReleasesWithItsController() throws {
         var host: Host? = try Host()
         let item = try #require(host?.window.selectedItemID)
         var session: PageSession? = try #require(host?.tabs.ensureSession(for: item))
         let profile = try #require(session?.profile)
         let view = RecordingWebView(frame: .zero, configuration: WKWebViewConfiguration())
         session?.installNavigation(WebKitPageNavigation(webView: view, profileID: profile.id))
-        #expect(host?.tabs.loadsWebKitFavicons == false)
         weak var released = session
-        session?.load(URL(string: "https://favicon-fixture.invalid/queued")!)
+        session?.load(URL(string: "https://navigation-fixture.invalid/queued")!)
         host = nil
         #expect(session?.controller == nil)
         session = nil
-        // MainActor cannot run an enqueued task during this synchronous test.
-        // A favicon task capturing the page would keep this weak reference alive.
         #expect(released == nil)
     }
 

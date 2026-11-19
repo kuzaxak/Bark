@@ -93,19 +93,22 @@ public class SearchManager {
         public let itemID: UUID
         public let title: String
         public let url: URL
-        public let favicon: SwiftUI.Image
         /// The icon of the tab's space when that is not the window's space.
         public let spaceIcon: String?
         /// Replaces the short address on line 2, e.g. the sub-folder a link sits in.
         public let detail: String?
 
-        public init(itemID: UUID, title: String, url: URL, favicon: SwiftUI.Image, spaceIcon: String? = nil, detail: String? = nil) {
+        public init(itemID: UUID, title: String, url: URL, spaceIcon: String? = nil, detail: String? = nil) {
             self.itemID = itemID
             self.title = title
             self.url = url
-            self.favicon = favicon
             self.spaceIcon = spaceIcon
             self.detail = detail
+        }
+
+        /// Read on each row render so the exact tab's icon can change without a new query.
+        @MainActor public func favicon(in tabs: TabsController) -> SwiftUI.Image {
+            tabs.session(for: itemID)?.favicon ?? SwiftUI.Image(systemName: "globe")
         }
     }
 
@@ -382,11 +385,7 @@ public class SearchManager {
         let session = tabs.session(for: item.id)
         guard let url = session?.url ?? tabs.device.openPages[item.id]?.url ?? item.url else { return nil }
         let title = item.customTitle.flatMap { $0.isEmpty ? nil : $0 } ?? session?.title ?? item.displayTitle
-        let favicon = session?.favicon
-            ?? (tabs.profileEngine == .webKit
-                ? url.host.flatMap { FaviconCache.shared.swiftUIImage(for: $0) } : nil)
-            ?? SwiftUI.Image(systemName: "globe")
-        return TabMatch(itemID: item.id, title: title, url: url, favicon: favicon, spaceIcon: spaceIcon(of: item.id), detail: detail)
+        return TabMatch(itemID: item.id, title: title, url: url, spaceIcon: spaceIcon(of: item.id), detail: detail)
     }
 
     @MainActor private func folderMatch(_ item: Item) -> FolderMatch? {

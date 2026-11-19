@@ -9,7 +9,6 @@
 //
 
 import Combine
-import FaviconFinder
 import NookBlocker
 import NookTabsCore
 import NookSettings
@@ -82,7 +81,10 @@ public final class PageSession: NSObject, Identifiable {
     /// Last committed URL (or the URL being loaded when nothing has committed yet).
     public var url: URL
     public var title: String
-    public var favicon: SwiftUI.Image
+    private var faviconImage: PlatformImage?
+    public var favicon: SwiftUI.Image {
+        faviconImage.map(SwiftUI.Image.init(platformImage:)) ?? SwiftUI.Image(systemName: "globe")
+    }
     /// A page the ad blocker stopped from loading. The blocked-page card shows while it is set.
     public internal(set) var blockedURL: URL?
     /// A page whose server's certificate failed the check. The certificate warning card shows while it is set.
@@ -263,10 +265,6 @@ public final class PageSession: NSObject, Identifiable {
     /// JavaScript dialogs since the last commit, and whether the user silenced the page.
     @ObservationIgnored var jsDialogCount = 0
     @ObservationIgnored var jsDialogsSuppressed = false
-    @ObservationIgnored var hasFavicon: Bool = false
-    @ObservationIgnored var faviconFetchInFlight: Bool = false
-    @ObservationIgnored var faviconFetchAttempts: Int = 0
-    static let maxFaviconRetries = 3
 
     @ObservationIgnored var lastSampledDomain: String? = nil
     @ObservationIgnored var lastTopBarDomain: String? = nil
@@ -322,6 +320,7 @@ public final class PageSession: NSObject, Identifiable {
     public internal(set) var navigation: (any PageNavigation)? {
         didSet {
             guard oldValue !== navigation else { return }
+            faviconImage = nil
             loadProgress = nil
             nativeVaultNotice = nil
             #if os(macOS)
@@ -546,6 +545,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     private func applyNavigationState(_ state: PageNavigationState, applyingInitialMedia: Bool = false) {
+        if faviconImage !== state.favicon { faviconImage = state.favicon }
         canGoBack = state.canGoBack
         canGoForward = state.canGoForward
         if let muted = state.isAudioMuted, isAudioMuted != muted { isAudioMuted = muted }
@@ -867,9 +867,7 @@ public final class PageSession: NSObject, Identifiable {
         self.isPrivate = isPrivate
         self.controller = controller
         self.runtimeEngine = controller?.profileEngine
-        self.favicon = SwiftUI.Image(systemName: "globe")
         super.init()
-        restoreFaviconFromCache()
     }
 
     deinit {
@@ -897,7 +895,6 @@ public final class PageSession: NSObject, Identifiable {
         if navigation == nil {
             setupWebView()
         }
-        ensureFaviconLoaded()
     }
 
     /// Makes `webView` the primary view, owned by the window that displays it first.
@@ -1196,9 +1193,6 @@ public final class PageSession: NSObject, Identifiable {
         hasAudioContent = false
         hasPlayingAudio = false
 
-        hasFavicon = false
-        faviconFetchAttempts = 0
-
         if usesNativePageHost {
             if let navigation, navigation.profileID == profile?.id {
                 loadNativeTarget(newURL, through: navigation)
@@ -1213,12 +1207,6 @@ public final class PageSession: NSObject, Identifiable {
 
         // Keep other windows displaying this page on the same URL.
         controller?.webKitSessionDelegate?.navigateAcrossWindows(itemID, to: newURL)
-
-        if usesWebKitFavicon {
-            Task { @MainActor in
-                await fetchAndSetFavicon(for: newURL)
-            }
-        }
     }
 
     private func performNativeSearch(_ intent: (id: UUID, query: String, serial: UInt64?), through page: any PageNavigation) {
@@ -1518,118 +1506,6 @@ public final class PageSession: NSObject, Identifiable {
             if webView.fullscreenState == .notInFullscreen { controller?.refreshWindows(showing: itemID) }
         } else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
-        }
-    }
-
-    // MARK: - Favicon
-
-    /// Chromium supplies its own icon; its pages must never use WebKit's
-    /// process-wide URLSession/cache path, including during model construction.
-    private var usesWebKitFavicon: Bool {
-        guard usesWebKitPageHost, controller?.loadsWebKitFavicons == true else { return false }
-        return navigation == nil || navigation is WebKitPageNavigation
-    }
-
-    /// Starts a favicon fetch when none has loaded yet, up to `maxFaviconRetries` failures.
-    public func ensureFaviconLoaded() {
-        guard usesWebKitFavicon else { return }
-        guard !hasFavicon, !faviconFetchInFlight else { return }
-        guard faviconFetchAttempts < Self.maxFaviconRetries else { return }
-        faviconFetchInFlight = true
-        Task { @MainActor in
-            await fetchAndSetFavicon(for: url)
-            faviconFetchInFlight = false
-        }
-    }
-
-    /// Memory then disk cache, synchronously. Gives restored rows their favicon at once.
-    func restoreFaviconFromCache() {
-        guard usesWebKitFavicon else { return }
-        guard url.scheme == "http" || url.scheme == "https", let host = url.host else { return }
-        if let cached = FaviconCache.shared.image(for: host) ?? FaviconCache.shared.imageFromDiskSync(for: host) {
-            favicon = SwiftUI.Image(platformImage: cached)
-            hasFavicon = true
-        }
-    }
-
-    func fetchAndSetFavicon(for url: URL) async {
-        guard usesWebKitFavicon else { return }
-        let defaultFavicon = SwiftUI.Image(systemName: "globe")
-        guard url.scheme == "http" || url.scheme == "https", url.host != nil else {
-            favicon = defaultFavicon
-            return
-        }
-        let cacheKey = url.host ?? url.absoluteString
-
-        // Show the cached icon at once, and refetch it once a day so a site's new icon replaces the old one.
-        let cached = await FaviconCache.shared.cachedImage(for: cacheKey)
-        if let cached {
-            favicon = SwiftUI.Image(platformImage: cached)
-            hasFavicon = true
-            guard await FaviconCache.shared.isStale(cacheKey) else { return }
-        }
-
-        faviconFetchAttempts += 1
-
-        // FaviconFinder parses HTML <link> tags, then falls back to /favicon.ico. It only
-        // fetches through URLSession.shared (shared cookies, disk URLCache), so a private
-        // page skips it and takes the root icon below.
-        if !isPrivate, let nsImage = await Self.fetchFaviconImage(for: url) {
-            FaviconCache.shared.store(nsImage, for: cacheKey)
-            favicon = SwiftUI.Image(platformImage: FaviconCache.shared.image(for: cacheKey) ?? nsImage)
-            hasFavicon = true
-            return
-        }
-
-        // Last resort: the root /favicon.ico (for sites whose <link> targets return 403).
-        if let rootFaviconURL = URL(string: "/favicon.ico", relativeTo: url)?.absoluteURL,
-           let nsImage = await Self.downloadImage(from: rootFaviconURL, isPrivate: isPrivate) {
-            // A private page's host must not reach ~/Library/Caches/FaviconCache.
-            FaviconCache.shared.store(nsImage, for: cacheKey, toDisk: !isPrivate)
-            favicon = SwiftUI.Image(platformImage: FaviconCache.shared.image(for: cacheKey) ?? nsImage)
-            hasFavicon = true
-            return
-        }
-
-        // A failed refresh keeps the cached icon; otherwise hasFavicon stays false so
-        // ensureFaviconLoaded() can retry.
-        if cached == nil { favicon = defaultFavicon }
-    }
-
-    private static func fetchFaviconImage(for url: URL) async -> PlatformImage? {
-        do {
-            let favicon = try await FaviconFinder(url: url)
-                .fetchFaviconURLs()
-                .download()
-                .largest()
-            return favicon.image?.image
-        } catch {
-            return nil
-        }
-    }
-
-    /// What private pages fetch their favicon with. An ephemeral config still holds cookies in
-    /// memory for the life of the process, so a favicon endpoint could hand back an identifier
-    /// that links one private window to the next. Turn cookies, credentials and caching off.
-    private static let privateFaviconSession: URLSession = {
-        let config = URLSessionConfiguration.ephemeral
-        config.httpShouldSetCookies = false
-        config.httpCookieAcceptPolicy = .never
-        config.httpCookieStorage = nil
-        config.urlCredentialStorage = nil
-        config.urlCache = nil
-        config.requestCachePolicy = .reloadIgnoringLocalCacheData
-        return URLSession(configuration: config)
-    }()
-
-    private static func downloadImage(from url: URL, isPrivate: Bool) async -> PlatformImage? {
-        do {
-            let session = isPrivate ? privateFaviconSession : URLSession.shared
-            let (data, response) = try await session.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else { return nil }
-            return PlatformImage(data: data)
-        } catch {
-            return nil
         }
     }
 

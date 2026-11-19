@@ -94,10 +94,10 @@ final class LinkPreviewService {
                     if let image = await Self.image(at: imageURL) { images[url] = image }
                 }
             }
-            if let landed = page.landedURL, let host = landed.host {
+            if let landed = page.landedURL, landed.host != nil {
                 let iconURL = page.iconURL ?? URL(string: "/favicon.ico", relativeTo: landed)?.absoluteURL
                 Task {
-                    if let icon = await Self.icon(at: iconURL, host: host) { icons[url] = icon }
+                    if let icon = await Self.icon(at: iconURL) { icons[url] = icon }
                 }
             }
             guard canSummarize else { return }
@@ -164,12 +164,10 @@ final class LinkPreviewService {
         return page
     }
 
-    /// The site's favicon: the shared cache first, else fetched through the gate and stored there like a tab's.
-    private static func icon(at url: URL?, host: String) async -> NSImage? {
-        if let cached = await FaviconCache.shared.cachedImage(for: host) { return cached }
-        guard let url, let (data, _) = await gatedData(url), data.count < 1_000_000, let found = NSImage(data: data) else { return nil }
-        FaviconCache.shared.store(found, for: host)
-        return FaviconCache.shared.image(for: host) ?? found
+    /// Fetch a preview's icon through its existing resource gate.
+    private nonisolated static func icon(at url: URL?) async -> NSImage? {
+        guard let url, let (data, _) = await gatedData(url), data.count < 1_000_000 else { return nil }
+        return NSImage(data: data)
     }
 
     private nonisolated static func image(at url: URL) async -> NSImage? {

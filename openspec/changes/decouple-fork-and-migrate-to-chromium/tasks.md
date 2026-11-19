@@ -115,6 +115,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 6.18 Close the app-side parity gaps from the Chromium feature audit: theme and appearance, General settings, Site Controls, space deletion, quit-time saves, palette and shortcut actions, favorite cards; verify each in the real window.
   Signed Intel Bark exposed distinct Back and Forward controls in Settings. A disposable host using Bark's updater and the pinned Sparkle framework verified automatic-check and download controls, their persisted values after relaunch, and their absence during update rehearsal.
 - [ ] 6.19 Add the engine hooks the audit needs: favicons, navigation policy for link cleaning, site routing and Warn-before-HTTP, hovered link, load progress, session state after unload; verify each in the real window.
+  The Swift page host checks icon updates, document changes, and ownership changes. The open-tab search regression covers two profiles on the same URL and a parked tab. The paired engine upgrade and the signed window check remain open.
 - [ ] 6.20 Make the Chromium window match Arc: window controls on one row, framed page with rounded corners, address control at rest, Favorites tiles, Library layout, and no Chromium bookmark interface; verify by side-by-side comparison with the real Arc window, with the owner judging.
 
 ## 7. Engine data conversion and recovery (G4)

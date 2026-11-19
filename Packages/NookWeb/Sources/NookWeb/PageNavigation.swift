@@ -7,6 +7,8 @@ import NookBlocker
 public struct PageNavigationState: Equatable {
     public var url: URL?
     public var title: String?
+    /// The live page's current site icon, cleared when its document or owner changes.
+    public var favicon: PlatformImage?
     public var isLoading: Bool
     /// A fraction supplied by the bound engine, or nil when progress is unknown.
     public var loadProgress: Double?

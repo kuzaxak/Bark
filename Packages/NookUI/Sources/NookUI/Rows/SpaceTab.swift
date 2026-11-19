@@ -76,7 +76,7 @@ public struct SpaceTab: View {
         }) {
             HStack(spacing: NookDesign.Tab.iconGap) {
                 if hasChildren { trailChevron }
-                ItemFavicon(item: item, session: session)
+                ItemFavicon(session: session)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                     .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
                     .overlay(alignment: .bottomTrailing) {

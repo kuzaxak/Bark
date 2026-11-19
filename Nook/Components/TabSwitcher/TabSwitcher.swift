@@ -152,7 +152,7 @@ struct TabSwitcherOverlay: View {
                         .aspectRatio(contentMode: .fill)
                 } else {
                     // A tab with no picture yet (never left while on screen) shows its icon large.
-                    ItemFavicon(item: item, session: session)
+                    ItemFavicon(session: session)
                         .frame(width: NookDesign.Size.essentialsTile, height: NookDesign.Size.essentialsTile)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .background(NookDesign.Surface.fill)
@@ -188,7 +188,7 @@ struct TabSwitcherOverlay: View {
             .overlay(NookDesign.Radius.shape(NookDesign.Radius.md).strokeBorder(NookDesign.Surface.hairline))
 
             HStack(spacing: NookDesign.Spacing.sm) {
-                ItemFavicon(item: item, session: session)
+                ItemFavicon(session: session)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                 Text(tabs.title(for: item))
                     .font(NookDesign.Font.body)

@@ -323,16 +323,10 @@ struct PageCertificateWarningTests {
         return try #require(host.tabs.ensureSession(for: item))
     }
 
-    @Test func recordingFixturesNeverStartFaviconCacheOrNetworkWork() async throws {
+    @Test func recordingFixtureLoadsTheRequestedAddress() throws {
         let host = try Host()
         let page = try selectedPage(in: host)
         page.load(URL(string: "https://100.64.0.43/kvm/")!)
-        page.ensureFaviconLoaded()
-        await page.fetchAndSetFavicon(for: URL(string: "https://100.64.0.43/kvm/")!)
-        await Task.yield()
-        #expect(!host.tabs.loadsWebKitFavicons)
-        #expect(page.faviconFetchAttempts == 0 && !page.faviconFetchInFlight)
-        #expect(!page.hasFavicon)
         #expect((page.activeWebView as? RecordingWebView)?.requested.last ==
             URL(string: "https://100.64.0.43/kvm/")!)
     }

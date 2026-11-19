@@ -13,6 +13,7 @@ import NookUI
 
 struct TabSuggestionItem: View {
     let tab: SearchManager.TabMatch
+    let tabs: TabsController
     let destination: (name: String, icon: String, profileName: String?)?
     /// Held Command on the highlighted row shows the whole address instead of the short one.
     var showsFullURL: Bool = false
@@ -27,7 +28,7 @@ struct TabSuggestionItem: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 9) {
-            SuggestionIcon(image: tab.favicon).accessibilityHidden(true)
+            SuggestionIcon(image: tab.favicon(in: tabs)).accessibilityHidden(true)
             SuggestionLines(title: tab.title, detail: showsFullURL ? tab.url.absoluteString : tab.detail ?? PaletteText.shortURL(tab.url))
             Spacer()
             if let destination { SpaceIcon(destination.icon).foregroundStyle(.secondary).accessibilityHidden(true) }

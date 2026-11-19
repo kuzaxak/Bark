@@ -37,7 +37,7 @@ with TemporaryDirectory(prefix='bark-import-check-') as directory:
         raise SystemExit(1)
     scratch = out / 'nookweb'
     debug = build_package(root / 'Packages/NookWeb', scratch, target, jobs=4)
-    objects = sorted(o for target in ['FaviconFinder', 'MuteableWKWebView', 'NookBlocker', 'NookSettings', 'NookTabsCore', 'NookTweaks', 'NookWeb', 'SwiftSoup']
+    objects = sorted(o for target in ['MuteableWKWebView', 'NookBlocker', 'NookSettings', 'NookTabsCore', 'NookTweaks', 'NookWeb']
                      for o in glob.glob(str(debug / f'{target}.build/*.o')))
     sources = sorted(str(p) for p in (root / 'Nook/Managers/ImportManager').glob('*.swift'))
     binary = out / 'chromium-import-check'

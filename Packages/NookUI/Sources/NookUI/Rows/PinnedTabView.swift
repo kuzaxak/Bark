@@ -21,8 +21,6 @@ public struct PinnedTabView<Icon: View>: View {
     var onResetToPinnedURL: () -> Void = {}
     /// The space theme's tile colors, as in Arc. Nil falls back to the neutral fills.
     var colors: SpaceTheme.TileColors?
-    /// Host whose blurred favicon glows behind the tile. Nil for neutral tiles.
-    var glowHost: String?
     /// The window is inactive.
     var isDimmed: Bool = false
     /// A short line under the icon, such as a Calendar favorite's "in 5m".
@@ -32,9 +30,7 @@ public struct PinnedTabView<Icon: View>: View {
     var action: () -> Void
 
     @State private var isHovered: Bool = false
-    @State private var glow: CGImage?
     @Environment(\.colorScheme) private var colorScheme
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
     public init(
         tabName: String,
@@ -45,7 +41,6 @@ public struct PinnedTabView<Icon: View>: View {
         hasLeftPinnedURL: Bool = false,
         onResetToPinnedURL: @escaping () -> Void = {},
         colors: SpaceTheme.TileColors? = nil,
-        glowHost: String? = nil,
         isDimmed: Bool = false,
         caption: String? = nil,
         hasUnread: Bool = false,
@@ -59,7 +54,6 @@ public struct PinnedTabView<Icon: View>: View {
         self.hasLeftPinnedURL = hasLeftPinnedURL
         self.onResetToPinnedURL = onResetToPinnedURL
         self.colors = colors
-        self.glowHost = glowHost
         self.isDimmed = isDimmed
         self.caption = caption
         self.hasUnread = hasUnread
@@ -72,23 +66,10 @@ public struct PinnedTabView<Icon: View>: View {
                 NookDesign.Radius.shape(NookDesign.Radius.lg)
                     .fill(backgroundColor)
                     .animation(NookDesign.Motion.quick, value: isHovered)
-                if let glow, glowHost != nil, colors != nil {
-                    glowImage(glow)
-                        .opacity(NookDesign.Surface.favoriteGlowOpacity(dark: colorScheme == .dark, hovered: isHovered, dimmed: isDimmed))
-                        .clipShape(NookDesign.Radius.shape(NookDesign.Radius.lg))
-                        .allowsHitTesting(false)
-                }
                 if isActive, let colors {
-                    if let glow, glowHost != nil, !isDimmed {
-                        glowImage(glow)
-                            .mask(NookDesign.Radius.shape(NookDesign.Radius.lg)
-                                .strokeBorder(Color.black, lineWidth: NookDesign.Size.favoriteBorder))
-                            .allowsHitTesting(false)
-                    } else {
-                        NookDesign.Radius.shape(NookDesign.Radius.lg)
-                            .strokeBorder(Color(colors.selectedBorder).opacity(isDimmed ? NookDesign.Surface.favoriteDimmedBorderOpacity : 1),
-                                          lineWidth: NookDesign.Size.favoriteBorder)
-                    }
+                    NookDesign.Radius.shape(NookDesign.Radius.lg)
+                        .strokeBorder(Color(colors.selectedBorder).opacity(isDimmed ? NookDesign.Surface.favoriteDimmedBorderOpacity : 1),
+                                      lineWidth: NookDesign.Size.favoriteBorder)
                 }
 
                 VStack(spacing: NookDesign.Spacing.xxs) {
@@ -143,27 +124,6 @@ public struct PinnedTabView<Icon: View>: View {
         .onHoverTracking { hovering in
             self.isHovered = hovering
         }
-        .task(id: wantsGlow ? glowHost : nil) {
-            guard !Task.isCancelled else { return }
-            glow = nil
-            guard wantsGlow, let glowHost else { return }
-            let image = await FaviconGlow.shared.image(forHost: glowHost)
-            guard !Task.isCancelled else { return }
-            glow = image
-        }
-    }
-
-    private var wantsGlow: Bool { colors != nil && !reduceTransparency }
-
-    private func glowImage(_ image: CGImage) -> some View {
-        // Fills the tile's own frame; on its own, scaledToFill grows the tile with the sidebar's width.
-        Color.clear
-            .overlay {
-                Image(decorative: image, scale: NookDesign.Size.favoriteGlowScale)
-                    .resizable()
-                    .scaledToFill()
-            }
-            .clipped()
     }
 
     //MARK: - Colors

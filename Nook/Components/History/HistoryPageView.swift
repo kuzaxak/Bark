@@ -277,7 +277,7 @@ private struct HistoryPageRow: View {
                 .font(NookDesign.Font.secondary.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: timeWidth, alignment: .leading)
-            HistoryFavicon(url: entry.url)
+            HistoryFavicon()
             HStack(spacing: NookDesign.Spacing.sm) {
                 Text(entry.displayTitle)
                     .font(NookDesign.Font.label)

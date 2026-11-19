@@ -157,7 +157,7 @@ private struct SpaceColumn: View {
                     .foregroundStyle(.primary)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
             } else {
-                ItemFavicon(item: item, session: tabs.session(for: item.id))
+                ItemFavicon(session: tabs.session(for: item.id))
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                     .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
             }

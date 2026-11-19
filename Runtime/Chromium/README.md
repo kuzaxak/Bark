@@ -758,6 +758,12 @@ The renderer-failure regression kills Work's renderer, checks Personal's live
 state, then recovers Work through same-URL bridge navigation. It does not test
 a dedicated Reload command or measure memory reclamation.
 
+The optional `tab_bind_favicon` callback supplies the current document’s site
+icon for one observed tab. Bark uses that tab’s live icon in the sidebar and in
+open-tab search results, including when two profiles have the same URL open.
+Tabs without a live icon display a globe. The current developer SDK pins
+predate this callback.
+
 Media controls observe the exact page's existing MediaSession without creating
 sessions for idle pages. Playback commands require that session's advertised
 actions and preserve background ownership. Unknown state disables transport

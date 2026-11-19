@@ -511,6 +511,7 @@ struct CommandPaletteView: View {
 
             if !visibleSuggestions.isEmpty {
                 CommandPaletteSuggestionsListView(
+                    tabs: browserManager.tabs,
                     suggestions: visibleSuggestions,
                     selectedIndex: max(selectedSuggestionIndex, 0),
                     revealsFullURL: commandHeld,
@@ -550,6 +551,7 @@ struct CommandPaletteView: View {
 
     // MARK: - Suggestions List Subview
     private struct CommandPaletteSuggestionsListView: View {
+        let tabs: TabsController
         let suggestions: [SearchManager.SearchSuggestion]
         let selectedIndex: Int
         let revealsFullURL: Bool
@@ -618,7 +620,7 @@ struct CommandPaletteView: View {
         ) -> some View {
             switch suggestion.type {
             case .tab(let tab):
-                TabSuggestionItem(tab: tab, destination: tabDestination(tab.itemID), showsFullURL: showsFullURL)
+                TabSuggestionItem(tab: tab, tabs: tabs, destination: tabDestination(tab.itemID), showsFullURL: showsFullURL)
             case .folder(let folder):
                 FolderSuggestionItem(folder: folder)
             case .action(let action):

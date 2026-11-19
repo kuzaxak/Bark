@@ -7,7 +7,6 @@
 //
 
 import AppKit
-import FaviconFinder
 import SwiftUI
 import NookDesign
 import NookWeb
@@ -161,8 +160,7 @@ struct SidebarMenuHistoryTab: View {
                             entry: entry,
                             onTap: { openInCurrentTab(entry.url) },
                             onOpenInNewTab: { openInNewTab(entry.url) },
-                            onDelete: { deleteEntry(entry) },
-                            useLegacyCache: browserManager.engine == .webKit
+                            onDelete: { deleteEntry(entry) }
                         )
 
                     }
@@ -327,13 +325,12 @@ struct HistoryRowView: View {
     let onTap: () -> Void
     let onOpenInNewTab: () -> Void
     let onDelete: () -> Void
-    var useLegacyCache = true
 
     @State private var isHovered: Bool = false
 
     var body: some View {
         HStack(spacing: NookDesign.Spacing.md) {
-            HistoryFavicon(url: entry.url, useLegacyCache: useLegacyCache)
+            HistoryFavicon()
 
             VStack(alignment: .leading, spacing: 0) {
                 Text(entry.displayTitle)
@@ -391,31 +388,14 @@ struct HistoryRowView: View {
     }
 }
 
-/// A history page's favicon: the cache first, the network only for a row on screen.
+/// History rows have no live page from which to get a profile-owned icon.
 struct HistoryFavicon: View {
-    let url: URL
-    var useLegacyCache = true
-    @State private var favicon: SwiftUI.Image?
-
     var body: some View {
-        (favicon ?? SwiftUI.Image(systemName: "globe"))
+        Image(systemName: "globe")
             .resizable()
             .scaledToFit()
             .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
             .foregroundStyle(.secondary)
-            // Cancelled when the row scrolls away; the old onAppear Task kept fetching for rows long gone.
-            .task(id: url.host) {
-                guard useLegacyCache,
-                      url.scheme == "http" || url.scheme == "https", let host = url.host else { return }
-                if let cached = await FaviconCache.shared.cachedImage(for: host) {
-                    favicon = SwiftUI.Image(platformImage: cached)
-                    return
-                }
-                guard let image = try? await FaviconFinder(url: url).fetchFaviconURLs().download().largest().image?.image,
-                      !Task.isCancelled else { return }
-                FaviconCache.shared.store(image, for: host)
-                favicon = SwiftUI.Image(platformImage: FaviconCache.shared.image(for: host) ?? image)
-            }
     }
 }
 

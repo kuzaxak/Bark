@@ -107,16 +107,6 @@ extension PageSession {
             }
         }
 
-        // Fetch favicon after page loads
-        if let currentURL = webView.url {
-            Task { @MainActor [weak self, weak webView] in
-                guard let self, let webView,
-                      self.isCurrentWebKitCallback(from: webView, navigation: finishedNavigation),
-                      webView.url == currentURL else { return }
-                await self.fetchAndSetFavicon(for: currentURL)
-            }
-        }
-
         injectPageObservers(into: webView)
         offerTranslationIfNeeded()
         updateNavigationStateEnhanced(source: "didCommit")

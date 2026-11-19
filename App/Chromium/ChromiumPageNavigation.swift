@@ -2,10 +2,13 @@
 import BarcChromium
 internal import BarkLoadProgress
 internal import BarkRendererState
+internal import BarkTabFavicon
 internal import BarkPasswordProvider
 import Darwin
 import Foundation
 import AppKit
+import ImageIO
+import UniformTypeIdentifiers
 import NookBlocker
 import NookWeb
 
@@ -152,6 +155,15 @@ final class ChromiumPageNavigation: PageNavigation {
                 context.owner?.receiveLoadProgress(token: token, progress: progress, loading: loading)
             }
         })
+        _ = withUnsafePointer(to: bridge) { api in
+            BarkObserveTabFavicon(api, token) { pointer, token, bytes, count in
+                MainActor.assumeIsolated {
+                    guard let pointer else { return }
+                    let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+                    context.owner?.receiveFavicon(token: token, bytes: bytes, count: count)
+                }
+            }
+        }
     }
 
     private static func observeLoadProgress(_ bridge: BarcBridge, _ token: UInt64,
@@ -796,6 +808,7 @@ final class ChromiumPageNavigation: PageNavigation {
         passwordManagementLanding.update(false)
         state.media = nil
         state.loadProgress = nil
+        state.favicon = nil
         cancelThumbnail()
         cancelSiteData()
         cancelStyle()
@@ -834,7 +847,11 @@ final class ChromiumPageNavigation: PageNavigation {
         self.window = window  // A live transfer changes the owner, never the page.
         if ownerChanged {
             passwordManagementLanding.update(false)
-            setLoadProgress(nil)
+            if state.loadProgress != nil || state.favicon != nil {
+                state.loadProgress = nil
+                state.favicon = nil
+                onStateChanged?(state)
+            }
             guard !invalidated else { return false }
             cancelElementPicker()
             cancelScript()
@@ -852,6 +869,28 @@ final class ChromiumPageNavigation: PageNavigation {
         guard state.loadProgress != progress else { return }
         state.loadProgress = progress
         onStateChanged?(state)
+    }
+
+    func receiveFavicon(token: UInt64, bytes: UnsafePointer<UInt8>?, count: Int) {
+        guard !invalidated, token != 0, token == observation, window != 0 else { return }
+        let image = Self.decodeFavicon(bytes: bytes, count: count)
+        guard image != nil || state.favicon != nil else { return }
+        state.favicon = image
+        onStateChanged?(state)
+    }
+
+    private static func decodeFavicon(bytes: UnsafePointer<UInt8>?, count: Int) -> NSImage? {
+        guard let bytes, (1...32_768).contains(count) else { return nil }
+        // The bridge lends the buffer only until this callback returns.
+        let data = Data(bytes: bytes, count: count)
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetType(source) as String? == UTType.png.identifier,
+              CGImageSourceGetCount(source) == 1,
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? Int, (1...32).contains(width),
+              let height = properties[kCGImagePropertyPixelHeight] as? Int, (1...32).contains(height),
+              let bitmap = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
+        return NSImage(cgImage: bitmap, size: NSSize(width: width, height: height))
     }
 
     func receiveLoadProgress(token: UInt64, progress: Double, loading: Int32) {
@@ -942,13 +981,16 @@ final class ChromiumPageNavigation: PageNavigation {
             || (!state.isLoading && loading)
         if ended { progressSuppressedUntilNextLoad = true }
         else if began { progressSuppressedUntilNextLoad = false }
-        let snapshot = PageNavigationState(
+        var snapshot = PageNavigationState(
             url: url, title: title, isLoading: loading,
             canGoBack: flags & BARC_TAB_BACK.rawValue != 0, canGoForward: flags & BARC_TAB_FORWARD.rawValue != 0,
             isAudioMuted: flags & BARC_TAB_MUTED.rawValue != 0, isAudible: audible,
             hasVideoPictureInPicture: pipKnown ? flags & BARC_TAB_VIDEO_PIP.rawValue != 0 : nil,
             hasDocumentPictureInPicture: pipKnown ? flags & BARC_TAB_DOCUMENT_PIP.rawValue != 0 : nil, media: media,
             loadProgress: loading && !began && !ended ? state.loadProgress : nil)
+        if !(event == BARC_TAB_COMMITTED && !sameDocument) && !(event == BARC_TAB_FAILED && !provisional) {
+            snapshot.favicon = state.favicon
+        }
         if state != snapshot {
             state = snapshot
             onStateChanged?(snapshot)

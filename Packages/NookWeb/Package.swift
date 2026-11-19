@@ -13,7 +13,6 @@ let package = Package(
         .package(path: "../NookSettings"),
         .package(path: "../NookBlocker"),
         .package(path: "../NookTweaks"),
-        .package(url: "https://github.com/will-lumley/FaviconFinder.git", from: "5.1.5"),
     ],
     targets: [
         .target(name: "MuteableWKWebView", path: "Sources/MuteableWKWebView", publicHeadersPath: "include"),
@@ -25,7 +24,6 @@ let package = Package(
                 .product(name: "NookSettings", package: "NookSettings"),
                 .product(name: "NookBlocker", package: "NookBlocker"),
                 .product(name: "NookTweaks", package: "NookTweaks"),
-                .product(name: "FaviconFinder", package: "FaviconFinder"),
             ],
             resources: [.copy("Resources")],
             swiftSettings: [.swiftLanguageMode(.v5)]
