@@ -134,3 +134,15 @@ final class WebKitPageNavigation: PageNavigation {
         webView = nil
     }
 }
+
+/// Commands for legacy WebKit views that can carry their own window-specific history.
+@MainActor
+public enum WebKitPageCommands {
+    public static func goBack(on session: PageSession, in view: WKWebView?) {
+        guard let view, view !== session.primaryWebView else {
+            session.goBack()
+            return
+        }
+        session.returnToOpenerIfNeeded(afterGoingBack: WebKitPageNavigation.goBack(in: view))
+    }
+}

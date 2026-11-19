@@ -173,7 +173,7 @@ enum WebContextMenuItem {
     private func performAction(on webView: FocusableWKWebView, payload: WebContextMenuPayload) {
         switch self {
         case .pageBack:
-            if let session = webView.owningSession { session.goBack(in: webView) } else { webView.goBack() }
+            if let session = webView.owningSession { WebKitPageCommands.goBack(on: session, in: webView) } else { webView.goBack() }
         case .pageForward:
             webView.goForward()
         case .pageTranslate:

@@ -2802,6 +2802,29 @@ struct NativePageLifecycleTests {
         #expect(native.loaded.isEmpty && fixture.host.creates.count == 1 && fixture.host.closes.isEmpty)
     }
 
+    @Test func nativeBackWithoutHistorySelectsTheOpenerAndClosesOnlyAfterAcknowledgment() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let opener = try #require(fixture.window.selectedItemID)
+        let source = fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let page = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        let id = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: fixture.window, spaceID: space, from: opener, select: true))
+        let session = try #require(fixture.tabs.selectedSession(in: fixture.window))
+        try #require(session.itemID == id && !session.canGoBack && session.canGoBackOrReturn)
+
+        session.goBack()
+
+        #expect(fixture.window.selectedItemID == opener)
+        #expect(fixture.tabs.selectedSession(in: fixture.window)?.navigation === source)
+        #expect(fixture.tabs.tree.item(id) != nil)
+        try #require(fixture.host.closes.count == 1 && fixture.host.closes[0].page === page)
+        fixture.host.finishClose(0, admitted: true)
+        #expect(fixture.tabs.tree.item(id) == nil && page.invalidated)
+        #expect(fixture.window.selectedItemID == opener && !source.invalidated)
+    }
+
     @Test func selectedAdoptionBindsExistingResourceAndClosesOnlyAfterActualOutcome() throws {
         let fixture = try NativeModelFixture()
         defer { fixture.cleanup() }

@@ -170,7 +170,7 @@ struct PeekNavigationBar: View {
     var body: some View {
         ZStack {
             HStack(spacing: NookDesign.Spacing.xxs) {
-                Button("Back", systemImage: "chevron.backward") { page.goBack(in: page.webView) }
+                Button("Back", systemImage: "chevron.backward") { page.goBack() }
                     .disabled(!page.canGoBack)
                 Button("Forward", systemImage: "chevron.forward") { page.goForward() }
                     .disabled(!page.canGoForward)

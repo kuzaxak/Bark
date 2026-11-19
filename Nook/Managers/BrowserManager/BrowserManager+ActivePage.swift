@@ -45,7 +45,7 @@ extension BrowserManager {
         let webView = frontWebView(in: window)
         switch command {
         case .goBack:
-            page.goBack(in: webView)
+            WebKitPageCommands.goBack(on: page, in: webView)
         case .goForward:
             if webView?.canGoForward == true { webView?.goForward() }
         case .reload:

@@ -33,7 +33,7 @@ extension PageSession {
             if phase == .cancelled { cancelled = true }
             guard isComplete else { return }
             // Close first, so a finished swipe does not flash the page back into place.
-            if !cancelled { self?.goBack(in: webView) }
+            if !cancelled, let self { WebKitPageCommands.goBack(on: self, in: webView) }
             webView.layer?.setAffineTransform(.identity)
         }
     }

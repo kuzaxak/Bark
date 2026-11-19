@@ -69,7 +69,7 @@ final class FocusableWKWebView: WKWebView, SessionWebView {
     /// page opened from another tab it returns there, like the two-finger swipe.
     override func swipe(with event: NSEvent) {
         if event.deltaX > 0, !canGoBack, let session = owningSession, session.canGoBackOrReturn {
-            session.goBack(in: self)
+            WebKitPageCommands.goBack(on: session, in: self)
         } else {
             super.swipe(with: event)
         }

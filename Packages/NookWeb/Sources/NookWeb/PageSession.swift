@@ -1302,15 +1302,12 @@ public final class PageSession: NSObject, Identifiable {
         load(validURL)
     }
 
-    /// Back in `view`, one window's view of this page (the primary by default). With no page left
-    /// to go back to, the tab closes and the tab that opened it shows.
-    public func goBack(in view: WKWebView? = nil) {
-        let wentBack: Bool
-        if let view, view !== primaryWebView {
-            wentBack = WebKitPageNavigation.goBack(in: view)
-        } else {
-            wentBack = navigation?.goBack() ?? false
-        }
+    /// Goes back on the live page or closes it to return to its opener when history is empty.
+    public func goBack() {
+        returnToOpenerIfNeeded(afterGoingBack: navigation?.goBack() ?? false)
+    }
+
+    func returnToOpenerIfNeeded(afterGoingBack wentBack: Bool) {
         if !wentBack, !canGoBack, let controller, let window = controller.window(for: self) {
             controller.returnToOpener(itemID, in: window)
         }

@@ -55,6 +55,23 @@ struct PageNavigationTests {
         #expect(page.invalidated)
     }
 
+    @Test func legacyBackTargetsTheSuppliedWebKitViewRatherThanPrimaryNavigation() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
+                                  title: "Test", isPrivate: true, controller: nil)
+        let selected = RecordingNavigation(profileID: UUID())
+        session.installNavigation(selected)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let legacyView = NavigationView(frame: .zero, configuration: configuration)
+        legacyView.setBack(true)
+
+        WebKitPageCommands.goBack(on: session, in: legacyView)
+        #expect(legacyView.back == 1 && selected.back == 0)
+
+        session.goBack()
+        #expect(legacyView.back == 1 && selected.back == 1)
+    }
+
     @Test func disabledFixtureFaviconWorkDoesNotOutliveItsController() throws {
         var host: Host? = try Host()
         let item = try #require(host?.window.selectedItemID)
