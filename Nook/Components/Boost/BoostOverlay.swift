@@ -7,7 +7,6 @@
 import SwiftUI
 import NookDesign
 import NookSettings
-import NookTweaks
 import NookUI
 import NookWeb
 
@@ -54,7 +53,7 @@ struct BoostOverlay: View {
                         session.cancelNativeBoostElementPicker(token: lease.token)
                     }
                 },
-                onFinish: { close(session, serial: serial, page: page, settings) }
+                onFinish: { close(session, serial: serial, page: page) }
             )
             // A different site is a different panel, with its own draft.
             .id(host)
@@ -69,15 +68,15 @@ struct BoostOverlay: View {
                 preview(nil, in: session, serial: serial, page: page)
             }
             .onDisappear { endNativePreview(session, serial: serial, page: page) }
-            .onChange(of: windowState.selectedItemID) { _, _ in close(session, serial: serial, page: page, settings) }
+            .onChange(of: windowState.selectedItemID) { _, _ in close(session, serial: serial, page: page) }
             .onChange(of: session.nativeNavigationSerial) { _, _ in
-                close(session, serial: serial, page: page, settings)
+                close(session, serial: serial, page: page)
             }
             .onChange(of: session.navigation.map { ObjectIdentifier($0) }) { _, _ in
-                close(session, serial: serial, page: page, settings)
+                close(session, serial: serial, page: page)
             }
             .onChange(of: session.isUnloaded) { _, unloaded in
-                if unloaded { close(session, serial: serial, page: page, settings) }
+                if unloaded { close(session, serial: serial, page: page) }
             }
         }
     }
@@ -105,11 +104,9 @@ struct BoostOverlay: View {
         session.endNativeBoostPreview(lease.token)
     }
 
-    /// Whatever was not saved goes away: the page shows the saved Boosts again, and the zap list
-    /// catches up with them.
-    private func close(_ session: PageSession, serial: UInt64, page: ObjectIdentifier?, _ settings: NookSettingsService) {
+    /// End the preview so the page shows the saved Boosts again.
+    private func close(_ session: PageSession, serial: UInt64, page: ObjectIdentifier?) {
         endNativePreview(session, serial: serial, page: page)
-        BoostTweaks.syncZapList(settings: settings, blocker: browserManager.contentBlockerManager)
         windowState.isBoostPanelVisible = false
     }
 }

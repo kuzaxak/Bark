@@ -1538,6 +1538,44 @@ struct NativePageLifecycleTests {
         #expect(f.host.creates.count == 1)
     }
 
+    @Test func nativeBoostZapsRestoreSavedSelectorsWhenPreviewClosesAndReopens() async throws {
+        let f = try NativeModelFixture(); defer { f.cleanup() }
+        await f.tabs.settings.waitForBoosts()
+        let saved = Boost(host: "fixture.invalid", zaps: ["#saved"])
+        f.tabs.settings.boosts = [saved]
+        let native = f.host.finishCreate(0)
+        native.supportsUserCSS = true
+        native.onEvent?(.committed(URL(string: "https://fixture.invalid/boost")!, sameDocument: false))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(native.styles.last?.css == "#saved { display: none !important; }")
+
+        let session = try #require(f.tabs.selectedSession(in: f.window))
+        let first = try #require(session.beginNativeBoostPreview())
+        var draft = saved
+        draft.zaps = ["#draft"]
+        #expect(session.previewNativeBoost(draft, token: first))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(native.styles.last?.css == "#draft { display: none !important; }")
+        #expect(f.tabs.settings.boosts == [saved])
+
+        session.endNativeBoostPreview(first)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(native.styles.last?.css == "#saved { display: none !important; }")
+        let reopened = try #require(session.beginNativeBoostPreview())
+        #expect(!session.previewNativeBoost(draft, token: first))
+        for _ in 0..<10 { await Task.yield() }
+        #expect(native.styles.last?.css == "#saved { display: none !important; }")
+
+        f.tabs.settings.boosts[0].zaps = ["#updated"]
+        session.endNativeBoostPreview(reopened)
+        for _ in 0..<10 { await Task.yield() }
+        #expect(native.styles.last?.css == "#updated { display: none !important; }")
+        f.tabs.settings.boosts.removeAll()
+        for _ in 0..<10 { await Task.yield() }
+        #expect(native.styles.last?.css == "")
+        #expect(session.primaryWebView == nil && f.host.creates.count == 1)
+    }
+
     @Test func nativeBoostPickerResultBelongsOnlyToItsPreviewAndDocument() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         await f.tabs.settings.waitForBoosts()
