@@ -119,6 +119,64 @@ class ArchitectureTests(unittest.TestCase):
         self.assertEqual(probe.call_args.args[0], ["/usr/sbin/sysctl", "-in", "hw.optional.arm64", "sysctl.proc_translated"])
 
 
+class NativeHarnessTests(unittest.TestCase):
+    def test_build_link_and_run_hold_the_same_architecture_cache(self):
+        cli = runpy.run_path(str(CLI))["main"].__globals__
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory)
+            caches = {}
+            for architecture, command in (("x86_64", "catalog"), ("x86_64", "page-host"),
+                                           ("arm64", "catalog")):
+                with self.subTest(architecture=architecture, command=command):
+                    stages = []
+                    binary = None
+
+                    def run(*args):
+                        nonlocal binary
+                        stages.append(args)
+                        if args[0] == "xcodebuild":
+                            cache = args[args.index("-derivedDataPath") + 1]
+                            if architecture in caches:
+                                self.assertEqual(cache, caches[architecture])
+                            caches[architecture] = cache
+                            if architecture == "arm64":
+                                separate = os.open(caches["x86_64"], os.O_RDONLY)
+                                try:
+                                    fcntl.flock(separate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                                finally:
+                                    os.close(separate)
+                        fd = os.open(caches[architecture], os.O_RDONLY)
+                        try:
+                            with self.assertRaises(BlockingIOError):
+                                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        finally:
+                            os.close(fd)
+                        if args[0] == "xcrun":
+                            binary = args[-1]
+                            binary.parent.mkdir(parents=True, exist_ok=True)
+                            binary.touch()
+                        elif isinstance(args[0], Path):
+                            self.assertTrue(binary.is_file())
+                            if command == "page-host":
+                                raise subprocess.CalledProcessError(1, args)
+
+                    with patch.dict(cli, {"run": run, "native_architecture": lambda: architecture}), \
+                            patch.object(Path, "home", return_value=home):
+                        if command == "page-host":
+                            with self.assertRaises(subprocess.CalledProcessError):
+                                cli["check_native_harness"](command)
+                        else:
+                            cli["check_native_harness"](command)
+                    self.assertEqual([args[0] for args in stages], ["xcodebuild", "xcrun", binary])
+                    self.assertFalse(binary.exists())
+                    fd = os.open(caches[architecture], os.O_RDONLY)
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    finally:
+                        os.close(fd)
+            self.assertNotEqual(caches["x86_64"], caches["arm64"])
+
+
 class CandidateLaunchTests(unittest.TestCase):
     def test_install_cannot_replace_bundle_between_verification_and_exec(self):
         cli = runpy.run_path(str(CLI))["main"].__globals__

@@ -62,32 +62,40 @@ def check_native_harness(command):
     # Keep the existing warm Intel cache and isolate the Silicon build products.
     cache_key = checkout if architecture == "x86_64" else f"{checkout}-{architecture}"
     derived = Path.home() / "Library/Caches/BarkSDK/native-checks" / cache_key
-    packages = derived / "SourcePackages"
-    products = derived / "Build/Products/Debug"
-    run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "BarkNativeChecks",
-        "-configuration", "Debug", "-destination", "generic/platform=macOS",
-        "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
-        "-onlyUsePackageVersionsFromResolvedFile", f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO",
-        "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-jobs", "1", "build")
-    maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
-    # SwiftPM bundle lookup uses the executable directory for command-line tools.
-    suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
-             "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
-             "live-fetch": "ChromiumLiveFetch"}[command]
-    checks = ("Main", "Ownership") if command == "live-fetch" else ("Main",)
-    for check in checks:
-        # Put the executable beside the package bundles for SwiftPM's resource lookup.
-        binary = products / f".bark-{command}-{check}-{uuid4()}"
-        try:
-            run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
-                "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
-                "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
-                "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
-                "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
-                REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
-            run(binary)
-        finally:
-            binary.unlink(missing_ok=True)
+    derived.mkdir(parents=True, exist_ok=True)
+    # Hold the cache across the executable's lifetime because the checks also
+    # read frameworks and SwiftPM resource bundles from these build products.
+    lock = os.open(derived, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        packages = derived / "SourcePackages"
+        products = derived / "Build/Products/Debug"
+        run("xcodebuild", "-project", REPO / "Bark.xcodeproj", "-scheme", "BarkNativeChecks",
+            "-configuration", "Debug", "-destination", "generic/platform=macOS",
+            "-derivedDataPath", derived, "-clonedSourcePackagesDirPath", packages,
+            "-onlyUsePackageVersionsFromResolvedFile", f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO",
+            "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-jobs", "1", "build")
+        maps = derived / "Build/Intermediates.noindex/GeneratedModuleMaps"
+        # SwiftPM bundle lookup uses the executable directory for command-line tools.
+        suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
+                 "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
+                 "live-fetch": "ChromiumLiveFetch"}[command]
+        checks = ("Main", "Ownership") if command == "live-fetch" else ("Main",)
+        for check in checks:
+            # Put the executable beside the package bundles for SwiftPM's resource lookup.
+            binary = products / f".bark-{command}-{check}-{uuid4()}"
+            try:
+                run("xcrun", "swiftc", "-swift-version", "5", "-target", f"{architecture}-apple-macosx15.5",
+                    "-parse-as-library", "-D", "BARK_CATALOG_FRAMEWORK", "-F", products, "-I", products,
+                    "-I", products / "include", "-I", packages / "checkouts/swift-atomics/Sources/_AtomicsShims/include",
+                    "-Xcc", f"-fmodule-map-file={maps / 'MuteableWKWebView.modulemap'}",
+                    "-framework", "NookNativeShell", "-Xlinker", "-rpath", "-Xlinker", products,
+                    REPO / "Tests/Shared/BridgeTable.swift", REPO / "Tests" / suite / f"{check}.swift", "-o", binary)
+                run(binary)
+            finally:
+                binary.unlink(missing_ok=True)
+    finally:
+        os.close(lock)
 
 
 def cached_engine(architecture):
