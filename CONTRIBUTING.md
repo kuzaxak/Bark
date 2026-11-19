@@ -334,16 +334,16 @@ Record the archive digest, download bytes, apparent bundle size and allocated bu
 
 ### Prepare a Bark distribution candidate
 
-The manual **Prepare Bark Candidate** workflow uses the architecture's pinned official SDK. It checks the build receipt and embedded framework before signing, then uploads the notarized, stapled DMG and Sparkle appcast for review. Feed and download publication are separate release steps. The public Nook transition feed uses the existing Nook release workflow.
+The manual **Prepare Bark Candidate** workflow uses the architecture's pinned official SDK. It checks the build receipt and embedded framework before signing, then qualifies the signed app and notarized, stapled DMG on a native desktop. After qualification passes, it uploads the DMG, Sparkle appcast and a separate qualification receipt for review. Feed and download publication are separate release steps. The public Nook transition feed uses the existing Nook release workflow.
 
-Configure the `bark-candidate-x86_64` or `bark-candidate-arm64` environment with required approval and a default-branch deployment restriction. Set `BARK_ENGINE_SOURCE` to the architecture’s pinned engine directory or archive. Set `BARK_SIGN_IDENTITY` and `BARK_NOTARY_PROFILE` to a Developer ID Application identity and notarytool profile on the dedicated runner. Use the existing Sparkle private key as the environment secret `SPARKLE_SIGNING_KEY`. An unavailable architecture pin stops the build.
+Configure the `bark-candidate-x86_64` or `bark-candidate-arm64` environment with required approval and a default-branch deployment restriction. Set `BARK_ENGINE_SOURCE` to the architecture’s pinned engine directory or archive. Set `BARK_SIGN_IDENTITY` and `BARK_NOTARY_PROFILE` to a Developer ID Application identity and notarytool profile on the dedicated runner. Use the existing Sparkle private key as the environment secret `SPARKLE_SIGNING_KEY`. An unavailable architecture pin stops the build. Set `BARK_WALK_PYTHON` to the absolute path to the runner-local [signed-walk Python executable](#run-the-signed-ui-walks). The workflow uses that interpreter as configured.
 
 With `--notary-profile`, packaging also checks Gatekeeper's assessment of the
 finished disk image and a fresh copy of Bark from a private, read-only mount.
 It verifies the copied app's signature, release metadata and pinned SDK before
 assessing execution trust. A failed check leaves the release export unpublished.
 
-Use a separate runner with the matching `bark-candidate-x86_64` or `bark-candidate-arm64` label, Xcode 26 and its Metal Toolchain installed. Before connecting it, install [the runner guard](scripts/runner/job-started-hook.sh) outside the runner’s work directory. Point `ACTIONS_RUNNER_HOOK_JOB_STARTED` at an executable wrapper outside the checkout. Use the installed guard path and the exact protected default ref.
+Use a separate runner with the matching `bark-candidate-x86_64` or `bark-candidate-arm64` label, Xcode 26 and its Metal Toolchain installed. Qualification needs an idle, logged-in macOS desktop with Accessibility access configured for the signed-walk environment. If the desktop is busy, rerun the candidate job once it is idle. Only the qualification receipt is uploaded from the walkthrough evidence. Before connecting the runner, install [the runner guard](scripts/runner/job-started-hook.sh) outside the runner’s work directory. Point `ACTIONS_RUNNER_HOOK_JOB_STARTED` at an executable wrapper outside the checkout. Use the installed guard path and the exact protected default ref.
 
 ```bash
 #!/bin/bash

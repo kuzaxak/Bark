@@ -487,11 +487,26 @@ python3 scripts/bark-check.py engine --require-official --arch "$arch" \
     --engine "$engine" --archive "$archive"
 ```
 
-A receiver with the staged metadata verifies each archive with
-`python3 scripts/bark-check.py engine --require-official --arch "$arch"
---engine "$archive"`. Perform native signed qualification for each
-architecture before committing the two headers and both pins together. One architecture can still be published independently
-when its public headers already match the other accepted architecture.
+On each receiving Mac, use the paired source checkout and a signed app built
+with its native SDK. Install the archive before starting the desktop walk.
+Use the local Python configured for Bark’s signed walks.
+
+```fish
+python3 scripts/bark-check.py engine --require-official --arch "$arch" --engine "$archive" --install
+"$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py --app "$signed_app" \
+    --identity "$BARK_SIGN_IDENTITY" --output (mktemp -d)/qualification
+```
+
+For a notarized release, also pass `--image "$disk_image"` to run the app
+copied from that DMG after Gatekeeper assessment. The walk checks three
+fresh launches, first input, and typing in the original draft on return.
+It then installs and updates disposable versions of that signed candidate
+using a local Sparkle feed. A successful run writes `qualification.json`
+with the architecture, SDK pin, candidate CDHash, timings and signed
+update identities. The release workflow uploads that receipt alongside its
+artifacts. Run the walk on both native architectures before committing a
+new shared header and its two pins. An architecture can still be published
+independently when its headers match the other accepted architecture.
 
 The app target copies its outer resources from `ChromiumApp/Resources`. Bark owns
 its display name, declared app and document artwork, and localized bundle identity.

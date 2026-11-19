@@ -73,20 +73,25 @@ class ReleaseTests(unittest.TestCase):
                     if failure == "sdk":
                         raise ValueError("SDK mismatch")
 
+                def exercise(installed):
+                    self.assertEqual(installed, installation[0])
+                    self.assertTrue(installed.is_dir())
+                    events.append("exercise")
+
                 with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
                     "bark_release.subprocess.check_output",
                     side_effect=["CDHash=abc123", "CDHash=bad456" if failure == "identity" else "CDHash=abc123"],
                 ):
                     if failure in ("sdk", "identity"):
                         with self.assertRaises(ValueError):
-                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk)
+                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk, exercise=exercise)
                     elif failure:
                         with self.assertRaises(subprocess.CalledProcessError):
-                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk)
+                            verify_installed_image(image, self.app, self.root, requirement, verify_sdk, exercise=exercise)
                     else:
-                        verify_installed_image(image, self.app, self.root, requirement, verify_sdk)
+                        verify_installed_image(image, self.app, self.root, requirement, verify_sdk, exercise=exercise)
                 expected = {
-                    None: ["image", "attach", "copy", "detach", "seal", "sdk", "execution"],
+                    None: ["image", "attach", "copy", "detach", "seal", "sdk", "execution", "exercise"],
                     "image": ["image"],
                     "copy": ["image", "attach", "copy", "detach"],
                     "seal": ["image", "attach", "copy", "detach", "seal"],

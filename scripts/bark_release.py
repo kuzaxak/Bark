@@ -193,7 +193,7 @@ def distribution_requirement(app, bundle_id):
             'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
 
 
-def verify_installed_image(image, staged_app, working, requirement, verify_staged):
+def verify_installed_image(image, staged_app, working, requirement, verify_staged, *, exercise=None):
     """Assess the notarized disk image and a clean copy of its app."""
     subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
                     "--context", "context:primary-signature", "--verbose=4", image], check=True)
@@ -222,6 +222,8 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
             verify_staged(installed)
         subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=4",
                         installed], check=True)
+        if exercise:
+            exercise(installed)
 
 
 def make_distribution(app, output_directory, architecture, identity, download_base_url, sparkle_bin,

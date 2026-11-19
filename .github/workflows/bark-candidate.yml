@@ -64,6 +64,7 @@ jobs:
       BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
       BARK_SIGN_IDENTITY: ${{ vars.BARK_SIGN_IDENTITY }}
       BARK_NOTARY_PROFILE: ${{ vars.BARK_NOTARY_PROFILE }}
+      BARK_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
     steps:
       - name: Checkout the approved revision
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -78,6 +79,11 @@ jobs:
           : "${BARK_ENGINE_SOURCE:?Set the matching pinned SDK source in the environment}"
           : "${BARK_SIGN_IDENTITY:?Set the local Developer ID identity in the environment}"
           : "${BARK_NOTARY_PROFILE:?Set the local notarytool profile in the environment}"
+          : "${BARK_WALK_PYTHON:?Set the runner-local signed-walk Python executable in the environment}"
+          case "$BARK_WALK_PYTHON" in
+            /*) test -f "$BARK_WALK_PYTHON" && test -x "$BARK_WALK_PYTHON" ;;
+            *) echo "BARK_WALK_PYTHON must be an absolute executable path" >&2; exit 1 ;;
+          esac
           work="$(mktemp -d "$RUNNER_TEMP/bark-candidate.XXXXXXXX")"
           printf 'BARK_RELEASE_WORK=%s\n' "$work" >> "$GITHUB_ENV"
 
@@ -120,6 +126,31 @@ jobs:
               --download-base-url "$BARK_DOWNLOAD_BASE_URL" --ed-key-file -
           test -f "$BARK_RELEASE_WORK/artifacts/Bark-$BARK_RELEASE_VERSION-$BARK_BUILD_NUMBER-macos-$BARK_ARCH.dmg"
           test -f "$BARK_RELEASE_WORK/artifacts/bark-macos-$BARK_ARCH.xml"
+
+      - name: Qualify the packaged candidate on the native desktop
+        run: |
+          set -euo pipefail
+          image="$BARK_RELEASE_WORK/artifacts/Bark-$BARK_RELEASE_VERSION-$BARK_BUILD_NUMBER-macos-$BARK_ARCH.dmg"
+          evidence="$BARK_RELEASE_WORK/qualification"
+          status=0
+          env -u BARK_ENGINE_SOURCE "$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py \
+            --app "$BARK_RELEASE_WORK/Bark.app" --image "$image" --output "$evidence" \
+            --identity "$BARK_SIGN_IDENTITY" || status=$?
+          if [[ "$status" == 3 ]]; then
+            echo "The native desktop was busy. Rerun the candidate job when the desktop is idle." >&2
+          fi
+          if [[ "$status" != 0 ]]; then
+            exit "$status"
+          fi
+          test -f "$evidence/qualification.json"
+
+      - name: Upload the native qualification receipt
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bark-qualification-${{ inputs.arch }}-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.BARK_RELEASE_WORK }}/qualification/qualification.json
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Upload the Bark candidate files
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
