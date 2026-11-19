@@ -1272,17 +1272,9 @@ extension TabsController {
         page.unload()
     }
 
-    /// Why automatic unloading leaves a page alone. Chromium reports no capture, upload or unsaved
-    /// work, so nothing unloads there on its own.
+    /// Retention policy shared by automatic and bulk unloading.
     public func inactiveUnloadProtectionReason(for page: PageSession) -> InactiveUnloadProtection? {
         if isOnScreen(page.itemID) { return .visible }
-        if profileEngine == .chromium { return .unknownNativeActivity }
-        return activityProtection(for: page)
-    }
-
-    /// Current runtime signals. This does not establish whether a document has unsaved work or
-    /// uploads, and on Chromium whether it captures a camera, microphone or screen: those signals are absent.
-    private func activityProtection(for page: PageSession) -> InactiveUnloadProtection? {
         if page.hasPlayingAudio || page.hasAudioContent { return .audio }
         if page.hasPiPActive { return .pictureInPicture }
         if isInMiniPlayer(page.itemID) { return .miniPlayer }
@@ -1290,6 +1282,8 @@ extension TabsController {
         case .pinned, .favorites: return .pinned
         default: break
         }
+        // Chromium's current bridge does not establish capture, uploads or unsaved work.
+        if profileEngine == .chromium { return .unknownNativeActivity }
         var views = webViews?.allWebViews(for: page.itemID) ?? []
         if let primary = page.webView { views.append(primary) }
         for view in views {
@@ -1299,10 +1293,20 @@ extension TabsController {
         return nil
     }
 
-    public func unloadAllHidden() {
-        for page in sessions where !page.isUnloaded && !isOnScreen(page.itemID) && activityProtection(for: page) == nil {
+    @discardableResult
+    public func unloadAllHidden() -> InactiveUnloadResult {
+        var result = InactiveUnloadResult()
+        for page in sessions where !page.isUnloaded {
+            if let reason = inactiveUnloadProtectionReason(for: page) {
+                result.retained[reason, default: 0] += 1
+                continue
+            }
+            // The current policy only admits WebKit releases, which are synchronous.
             page.unload()
+            if page.isUnloaded { result.unloaded += 1 }
+            else { result.notReleased += 1 }
         }
+        return result
     }
 
     // MARK: - External Undo
@@ -1380,4 +1384,13 @@ extension TabsController {
 /// Retention reasons, including an explicit boundary for engines without activity reporting.
 public enum InactiveUnloadProtection: String, Hashable {
     case visible, audio, pictureInPicture, miniPlayer, camera, microphone, pinned, unknownNativeActivity
+}
+
+/// Counts of live tabs considered by a bulk action. Already unloaded tabs are absent.
+public struct InactiveUnloadResult: Equatable {
+    public fileprivate(set) var unloaded = 0
+    public fileprivate(set) var retained: [InactiveUnloadProtection: Int] = [:]
+    public fileprivate(set) var notReleased = 0
+
+    public var kept: Int { retained.values.reduce(notReleased, +) }
 }

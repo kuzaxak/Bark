@@ -34,6 +34,7 @@ import NookWeb
     func exportSpace(_ spaceID: UUID)
     /// Asks for a `.nookspace` file and adds its space as a new one.
     func importSpace()
+    func showInactiveUnloadResult(_ result: InactiveUnloadResult, in window: BrowserWindowState?)
     func hideTabClosureToast()
     var tabClosureToastCount: Int { get }
     /// The active space's accent, already published for the window.
@@ -54,6 +55,14 @@ extension TabActions {
     public var supportsMultipleWindows: Bool { true }
     public var supportsSpaceFiles: Bool { true }
     public var spaceSync: (any SpaceSyncControls)? { nil }
+}
+
+extension InactiveUnloadResult {
+    public var presentationSummary: String {
+        let unknown = retained[.unknownNativeActivity, default: 0]
+        let counts = "Unloaded: \(unloaded). Kept open: \(kept)."
+        return unknown == 0 ? counts : "\(counts) Activity unknown: \(unknown)."
+    }
 }
 
 // MARK: - Environment

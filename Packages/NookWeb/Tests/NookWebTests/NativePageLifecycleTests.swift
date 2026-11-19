@@ -3102,7 +3102,7 @@ struct NativePageLifecycleTests {
             "The same counter must observe actual structural admission work")
     }
 
-    @Test func automaticUnloadStaysOutWhileTheExplicitActionUnloadsHiddenPages() throws {
+    @Test func bulkUnloadRetainsChromiumPagesWithUnknownActivity() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let visible = try #require(f.window.selectedItemID)
         f.host.finishCreate(0)
@@ -3132,7 +3132,14 @@ struct NativePageLifecycleTests {
         let hidden = try #require(f.tabs.session(for: plain))
         #expect(f.tabs.inactiveUnloadProtectionReason(for: hidden) == .unknownNativeActivity, "Automatic unloading has no capture signal")
 
-        f.tabs.unloadAllHidden()
+        let result = f.tabs.unloadAllHidden()
+        #expect(result.unloaded == 0 && result.kept == 7)
+        #expect(result.retained == [.visible: 1, .unknownNativeActivity: 2, .audio: 1, .pictureInPicture: 2, .pinned: 1])
+        #expect(f.host.closes.isEmpty && !hidden.isUnloaded)
+
+        // An explicit single-tab action still requests that tab's close.
+        f.tabs.unload(plain)
+        f.tabs.unload(refusing)
         #expect(Set(f.host.closes.map { ObjectIdentifier($0.page) }) == [ObjectIdentifier(plainPage), ObjectIdentifier(refusingPage)])
         f.host.finishClose(try #require(f.host.closes.firstIndex { $0.page === plainPage }), admitted: true)
         f.host.finishClose(try #require(f.host.closes.firstIndex { $0.page === refusingPage }), admitted: false)

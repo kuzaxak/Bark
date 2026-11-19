@@ -13,6 +13,7 @@ import NookWeb
 
 public struct SettingsGeneralTab: View {
     @Environment(TabsController.self) private var tabs
+    @State private var inactiveUnloadResult: InactiveUnloadResult?
     @Environment(NookSettingsService.self) var nookSettings
     @State private var showingAddSite = false
     @State private var showingAddEngine = false
@@ -72,7 +73,11 @@ public struct SettingsGeneralTab: View {
                 #endif
             }
             Button("Unload All Inactive Tabs") {
-                tabs.unloadAllHidden()
+                inactiveUnloadResult = tabs.unloadAllHidden()
+            }
+            if let inactiveUnloadResult {
+                Text(inactiveUnloadResult.presentationSummary)
+                    .foregroundStyle(.secondary)
             }
         } header: {
             Text("Performance")

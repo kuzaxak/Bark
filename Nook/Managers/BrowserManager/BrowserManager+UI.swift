@@ -126,6 +126,12 @@ extension BrowserManager: TabActions {
         )
     }
 
+    func showInactiveUnloadResult(_ result: InactiveUnloadResult, in window: BrowserWindowState?) {
+        guard let window = window ?? windowRegistry?.activeWindow,
+              windowRegistry?.windows[window.id] === window else { return }
+        showWindowToast(result.presentationSummary, in: window)
+    }
+
     func openSpaceSettings() {
         openSettings(tab: .spaces)
     }

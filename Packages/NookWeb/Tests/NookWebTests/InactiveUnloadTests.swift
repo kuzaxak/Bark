@@ -21,14 +21,17 @@ struct InactiveUnloadTests {
 
         #expect(host.tabs.inactiveUnloadProtectionReason(for: camera) == .camera)
         #expect(host.tabs.inactiveUnloadProtectionReason(for: microphone) == .microphone)
-        host.tabs.unloadAllHidden()
+        let initial = host.tabs.unloadAllHidden()
+        #expect(initial.unloaded == 1 && initial.kept == 2)
+        #expect(initial.retained == [.camera: 1, .microphone: 1])
         #expect(!camera.isUnloaded)
         #expect(!microphone.isUnloaded)
         #expect(safe.isUnloaded)
 
         (camera.webView as? CaptureView)?.cameraState = .none
         secondary.microphoneState = .none
-        host.tabs.unloadAllHidden()
+        let afterCapture = host.tabs.unloadAllHidden()
+        #expect(afterCapture.unloaded == 2 && afterCapture.kept == 0)
         #expect(camera.isUnloaded)
         #expect(microphone.isUnloaded)
     }
@@ -45,12 +48,16 @@ struct InactiveUnloadTests {
         host.window.miniPlayer.update([
             MiniPlayerPage(id: media.itemID, hasMedia: true, isAudible: false, isOnScreen: false)])
         #expect(host.tabs.isInMiniPlayer(media.itemID))
-        host.tabs.unloadAllHidden()
+        let initial = host.tabs.unloadAllHidden()
+        #expect(initial.unloaded == 1 && initial.kept == 2)
+        #expect(initial.retained == [.miniPlayer: 1, .pinned: 1])
         #expect(!media.isUnloaded)
         #expect(!pinned.isUnloaded)
         #expect(safe.isUnloaded)
         host.window.miniPlayer.dismiss()
-        host.tabs.unloadAllHidden()
+        let afterDismissal = host.tabs.unloadAllHidden()
+        #expect(afterDismissal.unloaded == 1 && afterDismissal.kept == 1)
+        #expect(afterDismissal.retained == [.pinned: 1])
         #expect(media.isUnloaded)
         #expect(!pinned.isUnloaded)
     }

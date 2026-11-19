@@ -278,7 +278,8 @@ public struct TabContextMenu: View {
         .disabled(session?.isUnloaded ?? true)
 
         Button {
-            tabs.unloadAllHidden()
+            let result = tabs.unloadAllHidden()
+            actions?.showInactiveUnloadResult(result, in: windowState)
         } label: {
             Label("Unload All Inactive Tabs", systemImage: "moon.zzz.fill")
         }
