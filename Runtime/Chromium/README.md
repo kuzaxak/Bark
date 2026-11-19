@@ -411,21 +411,25 @@ holds the exact framework, `Bark Packaging`, engine `Info.plist`, public header 
 `SHA256SUMS`. The shared public header is identical for both architectures.
 
 The app executable and Swift/AppKit shell build against the universal headers.
-Each signed developer app has launched with its pinned engine on its native
-architecture.
+Both signed developer builds pass bundle verification against their committed
+SDK pins. Earlier signed builds using those pins ran on native Intel and Apple
+Silicon hardware.
 
 | Component | Intel | Apple Silicon |
 | --- | --- | --- |
-| Bark launcher and Swift/AppKit framework | Signed thin Release build | Signed thin Release build, cross-compiled on Intel and run on an M4 Pro |
-| Chromium and its child processes | Pinned x86_64 developer SDK | Pinned arm64 developer SDK, native renderer smoke passed |
-| Rust adblock library and C SDK link library | x86_64 slice | arm64 slice |
-| Sparkle framework, updater and XPC services | x86_64 slice | arm64 slice |
+| Bark launcher and Swift/AppKit framework | Signed thin Release build | Signed thin Release build, cross-compiled on Intel |
+| Chromium and its child processes | Pinned x86_64 developer SDK | Pinned arm64 developer SDK, prior M4 Pro renderer smoke passed |
+| Rust adblock library | Thin x86_64 | Thin arm64 |
+| C SDK link library (build input) | Universal x86_64 and arm64 | Universal x86_64 and arm64 |
+| Sparkle framework, Autoupdate, Updater and both XPC services | Universal x86_64 and arm64 | Universal x86_64 and arm64 |
 
 Staging and signed verification inspect every Mach-O file in the app. The launcher,
 native shell and Chromium framework must match the target architecture exactly.
 Other embedded frameworks and services can be universal if they include that
-architecture. The Release shell weak-links FoundationModels and checks system
-model availability on macOS 26 or later. Its locked package graph has no MLX dependency.
+architecture. Both verified bundles contain 18 target-specific Mach-O files
+and five universal Sparkle files. The Release shell weak-links FoundationModels
+on both architectures and checks system model availability on macOS 26 or later.
+The locked package graph has no MLX dependency.
 
 The existing Intel SDK cache at `~/Library/Caches/BarkSDK/<digest>/Engine` is unchanged.
 The resolver also accepts an existing local Intel `Engine/` directory and legacy Intel

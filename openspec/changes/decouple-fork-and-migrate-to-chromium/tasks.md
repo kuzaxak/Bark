@@ -11,9 +11,9 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 
 ## 1. Baseline and release contract (G0)
 
-- [x] 1.1 Record the implementation base and release baseline; verify the intended branch contains the profile and tab behavior described in this plan. See the implementation baseline in `design.md`; universal unsigned Release compilation passed, while platform/runtime qualification remains in 1.2/1.4 and later gates.
-- [ ] 1.2 Audit arm64/x86_64 slices for the engine candidates and app dependencies, including MLX; deliver a dual-architecture build matrix with optional feature handling documented.
-  The [SDK architecture matrix](../../../Runtime/Chromium/README.md#publishing-the-engine) records shell and dependency coverage. The ARM64 engine receipt and native qualification remain open.
+- [x] 1.1 Record the implementation base and release baseline; verify the intended branch contains the profile and tab behavior described in this plan. See the implementation baseline in `design.md`; universal unsigned Release compilation passed, while see 1.2 for the architecture inventory and 1.4 and later gates for runtime qualification.
+- [x] 1.2 Audit arm64/x86_64 slices for the engine candidates and app dependencies, including MLX; deliver a dual-architecture build matrix with optional feature handling documented.
+  The [SDK architecture matrix](../../../Runtime/Chromium/README.md#publishing-the-engine) records verification of both signed developer bundles against their committed SDK pins, including nested native dependencies and optional model support. An earlier signed app using the same arm64 pin rendered a loopback page and quit on Apple Silicon. Official release and performance qualification remain separate gates.
 - [ ] 1.3 Freeze website workflows and extension versions/capabilities in a maintained acceptance matrix; verify all required spec scenarios have a case and assigned owner.
 - [ ] 1.4 Capture repeatable baseline measurements on real Intel and Apple Silicon Macs using existing performance hooks; record hardware, build, workload and aggregate process metrics outside source commits.
 - [ ] 1.5 Agree performance budgets, package-size budget procedure and engine-security response ownership before candidate measurement; verify the release checklist records those decisions.
