@@ -5,6 +5,20 @@ together, and each space opens its pages in its assigned Chromium profile. The
 window, sidebar, command palette and keyboard shortcuts are native Swift and
 AppKit. Chromium renders the pages.
 
+## Install a signed build
+
+Open the DMG for your Mac, drag **Bark** into **Applications**, eject the image,
+and open Bark from Applications. Bark keeps tabs, bookmarks and website
+sign-ins in `~/Library/Application Support/NookChromium`. An existing Bark
+profile on that Mac opens automatically. You can quit and reopen the app to
+check that your session persists.
+
+This branch builds separate signed developer apps for Intel and Apple Silicon
+on macOS 15.5 and later. Both have rendered a test page on native hardware.
+An official Bark download is pending.
+The repository’s earlier releases are published under the Nook name.
+[Earlier Nook releases](https://github.com/kuzaxak/Nook/releases)
+
 ## Using Bark
 
 Choose **Help → Bark Help** for a quick guide to the browser’s window controls.
@@ -30,8 +44,9 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 - Shift-click a link, or focus it and press Shift+Return, to open it in Peek.
   Escape returns focus to the source pane. Use **Add Split View** (Control+Shift+= by
   default) to keep the preview and its edits in a second pane.
-- External links can open in a compact window. Choose **Open in Space** to move
-  the page into the main window with its draft intact.
+- External links can open in a compact window. Choose **Open in Space** to keep
+  the page and its draft in the main window. For a site popup with a live
+  opener, the default destination is the window and space of the opening tab.
 
 ### Website passwords
 
@@ -82,16 +97,6 @@ space. You can enable sync for it separately.
 
 ## Build and run
 
-For a bug report, choose **Help → Build Information…** in Bark. **Copy**
-includes the app build, Chromium version, processor architecture and exact
-engine SDK digest.
-
-This branch builds separate signed developer apps for Intel and Apple Silicon
-on macOS 15.5 and later. Both have rendered a test page on native hardware.
-An official Bark download is pending.
-The repository’s earlier releases are published under the Nook name.
-[Earlier Nook releases](https://github.com/kuzaxak/Nook/releases)
-
 To compile the native window and sidebar without installing an engine, run
 `python3 -B scripts/bark-check.py shell --arch arm64` or select `x86_64`.
 This checks the Release app executable and Swift framework. Running the browser
@@ -115,10 +120,10 @@ python3 scripts/bark-check.py smoke build/Bark.app
 python3 scripts/bark-check.py launch build/Bark.app
 ```
 
-The smoke test opens a local page and quits after the renderer acknowledges it.
-The launch command leaves a separate disposable profile open for hands-on testing.
-To keep a personal browsing session, open the signed app normally. Its local data
-lives under `~/Library/Application Support/NookChromium`.
+The `smoke` and `launch` commands create temporary profiles and remove them
+when they finish. `smoke` quits after Chromium renders its local test page.
+`launch` keeps the test window open until you quit. Sparkle update rehearsals
+use a separately identified test app.
 
 To give someone a signed copy for everyday testing, package that same app.
 Select the architecture used to build it.
@@ -126,10 +131,6 @@ Select the architecture used to build it.
 ```fish
 python3 scripts/bark-check.py dmg build/Bark.app --arch arm64 --output ~/Downloads/Bark-macOS-arm64.dmg
 ```
-
-Open the DMG, drag **Bark** into **Applications**, eject the image and open Bark
-from Applications. This build keeps tabs, bookmarks and website sign-ins in
-the regular Bark profile. Sparkle update rehearsals use a separate test app.
 
 In a signed build with a configured update feed, use **Bark → Check for Updates**
 for a manual check. Under **Settings → General** you can also turn on automatic
@@ -141,8 +142,8 @@ The app owns the executable, menus and window layout. The engine owns Chromium
 profiles, documents and renderer processes. A versioned C interface connects the
 two. A shell change can use the pinned engine without rebuilding Chromium.
 For a bug report, open **Help → Build Information** and copy the app build,
-Chromium version, shell source SHA-256 and engine SDK pin. The two digests
-distinguish releases that share a version number.
+Chromium version, architecture, shell source SHA-256 and engine SDK pin.
+The two digests distinguish releases that share a version number.
 [App entry point](ChromiumApp) · [Swift window code](App/Chromium) ·
 [Engine SDK](Packages/BarkEngine) · [Chromium integration](Runtime/Chromium)
 
