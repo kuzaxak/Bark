@@ -123,11 +123,41 @@ class CandidateLaunchTests(unittest.TestCase):
                 fcntl.flock(fd, fcntl.LOCK_UN)
 
             verified = Mock(side_effect=verify)
-            with patch.dict(cli, {"verify_candidate": verified, "HTTPServer": lambda *_: nullcontext(server),
-                                  "seed_profile": Mock(), "stop": stop}), \
+            with patch.dict(cli, {"verify_candidate": verified, "ThreadingHTTPServer": lambda *_: nullcontext(server),
+                                  "smoke_console": lambda: nullcontext(Mock()), "seed_profile": Mock(), "stop": stop}), \
                     patch("subprocess.Popen", side_effect=launch) as spawn, patch("subprocess.run"):
                 cli["launch_candidate"](app, engine, root, "x86_64", interactive=False)
             spawn.assert_called_once()
+
+    def test_smoke_requires_an_idle_desktop_and_stops_on_activity(self):
+        cli = runpy.run_path(str(CLI))["main"].__globals__
+        for at_launch in (True, False):
+            with self.subTest(at_launch=at_launch), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                lock = root / "screen-lock"
+                console = Mock()
+                console.available.return_value = True
+                console.pointer.return_value = (100, 100)
+                # Before setup, before exec, then during the first request.
+                console.idle.side_effect = [30, 30, 0] if at_launch else [30, 30, 30, 0]
+                proc = Mock()
+                proc.poll.return_value = None
+                server = Mock(server_port=12345)
+                def stop(process):
+                    self.assertIs(process, proc)
+                    self.assertTrue(lock.is_dir())
+                stopped = Mock(side_effect=stop)
+                previous = signal.getsignal(signal.SIGTERM)
+                with patch.dict(cli, {"SCREEN_LOCK": lock, "QuartzConsole": lambda: console,
+                                      "ThreadingHTTPServer": lambda *_: nullcontext(server),
+                                      "verify_candidate": Mock(), "stop": stopped}), \
+                        patch("subprocess.Popen", return_value=proc) as spawn, patch("subprocess.run"), \
+                        self.assertRaisesRegex(cli["ScreenUnavailable"], "user is active"):
+                    cli["launch_candidate"](root / "Bark.app", root / "Engine", root, "x86_64", interactive=False)
+                self.assertEqual(spawn.call_count, 0 if at_launch else 1)
+                self.assertEqual(stopped.call_count, spawn.call_count)
+                self.assertFalse(lock.exists())
+                self.assertEqual(signal.getsignal(signal.SIGTERM), previous)
 
 
 class CandidateCleanupTests(unittest.TestCase):

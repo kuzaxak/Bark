@@ -3,12 +3,12 @@
 """Build, verify and run the signed Bark app or its native regression checks."""
 
 import argparse
-from contextlib import contextmanager
+from contextlib import contextmanager, ExitStack
 import fcntl
 import filecmp
 import gzip
 import hashlib
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
@@ -34,6 +34,11 @@ from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, lo
 from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
 
 REPO = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO / "Runtime/Chromium"))
+from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, QuartzConsole,
+                               ScreenUnavailable, interrupted, require_host_only_image,
+                               require_idle_console, screen_lock)
+
 STAGE = REPO / "scripts/stage-chromium-app.sh"
 PACKAGE = REPO / "Packages/BarkEngine"
 MACH_CPU_TYPES = {"x86_64": 0x01000007, "arm64": 0x0100000c}
@@ -289,8 +294,6 @@ def unsigned_mach_digest(path, payload_size, architecture, original_vmsize=None,
 
 def verify_signed_shell(app, architecture=None):
     architecture = architecture or native_architecture()
-    sys.path.insert(0, str(REPO / "Runtime/Chromium"))
-    from run_browser_tests import TEST_FRAMEWORK, require_host_only_image
     engine = app / "Contents/Frameworks" / TEST_FRAMEWORK
     for image in (app / "Contents/MacOS/Bark",
                   app / "Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell",
@@ -394,13 +397,30 @@ def seed_profile(root, space_id, url):
     }))
 
 
+@contextmanager
+def smoke_console():
+    previous = signal.signal(signal.SIGTERM, interrupted)
+    try:
+        with screen_lock(SCREEN_LOCK, wait=15) as owns_screen:
+            console = QuartzConsole()
+            pointer = console.pointer()
+            require_idle_console(console, owns_screen, pointer, min_idle=0)
+            # Give the Return key that invoked the CLI time to leave the idle window.
+            time.sleep(max(0, 10 - console.idle()))
+            yield lambda min_idle: require_idle_console(console, owns_screen, pointer, min_idle)
+    finally:
+        signal.signal(signal.SIGTERM, previous)
+
+
 def launch_candidate(app, engine, working, architecture, *, interactive):
     profile = str(uuid4()).upper()
     root = working / "Profile"
     root.mkdir()
     domain = "ee.qdo.nook.chromium-verification." + hashlib.sha256(str(root).encode()).hexdigest()
     app_binary = app / "Contents/MacOS/Bark"
-    with HTTPServer(("127.0.0.1", 0), SmokePage) as server, (working / "bark.log").open("wb") as log:
+    # A speculative loopback connection must leave the guard free to poll.
+    with ExitStack() as session, ThreadingHTTPServer(("127.0.0.1", 0), SmokePage) as server, \
+            (working / "bark.log").open("wb") as log:
         server.timeout = .25
         server.rendered = False
         origin = f"http://127.0.0.1:{server.server_port}"
@@ -409,6 +429,9 @@ def launch_candidate(app, engine, working, architecture, *, interactive):
         # child is running, install_local_build's process check protects it.
         with app_output_lock(app):
             verify_candidate(app, engine, working, architecture)
+            if not interactive:
+                check_console = session.enter_context(smoke_console())
+                check_console(10)
             proc = subprocess.Popen([str(app_binary), f"--barc-app-data-dir={root}",
                                      f"--barc-app-profile={profile}"],
                                     stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -417,6 +440,8 @@ def launch_candidate(app, engine, working, architecture, *, interactive):
             deadline = time.monotonic() + 45
             while not server.rendered and time.monotonic() < deadline and proc.poll() is None:
                 server.handle_request()
+                if not interactive:
+                    check_console(1.5)
             if not server.rendered or proc.poll() is not None:
                 raise ValueError(f"Bark did not acknowledge the fixture (exit status {proc.poll()}).")
             if interactive:
@@ -591,5 +616,8 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         sys.exit(130)
+    except ScreenUnavailable as error:
+        print(error, file=sys.stderr)
+        sys.exit(SCREEN_UNAVAILABLE)
     except (OSError, ValueError, tarfile.TarError, subprocess.CalledProcessError, struct.error) as error:
         sys.exit(str(error))
