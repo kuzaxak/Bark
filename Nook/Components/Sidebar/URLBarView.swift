@@ -100,7 +100,7 @@ struct URLBarView: View {
         collapsedAddress(session: session)
         .frame(maxWidth: .infinity, minHeight: controlHeight, maxHeight: controlHeight)
         .overlay(alignment: .bottom) {
-            NativePageLoadingBar(isLoading: session?.isLoading == true)
+            NativePageLoadingBar(isLoading: session?.isLoading == true, progress: session?.loadProgress)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .background {

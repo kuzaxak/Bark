@@ -244,6 +244,71 @@ private enum Native {
 }
 
 #if !BLOCKER_HOST_CHECKS
+@MainActor private func checkLoadProgress() throws {
+    let window: Int32 = 10, tab: Int32 = 2090
+    let page = try ChromiumPageNavigation(profileID: Native.first, window: window, tab: tab, bridge: Native.bridge)
+    defer { page.invalidate() }
+    let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil)
+    session.installNavigation(page)
+    let owner = Native.observations.first { $0.value.3 == tab }!
+    func emit(_ event: BarcTabEvent, loading: Bool = true, window: Int32 = 10) {
+        owner.value.0?(owner.value.1, owner.key, Int32(event.rawValue), window, tab, nil, nil, 0,
+                       loading ? BARC_TAB_LOADING.rawValue : 0)
+    }
+    func sample(_ fraction: Double, loading: Int32 = 1, token: UInt64? = nil) {
+        page.receiveLoadProgress(token: token ?? owner.key, progress: fraction, loading: loading)
+    }
+
+    sample(0.5)
+    precondition(!session.isLoading && session.loadProgress == nil)
+    emit(BARC_TAB_STARTED)
+    precondition(session.isLoading && session.loadProgress == nil, "an old SDK needs only the loading flag")
+    sample(0)
+    precondition(session.loadProgress == 0)
+    sample(0.45)
+    sample(0.8, token: owner.key + 1)
+    precondition(session.loadProgress == 0.45)
+    emit(BARC_TAB_TITLE)
+    precondition(session.loadProgress == 0.45)
+    emit(BARC_TAB_COMMITTED)
+    precondition(session.isLoading && session.loadProgress == nil)
+    sample(0.65)
+    precondition(session.loadProgress == 0.65)
+    emit(BARC_TAB_STATE, window: 0)
+    sample(0.95)
+    precondition(session.loadProgress == nil, "a detached owner has no visible progress")
+    emit(BARC_TAB_STATE)
+    sample(0.7)
+    precondition(session.loadProgress == 0.7)
+    page.stop()
+    precondition(session.loadProgress == nil)
+    sample(.infinity)
+    precondition(session.isLoading && session.loadProgress == nil)
+    sample(1.1)
+    precondition(session.loadProgress == nil)
+    sample(0.8)
+    sample(1, loading: 0)
+    precondition(session.loadProgress == nil)
+    sample(0.9)
+    emit(BARC_TAB_FAILED) // Late load flags must not let a sample revive the ended navigation.
+    sample(0.5)
+    precondition(!session.isLoading && session.loadProgress == nil)
+    emit(BARC_TAB_STARTED)
+    sample(0.25)
+    precondition(session.loadProgress == 0.25)
+    emit(BARC_TAB_STARTED)
+    precondition(session.loadProgress == nil, "a replacement navigation never inherits its predecessor's fraction")
+    sample(0.4)
+    emit(BARC_TAB_FINISHED, loading: false)
+    precondition(!session.isLoading && session.loadProgress == nil)
+    emit(BARC_TAB_STARTED)
+    sample(0.1)
+    session.installNavigation(try ChromiumPageNavigation(profileID: Native.first, window: window, tab: tab + 1, bridge: Native.bridge))
+    sample(0.99)
+    precondition(session.loadProgress == nil)
+    print("Chromium load progress stays bound to the live observation and resets with its document")
+}
+
 @MainActor private func lastPageKeepsItsWindow() throws {
     let profile = Profile(id: Native.first, engine: .chromium)
     let session = { PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "", isPrivate: false, controller: nil) }
@@ -649,6 +714,7 @@ private final class MoveCounter: NSView {
 @main
 private enum HostChecks {
     @MainActor static func main() throws {
+        try checkLoadProgress()
         let host = ChromiumNativePageHost(bridge: Native.bridge)
         let window = BrowserWindowState()
         let shell = NSView()

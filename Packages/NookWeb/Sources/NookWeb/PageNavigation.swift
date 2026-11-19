@@ -8,6 +8,8 @@ public struct PageNavigationState: Equatable {
     public var url: URL?
     public var title: String?
     public var isLoading: Bool
+    /// A fraction supplied by the bound engine, or nil when progress is unknown.
+    public var loadProgress: Double?
     public var canGoBack: Bool
     public var canGoForward: Bool
     /// nil means this engine has not supplied authoritative audio state.
@@ -21,10 +23,12 @@ public struct PageNavigationState: Equatable {
 
     public init(url: URL? = nil, title: String? = nil, isLoading: Bool = false,
                 canGoBack: Bool, canGoForward: Bool, isAudioMuted: Bool? = nil, isAudible: Bool? = nil,
-                hasVideoPictureInPicture: Bool? = nil, hasDocumentPictureInPicture: Bool? = nil, media: PageMedia? = nil) {
+                hasVideoPictureInPicture: Bool? = nil, hasDocumentPictureInPicture: Bool? = nil, media: PageMedia? = nil,
+                loadProgress: Double? = nil) {
         self.url = url
         self.title = title
         self.isLoading = isLoading
+        self.loadProgress = loadProgress
         self.canGoBack = canGoBack
         self.canGoForward = canGoForward
         self.isAudioMuted = isAudioMuted

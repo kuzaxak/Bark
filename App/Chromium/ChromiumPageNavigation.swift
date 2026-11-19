@@ -1,5 +1,6 @@
 // Licensed under GPL-3.0. See LICENSE.
 import BarcChromium
+internal import BarkLoadProgress
 import Darwin
 import Foundation
 import AppKit
@@ -57,6 +58,7 @@ final class ChromiumPageNavigation: PageNavigation {
     private var nextStyleRequest: UInt64 = 0
     private var styleRequest: (id: UInt64, window: Int32, completion: @MainActor (Bool) -> Void)?
     private var observation: UInt64 = 0
+    private var progressSuppressedUntilNextLoad = false
     private var pendingPeekRequest: Int32 = 0
     private var peekEnabled = false
     private var invalidated = false
@@ -125,6 +127,18 @@ final class ChromiumPageNavigation: PageNavigation {
         guard accepted == 1, !invalidated else {
             invalidate(); throw ChromiumNavigationError.observationRejected
         }
+        _ = Self.observeLoadProgress(bridge, token, { pointer, token, progress, loading in
+            MainActor.assumeIsolated {
+                guard let pointer else { return }
+                let context = Unmanaged<CallbackContext>.fromOpaque(pointer).takeUnretainedValue()
+                context.owner?.receiveLoadProgress(token: token, progress: progress, loading: loading)
+            }
+        })
+    }
+
+    private static func observeLoadProgress(_ bridge: BarcBridge, _ token: UInt64,
+        _ callback: @escaping @convention(c) (UnsafeMutableRawPointer?, UInt64, Double, Int32) -> Void) -> Int32 {
+        withUnsafePointer(to: bridge) { BarkObserveTabLoadProgress($0, token, callback) }
     }
 
     isolated deinit {
@@ -173,7 +187,9 @@ final class ChromiumPageNavigation: PageNavigation {
     @discardableResult func goBack() -> Bool { command(bridge.tab_go_back) }
     @discardableResult func goForward() -> Bool { command(bridge.tab_go_forward) }
     @discardableResult func reload() -> Bool { command(bridge.tab_reload) }
-    func stop() { _ = command(bridge.tab_stop) }
+    func stop() {
+        if command(bridge.tab_stop) { setLoadProgress(nil) }
+    }
 
     @discardableResult func applyBlockingPolicy(_ policy: ContentBlockerManager.NetworkPagePolicy) -> Bool {
         guard !invalidated, !isClosed, window > 0, observation != 0 else { return false }
@@ -749,6 +765,7 @@ final class ChromiumPageNavigation: PageNavigation {
         observeVaultPasskeys(nil)
         invalidated = true
         state.media = nil
+        state.loadProgress = nil
         cancelThumbnail()
         cancelSiteData()
         cancelStyle()
@@ -786,6 +803,8 @@ final class ChromiumPageNavigation: PageNavigation {
         let ownerChanged = self.window != window
         self.window = window  // A live transfer changes the owner, never the page.
         if ownerChanged {
+            setLoadProgress(nil)
+            guard !invalidated else { return false }
             cancelElementPicker()
             cancelScript()
             cancelFileDownloads()
@@ -796,6 +815,19 @@ final class ChromiumPageNavigation: PageNavigation {
             onNativeOwnerChanged?(window)
         }
         return !invalidated
+    }
+
+    private func setLoadProgress(_ progress: Double?) {
+        guard state.loadProgress != progress else { return }
+        state.loadProgress = progress
+        onStateChanged?(state)
+    }
+
+    func receiveLoadProgress(token: UInt64, progress: Double, loading: Int32) {
+        guard !invalidated, token != 0, token == observation, window != 0 else { return }
+        let fraction = loading == 1 && state.isLoading && !progressSuppressedUntilNextLoad && progress.isFinite && (0...1).contains(progress)
+            ? progress : nil
+        setLoadProgress(fraction)
     }
 
     private func receiveMedia(token: UInt64, window: Int32, tab: Int32, flags: UInt32,
@@ -870,12 +902,20 @@ final class ChromiumPageNavigation: PageNavigation {
         if let current = media?.isAudible, current != audible {
             media?.isAudible = audible
         }
+        let loading = flags & BARC_TAB_LOADING.rawValue != 0
+        let ended = event == BARC_TAB_FAILED || event == BARC_TAB_FINISHED
+            || (event == BARC_TAB_COMMITTED && sameDocument)
+        let began = event == BARC_TAB_STARTED || (event == BARC_TAB_COMMITTED && !sameDocument)
+            || (!state.isLoading && loading)
+        if ended { progressSuppressedUntilNextLoad = true }
+        else if began { progressSuppressedUntilNextLoad = false }
         let snapshot = PageNavigationState(
-            url: url, title: title, isLoading: flags & BARC_TAB_LOADING.rawValue != 0,
+            url: url, title: title, isLoading: loading,
             canGoBack: flags & BARC_TAB_BACK.rawValue != 0, canGoForward: flags & BARC_TAB_FORWARD.rawValue != 0,
             isAudioMuted: flags & BARC_TAB_MUTED.rawValue != 0, isAudible: audible,
             hasVideoPictureInPicture: pipKnown ? flags & BARC_TAB_VIDEO_PIP.rawValue != 0 : nil,
-            hasDocumentPictureInPicture: pipKnown ? flags & BARC_TAB_DOCUMENT_PIP.rawValue != 0 : nil, media: media)
+            hasDocumentPictureInPicture: pipKnown ? flags & BARC_TAB_DOCUMENT_PIP.rawValue != 0 : nil, media: media,
+            loadProgress: loading && !began && !ended ? state.loadProgress : nil)
         if state != snapshot {
             state = snapshot
             onStateChanged?(snapshot)

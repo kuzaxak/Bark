@@ -117,7 +117,10 @@ public final class PageSession: NSObject, Identifiable {
         }
     }
 
-    public var loadingState: LoadingState = .idle
+    public var loadingState: LoadingState = .idle {
+        didSet { if !loadingState.isLoading { loadProgress = nil } }
+    }
+    public private(set) var loadProgress: Double?
     public var isLoading: Bool { loadingState.isLoading }
     public var canGoBack: Bool = false
     public var canGoForward: Bool = false
@@ -296,6 +299,7 @@ public final class PageSession: NSObject, Identifiable {
     public internal(set) var navigation: (any PageNavigation)? {
         didSet {
             guard oldValue !== navigation else { return }
+            loadProgress = nil
             nativeVaultNotice = nil
             #if os(macOS)
             nativeVaultDetach?()
@@ -535,6 +539,7 @@ public final class PageSession: NSObject, Identifiable {
         // A displayed pending URL is not a committed URL to persist. Only
         // lifecycle events notify the tree or append a history visit.
         if let url = state.url { self.url = url }
+        loadProgress = state.isLoading ? state.loadProgress : nil
         if state.isLoading {
             if !loadingState.isLoading { loadingState = .didStartProvisionalNavigation }
         } else if loadingState.isLoading {

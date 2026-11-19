@@ -2,3 +2,8 @@ module BarkPasswordProvider {
   header "BarkPasswordProvider.h"
   export *
 }
+
+module BarkLoadProgress {
+  header "BarkLoadProgress.h"
+  export *
+}
