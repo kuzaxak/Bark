@@ -50,8 +50,9 @@ keeps a space local to that Mac if it has never been uploaded.
 
 Bark starts with a fresh iCloud dataset. Existing Nook cloud bookmarks and
 invitations stay in Nook. Turning sync off on a Mac keeps its local bookmarks.
-You can still import a legacy `.nookspace` file and choose whether to sync the
-imported space.
+To bring a space over, choose **Settings → Spaces → Import Space**, open its
+`.nookspace` file and choose the destination profile. Bark adds a new local
+space. You can enable sync for it separately.
 
 ## Build and run
 
@@ -86,8 +87,7 @@ python3 scripts/bark-check.py launch build/Bark.app
 The smoke test opens a local page and quits after the renderer acknowledges it.
 The launch command leaves a separate disposable profile open for hands-on testing.
 To keep a personal browsing session, open the signed app normally. Its local data
-lives under `~/Library/Application Support/NookChromium`. Existing Nook users can
-choose individual `.nookspace` files to import.
+lives under `~/Library/Application Support/NookChromium`.
 
 ## How the browser fits together
 
