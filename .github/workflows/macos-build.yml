@@ -108,6 +108,11 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /*
+            !/Runtime/
+            !/Tests/
 
       - name: Make Metal available
         run: xcrun metal --version || xcodebuild -downloadComponent MetalToolchain
@@ -116,7 +121,7 @@ jobs:
         env:
           BARK_SHELL_ARCH: ${{ matrix.arch }}
         run: |
-          test ! -e build
+          test ! -e Runtime && test ! -e Tests && test ! -e build
           python3 -B scripts/bark-check.py shell --arch "$BARK_SHELL_ARCH"
           test ! -e build
 

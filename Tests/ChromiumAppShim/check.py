@@ -760,13 +760,12 @@ def paired_publication_case(work, accepted):
     scripts.mkdir(parents=True)
     for name in (PUBLISH.name, STAGE.name, 'publish_chromium_sdk.py', 'bark-check.py',
                  'bark_release.py', 'bark_icloud_signing.py', 'bark_shell_boundary.py', 'bark_shell_source.py',
-                 'chromium_sdk_layout.py', 'chromium_test_runtime.py', 'check-chromium-architectures.py'):
+                 'bark_macos_console.py', 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
         shutil.copy2(ROOT / 'scripts' / name, scripts / name)
     chromium = receiver / 'Runtime/Chromium'
     bridge = chromium / 'bark/bridge'
     bridge.mkdir(parents=True)
     (chromium / 'bark/app').mkdir()
-    shutil.copy2(ROOT / 'Runtime/Chromium/run_browser_tests.py', chromium)
     shutil.copy2(ROOT / 'Runtime/Chromium/bark/app/barc_public_headers_sha256.py', chromium / 'bark/app')
     shutil.copytree(SHIM, receiver / 'ChromiumApp')
     header_name, = HEADER_NAMES
@@ -835,6 +834,12 @@ def paired_publication_case(work, accepted):
     archive = git('archive', f'--prefix={staged.relative_to(receiver)}/', revision)
     subprocess.run(['tar', '-x', '-C', receiver], input=archive, check=True)
 
+    # A shell-only receiver gets the public package and app tools. The
+    # publisher above has finished producing both transfer archives' inputs.
+    shutil.rmtree(chromium)
+    for producer in (PUBLISH.name, 'publish_chromium_sdk.py'):
+        (scripts / producer).unlink()
+
     def verify(arch, artifact, *flags):
         return subprocess.run([sys.executable, '-B', scripts / 'bark-check.py', 'engine',
                                '--arch', arch, '--engine', artifact, *flags],
@@ -844,8 +849,13 @@ def paired_publication_case(work, accepted):
         archive = work / f'paired-handoff-{arch}.tar.gz'
         packed = verify(arch, artifact_of(next_packages[arch], arch), '--archive', archive)
         received = verify(arch, archive) if packed.returncode == 0 else packed
-        check(f'the receiver metadata admits the coordinated {arch} SDK archive',
+        check(f'the shell-only receiver verifies the coordinated {arch} SDK archive',
               received.returncode == 0, received.stderr)
+
+    official = verify('x86_64', artifact_of(next_packages['x86_64'], 'x86_64'), '--require-official')
+    check('official qualification requires the full reviewed recipe on the receiver',
+          official.returncode != 0 and 'Runtime/Chromium' in official.stderr
+          and 'Traceback' not in official.stderr, official.stderr)
 
     # An old pin cannot remain next to shared metadata from the second epoch.
     (staged / pins[1]).write_bytes(baseline[pins[1]])

@@ -129,11 +129,12 @@ public headers.
 [Contributor setup](CONTRIBUTING.md#native-command-routing-and-signed-bark) ·
 [Engine recipe](Runtime/Chromium/README.md#checkout-and-build)
 
-From the repository root, supply the SDK directory or archive and your signing
-identity. The build creates `build/Bark.app` from tracked sources and the SDK.
+With the matching SDK archive, you can build and sign Bark from the app
+sources alone. The build creates `build/Bark.app`. Run these commands from
+the repository root and supply your SDK and signing identity.
 
 ```fish
-python3 scripts/bark-check.py engine --install --engine /path/to/Engine
+python3 scripts/bark-check.py engine --install --engine /path/to/BarkSDK.tar.gz
 set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
 python3 scripts/bark-check.py build
 python3 scripts/bark-check.py smoke build/Bark.app
@@ -162,10 +163,12 @@ checks and, when the build allows it, automatic downloads.
 ## How the browser fits together
 
 The app owns the executable, menus and window layout. The engine owns Chromium
-profiles, documents and renderer processes. A versioned C interface connects the
-two. The Swift shell loads Chromium through that interface. Shell changes can
-use the pinned engine without rebuilding Chromium. Bark can read bookmarks
-and history from an older browser on request.
+profiles, documents and renderer processes. The Swift shell compiles against
+the public C headers in `Packages/BarkEngine`. At startup, Bark’s launcher
+loads the Chromium framework embedded in the app, checks its bridge version,
+header digest and function table size, then passes the table to the Swift shell.
+A change to the sidebar or command palette can use the same pinned engine.
+Bark can import bookmarks and history from another browser on request.
 For a bug report, open **Help → Build Information** and copy the app build,
 Chromium version, architecture, shell source SHA-256 and engine SDK pin.
 The two digests distinguish releases that share a version number.

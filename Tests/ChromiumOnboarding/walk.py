@@ -16,10 +16,10 @@ import time
 from uuid import UUID, uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Shared"))
-from signed_walk import (Accessibility, REPO, Screen, ScreenUnavailable, crash_reports, processes,
+from signed_walk import (Accessibility, REPO, Screen, crash_reports, processes,
                          verify_native_candidate, wait_for)
-from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
-                               require_idle_console, screen_lock)
+from bark_macos_console import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole, ScreenUnavailable,
+                                require_idle_console, screen_lock)
 
 
 def starter_spaces(root):

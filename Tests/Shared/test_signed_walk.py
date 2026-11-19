@@ -79,7 +79,7 @@ class NativeArchitectureTests(unittest.TestCase):
                 signed_walk.runpy, "run_path", return_value=contributor
             ), patch.object(signed_walk, "verify_pinned_sdk", return_value=(sdk, qualification)) as verify, patch.object(
                 signed_walk, "bundle_cdhash", side_effect=verified_cdhash
-            ), patch("run_browser_tests.QuartzConsole"), self.assertRaisesRegex(RuntimeError, "stop before launch"):
+            ), patch("bark_macos_console.QuartzConsole"), self.assertRaisesRegex(RuntimeError, "stop before launch"):
                 signed_walk.run_walk("fixture", "fixture", Mock(side_effect=RuntimeError("stop before launch")),
                                      Mock(), official_qualification=True)
             self.assertEqual(json.loads((output / "candidate.json").read_text()), {

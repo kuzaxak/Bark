@@ -13,15 +13,14 @@ import tarfile
 from tempfile import TemporaryDirectory
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Runtime/Chromium"))
-from run_browser_tests import APP_FRAMEWORK, TEST_FRAMEWORK, file_identity, require_host_only_image
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Tests/ChromiumSDKLauncher"))
 from check import INTEGRATED_PLIST, RAW_LAUNCHER, RAW_PLIST, inspect_launcher
 
 from bark_release import publish_new
-from chromium_sdk_layout import ARCHITECTURES, GN_CPU, native_architecture
-from chromium_test_runtime import FIXTURE, MANIFEST_NAME, create_manifest, digest_regular
+from chromium_sdk_layout import ARCHITECTURES, GN_CPU, file_identity, native_architecture, require_host_only_image
+from chromium_test_runtime import APP_FRAMEWORK, FIXTURE, MANIFEST_NAME, TEST_FRAMEWORK, create_manifest, digest_regular
 
 RUNTIME_DEPS = "bark_browser_tests.runtime_deps"
 IMAGES = (Path("bark_browser_tests"), TEST_FRAMEWORK, APP_FRAMEWORK)

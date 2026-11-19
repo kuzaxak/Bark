@@ -15,9 +15,9 @@ from uuid import uuid4
 
 
 REPO = Path(__file__).resolve().parents[2]
-sys.path[:0] = [str(REPO / folder) for folder in ("Runtime/Chromium", "scripts")]
+sys.path.insert(0, str(REPO / "scripts"))
 from bark_release import bundle_cdhash
-from run_browser_tests import ScreenUnavailable
+from bark_macos_console import ScreenUnavailable
 
 
 def wait_for(description, predicate, process=None, timeout=12):
@@ -296,8 +296,8 @@ def run_walk(description, name, serve, exercise, preferences=(), *,
     args = parser.parse_args() if parse_options is None else parse_options(parser)
     if sys.platform != "darwin":
         parser.error("This walk requires macOS")
-    from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
-                                   require_idle_console, screen_lock)
+    from bark_macos_console import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
+                                    require_idle_console, screen_lock)
     app = args.app.resolve(strict=True)
     binary = app / "Contents/MacOS/Bark"
     if not binary.is_file() or processes(app):

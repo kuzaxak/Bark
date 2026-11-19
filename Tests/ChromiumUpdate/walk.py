@@ -25,12 +25,12 @@ from xml.etree import ElementTree
 
 REPO = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
-sys.path[:0] = [str(REPO / folder) for folder in ("scripts", "Runtime/Chromium", "Tests/Shared")]
+sys.path[:0] = [str(REPO / folder) for folder in ("scripts", "Tests/Shared")]
 import bark_release
-from publish_chromium_sdk import file_digest
+from chromium_sdk_layout import FRAMEWORK_BINARY, file_digest
 from bark_icloud_signing import PROFILE_NAME
-from run_browser_tests import (
-    QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, ScreenUnavailable, require_idle_console, screen_lock,
+from bark_macos_console import (
+    QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, ScreenUnavailable, require_idle_console, screen_lock,
 )
 from signed_walk import Screen, crash_reports, processes, verify_pinned_sdk, wait_for
 from update_kit import (KIT_FILES, MANIFEST, VERSIONS, image_route, load_kit, mount_app, profile_workspace,
@@ -134,7 +134,7 @@ def verify_installed_replacement(installed, newer, expected_cdhash):
     exact_files = [
         *SHELL_IMAGES,
         Path("Contents/Info.plist"),
-        frameworks / TEST_FRAMEWORK,
+        frameworks / FRAMEWORK_BINARY,
     ]
     if icon := outer_icon(newer):
         exact_files.append(icon)

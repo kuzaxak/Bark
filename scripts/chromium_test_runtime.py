@@ -1,26 +1,24 @@
 # Licensed under GPL-3.0. See LICENSE.
 """Verify the linked images in a packaged Bark browser-test runtime."""
 
-import hashlib
 import json
 import re
 import subprocess
 from pathlib import Path
 
+from chromium_sdk_layout import FRAMEWORK_BINARY, file_digest
+
+
 MANIFEST_NAME = "bark-test-runtime.json"
 FIXTURE = "bark/test/barc_bridge_browsertest.mm"
-TEST_FRAMEWORK = Path("Bark Framework.framework/Versions/Current/Bark Framework")
+TEST_FRAMEWORK = FRAMEWORK_BINARY
 APP_FRAMEWORK = Path("Bark.app/Contents/Frameworks") / TEST_FRAMEWORK
 
 
 def digest_regular(path):
     if path.is_symlink() or not path.is_file():
         raise ValueError(f"Expected regular test runtime file: {path}")
-    with path.open("rb") as stream:
-        digest = hashlib.sha256()
-        for block in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(block)
-        return digest.hexdigest()
+    return file_digest(path)
 
 
 def matching_framework_digest(build):

@@ -12,7 +12,7 @@ from urllib.parse import urlsplit
 from uuid import UUID
 
 import bark_release
-from publish_chromium_sdk import file_digest
+from chromium_sdk_layout import file_digest
 
 KIT_FILES = {"100": "original.dmg", "101": "replacement.dmg"}
 PAYLOAD = (*KIT_FILES.values(), "appcast.xml")

@@ -63,11 +63,11 @@ EXPORTS=$(/usr/bin/nm -gjU "$BINARY")
 /usr/bin/grep -x "_$ENTRY" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $ENTRY"
 /usr/bin/grep -x "_$TABLE" <<<"$EXPORTS" > /dev/null || refuse "Engine does not export $TABLE"
 /usr/bin/grep -x _barc_public_headers_sha256 <<<"$EXPORTS" > /dev/null || refuse 'Engine does not export barc_public_headers_sha256'
-python3 -B - "$ROOT/Runtime/Chromium" "$BINARY" "$ARCH" <<'PYTHON' || exit 1
+python3 -B - "$ROOT/scripts" "$BINARY" "$ARCH" <<'PYTHON' || exit 1
 from pathlib import Path
 import sys
 sys.path.insert(0, sys.argv[1])
-from run_browser_tests import require_host_only_image
+from chromium_sdk_layout import require_host_only_image
 try:
     require_host_only_image(Path(sys.argv[2]), sys.argv[3])
 except ValueError as error:

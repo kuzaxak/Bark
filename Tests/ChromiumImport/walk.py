@@ -288,8 +288,8 @@ def main():
         parser.error("This walk requires macOS")
     import ApplicationServices as ax
     import Quartz as cg
-    sys.path.insert(0, str(REPO / "Runtime/Chromium"))
-    from run_browser_tests import SCREEN_LOCK, QuartzConsole, require_idle_console, screen_lock
+    sys.path.insert(0, str(REPO / "scripts"))
+    from bark_macos_console import SCREEN_LOCK, QuartzConsole, require_idle_console, screen_lock
 
     if not (ax.AXIsProcessTrusted() and cg.CGPreflightPostEventAccess() and cg.CGPreflightScreenCaptureAccess()):
         parser.error("Existing Accessibility, input posting and Screen Recording access is required")

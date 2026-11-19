@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 # Licensed under GPL-3.0. See LICENSE.
-"""Bark SDK locations and filesystem operations shared by producers and consumers."""
+"""Bark SDK layout, file identity and Mach-O inspection shared by producers and consumers."""
 
 import argparse
 import ctypes
+import hashlib
 import os
 from pathlib import Path
 import platform
@@ -16,6 +17,52 @@ GN_CPU = {"x86_64": "x64", "arm64": "arm64"}
 ARCHITECTURES = tuple(GN_CPU)
 SLICE = "macos-arm64_x86_64"
 XCFRAMEWORK = "BarkEngine.xcframework"
+FRAMEWORK_BINARY = Path("Bark Framework.framework/Versions/Current/Bark Framework")
+HOST_ONLY_MARKER = b"BARK_MAC_HOST_ONLY_FACTORY_V1\0"
+
+
+def file_identity(path):
+    info = path.stat()
+    return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+
+
+def require_host_only_image(path, expected_arch=None):
+    """Inspect linked code without invoking the browser test executable."""
+    try:
+        identity = file_identity(path)
+        arches = subprocess.check_output(
+            ["/usr/bin/lipo", "-archs", str(path)], stderr=subprocess.PIPE, text=True
+        ).split()
+        if len(arches) != 1 or arches[0] not in ("arm64", "x86_64"):
+            raise ValueError(f"Expected a thin macOS Bark image: {path} ({' '.join(arches)})")
+        arch = arches[0]
+        if expected_arch is not None and arch != expected_arch:
+            raise ValueError(f"Expected {expected_arch} for native test execution: {path} ({arch})")
+        sections = subprocess.check_output(
+            ["/usr/bin/otool", "-s", "__TEXT", "__barkhostonly", str(path)],
+            stderr=subprocess.PIPE, text=True,
+        ).splitlines()
+        heading = "Contents of (__TEXT,__barkhostonly) section"
+        groups = [line.split()[1:] for line in sections[2:]]
+        # otool prints bytes on Intel and little-endian words on ARM. A final
+        # partial word can appear as individual bytes on ARM.
+        words = (bytes.fromhex(word) for group in groups for word in group)
+        data = b"".join(word[::-1] if arch == "arm64" else word for word in words)
+        if len(sections) < 2 or sections[1] != heading or data != HOST_ONLY_MARKER:
+            raise ValueError(f"Missing the compiled Bark host-only factory capability: {path}")
+        if file_identity(path) != identity:
+            raise ValueError(f"Test runtime changed during inspection: {path}")
+        return path, identity
+    except subprocess.CalledProcessError as error:
+        raise ValueError(f"Cannot inspect the Bark test runtime: {path}") from error
+
+
+def file_digest(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
 
 
 def directory_id(path):

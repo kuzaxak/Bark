@@ -19,10 +19,10 @@ from uuid import uuid4
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[1]
 sys.dont_write_bytecode = True
-sys.path[:0] = [str(REPO / path) for path in ("Tests/Shared", "Runtime/Chromium", "scripts")]
+sys.path[:0] = [str(REPO / path) for path in ("Tests/Shared", "scripts")]
 from chromium_sdk_layout import native_architecture
-from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
-                               ScreenUnavailable, require_idle_console, screen_lock)
+from bark_macos_console import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
+                                ScreenUnavailable, require_idle_console, screen_lock)
 from signed_walk import Accessibility, wait_for
 
 CHECK = "Check for updates automatically"

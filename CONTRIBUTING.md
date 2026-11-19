@@ -140,7 +140,11 @@ app executable and native shell framework are thin Mach-O images for the
 requested architecture. The check needs no installed Chromium SDK, signing
 identity, or repository `build/` directory and never launches the app.
 
-With Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine artifact matching the committed SDK pin for your Mac. The [engine recipe](Runtime/Chromium/README.md#checkout-and-build) also builds the SDK from its pinned sources. Xcode resolves the committed package lockfile.
+With Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine directory or archive matching the committed SDK pin for your Mac. Xcode resolves the committed package lockfile.
+
+For app development you can omit `Runtime/` and `Tests/` from the checkout. The app tools read the public headers and architecture pins from `Packages/BarkEngine` and verify the framework in the signed app against the supplied SDK. The Release shell CI builds both architectures from this layout. Include `Tests/` to run the repository's app regression suites.
+
+For official qualification, `--require-official` also checks the SDK against the reviewed engine recipe. Use the full Bark source revision for that check. To build the SDK itself, follow the [Chromium build instructions](Runtime/Chromium/README.md#checkout-and-build).
 
 ```fish
 python3 scripts/bark-check.py engine --install --engine /path/to/Engine

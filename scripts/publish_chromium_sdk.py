@@ -15,20 +15,12 @@ import sys
 from tempfile import TemporaryDirectory, mkdtemp
 from uuid import UUID, uuid4
 
-from chromium_sdk_layout import (ARCHITECTURES, artifact_directory, directory_id, headers_directory,
+from chromium_sdk_layout import (ARCHITECTURES, artifact_directory, directory_id, file_digest, headers_directory,
                                  pin_file, read_pin, remove_work, swap)
 
 CHROMIUM = Path(__file__).resolve().parents[1] / "Runtime/Chromium"
 sys.path.insert(0, str(CHROMIUM))
 HEADERS = ("barc_bridge_api.h", "barc_public_headers_sha256.h")
-
-
-def file_digest(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for block in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(block)
-    return digest.hexdigest()
 
 
 def sdk_manifest(engine):

@@ -29,8 +29,10 @@ from uuid import uuid4
 sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, local_engine, native_architecture,
-                                 read_pin, remove_work, swap)
+from chromium_sdk_layout import (ARCHITECTURES, FRAMEWORK_BINARY, directory_id, download_https, local_engine,
+                                 native_architecture, read_pin, remove_work, require_host_only_image, swap)
+from bark_macos_console import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole, ScreenUnavailable,
+                                interrupted, require_idle_console, screen_lock)
 from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements, load_profile
 from bark_release import (configure_release, expected_additions, make_distribution, make_personal_image,
                           production_settings, publish_new)
@@ -38,10 +40,6 @@ from bark_shell_boundary import verify_shell_boundary
 from bark_shell_source import shell_source_digest, verify_shell_source, write_shell_source
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "Runtime/Chromium"))
-from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, QuartzConsole,
-                               ScreenUnavailable, interrupted, require_host_only_image,
-                               require_idle_console, screen_lock)
 
 STAGE = REPO / "scripts/stage-chromium-app.sh"
 PACKAGE = REPO / "Packages/BarkEngine"
@@ -127,7 +125,10 @@ def cached_engine(architecture):
 
 
 def check_official_engine(engine, architecture):
-    sys.path.insert(0, str(REPO / "Runtime/Chromium"))
+    recipe = REPO / "Runtime/Chromium"
+    if not (recipe / "official_provenance.py").is_file():
+        raise ValueError("Official SDK qualification needs Runtime/Chromium from the matching Bark source revision.")
+    sys.path.insert(0, str(recipe))
     from official_provenance import verify_cached
 
     verify_cached(engine, architecture)
@@ -346,7 +347,7 @@ def unsigned_mach_digest(path, payload_size, architecture, original_vmsize=None,
 
 def verify_signed_shell(app, architecture=None):
     architecture = architecture or native_architecture()
-    engine = app / "Contents/Frameworks" / TEST_FRAMEWORK
+    engine = app / "Contents/Frameworks" / FRAMEWORK_BINARY
     run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
         "--arch", architecture, "--app", app)
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", app)

@@ -239,7 +239,7 @@ class UpdateBuildInputTest(unittest.TestCase):
             for app in (installed, replacement):
                 for relative in ("Contents/MacOS/Bark", "Contents/Info.plist",
                                  "Contents/Frameworks/NookNativeShell.framework/Versions/A/NookNativeShell",
-                                 Path("Contents/Frameworks") / walk.TEST_FRAMEWORK):
+                                 Path("Contents/Frameworks") / walk.FRAMEWORK_BINARY):
                     path = app / relative
                     path.parent.mkdir(parents=True, exist_ok=True)
                     path.write_bytes(b"identical fixture")

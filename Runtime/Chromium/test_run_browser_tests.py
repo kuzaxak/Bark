@@ -13,11 +13,12 @@ import unittest
 from unittest.mock import Mock, patch
 
 from run_browser_tests import (
-    APP_FRAMEWORK, HOST_ONLY_MARKER, TEST_FRAMEWORK, ScreenUnavailable,
+    APP_FRAMEWORK, TEST_FRAMEWORK, ScreenUnavailable,
     file_identity, listed_tests, main, require_filter_matches,
     require_host_only_image, require_host_only_runtime, run_tests, screen_lock,
 )
 
+from chromium_sdk_layout import HOST_ONLY_MARKER
 from chromium_test_runtime import MANIFEST_NAME, create_manifest
 
 

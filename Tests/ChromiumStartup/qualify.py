@@ -18,10 +18,9 @@ TESTS = Path(__file__).resolve().parents[1]
 REPO = TESTS.parent
 sys.path.insert(0, str(TESTS / "Shared"))
 from signed_walk import bundle_cdhash, verify_official_sdk
-from run_browser_tests import SCREEN_UNAVAILABLE, ScreenUnavailable
+from bark_macos_console import SCREEN_UNAVAILABLE, ScreenUnavailable
 import bark_release
-from publish_chromium_sdk import file_digest
-from chromium_sdk_layout import read_pin
+from chromium_sdk_layout import file_digest, read_pin
 from bark_shell_source import shell_source_digest, verify_shell_source
 
 
