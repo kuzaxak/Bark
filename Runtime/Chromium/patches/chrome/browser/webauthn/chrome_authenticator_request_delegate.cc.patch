@@ -1,18 +1,19 @@
 diff --git a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
-index 64cc5836fa..308a2fcb7b 100644
+index 64cc583..87b5892 100644
 --- a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
 +++ b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
-@@ -3,6 +3,9 @@
+@@ -3,6 +3,10 @@
  // found in the LICENSE file.
  
  #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
 +#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
 +#include "bark/browser/webauthn/barc_vault_authenticator.h"
 +#endif
  
  #include <algorithm>
  #include <array>
-@@ -532,6 +535,9 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
+@@ -532,6 +536,9 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
      std::optional<std::string_view> user_name,
      bool browser_provided_passkeys_available,
      device::FidoDiscoveryFactory* discovery_factory) {
@@ -22,19 +23,20 @@ index 64cc5836fa..308a2fcb7b 100644
    DCHECK(request_type == device::FidoRequestType::kGetAssertion ||
           resident_key_requirement.has_value());
  
-@@ -548,6 +554,11 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
+@@ -548,6 +555,12 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
      return;
    }
  
 +#if BUILDFLAG(IS_MAC)
-+  if (request_source == RequestSource::kWebAuthentication &&
++  if (barc::UsesPawlPasswordProvider() &&
++      request_source == RequestSource::kWebAuthentication &&
 +      dialog_controller_->ui_presentation() == UIPresentation::kModal &&
 +      !IsVirtualEnvironmentEnabled()) { pawl_origin_ = origin; pawl_rp_ = rp_id; }
 +#endif
    // Configure the enclave authenticator.
    if (browser_provided_passkeys_available && !IsVirtualEnvironmentEnabled() &&
        request_source == RequestSource::kWebAuthentication) {
-@@ -767,6 +778,18 @@ void ChromeAuthenticatorRequestDelegate::OnTransportAvailabilityEnumerated(
+@@ -767,6 +780,18 @@ void ChromeAuthenticatorRequestDelegate::OnTransportAvailabilityEnumerated(
    barrier_->SetTransportAvailabilityInfo(std::move(data));
  }
  

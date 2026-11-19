@@ -11,6 +11,7 @@
 #include "base/command_line.h"
 #include "base/files/file_util.h"
 #include "base/uuid.h"
+#include "base/strings/escape.h"
 #include "chrome/browser/profiles/profile.h"
 #include "bark/bridge/barc_profiles.h"
 
@@ -45,6 +46,10 @@
 #include "components/os_crypt/common/keychain_password_mac.h"
 #include "components/sessions/core/session_id.h"
 #include "content/public/browser/browser_thread.h"
+#include "content/public/browser/webui_config.h"
+#include "content/public/browser/webui_config_map.h"
+#include "content/public/common/url_constants.h"
+#include "url/gurl.h"
 #include "ui/base/base_window.h"
 
 namespace {
@@ -58,6 +63,8 @@ enum class Phase {
 };
 struct Startup {
   Phase phase = Phase::kEmpty;
+  BarcPasswordProvider password_provider = BARC_PASSWORD_PROVIDER_CHROMIUM;
+  bool password_provider_sealed = false;
   void (*callback)(void*) = nullptr;
   raw_ptr<void> user_data = nullptr;
   void (*close_callback)(int32_t, void*) = nullptr;
@@ -95,6 +102,64 @@ void ClearCallbacks() {
   state.closing_subscription = {};
 }
 }  // namespace
+
+int barc_set_password_provider(BarcPasswordProvider provider) {
+  CHECK(pthread_main_np());
+  auto& state = State();
+  if (state.password_provider_sealed ||
+      (state.phase != Phase::kEmpty && state.phase != Phase::kRegistered) ||
+      (provider != BARC_PASSWORD_PROVIDER_CHROMIUM &&
+       provider != BARC_PASSWORD_PROVIDER_PAWL)) {
+    return 0;
+  }
+  state.password_provider = provider;
+  state.password_provider_sealed = true;
+  return 1;
+}
+
+void barc_seal_password_provider() {
+  CHECK(pthread_main_np());
+  State().password_provider_sealed = true;
+}
+
+bool barc::UsesPawlPasswordProvider() {
+  barc_seal_password_provider();
+  return State().password_provider == BARC_PASSWORD_PROVIDER_PAWL;
+}
+
+namespace {
+constexpr char kPasswordManagerURL[] = "chrome://password-manager/";
+constexpr char kPawlManagementPage[] = R"HTML(<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="color-scheme" content="light dark">
+<title>Passwords in Bark</title></head><body>
+<main><h1>Passwords in Bark</h1>
+<p>Pawl Vault is your selected provider.</p>
+<p>To manage your logins, choose Settings in the Bark menu, then
+Privacy &rarr; Passwords &rarr; Open Pawl Vault.</p>
+</main></body></html>)HTML";
+}  // namespace
+
+void barc::ConfigurePawlPasswordManagement() {
+  if (UsesPawlPasswordProvider()) {
+    content::WebUIConfigMap::GetInstance().RemoveConfig(GURL(kPasswordManagerURL));
+  }
+}
+
+bool barc::RewritePawlPasswordManagement(GURL* url, content::BrowserContext*) {
+  if (!url->SchemeIs(content::kChromeUIScheme) ||
+      url->host() != GURL(kPasswordManagerURL).host() ||
+      !UsesPawlPasswordProvider()) {
+    return false;
+  }
+  // Keep the original virtual URL in history; the committed document has an
+  // opaque origin and never gets scheme-based WebUI extension APIs.
+  *url = GURL("data:text/html;charset=utf-8," +
+              base::EscapeQueryParamValue(kPawlManagementPage, false));
+  return true;
+}
+
 
 void barc_set_runtime_ready_callback(void (*callback)(void*), void* user_data) {
   auto& state = State();

@@ -1028,15 +1028,6 @@ The product Copy Screenshot menu and shortcut use the same capture at up to
 document and front window to remain current and the clipboard to be unchanged
 since the request; capture failure preserves the clipboard.
 
-DevMCP's `pages` and `clear_page_cache` operate on existing regular sessions.
-Listing pages leaves the selection and renderer lifecycle alone. `onScreen`
-comes from the tab, split and picture-in-picture model. `inWindow` reports
-whether the existing native view is attached to an AppKit window. SDKs with
-`BARC_HAS_RENDERER_STATE` also supply the primary renderer's OS `pid` and
-browser-reported document `visibility` for live regular pages. Missing
-measurements are omitted. Flushing the Back/Forward cache skips displayed
-pages unless the caller selects `all`. Private sessions are excluded in both modes.
-
 The fixed Boost picker owns one isolated controller on the observed top document.
 Its explicit cancellation also runs DOM cleanup; pagehide/hidden cleanup prevents
 a picker returning through history. Only trusted input can choose a selector,
@@ -1050,6 +1041,9 @@ restore its original view's focus; delayed Vault replies cannot activate a windo
 or fill a changed target. Enabled pages discover fields even when Pawl was locked
 or unavailable at startup, so refocusing after recovery does not require toggling
 the setting. Disabling Pawl removes native field observation.
+A click or keyboard traversal that moves focus to a password or one-time-code
+field can open the picker. Press Down Arrow on an already-focused field to
+open it again, including after an autofocus or a dismissed picker.
 
 Password saving uses Chromium's validated submission and keeps its origin and
 profile through login redirects. The native save card belongs to the selected

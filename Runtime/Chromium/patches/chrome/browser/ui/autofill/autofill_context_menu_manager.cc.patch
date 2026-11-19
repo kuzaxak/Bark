@@ -1,0 +1,92 @@
+diff --git a/chrome/browser/ui/autofill/autofill_context_menu_manager.cc b/chrome/browser/ui/autofill/autofill_context_menu_manager.cc
+index fbf05e2..29d060b 100644
+--- a/chrome/browser/ui/autofill/autofill_context_menu_manager.cc
++++ b/chrome/browser/ui/autofill/autofill_context_menu_manager.cc
+@@ -78,6 +78,15 @@ constexpr char kFeedbackPlaceholder[] =
+ // Constant determining the icon size in the context menu.
+ constexpr int kContextMenuIconSize = 16;
+ 
++bool CanUseBrowserPasswords(content::RenderFrameHost* frame) {
++  if (!frame || !frame->IsActive() || !frame->IsRenderFrameLive()) {
++    return false;
++  }
++  auto* client = ChromePasswordManagerClient::FromWebContents(
++      content::WebContents::FromRenderFrameHost(frame));
++  return client && !client->UsesExternalPasswordProvider();
++}
++
+ bool ShouldShowAutofillContextMenu(const content::ContextMenuParams& params) {
+   if (params.is_content_editable_for_autofill) {
+     return true;
+@@ -219,12 +228,19 @@ bool AutofillContextMenuManager::IsCommandIdSupported(int command_id) {
+ }
+ 
+ bool AutofillContextMenuManager::IsCommandIdEnabled(int command_id) {
+-  return true;
++  switch (command_id) {
++    case IDC_CONTENT_CONTEXT_AUTOFILL_FALLBACK_PASSWORDS_SELECT_PASSWORD:
++    case IDC_CONTENT_CONTEXT_AUTOFILL_FALLBACK_PASSWORDS_IMPORT_PASSWORDS:
++    case IDC_CONTENT_CONTEXT_AUTOFILL_FALLBACK_PASSWORDS_SUGGEST_PASSWORD:
++      return CanUseBrowserPasswords(delegate_->GetRenderFrameHost());
++    default:
++      return true;
++  }
+ }
+ 
+ void AutofillContextMenuManager::ExecuteCommand(int command_id) {
+   content::RenderFrameHost* rfh = delegate_->GetRenderFrameHost();
+-  if (!rfh) {
++  if (!rfh || !IsCommandIdEnabled(command_id)) {
+     return;
+   }
+   if (command_id ==
+@@ -367,10 +383,13 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
+         ShouldAddPasswordsManualFallbackItem(*password_manager_driver);
+   }
+ 
++  const size_t first_fallback_item = menu_model_->GetItemCount();
+   if (add_passwords_fallback) {
+-    Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
+-    password_manager::PasswordCounter* counter =
+-        PasswordCounterFactory::GetForProfile(profile);
++    password_manager::PasswordCounter* counter = nullptr;
++    if (CanUseBrowserPasswords(rfh)) {
++      Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
++      counter = PasswordCounterFactory::GetForProfile(profile);
++    }
+     const bool select_passwords_option_shown =
+         counter && counter->autofillable_passwords() > 0;
+     AddPasswordsManualFallbackItems(*password_manager_driver,
+@@ -381,9 +400,9 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
+           CHECK_DEREF(password_manager_driver));
+     }
+   }
+-  const bool add_at_memory_fallback = MaybeAddAtMemoryItem();
++  MaybeAddAtMemoryItem();
+ 
+-  if (add_passwords_fallback || add_at_memory_fallback) {
++  if (menu_model_->GetItemCount() != first_fallback_item) {
+     menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
+   }
+ }
+@@ -411,7 +430,10 @@ bool AutofillContextMenuManager::ShouldAddPasswordsManualFallbackItem(
+ void AutofillContextMenuManager::AddPasswordsManualFallbackItems(
+     ContentPasswordManagerDriver& password_manager_driver,
+     bool add_select_password_option) {
++  const bool show_browser_passwords =
++      CanUseBrowserPasswords(delegate_->GetRenderFrameHost());
+   const bool add_password_generation_option =
++      show_browser_passwords &&
+       password_manager_util::ManualPasswordGenerationEnabled(
+           &password_manager_driver) &&
+       password_manager_driver.IsPasswordFieldForPasswordManager(
+@@ -421,7 +443,8 @@ void AutofillContextMenuManager::AddPasswordsManualFallbackItems(
+       webauthn::IsPasskeyFromAnotherDeviceContextMenuEnabled(
+           delegate_->GetRenderFrameHost(), params_.form_renderer_id.value(),
+           params_.field_renderer_id.value());
+-  const bool add_import_passwords_option = !add_select_password_option;
++  const bool add_import_passwords_option =
++      show_browser_passwords && !add_select_password_option;
+ 
+   if (add_select_password_option) {
+     menu_model_->AddItemWithStringId(

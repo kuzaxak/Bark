@@ -10,6 +10,8 @@
 extern "C" {
 #endif
 const char* barc_chromium_version(void);
+int barc_set_password_provider(BarcPasswordProvider provider);
+void barc_seal_password_provider(void);
 void barc_set_runtime_ready_callback(BarcRuntimeReadyCallback callback, void* user_data);
 void barc_set_runtime_close_callback(BarcRuntimeCloseCallback callback, void* user_data);
 void barc_set_runtime_window_request_callback(BarcWindowRequestCallback callback, void* user_data);
@@ -64,6 +66,8 @@ void barc_tab_unobserve(uint64_t observation);
 int barc_tab_close_selecting(uint64_t observation, int32_t successor);
 int barc_tab_enable_peek(uint64_t observation, int enabled);
 int barc_tab_observe_media(uint64_t observation, BarcMediaCallback callback);
+int barc_tab_observe_load_progress(uint64_t observation,
+                                   BarcLoadProgressCallback callback);
 int barc_tab_capture_thumbnail(uint64_t observation, uint64_t request, BarcTabThumbnailCallback callback);
 int barc_tab_capture_screenshot(uint64_t observation, uint64_t request, int32_t max_width, BarcTabThumbnailCallback callback);
 int barc_tab_cancel_capture(uint64_t observation, uint64_t request);

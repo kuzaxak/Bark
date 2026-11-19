@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/chrome_browser_main.cc b/chrome/browser/chrome_browser_main.cc
-index b2619baa8f..f498b8ac18 100644
+index b2619ba..ec0b1a4 100644
 --- a/chrome/browser/chrome_browser_main.cc
 +++ b/chrome/browser/chrome_browser_main.cc
 @@ -29,6 +29,9 @@
@@ -12,7 +12,17 @@ index b2619baa8f..f498b8ac18 100644
  #include "chrome/browser/active_use_util.h"
  #include "chrome/browser/after_startup_task_utils.h"
  #include "chrome/browser/browser_features.h"
-@@ -2163,6 +2166,9 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
+@@ -1910,6 +1913,9 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
+   content::WebUIControllerFactory::RegisterFactory(
+       ChromeWebUIControllerFactory::GetInstance());
+   RegisterChromeWebUIConfigs();
++#if BUILDFLAG(IS_MAC)
++  barc::ConfigurePawlPasswordManagement();
++#endif
+   RegisterChromeUntrustedWebUIConfigs();
+ 
+   // This step is costly and is already measured in Startup.CreateFirstProfile
+@@ -2163,6 +2169,9 @@ int ChromeBrowserMainParts::PreMainMessageLoopRunImpl() {
    browser_process_->profile_manager()->UnblockAsyncLoading();
  
    PostBrowserStart();
@@ -22,7 +32,7 @@ index b2619baa8f..f498b8ac18 100644
  
  #if BUILDFLAG(ENABLE_DOWNGRADE_PROCESSING)
    // Clean up old user data directory, snapshots and disk cache directory.
-@@ -2225,6 +2231,9 @@ void ChromeBrowserMainParts::OnFirstIdle() {
+@@ -2225,6 +2234,9 @@ void ChromeBrowserMainParts::OnFirstIdle() {
  }
  
  void ChromeBrowserMainParts::PostMainMessageLoopRun() {
