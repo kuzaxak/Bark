@@ -157,8 +157,6 @@ public final class PageSession: NSObject, Identifiable {
     }
     @ObservationIgnored var switcherSnapshotGeneration: UInt64 = 0
     @ObservationIgnored var switcherCaptureInFlight: UUID?
-    /// The link under the pointer while Shift is held, for Link Previews; nil otherwise.
-    public var linkPreview: LinkPreviewTarget?
 
     // MARK: - Translation
 
@@ -232,7 +230,6 @@ public final class PageSession: NSObject, Identifiable {
     @ObservationIgnored public var isOptionKeyDown: Bool = false
     @ObservationIgnored public var onLinkHover: ((String?) -> Void)? = nil
     @ObservationIgnored public var onCommandHover: ((String?) -> Void)? = nil
-    @ObservationIgnored public var pendingContextMenuPayload: WebContextMenuPayload?
 
     // MARK: - OAuth Flow State
 
@@ -667,7 +664,6 @@ public final class PageSession: NSObject, Identifiable {
                 navigationFinishedReported = false
                 navigationCancelled = false
                 loadingState = .didCommit
-                linkPreview = nil
                 certificateWarning = nil
                 controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.loading])
             }
@@ -949,14 +945,12 @@ public final class PageSession: NSObject, Identifiable {
             configuration.preferences = preferences
         }
         let created = controller?.webViews?.makeWebView(configuration: configuration)
-        (created as? SessionWebView)?.contextMenuBridge = WebContextMenuBridge(session: self, configuration: configuration)
         primaryWebView = created
 
         guard let webView = primaryWebView else {
             Self.log.error("No web view created for item \(self.itemID.uuidString, privacy: .public)")
             return
         }
-        (webView as? SessionWebView)?.owningSession = self
         webView.navigationDelegate = webKitDelegate
         webView.uiDelegate = webKitDelegate
         webView.allowsBackForwardNavigationGestures = true
@@ -1017,8 +1011,6 @@ public final class PageSession: NSObject, Identifiable {
     /// Installs a WebKit-created popup view as this session's primary view. WebKit drives the
     /// popup's first navigation.
     func installPopupWebView(_ webView: WKWebView) {
-        (webView as? SessionWebView)?.owningSession = self
-        (webView as? SessionWebView)?.contextMenuBridge = WebContextMenuBridge(session: self, configuration: webView.configuration)
         webView.navigationDelegate = webKitDelegate
         webView.uiDelegate = webKitDelegate
         webView.allowsBackForwardNavigationGestures = true
@@ -1127,12 +1119,6 @@ public final class PageSession: NSObject, Identifiable {
         detachDevCaptureHandler(from: webView)
         controller.removeScriptMessageHandler(
             forName: AdvancedRulesEngine.messageHandlerName, contentWorld: .page)
-
-        // Break the retain cycle WKWebView -> contextMenuBridge -> userContentController -> WKWebView.
-        if let focusable = webView as? SessionWebView {
-            focusable.contextMenuBridge?.detach()
-            focusable.contextMenuBridge = nil
-        }
 
         removeThemeColorObserver(from: webView)
         removeNavigationStateObservers(from: webView)
@@ -1485,32 +1471,6 @@ public final class PageSession: NSObject, Identifiable {
         } else {
             super.observeValue(forKeyPath: keyPath, of: object, change: change, context: context)
         }
-    }
-
-    // MARK: - Context Menu
-
-    func deliverContextMenuPayload(_ payload: WebContextMenuPayload?) {
-        pendingContextMenuPayload = payload
-        if let webView = primaryWebView as? SessionWebView {
-            webView.contextMenuPayloadDidUpdate(payload)
-        }
-    }
-
-    // MARK: - Opening links
-
-    /// Opens `url` in a new tab, in the background unless `foreground`, in this page's window and space, as a child of this tab
-    /// (a trail). Used by "Open Link in New Tab" in the context menu, a middle click and a
-    /// Command-click on a link.
-    /// A private window's own tree keeps the link inside that window.
-    ///
-    /// The URL comes from the page's own markup, so the scheme is checked here rather
-    /// than at each caller: a page must not be able to talk Nook into opening a tab on
-    /// `javascript:`, `data:` or `file:`.
-    /// ponytail: http(s) only. Widen if someone reports a legitimate scheme.
-    public func openInNewTab(_ url: URL, foreground: Bool = false) {
-        guard let scheme = url.scheme?.lowercased(), scheme == "http" || scheme == "https" else { return }
-        guard let tabs = controller, let window = tabs.window(for: self) else { return }
-        tabs.open(url: url, in: window, placement: foreground ? .newTab : .background, from: itemID)
     }
 
     // MARK: - Equality

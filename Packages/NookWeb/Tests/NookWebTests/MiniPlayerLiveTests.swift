@@ -234,16 +234,10 @@ final class LivePage {
 @MainActor
 final class LiveWebViews: WebKitWebViewProvider {
     func makeWebView(configuration: WKWebViewConfiguration) -> WKWebView {
-        LiveWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
+        WKWebView(frame: NSRect(x: 0, y: 0, width: 800, height: 600), configuration: configuration)
     }
     func webView(for itemID: UUID, in windowID: UUID) -> WKWebView? { nil }
     func allWebViews(for itemID: UUID) -> [WKWebView] { [] }
     func releaseWebViews(for session: PageSession) {}
     func removeFromContainers(_ webView: WKWebView) { webView.removeFromSuperview() }
-}
-
-final class LiveWebView: WKWebView, SessionWebView {
-    weak var owningSession: PageSession?
-    var contextMenuBridge: WebContextMenuBridge?
-    func contextMenuPayloadDidUpdate(_ payload: WebContextMenuPayload?) {}
 }

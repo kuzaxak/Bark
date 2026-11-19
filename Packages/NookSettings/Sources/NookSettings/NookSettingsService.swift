@@ -74,7 +74,6 @@ public final class NookSettingsService {
     private let profileDownloadsKey = "settings.profileDownloads"
     private let defaultBrowserPromptDismissedAtKey = "settings.defaultBrowserPromptDismissedAt"
     private let tidyDownloadsKey = "settings.tidyDownloads"
-    private let linkPreviewsKey = "settings.linkPreviews"
     private let autoPictureInPictureKey = "settings.autoPictureInPicture"
     private let sponsorBlockEnabledKey = "settings.sponsorBlockEnabled"
     private let sponsorBlockCategoryOptionsKey = "settings.sponsorBlockCategoryOptions"
@@ -652,18 +651,6 @@ public final class NookSettingsService {
         }
     }
 
-    public static let linkPreviewsDidChange = Notification.Name("NookLinkPreviewsDidChange")
-
-    /// Shift-hover over a link shows an on-device summary of the page it opens.
-    public var linkPreviews: Bool {
-        didSet {
-            userDefaults.set(linkPreviews, forKey: linkPreviewsKey)
-            if linkPreviews != oldValue {
-                NotificationCenter.default.post(name: Self.linkPreviewsDidChange, object: nil, userInfo: ["enabled": linkPreviews])
-            }
-        }
-    }
-
     public var tabOrganizerEnabled: Bool {
         didSet {
             userDefaults.set(tabOrganizerEnabled, forKey: tabOrganizerEnabledKey)
@@ -816,7 +803,6 @@ public final class NookSettingsService {
             historyHalfLifeDaysKey: 10,
             paletteWordStopsKey: Self.defaultPaletteWordStops,
             tidyDownloadsKey: false,
-            linkPreviewsKey: false,
             sponsorBlockEnabledKey: false,
             autoPictureInPictureKey: false,
             securityKeysEnabledKey: true,
@@ -963,7 +949,6 @@ public final class NookSettingsService {
         let archiveHours = userDefaults.integer(forKey: archiveTabsAfterHoursKey)
         self.archiveTabsAfterHours = Self.archiveTabsAfterHoursChoices.contains(archiveHours) ? archiveHours : 72
         self.tidyDownloads = userDefaults.bool(forKey: tidyDownloadsKey)
-        self.linkPreviews = userDefaults.bool(forKey: linkPreviewsKey)
         self.autoPictureInPicture = userDefaults.bool(forKey: autoPictureInPictureKey)
         self.sponsorBlockEnabled = userDefaults.bool(forKey: sponsorBlockEnabledKey)
         if let sbData = userDefaults.data(forKey: sponsorBlockCategoryOptionsKey),

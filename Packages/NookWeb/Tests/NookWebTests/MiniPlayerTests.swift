@@ -329,10 +329,8 @@ struct MiniPlayerPagesTests {
     @Test func aLinkOpenedInTheBackgroundBelongsToItsWindow() throws {
         let host = try Host()
         let opener = try #require(host.window.selectedItemID)
-        let openerPage = try #require(host.tabs.ensureSession(for: opener))
-        let before = Set(host.tabs.tree.items.keys)
-        openerPage.openInNewTab(URL(string: "https://link.invalid/video")!)
-        let child = try #require(Set(host.tabs.tree.items.keys).subtracting(before).first)
+        let child = try #require(host.tabs.open(url: URL(string: "https://link.invalid/video")!, in: host.window,
+                                                placement: .background, from: opener))
         try play(child, host)
 
         #expect(ids(host.window, host).contains(child))

@@ -12,18 +12,13 @@ import NookTweaks
 /// background any other way waits until it is selected.
 @MainActor
 struct BackgroundLinkTabTests {
-    // `.invalid` never resolves, so no favicon reaches the shared favicon cache.
     let link = URL(string: "https://link.invalid/article")!
 
     @Test func linkOpenedInBackgroundLoadsAndKeepsSelection() throws {
         let host = try Host()
         let opener = try #require(host.window.selectedItemID)
-        let openerPage = try #require(host.tabs.ensureSession(for: opener))
-        let before = host.items()
+        let child = try #require(host.tabs.open(url: link, in: host.window, placement: .background, from: opener))
 
-        openerPage.openInNewTab(link)
-
-        let child = try #require(host.items().subtracting(before).first)
         #expect(host.window.selectedItemID == opener)
         let page = try #require(host.tabs.session(for: child))
         #expect(!page.isUnloaded)
@@ -36,16 +31,25 @@ struct BackgroundLinkTabTests {
         let spaceID = try #require(host.window.spaceID)
         let opener = try #require(host.tabs.open(url: URL(string: "https://opener.invalid")!, in: host.window,
                                                  placement: .newTab, parent: .tabs(spaceID: spaceID)))
-        let openerPage = try #require(host.tabs.session(for: opener))
-        let before = host.items()
+        let child = try #require(host.tabs.open(url: link, in: host.window, placement: .background, from: opener))
 
-        openerPage.openInNewTab(link)
-
-        let child = try #require(host.items().subtracting(before).first)
         #expect(host.window.selectedItemID == opener)
         let page = try #require(host.tabs.session(for: child))
         #expect(page.isPrivate)
         #expect((page.primaryWebView as? RecordingWebView)?.requested == [link])
+    }
+
+    @Test func retainedWebKitViewDoesNotInstallRetiredContextScripts() throws {
+        let host = try Host()
+        let space = try #require(host.window.spaceID)
+        let id = try #require(host.tabs.open(url: link, in: host.window, placement: .newTab,
+                                            parent: .tabs(spaceID: space)))
+        let session = try #require(host.tabs.session(for: id))
+        let view = try #require(session.primaryWebView)
+        let scripts = view.configuration.userContentController.userScripts
+        #expect(!scripts.contains { $0.source.contains("contextMenuPayload") })
+        #expect(view.navigationDelegate === session.webKitDelegate)
+        #expect(view.uiDelegate === session.webKitDelegate)
     }
 
     @Test func legacyWebKitObserverReceivesOpenTitleAndClose() throws {
@@ -123,12 +127,8 @@ final class RecordingWebViews: WebKitWebViewProvider {
     func removeFromContainers(_ webView: WKWebView) {}
 }
 
-final class RecordingWebView: WKWebView, SessionWebView {
-    weak var owningSession: PageSession?
-    var contextMenuBridge: WebContextMenuBridge?
+final class RecordingWebView: WKWebView {
     private(set) var requested: [URL] = []
-
-    func contextMenuPayloadDidUpdate(_ payload: WebContextMenuPayload?) {}
 
     override func load(_ request: URLRequest) -> WKNavigation? {
         request.url.map { requested.append($0) }

@@ -2,15 +2,6 @@
 
 import WebKit
 
-/// A web view that belongs to a `PageSession`. The app's concrete subclass (`FocusableWKWebView`
-/// on macOS) carries the platform's focus, context menu and download behaviour.
-@MainActor
-public protocol SessionWebView: AnyObject {
-    var owningSession: PageSession? { get set }
-    var contextMenuBridge: WebContextMenuBridge? { get set }
-    func contextMenuPayloadDidUpdate(_ payload: WebContextMenuPayload?)
-}
-
 @MainActor
 public protocol WebKitWebViewProvider: AnyObject {
     /// A new view of the app's session web view class.
