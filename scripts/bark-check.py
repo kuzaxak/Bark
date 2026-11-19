@@ -51,6 +51,19 @@ MACH64 = b"\xcf\xfa\xed\xfe"
 CODESIGN_LINKEDIT_ALIGNMENT = 16 * 1024
 
 
+NATIVE_CHECKS = {
+    "catalog": ("ChromiumCatalog", "run catalog and initial-window activation regressions"),
+    "page-host": ("ChromiumPageHost", "check page ownership, transfer and close"),
+    "profile-pages": ("ChromiumProfilePages", "check profile utility window ownership"),
+    "extension-actions": ("ChromiumExtensionActions", "check Chrome extension action snapshot ownership"),
+    "live-fetch": ("ChromiumLiveFetch", "check Chromium live fetch and profile ownership"),
+    "vault": ("ChromiumVaultSave", "check Pawl consent and picker ownership in the native shell"),
+    "downloads": ("ChromiumDownloads", "check Chromium download ownership and file actions"),
+    "blocker": ("ChromiumBlocker", "check first-page blocker readiness and per-profile policy publication"),
+    "page-tweaks": ("ChromiumPageTweaks", "check that page tweaks publish before the first document"),
+}
+
+
 def run(*args):
     subprocess.run([str(arg) for arg in args], check=True)
 
@@ -79,10 +92,7 @@ def check_native_harness(command):
             "-onlyUsePackageVersionsFromResolvedFile", f"ARCHS={architecture}", "CODE_SIGNING_ALLOWED=NO",
             "OTHER_SWIFT_FLAGS=$(inherited) -j2", "-jobs", "1", "build")
         # SwiftPM bundle lookup uses the executable directory for command-line tools.
-        suite = {"catalog": "ChromiumCatalog", "page-host": "ChromiumPageHost",
-                 "profile-pages": "ChromiumProfilePages", "extension-actions": "ChromiumExtensionActions",
-                 "live-fetch": "ChromiumLiveFetch", "vault": "ChromiumVaultSave",
-                 "downloads": "ChromiumDownloads"}[command]
+        suite, _ = NATIVE_CHECKS[command]
         sys.path.insert(0, str(REPO / "Tests/Shared"))
         from bridge_fixture import write_bridge_fixture
 
@@ -616,13 +626,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("interaction", help="run the native command-window regression")
-    commands.add_parser("catalog", help="run catalog and initial-window activation regressions")
-    commands.add_parser("page-host", help="check page ownership, transfer and close")
-    commands.add_parser("profile-pages", help="check profile utility window ownership")
-    commands.add_parser("extension-actions", help="check Chrome extension action snapshot ownership")
-    commands.add_parser("live-fetch", help="check Chromium live fetch and profile ownership")
-    commands.add_parser("vault", help="check Pawl consent and picker ownership in the native shell")
-    commands.add_parser("downloads", help="check Chromium download ownership and file actions")
+    for name, (_, help_text) in NATIVE_CHECKS.items():
+        commands.add_parser(name, help=help_text)
     pair = commands.add_parser("pair-sdk", help="stage matching Intel and ARM64 official SDK metadata together")
     pair.add_argument("--x86-64", type=Path, required=True, help="published Intel Engine or its transfer metadata directory")
     pair.add_argument("--arm64", type=Path, required=True, help="published ARM64 Engine or its transfer metadata directory")
@@ -675,7 +680,7 @@ def main():
     if args.command == "interaction":
         run(sys.executable, REPO / "Tests/ChromiumShortcuts/check.py")
         return
-    if args.command in ("catalog", "page-host", "profile-pages", "extension-actions", "live-fetch", "vault", "downloads"):
+    if args.command in NATIVE_CHECKS:
         check_native_harness(args.command)
         return
     if args.command in ("shell", "build"):

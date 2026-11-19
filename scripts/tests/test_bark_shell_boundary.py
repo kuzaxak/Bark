@@ -23,7 +23,19 @@ class ShellBoundaryTests(unittest.TestCase):
             self.assertIn("Nook/Managers/Legacy.swift:1: internal import class WebKit", str(caught.exception))
             self.assertIn("Nook/Managers/Legacy.swift:2: WebKitPageAccess", str(caught.exception))
 
-    def test_allows_shared_packages_and_read_only_import_paths(self):
+    def test_policy_packages_and_developer_tools_cannot_install_webkit_handlers(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for folder in ("NookBlocker/Sources/NookBlocker", "NookTweaks/Sources/NookTweaks",
+                           "NookWeb/Sources/NookWeb/DevTools"):
+                file = root / "Packages" / folder / "Handler.swift"
+                file.parent.mkdir(parents=True)
+                file.write_text("class Handler: NSObject, WKScriptMessageHandlerWithReply {}\n")
+            with self.assertRaises(ValueError) as caught:
+                verify_shell_boundary(root)
+            self.assertEqual(str(caught.exception).count("Handler.swift:1:"), 3)
+
+    def test_allows_legacy_page_adapter_and_read_only_import_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             shared = root / "Packages/NookWeb/Sources/WebKitAdapter.swift"

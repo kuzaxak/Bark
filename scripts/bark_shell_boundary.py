@@ -3,9 +3,11 @@
 
 import re
 
-# App-owned source groups in Bark.xcodeproj, including the launcher group.
-# Packages may still contain WebKit adapters for their other consumers.
-SHELL_ROOTS = ("App", "Nook", "Navigation", "CommandPalette", "Onboarding", "UI", "Settings", "ChromiumApp")
+# NookWeb still owns the legacy page adapter. Blocker and tweak policy cross
+# the Chromium bridge and must stay independent of that adapter.
+SHELL_ROOTS = ("App", "Nook", "Navigation", "CommandPalette", "Onboarding", "UI", "Settings", "ChromiumApp",
+               "Packages/NookBlocker/Sources", "Packages/NookTweaks/Sources",
+               "Packages/NookWeb/Sources/NookWeb/DevTools")
 PAGE_TYPE = re.compile(
     r"\b(?:WKWebView(?:Configuration)?|WKWebsiteDataStore|WKNavigationDelegate|WKUIDelegate|"
     r"WKScriptMessageHandler(?:WithReply)?|WebKitPageAccess|WebKitPageNavigation|"
