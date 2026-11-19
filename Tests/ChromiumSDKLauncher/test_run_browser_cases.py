@@ -62,14 +62,16 @@ class BrowserCasesTests(unittest.TestCase):
         self.fixture(dict.fromkeys(self.names, [{"status": "SUCCESS"}]), "EARLY_SUMMARY")
         self.assertIn("completed", self.invoke(1))
 
-    def test_expected_fixture_is_passed_to_the_guarded_runner(self):
+    def test_expected_fixture_and_sdk_are_passed_to_the_guarded_runner(self):
         fixture = self.summary.with_name("barc_bridge_browsertest.mm")
-        self.args.extend(("--fixture-source", str(fixture)))
+        sdk = self.summary.with_name("sdk-metadata")
+        self.args.extend(("--fixture-source", str(fixture), "--sdk-metadata", str(sdk)))
         self.fixture(dict.fromkeys(self.names, [{"status": "SUCCESS"}]))
         with patch.object(cases.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as launch:
             self.assertEqual(cases.main([*self.args, *self.names]), 0)
         command = launch.call_args.args[0]
         self.assertEqual(command[command.index("--fixture-source") + 1], fixture)
+        self.assertEqual(command[command.index("--sdk-metadata") + 1], sdk)
 
     def test_wildcard_is_rejected_before_launch(self):
         with patch.object(cases.subprocess, "run") as launch, redirect_stderr(StringIO()):

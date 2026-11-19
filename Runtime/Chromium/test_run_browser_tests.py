@@ -1,5 +1,6 @@
 """Headless checks for the local Chromium browser-test runner."""
 
+import hashlib
 import io
 import json
 import os
@@ -170,6 +171,21 @@ class HostOnlyRuntimeTests(unittest.TestCase):
         for image in (test_image, app_image):
             image.write_bytes(b"linked engine")
         before_lock(None, "--fixture-source", str(fixture))
+        sdk_manifest = self.checkout / "SHA256SUMS"
+        version = Path(__file__).with_name("CHROMIUM_VERSION").read_text().strip()
+        sdk_manifest.write_text(f"{record['framework_sha256']}  ./Bark Framework.framework/Versions/{version}/Bark Framework\n")
+        sdk_pin = hashlib.sha256(sdk_manifest.read_bytes()).hexdigest()
+        with patch("run_browser_tests.read_pin", return_value=sdk_pin):
+            before_lock(None, "--sdk-metadata", str(self.checkout))
+            manifest.unlink()
+            for image in (test_image, app_image):
+                image.write_bytes(b"matching copies from a different build")
+            before_lock("framework differs from the checkout's pinned SDK", "--sdk-metadata", str(self.checkout))
+            for image in (test_image, app_image):
+                image.write_bytes(b"linked engine")
+            manifest.write_text(json.dumps(record))
+            sdk_manifest.write_text(sdk_manifest.read_text().replace(record["framework_sha256"], "a" * 64))
+            before_lock("SDK manifest differs from the checkout", "--sdk-metadata", str(self.checkout))
         fixture.write_text("a different fixture")
         before_lock("differs from the expected source", "--fixture-source", str(fixture))
         legacy = {**record, "format": 1}

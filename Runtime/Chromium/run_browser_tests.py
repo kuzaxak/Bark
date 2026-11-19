@@ -15,8 +15,9 @@ import time
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-from chromium_sdk_layout import GN_CPU, native_architecture
+from chromium_sdk_layout import GN_CPU, native_architecture, read_pin
 from chromium_test_runtime import APP_FRAMEWORK, TEST_FRAMEWORK, verify_manifest
+from publish_chromium_sdk import sdk_manifest
 
 SCREEN_LOCK = Path("/private/tmp/nook-screen-lock")
 SCREEN_UNAVAILABLE = 3
@@ -59,14 +60,28 @@ def require_host_only_image(path, expected_arch=None):
         raise ValueError(f"Cannot inspect the Bark test runtime: {path}") from error
 
 
-def require_host_only_runtime(binary, expected_fixture=None):
+def pinned_framework_digest(metadata, arch):
+    pin, checksums = sdk_manifest(metadata)
+    repo = Path(__file__).resolve().parents[2]
+    if read_pin(repo / "Packages/BarkEngine", arch) != pin:
+        raise ValueError(f"The supplied SDK manifest differs from the checkout's {arch} pin")
+    version = Path(__file__).with_name("CHROMIUM_VERSION").read_text().strip()
+    image = f"Bark Framework.framework/Versions/{version}/Bark Framework"
+    if image not in checksums:
+        raise ValueError(f"The pinned SDK manifest lacks the Chromium {version} framework")
+    return checksums[image]
+
+
+def require_host_only_runtime(binary, expected_fixture=None, sdk_metadata=None):
     # Chromium's test launcher resolves its framework beside the executable.
     # The product bundle can launch helpers through its own framework copy.
     arch = native_architecture()
     images = tuple(require_host_only_image(path, expected_arch=arch) for path in (
         binary, binary.parent / TEST_FRAMEWORK, binary.parent / APP_FRAMEWORK,
     ))
-    verify_manifest(binary, expected_fixture)
+    framework_digest = verify_manifest(binary, expected_fixture)
+    if sdk_metadata is not None and framework_digest != pinned_framework_digest(sdk_metadata, arch):
+        raise ValueError("Browser-test framework differs from the checkout's pinned SDK")
     return images
 
 
@@ -245,6 +260,7 @@ def main():
     parser.add_argument("--checkout", type=Path, required=True, help="Chromium src directory")
     parser.add_argument("--binary", type=Path, help="bark_browser_tests path (defaults to the native developer build)")
     parser.add_argument("--fixture-source", type=Path, help="require the archived fixture to match this source")
+    parser.add_argument("--sdk-metadata", type=Path, help="compare the framework to the pinned SDK directory’s SHA256SUMS")
     parser.add_argument("--filter", help="Chromium gtest filter. Defaults to the full suite.")
     parser.add_argument("--summary", type=Path, help="New path for Chromium's JSON test summary")
     parser.add_argument("--wait", type=float, default=15, help="Seconds to wait for the screen mutex")
@@ -280,7 +296,7 @@ def main():
 
     signal.signal(signal.SIGTERM, interrupted)
     try:
-        verified_files = require_host_only_runtime(binary, args.fixture_source)
+        verified_files = require_host_only_runtime(binary, args.fixture_source, args.sdk_metadata)
         with screen_lock(SCREEN_LOCK, args.wait) as owns_screen:
             result = run_tests(
                 command, args.checkout, QuartzConsole(), owns_screen,

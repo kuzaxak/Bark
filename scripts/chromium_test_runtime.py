@@ -42,8 +42,7 @@ def verify_manifest(binary, expected_fixture=None):
     if not manifest.exists() and not manifest.is_symlink():
         if expected_fixture is not None:
             raise ValueError("Expected a packaged browser-test fixture manifest")
-        matching_framework_digest(binary.parent)
-        return
+        return matching_framework_digest(binary.parent)
     if manifest.is_symlink() or not manifest.is_file():
         raise ValueError(f"Expected a regular browser-test manifest: {manifest}")
     record = json.loads(manifest.read_text())
@@ -56,3 +55,4 @@ def verify_manifest(binary, expected_fixture=None):
     framework = matching_framework_digest(binary.parent)
     if record["format"] == 2 and record.get("framework_sha256") != framework:
         raise ValueError("Browser-test framework differs from its archived SHA-256")
+    return framework

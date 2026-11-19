@@ -39,17 +39,22 @@ def main(argv=None):
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--summary", required=True, type=Path)
     parser.add_argument("--fixture-source", type=Path, help="require the archived fixture hash to match this source")
+    parser.add_argument("--sdk-metadata", type=Path, help="require the framework from the checkout’s pinned SDK")
     parser.add_argument("tests", nargs="+", metavar="Suite.Case")
     args = parser.parse_args(argv)
     if len(set(args.tests)) != len(args.tests) or any(not EXACT_TEST.fullmatch(name) for name in args.tests):
         parser.error("provide distinct exact gtest names in Suite.Case form")
 
     try:
-        fixture = ["--fixture-source", args.fixture_source] if args.fixture_source is not None else []
+        checks = []
+        if args.fixture_source is not None:
+            checks.extend(["--fixture-source", args.fixture_source])
+        if args.sdk_metadata is not None:
+            checks.extend(["--sdk-metadata", args.sdk_metadata])
         result = subprocess.run([
             sys.executable, "-B", RUNNER, "--checkout", args.checkout,
             "--binary", args.binary, "--summary", args.summary,
-            *fixture, "--filter", ":".join(args.tests),
+            *checks, "--filter", ":".join(args.tests),
         ], check=False)
         if result.returncode:
             return result.returncode if result.returncode > 0 else 128 - result.returncode
