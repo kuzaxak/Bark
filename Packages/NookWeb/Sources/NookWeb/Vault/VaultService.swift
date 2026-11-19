@@ -13,7 +13,6 @@
 import Foundation
 import NookSettings
 import Observation
-import WebKit
 import AppKit
 
 protocol VaultRequests: Sendable {
@@ -252,18 +251,6 @@ public final class VaultService {
         return { attachment.stop() }
     }
 
-    // MARK: - Page hooks
-
-    /// Installs the bridge on a page's web view. Agent pages never reach the vault.
-    public func attach(to webView: WKWebView, session: PageSession) {
-        guard !session.isAgentPage else { return }
-        VaultBridge.install(on: webView, session: session, service: self)
-    }
-
-    public static func detach(from controller: WKUserContentController) {
-        VaultBridge.uninstall(from: controller)
-    }
-
     /// A main-frame navigation is starting: refresh the status for the pages after this one.
     public func navigationStarted() {
         guard isEnabled else { return }
@@ -271,16 +258,6 @@ public final class VaultService {
         if let last = lastNavigationRefresh, now - last < .seconds(3) { return }
         lastNavigationRefresh = now
         Task { await refresh() }
-    }
-
-    /// A new document committed in `webView`: requests and pickers from the old one end.
-    public func pageCommitted(in webView: WKWebView) {
-        VaultBridge.bridge(for: webView)?.pageCommitted(origin: webView.url.flatMap(WebAuthnPolicy.origin(of:)))
-    }
-
-    /// The web content process ended: the page's requests, pickers and sheets end with it.
-    public func pageEnded(in webView: WKWebView) {
-        VaultBridge.bridge(for: webView)?.documentChanged()
     }
 
     private func settingChanged() {

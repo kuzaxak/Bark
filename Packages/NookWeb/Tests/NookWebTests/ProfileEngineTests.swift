@@ -388,6 +388,34 @@ struct ProfileEngineTests {
         #expect(tabs.profile(forStore: profile.id) === profile)
     }
 
+    #if os(macOS)
+    @Test(arguments: [Profile.Engine.webKit, .chromium])
+    func vaultBridgeFollowsWebKitViewLifetime(engine: Profile.Engine) throws {
+        let fixture = try ProfileFixture()
+        defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs(engine: engine)
+        let profile = Profile.createEphemeral(engine: engine)
+        let webViews = RecordingWebViews()
+        tabs.webViews = webViews
+        tabs.vault = VaultService(settings: tabs.settings,
+            client: VerificationVault(origin: nil, profile: profile.id), pawlEnabledAtLaunch: false)
+        let page = PageSession(itemID: UUID(), url: URL(string: "about:blank")!, title: "Vault",
+                               isPrivate: true, controller: tabs)
+        page.detachedProfile = profile
+
+        withExtendedLifetime(webViews) { page.loadWebViewIfNeeded() }
+
+        if engine == .webKit {
+            let view = try #require(WebKitPageAccess.existingView(for: page))
+            #expect(VaultBridge.bridge(for: view) != nil)
+            page.unload()
+            #expect(VaultBridge.bridge(for: view) == nil)
+        } else {
+            #expect(page.primaryWebView == nil && page.isUnloaded)
+        }
+    }
+    #endif
+
     @Test func nativePageConstructionAndFaviconRequestsDoNotEnterWebKit() async throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }

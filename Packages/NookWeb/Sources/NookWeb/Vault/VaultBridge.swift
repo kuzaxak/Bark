@@ -70,7 +70,9 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
 
     // MARK: - Install
 
+    /// Installs the WebKit bridge for a page eligible to use the vault.
     static func install(on webView: WKWebView, session: PageSession, service: VaultService) {
+        guard !session.isAgentPage else { return }
         let controller = webView.configuration.userContentController
         uninstall(from: controller)
         let bridge = VaultBridge(session: session, service: service, webView: webView)
