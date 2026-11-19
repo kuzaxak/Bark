@@ -326,7 +326,7 @@ struct BrowserImporter {
                     let visits = batch.compactMap { visit in
                         URL(string: visit.url).map { HistoryVisit(url: $0, title: visit.title, timestamp: visit.date, tabId: nil, profileId: store) }
                     }
-                    await history.importVisitsAndWait(visits)
+                    await history.importVisitsAndWait(visits, claimUnscopedRows: false)
                     await MainActor.run {
                         progress.visitsRead = before + read
                         progress.visitsTotal = totalBefore + total

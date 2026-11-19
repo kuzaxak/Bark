@@ -205,12 +205,14 @@ public actor HistoryIndex {
     }
 
     /// One visit of `weight` (2 typed or chosen in the palette, 1 a link, 0 a reload, which is
-    /// skipped). A visit from a profile claims the URL's untagged row, as the history store does.
-    public func record(url: String, title: String, profile: UUID?, at date: Date, weight: Double) {
+    /// skipped). By default a profile may claim its URL's unscoped row, as the history store does.
+    public func record(url: String, title: String, profile: UUID?, at date: Date,
+                       weight: Double, claimUnscopedRows: Bool = true) {
         guard weight > 0, let db = open(create: true) else { return }
         let profileKey = Self.profileKey(profile)
         var existing: (rowid: Int64, key: Double, lastVisited: Double)?
-        for candidate in profile == nil ? [profileKey] : [profileKey, ""] where existing == nil {
+        let candidates = claimUnscopedRows && profile != nil ? [profileKey, ""] : [profileKey]
+        for candidate in candidates where existing == nil {
             run(db, "SELECT rowid, key, lastVisited FROM visits WHERE url = ? AND profile = ?", bind: { stmt in
                 sqlite3_bind_text(stmt, 1, url, -1, Self.transient)
                 sqlite3_bind_text(stmt, 2, candidate, -1, Self.transient)

@@ -84,6 +84,7 @@ extension Check {
 
     static func modelImport() async throws {
         try await chromeIntoTabs()
+        try await chromeHistoryKeepsUnscopedRows()
         try await arcIntoTabs()
         try await nothingToImport()
         try await startersAndChoice()
@@ -154,6 +155,38 @@ extension Check {
                      "progress moves while bookmarks come in: \(seen.count) values, \(progress.itemsDone)/\(progress.itemsTotal)")
         precondition(summary.tabs == 5_000, "every bookmark came in: \(summary.tabs)")
         precondition(probe.longestStall < .milliseconds(500), "the main actor waited \(probe.longestStall) while bookmarks came in")
+    }
+
+    /// An imported visit must not take ownership of existing legacy history for the same URL.
+    static func chromeHistoryKeepsUnscopedRows() async throws {
+        let host = try Host(onDisk: true)
+        let originalProfile = host.profile(try requireValue(host.window.spaceID))
+        let url = URL(string: "https://fixture.test/work-wiki")!
+        await host.history.importVisitsAndWait([
+            HistoryVisit(url: url, title: "Bark Legacy Wiki", timestamp: Date(), tabId: nil, profileId: nil)
+        ])
+        let legacy = try requireValue(await host.visits(originalProfile).first { $0.url == url })
+        precondition(legacy.title == "Bark Legacy Wiki" && legacy.visitCount == 1)
+        let summary = await host.importer(source(root)).run(.chrome)
+        precondition(summary.visits == 4)
+
+        let originalRows = await host.visits(originalProfile).filter { $0.url == url }
+        precondition(originalRows.count == 1 && originalRows[0].id == legacy.id
+                     && originalRows[0].title == legacy.title && originalRows[0].visitCount == 1,
+                     "Chrome import must preserve the original unscoped history row")
+        let originalIndex = await host.history.indexRows(matching: "Bark Legacy Wiki")
+        precondition(originalIndex?.first(where: { $0.url == url.absoluteString })?.visitCount == 1,
+                     "Chrome import must preserve the original unscoped palette entry")
+
+        let work = try requireValue(host.tabs.orderedSpaces.first { $0.name == "Work" })
+        let importedRows = await host.visits(host.profile(work.id)).filter { $0.url == url }
+        precondition(importedRows.count == 2 && importedRows.contains {
+            $0.id != legacy.id && $0.title == "Work Wiki" && $0.visitCount == 1
+        }, "Chrome history must have a separate row in the imported Work profile")
+        let importedIndex = await host.history.indexRows(matching: "Work Wiki")
+        precondition(importedIndex?.contains { $0.url == url.absoluteString &&
+            $0.title == "Work Wiki" && $0.visitCount == 1 } == true,
+            "the imported profile must get its own palette entry")
     }
 
     /// I4–I6 for Chrome: profiles become profiles and spaces, bookmarks one closed pinned folder,

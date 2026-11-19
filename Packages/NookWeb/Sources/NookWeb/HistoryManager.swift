@@ -96,20 +96,26 @@ public final class HistoryManager {
     }
 
     public func importVisits(_ visits: [HistoryVisit]) {
+        enqueueVisits(visits, claimUnscopedRows: true)
+    }
+
+    private func enqueueVisits(_ visits: [HistoryVisit], claimUnscopedRows: Bool) {
         let index = index
         enqueue { store in
-            await store.addVisits(visits)
+            await store.addVisits(visits, claimUnscopedRows: claimUnscopedRows)
             guard let index else { return }
             for visit in visits where visit.url.scheme == "http" || visit.url.scheme == "https" {
                 let title = visit.title.isEmpty ? (visit.url.host ?? "") : visit.title
-                await index.record(url: visit.url.absoluteString, title: title, profile: visit.profileId, at: visit.timestamp, weight: visit.weight)
+                await index.record(url: visit.url.absoluteString, title: title, profile: visit.profileId,
+                                   at: visit.timestamp, weight: visit.weight, claimUnscopedRows: claimUnscopedRows)
             }
         }
     }
 
-    /// `importVisits`, returning once the store holds them.
-    public func importVisitsAndWait(_ visits: [HistoryVisit]) async {
-        importVisits(visits)
+    /// Waits for the batch to finish. Imports into a separate profile can keep
+    /// the existing unscoped history and palette rows independent of the import.
+    public func importVisitsAndWait(_ visits: [HistoryVisit], claimUnscopedRows: Bool = true) async {
+        enqueueVisits(visits, claimUnscopedRows: claimUnscopedRows)
         await pendingWrite?.value
     }
 
@@ -286,7 +292,7 @@ actor HistoryStore {
         return try modelContext.fetch(descriptor).first
     }
 
-    func addVisits(_ visits: [HistoryVisit]) {
+    func addVisits(_ visits: [HistoryVisit], claimUnscopedRows: Bool) {
         let interval = BrowserPerformance.signposter.beginInterval("HistoryWrite")
         defer { BrowserPerformance.signposter.endInterval("HistoryWrite", interval) }
         modelContext.autosaveEnabled = false
@@ -295,7 +301,7 @@ actor HistoryStore {
                 guard visit.url.scheme == "http" || visit.url.scheme == "https" else { continue }
                 let url = visit.url.absoluteString
                 let existing = try exactURL(url, profile: visit.profileId)
-                    ?? (visit.profileId == nil ? nil : exactURL(url, profile: nil))
+                    ?? (claimUnscopedRows && visit.profileId != nil ? exactURL(url, profile: nil) : nil)
                 if let entry = existing {
                     entry.visitCount += 1
                     // An import of older history must not move a recent visit backwards.
