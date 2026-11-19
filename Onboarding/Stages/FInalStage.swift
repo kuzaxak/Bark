@@ -11,13 +11,17 @@ import SwiftUI
 struct FinalStage: View {
 
     var body: some View {
-        VStack(spacing: 24){
-            Text("All done")
+        VStack(spacing: 16) {
+            Text("Your spaces start on this Mac")
                 .font(.system(size: 22, weight: .semibold))
                 .foregroundStyle(.white)
-            Text("Welcome onboard")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundStyle(.white.opacity(0.6))
+            Text("Your Nook iCloud spaces and invitations stay in Nook.")
+            Text("To sync with other Macs running Bark, turn on iCloud Sync in Settings → Spaces.")
         }
+        .font(.system(size: 16))
+        .multilineTextAlignment(.center)
+        .foregroundStyle(.white.opacity(0.8))
+        .frame(maxWidth: 480)
+        .padding(.horizontal, 16)
     }
 }

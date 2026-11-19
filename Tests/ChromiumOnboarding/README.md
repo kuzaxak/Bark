@@ -14,10 +14,12 @@ set -l evidence (mktemp -d /private/tmp/bark-onboarding-walk.XXXXXX)
 ```
 
 The walk starts with an empty private verification root and uses the same
-synthetic profile and preferences domain for both launches. It observes the
-actual welcome window, waits for Bark to persist starter tabs, and interrupts
-the first process with SIGKILL. On relaunch the welcome window must return, the
-starter space IDs must match, and **Get Started** must advance to the stage
-with **Skip**. The marker must remain pending. The walk stops before choosing
-an import or finishing setup. It removes the test root and isolated preferences
-and leaves the phase record and both app logs in the output directory.
+synthetic profile and preferences domain throughout. It interrupts the first
+process with SIGKILL after Bark has saved the starter tabs. The second launch
+must resume at **Get Started** with the original space IDs and pending marker.
+The walk skips import, checks that the setup explains where Nook iCloud spaces
+and invitations stay and how to opt into sync in Bark, then chooses **Start Browsing Locally**. Completing setup and returning on
+the third launch must both open the browser with the same starter spaces and
+no Bark sync store. Verification mode keeps CloudKit disabled throughout.
+The walk removes the test root and isolated preferences and preserves phase
+records and app logs in the evidence directory.

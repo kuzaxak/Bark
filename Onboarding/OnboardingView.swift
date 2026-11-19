@@ -48,7 +48,7 @@ struct OnboardingView: View {
                         onBack: goBack,
                         onSkip: skipImport,
                         onCancel: session.isRunning ? { session.stop() } : nil,
-                        continueText: currentStage == 1 && session.summary?.foundNothing == false ? "Continue" : nil
+                        continueText: continueText
                     )
                 }
             }
@@ -64,6 +64,14 @@ struct OnboardingView: View {
                 return .handled
             }
             return .ignored
+        }
+    }
+
+    private var continueText: String? {
+        switch currentStage {
+        case 1 where session.summary?.foundNothing == false: return "Continue"
+        case 2: return "Start Browsing Locally"
+        default: return nil
         }
     }
 

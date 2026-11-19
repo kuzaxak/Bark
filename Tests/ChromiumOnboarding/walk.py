@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Interrupt a signed Bark first launch and verify onboarding resumes."""
+"""Resume signed Bark onboarding, verify its iCloud notice and finish locally."""
 
 import argparse
 from contextlib import contextmanager
@@ -16,7 +16,7 @@ import time
 from uuid import UUID, uuid4
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "Shared"))
-from signed_walk import (REPO, Screen, ScreenUnavailable, crash_reports, processes,
+from signed_walk import (Accessibility, REPO, Screen, ScreenUnavailable, crash_reports, processes,
                          verify_native_candidate, wait_for)
 from run_browser_tests import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole,
                                require_idle_console, screen_lock)
@@ -80,6 +80,24 @@ def onboarding_button(screen, proc, name):
                     lambda: screen.button(name) if sole_window() else None, proc)
 
 
+def browser_ready(screen, proc):
+    controls = Accessibility(screen, proc)
+    wait_for("The Bark browser did not replace onboarding",
+             lambda: len(screen.windows()) == 1
+             and (controls.find("Search or Enter URL...") is not None
+                  or controls.find("New Tab", ("AXButton",)) is not None)
+             and controls.find("Your spaces start on this Mac") is None
+             and controls.find("Get Started", ("AXButton",)) is None,
+             proc, timeout=30)
+
+
+def quit_locally(screen, proc):
+    screen.key("q", screen.command)
+    screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), proc))
+    if proc.wait(timeout=30) != 0:
+        raise RuntimeError("The disposable browser did not quit cleanly")
+
+
 def run(app, output, contributor, console):
     launched_crashes = crash_reports()
     result = {"architecture": verify_native_candidate(contributor, app), "phases": {}}
@@ -95,7 +113,13 @@ def run(app, output, contributor, console):
             raise RuntimeError("Expected a fresh private verification root")
         profile = str(uuid4()).upper()
         marker = root / "App/onboarding-state"
+        sync_store = root / "App/Sync/iCloud.ee.qdo.bark/spaces.json"
         domain = "ee.qdo.nook.chromium-verification." + hashlib.sha256(root.as_posix().encode()).hexdigest()
+
+        def check_local_setup(spaces):
+            if marker.read_text() != "completed\n" or starter_spaces(root) != spaces or sync_store.exists():
+                raise RuntimeError("Local setup did not preserve starter spaces and leave the sync store absent")
+
         record("isolated", profile=profile, preferences_domain=domain)
         try:
             with screen_lock(SCREEN_LOCK, wait=30) as owns_screen:
@@ -122,19 +146,45 @@ def run(app, output, contributor, console):
                         raise RuntimeError("Relaunch did not retain the starter space identities")
                     require_idle_console(console, owns_screen, screen.point, min_idle=2)
                     screen.press_button(start)
-                    # Observe the explicit skip control on the next stage. Do
-                    # not start an import or finish setup in this test.
-                    onboarding_button(screen, proc, "Skip")
+                    skip = onboarding_button(screen, proc, "Skip")
                     current_marker = marker.read_text() if marker.is_file() else None
                     record("resumed", windows=1, onboarding_button="Skip",
                            saved_spaces=spaces, marker=current_marker)
                     if initial_marker != "pending\n" or current_marker != "pending\n":
                         raise RuntimeError("Onboarding did not retain its pending marker")
+                    screen.press_button(skip)
+                    local = onboarding_button(screen, proc, "Start Browsing Locally")
+                    controls = Accessibility(screen, proc)
+                    notice = [
+                        "Your spaces start on this Mac",
+                        "Your Nook iCloud spaces and invitations stay in Nook.",
+                        "To sync with other Macs running Bark, turn on iCloud Sync in Settings → Spaces.",
+                    ]
+                    for line in notice:
+                        controls.control(line, ("AXStaticText",))
+                    if marker.read_text() != "pending\n" or sync_store.exists():
+                        raise RuntimeError("Onboarding advanced or created a sync store before the local choice")
+                    record("disclosure", marker="pending", sync_store_created=False, action="Start Browsing Locally", notice=notice)
+                    screen.press_button(local)
+                    browser_ready(screen, proc)
+                    check_local_setup(spaces)
+                    record("completed_locally", marker="completed", sync_store_created=False, saved_spaces=spaces)
+                    quit_locally(screen, proc)
+                    check_local_setup(spaces)
+
+                with launch(app, root, profile, output / "return-launch.log",
+                            console, owns_screen, contributor["stop"]) as (screen, proc):
+                    browser_ready(screen, proc)
+                    check_local_setup(spaces)
+                    record("return_launch", onboarding=False, marker="completed",
+                           sync_store_created=False, saved_spaces=spaces)
+                    quit_locally(screen, proc)
+                    check_local_setup(spaces)
         finally:
             subprocess.run(["/usr/bin/defaults", "delete", domain], capture_output=True)
     if crash_reports() - launched_crashes:
         raise RuntimeError("A Bark crash report appeared during the walk")
-    print("Signed Bark resumed onboarding with its original starter spaces and pending marker")
+    print("Signed Bark resumed pending setup, showed the iCloud notice and returned to the same local spaces")
 
 
 def main():
