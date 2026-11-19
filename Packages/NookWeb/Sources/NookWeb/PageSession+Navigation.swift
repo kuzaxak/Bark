@@ -124,11 +124,6 @@ extension PageSession {
                 self.extractTopBarColor(from: webView)
             }
         }
-
-        // Check for OAuth completion and auto-close if needed
-        if isOAuthFlow, let currentURL = webView.url {
-            checkOAuthCompletion(url: currentURL)
-        }
     }
 
     // MARK: - Loading Failed (after content started loading)

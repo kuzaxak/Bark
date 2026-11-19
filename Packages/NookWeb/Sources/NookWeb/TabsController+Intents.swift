@@ -8,7 +8,6 @@
 
 import Foundation
 import NookTabsCore
-import WebKit
 
 extension TabsController {
     // MARK: - Open
@@ -103,107 +102,6 @@ extension TabsController {
             select(session.itemID, in: window, leaving: selectedSession(in: window), nativeAdmitted: true, adoptionGeneration: generation, validateNative: validateNative)
         } else {
             recordPageOwner(session.itemID, in: window)
-        }
-    }
-
-    // MARK: - Detached Pages
-
-    /// A page outside the tree, for Peek or a mini window. It loads at once, runs the same
-    /// navigation, blocking and dialog code as a tab, and stays out of the sidebar until
-    /// `adopt(_:in:)` makes it a tab. `endDetached(_:)` closes it.
-    public func openDetached(url: URL, profile: Profile, in window: BrowserWindowState?) -> PageSession {
-        let session = PageSession(
-            itemID: UUID(), url: url, title: url.host ?? url.absoluteString,
-            isPrivate: profile.isEphemeral, controller: self)
-        session.detachedProfile = profile
-        session.detachedWindow = window
-        session.loadWebViewIfNeeded()
-        return session
-    }
-
-    /// A WebKit-created popup from `opener` shown outside the tree (a sign-in window). It keeps
-    /// `window.opener`, and WebKit drives its first navigation.
-    func openDetachedPopup(configuration: WKWebViewConfiguration, url: URL?, opener: PageSession) -> PageSession? {
-        guard let profile = opener.profile,
-              let webView = webViews?.makeWebView(configuration: configuration) else { return nil }
-        let pageURL = url ?? URL(string: "about:blank")!
-        let session = PageSession(
-            itemID: UUID(), url: pageURL, title: pageURL.host ?? pageURL.absoluteString,
-            isPrivate: opener.isPrivate, controller: self)
-        session.detachedProfile = profile
-        session.detachedWindow = window(for: opener)
-        session.installPopupWebView(webView)
-        return session
-    }
-
-    /// Makes a detached page a selected tab of `window`, live view and all: a child of `opener`
-    /// when Peek opened it from that tab, else below the selected tab. A window whose space uses
-    /// another data store opens the URL fresh instead, and the detached page ends.
-    @discardableResult
-    public func adopt(_ session: PageSession, in window: BrowserWindowState, from opener: UUID? = nil) -> UUID? {
-        guard session.isDetached else { return nil }
-        let store = window.privateTree != nil ? window.ephemeralProfile : window.spaceID.flatMap { profile(forSpace: $0) }
-        guard store === session.detachedProfile,
-              let position = opener.flatMap({ childTabPosition(in: window, opener: $0) })
-                ?? newTabPosition(in: window, after: window.selectedItemID),
-              perform(owner(of: window), "adopt", {
-                  try $0.createTab(id: session.itemID, url: session.url, title: session.title, in: position.0, after: position.1)
-              }) != nil
-        else {
-            let id = open(url: session.url, in: window, placement: .newTab, from: opener)
-            endDetached(session)
-            return id
-        }
-        if let opener { linked(session.itemID, from: opener, at: position.0, owner: owner(of: window)) }
-        session.detachedProfile = nil
-        session.detachedWindow = nil
-        session.onClose = nil
-        register(session, in: window)
-        // Extensions could not see the page while it had no item.
-        if !session.isPrivate { webKitTabEvents?.tabOpened(session) }
-        select(session.itemID, in: window)
-        return session.itemID
-    }
-
-    /// Closes a detached page that never became a tab.
-    public func endDetached(_ session: PageSession) {
-        guard session.isDetached else { return }
-        session.onClose = nil
-        session.tearDown()
-        if !session.isPrivate { webKitTabEvents?.tabClosed(itemID: session.itemID) }
-    }
-
-    /// A WebKit-created popup from `opener`: a new selected tab in the opener's window whose
-    /// session owns `webView`. WebKit drives the popup's first navigation.
-    @discardableResult
-    func adoptPopup(webView: WKWebView, url: URL?, opener: PageSession) -> UUID? {
-        guard let window = window(for: opener), let position = childTabPosition(in: window, opener: opener.itemID)
-        else { return nil }
-        let id = UUID()
-        let pageURL = url ?? URL(string: "about:blank")!
-        guard perform(owner(of: window), "popup", {
-            try $0.createTab(id: id, url: pageURL, title: "New Tab", in: position.0, after: position.1)
-        }) != nil else { return nil }
-        linked(id, from: opener.itemID, at: position.0, owner: owner(of: window))
-        let session = PageSession(
-            itemID: id, url: pageURL, title: "New Tab", isPrivate: window.privateTree != nil,
-            controller: self)
-        session.isPopupHost = true
-        register(session, in: window)
-        session.installPopupWebView(webView)
-        if let url, url.scheme != nil, url.absoluteString != "about:blank" {
-            session.load(url)
-        }
-        // Select only after the session owns its view, so selection cannot create a second one.
-        select(id, in: window)
-        return id
-    }
-
-    private func register(_ session: PageSession, in window: BrowserWindowState) {
-        if window.privateTree != nil {
-            window.privateSessions[session.itemID] = session
-        } else {
-            addSession(session)
         }
     }
 

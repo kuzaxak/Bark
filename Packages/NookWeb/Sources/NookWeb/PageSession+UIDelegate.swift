@@ -3,7 +3,7 @@
 //  PageSession+UIDelegate.swift
 //  Nook
 //
-//  Popups, OAuth windows, JavaScript panels, file upload and full screen for a PageSession.
+//  JavaScript panels, file upload and full screen for a PageSession.
 //
 
 import SwiftUI
@@ -12,24 +12,6 @@ import NookBlocker
 import NookSettings
 import NookTweaks
 extension PageSession {
-    func isLikelyOAuthOrExternalWindow(url: URL, windowFeatures: WKWindowFeatures) -> Bool {
-        if OAuthDetector.isLikelyOAuthPopupURL(url) { return true }
-
-        // If the popup has explicit dimensions AND is cross-origin, it's likely a sign-in window.
-        // Same-origin popups with dimensions (e.g. log viewers, help windows) should open normally.
-        if let width = windowFeatures.width, let height = windowFeatures.height,
-            width.doubleValue > 0 && height.doubleValue > 0
-        {
-            let currentHost = self.url.host?.lowercased()
-            let popupHost = url.host?.lowercased()
-            if currentHost != popupHost {
-                return true
-            }
-        }
-
-        return false
-    }
-
     // MARK: - Peek Detection
 
     /// A click on a link the page opens in a new tab (target=_blank), or any link clicked with
@@ -76,48 +58,6 @@ extension PageSession {
         guard !a.isEmpty, !b.isEmpty else { return false }
         return a == b || a.hasSuffix(".\(b)") || b.hasSuffix(".\(a)")
     }
-
-    // MARK: - OAuth Helpers
-
-    /// Checks if a URL indicates OAuth completion and handles the flow
-    func checkOAuthCompletion(url: URL) {
-        guard isOAuthFlow, let parentItemID = oauthParentItemID else { return }
-
-        let urlString = url.absoluteString.lowercased()
-        let host = url.host?.lowercased() ?? ""
-
-        // Check for OAuth success indicators
-        let successIndicators = ["code=", "access_token=", "id_token=", "oauth_token=",
-                                "oauth_verifier=", "session_state=", "samlresponse="]
-
-        // Check for OAuth error indicators
-        let errorIndicators = ["error=", "access_denied", "invalid_request", "denied"]
-
-        let isSuccess = successIndicators.contains { urlString.contains($0) }
-        let isError = errorIndicators.contains { urlString.contains($0) }
-
-        // Check if this is a redirect back to the original domain (not the OAuth provider)
-        if let providerHost = oauthProviderHost, !host.contains(providerHost),
-           (isSuccess || isError || !OAuthDetector.isLikelyOAuthURL(url)) {
-
-
-            // Reselect and reload the opener, then close this sign-in page.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let controller = self.controller,
-                      let parent = controller.session(for: parentItemID) else { return }
-                if let window = controller.window(for: parent) {
-                    controller.select(parentItemID, in: window)
-                }
-                parent.activeWebView.reload()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self else { return }
-                self.controller?.close(self.itemID)
-            }
-        }
-    }
-
-
 }
 
 // MARK: - WKUIDelegate
@@ -126,70 +66,6 @@ extension WebKitPageDelegateAdapter: WKUIDelegate {
         guard let session, view.uiDelegate === self,
               session.acceptsNavigationCallbacks(from: view) else { return nil }
         return session
-    }
-
-    func webView(
-        _ webView: WKWebView,
-        createWebViewWith configuration: WKWebViewConfiguration,
-        for navigationAction: WKNavigationAction,
-        windowFeatures: WKWindowFeatures
-    ) -> WKWebView? {
-        guard let session = uiOwner(of: webView), let delegate = session.controller?.webKitSessionDelegate else { return nil }
-        let url = navigationAction.request.url
-        // Extensions manage their own auth flows, and never get Peek.
-        let sourceScheme = navigationAction.sourceFrame.request.url?.scheme?.lowercased() ?? ""
-        let isFromExtension = sourceScheme == "webkit-extension" || sourceScheme == "safari-web-extension"
-
-        // WebKit's configuration shares the opener's userContentController. Handlers are keyed
-        // by name, so registering the popup's on it would reroute the opener's messages to the
-        // popup, and closing the popup would strip them from the opener. Give the popup its own
-        // controller; WebKit only requires the configuration's related web view to match.
-        func popupConfiguration() -> WKWebViewConfiguration {
-            configuration.userContentController = BrowserConfiguration.webKit.freshUserContentController()
-            return configuration
-        }
-
-        // A sign-in popup shows in a mini window as a real popup, so `window.opener` carries the
-        // result back to this page the way the site expects.
-        // An agent page's popups, sign-in ones too, open as tabs in the Agent space (adoptPopup).
-        if !isFromExtension, !session.isAgentPage, let url, session.isLikelyOAuthOrExternalWindow(url: url, windowFeatures: windowFeatures) {
-            guard let popup = session.controller?.openDetachedPopup(configuration: popupConfiguration(), url: url, opener: session)
-            else { return nil }
-            delegate.presentPopupWindow(popup)
-            return popup.primaryWebView
-        }
-
-        // Air Traffic Control: route popup URLs to designated spaces.
-        if let url, session.controller?.siteRouting.applyRoute(url: url, from: session) == true {
-            return nil
-        }
-
-        // Peek and mini window pages follow the link in place rather than open a tab behind them.
-        if session.isDetached {
-            if url != nil { webView.load(navigationAction.request) }
-            return nil
-        }
-
-        if !isFromExtension, let url, session.shouldRedirectToPeek(url: url) || session.peeksNewTabLink(navigationAction) {
-            // Trigger Peek after returning control to WebKit to avoid runloop-mode issues
-            RunLoop.current.perform { [weak session] in
-                guard let session else { return }
-                session.controller?.sessionDelegate?.presentPeek(url: url, from: session)
-            }
-            return nil
-        }
-
-        guard let newWebView = session.controller?.webViews?.makeWebView(configuration: popupConfiguration()) else { return nil }
-
-        // A session owns the popup's view; a private page's popup stays in its private window.
-        guard let controller = session.controller,
-              controller.adoptPopup(
-                webView: newWebView,
-                url: navigationAction.request.url,
-                opener: session) != nil
-        else { return nil }
-
-        return newWebView
     }
 
     /// Counts a dialog. From the second one since the last main-frame commit the presenter offers

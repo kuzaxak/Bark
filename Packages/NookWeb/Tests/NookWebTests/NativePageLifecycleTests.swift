@@ -1868,9 +1868,12 @@ struct NativePageLifecycleTests {
         let page = NativeTestPage(profileID: profile.id)
         page.state = PageNavigationState(url: URL(string: "https://detached-native.invalid/already-loaded")!,
             title: "Loaded native document", canGoBack: false, canGoForward: false)
+        page.state.media = PageMedia(hasMedia: true, isAudible: true, isPlaying: true)
         let tree = f.tabs.tree, device = f.tabs.device, creates = f.host.creates.count
         let session = try #require(f.tabs.bindDetachedNativePage(page, profile: profile, owner: owner, in: f.window))
         #expect(session.navigation === page && session.isDetached && session.profile === profile)
+        #expect(session.media.isPlaying)
+        #expect(!f.tabs.miniPlayerPages(for: f.window).contains { $0.id == session.itemID })
         #expect(page.loaded.isEmpty && f.tabs.tree == tree && f.tabs.device == device)
         #expect(f.host.creates.count == creates && f.host.closes.isEmpty)
         session.unload()

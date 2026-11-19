@@ -276,20 +276,14 @@ struct MiniPlayerPagesTests {
         #expect(!ids(host.window, host).contains(tab))
     }
 
-    @Test func leavesOutTheAgentSpaceAndPeek() throws {
+    @Test func leavesOutTheAgentSpace() throws {
         let host = try Host()
-        let spaceID = try #require(host.window.spaceID)
         let agent = try #require(host.tabs.ensureAgentSpace(loginsFrom: host.window))
         host.tabs.setSpace(agent, in: host.window)
         let agentTab = try openTab("https://agent.invalid", in: host.window, space: agent, host)
         try play(agentTab, host)
-        let profile = try #require(host.tabs.profile(forSpace: spaceID))
-        let peek = host.tabs.openDetached(url: URL(string: "https://peek.invalid")!, profile: profile, in: host.window)
-        peek.report(playing)
-
         let listed = ids(host.window, host)
         #expect(!listed.contains(agentTab))
-        #expect(!listed.contains(peek.itemID))
     }
 
     @Test func marksEveryPaneOnScreen() throws {

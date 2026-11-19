@@ -242,10 +242,6 @@ public final class PageSession: NSObject, Identifiable {
             if isOAuthFlow != oldValue { controller?.blocker.refreshNetworkPolicy(for: self) }
         }
     }
-    /// The item whose page started this OAuth flow.
-    @ObservationIgnored var oauthParentItemID: UUID?
-    /// The OAuth provider host (e.g., "accounts.google.com") for tracking protection exemption.
-    @ObservationIgnored var oauthProviderHost: String?
 
     // MARK: - Internal State
 
@@ -253,8 +249,6 @@ public final class PageSession: NSObject, Identifiable {
     @ObservationIgnored var savedHistory: Any?
     /// Counts back and forward swipes, so a late snapshot cleanup never touches a newer swipe.
     @ObservationIgnored var navigationGestureCount = 0
-    /// One-shot initial-navigation suppression for a WebKit-created popup.
-    @ObservationIgnored var isPopupHost: Bool = false
     /// The page's address as it may be stored, copied or shown: without a Kagi session token.
     public var storableURL: URL { KagiSession.withoutToken(url) }
 
@@ -981,17 +975,13 @@ public final class PageSession: NSObject, Identifiable {
             }
             didNotifyOpenToExtensions = true
         }
-        // Consume popup suppression only after setup succeeds. WebKit drives the original
-        // navigation; any replacement view must load the saved URL.
-        let shouldLoadInitialURL = initialLoad && !isPopupHost
-        isPopupHost = false
         let history = savedHistory
         savedHistory = nil
-        if shouldLoadInitialURL, let history {
+        if initialLoad, let history {
             webView.interactionState = history
             // Restoring shows the cached copy, as Back does; reload revalidates it like a fresh load.
             if webView.reload() == nil { load(url) }
-        } else if shouldLoadInitialURL {
+        } else if initialLoad {
             load(url)
         }
     }
@@ -1089,9 +1079,6 @@ public final class PageSession: NSObject, Identifiable {
         coordinator?.releaseWebViews(for: self)
         if let primary, !primaryIsPooled { cleanupClone(primary) }
         primaryWebView = nil
-        // WebKit only supplies the original popup navigation. A replacement view must load the
-        // saved URL through the normal setup path.
-        isPopupHost = false
         primaryWindowId = nil
         // The next view announces itself again (activation included).
         didNotifyOpenToExtensions = false

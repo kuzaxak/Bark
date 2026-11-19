@@ -21,8 +21,6 @@ public protocol WebKitPageSessionDelegate: PageSessionDelegate {
 
     // MARK: Sign-in
 
-    /// Shows a sign-in popup, a detached page that keeps `window.opener`, in a mini window.
-    func presentPopupWindow(_ session: PageSession)
     func handleAuthenticationChallenge(
         _ challenge: URLAuthenticationChallenge,
         for session: PageSession,
