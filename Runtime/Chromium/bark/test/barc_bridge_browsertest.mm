@@ -1,3 +1,5 @@
+#include <string_view>
+
 #include "device/bluetooth/bluetooth_adapter_factory.h"
 #include "device/bluetooth/test/mock_bluetooth_adapter.h"
 #include "content/public/browser/content_browser_client.h"
@@ -9,6 +11,7 @@
 #include "chrome/browser/webauthn/chrome_authenticator_request_delegate.h"
 #include "base/json/json_reader.h"
 #include "base/base64.h"
+#include "base/strings/utf_string_conversions.h"
 #include "device/fido/authenticator_supported_options.h"
 #include "device/fido/fido_discovery_factory.h"
 #include "bark/browser/webauthn/barc_vault_authenticator.h"
@@ -11370,6 +11373,11 @@ class BarcPawlBrowserTest : public BarcBridgeBrowserTest {
     policy::BrowserPolicyConnector::SetPolicyProviderForTesting(&policy_provider_);
   }
 
+  void SetUpOnMainThread() override {
+    BarcBridgeBrowserTest::SetUpOnMainThread();
+    host_resolver()->AddRule("a.test", "127.0.0.1");
+  }
+
   void SetPasswordPolicy(const char* key, base::Value value) {
     policy::PolicyMap policies;
     if (key) {
@@ -11481,9 +11489,14 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, PasswordManagementUsesInertPawlPage)
     EXPECT_TRUE(std::ranges::none_of(events.events, [](const auto& event) {
       return event.kind == BARC_TAB_STARTED && (event.flags & BARC_TAB_PAWL_MANAGEMENT);
     }));
-    EXPECT_EQ(expected_page, contents->GetLastCommittedURL());
-    EXPECT_EQ(virtual_url, controller.GetLastCommittedEntry()->GetVirtualURL());
-    EXPECT_TRUE(contents->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque());
+    auto* entry = controller.GetLastCommittedEntry();
+    ASSERT_TRUE(entry);
+    auto* frame = contents->GetPrimaryMainFrame();
+    EXPECT_EQ(expected_page, entry->GetURL());
+    EXPECT_EQ(expected_page, frame->GetLastCommittedURL());
+    EXPECT_EQ(virtual_url, entry->GetVirtualURL());
+    EXPECT_EQ(virtual_url, contents->GetLastCommittedURL());
+    EXPECT_TRUE(frame->GetLastCommittedOrigin().opaque());
     EXPECT_EQ(nullptr, contents->GetWebUI());
     EXPECT_EQ(u"Passwords in Bark", contents->GetTitle());
     EXPECT_EQ(true, content::EvalJs(
@@ -11496,7 +11509,9 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, PasswordManagementUsesInertPawlPage)
     EXPECT_FALSE(content::WebUIConfigMap::GetInstance().GetConfig(
         contents->GetBrowserContext(), url));
     events.events.clear();
-    ASSERT_TRUE(content::NavigateToURL(contents, url, expected_page));
+    // WebContents exposes the virtual address. Check the real renderer URL
+    // separately, as well as absence of the privileged WebUI.
+    ASSERT_TRUE(content::NavigateToURL(contents, url));
     expect_pawl(url);
   }
   const auto virtual_url = controller.GetLastCommittedEntry()->GetVirtualURL();
@@ -11506,12 +11521,18 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, PasswordManagementUsesInertPawlPage)
   reloaded.Wait();
   ASSERT_TRUE(reloaded.last_navigation_succeeded());
   expect_pawl(virtual_url);
+
+  // Multiple aliases share one physical inert URL. Leave that document
+  // before using Back, so it restores a distinct committed history entry.
+  const GURL next_page = embedded_test_server()->GetURL("/title2.html");
+  ASSERT_TRUE(content::NavigateToURL(contents, next_page));
+  ASSERT_TRUE(controller.CanGoBack());
   events.events.clear();
   content::TestNavigationObserver history(contents);
   controller.GoBack();
   history.Wait();
   ASSERT_TRUE(history.last_navigation_succeeded());
-  expect_pawl(alias);
+  expect_pawl(virtual_url);
 
   barc_tab_unobserve(events.token);
   events.events.clear();
@@ -11763,7 +11784,6 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultOwnedPickerNeedsRestoredNativeF
 IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultFrameOriginAndFieldIdsNeverRetargetParent) {
   MountSelectedHostPage(browser());
   browser()->GetWindow()->Show();
-  host_resolver()->AddRule("a.test", "127.0.0.1");
   net::EmbeddedTestServer child_server(net::EmbeddedTestServer::TYPE_HTTPS);
   child_server.SetSSLConfig(net::EmbeddedTestServer::CERT_TEST_NAMES);
   child_server.RegisterRequestHandler(base::BindRepeating(&VaultForm));
@@ -11888,7 +11908,9 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest,
         auto result = std::make_unique<net::test_server::BasicHttpResponse>();
         result->set_content_type("text/html");
         result->set_content(request.relative_url == "/vault-done"
-            ? "<title>Done</title>"
+            // A title-only page is considered empty by PasswordAutofillAgent
+            // and cannot confirm that the submitted login form disappeared.
+            ? "<title>Done</title><main id=confirmed>Signed in</main>"
             : "<form action=/vault-done method=post>"
               "<input id=user name=user autocomplete=username>"
               "<input id=pass name=pass type=password "
@@ -11930,10 +11952,29 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest,
       return true;
     })()
   )JS"));
-  content::TestNavigationObserver declined(contents);
-  ASSERT_TRUE(content::ExecJs(contents,
-      "user.value='declined-user';pass.value='declined-password';go.click();"));
-  declined.Wait();
+  const auto submit = [&](std::u16string_view username,
+                          std::u16string_view password) {
+    // The password renderer tracks user edits separately from script values.
+    contents->Focus();
+    ASSERT_TRUE(content::ExecJs(contents, "user.focus()"));
+    for (char16_t c : username) {
+      content::SimulateCharTyped(contents, c);
+    }
+    ASSERT_EQ(base::UTF16ToUTF8(username), content::EvalJs(contents, "user.value"));
+    ASSERT_TRUE(content::ExecJs(contents, "pass.focus()"));
+    for (char16_t c : password) {
+      content::SimulateCharTyped(contents, c);
+    }
+    ASSERT_EQ(base::UTF16ToUTF8(password), content::EvalJs(contents, "pass.value"));
+    content::TestNavigationObserver submitted(contents);
+    content::SimulateMouseClickOrTapElementWithId(contents, "go");
+    submitted.Wait();
+    ASSERT_TRUE(submitted.last_navigation_succeeded());
+    ASSERT_EQ(embedded_test_server()->GetURL("/vault-done"),
+              contents->GetLastCommittedURL());
+    EXPECT_EQ("Signed in", content::EvalJs(contents, "confirmed.textContent"));
+  };
+  ASSERT_NO_FATAL_FAILURE(submit(u"declined-user", u"declined-password"));
   content::RunAllTasksUntilIdle();
   auto logins = password_manager::GetAllLoginsSync(store.get());
   ASSERT_EQ(1u, logins.size());
@@ -11960,10 +12001,7 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest,
   auto verify_blocked_submission = [&] {
     ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), login));
     ASSERT_FALSE(client->IsSavingAndFillingEnabled(origin, login));
-    content::TestNavigationObserver blocked(contents);
-    ASSERT_TRUE(content::ExecJs(contents,
-        "user.value='blocked-user';pass.value='blocked-password';go.click();"));
-    blocked.Wait();
+    ASSERT_NO_FATAL_FAILURE(submit(u"blocked-user", u"blocked-password"));
     content::RunAllTasksUntilIdle();
     EXPECT_EQ(0, events.offers);
   };
@@ -11990,11 +12028,36 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest,
            client->IsSavingAndFillingEnabled(origin, login);
   }));
   ASSERT_FALSE(prefs->GetBoolean(save_pref));
+  using PasswordManager = password_manager::PasswordManagerInterface;
+  class SubmissionObserver final : public PasswordManager::Observer {
+   public:
+    void OnPasswordFormsParsed(
+        password_manager::PasswordManagerDriver* driver,
+        const std::vector<autofill::FormData>& forms) override {
+      if (!forms.empty()) parsed_driver = driver;
+    }
+    void OnLoginSuccessful(const password_manager::PasswordForm& form) override {
+      successful_username = form.username_value;
+    }
+    raw_ptr<password_manager::PasswordManagerDriver> parsed_driver = nullptr;
+    std::u16string successful_username;
+  } submission;
+  auto* password_manager =
+      static_cast<password_manager::PasswordManagerClient*>(client)
+          ->GetPasswordManager();
+  ASSERT_TRUE(password_manager);
+  base::ScopedObservation<PasswordManager, PasswordManager::Observer> observe(&submission);
+  observe.Observe(password_manager);
+
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), login));
-  content::TestNavigationObserver navigation(contents);
-  ASSERT_TRUE(content::ExecJs(contents,
-      "user.value='synthetic-user';pass.value='synthetic-password';go.click();"));
-  navigation.Wait();
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return submission.parsed_driver &&
+           password_manager->HaveFormManagersReceivedData(submission.parsed_driver);
+  })) << "Chromium must parse the login form and finish its no-store fetch";
+  ASSERT_NO_FATAL_FAILURE(submit(u"synthetic-user", u"synthetic-password"));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return submission.successful_username == u"synthetic-user";
+  })) << "Chromium must recognize the posted login";
   ASSERT_TRUE(base::test::RunUntil([&] { return events.submission != 0; }));
   EXPECT_EQ(1, events.offers);
   EXPECT_EQ("synthetic-user", events.username);
@@ -12047,20 +12110,20 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultSaveAdmissionOwnsOnePromptAcros
   EXPECT_NE(first,second);
   EXPECT_EQ(original_state,ui->GetState());
   EXPECT_EQ(0,barc_tab_cancel_vault_save(events.observation,first));
-  // A refused newer submission must retire the still-active Pawl offer before
-  // entering Chrome's fallback, leaving no second valid save prompt.
+  // A refused newer submission retires the active Pawl offer without falling
+  // through to Chromium's save UI.
   credentials.username_value.clear();
-  ASSERT_TRUE(client->PromptUserToSaveOrUpdatePassword(VaultFormManager(credentials),false));
+  EXPECT_FALSE(client->PromptUserToSaveOrUpdatePassword(VaultFormManager(credentials),false));
   EXPECT_EQ(0,barc_tab_vault_save_is_current(events.observation,second));
   EXPECT_EQ(0,barc_tab_cancel_vault_save(events.observation,second));
   ASSERT_TRUE(base::test::RunUntil([&] { return events.submission == 0; }));
-  EXPECT_EQ(2,events.offers);  // Clear+replacement notifications are coalesced.
-  EXPECT_EQ(password_manager::ui::PENDING_PASSWORD_STATE,ui->GetState());
+  EXPECT_EQ(2,events.offers);
+  EXPECT_EQ(original_state,ui->GetState());
   credentials.username_value = u"synthetic-user";
-  // Disconnected/disabled consumer unregisters; normal Chromium retains its UI.
+  // A disconnected Pawl consumer does not re-enable Chromium save UI.
   ASSERT_EQ(1,barc_tab_observe_vault_save(events.observation,nullptr));
-  ASSERT_TRUE(client->PromptUserToSaveOrUpdatePassword(VaultFormManager(credentials),false));
-  EXPECT_EQ(password_manager::ui::PENDING_PASSWORD_STATE,ui->GetState());
+  EXPECT_FALSE(client->PromptUserToSaveOrUpdatePassword(VaultFormManager(credentials),false));
+  EXPECT_EQ(original_state,ui->GetState());
   EXPECT_EQ(2,events.offers);
 }
 
@@ -12085,7 +12148,11 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultSaveOwnerTransferRetiresSubmiss
   ASSERT_TRUE(client->PromptUserToSaveOrUpdatePassword(VaultFormManager(credentials),false));
   ASSERT_TRUE(base::test::RunUntil([&] { return events.submission != 0; }));
   const uint64_t serial = events.submission;
-  auto* peer = CreateBrowser(browser()->GetProfile());
+  // A rootless Bark window does not activate on creation. The transfer needs
+  // its logical destination, not the stock CreateBrowser activation wait.
+  auto* peer = CreateBrowserWindow(BrowserWindowCreateParams(
+      BrowserWindowInterface::TYPE_NORMAL, browser()->GetProfile(), false));
+  ASSERT_TRUE(peer);
   ASSERT_EQ(1,barc_tab_transfer(window,tab,peer->GetSessionID().id()));
   EXPECT_EQ(0,barc_tab_vault_save_is_current(events.observation,serial));
   // Invalid data must not fall back to the built-in save UI in Pawl mode.
