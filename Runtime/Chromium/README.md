@@ -284,8 +284,7 @@ the [signed walk environment](../../CONTRIBUTING.md#run-the-signed-ui-walks).
 set -l gn_cpu (python3 scripts/chromium_sdk_layout.py native-arch --gn)
 set -l src "$engine_checkout/src"
 python3 Runtime/Chromium/run_browser_tests.py --checkout "$src" --binary "$src/out/Barc-$gn_cpu-official/bark_browser_tests"
-python3 scripts/bark-check.py verify --require-official build/Bark.app
-python3 scripts/bark-check.py smoke build/Bark.app
+python3 scripts/bark-check.py smoke --require-official build/Bark.app
 python3 Tests/ChromiumExtensionActions/walk.py --require-official --app build/Bark.app --output (mktemp -d)/extensions
 ```
 

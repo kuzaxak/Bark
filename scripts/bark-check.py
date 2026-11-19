@@ -394,7 +394,7 @@ def seed_profile(root, space_id, url):
     }))
 
 
-def launch_candidate(app, working, *, interactive):
+def launch_candidate(app, engine, working, architecture, *, interactive):
     profile = str(uuid4()).upper()
     root = working / "Profile"
     root.mkdir()
@@ -405,9 +405,13 @@ def launch_candidate(app, working, *, interactive):
         server.rendered = False
         origin = f"http://127.0.0.1:{server.server_port}"
         seed_profile(root, profile, origin)
-        proc = subprocess.Popen([str(app_binary), f"--barc-app-data-dir={root}",
-                                 f"--barc-app-profile={profile}"],
-                                stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+        # Join the installer's lock from verification through exec. Once the
+        # child is running, install_local_build's process check protects it.
+        with app_output_lock(app):
+            verify_candidate(app, engine, working, architecture)
+            proc = subprocess.Popen([str(app_binary), f"--barc-app-data-dir={root}",
+                                     f"--barc-app-profile={profile}"],
+                                    stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         spontaneous_status = None
         try:
             deadline = time.monotonic() + 45
@@ -523,8 +527,7 @@ def main():
         sub.add_argument("--arch", choices=ARCHITECTURES, help="SDK architecture (default: native hardware)")
         sub.add_argument("--engine", default=os.environ.get("BARK_ENGINE_SOURCE"),
                          help="pinned engine directory, tar archive, or HTTPS tar archive")
-        if command in ("engine", "build", "verify", "package"):
-            sub.add_argument("--require-official", action="store_true", help="require verified official engine provenance")
+        sub.add_argument("--require-official", action="store_true", help="require verified official engine provenance")
         if command == "engine":
             sub.add_argument("--install", action="store_true", help="cache the verified SDK for clean checkouts")
             sub.add_argument("--archive", type=Path, metavar="FILE", help="write a verified gzip tar archive to a new file")
@@ -576,9 +579,11 @@ def main():
                                   verify_staged=lambda staged: verify_candidate(staged, engine, working, architecture))
             else:
                 app = args.app.resolve(strict=True)
-                verify_candidate(app, engine, working, architecture)
                 if launching:
-                    launch_candidate(app, working, interactive=args.command == "launch")
+                    launch_candidate(app, engine, working, architecture, interactive=args.command == "launch")
+                else:
+                    with app_output_lock(app):
+                        verify_candidate(app, engine, working, architecture)
 
 
 if __name__ == "__main__":
