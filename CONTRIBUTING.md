@@ -164,8 +164,9 @@ and python3 scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
     --engine /path/to/BarkSDK.tar.gz --shell-source "$shell_source"
 ```
 
-This digest includes local app and package sources, resources, the Release project and package
-lock, and the SDK compile interface. Shell inputs follow the BarkNativeShell target’s
+This digest includes local app and package sources, resources, the shipping plist and its
+generator, the Release project and package lock, and the SDK compile interface.
+Shell inputs follow the BarkNativeShell target’s
 synchronized groups, including their membership exceptions and explicit source and resource
 entries. The source-only command works without Xcode or an existing build.
 The digest excludes the runtime engine, engine pins, tests, generated output and documentation

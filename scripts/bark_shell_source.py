@@ -197,6 +197,9 @@ def _inputs(root, links):
             record_link(relative)
     paths = _project_inputs(root)
     paths.update((Path(name), set()) for name in _INPUTS)
+    # Older shells used the shipping plist directly in Xcode.
+    if (root / "ChromiumApp/Build-Info.plist").is_file():
+        paths[Path("scripts/bark_outer_info.py")] = set()
     paths[_SDK_INTERFACE] = set()
     paths[_ADBLOCK_BINARY] = set()
     for package in _PACKAGES:

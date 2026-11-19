@@ -19,6 +19,16 @@ import bark_shell_source as shell
 
 
 class SourceTests(unittest.TestCase):
+    def test_shell_identity_includes_the_shipping_plist_generator_when_used(self):
+        self.make_shell_inputs()
+        legacy = shell.shell_source_digest(self.root)
+        generator = self.write("scripts/bark_outer_info.py")
+        self.assertEqual(shell.shell_source_digest(self.root), legacy)
+        self.write("ChromiumApp/Build-Info.plist")
+        staged = shell.shell_source_digest(self.root)
+        generator.write_bytes(b"changed shipping identity")
+        self.assertNotEqual(shell.shell_source_digest(self.root), staged)
+
     def setUp(self):
         scratch = TemporaryDirectory()
         self.addCleanup(scratch.cleanup)
