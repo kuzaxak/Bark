@@ -40,6 +40,9 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Check the CloudKit schema tooling offline
+        run: bash scripts/tests/check-production-schema-check.sh
+
       - name: Check native command routing
         run: python3 scripts/bark-check.py interaction
 

@@ -1,22 +1,28 @@
 #!/bin/bash
 # Licensed under GPL-3.0. See LICENSE.
 #
-# Imports scripts/cloudkit/schema.ckdb, the record types space sync uses, into the development
-# environment of the iCloud.ee.qdo.nook container:
-#   scripts/cloudkit/import-schema.sh path/to/management-token
-#
-# The file holds a CloudKit management token (CloudKit Console → Settings → Tokens & Keys). It
-# reaches cktool in CLOUDKIT_MANAGEMENT_TOKEN, so it is never printed, on a command line, or
-# saved in the keychain. Developer ID builds use the production environment, so deploy the
-# imported schema there afterwards in CloudKit Console: Deploy Schema Changes.
+# Import the tracked schema into Bark development. Deploy to production
+# separately in CloudKit Console. --validate-only makes no schema changes.
+# Without a token file, cktool uses CLOUDKIT_MANAGEMENT_TOKEN or its saved token.
 set -euo pipefail
 
-TOKEN_FILE="${1:?usage: scripts/cloudkit/import-schema.sh path/to/management-token}"
-[[ -s "$TOKEN_FILE" ]] || { echo "No such file, or it is empty: $TOKEN_FILE"; exit 1; }
-[[ "$TOKEN_FILE" == /* ]] || TOKEN_FILE="$PWD/$TOKEN_FILE"
-cd "$(dirname "$0")"
+usage="usage: scripts/cloudkit/import-schema.sh [--validate-only] [management-token-file]"
+operation=(import-schema --validate)
+message="Imported schema.ckdb into Bark development. Deploy it to production in CloudKit Console."
+if [[ "${1:-}" == --validate-only ]]; then
+  operation=(validate-schema)
+  message="Validated schema.ckdb against Bark development."
+  shift
+fi
+[[ $# -le 1 && "${1:-}" != --* ]] || { echo "$usage" >&2; exit 2; }
+if [[ $# == 1 ]]; then
+  [[ -s "$1" ]] || { echo "No such file, or it is empty: $1" >&2; exit 2; }
+  CLOUDKIT_MANAGEMENT_TOKEN="$(tr -d '[:space:]' < "$1")"
+  [[ -n "$CLOUDKIT_MANAGEMENT_TOKEN" ]] || { echo "Management token is empty" >&2; exit 2; }
+  export CLOUDKIT_MANAGEMENT_TOKEN
+fi
 
-CLOUDKIT_MANAGEMENT_TOKEN="$(tr -d '[:space:]' < "$TOKEN_FILE")" xcrun cktool import-schema \
-  --team-id 538SB59LX4 --container-id iCloud.ee.qdo.nook \
-  --environment development --validate --file schema.ckdb
-echo "Imported schema.ckdb into development. Deploy it to production in CloudKit Console."
+schema="$(cd "$(dirname "$0")" && pwd)/schema.ckdb"
+xcrun cktool "${operation[@]}" --team-id 538SB59LX4 --container-id iCloud.ee.qdo.bark \
+  --environment development --file "$schema"
+echo "$message"

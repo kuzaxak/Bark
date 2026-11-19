@@ -31,6 +31,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from chromium_sdk_layout import (ARCHITECTURES, directory_id, download_https, local_engine, native_architecture,
                                  read_pin, remove_work, swap)
+from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements, load_profile
 from bark_release import configure_release, expected_additions, make_distribution, production_settings, publish_new
 
 REPO = Path(__file__).resolve().parents[1]
@@ -502,9 +503,11 @@ def release_shell_build_args(derived, architecture):
             "-jobs", "2", "build")
 
 
-def build_candidate(engine, output, identity, architecture, release_info=None):
+def build_candidate(engine, output, identity, architecture, release_info=None, icloud_profile=None):
     if not identity:
         raise ValueError("Supply --identity or BARK_SIGN_IDENTITY for local Developer ID signing.")
+    if icloud_profile is not None:
+        authorized_entitlements(load_profile(icloud_profile), BUNDLE_ID)
     if output.name != "Bark.app":
         raise ValueError("The build output must be named Bark.app.")
     output = output.parent.expanduser().resolve() / output.name
@@ -523,9 +526,16 @@ def build_candidate(engine, output, identity, architecture, release_info=None):
             if release_info:
                 configure_release(stage / "Bark.app", release_info)
             signed = work / "signed"
-            run(sys.executable, REPO / "scripts/sign-bark-local.py", "--identity", identity, stage, signed)
+            signing = [sys.executable, "-B", REPO / "scripts/sign-bark-local.py", "--identity", identity]
+            if icloud_profile is not None:
+                signing.extend(("--icloud-profile", icloud_profile))
+            run(*signing, stage, signed)
             app = signed / "stable/Bark.app"
             verify_candidate(app, engine, work, architecture, release_info)
+            if icloud_profile is not None and not filecmp.cmp(
+                    stage / "Bark.app/Contents" / PROFILE_NAME,
+                    app / "Contents" / PROFILE_NAME, shallow=False):
+                raise ValueError("The signed app does not contain the requested iCloud profile.")
             signed_info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
             if any(signed_info.get(key) != value for key, value in (release_info or {}).items()):
                 raise ValueError("The signed bundle differs from the requested release settings.")
@@ -560,6 +570,7 @@ def main():
             sub.add_argument("--output", type=Path, default=REPO / "build/Bark.app")
             sub.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"),
                              help="local Developer ID Application signing identity")
+            sub.add_argument("--icloud-profile", type=Path, help="opt in with a Developer ID profile for Bark")
             sub.add_argument("--release-version", help="Bark marketing version for an updatable release")
             sub.add_argument("--build-number", help="increasing Sparkle build number")
             sub.add_argument("--feed-base-url", help="HTTPS directory serving the architecture-specific Bark feed")
@@ -597,7 +608,7 @@ def main():
                 if args.install:
                     install_engine(engine, architecture, require_official)
             elif args.command == "build":
-                build_candidate(engine, args.output, args.identity, architecture, release_info)
+                build_candidate(engine, args.output, args.identity, architecture, release_info, args.icloud_profile)
             elif args.command == "package":
                 make_distribution(args.app.resolve(strict=True), args.output, architecture, args.identity,
                                   args.download_base_url, None, args.ed_key_file, working, args.notary_profile,

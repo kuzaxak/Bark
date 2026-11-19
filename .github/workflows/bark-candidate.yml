@@ -10,6 +10,10 @@ on:
         type: choice
         options: [x86_64, arm64]
         required: true
+      icloud:
+        description: Enable production CloudKit with the configured Bark profile
+        type: boolean
+        default: false
       release_version:
         description: Bark marketing version
         type: string
@@ -88,11 +92,20 @@ jobs:
           printf 'name=%s\n' "$name" >> "$GITHUB_OUTPUT"
 
       - name: Build and verify the signed candidate
+        env:
+          BARK_ENABLE_ICLOUD: ${{ inputs.icloud }}
+          BARK_ICLOUD_PROFILE: ${{ vars.BARK_ICLOUD_PROFILE }}
         run: |
+          set -euo pipefail
+          set --
+          if [[ "$BARK_ENABLE_ICLOUD" == true ]]; then
+            : "${BARK_ICLOUD_PROFILE:?Set the runner-local Bark provisioning profile path in the environment}"
+            set -- --icloud-profile "$BARK_ICLOUD_PROFILE"
+          fi
           env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py build --arch "$BARK_ARCH" --require-official \
             --identity "$BARK_SIGN_IDENTITY" --output "$BARK_RELEASE_WORK/Bark.app" \
             --release-version "$BARK_RELEASE_VERSION" --build-number "$BARK_BUILD_NUMBER" \
-            --feed-base-url "$BARK_FEED_BASE_URL"
+            --feed-base-url "$BARK_FEED_BASE_URL" "$@"
 
       - name: Notarize and package Bark
         env:

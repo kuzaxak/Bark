@@ -539,6 +539,28 @@ only with a fresh `/private/tmp` synthetic app root and explicit profile UUID;
 never use a real profile. Patch application, compilation and mechanical tests do
 not establish native interaction, media, profile isolation or release readiness.
 
+### Opt in to Bark iCloud signing
+
+Ordinary Developer ID builds require no provisioning profile and leave CloudKit
+disabled. To enable it, supply a current Apple-issued macOS Developer ID
+distribution profile for the explicit `ee.qdo.bark` App ID. It must authorize
+`iCloud.ee.qdo.bark`, production CloudKit and production push, and include the
+Developer ID Application certificate used for signing.
+
+```fish
+python3 scripts/bark-check.py build --icloud-profile /path/to/Bark.provisionprofile
+python3 scripts/bark-check.py verify build/Bark.app
+```
+
+Build and signed verification check the embedded profile, certificate and outer
+app entitlements. The native shell runs in that app process. This verifies the
+local signing prerequisites. A live sync also needs the production CloudKit
+schema and a signed-in iCloud account. For the manual
+**Prepare Bark Candidate** workflow, enable the `icloud` input and set the
+`BARK_ICLOUD_PROFILE` configuration variable in the architecture’s protected
+Actions environment to the profile’s absolute path on the trusted runner. The workflow fails without that file when iCloud is
+requested.
+
 ### Prepare Bark distribution files
 
 Choose the architecture and corresponding pinned SDK. Use a positive build number
@@ -850,8 +872,8 @@ python3 "$staging_input/Bark Packaging/sign_chrome.py" \
 Use normal Developer ID signing for this gate. The upstream `--development`
 option injects `get-task-allow` and skips Gatekeeper assessment, so it cannot
 qualify the installed proof. Preserve the generated helper entitlements and
-complete versioned framework layout. Production provisioning for `ee.qdo.bark` and
-CloudKit are separate work.
+complete versioned framework layout. When a release includes bookmark sync,
+use the Bark production provisioning profile through the iCloud signing steps above.
 
 Verify the produced DMG, install its complete app in an isolated location
 outside the build tree, and require strict signature checks, stapler validation

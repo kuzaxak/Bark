@@ -6,13 +6,17 @@ import argparse
 from pathlib import Path
 import sys
 
+from bark_icloud_signing import prepare_profile
+
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--identity", required=True)
+    parser.add_argument("--icloud-profile", type=Path, help="macOS Developer ID provisioning profile for Bark")
     parser.add_argument("stage", type=Path)
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
+    prepare_profile(args.stage, args.icloud_profile)
     sys.path.insert(0, str((args.stage / "Bark Packaging").resolve(strict=True)))
     from signing import config_factory, driver
 

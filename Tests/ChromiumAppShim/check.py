@@ -700,7 +700,7 @@ def paired_publication_case(work, accepted):
     scripts = receiver / 'scripts'
     scripts.mkdir(parents=True)
     for name in (PUBLISH.name, STAGE.name, 'publish_chromium_sdk.py', 'bark-check.py',
-                 'bark_release.py', 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
+                 'bark_release.py', 'bark_icloud_signing.py', 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
         shutil.copy2(ROOT / 'scripts' / name, scripts / name)
     chromium = receiver / 'Runtime/Chromium'
     bridge = chromium / 'bark/bridge'
@@ -1446,7 +1446,7 @@ def archive_transport_cases(fixture, artifact, contributor):
     receiver = fixture / 'receiver'
     scripts = receiver / 'scripts'
     scripts.mkdir(parents=True)
-    for name in (STAGE.name, 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
+    for name in (STAGE.name, 'bark_icloud_signing.py', 'chromium_sdk_layout.py', 'check-chromium-architectures.py'):
         shutil.copy2(ROOT / 'scripts' / name, scripts / name)
     # Give the receiving checkout only its matching headers and pin.
     package = receiver / 'Packages/BarkEngine'
@@ -1671,6 +1671,20 @@ def signed_cases(work, mach_o):
     run = check_signed('signed-extra-entitlement', entitlements={**listed_entitlements, 'com.apple.security.cs.disable-library-validation': True})
     check('--check-signed refuses an entitlement outside the engine\'s and the list',
           run.returncode != 0 and 'outside the engine\'s and the declared additions: com.apple.security.cs.disable-library-validation' in run.stderr,
+          (run.returncode, run.stderr))
+    run = check_signed('signed-unprovisioned-cloudkit', entitlements={
+        **listed_entitlements, 'com.apple.developer.icloud-container-identifiers': ['iCloud.ee.qdo.bark'],
+    })
+    check('--check-signed refuses a CloudKit claim without an embedded profile',
+          run.returncode != 0 and 'com.apple.developer.icloud-container-identifiers' in run.stderr,
+          (run.returncode, run.stderr))
+
+    def invalid_profile(app):
+        (app / 'Contents/embedded.provisionprofile').write_bytes(b'not an Apple profile')
+
+    run = check_signed('signed-untrusted-profile', invalid_profile)
+    check('--check-signed refuses an invalid embedded profile',
+          run.returncode != 0 and 'Cannot verify Bark iCloud signing' in run.stderr,
           (run.returncode, run.stderr))
     run = check_signed('signed-no-listed-entitlement', entitlements=ENGINE_ENTITLEMENTS)
     check('--check-signed refuses a bundle without a listed entitlement',

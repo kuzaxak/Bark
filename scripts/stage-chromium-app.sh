@@ -5,7 +5,7 @@
 # packaging's app-entitlements.plist.
 # Sign the staged bundle through Chromium's signing flow before execution.
 # With --check-signed, check a signed candidate instead: one blocker library, no unsigned Mach-O, and
-# the engine's entitlements plus the declared additions, nothing else.
+# the engine's entitlements plus the declared additions and any authorized iCloud grant.
 set -euo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 DEFAULT_ADDITIONS="$REPO/ChromiumApp/Additions.plist"
@@ -131,8 +131,13 @@ PYTHON
 # Supplemental Info entries are merged with the app's plist. Entitlement additions are
 # validated against the engine's signing configuration.
 additions() {
-  python3 - "$@" <<'PY' || exit 1
+  python3 -B - "$@" "$REPO/scripts" <<'PY' || exit 1
 import os, plistlib, subprocess, sys
+from pathlib import Path
+
+sys.path.insert(0, sys.argv.pop())
+from bark_icloud_signing import CLOUD_KEYS, signed_cloud_entitlements
+
 mode, path = sys.argv[1:3]
 def load(path):
     if not os.path.exists(path):
@@ -147,6 +152,8 @@ other = sorted(set(listed) - {'Info', 'Entitlements'})
 if other:
     sys.exit('ChromiumApp/Additions.plist holds other than Info and Entitlements: ' + ', '.join(other))
 info, entitlements = listed.get('Info', {}), listed.get('Entitlements', {})
+if CLOUD_KEYS & entitlements.keys():
+    sys.exit('Set iCloud signing entitlements with the explicit provisioning-profile option.')
 def merged(base, added):
     return {**base, **{key: base.get(key, []) + value if isinstance(value, list) else value for key, value in added.items()}}
 if mode == 'validate':
@@ -174,7 +181,14 @@ elif mode == 'signed':
     executable = os.path.join(app, 'Contents/MacOS', signed_info.get('CFBundleExecutable', ''))
     shown = subprocess.run(['/usr/bin/codesign', '-d', '--entitlements', ':-', executable], capture_output=True).stdout
     signed = plistlib.loads(shown) if shown.strip() else {}
+    try:
+        cloud = signed_cloud_entitlements(Path(app), signed_info.get('CFBundleIdentifier'))
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        sys.exit(f'Cannot verify Bark iCloud signing: {error}')
     expected = merged(engine_entitlements, entitlements)
+    if CLOUD_KEYS & expected.keys():
+        sys.exit('The base app entitlements must not set iCloud signing entitlements.')
+    expected.update(cloud)
     problems = []
     for key, value in info.items():
         present = signed_info.get(key)
@@ -182,7 +196,12 @@ elif mode == 'signed':
             problems.append(f'The signed Info.plist lacks the listed Info.plist addition: {key}')
     for key in sorted(expected):
         if signed.get(key) != expected[key]:
-            problems.append(('The signed app lacks the listed entitlement: ' if key in entitlements else "The signed app lacks the engine's entitlement: ") + key)
+            if key in cloud:
+                problems.append(f'The signed app lacks the authorized iCloud entitlement: {key}')
+            elif key in entitlements:
+                problems.append(f'The signed app lacks the listed entitlement: {key}')
+            else:
+                problems.append(f"The signed app lacks the engine's entitlement: {key}")
     problems += [f"Entitlement outside the engine's and the declared additions: {key}" for key in sorted(set(signed) - set(expected))]
     sys.exit('\n'.join(problems) or None)
 PY
