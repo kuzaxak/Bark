@@ -254,6 +254,17 @@ palette after the sidebar hides again.
 python3 Tests/ChromiumStartup/sidebar_walk.py --verify-sdk --app build/Bark.app --output (mktemp -d)/sidebar
 ```
 
+The loading-bar walk holds a page script open across two chunks and reads the
+address bar through Accessibility. On the current Intel SDK, verify that it
+reports an indeterminate load and disappears when the page finishes.
+
+```fish
+python3 Tests/ChromiumLoadingBar/walk.py --verify-sdk --expect-indeterminate --app build/Bark.app --output (mktemp -d)/loading
+```
+
+For a build with the numeric progress observer, omit `--expect-indeterminate`.
+The walk then requires two increasing fractions while the same page is loading.
+
 To measure first input and return to a parked tab on an official candidate,
 install its pinned native SDK and run the startup walk on the same Mac.
 Grant Screen Recording access to the process running the walk, in addition
