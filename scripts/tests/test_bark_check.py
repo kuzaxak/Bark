@@ -5,6 +5,7 @@ import fcntl
 from io import StringIO
 import os
 from pathlib import Path
+import plistlib
 import runpy
 import signal
 import subprocess
@@ -99,7 +100,7 @@ class ArchitectureTests(unittest.TestCase):
                     if args[0] in ("smoke", "launch"):
                         self.assertFalse(calls["pinned_engine"].call_args.args[3])
                         self.assertEqual(calls["launch_candidate"].call_args.kwargs,
-                                         {"interactive": args[0] == "launch"})
+                                         {"interactive": args[0] == "launch", "shell_source": None})
 
     def test_personal_image_uses_selected_sdk_for_the_signed_app_copy(self):
         for architecture in ("arm64", "x86_64"):
@@ -153,11 +154,12 @@ class ArchitectureTests(unittest.TestCase):
     def test_official_execution_qualifies_the_sdk_before_smoke_or_launch(self):
         for command in ("smoke", "launch"):
             with self.subTest(command=command):
-                calls = self.invoke([command, "--require-official", str(self.app)], "arm64")
+                source = "1" * 64
+                calls = self.invoke([command, "--require-official", "--shell-source", source, str(self.app)], "arm64")
                 self.assertEqual(calls["pinned_engine"].call_args.args[2:], ("arm64", True))
                 self.assertEqual(calls["launch_candidate"].call_args.args[1], self.root / "Engine")
                 self.assertEqual(calls["launch_candidate"].call_args.kwargs,
-                                 {"interactive": command == "launch"})
+                                 {"interactive": command == "launch", "shell_source": source})
 
     def test_execution_rejects_cross_architecture(self):
         errors = StringIO()
@@ -261,8 +263,9 @@ class CandidateLaunchTests(unittest.TestCase):
             proc = Mock()
             proc.poll.return_value = None
 
-            def verify(*args):
+            def verify(*args, shell_source):
                 self.assertEqual(args, (app, engine, root, "x86_64"))
+                self.assertEqual(shell_source, "1" * 64)
                 with self.assertRaises(BlockingIOError):
                     fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
 
@@ -282,8 +285,24 @@ class CandidateLaunchTests(unittest.TestCase):
             with patch.dict(cli, {"verify_candidate": verified, "ThreadingHTTPServer": lambda *_: nullcontext(server),
                                   "smoke_console": lambda: nullcontext(Mock()), "seed_profile": Mock(), "stop": stop}), \
                     patch("subprocess.Popen", side_effect=launch) as spawn, patch("subprocess.run"):
-                cli["launch_candidate"](app, engine, root, "x86_64", interactive=False)
+                cli["launch_candidate"](app, engine, root, "x86_64", interactive=False, shell_source="1" * 64)
             spawn.assert_called_once()
+
+    def test_smoke_rejects_a_different_signed_shell_before_requesting_the_desktop(self):
+        cli = runpy.run_path(str(CLI))["main"].__globals__
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            app = root / "Bark.app"
+            (app / "Contents").mkdir(parents=True)
+            (app / "Contents/Info.plist").write_bytes(plistlib.dumps({"BarkShellSourceSHA256": "a" * 64}))
+            with patch.dict(cli, {"verify_signed_shell": Mock(), "smoke_console": Mock(),
+                                  "ThreadingHTTPServer": lambda *_: nullcontext(Mock(server_port=12345))}), \
+                    patch("subprocess.Popen") as spawn:
+                with self.assertRaisesRegex(ValueError, "different Bark shell source"):
+                    cli["launch_candidate"](app, root / "Engine", root, "x86_64",
+                                            interactive=False, shell_source="b" * 64)
+                cli["smoke_console"].assert_not_called()
+                spawn.assert_not_called()
 
     def test_smoke_requires_an_idle_desktop_and_stops_on_activity(self):
         cli = runpy.run_path(str(CLI))["main"].__globals__

@@ -452,7 +452,7 @@ def smoke_console():
         signal.signal(signal.SIGTERM, previous)
 
 
-def launch_candidate(app, engine, working, architecture, *, interactive):
+def launch_candidate(app, engine, working, architecture, *, interactive, shell_source=None):
     profile = str(uuid4()).upper()
     root = working / "Profile"
     root.mkdir()
@@ -468,7 +468,7 @@ def launch_candidate(app, engine, working, architecture, *, interactive):
         # Join the installer's lock from verification through exec. Once the
         # child is running, install_local_build's process check protects it.
         with app_output_lock(app):
-            verify_candidate(app, engine, working, architecture)
+            verify_candidate(app, engine, working, architecture, shell_source=shell_source)
             if not interactive:
                 check_console = session.enter_context(smoke_console())
                 check_console(10)
@@ -650,7 +650,7 @@ def main():
             sub.add_argument("--feed-base-url", help="HTTPS directory serving the architecture-specific Bark feed")
         else:
             sub.add_argument("app", type=Path, help="path to a signed Bark.app")
-            if command == "verify":
+            if command in ("verify", "smoke", "launch"):
                 sub.add_argument("--shell-source", metavar="SHA256", help="require this signed shell source SHA-256")
             if command == "dmg":
                 sub.add_argument("--output", type=Path, required=True, help="new signed DMG for normal browsing")
@@ -714,13 +714,11 @@ def main():
             else:
                 app = args.app.resolve(strict=True)
                 if launching:
-                    launch_candidate(app, engine, working, architecture, interactive=args.command == "launch")
+                    launch_candidate(app, engine, working, architecture,
+                                     interactive=args.command == "launch", shell_source=args.shell_source)
                 else:
                     with app_output_lock(app):
-                        if args.shell_source is None:
-                            verify_candidate(app, engine, working, architecture)
-                        else:
-                            verify_candidate(app, engine, working, architecture, shell_source=args.shell_source)
+                        verify_candidate(app, engine, working, architecture, shell_source=args.shell_source)
 
 
 if __name__ == "__main__":

@@ -204,9 +204,10 @@ available and Bark running until you quit Bark or press Ctrl+C in the terminal.
 For the optional CI smoke, choose a trusted Mac with a logged-in desktop session and a verified SDK pin for its native CPU. Set `BARK_SMOKE_RUNNER` to a runner label unique to that configuration and `BARK_ENGINE_SOURCE` to the matching SDK directory or archive. Set `BARK_SIGN_IDENTITY` to build the checked-out revision on that runner, or supply an existing signed app using `BARK_SMOKE_CANDIDATE`. In **macOS Package Tests**, the configured job runs on pushes to the default branch and manual runs on that branch.
 The job installs the SDK once in `~/Library/Caches/BarkSDK/<pin>/Engine`. It
 builds and signs the checked-out shell in a temporary directory when a signing
-identity is configured. Both paths verify the signed app against the cached SDK
-and record its architecture and pin. The job can identify the shell revision
-only for an app it built.
+identity is configured. For both a fresh build and a supplied app, the job
+compares the signed shell fingerprint with the checked-out inputs and checks
+the embedded engine against the pinned SDK before launch. Its summary records
+the architecture, SDK pin, checkout revision and shell fingerprint.
 
 ### Run the signed UI walks
 

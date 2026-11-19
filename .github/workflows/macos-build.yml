@@ -159,15 +159,16 @@ jobs:
           set -euo pipefail
           if [[ -n "${BARK_SMOKE_WORK:-}" ]]; then
             app="$BARK_SMOKE_WORK/Bark.app"
-            source="Built from $GITHUB_SHA in this job."
           else
             app="$BARK_SMOKE_CANDIDATE"
-            source="Supplied signed app. Its source revision was not verified."
           fi
-          env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py smoke --arch "$BARK_SMOKE_ARCH" "$app"
+          shell_source="$(python3 -B scripts/bark-check.py shell-source)"
+          env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py smoke --arch "$BARK_SMOKE_ARCH" \
+            --shell-source "$shell_source" "$app"
           {
             echo '### Signed Bark smoke'
-            printf 'Architecture: `%s`\n\nSDK pin: `%s`\n\n%s\n' "$BARK_SMOKE_ARCH" "$BARK_SMOKE_PIN" "$source"
+            printf 'Architecture: `%s`\n\nSDK pin: `%s`\n\nShell inputs at `%s`: `%s`\n' \
+              "$BARK_SMOKE_ARCH" "$BARK_SMOKE_PIN" "$GITHUB_SHA" "$shell_source"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove this run's temporary candidate
