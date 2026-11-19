@@ -234,7 +234,7 @@ final class VaultBridge: NSObject, WKScriptMessageHandler, WKScriptMessageHandle
         let profile = profile
         Task {
             guard let service else { return }
-            let logins = (try? await service.send(VaultLogins(origin: origin, profile: profile)))?.logins ?? []
+            let logins = (try? await service.selectableLogins(VaultLogins(origin: origin, profile: profile))) ?? []
             var passkeys: [VaultPasskey] = []
             if let conditional {
                 let call = VaultPasskeys(rpId: conditional.rpId, allowCredentials: conditional.allowCredentials, profile: profile)

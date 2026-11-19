@@ -3818,6 +3818,37 @@ struct NativeVaultFormTests {
         #expect(calls.allSatisfy { $0.0 == "https://vault.synthetic.invalid" && $0.1 == native.profileID?.uuidString })
     }
 
+    @Test(arguments: [false, true])
+    func pickerOmitsUnaddressableLoginsBeforeFilteringForCodes(code: Bool) async throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        fixture.tabs.settings.pawlVaultEnabled = true
+        let space = try #require(fixture.window.spaceID)
+        let profile = try #require(fixture.tabs.tree.dataStoreID(for: space))
+        let aliasedID = "d4fc54f2-114a-4394-8cad-08163983ee91"
+        let transport = VerificationVault(origin: "https://vault.synthetic.invalid", profile: profile, logins: [
+            .init(id: "shared", username: "first", title: "Shared", hasCode: true),
+            .init(id: aliasedID, username: "one", title: "Same UUID", hasCode: true),
+            .init(id: "", username: "missing-id", title: "Missing", hasCode: true),
+            .init(id: "unique", username: "reachable", title: "Available", hasCode: true),
+            .init(id: "shared", username: "second", title: "Other", hasCode: false),
+            .init(id: aliasedID.uppercased(), username: "two", title: "Same UUID", hasCode: false),
+        ])
+        let presenter = SyntheticVaultPresenter()
+        let vault = VaultService(settings: fixture.tabs.settings, client: transport)
+        vault.presenter = presenter
+        fixture.tabs.vault = vault
+        _ = await vault.refresh()
+        let native = fixture.host.finishCreate(0)
+        native.focusVault(code: code)
+        await agentCallbacks()
+        try #require(presenter.items.map(\.id) == [code ? "code:unique" : "login:unique"])
+        presenter.pick()
+        await agentCallbacks()
+        #expect(native.vaultFills.count == 1)
+        #expect(native.vaultFills.first?.2 == (code ? "246810" : "fixture-password"))
+    }
+
     @Test func nativePasswordReplyMustMatchTheRawSelectedUsername() async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
@@ -4470,7 +4501,8 @@ struct NativeVaultFormTests {
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
         for returnedID in ["Ag", "AQ"] {
-            await transport.assertionCredentials(listed:["AQ","Ag"], reply:returnedID)
+            // Aw repeats, BA and BB encode the same bytes, and BR lacks a canonical row.
+            await transport.assertionCredentials(listed:["AQ","Aw","BA","","Ag","BB","Aw","BR"], reply:returnedID)
             native.requestPasskey(operation:1,emptyAllow:emptyAllow,allowed:["AQ","Ag"])
             await agentCallbacks()
             try #require(presenter.items.map(\.id) == ["passkey:AQ","passkey:Ag"])

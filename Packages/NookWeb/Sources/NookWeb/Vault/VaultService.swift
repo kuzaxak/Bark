@@ -189,6 +189,23 @@ public final class VaultService {
         }
     }
 
+    // The picker and Pawl's subsequent secret request must identify the same row.
+    // Keep the provider's ordering for all entries it can address unambiguously.
+    private func uniqueAddresses<Entry>(_ entries: [Entry], address: (Entry) -> String?) -> [(entry: Entry, id: String)] {
+        let addressed = entries.compactMap { entry -> (entry: Entry, id: String)? in
+            guard let id = address(entry), !id.isEmpty else { return nil }
+            return (entry, id)
+        }
+        let groups = Dictionary(grouping: addressed, by: \.id)
+        return addressed.filter { groups[$0.id]?.count == 1 }
+    }
+
+    func selectableLogins(_ call: VaultLogins) async throws -> [VaultLogin] {
+        let entries = try await send(call).logins
+        // Pawl resolves UUIDs case-insensitively. Send back the original spelling.
+        return uniqueAddresses(entries) { UUID(uuidString: $0.id)?.uuidString ?? $0.id }.map(\.entry)
+    }
+
     func password(for id: String, in offered: [VaultLogin], origin: String, profile: String?) async throws -> VaultPassword.Reply {
         let matches = offered.filter { $0.id == id }
         guard matches.count == 1, let login = matches.first else { throw VaultClientError.malformedResponse }
@@ -201,9 +218,10 @@ public final class VaultService {
     func matchingPasskeys(_ call: VaultPasskeys) async throws -> [VaultPasskey] {
         let entries = try await send(call).passkeys
         let allowed = Set(call.allowCredentials)
-        return entries.filter {
-            guard let bytes = Base64URL.decode($0.credentialId), !bytes.isEmpty else { return false }
-            return allowed.isEmpty || allowed.contains($0.credentialId)
+        let unique = uniqueAddresses(entries) { Base64URL.decode($0.credentialId).map(Base64URL.encode) }
+        return unique.compactMap { entry, id in
+            guard entry.credentialId == id, allowed.isEmpty || allowed.contains(id) else { return nil }
+            return entry
         }
     }
 
@@ -782,7 +800,7 @@ private final class NativeVaultAttachment {
         Task { [weak self, weak service] in
             guard let service else { return }
             let logins: [VaultLogin]
-            do { logins = try await service.send(VaultLogins(origin: focus.origin, profile: profile)).logins }
+            do { logins = try await service.selectableLogins(VaultLogins(origin: focus.origin, profile: profile)) }
             catch {
                 if let self, self.generation == generation { self.cancel() }
                 return
