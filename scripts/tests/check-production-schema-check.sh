@@ -24,6 +24,20 @@ if "$check" --compare scripts/cloudkit/schema.ckdb > "$test_dir/out" 2>&1; then
 fi
 grep -Fxq '  cloudkit.share' "$test_dir/out"
 
+sed '/"cloudkit.title" STRING/d' "$test_dir/complete.ckdb" > "$test_dir/no-share-title.ckdb"
+if "$check" --compare "$test_dir/no-share-title.ckdb" > "$test_dir/out" 2>&1; then
+  echo "FAIL: a share type without a title passed"
+  exit 1
+fi
+grep -Fxq '  cloudkit.share.cloudkit.title' "$test_dir/out"
+
+sed 's/"cloudkit.title" STRING/"cloudkit.title" BYTES/' "$test_dir/complete.ckdb" > "$test_dir/wrong-share-title.ckdb"
+if "$check" --compare "$test_dir/wrong-share-title.ckdb" > "$test_dir/out" 2>&1; then
+  echo "FAIL: a share title with the wrong type passed"
+  exit 1
+fi
+grep -Fxq '  cloudkit.share.cloudkit.title: expected STRING, found BYTES' "$test_dir/out"
+
 grep -v '"device"\|"movedTo"' scripts/cloudkit/schema.ckdb | awk '/RECORD TYPE Item/ { skip = 1 } !skip { print } skip && /\);/ { skip = 0 }' \
   > "$test_dir/behind.ckdb"
 status=0

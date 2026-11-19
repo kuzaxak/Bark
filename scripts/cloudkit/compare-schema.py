@@ -72,8 +72,16 @@ def main():
         exported = schema(args.exported)
         missing = list(differences(schema(args.tracked), exported))
         # CloudKit creates this system type when a real zone share is saved in Development.
-        if "cloudkit.share" not in exported:
+        share = exported.get("cloudkit.share")
+        if share is None:
             missing.append("cloudkit.share")
+        else:
+            fields, _ = share
+            title = fields.get("cloudkit.title")
+            if title is None:
+                missing.append("cloudkit.share.cloudkit.title")
+            elif title[0] != "STRING":
+                missing.append(f"cloudkit.share.cloudkit.title: expected STRING, found {title[0]}")
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
     if missing:

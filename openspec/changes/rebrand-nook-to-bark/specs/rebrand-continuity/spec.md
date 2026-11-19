@@ -72,6 +72,12 @@ Bark SHALL start with fresh local application state under the new identity witho
 ### Requirement: New sharing invitations
 Bark SHALL establish sharing through new invitations issued from the new container.
 
+#### Scenario: Share bookmarks between two iCloud accounts by invite code
+- **GIVEN** two Macs have enabled Bark sync using different iCloud accounts
+- **WHEN** the owner enters the other Mac’s invite code and the invited user accepts the resulting link
+- **THEN** both users can edit bookmarks in the shared space and see each other’s changes
+- **AND** each Mac continues to show its own iCloud account ID in Spaces settings
+
 #### Scenario: Open an old Nook invitation
 - **WHEN** the user opens an old-container sharing invitation in Bark
 - **THEN** Bark explains that a new invitation is required

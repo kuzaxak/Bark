@@ -311,7 +311,7 @@ public struct SpacesSettingsView: View {
                         .font(NookDesign.Font.mono)
                         .textSelection(.enabled)
                 }
-                .help("The end of this Mac's iCloud account identifier. Macs that sync with each other show the same one.")
+                .help("The last characters of this Mac’s iCloud account ID. Each invited account keeps its own ID.")
                 LabeledContent("Last synced") {
                     if let date = status.lastSync {
                         Text(date, format: .relative(presentation: .named))
@@ -450,7 +450,7 @@ public struct SpacesSettingsView: View {
     /// Who spaces sync with, under the status line.
     private static func hint(_ mode: SpaceSyncMode) -> String {
         switch mode {
-        case .own: return "Spaces sync between Macs signed in to the same iCloud account (System Settings \u{2192} your name)."
+        case .own: return "Spaces sync across Macs using this iCloud account. Choose Invite with Code to share them with another account."
         case .sharing: return "Spaces sync between this iCloud account\u{2019}s Macs and the people it is shared with."
         case .joined: return "Spaces sync with everyone in this shared sync, whatever iCloud account they use."
         }
