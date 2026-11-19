@@ -503,8 +503,12 @@ fresh launches, first input, and typing in the original draft on return.
 It then installs and updates disposable versions of that signed candidate
 using a local Sparkle feed. A successful run writes `qualification.json`
 with the architecture, SDK pin, candidate CDHash, timings and signed
-update identities. The release workflow uploads that receipt alongside its
-artifacts. Run the walk on both native architectures before committing a
+update identities. Its `size_bytes` records the installed app payload, the
+Chromium framework's share, and the downloadable DMG when supplied. Installed
+sizes count each regular file once and skip framework symlinks. Compare
+receipts for the same architecture and build configuration. The release
+workflow uploads the receipt alongside its artifacts. Run the walk on both
+native architectures before committing a
 new shared header and its two pins. An architecture can still be published
 independently when its headers match the other accepted architecture.
 

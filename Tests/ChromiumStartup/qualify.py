@@ -9,6 +9,7 @@ from pathlib import Path
 import plistlib
 import re
 import runpy
+import stat
 import subprocess
 import sys
 import time
@@ -66,6 +67,24 @@ def check_update(update, candidate):
     return {"original_bundle_cdhash": original, "replacement_bundle_cdhash": replacement}
 
 
+def installed_size_bytes(app):
+    """Logical payload bytes, counting regular files once regardless of framework aliases."""
+    engine = app / "Contents/Frameworks/Bark Framework.framework"
+    pending = [app]
+    files, engine_files = {}, {}
+    while pending:
+        for path in pending.pop().iterdir():
+            info = path.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                pending.append(path)
+            elif stat.S_ISREG(info.st_mode):
+                file_id = (info.st_dev, info.st_ino)
+                files[file_id] = info.st_size
+                if path.is_relative_to(engine):
+                    engine_files[file_id] = info.st_size
+    return {"installed_app": sum(files.values()), "chromium_framework": sum(engine_files.values())}
+
+
 def qualify(app, image, identity, output):
     contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     architecture = contributor["native_architecture"]()
@@ -80,6 +99,9 @@ def qualify(app, image, identity, output):
               "build": info["CFBundleVersion"]}
 
     def exercise(installed):
+        result["size_bytes"] = installed_size_bytes(installed)
+        if image:
+            result["size_bytes"]["download_dmg"] = image.stat().st_size
         observations = []
         for index in range(1, 4):
             if index > 1:

@@ -21,6 +21,14 @@ class OfficialQualificationTests(unittest.TestCase):
         image = root / "candidate.dmg"
         image.write_bytes(b"fixture image")
         installed = root / "private install/Bark.app"
+        framework = installed / "Contents/Frameworks/Bark Framework.framework"
+        version = framework / "Versions/1"
+        version.mkdir(parents=True)
+        (version / "Bark Framework").write_bytes(b"engine")
+        (framework / "Versions/Current").symlink_to("1", target_is_directory=True)
+        (framework / "Bark Framework").symlink_to("Versions/Current/Bark Framework")
+        (version / "second name").hardlink_to(version / "Bark Framework")
+        (installed / "Contents/launcher").write_bytes(b"app")
         output = root / "evidence"
         output.mkdir()
         sdk = {"architecture": "arm64", "sdk_pin": "b" * 64, "official": True}
@@ -75,6 +83,8 @@ class OfficialQualificationTests(unittest.TestCase):
             self.assertTrue(result["candidate"]["official"])
             self.assertEqual(result["installed_update"]["replacement_bundle_cdhash"], "d" * 40)
             self.assertEqual(len(result["image_sha256"]), 64)
+            self.assertEqual(result["size_bytes"], {"installed_app": 9, "chromium_framework": 6,
+                                                     "download_dmg": len(b"fixture image")})
 
     def test_mismatched_evidence_never_writes_a_qualification_receipt(self):
         for reason in ("startup", "profile", "update", "sdk"):
