@@ -756,6 +756,7 @@ struct CommandPaletteView: View {
                 browserManager.tabs.select(match.itemID, in: windowState)
             }
         case .folder(let folder):
+            guard currentFolder(folder) else { return }
             browserManager.tabs.reveal(folder.itemID, in: windowState)
         case .history(let historyEntry):
             guard searchManager.recordPick(prefix: text, url: historyEntry.url) else { return }
@@ -1061,8 +1062,18 @@ struct CommandPaletteView: View {
         browserManager.keyboardShortcutManager?.perform(action)
     }
 
+    private func currentFolder(_ folder: SearchManager.FolderMatch) -> Bool {
+        guard searchManager.isCurrentFolderMatch(folder) else {
+            selectedSuggestionIndex = -1
+            search(text)
+            return false
+        }
+        return true
+    }
+
     /// Tab on a folder: the chip becomes that folder, one level deeper inside a folder scope.
     private func enterFolder(_ folder: SearchManager.FolderMatch) {
+        guard maySubmit(), currentFolder(folder) else { return }
         var path: [FolderCrumb] = []
         if case .folder(let current) = scope { path = current }
         path.append(FolderCrumb(id: folder.itemID, title: folder.title))

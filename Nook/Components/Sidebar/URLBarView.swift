@@ -40,12 +40,7 @@ struct URLBarView: View {
         addressPresentation
         .onChange(of: addressText) { _, value in
             guard isEditing else { return }
-            selectedSuggestion = nil
-            guard value != prefilledAddress else {
-                searchManager.clearSuggestions()
-                return
-            }
-            searchManager.searchSuggestions(for: value, includeWebSuggestions: !isLikelyURL(value))
+            refreshAddressSuggestions(for: value)
         }
         .onChange(of: searchManager.suggestions) { _, _ in
             if let selectedSuggestion, !inlineSuggestions.contains(selectedSuggestion) {
@@ -506,6 +501,15 @@ struct URLBarView: View {
         searchManager.clearWebSuggestionTarget()
     }
 
+    private func refreshAddressSuggestions(for value: String) {
+        selectedSuggestion = nil
+        guard value != prefilledAddress else {
+            searchManager.clearSuggestions()
+            return
+        }
+        searchManager.searchSuggestions(for: value, includeWebSuggestions: !isLikelyURL(value))
+    }
+
     private func submitAddress(_ chosen: SearchManager.SearchSuggestion? = nil) {
         // Capture before cancelEditing: retiring the editor may itself change
         // selection. Never retarget a stale address submission to its successor.
@@ -513,6 +517,11 @@ struct URLBarView: View {
         let currentTarget = { !usesNativeEditor || editTarget?.isCurrent == true }
         guard !usesNativeEditor || isEditing, !isComposingAddress else { return }
         guard currentTarget() else { cancelEditing(); return }
+        if chosen == nil, case .folder(let folder)? = selectedSuggestion?.type,
+           !searchManager.isCurrentFolderMatch(folder) {
+            refreshAddressSuggestions(for: addressText)
+            return
+        }
         let suggestions = inlineSuggestions
         let selected = selectedSuggestion.flatMap { selection in suggestions.first { $0 == selection } }
         let typed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -528,8 +537,12 @@ struct URLBarView: View {
         let url: URL?
         switch suggestion.type {
         case .folder(let folder):
+            guard searchManager.isCurrentFolderMatch(folder) else {
+                refreshAddressSuggestions(for: addressText)
+                return
+            }
             cancelEditing()
-            guard currentTarget() else { return }
+            guard currentTarget(), searchManager.isCurrentFolderMatch(folder) else { return }
             browserManager.tabs.reveal(folder.itemID, in: windowState)
             return
         case .action:

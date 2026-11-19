@@ -153,6 +153,14 @@ public class SearchManager {
         public let path: String
         /// What it holds, e.g. "2 folders, 5 links".
         public let detail: String
+        fileprivate let section: Parent
+        fileprivate let ancestors: [UUID]
+        fileprivate let profileID: UUID?
+
+        fileprivate func matchesLocation(of other: Self) -> Bool {
+            itemID == other.itemID && section == other.section && ancestors == other.ancestors &&
+                profileID == other.profileID && path == other.path
+        }
     }
 
     /// A command the bar runs on the tab that was selected when it opened.
@@ -205,7 +213,7 @@ public class SearchManager {
             case (.tab(let lhsTab), .tab(let rhsTab)):
                 return lhs.text == rhs.text && lhsTab.itemID == rhsTab.itemID
             case (.folder(let lhsFolder), .folder(let rhsFolder)):
-                return lhsFolder.itemID == rhsFolder.itemID
+                return lhsFolder.matchesLocation(of: rhsFolder)
             case (.action(let lhsAction), .action(let rhsAction)):
                 return lhsAction.id == rhsAction.id
             case (.history(let lhsHistory), .history(let rhsHistory)):
@@ -426,8 +434,16 @@ public class SearchManager {
         return TabMatch(itemID: item.id, title: title, url: url, spaceIcon: spaceIcon(of: item.id), detail: detail)
     }
 
+    /// The live folder still belongs to the location presented by this search result.
+    public func isCurrentFolderMatch(_ match: FolderMatch) -> Bool {
+        guard let tabs, let window,
+              let item = tabs.tree(tabs.owner(of: window)).item(match.itemID),
+              let current = folderMatch(item) else { return false }
+        return match.matchesLocation(of: current)
+    }
+
     @MainActor private func folderMatch(_ item: Item) -> FolderMatch? {
-        guard let tabs, let window else { return nil }
+        guard item.isFolder, let tabs, let window else { return nil }
         let tree = tabs.tree(tabs.owner(of: window))
         guard let chain = tree.liveFolderChain(of: item.id), let id = chain.section.spaceID,
               let space = tree.space(id) else { return nil }
@@ -450,7 +466,9 @@ public class SearchManager {
         if folders > 0 { parts.append(folders == 1 ? "1 folder" : "\(folders) folders") }
         if links > 0 || folders == 0 { parts.append(links == 1 ? "1 link" : "\(links) links") }
         return FolderMatch(itemID: item.id, title: item.displayTitle, spaceIcon: spaceIcon(of: item.id),
-                           path: path.joined(separator: " › "), detail: parts.joined(separator: ", "))
+                           path: path.joined(separator: " › "), detail: parts.joined(separator: ", "),
+                           section: chain.section, ancestors: chain.folders,
+                           profileID: window.isIncognito ? window.ephemeralProfile?.id : tree.dataStoreID(for: id))
     }
 
     /// The icon of the space holding `itemID`, when that is not the window's space.
