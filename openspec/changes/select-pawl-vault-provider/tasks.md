@@ -26,6 +26,7 @@
 ## 4. Passkeys and qualification
 
 - [ ] 4.1 Isolate browser-managed passkey suggestions from Pawl in Pawl mode. Verify a disposable relying party accepts a signed modal assertion and that separately chosen hardware security keys work.
+  On the pinned Intel SDK, the signed app opened the Pawl account picker for a discoverable modal request. After account selection the disposable vault signed once. The loopback site verified the signature, challenge, origin, RP hash, presence and verification flags, credential ID and user handle. The exclusive engine, installed companion and physical security key still need qualification.
 - [ ] 4.2 Qualify conditional passkeys on Chromium before claiming parity with WebKit. Verify account suggestions, opt-out, cancellation and navigation using a disposable relying party.
 - [ ] 4.3 Pass the unchanged upstream patch budget and qualify a signed pair on Intel and Apple Silicon with password, OTP and passkey flows, and promote the matching SDK receipts through the tracked recipe after results pass.
   Signed Intel Bark with the pinned SDK and an in-memory provider updated one existing account, created another and filled both from fresh documents. The legacy-provider walk offered manual management for both submissions and recorded zero write attempts. The checked-provider walk also filled a code, cancelled a passkey request and exercised the connected provider’s management button. The signed companion and provider-capable engine still need joint qualification.

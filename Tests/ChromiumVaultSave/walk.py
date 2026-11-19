@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Check signed Bark vault UI with a loopback-only, in-memory provider."""
 
+from base64 import b64decode, urlsafe_b64encode
+from binascii import Error as Base64Error
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -21,12 +23,42 @@ PASSWORD = "disposable-new-password"
 EXISTING_ACCOUNT = "synthetic-existing"
 UPDATED_PASSWORD = "disposable-replacement-password"
 MARKER = "Bark verification vault: "
+PUBLIC_KEY_MARKER = MARKER + "assertion public key "
+
+
+def fixture_public_key(log):
+    keys = set()
+    for line in log.read_text(errors="replace").splitlines():
+        if not line.startswith(PUBLIC_KEY_MARKER):
+            continue
+        encoded = line[len(PUBLIC_KEY_MARKER):]
+        if len(encoded) != 87:
+            raise ValueError("invalid P-256 public key encoding")
+        key = b64decode(encoded + "=", altchars=b"-_", validate=True)
+        if len(key) != 65 or key[0] != 4 or urlsafe_b64encode(key).decode().rstrip("=") != encoded:
+            raise ValueError("invalid P-256 uncompressed public key")
+        keys.add(key)
+    if len(keys) != 1:
+        raise ValueError("expected one fixture public key")
+    return keys.pop()
 
 
 class Fixture(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/source", "/new-form", "/saved-form", "/updated-form", "/passkey"):
             self.page()
+        elif self.path == "/assertion-public-key" and self.server.assertion_log is not None:
+            try:
+                key = fixture_public_key(self.server.assertion_log)
+            except (OSError, ValueError, Base64Error):
+                self.send_error(404)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(key)))
+            self.end_headers()
+            self.wfile.write(key)
         else:
             self.send_error(404)
 
@@ -52,6 +84,7 @@ class Fixture(BaseHTTPRequestHandler):
             "ready:/saved-form", "ready:/updated-form", "ready:/passkey", "ready:/existing-signed-in",
             "typed-fields-filled", "saved-fields-filled", "updated-fields-filled", "passkey-started", "passkey-cancelled",
             "passkey-created", "passkey-error", "code-only-filled", "wrong-code-fill",
+            "assertion-started", "assertion-verified", "assertion-error",
         }:
             self.send_error(400)
             return
@@ -77,6 +110,7 @@ def serve():
     with ThreadingHTTPServer(("127.0.0.1", 0), Fixture) as server:
         server.html = (HERE / "fixture.html").read_bytes()
         server.events = []
+        server.assertion_log = None
         worker = Thread(target=server.serve_forever, daemon=True)
         worker.start()
         try:
@@ -435,6 +469,27 @@ def exercise(screen, process, events, output, *, legacy_provider):
             raise RuntimeError("Cancelled consent produced a synthetic registration")
         print("Cancelled the native Pawl passkey consent without registering", flush=True)
 
+        controls.click("Sign in with the disposable passkey", ("AXButton",))
+        seen("assertion-started")
+        kind, button = wait_for("No Pawl entry or Back control for the assertion",
+                                chooser_control, process)
+        if kind == "back":
+            screen.press_button(button)
+        controls.click_settled_button("Pawl Vault", dialog_label="Use a saved passkey for localhost")
+        controls.require("synthetic-passkey", ("AXButton",), partial=True)
+        if method("assert"):
+            raise RuntimeError("The provider attempted an assertion before account selection")
+        screen.screenshot(output / "passkey-assertion-picker.png", include_owned_windows=True)
+        # The picker intentionally ignores input during its opening interval.
+        time.sleep(0.5)
+        controls.click_settled_button("synthetic-passkey", partial=True)
+        result = wait_for("The loopback RP did not finish verifying the assertion",
+                          lambda: next((e for e in events if e in ("assertion-verified", "assertion-error")), None),
+                          process, timeout=12)
+        if result != "assertion-verified" or method("assert") != 1:
+            raise RuntimeError("The loopback RP did not accept exactly one Pawl assertion")
+        print("The loopback RP verified the selected Pawl passkey assertion", flush=True)
+
         if (method("password") != reads_before_existing + 2 or
                 writes() != (0, 1, 1) or attempts() != (0, 2)):
             raise RuntimeError("Unexpected password reads, creates, or updates in the disposable vault")
@@ -485,8 +540,11 @@ def prepare_fixture(root, origin, app, profile, *, legacy_provider):
                     "checked create", "checked update", "checked commit attempted", "save attempted")
     if any((MARKER + name).encode() not in code for name in mode_markers):
         raise RuntimeError("The signed candidate lacks the current vault fixture modes")
+    if not legacy_provider and PUBLIC_KEY_MARKER.encode() not in code:
+        raise RuntimeError("The signed candidate lacks the modal passkey assertion fixture")
     (root / "VaultFixture.json").write_text(json.dumps({
         "origin": origin, "conditionalLoginWrites": not legacy_provider,
+        "modalPasskey": not legacy_provider,
     }) + "\n")
     # The synthetic submission stays on loopback. Chromium otherwise schedules
     # its own password leak check, independently of the selected save provider.
@@ -499,6 +557,14 @@ def prepare_fixture(root, origin, app, profile, *, legacy_provider):
 
 def main():
     legacy_provider = False
+    server = None
+
+    @contextmanager
+    def serve_candidate():
+        nonlocal server
+        with serve() as running:
+            server = running
+            yield running
 
     def parse_options(parser):
         nonlocal legacy_provider
@@ -512,10 +578,12 @@ def main():
         prepare_fixture(root, origin, app, profile, legacy_provider=legacy_provider)
 
     def run(screen, process, events, output):
+        if not legacy_provider:
+            server.assertion_log = output / "app.log"
         exercise(screen, process, events, output, legacy_provider=legacy_provider)
 
     return run_walk(
-        "Signed Pawl password and code fill, save, update and passkey cancellation", "vault", serve, run,
+        "Signed Pawl password and code fill, save, update and passkey assertion", "vault", serve_candidate, run,
         preferences=(("settings.pawlVaultEnabled", "-bool", "true"),),
         source_host="localhost",
         prepare_fixture=prepare,

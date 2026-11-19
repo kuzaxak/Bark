@@ -1,6 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 
 #if os(macOS)
+import CryptoKit
 import Foundation
 import Testing
 @testable import NookWeb
@@ -231,6 +232,45 @@ struct VerificationVaultTests {
         await #expect(throws: VaultClientError.server(.denied, "")) {
             try await fixture.send(request)
         }
+    }
+
+    @Test func preEnrolledAssertionSignsOnlyTheRequestedFixtureAccount() async throws {
+        let key = P256.Signing.PrivateKey()
+        let fixture = VerificationVault(origin: origin, profile: profile, assertionKey: key)
+        let lookup = VaultPasskeys(rpId: "localhost", allowCredentials: [], profile: profile.uuidString)
+        let entries = try await fixture.send(lookup).passkeys
+        let id = try #require(entries.first?.credentialId)
+        #expect(entries.count == 1 && entries[0].userName == "synthetic-passkey")
+        var other = lookup
+        other.allowCredentials = ["other-id"]
+        #expect(try await fixture.send(other).passkeys.isEmpty)
+        let noKey = VerificationVault(origin: origin, profile: profile)
+        #expect(try await noKey.send(lookup).passkeys.isEmpty)
+
+        let hash = Data(SHA256.hash(data: Data("fixture-client-data".utf8)))
+        let request = VaultAssert(rpId: lookup.rpId, credentialId: id, clientDataHash: Base64URL.encode(hash),
+                                  userVerification: "required", origin: origin, profile: profile.uuidString)
+        let reply = try await fixture.send(request)
+        let data = try #require(Base64URL.decode(reply.authenticatorData))
+        let der = try #require(Base64URL.decode(reply.signature))
+        let signature = try P256.Signing.ECDSASignature(derRepresentation: der)
+        let expected = Data(SHA256.hash(data: Data("localhost".utf8))) + Data([5, 0, 0, 0, 0])
+        #expect(data == expected && reply.credentialId == id)
+        #expect(reply.userHandle.flatMap(Base64URL.decode) == Data("bark-fixture-user".utf8))
+        #expect(key.publicKey.isValidSignature(signature, for: data + hash))
+        #expect(!key.publicKey.isValidSignature(signature, for: data + Data(repeating: 0, count: 32)))
+
+        for (field, value) in [(\VaultAssert.rpId, "example.org"), (\.origin, origin + "/"),
+                               (\.credentialId, "different"), (\.clientDataHash, "AA"),
+                               (\.userVerification, "discouraged")] {
+            var changed = request
+            changed[keyPath: field] = value
+            await #expect(throws: VaultClientError.server(.denied, "")) { try await fixture.send(changed) }
+        }
+        var wrongProfile = request
+        wrongProfile.profile = UUID().uuidString
+        await #expect(throws: VaultClientError.server(.denied, "")) { try await fixture.send(wrongProfile) }
+        await #expect(throws: VaultClientError.server(.denied, "")) { try await noKey.send(request) }
     }
 
     @Test func disposableProfileWithoutFixtureHasNoVault() async {

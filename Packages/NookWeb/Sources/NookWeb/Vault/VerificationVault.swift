@@ -1,6 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 
 #if os(macOS)
+import CryptoKit
 import Darwin
 import Foundation
 import NookSettings
@@ -18,7 +19,8 @@ extension VaultService {
                 : "Bark verification vault: legacy login writes")
         }
         self.init(settings: settings, client: VerificationVault(origin: fixture?.origin, profile: profile,
-                                                               conditionalLoginWrites: conditionalLoginWrites),
+                                                               conditionalLoginWrites: conditionalLoginWrites,
+                                                               assertionKey: fixture?.modalPasskey == true ? .init() : nil),
                   pawlEnabledAtLaunch: pawlEnabledAtLaunch)
     }
 }
@@ -27,6 +29,7 @@ actor VerificationVault: VaultRequests {
     struct Fixture: Decodable {
         let origin: String
         let conditionalLoginWrites: Bool?
+        let modalPasskey: Bool?
     }
     enum ConfigurationError: Error { case invalidFixture }
 
@@ -87,11 +90,14 @@ actor VerificationVault: VaultRequests {
     private let profile: UUID
     private let conditionalLoginWrites: Bool
     private let ticketLifetime: Duration
+    private let assertionKey: P256.Signing.PrivateKey?
+    private static let credentialID = Base64URL.encode(Data("bark-fixture-passkey".utf8))
+    private static let userHandle = Base64URL.encode(Data("bark-fixture-user".utf8))
     private var entries: [StoredLogin]
     private var tickets: [WriteTicket] = []
     private static let ticketLimit = 32
 
-    init(origin: String?, profile: UUID, conditionalLoginWrites: Bool = true,
+    init(origin: String?, profile: UUID, conditionalLoginWrites: Bool = true, assertionKey: P256.Signing.PrivateKey? = nil,
          logins: [VaultLogin] = [.init(id: "fixture-existing", username: "synthetic-existing",
                                       title: "Synthetic local vault", hasCode: true)],
          ticketLifetime: Duration = .seconds(60)) {
@@ -99,6 +105,7 @@ actor VerificationVault: VaultRequests {
         self.profile = profile
         self.conditionalLoginWrites = conditionalLoginWrites
         self.ticketLifetime = ticketLifetime
+        self.assertionKey = assertionKey
         entries = logins.map { StoredLogin(login: $0, password: "fixture-password") }
     }
 
@@ -142,13 +149,28 @@ actor VerificationVault: VaultRequests {
         case let request as VaultCommitLoginWrite where conditionalLoginWrites:
             reply = commit(request)
         case let request as VaultPasskeys where request.rpId == "localhost" && matches(request.profile):
-            reply = VaultPasskeys.Reply(passkeys: [])
+            if let assertionKey, request.allowCredentials.isEmpty || request.allowCredentials.contains(Self.credentialID) {
+                // The verifier obtains the enrolled public key outside the website's response.
+                Self.record("Bark verification vault: assertion public key " + Base64URL.encode(assertionKey.publicKey.x963Representation))
+                reply = VaultPasskeys.Reply(passkeys: [.init(credentialId: Self.credentialID, userName: "synthetic-passkey", title: "Synthetic local vault")])
+            } else {
+                reply = VaultPasskeys.Reply(passkeys: [])
+            }
         case let request as VaultRegister where request.origin == origin && matches(request.profile):
             Self.record("Bark verification vault: register")
             throw VaultClientError.server(.denied, "")
         case let request as VaultAssert where request.origin == origin && matches(request.profile):
+            guard let assertionKey, request.rpId == "localhost", request.credentialId == Self.credentialID,
+                  request.userVerification == "required", let hash = Base64URL.decode(request.clientDataHash),
+                  hash.count == 32, Base64URL.encode(hash) == request.clientDataHash
+            else { throw VaultClientError.server(.denied, "") }
+            var authData = Data(SHA256.hash(data: Data(request.rpId.utf8)))
+            // The fixture simulates presence and verification, with no signature counter.
+            authData.append(contentsOf: [0x05, 0, 0, 0, 0])
+            let signature = try assertionKey.signature(for: authData + hash)
             Self.record("Bark verification vault: assert")
-            throw VaultClientError.server(.denied, "")
+            reply = VaultAssert.Reply(credentialId: Self.credentialID, authenticatorData: Base64URL.encode(authData),
+                                      signature: Base64URL.encode(signature.derRepresentation), userHandle: Self.userHandle)
         default:
             throw VaultClientError.server(.denied, "")
         }

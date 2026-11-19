@@ -8,10 +8,70 @@
 const report = event => fetch("/event", {method: "POST", body: event});
 const main = document.querySelector("main");
 
+const bytes = text => new TextEncoder().encode(text);
+const base64URL = value => btoa(String.fromCharCode(...value))
+  .replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+const sha256 = async value => new Uint8Array(await crypto.subtle.digest("SHA-256", value));
+
+function requireAssertion(condition, field) {
+  if (!condition) throw new Error("Assertion validation failed: " + field);
+}
+
+// WebAuthn's ECDSA signature uses ASN.1 DER; WebCrypto expects fixed-width r || s.
+function p256SignatureBytes(der) {
+  requireAssertion(der.length >= 8 && der.length <= 72 &&
+                   der[0] === 0x30 && der[1] === der.length - 2, "signature sequence");
+  let offset = 2;
+  const raw = new Uint8Array(64);
+  for (const part of [0, 32]) {
+    requireAssertion(der[offset++] === 0x02, "signature integer");
+    const length = der[offset++];
+    requireAssertion(length > 0 && length <= 33 && offset + length <= der.length &&
+                     (der[offset] & 0x80) === 0, "signature integer length/sign");
+    const pad = length > 1 && der[offset] === 0 ? 1 : 0;
+    requireAssertion(length - pad <= 32 && (!pad || (der[offset + 1] & 0x80) !== 0),
+                     "signature integer padding");
+    raw.set(der.subarray(offset + pad, offset + length), part + 32 - (length - pad));
+    offset += length;
+  }
+  requireAssertion(offset === der.length, "signature trailing bytes");
+  return raw;
+}
+
+async function verifyAssertion(credential, challenge, expectedOrigin, publicKeyBytes) {
+  const response = credential.response;
+  requireAssertion(credential.type === "public-key" &&
+                   base64URL(new Uint8Array(credential.rawId)) === base64URL(bytes("bark-fixture-passkey")) &&
+                   response.userHandle &&
+                   base64URL(new Uint8Array(response.userHandle)) === base64URL(bytes("bark-fixture-user")),
+                   "credential and user handle");
+  const clientData = new Uint8Array(response.clientDataJSON);
+  const client = JSON.parse(new TextDecoder().decode(clientData));
+  requireAssertion(client.type === "webauthn.get" && client.origin === expectedOrigin &&
+                   client.challenge === base64URL(challenge) && client.crossOrigin === false,
+                   "client data");
+  const authenticatorData = new Uint8Array(response.authenticatorData);
+  const rpIdHash = await sha256(bytes("localhost"));
+  requireAssertion(authenticatorData.length === 37 &&
+                   base64URL(authenticatorData.subarray(0, 32)) === base64URL(rpIdHash) &&
+                   authenticatorData[32] === 0x05 &&
+                   new DataView(authenticatorData.buffer).getUint32(33) === 0,
+                   "RP ID hash, UP/UV flags and counter");
+  const signed = new Uint8Array(69);
+  signed.set(authenticatorData);
+  signed.set(await sha256(clientData), authenticatorData.length);
+  const key = await crypto.subtle.importKey(
+    "raw", publicKeyBytes, {name: "ECDSA", namedCurve: "P-256"}, false, ["verify"]);
+  requireAssertion(await crypto.subtle.verify(
+    {name: "ECDSA", hash: "SHA-256"}, key,
+    p256SignatureBytes(new Uint8Array(response.signature)), signed), "signature");
+}
+
 if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname)) {
   main.innerHTML = `
     <p>Signed in to the disposable fixture</p>
     <button type="button" id="passkey">Start disposable passkey</button>
+    <button type="button" id="assertion">Sign in with the disposable passkey</button>
     <a href="/saved-form">Check the saved fixture account</a>
     <a href="/updated-form">Check the updated fixture account</a>
     <a href="/new-form">Use a new fixture account</a>
@@ -32,6 +92,25 @@ if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname
       await report("passkey-created");
     } catch (error) {
       await report(error.name === "NotAllowedError" ? "passkey-cancelled" : "passkey-error");
+    }
+  };
+  document.querySelector("#assertion").onclick = async function () {
+    this.disabled = true;
+    report("assertion-started");
+    try {
+      const challenge = crypto.getRandomValues(new Uint8Array(32));
+      // Omitting allowCredentials exercises discoverable modal GET and returns a user handle.
+      const credential = await navigator.credentials.get({
+        mediation: "required",
+        publicKey: {challenge, rpId: "localhost", userVerification: "required", timeout: 30000}
+      });
+      const publicKey = await fetch("/assertion-public-key", {cache: "no-store"});
+      requireAssertion(publicKey.ok, "fixture public key missing");
+      await verifyAssertion(credential, challenge, location.origin, await publicKey.arrayBuffer());
+      await report("assertion-verified");
+    } catch (error) {
+      console.error(error);
+      await report("assertion-error");
     }
   };
 } else {

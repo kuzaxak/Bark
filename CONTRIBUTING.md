@@ -199,8 +199,11 @@ the other, and checks what Chromium retained after quit.
 
 The Pawl walk uses an in-memory vault and a loopback sign-in form. It updates an
 existing login, creates another, and reads both back through Chromium. It also
-fills a one-time code, cancels a passkey request, and exercises the connected
-provider’s management button. A second run selects a legacy provider. It submits
+fills a one-time code, cancels a passkey registration, and signs in with a
+discoverable passkey selected in Bark. The loopback site verifies a fresh
+challenge and the signature against the disposable vault’s public key.
+The walk also exercises the connected provider’s management button.
+A second run selects a legacy provider. It submits
 both logins and dismisses both manual management cards,
 then checks that the browser attempted no password writes.
 
