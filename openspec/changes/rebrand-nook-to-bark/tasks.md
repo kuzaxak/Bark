@@ -28,6 +28,7 @@ The user accepted fresh local/cloud state under a new Bark App ID and CloudKit c
 - [x] 3.3 Retain manual `.nookspace` import; run existing import checks and verify it cannot restore old cloud/account/sharing state or silently enable uploads. Signed Intel Bark imported a legacy file through Settings into the chosen profile with fresh space, folder and tab IDs. The local import ignored old account, share and sync fields and preserved the original files and selected space. The Finder routing check and 21 model tests passed.
 - [ ] 3.4 Audit credential/provider and native messaging identities; verify new signed-app behavior and provide reconnect guidance wherever previous access is unavailable.
 - [ ] 3.5 Update URL/file associations, default-browser handling and MCP discovery; verify external links, legacy file open and a documented automation client connection.
+  Local MCP connections exercised both directions. A stdio peer received the Bark app name and version and returned a discoverable tool. The inbound server identified itself as `bark-dev` using its configured storage.
 - [ ] 3.6 Rehearse cancellation/recovery with old local data present; verify old files remain recoverable and no startup cleanup deletes them.
 
 ## 4. Logo and visible identity (B2)
@@ -45,6 +46,7 @@ The user accepted fresh local/cloud state under a new Bark App ID and CloudKit c
 - [ ] 5.4 Update build, signing, DMG, CI and release path references and runner allowlists; verify a staged release pipeline reaches packaging with Bark names.
 - [x] 5.5 Rewrite README, contribution/support destinations and trademark/attribution presentation for Bark; verify Intel/Apple Silicon documentation and all public links while retaining upstream license/authorship.
 - [ ] 5.6 Audit remaining Nook names and old identifiers against an explicit compatibility/attribution allowlist; verify no unexplained old product branding or active old cloud configuration remains.
+  [Contributor guidance](../../../CONTRIBUTING.md#names-kept-for-compatibility) identifies the stored names, wire fields, linked framework, former cloud identity and upstream references. The translation prompt and Boost console error now identify Bark in source. Verification of the Boost label in the rebuilt SDKs is pending.
 
 ## 6. Signed transition and release rehearsal (B4)
 

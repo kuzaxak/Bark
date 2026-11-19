@@ -107,7 +107,7 @@ python3 -B -m unittest discover -s Tests/ChromiumSDKLauncher
 python3 -B Tests/ChromiumAppShim/check.py
 ```
 
-Run the catalog, startup focus, page ownership, download actions, extension actions and live fetch regressions against the Debug shell on the host architecture. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`. Pull requests run the catalog, page-host, Site Controls, content blocker and page tweaks checks on a hosted macOS runner.
+Run the following regressions against the Debug shell on the host architecture. These commands build the shell framework using the SDK headers and locked package versions. The test bridge supplies engine calls. Xcode caches the framework under `~/Library/Caches/BarkSDK/native-checks/`. Pull requests run the catalog, page-host, profile controls, profile deletion, Site Controls, content blocker and page tweaks checks on a hosted macOS runner.
 
 ```fish
 python3 scripts/bark-check.py catalog
@@ -421,6 +421,20 @@ exec "$HOME/actions-runner-bark/hooks/job-started-guard.sh" --bark-candidate ref
 The runner-side guard permits only this repository’s Bark candidate workflow on that ref. Keep the signing runner separate from PR jobs and the legacy Nook release runner. The [local packaging commands](Runtime/Chromium/README.md#prepare-bark-distribution-files) use the same checks.
 
 ## Code Style & Standards
+
+### Names kept for compatibility
+
+Use **Bark** in the app, its system permission text, and messages to users or
+connected services. Check the owner of an older identifier before changing it.
+
+| Identifier | What depends on it |
+| --- | --- |
+| `NookChromium`, `ee.qdo.nook.chromium` | Existing Chromium-based Bark installations find their profiles, preferences and website sign-ins here. The Safe Storage, Kagi and AI provider Keychain service names also identify existing credentials. |
+| `.nookspace`, `ee.qdo.nook.space` | Finder and the space importer recognize saved files from either browser. The displayed document type is **Bark Space**. |
+| `"client": "Nook"` in Pawl Vault v1 | This field is part of the existing handshake. Pawl checks the connecting app's signing identity separately. |
+| `NookNativeShell.framework`, `barc_*` symbols, `Nook*` Swift modules | The launcher, pinned SDK and source packages use these names for linking or importing code. A change to the binary contract needs a compatible launcher and engine. |
+| `iCloud.ee.qdo.nook` in historical configuration and old invitations | Previous Nook releases own that dataset. Bark's app and provisioning use `iCloud.ee.qdo.bark`. |
+| `kuzaxak/Nook`, the legacy Sparkle feed and upstream Nook credits | Published repository links, existing Nook installations and the upstream license and trademark attribution depend on these references. |
 
 ### Conventions
 
