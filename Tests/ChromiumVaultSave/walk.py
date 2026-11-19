@@ -228,7 +228,7 @@ class CandidateControls:
             raise RuntimeError(f"Missing visible bounds for {label}")
         self.click_point(point)
 
-    def click_settled_button(self, label, *, dialog_label=None, partial=False):
+    def click_settled_button(self, label, *, dialog_label=None, partial=False, require_pointer_hit=False):
         previous = None
 
         def settled_point():
@@ -242,6 +242,13 @@ class CandidateControls:
                 previous = None
                 return None
             point = self.center(button)
+            if require_pointer_hit and point is not None:
+                status, hit = self.ax.AXUIElementCopyElementAtPosition(self.app, *point, None)
+                while hit is not None and self.attribute(hit, "AXRole") in ("AXStaticText", "AXGroup"):
+                    hit = self.attribute(hit, "AXParent")
+                if status != 0 or hit != button:
+                    previous = None
+                    return None
             stable = point is not None and previous == (dialog, point)
             previous = (dialog, point)
             return point if stable else None
@@ -534,7 +541,8 @@ def exercise(screen, process, events, output, *, legacy_provider, require_exclus
             raise RuntimeError("Cancelled consent produced a synthetic registration")
         print("Cancelled the native Pawl passkey consent without registering", flush=True)
 
-        controls.click("Sign in with the disposable passkey", ("AXButton",))
+        # The closing browser dialog can still move the underlying page.
+        controls.click_settled_button("Sign in with the disposable passkey", require_pointer_hit=True)
         seen("assertion-started")
         kind, button = wait_for("No Pawl entry or Back control for the assertion",
                                 chooser_control, process)

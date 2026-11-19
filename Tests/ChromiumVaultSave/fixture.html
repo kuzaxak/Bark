@@ -94,7 +94,11 @@ if (["/signed-in", "/existing-signed-in", "/passkey"].includes(location.pathname
       await report(error.name === "NotAllowedError" ? "passkey-cancelled" : "passkey-error");
     }
   };
-  document.querySelector("#assertion").onclick = async function () {
+  document.querySelector("#assertion").onclick = async function (event) {
+    if (!event.isTrusted || !navigator.userActivation.isActive) {
+      await report("assertion-error");
+      return;
+    }
     this.disabled = true;
     report("assertion-started");
     try {
