@@ -55,13 +55,13 @@ private final class PrintCompletion: NSObject {
     }
 }
 
-extension PageSession {
+extension WebKitPageDelegateAdapter {
     /// A page's own window.print(). Without this WebKit gets no answer and the call does nothing.
     /// The page waits on `completionHandler`, so it cannot close or rewrite itself mid-print.
     @objc(_webView:printFrame:pdfFirstPageSize:completionHandler:)
     func webView(_ webView: WKWebView, printFrame frame: AnyObject, pdfFirstPageSize: CGSize, completionHandler: @escaping () -> Void) {
         // The print panel is modal; an agent page's print does nothing.
-        if isAgentPage { return completionHandler() }
+        guard let session = uiOwner(of: webView), !session.isAgentPage else { return completionHandler() }
         webView.nookPrint(frame: frame, completion: completionHandler)
     }
 }

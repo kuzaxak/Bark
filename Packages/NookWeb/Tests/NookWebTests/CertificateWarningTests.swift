@@ -342,12 +342,12 @@ struct PageCertificateWarningTests {
         let page = try selectedPage(in: host)
         let webView = page.activeWebView
 
-        page.webView(webView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(webView, didFailProvisionalNavigation: nil, withError: error)
         let warning = try #require(page.certificateWarning)
         #expect(warning.host == "100.64.0.43")
         #expect(warning.allowsVisit)
 
-        page.webView(webView, didStartProvisionalNavigation: nil)
+        page.webKitDelegate.webView(webView, didStartProvisionalNavigation: nil)
         #expect(page.certificateWarning == nil)
     }
 
@@ -355,24 +355,24 @@ struct PageCertificateWarningTests {
     @Test func aSupersededLoadShowsNoCard() throws {
         let host = try Host()
         let page = try selectedPage(in: host)
-        page.webView(StillLoadingWebView(), didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(StillLoadingWebView(), didFailProvisionalNavigation: nil, withError: error)
         #expect(page.certificateWarning == nil)
     }
 
     @Test func aCommitClearsTheCard() throws {
         let host = try Host()
         let page = try selectedPage(in: host)
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
         #expect(page.certificateWarning != nil)
 
-        page.webView(page.activeWebView, didCommit: nil)
+        page.webKitDelegate.webView(page.activeWebView, didCommit: nil)
         #expect(page.certificateWarning == nil)
     }
 
     @Test func visitingLoadsTheFailedPageAgain() throws {
         let host = try Host()
         let page = try selectedPage(in: host)
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
         let warning = try #require(page.certificateWarning)
 
         page.retryLoad(of: warning)
@@ -382,7 +382,7 @@ struct PageCertificateWarningTests {
     @Test func anotherFailureShowsNoCard() throws {
         let host = try Host()
         let page = try selectedPage(in: host)
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil,
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil,
                      withError: NSError(domain: NSURLErrorDomain, code: NSURLErrorTimedOut))
         #expect(page.certificateWarning == nil)
     }
@@ -392,7 +392,7 @@ struct PageCertificateWarningTests {
         let delegate = RecordingCertificateDelegate()
         host.tabs.sessionDelegate = delegate
         let page = try selectedPage(in: host)
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
 
         page.visitDespiteCertificateWarning()
         #expect(delegate.visits == [page.certificateWarning])
@@ -404,7 +404,7 @@ struct PageCertificateWarningTests {
         delegate.certificateExceptions = CertificateExceptions(saved: ["100.64.0.43:443": "aa"])
         host.tabs.sessionDelegate = delegate
         let page = try selectedPage(in: host)
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
 
         #expect(page.certificateWarning?.details.first?.hasPrefix("The certificate for 100.64.0.43 has changed") == true)
     }
@@ -419,7 +419,7 @@ struct PageCertificateWarningTests {
         let page = try #require(host.tabs.ensureSession(for: item))
         #expect(page.isAgentPage)
 
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
         let warning = try #require(page.certificateWarning)
         #expect(!warning.allowsVisit)
 
@@ -433,7 +433,7 @@ struct PageCertificateWarningTests {
         let item = try #require(host.tabs.open(url: URL(string: "https://100.64.0.43/kvm/")!, in: host.window,
                                                placement: .newTab, parent: .tabs(spaceID: spaceID)))
         let page = try #require(host.tabs.session(for: item))
-        page.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
+        page.webKitDelegate.webView(page.activeWebView, didFailProvisionalNavigation: nil, withError: error)
         #expect(!page.hasCommittedPage)
 
         page.leaveBlockedPage()

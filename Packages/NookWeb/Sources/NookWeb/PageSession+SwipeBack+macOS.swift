@@ -11,16 +11,16 @@
 import AppKit
 import WebKit
 
-extension PageSession {
+extension WebKitPageDelegateAdapter {
     /// WebKit's own swipe needs a back item, so it never starts here. It reports only the wheel
     /// events the page did not scroll with, so a carousel or map under the pointer keeps its swipe.
     /// The progress range copies WebKit's (`ViewGestureController`).
     @objc(_webView:didNotHandleWheelEvent:)
     func webView(_ webView: WKWebView, didNotHandleWheelEvent event: NSEvent) {
-        guard event.phase == .began, event.hasPreciseScrollingDeltas,
+        guard let session = uiOwner(of: webView), event.phase == .began, event.hasPreciseScrollingDeltas,
               NSEvent.isSwipeTrackingFromScrollEventsEnabled,
               abs(event.scrollingDeltaY) < abs(event.scrollingDeltaX) / 2,
-              !webView.canGoBack, controller?.opener(of: itemID) != nil else { return }
+              !webView.canGoBack, session.controller?.opener(of: session.itemID) != nil else { return }
         let rightToLeft = webView.userInterfaceLayoutDirection == .rightToLeft
         guard rightToLeft ? event.scrollingDeltaX < 0 : event.scrollingDeltaX > 0 else { return }
         var cancelled = false
@@ -29,11 +29,15 @@ extension PageSession {
             dampenAmountThresholdMin: rightToLeft ? -1 : 0, max: rightToLeft ? 0 : 1
         ) { [weak self, weak webView] amount, phase, isComplete, _ in
             guard let webView else { return }
+            guard let session = self?.uiOwner(of: webView) else {
+                webView.layer?.setAffineTransform(.identity)
+                return
+            }
             webView.layer?.setAffineTransform(CGAffineTransform(translationX: amount * webView.bounds.width, y: 0))
             if phase == .cancelled { cancelled = true }
             guard isComplete else { return }
             // Close first, so a finished swipe does not flash the page back into place.
-            if !cancelled, let self { WebKitPageCommands.goBack(on: self, in: webView) }
+            if !cancelled { WebKitPageCommands.goBack(on: session, in: webView) }
             webView.layer?.setAffineTransform(.identity)
         }
     }
@@ -47,15 +51,16 @@ extension PageSession {
     /// ponytail: fixed 300 ms wait; tune it if pages show half drawn or still feel slow.
     @objc(_webViewDidBeginNavigationGesture:)
     func webViewDidBeginNavigationGesture(_ webView: WKWebView) {
-        navigationGestureCount += 1
+        navigationOwner(of: webView)?.navigationGestureCount += 1
     }
 
     @objc(_webViewDidEndNavigationGesture:withNavigationToBackForwardListItem:)
     func webViewDidEndNavigationGesture(_ webView: WKWebView, withNavigationTo item: WKBackForwardListItem?) {
-        guard item != nil else { return }
-        let gesture = navigationGestureCount
+        guard item != nil, let session = navigationOwner(of: webView) else { return }
+        let gesture = session.navigationGestureCount
         DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(300)) { [weak self, weak webView] in
-            guard let self, let webView, gesture == self.navigationGestureCount, !webView.isLoading,
+            guard let self, let webView, let session = self.navigationOwner(of: webView),
+                  gesture == session.navigationGestureCount, !webView.isLoading,
                   webView.callBool("_isShowingNavigationGestureSnapshot") == true else { return }
             // Testing SPI, but the only way in: it removes the snapshot once the swipe has ended.
             webView.callVoid("_resetNavigationGestureStateForTesting")

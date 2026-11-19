@@ -11,11 +11,16 @@ import SwiftUI
 import WebKit
 import NookBlocker
 import NookTweaks
-// MARK: - WKNavigationDelegate
-extension PageSession: WKNavigationDelegate {
+// MARK: - WebKit navigation handling
+extension PageSession {
+
+    private func isCurrentWebKitCallback(from view: WKWebView, navigation expected: (any PageNavigation)?) -> Bool {
+        guard let expected, navigation === expected else { return false }
+        return view.navigationDelegate === webKitDelegate && acceptsNavigationCallbacks(from: view)
+    }
 
     // MARK: - Loading Start
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         didStartProvisionalNavigation navigation: WKNavigation!
     ) {
@@ -24,7 +29,7 @@ extension PageSession: WKNavigationDelegate {
     }
 
     // MARK: - Content Committed
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         didCommit navigation: WKNavigation!
     ) {
@@ -55,7 +60,7 @@ extension PageSession: WKNavigationDelegate {
     }
 
     // MARK: - Loading Success
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         didFinish navigation: WKNavigation!
     ) {
@@ -84,11 +89,12 @@ extension PageSession: WKNavigationDelegate {
         updateNavigationStateEnhanced(source: "didFinish")
 
         let finishedURL = webView.url
+        let finishedNavigation = self.navigation
         webView.evaluateJavaScript("document.title") {
             [weak self] result, error in
             // A retired surface must not add history/title after unload or engine replacement.
-            guard let session = self, session.acceptsNavigationCallbacks(from: webView),
-                  webView.url == finishedURL else { return }
+            guard let session = self, session.isCurrentWebKitCallback(
+                from: webView, navigation: finishedNavigation), webView.url == finishedURL else { return }
             // evaluateJavaScript completion runs on main thread; no dispatch needed
             if let title = result as? String {
                 if let currentURL = webView.url {
@@ -103,7 +109,10 @@ extension PageSession: WKNavigationDelegate {
 
         // Fetch favicon after page loads
         if let currentURL = webView.url {
-            Task { @MainActor in
+            Task { @MainActor [weak self, weak webView] in
+                guard let self, let webView,
+                      self.isCurrentWebKitCallback(from: webView, navigation: finishedNavigation),
+                      webView.url == currentURL else { return }
                 await self.fetchAndSetFavicon(for: currentURL)
             }
         }
@@ -115,7 +124,9 @@ extension PageSession: WKNavigationDelegate {
         // Trigger background color extraction after page fully loads
         // Wait a bit for rendering to complete
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self, weak webView] in
-            guard let self = self, let webView = webView else { return }
+            guard let self, let webView,
+                  self.isCurrentWebKitCallback(from: webView, navigation: finishedNavigation),
+                  webView.url == finishedURL else { return }
             // Only sample if page is still loaded (not navigating away)
             if self.loadingState == .didFinish {
                 self.updateBackgroundColor(from: webView)
@@ -136,7 +147,7 @@ extension PageSession: WKNavigationDelegate {
     }
 
     // MARK: - Loading Failed (after content started loading)
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         didFail navigation: WKNavigation!,
         withError error: Error
@@ -150,7 +161,7 @@ extension PageSession: WKNavigationDelegate {
     }
 
     // MARK: - Web Process Crash Recovery
-    public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
         guard acceptsNavigationCallbacks(from: webView) else { return }
         let now = Date()
         // Reset crash counter if last crash was more than 30 seconds ago (new crash burst)
@@ -190,9 +201,11 @@ extension PageSession: WKNavigationDelegate {
         // into the same broken XPC state, causing a tight crash loop. The delay gives launchservicesd
         // and other XPC services time to finish restarting after a system wake.
         let delay = Double(webProcessCrashCount) * 2.0 // 2s, 4s, 6s, 8s
+        let crashedNavigation = navigation
         DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak webView] in
             // Skip views released or unloaded while waiting.
-            guard let self, let webView, (webView.navigationDelegate as AnyObject?) === self else { return }
+            guard let self, let webView,
+                  self.isCurrentWebKitCallback(from: webView, navigation: crashedNavigation) else { return }
             // reload() does nothing when the crash happened before any page committed.
             if webView.backForwardList.currentItem == nil || webView.reload() == nil {
                 PageSession.loadPage(self.url, in: webView)
@@ -201,7 +214,7 @@ extension PageSession: WKNavigationDelegate {
     }
 
     // MARK: - Loading Failed (before content started loading)
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         didFailProvisionalNavigation navigation: WKNavigation!,
         withError error: Error
@@ -241,7 +254,7 @@ extension PageSession: WKNavigationDelegate {
         return error.domain == "WebKitErrorDomain" && error.code == 104
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         didReceive challenge: URLAuthenticationChallenge,
         completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
@@ -259,7 +272,7 @@ extension PageSession: WKNavigationDelegate {
         completionHandler(.performDefaultHandling, nil)
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
         preferences: WKWebpagePreferences,
@@ -273,7 +286,7 @@ extension PageSession: WKNavigationDelegate {
         self.webView(webView, decidePolicyFor: navigationAction) { decisionHandler($0, preferences) }
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
@@ -415,7 +428,7 @@ extension PageSession: WKNavigationDelegate {
         decisionHandler(.allow)
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         decidePolicyFor navigationResponse: WKNavigationResponse,
         decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void
@@ -437,7 +450,7 @@ extension PageSession: WKNavigationDelegate {
     }
 
     //MARK: - Downloads
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         navigationAction: WKNavigationAction,
         didBecome download: WKDownload
@@ -450,7 +463,7 @@ extension PageSession: WKNavigationDelegate {
             download, originalURL: originalURL, suggestedFilename: suggestedFilename)
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         navigationResponse: WKNavigationResponse,
         didBecome download: WKDownload

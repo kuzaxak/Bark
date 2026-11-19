@@ -505,14 +505,6 @@ public final class TabsController {
         }
     }
 
-    public func session(for webView: WKWebView) -> PageSession? {
-        let coordinator = webViews
-        return sessions.first { session in
-            session.primaryWebView === webView
-                || coordinator?.allWebViews(for: session.itemID).contains(where: { $0 === webView }) == true
-        }
-    }
-
     public func selectedItemID(in window: BrowserWindowState) -> UUID? {
         window.selectedItemID
     }

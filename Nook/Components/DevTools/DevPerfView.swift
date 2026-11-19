@@ -94,17 +94,19 @@ struct DevPerfView: View {
 
     /// Once a second while this tab is on screen; the task ends when it leaves.
     private func sampleProcess(of session: PageSession) async {
-        var previous: (cpu: UInt64, at: UInt64)?
+        var previous: (pid: Int32, cpu: UInt64, at: UInt64)?
         while !Task.isCancelled {
-            let pid = session.webProcessID
-            if pid > 0, let usage = Self.rusage(pid) {
+            if let pid = WebKitPageAccess.processID(for: session), let usage = Self.rusage(pid) {
                 let now = mach_absolute_time()
                 let cpu = usage.ri_user_time + usage.ri_system_time
                 var percent: Double?
-                if let previous, now > previous.at { percent = Double(cpu &- previous.cpu) / Double(now - previous.at) * 100 }
-                previous = (cpu, now)
+                if let previous, previous.pid == pid, cpu >= previous.cpu, now > previous.at {
+                    percent = Double(cpu - previous.cpu) / Double(now - previous.at) * 100
+                }
+                previous = (pid, cpu, now)
                 process = ProcessSample(footprint: usage.ri_phys_footprint, cpuPercent: percent)
             } else {
+                previous = nil
                 process = nil
             }
             try? await Task.sleep(for: .seconds(1))

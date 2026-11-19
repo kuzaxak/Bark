@@ -11,7 +11,7 @@
 import AppKit
 import WebKit
 
-extension PageSession {
+extension WebKitPageDelegateAdapter {
     /// Answers with the web view's own screen rect, not the window's: pages estimate zoom as
     /// outerWidth / innerWidth (Google Docs sizes its canvas from it), and the sidebar would skew it.
     @objc(_webView:getWindowFrameWithCompletionHandler:)

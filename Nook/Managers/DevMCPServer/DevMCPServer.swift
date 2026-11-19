@@ -1087,12 +1087,13 @@ final class DevMCPServer {
                     return text("No capture for this tab. Reload it: it loaded before Developer Mode turned on.", error: true)
                 }
                 var summary = capture.perf.summary
-                var usage = rusage_info_v6()
-                let pid = session.webProcessID
-                let ok = withUnsafeMutablePointer(to: &usage) {
-                    $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V6, $0) }
+                if let pid = WebKitPageAccess.processID(for: session) {
+                    var usage = rusage_info_v6()
+                    let ok = withUnsafeMutablePointer(to: &usage) {
+                        $0.withMemoryRebound(to: rusage_info_t?.self, capacity: 1) { proc_pid_rusage(pid, RUSAGE_INFO_V6, $0) }
+                    }
+                    if ok == 0 { summary += "\nWebContent memory footprint: \(usage.ri_phys_footprint / 1_048_576) MB" }
                 }
-                if pid > 0, ok == 0 { summary += "\nWebContent memory footprint: \(usage.ri_phys_footprint / 1_048_576) MB" }
                 if !capture.perf.advice.isEmpty { summary += "\n\n" + capture.perf.advice.joined(separator: "\n") }
                 return text(summary)
 

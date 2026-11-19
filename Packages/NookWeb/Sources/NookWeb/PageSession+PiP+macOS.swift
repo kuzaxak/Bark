@@ -11,12 +11,13 @@
 import AppKit
 import WebKit
 
-extension PageSession {
+extension WebKitPageDelegateAdapter {
     /// Element fullscreen sends this too, so only a page in picture-in-picture acts on it.
     @objc(_webViewFullscreenMayReturnToInline:)
     func webViewFullscreenMayReturnToInline(_ webView: WKWebView) {
-        guard hasPiPActive, !isDetached, let window = controller?.window(for: self) else { return }
-        controller?.select(itemID, in: window)
+        guard let session = uiOwner(of: webView), session.hasPiPActive, !session.isDetached,
+              let window = session.controller?.window(for: session) else { return }
+        session.controller?.select(session.itemID, in: window)
         window.windowHandle?.bringToFront()
         NSApp.activate()
     }

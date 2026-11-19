@@ -77,17 +77,64 @@ extension PageSession {
         return a == b || a.hasSuffix(".\(b)") || b.hasSuffix(".\(a)")
     }
 
+    // MARK: - OAuth Helpers
+
+    /// Checks if a URL indicates OAuth completion and handles the flow
+    func checkOAuthCompletion(url: URL) {
+        guard isOAuthFlow, let parentItemID = oauthParentItemID else { return }
+
+        let urlString = url.absoluteString.lowercased()
+        let host = url.host?.lowercased() ?? ""
+
+        // Check for OAuth success indicators
+        let successIndicators = ["code=", "access_token=", "id_token=", "oauth_token=",
+                                "oauth_verifier=", "session_state=", "samlresponse="]
+
+        // Check for OAuth error indicators
+        let errorIndicators = ["error=", "access_denied", "invalid_request", "denied"]
+
+        let isSuccess = successIndicators.contains { urlString.contains($0) }
+        let isError = errorIndicators.contains { urlString.contains($0) }
+
+        // Check if this is a redirect back to the original domain (not the OAuth provider)
+        if let providerHost = oauthProviderHost, !host.contains(providerHost),
+           (isSuccess || isError || !OAuthDetector.isLikelyOAuthURL(url)) {
+
+
+            // Reselect and reload the opener, then close this sign-in page.
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let controller = self.controller,
+                      let parent = controller.session(for: parentItemID) else { return }
+                if let window = controller.window(for: parent) {
+                    controller.select(parentItemID, in: window)
+                }
+                parent.activeWebView.reload()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                guard let self else { return }
+                self.controller?.close(self.itemID)
+            }
+        }
+    }
+
+
 }
 
 // MARK: - WKUIDelegate
-extension PageSession: WKUIDelegate {
-    public func webView(
+extension WebKitPageDelegateAdapter: WKUIDelegate {
+    func uiOwner(of view: WKWebView) -> PageSession? {
+        guard let session, view.uiDelegate === self,
+              session.acceptsNavigationCallbacks(from: view) else { return nil }
+        return session
+    }
+
+    func webView(
         _ webView: WKWebView,
         createWebViewWith configuration: WKWebViewConfiguration,
         for navigationAction: WKNavigationAction,
         windowFeatures: WKWindowFeatures
     ) -> WKWebView? {
-        guard let delegate = controller?.webKitSessionDelegate else { return nil }
+        guard let session = uiOwner(of: webView), let delegate = session.controller?.webKitSessionDelegate else { return nil }
         let url = navigationAction.request.url
         // Extensions manage their own auth flows, and never get Peek.
         let sourceScheme = navigationAction.sourceFrame.request.url?.scheme?.lowercased() ?? ""
@@ -105,95 +152,55 @@ extension PageSession: WKUIDelegate {
         // A sign-in popup shows in a mini window as a real popup, so `window.opener` carries the
         // result back to this page the way the site expects.
         // An agent page's popups, sign-in ones too, open as tabs in the Agent space (adoptPopup).
-        if !isFromExtension, !isAgentPage, let url, isLikelyOAuthOrExternalWindow(url: url, windowFeatures: windowFeatures) {
-            guard let popup = controller?.openDetachedPopup(configuration: popupConfiguration(), url: url, opener: self)
+        if !isFromExtension, !session.isAgentPage, let url, session.isLikelyOAuthOrExternalWindow(url: url, windowFeatures: windowFeatures) {
+            guard let popup = session.controller?.openDetachedPopup(configuration: popupConfiguration(), url: url, opener: session)
             else { return nil }
             delegate.presentPopupWindow(popup)
             return popup.primaryWebView
         }
 
         // Air Traffic Control: route popup URLs to designated spaces.
-        if let url, controller?.siteRouting.applyRoute(url: url, from: self) == true {
+        if let url, session.controller?.siteRouting.applyRoute(url: url, from: session) == true {
             return nil
         }
 
         // Peek and mini window pages follow the link in place rather than open a tab behind them.
-        if isDetached {
+        if session.isDetached {
             if url != nil { webView.load(navigationAction.request) }
             return nil
         }
 
-        if !isFromExtension, let url, shouldRedirectToPeek(url: url) || peeksNewTabLink(navigationAction) {
+        if !isFromExtension, let url, session.shouldRedirectToPeek(url: url) || session.peeksNewTabLink(navigationAction) {
             // Trigger Peek after returning control to WebKit to avoid runloop-mode issues
-            RunLoop.current.perform { [weak self] in
-                guard let self else { return }
-                self.controller?.sessionDelegate?.presentPeek(url: url, from: self)
+            RunLoop.current.perform { [weak session] in
+                guard let session else { return }
+                session.controller?.sessionDelegate?.presentPeek(url: url, from: session)
             }
             return nil
         }
 
-        guard let newWebView = controller?.webViews?.makeWebView(configuration: popupConfiguration()) else { return nil }
+        guard let newWebView = session.controller?.webViews?.makeWebView(configuration: popupConfiguration()) else { return nil }
 
         // A session owns the popup's view; a private page's popup stays in its private window.
-        guard let controller,
+        guard let controller = session.controller,
               controller.adoptPopup(
                 webView: newWebView,
                 url: navigationAction.request.url,
-                opener: self) != nil
+                opener: session) != nil
         else { return nil }
 
         return newWebView
     }
 
-    // MARK: - OAuth Helpers
-
-    /// Checks if a URL indicates OAuth completion and handles the flow
-    func checkOAuthCompletion(url: URL) {
-        guard isOAuthFlow, let parentItemID = oauthParentItemID else { return }
-        
-        let urlString = url.absoluteString.lowercased()
-        let host = url.host?.lowercased() ?? ""
-        
-        // Check for OAuth success indicators
-        let successIndicators = ["code=", "access_token=", "id_token=", "oauth_token=",
-                                "oauth_verifier=", "session_state=", "samlresponse="]
-        
-        // Check for OAuth error indicators
-        let errorIndicators = ["error=", "access_denied", "invalid_request", "denied"]
-        
-        let isSuccess = successIndicators.contains { urlString.contains($0) }
-        let isError = errorIndicators.contains { urlString.contains($0) }
-        
-        // Check if this is a redirect back to the original domain (not the OAuth provider)
-        if let providerHost = oauthProviderHost, !host.contains(providerHost),
-           (isSuccess || isError || !OAuthDetector.isLikelyOAuthURL(url)) {
-            
-            
-            // Reselect and reload the opener, then close this sign-in page.
-            DispatchQueue.main.async { [weak self] in
-                guard let self, let controller = self.controller,
-                      let parent = controller.session(for: parentItemID) else { return }
-                if let window = controller.window(for: parent) {
-                    controller.select(parentItemID, in: window)
-                }
-                parent.activeWebView.reload()
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                guard let self else { return }
-                self.controller?.close(self.itemID)
-            }
-        }
-    }
-
     /// Counts a dialog. From the second one since the last main-frame commit the presenter offers
     /// to stop them, so `while(1) alert()` cannot hold the window.
-    private func nextDialogSuppressor() -> (() -> Void)? {
-        jsDialogCount += 1
-        guard jsDialogCount > 1 else { return nil }
-        return { [weak self] in self?.jsDialogsSuppressed = true }
+    private func nextDialogSuppressor(for session: PageSession) -> (() -> Void)? {
+        session.jsDialogCount += 1
+        guard session.jsDialogCount > 1 else { return nil }
+        return { [weak session] in session?.jsDialogsSuppressed = true }
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         runJavaScriptAlertPanelWithMessage message: String,
         initiatedByFrame frame: WKFrameInfo,
@@ -201,51 +208,54 @@ extension PageSession: WKUIDelegate {
     ) {
         // An agent page's dialogs answer at once: a sheet would cover the person's window and
         // hold the agent's next call until it times out.
-        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler() }
+        guard let session = uiOwner(of: webView), !session.jsDialogsSuppressed, !session.isAgentPage,
+              let alerts = session.controller?.webKitAlertPresenter else { return completionHandler() }
         alerts.presentAlert(
             message: message, host: frame.securityOrigin.host, over: webView,
-            onSuppress: nextDialogSuppressor(), completion: completionHandler)
+            onSuppress: nextDialogSuppressor(for: session), completion: completionHandler)
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         runJavaScriptConfirmPanelWithMessage message: String,
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (Bool) -> Void
     ) {
-        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler(false) }
+        guard let session = uiOwner(of: webView), !session.jsDialogsSuppressed, !session.isAgentPage,
+              let alerts = session.controller?.webKitAlertPresenter else { return completionHandler(false) }
         alerts.presentConfirm(
             message: message, host: frame.securityOrigin.host, over: webView,
-            onSuppress: nextDialogSuppressor(), completion: completionHandler)
+            onSuppress: nextDialogSuppressor(for: session), completion: completionHandler)
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         runJavaScriptTextInputPanelWithPrompt prompt: String,
         defaultText: String?,
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping (String?) -> Void
     ) {
-        guard !jsDialogsSuppressed, !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler(nil) }
+        guard let session = uiOwner(of: webView), !session.jsDialogsSuppressed, !session.isAgentPage,
+              let alerts = session.controller?.webKitAlertPresenter else { return completionHandler(nil) }
         alerts.presentPrompt(
             prompt: prompt, defaultText: defaultText, host: frame.securityOrigin.host, over: webView,
-            onSuppress: nextDialogSuppressor(), completion: completionHandler)
+            onSuppress: nextDialogSuppressor(for: session), completion: completionHandler)
     }
 
     /// A popup that finished (a sign-in window) closes itself; only detached pages act on it.
-    public func webViewDidClose(_ webView: WKWebView) {
-        onClose?()
+    func webViewDidClose(_ webView: WKWebView) {
+        uiOwner(of: webView)?.onClose?()
     }
 
     // MARK: - File Upload Support
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         runOpenPanelWith parameters: WKOpenPanelParameters,
         initiatedByFrame frame: WKFrameInfo,
         completionHandler: @escaping ([URL]?) -> Void
     ) {
 
-        guard !isAgentPage, let alerts = controller?.webKitAlertPresenter else { return completionHandler(nil) }
+        guard let session = uiOwner(of: webView), !session.isAgentPage, let alerts = session.controller?.webKitAlertPresenter else { return completionHandler(nil) }
         alerts.presentOpenPanel(
             allowsMultipleSelection: parameters.allowsMultipleSelection,
             allowsDirectories: parameters.allowsDirectories,
@@ -254,12 +264,12 @@ extension PageSession: WKUIDelegate {
     }
 
     // MARK: - Full-Screen Video Support
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         enterFullScreenForVideoWith completionHandler: @escaping (Bool, Error?) -> Void
     ) {
 
-        guard !isAgentPage, controller?.webKitSessionDelegate?.toggleFullScreen(for: webView) == true else {
+        guard let session = uiOwner(of: webView), !session.isAgentPage, session.controller?.webKitSessionDelegate?.toggleFullScreen(for: webView) == true else {
             completionHandler(
                 false,
                 NSError(
@@ -271,12 +281,12 @@ extension PageSession: WKUIDelegate {
         completionHandler(true, nil)
     }
 
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         exitFullScreenWith completionHandler: @escaping (Bool, Error?) -> Void
     ) {
 
-        guard controller?.webKitSessionDelegate?.toggleFullScreen(for: webView) == true else {
+        guard uiOwner(of: webView)?.controller?.webKitSessionDelegate?.toggleFullScreen(for: webView) == true else {
             completionHandler(
                 false,
                 NSError(
@@ -293,7 +303,7 @@ extension PageSession: WKUIDelegate {
     // MARK: - Media Capture Authorization
 
     /// Handle requests for camera/microphone capture authorization
-    public func webView(
+    func webView(
         _ webView: WKWebView,
         requestMediaCaptureAuthorization type: WKMediaCaptureType,
         for origin: WKSecurityOrigin,
@@ -310,14 +320,18 @@ extension PageSession: WKUIDelegate {
         case .cameraAndMicrophone: needed = [.camera, .microphone]
         @unknown default: needed = [.camera, .microphone]
         }
-        guard let settings = controller?.settings else {
+        guard let session = uiOwner(of: webView) else {
+            decisionHandler(.deny)
+            return
+        }
+        guard let settings = session.controller?.settings else {
             decisionHandler(.prompt)
             return
         }
         let policies = needed.map { settings.permission($0, for: origin.host) }
         // A combined request needs every part allowed, and one block denies the whole thing.
         // No capture prompt for an agent page: nobody may be watching it.
-        if policies.contains(.block) || (isAgentPage && !policies.allSatisfy({ $0 == .allow })) {
+        if policies.contains(.block) || (session.isAgentPage && !policies.allSatisfy({ $0 == .allow })) {
             decisionHandler(.deny)
         } else if policies.allSatisfy({ $0 == .allow }) {
             decisionHandler(.grant)

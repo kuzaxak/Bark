@@ -313,6 +313,8 @@ public final class PageSession: NSObject, Identifiable {
             resetTranslation()
         }
     }
+    @ObservationIgnored lazy var webKitDelegate = WebKitPageDelegateAdapter(session: self)
+
     var primaryWebView: WKWebView? {
         didSet {
             guard primaryWebView !== oldValue else { return }
@@ -795,7 +797,7 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     func acceptsNavigationCallbacks(from view: WKWebView) -> Bool {
-        guard navigation != nil else { return false }
+        guard !usesNativePageHost, navigation is WebKitPageNavigation else { return false }
         return view === primaryWebView ||
             controller?.webViews?.allWebViews(for: itemID).contains(where: { $0 === view }) == true
     }
@@ -945,8 +947,8 @@ public final class PageSession: NSObject, Identifiable {
             return
         }
         (webView as? SessionWebView)?.owningSession = self
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
+        webView.navigationDelegate = webKitDelegate
+        webView.uiDelegate = webKitDelegate
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
         setupThemeColorObserver(for: webView)
@@ -983,12 +985,12 @@ public final class PageSession: NSObject, Identifiable {
         let controller = webView.configuration.userContentController
         for name in messageHandlerNames {
             controller.removeScriptMessageHandler(forName: name)
-            controller.add(self, name: name)
+            controller.add(webKitDelegate, name: name)
         }
         controller.removeScriptMessageHandler(forName: "pipStateChange", contentWorld: Self.pipStateWorld)
-        controller.add(self, contentWorld: Self.pipStateWorld, name: "pipStateChange")
+        controller.add(webKitDelegate, contentWorld: Self.pipStateWorld, name: "pipStateChange")
         controller.removeScriptMessageHandler(forName: Self.translateHandlerName, contentWorld: Self.translateWorld)
-        controller.add(self, contentWorld: Self.translateWorld, name: Self.translateHandlerName)
+        controller.add(webKitDelegate, contentWorld: Self.translateWorld, name: Self.translateHandlerName)
         controller.addUserScript(WKUserScript(source: MediaScript.reporter(handler: "mediaStateChange_\(itemID.uuidString)"),
                                               injectionTime: .atDocumentEnd, forMainFrameOnly: false))
         #if os(macOS)
@@ -1011,8 +1013,8 @@ public final class PageSession: NSObject, Identifiable {
     func installPopupWebView(_ webView: WKWebView) {
         (webView as? SessionWebView)?.owningSession = self
         (webView as? SessionWebView)?.contextMenuBridge = WebContextMenuBridge(session: self, configuration: webView.configuration)
-        webView.navigationDelegate = self
-        webView.uiDelegate = self
+        webView.navigationDelegate = webKitDelegate
+        webView.uiDelegate = webKitDelegate
         webView.allowsBackForwardNavigationGestures = true
         webView.allowsMagnification = true
         primaryWebView = webView

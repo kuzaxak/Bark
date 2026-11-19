@@ -157,13 +157,17 @@ extension PageSession {
     }
 }
 
-// MARK: - WKScriptMessageHandler
-extension PageSession: WKScriptMessageHandler {
-    public func userContentController(
-        _ userContentController: WKUserContentController, didReceive message: WKScriptMessage
-    ) {
-        // WKScriptMessageHandler callbacks run on main thread; no dispatch needed
+extension WebKitPageDelegateAdapter: WKScriptMessageHandler {
+    func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
+        guard let session, let view = message.webView,
+              view.configuration.userContentController === controller,
+              session.acceptsNavigationCallbacks(from: view) else { return }
+        session.receiveScriptMessage(message, from: view)
+    }
+}
 
+extension PageSession {
+    fileprivate func receiveScriptMessage(_ message: WKScriptMessage, from view: WKWebView) {
         // The dev capture handler only appends log lines, so every frame may post to it.
         if message.name == DevCaptureScript.handlerName { receiveDevCapture(message); return }
         if message.name == DevPickerScript.handlerName { receiveDevPick(message); return }
@@ -218,7 +222,7 @@ extension PageSession: WKScriptMessageHandler {
             // a page could otherwise put any URL, lock icon included, in the URL bar. WebKit
             // has already updated webView.url for a same-document navigation by the time
             // the message arrives.
-            if let url = message.webView?.url {
+            if let url = view.url {
                 if self.url.absoluteString != url.absoluteString {
                     self.url = url
                     // NOTE: Do NOT call syncTabAcrossWindows here. SPA navigations
@@ -229,11 +233,11 @@ extension PageSession: WKScriptMessageHandler {
                     // back/forward (e.g., Facebook lightbox close via browser back).
 
                     // Fetch updated title after SPA navigation
-                    message.webView?.evaluateJavaScript("document.title") { [weak self] result, _ in
-                        // evaluateJavaScript completion runs on main thread
-                        if let title = result as? String, !title.isEmpty {
-                            self?.updateTitle(title)
-                        }
+                    view.evaluateJavaScript("document.title") { [weak self, weak view] result, _ in
+                        guard let self, let view, self.acceptsNavigationCallbacks(from: view),
+                              self.url == url, view.url == url,
+                              let title = result as? String, !title.isEmpty else { return }
+                        self.updateTitle(title)
                     }
 
                     // Fetch favicon for new URL
@@ -244,7 +248,7 @@ extension PageSession: WKScriptMessageHandler {
                     // The store coalesces writes, so SPA URL changes report directly.
                     controller?.pageCommitted(itemID: itemID, url: url)
                     controller?.webKitTabEvents?.tabPropertiesChanged(self, properties: [.URL])
-                    if let webView = message.webView { schedulePageTextCapture(in: webView, sameDocument: true) }
+                    schedulePageTextCapture(in: view, sameDocument: true)
                 }
             }
 

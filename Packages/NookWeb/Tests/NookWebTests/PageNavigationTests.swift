@@ -10,6 +10,7 @@ struct PageNavigationTests {
         let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
                                   title: "Test", isPrivate: true, controller: nil)
         #expect(WebKitPageAccess.existingView(for: session) == nil)
+        #expect(WebKitPageAccess.processID(for: session) == nil)
         #expect(WebKitPageAccess.assignedView(for: session) == nil)
         #expect(session.isUnloaded)
 
@@ -26,7 +27,27 @@ struct PageNavigationTests {
         // access through this adapter to a Chromium-owned session.
         session.detachedProfile = Profile(id: UUID(), engine: .chromium)
         #expect(WebKitPageAccess.existingView(for: session) == nil)
+        #expect(WebKitPageAccess.processID(for: session) == nil)
         #expect(WebKitPageAccess.assignedView(for: session) == nil)
+        #expect(session.primaryWebView === view)
+    }
+
+    @Test func webKitViewLookupRejectsANativeOwnerEvenWithARetainedView() throws {
+        let host = try Host(isPrivate: true)
+        let space = try #require(host.window.spaceID)
+        let item = try #require(host.tabs.open(url: URL(string: "about:blank")!, in: host.window,
+            placement: .background, parent: .tabs(spaceID: space)))
+        let session = try #require(host.tabs.ensureSession(for: item))
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let view = RecordingWebView(frame: .zero, configuration: configuration)
+        session.installPopupWebView(view)
+        defer { session.detachedProfile = nil; session.unload() }
+
+        #expect(WebKitPageAccess.session(for: view, in: host.tabs) === session)
+        session.detachedProfile = Profile.createEphemeral(engine: .chromium)
+        #expect(WebKitPageAccess.session(for: view, in: host.tabs) == nil)
+        #expect(WebKitPageAccess.processID(for: session) == nil)
         #expect(session.primaryWebView === view)
     }
 
@@ -267,6 +288,36 @@ struct PageNavigationTests {
         #expect(session.url == second && session.title == "Second")
     }
 
+    @Test func webKitNavigationDelegateIgnoresAnUnloadedView() {
+        let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
+                                  title: "Test", isPrivate: true, controller: nil)
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .nonPersistent()
+        let first = NavigationView(frame: .zero, configuration: configuration)
+        session.installPopupWebView(first)
+        let adapter = session.webKitDelegate
+        #expect(first.navigationDelegate === adapter)
+        #expect(adapter.responds(to: NSSelectorFromString(
+            "_webView:contentRuleListWithIdentifier:performedAction:forURL:")))
+        #expect(adapter.responds(to: NSSelectorFromString("_webViewDidBeginNavigationGesture:")))
+        #expect(adapter.responds(to: NSSelectorFromString(
+            "_webViewDidEndNavigationGesture:withNavigationToBackForwardListItem:")))
+        adapter.webViewDidBeginNavigationGesture(first)
+        #expect(session.navigationGestureCount == 1)
+        session.unload()
+        let second = NavigationView(frame: .zero, configuration: configuration)
+        session.installPopupWebView(second)
+        defer { session.unload() }
+
+        // Simulate an already dispatched callback after the old view retired.
+        adapter.webViewDidBeginNavigationGesture(first)
+        #expect(session.navigationGestureCount == 1)
+        adapter.webView(first, didStartProvisionalNavigation: nil)
+        #expect(!session.isLoading)
+        adapter.webView(second, didStartProvisionalNavigation: nil)
+        #expect(session.isLoading)
+    }
+
     @Test func supersededWebKitFailureCannotRegressNewNavigation() throws {
         let session = PageSession(itemID: UUID(), url: URL(string: "about:blank")!,
                                   title: "Test", isPrivate: true, controller: nil)
@@ -281,11 +332,11 @@ struct PageNavigationTests {
         page.report(.started(URL(string: "https://navigation.invalid/old")!), navigation: old)
         let destination = URL(string: "https://navigation.invalid/new")!
         page.report(.started(destination), navigation: current)
-        session.webView(view, didFailProvisionalNavigation: old,
+        session.webKitDelegate.webView(view, didFailProvisionalNavigation: old,
                         withError: URLError(.cancelled))
         #expect(session.url == destination && session.isLoading)
         session.stop()
-        session.webView(view, didFailProvisionalNavigation: current,
+        session.webKitDelegate.webView(view, didFailProvisionalNavigation: current,
                         withError: URLError(.cancelled))
         #expect(session.loadingState == .idle && session.url == destination)
     }

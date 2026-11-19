@@ -328,7 +328,7 @@ struct MiniPlayerPagesTests {
         try play(tab, host)
         let page = try #require(host.tabs.session(for: tab))
 
-        page.webView(page.activeWebView, didCommit: nil)
+        page.webKitDelegate.webView(page.activeWebView, didCommit: nil)
         #expect(!(host.tabs.miniPlayerPages(for: host.window).first { $0.id == tab }?.hasMedia ?? true))
     }
 

@@ -32,9 +32,9 @@ extension PageSession {
     func attachDevCaptureHandler(to webView: WKWebView) {
         let controller = webView.configuration.userContentController
         controller.removeScriptMessageHandler(forName: DevCaptureScript.handlerName)
-        controller.add(self, name: DevCaptureScript.handlerName)
+        controller.add(webKitDelegate, name: DevCaptureScript.handlerName)
         controller.removeScriptMessageHandler(forName: DevPickerScript.handlerName, contentWorld: DevPickerScript.world)
-        controller.add(self, contentWorld: DevPickerScript.world, name: DevPickerScript.handlerName)
+        controller.add(webKitDelegate, contentWorld: DevPickerScript.world, name: DevPickerScript.handlerName)
         if devCapture == nil { devCapture = DevCapture() }
     }
 
@@ -155,10 +155,7 @@ extension TabsController {
 // MARK: - Content rule list actions
 
 extension PageSession {
-    /// WebKit SPI on WKNavigationDelegatePrivate: one call per action a compiled rule list took.
-    /// The identifier is a chunk of every list merged, so it does not name the list.
-    @objc(_webView:contentRuleListWithIdentifier:performedAction:forURL:)
-    func devContentRuleList(_ webView: WKWebView, identifier: String, performedAction action: NSObject, url: URL) {
+    func recordWebKitContentRuleAction(_ action: NSObject, url: URL) {
         guard let capture = devCapture else { return }
         func flag(_ key: String) -> Bool {
             action.responds(to: NSSelectorFromString(key)) && (action.value(forKey: key) as? Bool) == true
@@ -170,15 +167,5 @@ extension PageSession {
         else if flag("blockedCookies") { kind = .cookiesBlocked }
         else { return }
         capture.recordBlock(DevBlockEntry(action: kind, url: url.absoluteString))
-    }
-}
-
-extension PageSession {
-    /// The page's WebContent process, through the `_webProcessIdentifier` SPI; 0 when there is none.
-    public var webProcessID: Int32 {
-        let selector = NSSelectorFromString("_webProcessIdentifier")
-        guard let webView = primaryWebView, webView.responds(to: selector) else { return 0 }
-        typealias Getter = @convention(c) (AnyObject, Selector) -> Int32
-        return unsafeBitCast(webView.method(for: selector), to: Getter.self)(webView, selector)
     }
 }

@@ -59,7 +59,11 @@ Chromium operation in the native adapter using Bark’s public C bridge. The sha
 [WebKitProfileStorage capability](Packages/NookWeb/Sources/NookWeb/WebKitProfileStorage.swift).
 Only a WebKit host uses that capability’s `dataStore` or implements
 [WebKitPageSessionDelegate](Packages/NookWeb/Sources/NookWeb/WebKitPageSessionDelegate.swift).
-Chromium profiles do not create a WebKit store.
+WebKit hosts can use `WebKitPageAccess` to look up an existing view, its
+session or its WebContent process. These lookups leave unloaded pages unloaded.
+WebKit navigation, UI and script callbacks enter through a delegate tied to
+the owning session. Chromium profiles use their native page host and diagnostics.
+[WebKit page access](Packages/NookWeb/Sources/NookWeb/WebKitPageAccess.swift)
 `NativePageHost` owns creation, selection, transfer and acknowledged close.
 Check the page’s current window and profile before applying an asynchronous
 result. A transfer can preserve the document while changing the window

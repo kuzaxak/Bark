@@ -39,8 +39,8 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
   Chromium’s host implements the shared page delegate. WebKit hosts opt into the view provider and WebKit callbacks. The adopted-page regression covers commit, title, acknowledged close and a late title event.
 - [x] 3.4 Separate AppKit surface ownership from page state; verify one live page per tab across window transfer, split and Peek checks.
   Page-host checks retain the existing page adapter across a window transfer. The signed Intel mini-window transfer in section 4a preserved the document and draft. AppKit checks cover promotion while the source pane keeps focus and a late Peek request for the promoted sibling. The signed split walk restored typing to the original document, draft and scroll position, and delivered a click to the uncovered sibling.
-- [ ] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.
-  WebKit hosts use the explicit profile storage and page delegate adapters. Existing primary and assigned views are available through `WebKitPageAccess`, which rejects native sessions and never creates a view. The WebKit vault bridge owns script installation and teardown. Package tests cover both adapters. The shared page still implements public WebKit delegate methods.
+- [x] 3.5 Remove engine types from shared public UI/model boundaries and document the adapter API; verify package builds.
+  WebKit hosts use explicit profile, page, view and vault adapters. An internal delegate receives WebKit navigation, UI and script callbacks for the current owner. The public shared page and tab controller expose no WebKit delegate methods or view lookups. `WebKitPageAccess` provides existing views, owner lookup and WebContent process IDs. All 414 NookWeb tests passed, including real script delivery, popup close, gesture selectors and retired-view rejection. See the adapter guide in CONTRIBUTING.md.
 
 ## 3a. Shared smart-tab policy (after G2, before G4 completion)
 
