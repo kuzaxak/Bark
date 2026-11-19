@@ -23,9 +23,13 @@ def require(condition, message):
         raise SystemExit(message)
 
 
-def check(build, architecture):
-    raw_app = build / "Bark.app" / "Contents"
-    raw = read_plist(raw_app / "Info.plist")
+RAW_PLIST = Path("Bark.app/Contents/Info.plist")
+RAW_LAUNCHER = RAW_PLIST.parent / "MacOS/Bark"
+INTEGRATED_PLIST = Path("gen/chrome/chrome_integrated_app_info_plist.plist")
+
+
+def inspect_launcher(build, architecture):
+    raw = read_plist(build / RAW_PLIST)
     require(raw.get("CFBundleIdentifier") == "ee.qdo.bark.sdk",
             "Raw engine uses the wrong bundle identifier")
     require(raw.get("LSBackgroundOnly") is True, "Raw engine is eligible for foreground use")
@@ -34,9 +38,7 @@ def check(build, architecture):
         "NSPrincipalClass", "ASWebAuthenticationSessionWebBrowserSupportCapabilities",
         "UTExportedTypeDeclarations", "UTImportedTypeDeclarations",
     }, "Raw engine advertises interactive services")
-    integrated = read_plist(
-        build / "gen" / "chrome" / "chrome_integrated_app_info_plist.plist"
-    )
+    integrated = read_plist(build / INTEGRATED_PLIST)
     require(integrated.get("CFBundleIdentifier") == "ee.qdo.bark" and
             integrated.get("NSPrincipalClass") == "BrowserCrApplication" and
             integrated.get("LSBackgroundOnly") is not True and
@@ -44,7 +46,7 @@ def check(build, architecture):
             bool(integrated.get("CFBundleDocumentTypes")),
             "Integrated app metadata lost its interactive contract")
     require(raw.get("CFBundleExecutable") == "Bark", "Raw engine has an unexpected executable")
-    executable = raw_app / "MacOS" / "Bark"
+    executable = build / RAW_LAUNCHER
 
     actual_arch = subprocess.check_output(["/usr/bin/lipo", "-archs", executable], text=True).strip()
     require(actual_arch == architecture,
@@ -61,6 +63,11 @@ def check(build, architecture):
     ).splitlines()
     require(not set(imports) - {"___stderrp", "_fputs", "dyld_stub_binder"},
             "Raw executable imports functions outside the refusal path")
+    return executable
+
+
+def check(build, architecture):
+    executable = inspect_launcher(build, architecture)
     hardware = native_architecture()
     tooling = platform.machine()
     if architecture != hardware:

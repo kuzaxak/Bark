@@ -71,6 +71,27 @@ class LauncherCheckTests(unittest.TestCase):
                     [self.executable, "--headless", "https://example.invalid"],
                 ])
 
+    def test_static_inspection_never_executes_a_valid_native_launcher(self):
+        metadata = ["x86_64\n", "launcher:\n /usr/lib/libSystem.B.dylib (version)\n", "_fputs\n"]
+        with patch.object(check.subprocess, "check_output", side_effect=metadata), patch.object(
+            check.subprocess, "run"
+        ) as launch:
+            self.assertEqual(check.inspect_launcher(self.build, "x86_64"), self.executable)
+            launch.assert_not_called()
+
+    def test_static_inspection_refuses_legacy_foreground_bundle(self):
+        path = self.build / check.RAW_PLIST
+        result = plistlib.loads(path.read_bytes())
+        result.pop("LSBackgroundOnly")
+        path.write_bytes(plistlib.dumps(result))
+        with patch.object(check.subprocess, "check_output") as inspect, patch.object(
+            check.subprocess, "run"
+        ) as launch:
+            with self.assertRaisesRegex(SystemExit, "eligible for foreground"):
+                check.inspect_launcher(self.build, "arm64")
+            inspect.assert_not_called()
+            launch.assert_not_called()
+
     def test_wrong_width_arch_or_unsafe_symbols_fail_before_launch(self):
         self.inspect("arm64", "arm64", "arm64", actual="x86_64 arm64")
         self.inspect("arm64", "arm64", "arm64", actual="x86_64")
