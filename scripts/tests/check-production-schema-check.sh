@@ -10,6 +10,20 @@ test_dir=$(mktemp -d)
 trap 'rm -rf "$test_dir"' EXIT
 check=scripts/cloudkit/check-production-schema.sh
 
+cp scripts/cloudkit/schema.ckdb "$test_dir/complete.ckdb"
+cat >> "$test_dir/complete.ckdb" <<'SHARE'
+    RECORD TYPE "cloudkit.share" (
+        "cloudkit.title" STRING,
+        GRANT CREATE TO "_icloud"
+    );
+SHARE
+
+if "$check" --compare scripts/cloudkit/schema.ckdb > "$test_dir/out" 2>&1; then
+  echo "FAIL: the app schema alone passed without Apple's share type"
+  exit 1
+fi
+grep -Fxq '  cloudkit.share' "$test_dir/out"
+
 grep -v '"device"\|"movedTo"' scripts/cloudkit/schema.ckdb | awk '/RECORD TYPE Item/ { skip = 1 } !skip { print } skip && /\);/ { skip = 0 }' \
   > "$test_dir/behind.ckdb"
 status=0
@@ -20,7 +34,7 @@ for missing in Space.device Space.movedTo Item; do
 done
 if grep -q "  Space.name" "$test_dir/out"; then echo "FAIL: a field production has was named: $(<"$test_dir/out")"; exit 1; fi
 
-sed -e 's/"\([A-Za-z_]*\)"/\1/' -e 's/^    RECORD TYPE \(.*\) ($/RECORD TYPE \1(/' scripts/cloudkit/schema.ckdb \
+sed -e 's/"\([A-Za-z_]*\)"/\1/' -e 's/^    RECORD TYPE \(.*\) ($/RECORD TYPE \1(/' "$test_dir/complete.ckdb" \
   | sed '/^[[:space:]]*level[[:space:]]/a\
         "extra"         STRING,' > "$test_dir/ahead.ckdb"
 grep -q '"extra"' "$test_dir/ahead.ckdb"
@@ -49,7 +63,7 @@ set -eu
 printf '%s\n' "$@" > "$CLOUDKIT_FIXTURE/arguments"
 printf '%s\n' "${CLOUDKIT_MANAGEMENT_TOKEN-<saved>}" > "$CLOUDKIT_FIXTURE/token"
 if [[ "$2" == export-schema ]]; then
-  cp scripts/cloudkit/schema.ckdb "${!#}"
+  cp "$CLOUDKIT_FIXTURE/complete.ckdb" "${!#}"
 fi
 MOCK
 chmod +x "$test_dir/xcrun"

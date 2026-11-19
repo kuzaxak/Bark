@@ -41,9 +41,12 @@ You need a Mac and Xcode 26 or later. The package tests and native command-routi
    management token. You can also export the schema for `iCloud.ee.qdo.bark`
    from CloudKit Console’s **Production** environment and check it offline with
    `scripts/cloudkit/check-production-schema.sh --compare /path/to/export.ckdb`.
-   The check covers field types, encryption, indexes and grants. To update the
-   service, import the tracked schema into **Development**, review the changes
-   in CloudKit Console, deploy them to **Production**, and check a fresh export.
+   The check covers field types, encryption, indexes, grants and Apple's
+   `cloudkit.share` record type. Import the tracked app schema into
+   **Development**. For a new container, use a development-signed app to save
+   a zone-wide `CKShare` in a disposable zone. Apple creates the share type
+   when that save succeeds. Review the changes in CloudKit Console, deploy
+   them to **Production**, and check a fresh export.
 
 There is no app test target. Logic with its own checks lives in `Checks/` folders beside each package's sources and in `scripts/tests/`; each file says how to run it. Every package with a `Tests/` folder has a `swift test` suite, and CI runs them on each pull request.
 

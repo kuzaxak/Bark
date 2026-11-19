@@ -7,7 +7,7 @@ import re
 
 
 NAME = r'[A-Za-z_][A-Za-z_0-9]*'
-IDENTIFIER = rf'(?:"({NAME})"|({NAME}))'
+IDENTIFIER = rf'(?:"({NAME}(?:\.{NAME})*)"|({NAME}))'
 RECORD = re.compile(rf'\bRECORD\s+TYPE\s+{IDENTIFIER}\s*\((.*?)\)\s*;', re.DOTALL)
 FIELD = re.compile(rf'{IDENTIFIER}\s+(ENCRYPTED\s+)?({NAME}(?:\s*<\s*{NAME}\s*>)?)((?:\s+{NAME})*)')
 GRANT = re.compile(rf'GRANT\s+({NAME})\s+TO\s+{IDENTIFIER}')
@@ -69,13 +69,18 @@ def main():
     parser.add_argument("exported", type=Path)
     args = parser.parse_args()
     try:
-        missing = list(differences(schema(args.tracked), schema(args.exported)))
+        exported = schema(args.exported)
+        missing = list(differences(schema(args.tracked), exported))
+        # CloudKit creates this system type when a real zone share is saved in Development.
+        if "cloudkit.share" not in exported:
+            missing.append("cloudkit.share")
     except (OSError, ValueError) as error:
         parser.exit(1, f"{error}\n")
     if missing:
         report = "\n".join(f"  {problem}" for problem in missing)
         parser.exit(1, f"Production schema does not meet Bark requirements:\n{report}\n"
-                    "Import schema.ckdb into Bark development and deploy it to production before releasing.\n")
+                    "Import the app schema into Development. For a missing cloudkit.share, save a real "
+                    "zone-wide CKShare in Development. Review and deploy the changes before releasing.\n")
     print("Production schema meets Bark's record, field, index and grant requirements.")
 
 
