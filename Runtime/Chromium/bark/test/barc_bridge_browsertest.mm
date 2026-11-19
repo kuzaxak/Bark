@@ -220,6 +220,11 @@
 #include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/password_manager/core/browser/password_manager_interface.h"
 #include "components/password_manager/core/common/password_manager_pref_names.h"
+#include "components/policy/core/browser/browser_policy_connector.h"
+#include "components/policy/core/common/mock_configuration_policy_provider.h"
+#include "components/policy/core/common/policy_map.h"
+#include "components/policy/core/common/policy_types.h"
+#include "components/policy/policy_constants.h"
 #include "components/prefs/pref_service.h"
 #include "ui/events/keycodes/dom/dom_code.h"
 #include "ui/events/keycodes/dom/dom_key.h"
@@ -11200,6 +11205,25 @@ class BarcPawlBrowserTest : public BarcBridgeBrowserTest {
     BarcBridgeBrowserTest::SetUpCommandLine(command_line);
     ASSERT_EQ(1, barc_set_password_provider(BARC_PASSWORD_PROVIDER_PAWL));
   }
+
+ protected:
+  void SetUpInProcessBrowserTestFixture() override {
+    BarcBridgeBrowserTest::SetUpInProcessBrowserTestFixture();
+    policy_provider_.SetDefaultReturns(true, true);
+    policy::BrowserPolicyConnector::SetPolicyProviderForTesting(&policy_provider_);
+  }
+
+  void SetPasswordPolicy(const char* key, base::Value value) {
+    policy::PolicyMap policies;
+    if (key) {
+      policies.Set(key, policy::POLICY_LEVEL_MANDATORY, policy::POLICY_SCOPE_USER,
+                   policy::POLICY_SOURCE_PLATFORM, std::move(value), nullptr);
+    }
+    policy_provider_.UpdateChromePolicy(policies);
+  }
+
+ private:
+  testing::NiceMock<policy::MockConfigurationPolicyProvider> policy_provider_;
 };
 
 namespace {
@@ -11594,23 +11618,6 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultFrameOriginAndFieldIdsNeverReta
 }
 
 namespace {
-class VaultLoginObserver : public password_manager::PasswordManagerInterface::Observer {
- public:
-  explicit VaultLoginObserver(password_manager::PasswordManagerInterface* manager) {
-    observation_.Observe(manager);
-  }
-
-  void OnLoginSuccessful(const password_manager::PasswordForm& pending_form) override {
-    ++successful_submissions;
-  }
-
-  int successful_submissions = 0;
-
- private:
-  base::ScopedObservation<password_manager::PasswordManagerInterface,
-                          password_manager::PasswordManagerInterface::Observer>
-      observation_{this};
-};
 
 struct VaultSaveEvents {
   uint64_t observation = 0, submission = 0;
@@ -11745,21 +11752,43 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest,
   auto* prefs = browser()->GetProfile()->GetPrefs();
   const auto& save_pref = password_manager::prefs::kCredentialsEnableService;
   const auto origin = url::Origin::Create(login);
-  VaultLoginObserver login_observer(client->GetPasswordManager());
   prefs->SetBoolean(save_pref, false);
-  ASSERT_FALSE(client->IsSavingAndFillingEnabled(origin, login));
-  content::TestNavigationObserver disabled_navigation(contents);
-  ASSERT_TRUE(content::ExecJs(contents,
-      "user.value='disabled-user';pass.value='disabled-password';go.click();"));
-  disabled_navigation.Wait();
-  ASSERT_TRUE(base::test::RunUntil(
-      [&] { return login_observer.successful_submissions == 1; }));
-  content::RunAllTasksUntilIdle();
-  EXPECT_EQ(0, events.offers);
+  ASSERT_FALSE(prefs->IsManagedPreference(save_pref));
 
-  prefs->SetBoolean(save_pref, true);
+  auto verify_blocked_submission = [&] {
+    ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), login));
+    ASSERT_FALSE(client->IsSavingAndFillingEnabled(origin, login));
+    content::TestNavigationObserver blocked(contents);
+    ASSERT_TRUE(content::ExecJs(contents,
+        "user.value='blocked-user';pass.value='blocked-password';go.click();"));
+    blocked.Wait();
+    content::RunAllTasksUntilIdle();
+    EXPECT_EQ(0, events.offers);
+  };
+  SetPasswordPolicy(policy::key::kPasswordManagerEnabled, base::Value(false));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return prefs->IsManagedPreference(save_pref); }));
+  ASSERT_NO_FATAL_FAILURE(verify_blocked_submission());
+
+  const auto& site_policy = password_manager::prefs::kPasswordManagerBlocklist;
+  base::ListValue sites;
+  sites.Append(origin.GetURL().spec());
+  SetPasswordPolicy(policy::key::kPasswordManagerBlocklist,
+                    base::Value(std::move(sites)));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !prefs->IsManagedPreference(save_pref) &&
+           prefs->IsManagedPreference(site_policy) &&
+           !client->IsSavingAndFillingEnabled(origin, login);
+  }));
+  ASSERT_NO_FATAL_FAILURE(verify_blocked_submission());
+
+  SetPasswordPolicy(nullptr, base::Value());
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !prefs->IsManagedPreference(site_policy) &&
+           client->IsSavingAndFillingEnabled(origin, login);
+  }));
+  ASSERT_FALSE(prefs->GetBoolean(save_pref));
   ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), login));
-  ASSERT_TRUE(client->IsSavingAndFillingEnabled(origin, login));
   content::TestNavigationObserver navigation(contents);
   ASSERT_TRUE(content::ExecJs(contents,
       "user.value='synthetic-user';pass.value='synthetic-password';go.click();"));

@@ -12,6 +12,7 @@
 #include "base/files/file_util.h"
 #include "base/uuid.h"
 #include "base/strings/escape.h"
+#include "chrome/browser/password_manager/chrome_password_manager_client.h"
 #include "chrome/browser/profiles/profile.h"
 #include "bark/bridge/barc_profiles.h"
 
@@ -145,6 +146,10 @@ void barc::ConfigurePawlPasswordManagement() {
   if (UsesPawlPasswordProvider()) {
     content::WebUIConfigMap::GetInstance().RemoveConfig(GURL(kPasswordManagerURL));
   }
+}
+
+bool ChromePasswordManagerClient::IsExternalPasswordProviderSelected() {
+  return barc::UsesPawlPasswordProvider();
 }
 
 bool barc::RewritePawlPasswordManagement(GURL* url, content::BrowserContext*) {
