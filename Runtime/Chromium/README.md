@@ -293,8 +293,19 @@ The raw GN output also has the `Bark.app` filename because the build tools use
 its bundle layout. Its executable exits before loading AppKit or the engine,
 and its background-only bundle uses `ee.qdo.bark.sdk` without URL or document
 handlers. Publish the generated integrated app metadata alongside the framework.
-Run `python3 Tests/ChromiumSDKLauncher/check.py <GN-output-directory>` to check
-direct launch and both property lists without opening a window.
+After linking and before writing an official build receipt, the build recipe
+checks the requested thin architecture, both property lists, and the raw
+launcher's refusal-only library and symbol imports. When the launcher matches the host CPU,
+the recipe also exercises all five direct invocation cases, including when
+Python runs under Rosetta. Cross-builds report static inspection. Run the
+gate on the target hardware before qualifying the cross-built runtime.
+
+```fish
+python3 Tests/ChromiumSDKLauncher/check.py "$engine_checkout/src/out/Barc-arm64-official" --arch arm64
+```
+
+Use `--arch x86_64` for Intel. The check opens no windows and needs the original
+GN output because the published SDK excludes the raw launcher.
 
 ### Publishing the engine
 

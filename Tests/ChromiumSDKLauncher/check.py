@@ -2,9 +2,15 @@
 """Verify the built raw engine launcher without Finder or Launch Services."""
 
 import argparse
+import platform
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
+
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from chromium_sdk_layout import ARCHITECTURES, native_architecture
 
 
 def read_plist(path):
@@ -17,7 +23,7 @@ def require(condition, message):
         raise SystemExit(message)
 
 
-def check(build):
+def check(build, architecture):
     raw_app = build / "Bark.app" / "Contents"
     raw = read_plist(raw_app / "Info.plist")
     require(raw.get("CFBundleIdentifier") == "ee.qdo.bark.sdk",
@@ -40,6 +46,10 @@ def check(build):
     require(raw.get("CFBundleExecutable") == "Bark", "Raw engine has an unexpected executable")
     executable = raw_app / "MacOS" / "Bark"
 
+    actual_arch = subprocess.check_output(["/usr/bin/lipo", "-archs", executable], text=True).strip()
+    require(actual_arch == architecture,
+            f"Raw executable must be exactly {architecture}; found {actual_arch!r}")
+
     # Stop before execution if given an old build or a launcher linked to UI libraries.
     libraries = subprocess.check_output(
         ["/usr/bin/otool", "-L", executable], text=True
@@ -51,6 +61,14 @@ def check(build):
     ).splitlines()
     require(not set(imports) - {"___stderrp", "_fputs", "dyld_stub_binder"},
             "Raw executable imports functions outside the refusal path")
+    hardware = native_architecture()
+    tooling = platform.machine()
+    if architecture != hardware:
+        mode = f"tooling {tooling}, hardware {hardware}"
+        print(f"Raw {architecture} launcher statically verified ({mode}); "
+              "direct refusal cases require a native run.")
+        return
+
     for arguments in [[], ["-psn_0_12345"], ["--type=renderer"], ["--type=gpu-process"],
                       ["--headless", "https://example.invalid"]]:
         result = subprocess.run([executable, *arguments], capture_output=True,
@@ -58,10 +76,13 @@ def check(build):
         require(result.returncode == 69 and not result.stdout and
                 result.stderr == "Bark Engine is an SDK build artifact. Launch the signed Bark app.\n",
                 f"Raw engine did not refuse direct launch with {arguments!r}: {result!r}")
-    print("Raw engine refuses direct launch and advertises SDK-only metadata")
+    print(f"Raw {architecture} launcher statically verified and all 5 native direct launch cases refused.")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("build", type=Path, help="Chromium GN output directory")
-    check(parser.parse_args().build.resolve())
+    parser.add_argument("--arch", choices=ARCHITECTURES,
+                        help="required thin Mach-O architecture (defaults to native hardware)")
+    args = parser.parse_args()
+    check(args.build.resolve(), args.arch or native_architecture())

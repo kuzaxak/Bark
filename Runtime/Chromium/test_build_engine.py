@@ -147,6 +147,9 @@ class BuildArchitectureTests(unittest.TestCase):
                     self.assertIn(f"--target {target} --target-dir {src / 'out/BarkCargo'}", commands)
                     self.assertIn(f"gn gen out/Barc-{arch}", commands)
                     self.assertIn(f"autoninja -C out/Barc-{arch}", commands)
+                    launcher_arch = {"x64": "x86_64", "arm64": "arm64"}[arch]
+                    self.assertIn(
+                        f"Tests/ChromiumSDKLauncher/check.py {out} --arch {launcher_arch}", commands)
                     self.assertFalse((src / "bark").exists())
                     self.assertFalse((src / "out/BarkCargo").exists())
 

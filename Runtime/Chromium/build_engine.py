@@ -449,6 +449,8 @@ def build(checkout, depot_tools, env, args):
                     src, ninja_env)
     else:
         run([*ninja, *TARGETS], src, ninja_env, args.dry_run)
+    run([sys.executable, "-B", REPO / "Tests/ChromiumSDKLauncher/check.py", out, "--arch", macho_arch],
+        REPO, env, args.dry_run)
     if args.official and not args.dry_run:
         from official_provenance import RECEIPT, record
 
