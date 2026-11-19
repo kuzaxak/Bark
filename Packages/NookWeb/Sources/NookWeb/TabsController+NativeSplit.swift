@@ -25,10 +25,10 @@ final class NativeSplitPreparation {
     var publishingSelection = false
     var published = false
     var cancelled = false
-    var completions: [@MainActor (Bool) -> Void]
+    var completions: [@MainActor (NativeSplitOutcome) -> Void]
     init(record: SplitRecord?, previous: SplitRecord?, active: UUID?, window: BrowserWindowState,
          ordered: [PageSession], pages: [UUID: PageSession], selectionAtActiveSpace: UUID?,
-         liveAdmission: (() -> Bool)?, completion: (@MainActor (Bool) -> Void)?) {
+         liveAdmission: (() -> Bool)?, completion: (@MainActor (NativeSplitOutcome) -> Void)?) {
         self.record = record; self.previous = previous; self.active = active
         selectedBefore = window.selectedItemID; spaceBefore = window.spaceID
         self.ordered = ordered; self.pages = pages
@@ -39,10 +39,10 @@ final class NativeSplitPreparation {
         profiles = Dictionary(uniqueKeysWithValues: ordered.compactMap { page in page.profile.map { (page.itemID, $0.id) } })
         completions = completion.map { [$0] } ?? []
     }
-    func complete(_ succeeded: Bool) {
+    func complete(_ outcome: NativeSplitOutcome) {
         let callbacks = completions
         completions.removeAll()
-        callbacks.forEach { $0(succeeded) }
+        callbacks.forEach { $0(outcome) }
     }
 }
 
@@ -57,6 +57,16 @@ extension TabsController {
                                    in window: BrowserWindowState,
                                    liveAdmission: (() -> Bool)? = nil,
                                    completion: (@MainActor (Bool) -> Void)? = nil) -> Bool {
+        presentNativeSplitWithOutcome(record, activeItemID: activeItemID, in: window, liveAdmission: liveAdmission,
+                                      completion: completion.map { report in { report($0 == .admitted) } })
+    }
+
+    /// Like presentNativeSplit, but distinguishes refusal from a newer owner's request.
+    @discardableResult
+    public func presentNativeSplitWithOutcome(_ record: SplitRecord?, activeItemID: UUID?,
+                                              in window: BrowserWindowState,
+                                              liveAdmission: (() -> Bool)? = nil,
+                                              completion: (@MainActor (NativeSplitOutcome) -> Void)? = nil) -> Bool {
         let entryGeneration = window.nativeSelectionGeneration
         let entrySelection = window.selectedItemID, entrySpace = window.spaceID
         let entrySplit = window.split
@@ -65,25 +75,25 @@ extension TabsController {
               liveAdmission?() ?? true,
               liveAdmission == nil || (window.nativeSelectionGeneration == entryGeneration &&
                   window.selectedItemID == entrySelection && window.spaceID == entrySpace && window.split == entrySplit),
-              nativePageHost === host, windowRegistry.windows[window.id] === window else { completion?(false); return false }
+              nativePageHost === host, windowRegistry.windows[window.id] === window else { completion?(.refused); return false }
         if let pending = window.nativeSplitPreparation, pending.record == record, pending.active == activeItemID,
            (pending.liveAdmission == nil) == (liveAdmission == nil) {
             // Catalog drains caused by page creation must not restart this work.
             if let completion { pending.completions.append(completion) }
             return true
         }
-        guard cancelNativeSplit(in: window) else { completion?(false); return false }
+        guard cancelNativeSplit(in: window) else { completion?(.superseded); return false }
         let previous = window.split, selected = window.selectedItemID, space = window.spaceID
         if record == nil, let activeItemID, activeItemID != selected,
-           session(for: activeItemID)?.navigation == nil { completion?(false); return false }
+           session(for: activeItemID)?.navigation == nil { completion?(.refused); return false }
         let beforeGeneration = window.nativeSelectionGeneration
         var ordered: [PageSession] = []
         if let record {
-            guard let activeItemID, record.contains(activeItemID) else { completion?(false); return false }
+            guard let activeItemID, record.contains(activeItemID) else { completion?(.refused); return false }
             for id in record.itemIDs {
                 guard holds(id, in: window), item(id)?.isFolder == false,
                       let page = liveAdmission == nil ? ensureSession(for: id) : session(for: id),
-                      !page.nativeIsEnding, liveAdmission == nil || page.navigation != nil else { completion?(false); return false }
+                      !page.nativeIsEnding, liveAdmission == nil || page.navigation != nil else { completion?(.refused); return false }
                 ordered.append(page)
             }
             guard ordered.allSatisfy({ page in
@@ -91,11 +101,11 @@ extension TabsController {
                       profile.isEphemeral == window.isIncognito,
                       !window.isIncognito || profile.id == window.ephemeralProfile?.id else { return false }
                 return page.navigation == nil || page.navigation?.profileID == profile.id
-            }) else { completion?(false); return false }
+            }) else { completion?(.refused); return false }
         }
         guard window.split == previous, window.selectedItemID == selected, window.spaceID == space,
               window.nativeSelectionGeneration == beforeGeneration,
-              nativePageHost === host else { completion?(false); return false }
+              nativePageHost === host else { completion?(.refused); return false }
         var pages = Dictionary(uniqueKeysWithValues: ordered.map { ($0.itemID, $0) })
         for id in (previous?.itemIDs ?? []) + (activeItemID.map { [$0] } ?? []) + (selected.map { [$0] } ?? []) {
             if let page = session(for: id) { pages[id] = page }
@@ -108,7 +118,7 @@ extension TabsController {
         // observable name/icon changes. Never overwrite a newer admission.
         guard window.split == previous, window.selectedItemID == selected, window.spaceID == space,
               window.nativeSelectionGeneration == beforeGeneration, nativePageHost === host,
-              windowRegistry.windows[window.id] === window else { request.complete(false); return false }
+              windowRegistry.windows[window.id] === window else { request.complete(.superseded); return false }
         let oldPage = window.nativeSelectionSession
         window.nativeSelectionGeneration = request.id
         window.nativeSelectionSession = nil
@@ -129,10 +139,7 @@ extension TabsController {
                                        completion: @escaping @MainActor (NativeSplitOutcome) -> Void) -> Bool {
         guard let request = window.nativeSplitPreparation, request.record == record,
               request.active == activeItemID, window.nativeSelectionGeneration == request.id else { return false }
-        request.completions.append { [weak request] succeeded in
-            guard let request else { completion(.superseded); return }
-            completion(request.cancelled ? .superseded : (succeeded ? .admitted : .refused))
-        }
+        request.completions.append(completion)
         return true
     }
 
@@ -188,7 +195,7 @@ extension TabsController {
                 return
             }
             page.ensureNativePage(in: window) { [weak self, weak window] prepared in
-                guard let self, let window else { request.complete(false); return }
+                guard let self, let window else { request.complete(.superseded); return }
                 guard prepared, self.nativeSplitCurrent(request, host: host, in: window) else {
                     self.finishNativeSplit(request, succeeded: false, in: window); return
                 }
@@ -231,6 +238,8 @@ extension TabsController {
     private func finishNativeSplit(_ request: NativeSplitPreparation, succeeded: Bool,
                                    in window: BrowserWindowState) {
         let owns = window.nativeSplitPreparation === request
+        let superseded = request.cancelled
+        let outcome: NativeSplitOutcome = superseded ? .superseded : (succeeded ? .admitted : .refused)
         if owns {
             window.nativeSplitPreparation = nil
             if window.nativeSelectionGeneration == request.id {
@@ -242,8 +251,8 @@ extension TabsController {
         let callbacks = request.completions
         request.completions.removeAll()
         if owns && !succeeded { request.preparing?.cancelNativePreparation(in: window) }
-        callbacks.forEach { $0(succeeded) }
-        if !request.cancelled, window.nativeSelectionGeneration == nil,
+        callbacks.forEach { $0(outcome) }
+        if !superseded, window.nativeSelectionGeneration == nil,
            window.nativeSplitPreparation == nil {
             window.nativePresentationDidSettle?(succeeded)
         }

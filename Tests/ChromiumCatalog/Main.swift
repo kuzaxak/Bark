@@ -627,6 +627,11 @@ private final class CatalogApplication: NSApplication {
         try checkPeekInBarkWindow(promoteToSplit: false)
         try checkPeekInBarkWindow(promoteToSplit: true)
         try checkPeekInBarkWindow(promoteToSplit: true, existingSplit: true)
+        try checkPeekInBarkWindow(promoteToSplit: true, supersede: .beforeAdoption)
+        try checkPeekInBarkWindow(promoteToSplit: true, supersede: .duringPublication)
+        try checkPeekInBarkWindow(promoteToSplit: true, supersede: .duringSplit)
+        try checkPeekInBarkWindow(promoteToSplit: true, supersede: .awayAndBack)
+        try checkPeekInBarkWindow(promoteToSplit: true, refuseSplit: true)
         print("Chromium same-client Peek activation and split promotion checks passed")
         print("Chromium catalog admission checks passed")
     }
@@ -3331,7 +3336,11 @@ private final class CatalogApplication: NSApplication {
 /// In a Bark window a Peek is a background tab of its source's own client. It is made, owned and
 /// promoted there with no second client; while the engine reports it active, the model stays on the
 /// source and never adopts it as an ordinary tab.
-@MainActor private func checkPeekInBarkWindow(promoteToSplit: Bool, existingSplit: Bool = false) throws {
+private enum PeekPromotionSupersession { case beforeAdoption, duringPublication, duringSplit, awayAndBack }
+
+@MainActor private func checkPeekInBarkWindow(promoteToSplit: Bool, existingSplit: Bool = false,
+                                            supersede: PeekPromotionSupersession? = nil,
+                                            refuseSplit: Bool = false) throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcBarkPeek-\(UUID())")
     let suite = "BarcBarkPeek-\(UUID())"
     let defaults = UserDefaults(suiteName: suite)!
@@ -3344,6 +3353,7 @@ private final class CatalogApplication: NSApplication {
         Native.transfersEnabled = false; Native.peekCapable = false
         Native.pageViews = [:]; Native.roots[8300] = nil
         Native.onCreatePeek = nil; Native.onSelectWindow = nil
+        Native.onPageView = nil; Native.viewless.remove(83001)
     }
     var tree = TabTree()
     tree.createSpace(id: Native.work, name: "Work", icon: "briefcase", accentHex: "#123456", after: nil)
@@ -3440,6 +3450,88 @@ private final class CatalogApplication: NSApplication {
         precondition(peek.isDetached && Native.peekRoleClears == clears && window.selectedItemID == sourceID,
                      "the selected native tab cannot promote from a card that lost its page")
         cardSlot.addSubview(peekView)
+    }
+    if let supersede {
+        let destination = tabs.createSpace(name: "New selection", icon: "", accentHex: "#123456",
+                                           after: Native.work, sharingLoginsWith: Native.work)!
+        if supersede == .awayAndBack {
+            tabs.onTreeChanged = {
+                tabs.setSpace(destination, in: window)
+                precondition(window.spaceID == destination && window.showsNativeEmptySpace)
+                tabs.setSpace(Native.work, in: window)
+                precondition(window.spaceID == Native.work && window.selectedItemID == sourceID &&
+                             host.isNativeSelection(sourceNavigation, in: window))
+            }
+            defer { tabs.onTreeChanged = nil }
+            precondition(admission.promotePeek(peek, source: source, in: window, intoSplit: split))
+            precondition(window.spaceID == Native.work && window.selectedItemID == sourceID &&
+                         window.split == originalSplit && Native.peekRoleClears == clears + 1,
+                         "A completed round trip selects the source, despite having the same model values")
+            for owner in Array(Native.windows.keys) { Native.end(owner) }
+            tabs.saveNow()
+            return
+        }
+        var pending: (BarcSpaceSwitchRequest, BarcSpaceSwitchCallback?, UnsafeMutableRawPointer?)?
+        Native.onSpaceSwitch = { request, callback, context in
+            precondition(window.selectedItemID == sourceID,
+                         "A cancelled Peek split cannot reflect the Preview while the newer request is starting")
+            pending = (request, callback, context)
+            return 1
+        }
+        defer {
+            Native.onSpaceSwitch = nil
+            Native.onTransferAdmission = nil
+            tabs.onTreeChanged = nil
+        }
+
+        let switchSpace = {
+            tabs.setSpace(destination, in: window)
+            precondition(window.nativeSpaceSwitchIsPending && pending != nil)
+        }
+        switch supersede {
+        case .beforeAdoption: Native.onTransferAdmission = switchSpace
+        case .duringPublication: tabs.onTreeChanged = switchSpace
+        case .duringSplit:
+            tabs.onTreeChanged = {
+                Native.onPageView = { _ in
+                    Native.onPageView = nil
+                    switchSpace()
+                }
+            }
+        case .awayAndBack: preconditionFailure("Handled before holding a reply")
+        }
+
+        let promoted = admission.promotePeek(peek, source: source, in: window, intoSplit: split)
+        precondition(window.nativeSpaceSwitchIsPending && window.split == originalSplit && barkRoot?.split?.focused != 83002,
+                     "Peek promotion cannot replace a newer space switch awaiting a reply (\(supersede))")
+        if supersede == .beforeAdoption {
+            precondition(!promoted && peek.isDetached && tabs.item(peekID) == nil && Native.peekRoleClears == clears,
+                         "Refusing admission keeps the Peek detached and its native role intact")
+        } else {
+            precondition(promoted && !peek.isDetached && tabs.session(for: peekID) === peek &&
+                         Native.peekRoleClears == clears + 1,
+                         "An already published page keeps its document as a regular tab")
+        }
+        let (request, callback, context) = pending!
+        Native.selectClient(8300, tab: 0)
+        Native.windows[8300]?.flags |= BARC_DISCOVERY_SPACE_SUPPRESSED.rawValue
+        Native.settle(request, group: 8300, status: BARC_SPACE_SWITCH_APPLIED, client: 8300, tab: 0,
+                      callback: callback, context: context)
+        precondition(window.spaceID == destination && window.showsNativeEmptySpace,
+                     "The held selection settles normally after the Peek action returns")
+        for owner in Array(Native.windows.keys) { Native.end(owner) }
+        tabs.saveNow()
+        return
+    }
+    if refuseSplit {
+        tabs.onTreeChanged = { Native.viewless.insert(83001) }
+        precondition(admission.promotePeek(peek, source: source, in: window, intoSplit: split))
+        precondition(window.split == nil && window.selectedItemID == peekID &&
+                     tabs.session(for: peekID) === peek && Native.peekRoleClears == clears + 1,
+                     "A genuine split refusal still promotes the live Preview as an ordinary tab")
+        for owner in Array(Native.windows.keys) { Native.end(owner) }
+        tabs.saveNow()
+        return
     }
     precondition(admission.promotePeek(peek, source: source, in: window, intoSplit: split),
                  "the Peek is promoted in place")

@@ -264,7 +264,7 @@ final class ChromiumWindowRoot: NSView {
     /// window, whatever moves; a page that leaves the split leaves the window. False, and nothing
     /// changes, when a pane's client has no page view for its tab or the split is not one.
     @discardableResult
-    func showSplit(_ split: Split) -> Bool {
+    func showSplit(_ split: Split, while isCurrent: () -> Bool = { true }) -> Bool {
         let panes = split.panes.compactMap { $0 }
         guard (2...4).contains(split.panes.count), split.dividers.count + 1 == split.panes.count,
               zip([0] + split.dividers, split.dividers + [1]).allSatisfy({ $0 < $1 }),
@@ -276,7 +276,7 @@ final class ChromiumWindowRoot: NSView {
             guard let view = pageView(pane) else { return false }
             views[pane.tab] = view
         }
-        guard presentationRevision == before else { return false }
+        guard isCurrent(), presentationRevision == before else { return false }
         presentationRevision &+= 1
         let revision = presentationRevision
         presentationDepth += 1

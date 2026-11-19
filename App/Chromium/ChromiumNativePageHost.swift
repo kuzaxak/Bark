@@ -1155,10 +1155,11 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         if let record {
             guard active != nil,
                   let split = hostSplit(record, navigations: navigations, activeItemID: activeItemID, mount: mount, in: window),
-                  mount.presenter.showSplit(split) else { return false }
+                  mount.presenter.showSplit(split, while: isCurrent) else { return false }
         } else if mount.presenter.shownSplit != nil {
-            guard mount.presenter.showSplit(nil) else { return false }
+            guard mount.presenter.showSplit(nil, while: isCurrent) else { return false }
         }
+        guard isCurrent() else { return false }
         if let active, !isNativeSelection(active, in: window) {
             guard selectPage(active, in: window), isCurrent() else { return false }
         }

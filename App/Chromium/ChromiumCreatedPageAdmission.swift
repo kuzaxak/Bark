@@ -126,7 +126,7 @@ final class ChromiumCreatedPageAdmission {
     /// A Peek already in its source's client, as in a Bark window, stays there.
     func promotePeek(_ session: PageSession, source: PageSession, in window: BrowserWindowState,
                      intoSplit split: SplitRecord? = nil) -> Bool {
-        guard registry.windows[window.id] === window, window.selectedItemID == source.itemID,
+        guard !window.nativePresentationIsPreparing, registry.windows[window.id] === window, window.selectedItemID == source.itemID,
               session.isDetached, let profile = session.profile,
               tabs.isNativePageOwner(source, in: window),
               let origin = source.navigation as? ChromiumPageNavigation,
@@ -135,29 +135,39 @@ final class ChromiumCreatedPageAdmission {
               split == nil || (page.nativeWindowID == origin.nativeWindowID && host.laysOutSplits(in: window)
                 && split?.contains(source.itemID) == true && split?.contains(session.itemID) == true),
               let space = window.isIncognito ? window.spaceID : tabs.spaceID(of: source.itemID) else { return false }
+        let displayedSpace = window.spaceID
+        let displayedSplit = window.split
+        let sourceIsCurrent = { [weak self, weak source, weak window] in
+            guard let self, let source, let window else { return false }
+            return !window.nativePresentationIsPreparing && self.registry.windows[window.id] === window &&
+                window.selectedItemID == source.itemID && window.spaceID == displayedSpace &&
+                window.split == displayedSplit && self.tabs.isNativePageOwner(source, in: window)
+        }
         let commit = { [weak self, weak session, weak source, weak window] () -> Bool in
-            guard let self, let session, let source, let window,
-                  self.registry.windows[window.id] === window,
-                  self.tabs.isNativePageOwner(source, in: window),
+            guard let self, let session, let source, let window, sourceIsCurrent(),
                   split == nil ? self.host.acceptNativeSelection(page, in: window)
                                : self.host.isNativePeekSelection(page, source: origin, in: window),
+                  sourceIsCurrent(),
                   let id = self.tabs.adoptDetachedNativePage(session, through: self.host, in: window,
                       spaceID: space, from: source.itemID, select: false),
                   self.tabs.session(for: id) === session, session.navigation === page else { return false }
-            return split != nil || self.tabs.reflectNativeSelection(id, in: window)
+            // Publication is committed. Let Chromium clear the Peek role even
+            // if publication itself caused a newer selection; preserve the tab.
+            return split != nil || !sourceIsCurrent() || self.tabs.reflectNativeSelection(id, in: window)
         }
         if page.nativeWindowID == origin.nativeWindowID {
             guard ownsPeek(session, source: source, in: window), host.admitMovedPeek(page, commit: commit) else { return false }
-            if let split {
+            if let split, sourceIsCurrent(), host.isNativePeekSelection(page, source: origin, in: window),
+               sourceIsCurrent() {
                 // Keep the source layout mounted until the engine clears the
                 // Peek role and the split can place the existing card page.
                 let stillOwned = { [weak self, weak window, weak session] in
                     guard let self, let window, let session else { return false }
                     return self.tabs.session(for: session.itemID) === session && session.navigation === page
                 }
-                tabs.presentNativeSplit(split, activeItemID: session.itemID, in: window, liveAdmission: stillOwned) {
-                    [weak self, weak window] admitted in
-                    guard !admitted, let self, let window, window.selectedItemID == source.itemID,
+                tabs.presentNativeSplitWithOutcome(split, activeItemID: session.itemID, in: window, liveAdmission: stillOwned) {
+                    [weak self, weak window] outcome in
+                    guard outcome == .refused, let self, let window, sourceIsCurrent(),
                           stillOwned(), self.host.isNativeSelection(page, in: window) ||
                             self.host.isNativePeekSelection(page, source: origin, in: window) else { return }
                     // Reflection moves the still-selected Peek into the ordinary page slot.

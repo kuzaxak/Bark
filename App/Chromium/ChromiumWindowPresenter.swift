@@ -55,9 +55,9 @@ final class ChromiumHostPresenter {
         return (window, point)
     }
 
-    func showSplit(_ split: ChromiumWindowRoot.Split?) -> Bool {
-        guard let split else { return root.endSplit() }
-        return root.showSplit(split)
+    func showSplit(_ split: ChromiumWindowRoot.Split?, while isCurrent: () -> Bool = { true }) -> Bool {
+        guard let split else { return isCurrent() && root.endSplit() }
+        return root.showSplit(split, while: isCurrent)
     }
 
     var shownSplit: ChromiumWindowRoot.Split? { root.split }
