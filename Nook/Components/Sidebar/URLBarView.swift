@@ -100,11 +100,7 @@ struct URLBarView: View {
         collapsedAddress(session: session)
         .frame(maxWidth: .infinity, minHeight: controlHeight, maxHeight: controlHeight)
         .overlay(alignment: .bottom) {
-            if browserManager.engine == .chromium {
-                NativePageLoadingBar(isLoading: session?.isLoading == true)
-            } else if splitItemID == nil {
-                PageLoadingProgressBar(session: session)
-            }
+            NativePageLoadingBar(isLoading: session?.isLoading == true)
         }
         .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
         .background {

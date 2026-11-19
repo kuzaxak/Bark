@@ -1,14 +1,18 @@
 from pathlib import Path
-from tempfile import TemporaryDirectory
 import subprocess
-root=Path(__file__).resolve().parents[2]
+import sys
+from tempfile import TemporaryDirectory
 
-with TemporaryDirectory(prefix='bark-loading-bar-') as directory:
-    out = Path(directory)
-    s=(root/'Nook/Components/WebsiteView/PageLoadingProgressBar.swift').read_text()
-    a=s.index('    static func sweep(');b=s.index('    var body: some View {',a)
-    (out/'Sweep.swift').write_text('import Foundation\nenum NativePageLoadingBar {\n'+s[a:b]+'}\n')
-    cmd=['swiftc','-swift-version','5','-parse-as-library',str(out/'Sweep.swift'),str(root/'Tests/ChromiumLoadingBar/Main.swift'),'-o',str(out/'check')]
-    for i,c in enumerate([cmd,[str(out/'check')]]):
-     p=subprocess.run(c,capture_output=True,text=True);(out/f'{i}.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr)
-     if p.returncode:raise SystemExit(p.returncode)
+root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / "Tests/Shared"))
+from swift_check import swift_target
+
+with TemporaryDirectory(prefix="bark-loading-bar-") as scratch:
+    binary = Path(scratch) / "check"
+    subprocess.run([
+        "swiftc", "-target", swift_target(), "-swift-version", "5", "-parse-as-library",
+        "-module-cache-path", str(Path(scratch) / "ModuleCache"),
+        root / "Nook/Components/WebsiteView/NativePageLoadingSweep.swift",
+        root / "Tests/ChromiumLoadingBar/Main.swift", "-o", binary,
+    ], check=True)
+    subprocess.run([binary], check=True)
