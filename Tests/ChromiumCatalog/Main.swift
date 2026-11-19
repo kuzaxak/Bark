@@ -421,8 +421,23 @@ private struct NoTokens: KagiTokenStore {
     func save(_ token: String?) {}
 }
 
+@MainActor private func checkRegularTabCount() {
+    let regular = Native.window(1, group: 1, profile: UUID(), active: 10)
+    var parked = Native.window(2, group: 1, profile: UUID(), flags: 0, active: 20)
+    parked.selected_client = regular.window
+    let guest = Native.window(3, group: 2, profile: nil, profileKind: BARC_DISCOVERY_GUEST.rawValue, active: 30)
+    let unnamed = Native.window(4, group: 3, profile: nil, active: 40)
+    let snapshot = ChromiumDiscoverySnapshot(revision: 1, windows: [regular, parked, guest, unnamed], tabs: [
+        Native.tab(10, window: 1), Native.tab(11, window: 1),
+        Native.tab(20, window: 2, flags: BARC_DISCOVERY_TAB_APP_FACTORY.rawValue),
+        Native.tab(30, window: 3), Native.tab(40, window: 4), Native.tab(50, window: 5),
+    ])
+    precondition(snapshot.regularTabCount == 3, "Count parked and factory tabs only for known regular owners")
+}
+
 @main private enum Checks {
     @MainActor static func main() throws {
+        checkRegularTabCount()
         try checkEngineSelectionInBarkWindow()
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcCatalog-\(UUID())")
         let suite = "BarcCatalog-\(UUID())"

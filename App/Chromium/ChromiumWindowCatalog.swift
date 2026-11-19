@@ -1,11 +1,19 @@
 import Darwin
 import Foundation
 import BarcChromium
+import OSLog
 
 struct ChromiumDiscoverySnapshot {
     let revision: UInt64
     let windows: [BarcDiscoveryWindow]
     let tabs: [BarcDiscoveryTab]
+
+    // Include parked clients and factory-created blank tabs. Only named regular
+    // profiles contribute to performance diagnostics.
+    var regularTabCount: Int {
+        let regular = Set(windows.lazy.filter { $0.profileID != nil }.map(\.window))
+        return tabs.reduce(0) { $0 + (regular.contains($1.window) ? 1 : 0) }
+    }
 }
 
 /// The header's contract: the side that allocates a bridge struct sets its size.
@@ -93,6 +101,8 @@ extension BarcDiscoveryWindow {
 final class ChromiumWindowCatalog {
     private let bridge: BarcBridge
     private var observation: UInt64 = 0
+    private let performanceLog = OSLog(subsystem: Bundle.main.bundleIdentifier ?? "ee.qdo.bark", category: "TabResources")
+    private var lastReportedTabCount: Int?
     var onSnapshot: ((ChromiumDiscoverySnapshot) -> Void)?
 
     init(bridge: BarcBridge) { self.bridge = bridge }
@@ -105,15 +115,28 @@ final class ChromiumWindowCatalog {
                 let catalog = Unmanaged<ChromiumWindowCatalog>.fromOpaque(context).takeUnretainedValue()
                 guard catalog.observation == token, token != 0,
                       let snapshot = catalog.bridge.readSnapshot() else { return }
+                catalog.reportTabCount(snapshot)
                 catalog.onSnapshot?(snapshot)
             }
         }, Unmanaged.passUnretained(self).toOpaque())
         return observation != 0
     }
 
+    private func reportTabCount(_ snapshot: ChromiumDiscoverySnapshot) {
+        guard performanceLog.isEnabled(type: .debug) else {
+            lastReportedTabCount = nil
+            return
+        }
+        let count = snapshot.regularTabCount
+        guard lastReportedTabCount != count else { return }
+        lastReportedTabCount = count
+        os_log(.debug, log: performanceLog, "regularTabCount=%{public}ld", count)
+    }
+
     func stop() {
         let token = observation
         observation = 0
+        lastReportedTabCount = nil
         onSnapshot = nil
         if token != 0 { bridge.discovery_unobserve(token) }
     }
