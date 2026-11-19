@@ -34,9 +34,7 @@ struct URLBarView: View {
     var nativeTopBar: Bool = false
     private var usesNativeEditor: Bool { nativeTopBar || (browserManager.engine == .chromium && splitItemID == nil) }
     @State private var nativeEditPage: PageSession?
-    @State private var nativeEditProfile: UUID?
-    @State private var nativeEditSpace: UUID?
-    @State private var nativeEditSelected: UUID?
+    @State private var nativeEditTarget: AddressEditTarget?
 
     var body: some View {
         addressPresentation
@@ -70,18 +68,19 @@ struct URLBarView: View {
             }
         }
         .onChange(of: windowState.spaceID) { _, _ in cancelEditing() }
+        .onChange(of: nativeEditTarget?.isCurrent) { _, current in
+            if current == false { cancelEditing() }
+        }
         .onChange(of: windowState.commandPalette?.isVisible) { _, visible in
-            guard visible == true else { return }
-            if usesNativeEditor, let palette = windowState.commandPalette,
-               palette.shouldNavigateCurrentTab, palette.addSplit == nil {
-                guard nativeAddressIsAvailable else { return }
-                let text = palette.prefilledText
-                let page = browserManager.frontPage(in: windowState)
-                palette.close()
-                guard page?.url.absoluteString == text || (page == nil && text.isEmpty) else { return }
-                if !nativeTopBar, !windowState.isSidebarVisible { hoverManager.isOverlayVisible = true }
-                beginEditing(text)
-            } else { cancelEditing() }
+            if visible == true && windowState.commandPalette?.addressEdit == nil { cancelEditing() }
+        }
+        .onChange(of: windowState.commandPalette?.visibleAddressEditID) { _, request in
+            guard request != nil, usesNativeEditor, nativeAddressIsAvailable,
+                  let palette = windowState.commandPalette, let target = palette.addressEdit else { return }
+            palette.close()
+            guard target.isCurrent else { return }
+            if !nativeTopBar, !windowState.isSidebarVisible { hoverManager.isOverlayVisible = true }
+            beginEditing(target.address, target: target)
         }
         .onDisappear { cancelEditing() }
         .onHoverTracking { hovering in
@@ -485,26 +484,19 @@ struct URLBarView: View {
         return suggestion.text
     }
 
-    private func beginEditing(_ address: String) {
+    private func beginEditing(_ address: String, target: AddressEditTarget? = nil) {
         if usesNativeEditor {
-            guard nativeAddressIsAvailable, let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
-                  browserManager.windowRegistry?.windows[windowState.id] === windowState,
-                  browserManager.windowRegistry?.activeWindow === windowState else { return }
-            let page = browserManager.frontPage(in: windowState)
-            guard page?.url.absoluteString == address || (page == nil && address.isEmpty) else { return }
-            nativeEditPage = page
-            nativeEditProfile = page?.profile?.id
-            nativeEditSpace = windowState.spaceID; nativeEditSelected = windowState.selectedItemID
+            guard nativeAddressIsAvailable,
+                  let target = target ?? AddressEditTarget.capture(in: windowState, manager: browserManager),
+                  target.address == address, target.isCurrent else { return }
+            nativeEditTarget = target
+            nativeEditPage = browserManager.frontPage(in: windowState)
         }
         searchManager.setTabs(browserManager.tabs, window: windowState)
         searchManager.setHistoryManager(browserManager.historyManager)
-        if usesNativeEditor, let page = nativeEditPage {
-            let profileID = nativeEditProfile, spaceID = nativeEditSpace, selected = nativeEditSelected
-            searchManager.setWebSuggestionTarget(for: page) { [weak page, weak manager = browserManager, weak window = windowState] in
-                guard let page, let manager, let window else { return false }
-                return window.isAddressEditing && manager.windowRegistry?.windows[window.id] === window &&
-                    manager.frontPage(in: window) === page && page.profile?.id == profileID &&
-                    window.spaceID == spaceID && window.selectedItemID == selected
+        if usesNativeEditor, let target = nativeEditTarget, let page = nativeEditPage {
+            searchManager.setWebSuggestionTarget(for: page) { [weak window = windowState] in
+                window?.isAddressEditing == true && target.isCurrent
             }
         } else { searchManager.clearWebSuggestionTarget() }
         prefilledAddress = address
@@ -522,7 +514,7 @@ struct URLBarView: View {
         windowState.isAddressEditing = false
         hoverManager.setAddressEditing(false, in: windowState.id)
         isEditing = false
-        nativeEditPage = nil; nativeEditProfile = nil
+        nativeEditPage = nil; nativeEditTarget = nil
         addressFocused = false
         searchManager.clearWebSuggestionTarget()
     }
@@ -530,18 +522,10 @@ struct URLBarView: View {
     private func submitAddress(_ chosen: SearchManager.SearchSuggestion? = nil) {
         // Capture before cancelEditing: retiring the editor may itself change
         // selection. Never retarget a stale address submission to its successor.
-        let editPage = nativeEditPage, editProfile = nativeEditProfile
-        let editSpace = nativeEditSpace, editSelected = nativeEditSelected
-        let currentTarget: () -> Bool = {
-            guard usesNativeEditor else { return true }
-            guard let nativeWindow = windowState.window, nativeWindow === NSApp.keyWindow,
-                  browserManager.windowRegistry?.windows[windowState.id] === windowState,
-                  browserManager.windowRegistry?.activeWindow === windowState,
-                  windowState.spaceID == editSpace, windowState.selectedItemID == editSelected,
-                  browserManager.frontPage(in: windowState) === editPage else { return false }
-            return editPage?.profile?.id == editProfile
-        }
-        guard !usesNativeEditor || isEditing, currentTarget(), !isComposingAddress else { return }
+        let editPage = nativeEditPage, editTarget = nativeEditTarget
+        let currentTarget = { !usesNativeEditor || editTarget?.isCurrent == true }
+        guard !usesNativeEditor || isEditing, !isComposingAddress else { return }
+        guard currentTarget() else { cancelEditing(); return }
         let suggestions = inlineSuggestions
         let selected = selectedSuggestion.flatMap { selection in suggestions.first { $0 == selection } }
         let typed = addressText.trimmingCharacters(in: .whitespacesAndNewlines)

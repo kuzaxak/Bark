@@ -5,7 +5,7 @@ import Foundation
 
 @main
 struct AddSplitCheck {
-    @MainActor static func main() {
+    @MainActor static func main() async {
         let current = UUID(), other = UUID(), opened = UUID(), hiddenLeft = UUID(), hiddenRight = UUID(), third = UUID(), fourth = UUID()
         func layout(_ panes: [UUID], vertical: Bool = false) -> SplitDrop.Layout {
             SplitDrop.Layout(panes: panes, vertical: vertical, dividers: SplitDrop.equalDividers(panes.count), isFull: panes.count == 4)
@@ -95,6 +95,76 @@ struct AddSplitCheck {
         palette.open(addSplit: adding)
         palette.open(prefill: "https://example.com", navigateCurrentTab: true)
         precondition(palette.addSplit == nil, "the bar opened for something else")
+        await checkAddressEdit()
         print("AddSplitCheck passed")
     }
+
+    @MainActor private static func checkAddressEdit() async {
+        let palette = CommandPalette()
+        let window = NSObject(), otherWindow = NSObject()
+        let tab = NSObject(), otherTab = NSObject(), peek = NSObject()
+        let navigation = NSObject(), replacement = NSObject()
+        let sameURL = URL(string: "https://example.com")!
+        let space = UUID(), otherSpace = UUID(), item = UUID(), profile = UUID()
+        func owner(window: NSObject, space: UUID = space, selection: UUID? = item,
+                   page: NSObject? = tab, navigation: NSObject? = navigation, url: URL? = sameURL,
+                   nativeWindow: Int32? = 1, nativeTab: Int32? = 2, document: UInt64? = 4) -> AddressEditTarget.Context {
+            .init(window: ObjectIdentifier(window), space: space, selection: selection,
+                  page: page.map(ObjectIdentifier.init), navigation: navigation.map(ObjectIdentifier.init),
+                  nativeWindow: nativeWindow, nativeTab: nativeTab, document: document, profile: profile, address: url)
+        }
+        var front: AddressEditTarget.Context? = owner(window: window)
+        let edit = AddressEditTarget { front }!
+        precondition(edit.isCurrent && edit.address == sameURL.absoluteString)
+        for changed in [
+            owner(window: otherWindow),
+            owner(window: window, space: otherSpace),
+            owner(window: window, page: otherTab),
+            owner(window: window, page: peek),
+            owner(window: window, navigation: replacement),
+            owner(window: window, nativeWindow: 3),
+            owner(window: window, document: 5),
+            owner(window: window, url: URL(string: "https://example.com/redirect")),
+            nil
+        ] {
+            front = changed
+            precondition(!edit.isCurrent, "A changed owner cannot receive the earlier address edit")
+        }
+
+        front = owner(window: window)
+        palette.openAddressEdit(edit)
+        front = owner(window: window, page: otherTab)
+        await finishPresentation()
+        precondition(!palette.isVisible && palette.addressEdit == nil,
+                     "A queued edit cannot present on another same-URL page")
+
+        front = owner(window: window, page: nil, navigation: nil, url: nil)
+        precondition(AddressEditTarget { front } == nil, "An unavailable selected page is not empty")
+        front = owner(window: window, selection: nil, page: nil, navigation: nil, url: nil)
+        let empty = AddressEditTarget { front }!
+        palette.openAddressEdit(empty)
+        await finishPresentation()
+        precondition(palette.isVisible && empty.isCurrent && palette.prefilledText.isEmpty,
+                     "A genuinely empty space can accept an address")
+        front = owner(window: window)
+        precondition(!empty.isCurrent, "A page that arrives during an empty edit cannot receive it")
+
+        palette.close()
+        palette.open()
+        await finishPresentation()
+        precondition(palette.isVisible && !palette.shouldNavigateCurrentTab && palette.addressEdit == nil,
+                     "A new-tab invocation is independent of the prior edit")
+        palette.close()
+        palette.open()
+        palette.close()
+        await finishPresentation()
+        precondition(!palette.isVisible, "A dismissed palette cannot reopen from its queued presentation")
+    }
+
+    @MainActor private static func finishPresentation() async {
+        await withCheckedContinuation { continuation in
+            DispatchQueue.main.async { continuation.resume() }
+        }
+    }
+
 }

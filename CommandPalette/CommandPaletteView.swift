@@ -14,6 +14,26 @@ import NookSettings
 import NookWeb
 import NookUI
 
+extension AddressEditTarget {
+    static func capture(in window: BrowserWindowState, manager: BrowserManager) -> AddressEditTarget? {
+        guard let nativeWindow = window.window else { return nil }
+        return AddressEditTarget { [weak window, weak manager, weak nativeWindow] in
+            guard let window, let manager, let nativeWindow, window.window === nativeWindow,
+                  nativeWindow.isKeyWindow, manager.windowRegistry?.windows[window.id] === window,
+                  manager.windowRegistry?.activeWindow === window,
+                  !window.nativePresentationIsPreparing, !window.nativeSpaceSwitchIsPending,
+                  !window.nativeSpaceSwitchIsUnresolved, window.spaceID != nil else { return nil }
+            let page = manager.frontPage(in: window)
+            let native = page?.navigation as? ChromiumPageNavigation
+            return Context(window: ObjectIdentifier(nativeWindow), space: window.spaceID,
+                           selection: window.selectedItemID, page: page.map(ObjectIdentifier.init),
+                           navigation: page?.navigation.map(ObjectIdentifier.init),
+                           nativeWindow: native?.nativeWindowID, nativeTab: native?.nativeTabID,
+                           document: page?.nativeNavigationSerial, profile: page?.profile?.id, address: page?.url)
+        }
+    }
+}
+
 struct CommandPaletteView: View {
     @EnvironmentObject var browserManager: BrowserManager
     @Environment(BrowserWindowState.self) private var windowState
@@ -338,6 +358,9 @@ struct CommandPaletteView: View {
                 selectedSuggestionIndex = -1
             }
         }
+        .onChange(of: commandPalette.addressEdit?.isCurrent) { _, current in
+            if current == false { commandPalette.close() }
+        }
         .onChange(of: windowState.spaceID) { _, _ in
             if commandPalette.isVisible {
                 searchManager.updateSpaceContext()
@@ -650,15 +673,26 @@ struct CommandPaletteView: View {
 
     private var returnPlacement: String {
         if commandPalette.addSplit != nil { return "the new pane" }
-        if commandPalette.shouldNavigateCurrentTab, let page = browserManager.frontPage(in: windowState) {
+        if commandPalette.shouldNavigateCurrentTab, commandPalette.addressEdit?.isCurrent != false,
+           let page = browserManager.frontPage(in: windowState) {
             return page.isDetached ? "this Peek" : "this tab"
         }
         return browserManager.tabs.newTabAnchorTitle(in: windowState).map { "a new tab below \u{201C}\($0)\u{201D}" }
             ?? "a new tab at the top of Tabs"
     }
 
+    private func maySubmit() -> Bool {
+        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return false }
+        if isNative && commandPalette.shouldNavigateCurrentTab,
+           commandPalette.addressEdit?.isCurrent != true {
+            commandPalette.close()
+            return false
+        }
+        return true
+    }
+
     private func handleReturn() {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
+        guard maySubmit() else { return }
         if let site = activeSiteSearch {
             let query: String
             if selectedSuggestionIndex >= 0 && selectedSuggestionIndex < visibleSuggestions.count {
@@ -689,7 +723,7 @@ struct CommandPaletteView: View {
 
     private func selectSuggestion(_ suggestion: SearchManager.SearchSuggestion)
     {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
+        guard maySubmit() else { return }
         if case .action(let action) = suggestion.type {
             runAction(action)
             return
@@ -722,7 +756,6 @@ struct CommandPaletteView: View {
             // Explicit site-search templates remain URLs, including mouse picks.
             if activeSiteSearch != nil, case .search = suggestion.type, let url = url(for: suggestion) {
                 open(url)
-            // A page another window holds is not navigated from here; the text opens a new tab.
             } else if commandPalette.shouldNavigateCurrentTab, let session = browserManager.frontPage(in: windowState) {
                 session.typedVisitPending = true
                 session.navigate(to: suggestion.text)
@@ -751,6 +784,7 @@ struct CommandPaletteView: View {
 
     /// Loads `url` in the page in front when the palette was opened to navigate it, else in a new tab.
     private func open(_ url: URL) {
+        guard maySubmit() else { return }
         guard commandPalette.shouldNavigateCurrentTab, let page = browserManager.frontPage(in: windowState) else { return openInNewTab(url) }
         if page.isDetached {
             page.typedVisitPending = true
@@ -1100,7 +1134,7 @@ struct CommandPaletteView: View {
     /// several can be opened in a row. An open tab is switched to, as with Return. Filling Add
     /// Split View's empty pane, it does what Return does.
     private func openTargetInBackground() {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
+        guard maySubmit() else { return }
         guard commandPalette.addSplit == nil else { return handleReturn() }
         guard let row = targetSuggestion else { return }
         if let query = nativeSearchQuery(for: row) {
@@ -1117,7 +1151,7 @@ struct CommandPaletteView: View {
 
     /// Shift+Return: the row opens in split view beside the current tab, unless four panes show.
     private func openTargetInSplit() {
-        guard !isNative || (nativeOwnerCurrent && commandPalette.isVisible) else { return }
+        guard maySubmit() else { return }
         guard commandPalette.addSplit != nil || browserManager.splitManager.offersAddSplitView(in: windowState),
               let row = targetSuggestion else { return }
         let itemID: UUID?

@@ -379,15 +379,17 @@ class KeyboardShortcutManager {
            action == .newTab || action == .focusAddressBar || action == .openCommandPalette {
             guard let window = windowRegistry?.activeWindow, let keyWindow = CommandWindow.key,
                   window.window === keyWindow else { return }
+            if action == .focusAddressBar {
+                guard let target = AddressEditTarget.capture(in: window, manager: browserManager) else { return }
+                window.commandPalette?.openAddressEdit(target)
+                return
+            }
             let selected = window.selectedItemID
-            let address = action == .focusAddressBar ? browserManager.frontPage(in: window)?.url.absoluteString : nil
             DispatchQueue.main.async { [weak self, weak window] in
                 guard let self, let window, self.windowRegistry?.activeWindow === window,
                       self.windowRegistry?.windows[window.id] === window, window.selectedItemID == selected,
                       let keyWindow = CommandWindow.key, window.window === keyWindow else { return }
-                if let address { window.commandPalette?.open(prefill: address, navigateCurrentTab: true) }
-                else if action == .focusAddressBar { window.commandPalette?.open(navigateCurrentTab: true) }
-                else { window.commandPalette?.open() }
+                window.commandPalette?.open()
             }
             return
         }
