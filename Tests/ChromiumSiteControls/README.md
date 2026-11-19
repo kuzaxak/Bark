@@ -27,9 +27,11 @@ survive, then quits Bark. The walk does not accept
 certificate exceptions or modify Keychain trust.
 
 The cookie walk uses two disposable loopback sites in the same Bark profile.
-It checks both cookies through browser requests, chooses **Site Controls →
-More → Clear Cookies** on the first site, and checks that only that site's
-cookie disappears. The evidence includes the server observations and the
+It checks both cookies through browser requests and navigates the first page
+with **Site Controls → More** open. If AppKit retains the old menu action,
+activating it must leave the cookie unchanged. The walk then chooses
+**Clear Cookies** from the current page's menu and checks that only the
+requesting site's cookie disappears. The evidence includes the server observations and the
 identity of the signed candidate.
 
 ```fish
