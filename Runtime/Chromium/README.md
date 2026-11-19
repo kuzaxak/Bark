@@ -835,22 +835,27 @@ supplies `--barc-app-data-dir` and `--barc-app-profile` to select temporary
 storage, isolated preferences and a mock keychain. Cloud sync is disabled for
 that run.
 
-Normal startup requires bridge version 12 before ChromeMain. Native registration
+Before entering ChromeMain, the launcher checks the versioned entry points,
+the bridge table and the public header digest from the pinned SDK. The
+current entry points are `barc_engine_main_v13` and `barc_bridge_v13`.
+Native registration
 sets `NookChromium Safe Storage` / `NookChromium` through Chromium's existing
 configurable key-storage seam before providers start. Encryption and denial
 handling remain upstream; there is no lookup fallback to Chromium's default
 item. Kagi uses a separate `NookChromium Kagi Session Link` service. Verification
 credentials stay in memory.
 
-Startup reuses saved window IDs, profiles and selection. The implementation
-loads the visible selection or two-to-four same-profile split panes while
-leaving unrelated pages unloaded. Unsupported cross-profile layouts stay
-unmodified and are refused until their native presentation is available.
-Additional factory windows stay hidden until exact page/header admission. Failed
-restores keep their saved record; an already-bound live owner stays registered
-until actual group disappearance, including pending/refused close.
+Startup reuses saved window IDs, profiles and selection. A saved split can
+contain two to four panes from one or more regular profiles. The native
+window checks that every pane holds the current view for its Chromium tab.
+When a view moves or Chromium replaces it, the shell can remount the
+current view without navigating again. If a saved split cannot be shown,
+Bark clears the split after it successfully presents the selected tab alone.
+Additional factory windows stay hidden until their page and header are
+admitted. An already-bound window stays registered while its native group
+exists, including during a pending or refused close.
 
-The matched framework requires `barc_set_runtime_close_callback`. Accepted quit
+The shell registers the bridge table's `set_runtime_close_callback`. Accepted quit
 flushes saved windows before native session/window teardown; a later veto resumes
 model operations and window admission. This is distinct from the first quit
 attempt, which may still fail beforeunload/download consent. Source/fixture
