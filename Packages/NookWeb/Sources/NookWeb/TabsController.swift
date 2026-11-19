@@ -846,10 +846,12 @@ public final class TabsController {
     /// Delay destructive model mutation until all affected native owners have
     /// actually closed. Cancellation preserves the items; already-closed pages
     /// may be recreated later. No native handles or second item registry live here.
-    func releaseNativePagesBeforeMutation(_ ids: [UUID], then action: @escaping @MainActor () -> Void) -> Bool {
+    func releaseNativePagesBeforeMutation(_ ids: [UUID],
+                                          preferredSuccessor: ((BrowserWindowState) -> UUID?)? = nil,
+                                          then action: @escaping @MainActor () -> Void) -> Bool {
         let pages = ids.compactMap { session(for: $0) }.filter(\.requiresNativeResourceRelease)
         guard !pages.isEmpty else { return false }
-        let handoffs = nameCloseSuccessors(leaving: Set(ids))
+        let handoffs = nameCloseSuccessors(leaving: Set(ids), preferred: preferredSuccessor)
         let profiles = pages.map { $0.profile?.id }
         var remaining = pages.count
         var allAdmitted = true
@@ -878,12 +880,13 @@ public final class TabsController {
     /// Chromium shows a tab of its own choosing when a shown page closes. A successor whose
     /// page is live goes with the close, so the engine shows it the moment the page actually
     /// closes. Until then, as while "Leave site?" asks, the closing page stays selected.
-    private func nameCloseSuccessors(leaving ids: Set<UUID>) -> [(window: BrowserWindowState, left: UUID, successor: UUID)] {
+    private func nameCloseSuccessors(leaving ids: Set<UUID>,
+                                     preferred: ((BrowserWindowState) -> UUID?)?) -> [(window: BrowserWindowState, left: UUID, successor: UUID)] {
         var handoffs: [(window: BrowserWindowState, left: UUID, successor: UUID)] = []
         for window in allWindows {
             guard let selected = window.selectedItemID, ids.contains(selected),
                   window.split?.contains(selected) != true,
-                  let next = successor(in: window, leaving: ids),
+                  let next = preferred?(window) ?? successor(in: window, leaving: ids),
                   let page = session(for: next), page.navigation != nil, !page.nativeIsEnding else { continue }
             window.nativeCloseSuccessor = next
             handoffs.append((window, selected, next))
@@ -924,6 +927,12 @@ public final class TabsController {
     public func isPageShownElsewhere(_ itemID: UUID, from window: BrowserWindowState) -> Bool {
         guard let owner = pageOwnerWindow(of: itemID) else { return false }
         return owner.id != window.id
+    }
+
+    func hasOtherNativePageOwner(_ itemID: UUID, than window: BrowserWindowState) -> Bool {
+        guard session(for: itemID)?.navigation != nil, let owner = pageOwners[itemID],
+              windowRegistry.windows[owner] != nil else { return false }
+        return owner != window.id
     }
 
     /// The window's selected page is live in another window, which shows it.
@@ -1570,7 +1579,22 @@ public final class TabsController {
 
     /// The engine shows this page in `window` when the window's closing page goes.
     public func isCloseSuccessor(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
-        window.nativeCloseSuccessor == itemID && selectedSession(in: window)?.nativeIsEnding == true
+        window.nativeCloseSuccessor == itemID && selectedSession(in: window)?.nativeIsEnding == true &&
+            canUseCloseSuccessor(itemID, in: window)
+    }
+
+    /// While a close is pending, Chromium can temporarily activate a neighbouring tab.
+    public func canPresentProvisionalSelection(_ itemID: UUID, in window: BrowserWindowState,
+                                               selectedPageClosed: Bool = false) -> Bool {
+        if window.nativeCloseSuccessor == itemID { return !isStaleCloseSuccessor(itemID, in: window) }
+        guard selectedPageClosed || selectedSession(in: window)?.nativeIsEnding == true else { return true }
+        return canUseCloseSuccessor(itemID, in: window, previouslyShownIn: window.split)
+    }
+
+    /// A named tab can move while Chromium waits for beforeunload. The engine
+    /// may activate its old client slot before reporting the terminal close.
+    public func isStaleCloseSuccessor(_ itemID: UUID, in window: BrowserWindowState) -> Bool {
+        window.nativeCloseSuccessor == itemID && !canUseCloseSuccessor(itemID, in: window)
     }
 
     /// Nook is deciding this window's selection: its page is closing, a successor is being

@@ -1203,11 +1203,15 @@ final class ChromiumCreatedPageAdmission {
             // or the successor Nook named with the close takes the selection. A page
             // that closed itself reads closed here before its CLOSED reaches the model.
             let closedSelection = (tabs.selectedSession(in: product.state)?.navigation as? ChromiumPageNavigation)?.isClosed == true
+            guard !tabs.isStaleCloseSuccessor(session.itemID, in: product.state) else { continue }
             let independentSelection = host.replacedEmptySpaceSelection(in: product.state)
             if tabs.nativeSelectionIsSettling(in: product.state) || closedSelection,
                !created.contains(selected.active_tab), !tabs.isCloseSuccessor(session.itemID, in: product.state),
                !independentSelection {
-                if let page = session.navigation { _ = host.acceptNativeSelection(page, in: product.state) }
+                if tabs.canPresentProvisionalSelection(session.itemID, in: product.state, selectedPageClosed: closedSelection),
+                   let page = session.navigation {
+                    _ = host.acceptNativeSelection(page, in: product.state)
+                }
                 continue
             }
             guard alreadyMirrored || tabs.reflectNativeSelection(session.itemID, in: product.state),

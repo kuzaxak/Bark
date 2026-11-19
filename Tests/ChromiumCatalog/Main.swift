@@ -607,6 +607,7 @@ private final class CatalogApplication: NSApplication {
         tabs.saveNow()
         try checkOnlySourceTransfer()
         try checkClosingSelectionStaysWithNook()
+        try checkClosingSelectionStaysWithNook(successorMoves: true)
         try checkSelfClosingPageKeepsNooksSpace()
         try checkLinkReachesEmptySpaceOfAnotherProfile()
         try checkSpaceSwitchOutcomes()
@@ -632,7 +633,7 @@ private final class CatalogApplication: NSApplication {
 
 /// Chromium activates a neighbour once Nook's selected page closes. That is not
 /// mirrored: Nook's own pick wins, and a page Chromium opens on an empty space shows.
-@MainActor private func checkClosingSelectionStaysWithNook() throws {
+@MainActor private func checkClosingSelectionStaysWithNook(successorMoves: Bool = false) throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("BarcClosingSelection-\(UUID())")
     let suite = "BarcClosingSelection-\(UUID())", registry = WindowRegistry()
     let defaults = UserDefaults(suiteName: suite)!
@@ -667,10 +668,6 @@ private final class CatalogApplication: NSApplication {
     precondition(window.selectedItemID == closing, "The page stays shown until it actually closes")
     admission.apply(Native.bridge.readSnapshot()!)
     precondition(window.selectedItemID == closing)
-    // The close goes ahead: Chromium shows the successor and the sidebar follows at once.
-    Native.windows[601]?.active_tab = 6012
-    admission.apply(Native.bridge.readSnapshot()!)
-    precondition(window.selectedItemID == recent, "The sidebar moves when Chromium shows the successor")
     func endTab(_ tab: Int32) {
         Native.tabs.removeAll { $0.tab == tab }
         for (token, observation) in Native.observers.filter({ $0.value.3 == tab }) {
@@ -678,6 +675,29 @@ private final class CatalogApplication: NSApplication {
             observation.0?(observation.1, token, 7, 601, tab, nil, nil, 0, 0)
         }
     }
+    if successorMoves {
+        let moved = tabs.createSpace(name: "Moved", icon: "", accentHex: "#123456",
+                                     after: Native.work, sharingLoginsWith: Native.work)!
+        tabs.move(recent, to: .tabs(spaceID: moved), after: nil)
+        let root = Native.roots[601].map { Unmanaged<NSView>.fromOpaque($0).takeUnretainedValue() } as? ChromiumWindowRoot
+        precondition(root?.shownTab == 6010 && tabs.spaceID(of: recent) == moved)
+        Native.windows[601]?.active_tab = 6012
+        admission.apply(Native.bridge.readSnapshot()!)
+        precondition(window.spaceID == Native.work && window.selectedItemID == closing && root?.shownTab == 6010,
+                     "An obsolete engine close hint must not present a page from the other space")
+        endTab(6010)
+        drain()
+        admission.apply(Native.bridge.readSnapshot()!)
+        precondition(window.spaceID == Native.work && window.selectedItemID == neighbour && root?.shownTab == 6011,
+                     "The model and mounted page must agree on the surviving local tab")
+        Native.restoring = false
+        Native.end(601); tabs.saveNow()
+        return
+    }
+    // The close goes ahead: Chromium shows the successor and the sidebar follows at once.
+    Native.windows[601]?.active_tab = 6012
+    admission.apply(Native.bridge.readSnapshot()!)
+    precondition(window.selectedItemID == recent, "The sidebar moves when Chromium shows the successor")
     endTab(6010)
     admission.apply(Native.bridge.readSnapshot()!)
     drain()
@@ -868,9 +888,9 @@ private final class CatalogApplication: NSApplication {
     let window = registry.allWindows.first { $0.selectedItemID == work.itemID }!
     let other = registry.allWindows.first { $0.selectedItemID == otherPage.itemID }!
     registry.setActive(window)
-    func assertCommands(_ destination: PageSession, in state: BrowserWindowState) {
-        precondition(tabs.controllableSession(in: state) === destination)
-        precondition(host.isNativeSelection(destination.navigation!, in: state))
+    func assertCommands(_ destination: PageSession, in state: BrowserWindowState, line: UInt = #line) {
+        precondition(tabs.controllableSession(in: state) === destination, "The command target disagrees with the settled selection", line: line)
+        precondition(host.isNativeSelection(destination.navigation!, in: state), "The engine presents a different page", line: line)
     }
     let researchSpace = tabs.createSpace(name: "Research", icon: "", accentHex: "#123456",
         after: Native.personal, sharingLoginsWith: Native.work)!

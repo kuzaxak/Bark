@@ -512,22 +512,26 @@ extension TabsController {
     /// A bookmark (a pinned tab, a favorite, or a tab inside a folder) ends its page and keeps
     /// the item. A normal tab, and any folder, is removed into the reopen history.
     public func close(_ itemID: UUID) {
+        close(itemID, returningTo: nil)
+    }
+
+    private func close(_ itemID: UUID, returningTo opener: ((BrowserWindowState) -> UUID?)?) {
         guard !profileChangeLocksItem(itemID) else { return }
         guard let owner = owner(ofItem: itemID) else { return }
         let source = tree(owner)
         guard let item = source.item(itemID) else { return }
         let expectedSubtree = Set(source.subtree(of: itemID))
         let closingIDs = item.isFolder ? Array(expectedSubtree) : [itemID]
-        if releaseNativePagesBeforeMutation(closingIDs, then: { [weak self] in
+        if releaseNativePagesBeforeMutation(closingIDs, preferredSuccessor: opener, then: { [weak self] in
             guard let self, Set(self.tree(owner).subtree(of: itemID)) == expectedSubtree else { return }
-            self.close(itemID)
+            self.close(itemID, returningTo: opener)
         }) { return }
         if source.keepsItemOnClose(itemID) {
             // The page it showed, so Reopen Closed Tab can bring it back in place.
             var page = pendingSearchPage(for: itemID)
                 ?? session(for: itemID).map { OpenPage(url: $0.storableURL, title: $0.title) }
             if page == nil, case .main = owner { page = device.openPages[itemID] }
-            moveSelectionOff([itemID])
+            moveSelectionOff([itemID], preferredSuccessor: opener)
             endSession(itemID)
             if let page, let section = source.section(of: itemID) {
                 let entry = ClosedEntry(items: [item], section: section, closedAt: Date(), endedPage: page)
@@ -543,7 +547,7 @@ extension TabsController {
             return
         }
         // A tab with a trail closes alone; its children move up into its place.
-        remove(itemID, promotingChildren: !item.isFolder)
+        remove(itemID, promotingChildren: !item.isFolder, preferredSuccessor: opener)
     }
 
     /// Deletes an item and its subtree from the sidebar, pinned tabs and favorites included.
@@ -553,17 +557,19 @@ extension TabsController {
     }
 
     /// `archiving` files the closed entry with the archive sweep's, apart from the person's closes.
-    func remove(_ itemID: UUID, promotingChildren: Bool, archiving: Bool = false) {
+    func remove(_ itemID: UUID, promotingChildren: Bool, archiving: Bool = false,
+                preferredSuccessor: ((BrowserWindowState) -> UUID?)? = nil) {
         guard let owner = owner(ofItem: itemID) else { return }
         let ids = promotingChildren ? [itemID] : tree(owner).subtree(of: itemID)
-        if releaseNativePagesBeforeMutation(ids, then: { [weak self] in
+        if releaseNativePagesBeforeMutation(ids, preferredSuccessor: preferredSuccessor, then: { [weak self] in
             guard let self else { return }
             let current = promotingChildren ? [itemID] : self.tree(owner).subtree(of: itemID)
             guard Set(current) == Set(ids) else { return }
-            self.remove(itemID, promotingChildren: promotingChildren, archiving: archiving)
+            self.remove(itemID, promotingChildren: promotingChildren, archiving: archiving,
+                        preferredSuccessor: preferredSuccessor)
         }) { return }
         if let item = tree(owner).item(itemID) { dismissFromLiveFolder(item) }
-        moveSelectionOff(Set(ids))
+        moveSelectionOff(Set(ids), preferredSuccessor: preferredSuccessor)
         let pendingPages = Dictionary(uniqueKeysWithValues: ids.compactMap { id in
             pendingSearchPage(for: id).map { (id, $0) }
         })
@@ -606,8 +612,26 @@ extension TabsController {
     /// Zen do. Reopen Closed Tab brings it back.
     public func returnToOpener(_ itemID: UUID, in window: BrowserWindowState) {
         guard let opener = opener(of: itemID) else { return }
-        select(opener, in: window)
-        close(itemID)
+        guard profileEngine == .chromium else {
+            select(opener, in: window)
+            close(itemID)
+            return
+        }
+        // On the SDK, Back can ask the current document to leave. Keep its pane
+        // active through that question, with the opener only a close successor.
+        guard window.selectedItemID == itemID, let space = window.spaceID,
+              windowRegistry.windows[window.id] === window,
+              pageOwnerWindow(of: itemID) === window,
+              window.nativeSelectionGeneration == nil else { return }
+        close(itemID, returningTo: { [weak self, weak window] candidate in
+            guard let self, let window, candidate === window,
+                  self.windowRegistry.windows[window.id] === window,
+                  window.spaceID == space, window.selectedItemID == itemID,
+                  self.pageOwnerWindow(of: itemID) === window, window.nativeSelectionGeneration == nil,
+                  self.opener(of: itemID) == opener,
+                  self.canUseCloseSuccessor(opener, in: window) else { return nil }
+            return opener
+        })
     }
 
     /// Restores the newest closed entry and selects it. A private window reopens from its own
@@ -659,16 +683,24 @@ extension TabsController {
 
     /// Before items disappear (or a pinned tab's page ends), every window selecting one returns
     /// to the item it selected before, else the next item in display order, else the previous.
-    private func moveSelectionOff(_ ids: Set<UUID>) {
+    private func moveSelectionOff(_ ids: Set<UUID>,
+                                  preferredSuccessor: ((BrowserWindowState) -> UUID?)? = nil) {
         for window in allWindows {
             for space in window.recentItemsBySpace.keys {
                 window.recentItemsBySpace[space]?.removeAll { ids.contains($0) }
             }
+            let preferred = preferredSuccessor?(window)
+            // An ordinary selection may still be preparing while Back's close completes.
+            let keepPendingSelection = preferredSuccessor != nil && window.nativeSelectionGeneration != nil
+                && window.nativeSelectionSession.map { !ids.contains($0.itemID) } == true
             if let split = window.split, split.itemIDs.contains(where: ids.contains) {
                 window.split = split.itemIDs.filter(ids.contains).reduce(split) { $0?.removing($1) }
                 // A pane's tab going while the split shows: a neighbouring pane takes the selection.
-                if let selected = window.selectedItemID, ids.contains(selected), let index = split.itemIDs.firstIndex(of: selected),
-                   let next = (split.itemIDs[(index + 1)...] + split.itemIDs[..<index].reversed()).first(where: { !ids.contains($0) }) {
+                let openerPane = preferred.flatMap { split.contains($0) ? $0 : nil }
+                if !keepPendingSelection, let selected = window.selectedItemID, ids.contains(selected),
+                   let index = split.itemIDs.firstIndex(of: selected), let next = openerPane ?? (split.itemIDs[(index + 1)...] + split.itemIDs[..<index].reversed()).first(where: {
+                       !ids.contains($0) && canUseCloseSuccessor($0, in: window, previouslyShownIn: split)
+                   }) {
                     select(next, in: window)
                     for (space, item) in window.selectedItemBySpace where ids.contains(item) {
                         window.selectedItemBySpace[space] = nil
@@ -686,11 +718,14 @@ extension TabsController {
                 }
                 continue
             }
-            let next = successor(in: window, leaving: ids)
+            let next = preferred ?? successor(in: window, leaving: ids)
             for (space, item) in window.selectedItemBySpace where ids.contains(item) {
                 window.selectedItemBySpace[space] = nil
             }
-            if let next {
+            if keepPendingSelection {
+                mirror(window)
+                window.refreshCompositor()
+            } else if let next {
                 select(next, in: window)
             } else {
                 window.selectedItemBySpace[spaceID] = nil
@@ -700,6 +735,17 @@ extension TabsController {
                 window.refreshCompositor()
             }
         }
+    }
+
+    func canUseCloseSuccessor(_ itemID: UUID, in window: BrowserWindowState,
+                              previouslyShownIn split: SplitRecord? = nil) -> Bool {
+        guard profileEngine == .chromium else { return true }
+        let source = tree(owner(of: window))
+        guard let space = window.spaceID,
+              let destination = selectionSpaceID(for: itemID, currentSpaceID: space, in: source),
+              destination == space || split?.contains(itemID) == true,
+              !isPageShownElsewhere(itemID, from: window) else { return false }
+        return !hasOtherNativePageOwner(itemID, than: window)
     }
 
     /// The tab a window shows when its selected one goes: its most recent open tab in the
@@ -721,9 +767,9 @@ extension TabsController {
             return source.spaceID(of: id) == spaceID
         }
         let candidates = recent
-            + order[(index + 1)...].filter { !ids.contains($0) && isOpen($0) }
-            + order[..<index].reversed().filter { !ids.contains($0) && isOpen($0) }
-        return candidates.first
+            + order.dropFirst(index + 1).filter { !ids.contains($0) && isOpen($0) }
+            + order.prefix(index).reversed().filter { !ids.contains($0) && isOpen($0) }
+        return candidates.first { canUseCloseSuccessor($0, in: window) }
     }
 
     // MARK: - Move

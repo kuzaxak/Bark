@@ -2943,6 +2943,9 @@ struct NativePageLifecycleTests {
         let opener = try #require(fixture.window.selectedItemID)
         let source = fixture.host.finishCreate(0)
         let space = try #require(fixture.window.spaceID)
+        _ = try #require(fixture.tabs.open(url: URL(string: "about:blank#recent")!,
+            in: fixture.window, placement: .newTab))
+        fixture.host.finishCreate(1)
         let page = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
         let id = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
             in: fixture.window, spaceID: space, from: opener, select: true))
@@ -2951,13 +2954,168 @@ struct NativePageLifecycleTests {
 
         session.goBack()
 
-        #expect(fixture.window.selectedItemID == opener)
-        #expect(fixture.tabs.selectedSession(in: fixture.window)?.navigation === source)
+        #expect(fixture.window.selectedItemID == id)
+        #expect(fixture.tabs.selectedSession(in: fixture.window)?.navigation === page)
         #expect(fixture.tabs.tree.item(id) != nil)
         try #require(fixture.host.closes.count == 1 && fixture.host.closes[0].page === page)
-        fixture.host.finishClose(0, admitted: true)
+        #expect(fixture.host.closes[0].successor === source)
+        fixture.host.finishClose(0, admitted: false)
+        #expect(fixture.window.selectedItemID == id && fixture.tabs.tree.item(id) != nil)
+        #expect(session.navigation === page && !page.invalidated)
+
+        session.goBack()
+        try #require(fixture.host.closes.count == 2)
+        fixture.host.finishClose(1, admitted: true)
         #expect(fixture.tabs.tree.item(id) == nil && page.invalidated)
         #expect(fixture.window.selectedItemID == opener && !source.invalidated)
+    }
+
+    @Test func nativeBackWithoutHistoryCompletionDoesNotSupersedePendingSelection() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let opener = try #require(fixture.window.selectedItemID)
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let page = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        let closing = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: fixture.window, spaceID: space, from: opener, select: true))
+        let selected = try #require(fixture.tabs.selectedSession(in: fixture.window))
+        selected.goBack()
+        try #require(fixture.host.closes.count == 1)
+        let newer = try #require(fixture.tabs.open(url: URL(string: "about:blank#newer")!,
+            in: fixture.window, placement: .newTab))
+        try #require(fixture.host.creates.count == 2)
+        #expect(fixture.window.selectedItemID == closing)
+        fixture.host.finishClose(0, admitted: true)
+        #expect(fixture.tabs.item(closing) == nil)
+        #expect(!fixture.host.creates[1].cancelled)
+        let navigation = fixture.host.finishCreate(1)
+        #expect(fixture.window.selectedItemID == newer)
+        #expect(fixture.tabs.selectedSession(in: fixture.window)?.navigation === navigation)
+    }
+
+    @Test func nativeBackWithoutHistoryKeepsSplitPanesOnVeto() throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let opener = try #require(fixture.window.selectedItemID)
+        fixture.host.finishCreate(0)
+        let space = try #require(fixture.window.spaceID)
+        let page = NativeTestPage(profileID: try #require(fixture.tabs.tree.dataStoreID(for: space)))
+        let child = try #require(fixture.tabs.adoptNativePage(page, through: fixture.host,
+            in: fixture.window, spaceID: space, from: opener, select: true))
+        let session = try #require(fixture.tabs.selectedSession(in: fixture.window))
+        let split = try #require(SplitRecord([opener, child], orientation: .vertical))
+        try #require(fixture.tabs.presentNativeSplit(split, activeItemID: opener, in: fixture.window) { _ in })
+        #expect(fixture.window.selectedItemID == opener)
+
+        session.goBack()
+        #expect(fixture.host.closes.isEmpty, "A background pane cannot return a different pane")
+
+        try #require(fixture.tabs.presentNativeSplit(split, activeItemID: child, in: fixture.window) { _ in })
+        session.goBack()
+        #expect(fixture.window.selectedItemID == child && fixture.window.split == split)
+        try #require(fixture.host.closes.count == 1)
+        fixture.host.finishClose(0, admitted: false)
+        #expect(fixture.window.selectedItemID == child && fixture.window.split == split)
+        #expect(fixture.tabs.item(child) != nil && session.navigation === page)
+
+        session.goBack()
+        try #require(fixture.host.closes.count == 2)
+        fixture.host.finishClose(1, admitted: true)
+        #expect(fixture.window.split == nil && fixture.window.selectedItemID == opener)
+        #expect(fixture.tabs.item(child) == nil && page.invalidated)
+    }
+
+    @Test(arguments: [false, true])
+    func nativeBackWithoutHistoryDoesNotFollowMovedOpener(moveToAnotherWindow: Bool) throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let opener = try #require(f.window.selectedItemID)
+        let source = f.host.finishCreate(0)
+        let space = try #require(f.window.spaceID)
+        let fallback = try #require(f.tabs.open(url: URL(string: "about:blank#fallback")!,
+            in: f.window, placement: .newTab))
+        f.host.finishCreate(1)
+        let page = NativeTestPage(profileID: try #require(f.tabs.tree.dataStoreID(for: space)))
+        let closing = try #require(f.tabs.adoptNativePage(page, through: f.host,
+            in: f.window, spaceID: space, from: opener, select: true))
+        let session = try #require(f.tabs.selectedSession(in: f.window))
+        session.goBack()
+        try #require(f.host.closes.count == 1 && f.host.closes[0].successor === source)
+
+        let other = BrowserWindowState()
+        if moveToAnotherWindow {
+            f.registry.register(other)
+            f.tabs.attach(window: other)
+            f.tabs.select(opener, in: other)
+            try #require(f.tabs.pageOwnerWindow(of: opener) === other)
+        } else {
+            let destination = try #require(f.tabs.createSpace(name: "Other", icon: "", accentHex: "#123456",
+                after: space, sharingLoginsWith: space))
+            f.tabs.move(opener, to: .tabs(spaceID: destination), after: nil)
+            try #require(f.tabs.tree.spaceID(of: opener) == destination)
+        }
+
+        #expect(!f.tabs.isCloseSuccessor(opener, in: f.window))
+        #expect(f.tabs.isStaleCloseSuccessor(opener, in: f.window))
+        #expect(!f.tabs.canPresentProvisionalSelection(opener, in: f.window))
+        f.host.finishClose(0, admitted: true)
+        #expect(f.tabs.item(closing) == nil)
+        #expect(f.window.spaceID == space && f.window.selectedItemID == fallback)
+        if moveToAnotherWindow {
+            #expect(other.selectedItemID == opener && f.tabs.pageOwnerWindow(of: opener) === other)
+        }
+    }
+
+    @Test func nativeCloseKeepsVisibleSplitPaneFromAnotherProfile() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let closing = try #require(f.window.selectedItemID)
+        let first = f.host.finishCreate(0)
+        let otherSpace = try #require(f.tabs.createSpace(name: "Other", icon: "", accentHex: "#123456",
+            after: f.window.spaceID))
+        let survivor = try #require(f.tabs.open(url: URL(string: "about:blank#other-profile")!,
+            in: f.window, placement: .background, parent: .tabs(spaceID: otherSpace)))
+        let split = try #require(SplitRecord([closing, survivor]))
+        try #require(f.tabs.presentNativeSplit(split, activeItemID: closing, in: f.window) { _ in })
+        let second = f.host.finishCreate(1)
+        try #require(f.window.split == split && first.profileID != second.profileID)
+        #expect(f.tabs.canPresentProvisionalSelection(survivor, in: f.window))
+
+        f.tabs.close(closing)
+        try #require(f.host.closes.count == 1)
+        f.host.finishClose(0, admitted: true)
+        #expect(f.window.split == nil && f.tabs.item(closing) == nil)
+        #expect(f.window.spaceID == otherSpace && f.window.selectedItemID == survivor)
+        #expect(f.tabs.selectedSession(in: f.window)?.navigation === second)
+    }
+
+    @Test func ordinaryNativeCloseSkipsTabsDisplayedInAnotherWindow() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let elsewhere = try #require(f.window.selectedItemID)
+        f.host.finishCreate(0)
+        let fallback = try #require(f.tabs.open(url: URL(string: "about:blank#fallback")!,
+            in: f.window, placement: .newTab))
+        let fallbackPage = f.host.finishCreate(1)
+        let closing = try #require(f.tabs.open(url: URL(string: "about:blank#closing")!,
+            in: f.window, placement: .newTab))
+        f.host.finishCreate(2)
+        f.tabs.select(elsewhere, in: f.window)
+        f.tabs.select(closing, in: f.window)
+
+        let other = BrowserWindowState()
+        f.registry.register(other)
+        f.tabs.attach(window: other)
+        f.tabs.select(elsewhere, in: other)
+        try #require(f.tabs.pageOwnerWindow(of: elsewhere) === other)
+
+        f.tabs.close(closing)
+        try #require(f.host.closes.count == 1)
+        #expect(f.host.closes[0].successor === fallbackPage)
+        f.host.finishClose(0, admitted: true)
+        #expect(f.window.selectedItemID == fallback && f.tabs.item(closing) == nil)
+        #expect(other.selectedItemID == elsewhere && f.tabs.pageOwnerWindow(of: elsewhere) === other)
     }
 
     @Test func selectedAdoptionBindsExistingResourceAndClosesOnlyAfterActualOutcome() throws {
