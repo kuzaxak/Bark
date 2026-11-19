@@ -1682,6 +1682,23 @@ class TabObservation : public content::WebContentsObserver,
         flags |= BARC_TAB_BACK;
       if (controller.CanGoForward())
         flags |= BARC_TAB_FORWARD;
+      if (owner && !closing_ && !discovery_stopped && !owner->IsDeleteScheduled() &&
+          event != BARC_TAB_STARTED && event != BARC_TAB_CLOSED &&
+          event != BARC_TAB_PEEK_REQUESTED && event != BARC_TAB_NATIVE_BLOCKED &&
+          event != BARC_TAB_CONTINUE_NATIVE_BLOCK &&
+          !(extra & BARC_TAB_PROVISIONAL) && !controller.GetPendingEntry() &&
+          !owner->GetProfile()->IsOffTheRecord() &&
+          web_contents()->GetBrowserContext() == owner->GetProfile()) {
+        auto* entry = controller.GetLastCommittedEntry();
+        auto* frame = web_contents()->GetPrimaryMainFrame();
+        if (entry && frame && entry->GetPageType() == content::PAGE_TYPE_NORMAL &&
+            barc::IsPawlPasswordManagementDocument(entry->GetURL(), entry->GetVirtualURL()) &&
+            frame->IsActive() && frame->IsRenderFrameLive() &&
+            frame->GetLastCommittedOrigin().opaque() &&
+            frame->GetLastCommittedURL() == entry->GetURL()) {
+          flags |= BARC_TAB_PAWL_MANAGEMENT;
+        }
+      }
       url = web_contents()->GetVisibleURL().spec();
       title = base::UTF16ToUTF8(web_contents()->GetTitle());
     }

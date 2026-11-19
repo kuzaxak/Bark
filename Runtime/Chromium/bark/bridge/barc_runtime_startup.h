@@ -23,6 +23,7 @@ bool UsesPawlPasswordProvider();
 // Called after WebUI registration and before the first profile exists.
 void ConfigurePawlPasswordManagement();
 bool RewritePawlPasswordManagement(GURL* url, content::BrowserContext*);
+bool IsPawlPasswordManagementDocument(const GURL& actual_url, const GURL& virtual_url);
 // Called only by Chromium's validated password-save admission. Returns true
 // only when an opt-in model consumer owns the single save prompt.
 bool OfferVaultPasswordSave(content::WebContents* contents,

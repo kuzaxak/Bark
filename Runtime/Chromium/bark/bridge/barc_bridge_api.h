@@ -34,6 +34,7 @@ extern "C" {
 #define BARC_HAS_PASSWORD_PROVIDER 1
 #define BARC_HAS_LOAD_PROGRESS 1
 #define BARC_HAS_RENDERER_STATE 1
+#define BARC_HAS_PAWL_MANAGEMENT 1
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.
@@ -303,7 +304,9 @@ enum BarcTabFlags {
   BARC_TAB_MUTED = 256, BARC_TAB_AUDIBLE = 512,
   BARC_TAB_VIDEO_PIP = 1024, BARC_TAB_DOCUMENT_PIP = 2048,
   // Without this bit the PiP fields are unavailable, not known-inactive.
-  BARC_TAB_PIP_STATE_KNOWN = 4096
+  BARC_TAB_PIP_STATE_KNOWN = 4096,
+  // Exact committed Pawl management document in a regular owner.
+  BARC_TAB_PAWL_MANAGEMENT = 8192
 };
 typedef void (*BarcTabCallback)(void* context, uint64_t observation,
                                int32_t event, int32_t window, int32_t tab,

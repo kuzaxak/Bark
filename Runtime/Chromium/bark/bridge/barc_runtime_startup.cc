@@ -129,7 +129,7 @@ bool barc::UsesPawlPasswordProvider() {
 }
 
 namespace {
-constexpr char kPasswordManagerURL[] = "chrome://password-manager/";
+constexpr char kPasswordManagerHost[] = "password-manager";
 constexpr char kPawlManagementPage[] = R"HTML(<!doctype html>
 <html lang="en"><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; base-uri 'none'; form-action 'none'">
@@ -140,11 +140,21 @@ constexpr char kPawlManagementPage[] = R"HTML(<!doctype html>
 <p>To manage your logins, choose Settings in the Bark menu, then
 Privacy &rarr; Passwords &rarr; Open Pawl Vault.</p>
 </main></body></html>)HTML";
+const GURL& PawlManagementDocumentURL() {
+  static const base::NoDestructor<GURL> url(
+      "data:text/html;charset=utf-8," +
+      base::EscapeQueryParamValue(kPawlManagementPage, false));
+  return *url;
+}
+bool IsPasswordManagerVirtualURL(const GURL& url) {
+  return url.SchemeIs(content::kChromeUIScheme) &&
+         url.host() == kPasswordManagerHost;
+}
 }  // namespace
 
 void barc::ConfigurePawlPasswordManagement() {
   if (UsesPawlPasswordProvider()) {
-    content::WebUIConfigMap::GetInstance().RemoveConfig(GURL(kPasswordManagerURL));
+    content::WebUIConfigMap::GetInstance().RemoveConfig(GURL("chrome://password-manager/"));
   }
 }
 
@@ -153,18 +163,21 @@ bool ChromePasswordManagerClient::IsExternalPasswordProviderSelected() {
 }
 
 bool barc::RewritePawlPasswordManagement(GURL* url, content::BrowserContext*) {
-  if (!url->SchemeIs(content::kChromeUIScheme) ||
-      url->host() != GURL(kPasswordManagerURL).host() ||
-      !UsesPawlPasswordProvider()) {
+  if (!IsPasswordManagerVirtualURL(*url) || !UsesPawlPasswordProvider()) {
     return false;
   }
   // Keep the original virtual URL in history; the committed document has an
   // opaque origin and never gets scheme-based WebUI extension APIs.
-  *url = GURL("data:text/html;charset=utf-8," +
-              base::EscapeQueryParamValue(kPawlManagementPage, false));
+  *url = PawlManagementDocumentURL();
   return true;
 }
 
+bool barc::IsPawlPasswordManagementDocument(const GURL& actual_url,
+                                            const GURL& virtual_url) {
+  return IsPasswordManagerVirtualURL(virtual_url) &&
+         actual_url.SchemeIs(url::kDataScheme) &&
+         UsesPawlPasswordProvider() && actual_url == PawlManagementDocumentURL();
+}
 
 void barc_set_runtime_ready_callback(void (*callback)(void*), void* user_data) {
   auto& state = State();

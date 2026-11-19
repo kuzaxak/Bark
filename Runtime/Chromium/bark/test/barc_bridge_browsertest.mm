@@ -11286,6 +11286,16 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, ChromiumPasswordManagementRemainsR
   auto rewritten = url;
   EXPECT_FALSE(barc::RewritePawlPasswordManagement(&rewritten, profile));
   EXPECT_EQ(url, rewritten);
+  const int32_t window = browser()->GetSessionID().id();
+  NavigationEvents events;
+  ASSERT_NE(0u, barc_tab_observe(window, barc_window_tab_at(window, 0),
+                                NavigationEvents::Receive, &events));
+  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(content::NavigateToURL(contents, url));
+  ASSERT_GT(events.Count(BARC_TAB_COMMITTED), 0u);
+  EXPECT_TRUE(std::ranges::none_of(events.events, [](const auto& event) {
+    return event.flags & BARC_TAB_PAWL_MANAGEMENT;
+  }));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, PasswordManagementUsesInertPawlPage) {
@@ -11297,10 +11307,23 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, PasswordManagementUsesInertPawlPage)
   ASSERT_EQ(GURL("chrome://password-manager/checkup"), alias);
   const GURL starting_page = embedded_test_server()->GetURL("/title1.html");
   ASSERT_TRUE(content::NavigateToURL(contents, starting_page));
+  const int32_t window = browser()->GetSessionID().id();
+  const int32_t tab = barc_window_tab_at(window, 0);
+  NavigationEvents events;
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &events));
+  ASSERT_FALSE(events.events.empty());
+  EXPECT_EQ(BARC_TAB_INITIAL, events.events.front().kind);
+  EXPECT_FALSE(events.events.front().flags & BARC_TAB_PAWL_MANAGEMENT);
   auto expected_page = stock;
   ASSERT_TRUE(barc::RewritePawlPasswordManagement(&expected_page,
                                                   contents->GetBrowserContext()));
   const auto expect_pawl = [&](const GURL& virtual_url) {
+    EXPECT_TRUE(std::ranges::any_of(events.events, [](const auto& event) {
+      return event.kind == BARC_TAB_COMMITTED && (event.flags & BARC_TAB_PAWL_MANAGEMENT);
+    }));
+    EXPECT_TRUE(std::ranges::none_of(events.events, [](const auto& event) {
+      return event.kind == BARC_TAB_STARTED && (event.flags & BARC_TAB_PAWL_MANAGEMENT);
+    }));
     EXPECT_EQ(expected_page, contents->GetLastCommittedURL());
     EXPECT_EQ(virtual_url, controller.GetLastCommittedEntry()->GetVirtualURL());
     EXPECT_TRUE(contents->GetPrimaryMainFrame()->GetLastCommittedOrigin().opaque());
@@ -11315,20 +11338,42 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, PasswordManagementUsesInertPawlPage)
            GURL("chrome://password-manager/settings/password-change?ignored=original")}) {
     EXPECT_FALSE(content::WebUIConfigMap::GetInstance().GetConfig(
         contents->GetBrowserContext(), url));
+    events.events.clear();
     ASSERT_TRUE(content::NavigateToURL(contents, url, expected_page));
     expect_pawl(url);
   }
   const auto virtual_url = controller.GetLastCommittedEntry()->GetVirtualURL();
+  events.events.clear();
   content::TestNavigationObserver reloaded(contents);
   controller.Reload(content::ReloadType::NORMAL, false);
   reloaded.Wait();
   ASSERT_TRUE(reloaded.last_navigation_succeeded());
   expect_pawl(virtual_url);
+  events.events.clear();
   content::TestNavigationObserver history(contents);
   controller.GoBack();
   history.Wait();
   ASSERT_TRUE(history.last_navigation_succeeded());
   expect_pawl(alias);
+
+  barc_tab_unobserve(events.token);
+  events.events.clear();
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &events));
+  ASSERT_FALSE(events.events.empty());
+  EXPECT_EQ(BARC_TAB_INITIAL, events.events.front().kind);
+  EXPECT_TRUE(events.events.front().flags & BARC_TAB_PAWL_MANAGEMENT);
+
+  // Even the exact inert document bytes do not authorize the action when a
+  // data: navigation lacks the browser's committed password-manager URL.
+  ASSERT_TRUE(content::NavigateToURL(contents, starting_page));
+  events.events.clear();
+  ASSERT_TRUE(content::NavigateToURL(contents, expected_page));
+  ASSERT_EQ(expected_page, contents->GetLastCommittedURL());
+  ASSERT_EQ(expected_page, controller.GetLastCommittedEntry()->GetVirtualURL());
+  ASSERT_GT(events.Count(BARC_TAB_COMMITTED), 0u);
+  EXPECT_TRUE(std::ranges::none_of(events.events, [](const auto& event) {
+    return event.flags & BARC_TAB_PAWL_MANAGEMENT;
+  }));
 
   for (const GURL& unrelated : {
            GURL("chrome://settings/autofill"),
