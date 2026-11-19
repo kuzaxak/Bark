@@ -5,13 +5,11 @@
 //
 //  Created by Bain Gurley on 17/09/2026.
 //
-//  The app side of NookTweaks' two seams: window and space work for Air Traffic
-//  Control, and the download path for the social media download button.
+//  Window and space work for Air Traffic Control.
 //
 
 import Foundation
 import OSLog
-import WebKit
 import NookTabsCore
 import NookTweaks
 import NookWeb
@@ -48,11 +46,5 @@ extension BrowserManager: SiteRoutingHost {
 
     func liveSpaceIDs() -> Set<UUID> {
         Set(tabs.orderedSpaces.map(\.id))
-    }
-}
-
-extension BrowserManager: MediaDownloading {
-    func downloadImage(at url: URL, from webView: WKWebView) {
-        (webView as? FocusableWKWebView)?.downloadImage(from: url)
     }
 }

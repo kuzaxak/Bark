@@ -10,7 +10,6 @@
 
 import AppKit
 import SwiftUI
-import WebKit
 import NookWeb
 
 @MainActor
@@ -159,11 +158,6 @@ final class AutofillManager: NSObject, VaultPresenter, NSPopoverDelegate {
     }
 
     // MARK: - Save offer
-
-    func offerSave(host: String, username: String, in webView: NSView, completion: @escaping (Bool) -> Void) {
-        guard let itemID = (webView as? FocusableWKWebView)?.owningSession?.itemID else { return completion(false) }
-        offerNativeLogin(.create, host: host, username: username, itemID: itemID, in: webView, completion: completion)
-    }
 
     func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
                           in view: NSView, completion: @escaping (Bool) -> Void) {

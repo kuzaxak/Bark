@@ -35,11 +35,6 @@ extension BrowserWindowState {
         set { windowHandle = newValue }
     }
 
-    var sidebarPiPController: SidebarPiPController? {
-        get { sidebarPiPStorage as? SidebarPiPController }
-        set { sidebarPiPStorage = newValue }
-    }
-
     /// Reference to this window's CommandPalette for global shortcuts
     var commandPalette: CommandPalette? {
         get { commandPaletteStorage as? CommandPalette }

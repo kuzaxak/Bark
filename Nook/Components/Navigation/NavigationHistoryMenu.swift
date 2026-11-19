@@ -57,5 +57,22 @@ struct NavigationHistoryMenu: View {
         }
         return menu
     }
+}
 
+private final class HandlerMenuItem: NSMenuItem {
+    private let handler: (NSMenuItem) -> Void
+
+    init(title: String, handler: @escaping (NSMenuItem) -> Void) {
+        self.handler = handler
+        super.init(title: title, action: #selector(handleAction(_:)), keyEquivalent: "")
+        target = self
+    }
+
+    required init(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    @objc private func handleAction(_ sender: NSMenuItem) {
+        handler(sender)
+    }
 }

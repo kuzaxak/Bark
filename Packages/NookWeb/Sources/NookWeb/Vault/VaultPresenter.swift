@@ -99,6 +99,8 @@ extension VaultPresenter {
                                              completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissNativePasskey(in view: NSView) { dismissPicker(in:view) }
     public func ownsNativePasskeyPresentation(in view: NSView, keyWindow: NSWindow) -> Bool { false }
+    public func offerSave(host: String, username: String, in webView: NSView,
+                          completion: @escaping (Bool) -> Void) { completion(false) }
     public func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
                                  in view: NSView, completion: @escaping (Bool) -> Void) { completion(false) }
     public func dismissSave(in view: NSView) {}

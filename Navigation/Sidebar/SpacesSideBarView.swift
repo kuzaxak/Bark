@@ -129,11 +129,6 @@ struct SpacesSideBarView: View {
                 downloadsMenuOverlay
             }
 
-            // Video left playing in another tab, directly above the media controls
-            SidebarPiPView()
-                .environmentObject(browserManager)
-                .environment(windowState)
-
             if !windowState.isIncognito, let agent = tabs.agentSpaceID, windowState.spaceID != agent,
                !tabs.displayOrder(inSpace: agent).isEmpty {
                 AgentSpaceRow(tabCount: tabs.displayOrder(inSpace: agent).count, busy: tabs.agentCallsInFlight > 0) {
@@ -142,7 +137,6 @@ struct SpacesSideBarView: View {
                 .padding(.horizontal, NookDesign.Spacing.sidebarInset)
             }
 
-            // Media controls. Hides itself while the video is showing above it.
             MediaControlsView()
                 .environmentObject(browserManager)
                 .environment(windowState)

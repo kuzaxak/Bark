@@ -19,32 +19,18 @@ struct MediaControlsView: View {
     @Environment(BrowserWindowState.self) private var windowState
     @State private var isHovering = false
 
-    /// The video showing above carries its own controls, so the bar stands down while it is up.
-    private var isVideoShowing: Bool {
-        windowState.sidebarPiPController?.isShowing == true
-    }
-
     var body: some View {
         Group {
-            if !isVideoShowing, let itemID = windowState.miniPlayer.itemID, let page = tabs.session(for: itemID) {
+            if let itemID = windowState.miniPlayer.itemID, let page = tabs.session(for: itemID) {
                 bar(page)
                     .transition(.opacity.combined(with: .move(edge: .bottom)))
             }
         }
         .animation(NookDesign.Motion.standard, value: windowState.miniPlayer.itemID)
-        .animation(NookDesign.Motion.standard, value: isVideoShowing)
-        // Minimising the sidebar's video hands its page the bar.
-        .onChange(of: isVideoShowing) { wasShowing, isShowing in
-            guard wasShowing, !isShowing, let itemID = windowState.sidebarPiPController?.barSession?.itemID else { return }
-            windowState.miniPlayer.takeOver(itemID)
-        }
     }
 
     private func bar(_ page: PageSession) -> some View {
-        ViewThatFits(in: .horizontal) {
-            controls(page, showsVideoButton: tabs.profileEngine == .webKit && page.hasVideoContent)
-            controls(page, showsVideoButton: false)
-        }
+        controls(page)
         .labelStyle(.iconOnly)
         .buttonStyle(NookIconButtonStyle(size: NookDesign.Size.mediaControl))
         .padding(.horizontal, NookDesign.Spacing.md)
@@ -71,7 +57,7 @@ struct MediaControlsView: View {
         withAnimation(NookDesign.Motion.standard) { windowState.miniPlayer.dismiss() }
     }
 
-    private func controls(_ page: PageSession, showsVideoButton: Bool) -> some View {
+    private func controls(_ page: PageSession) -> some View {
         let media = page.media
         let track = [media.title, media.artist, media.album].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " – ")
         let label = track.isEmpty ? page.title : track
@@ -107,11 +93,6 @@ struct MediaControlsView: View {
                 page.toggleSound()
             }
             .help(muted ? "Unmute" : "Mute")
-            if showsVideoButton {
-                Spacer(minLength: 0)
-                Button("Maximize", systemImage: "arrow.up.left.and.arrow.down.right") { maximize(page) }
-                    .help("Show video in the sidebar")
-            }
         }
     }
 
@@ -128,20 +109,5 @@ struct MediaControlsView: View {
         .help("Close")
         .offset(x: -NookDesign.Spacing.xs, y: -NookDesign.Spacing.xs)
         .transition(.opacity)
-    }
-
-    /// The counterpart of the video's minimise button. Falls back to system picture-in-picture
-    /// when the video cannot be isolated, or the sidebar is only the hover overlay.
-    private func maximize(_ page: PageSession) {
-        // Private tabs never report leaving, and another window's tab or PiP would lose its view.
-        guard let controller = windowState.sidebarPiPController, !page.isPrivate,
-            !tabs.isOnScreen(page.itemID),
-            let webView = WebKitPageAccess.assignedView(for: page)
-        else { return }
-        guard windowState.isSidebarVisible else { return PiPManager.shared.setPiP(true, for: page, webView: webView) }
-        if page.hasPiPActive { PiPManager.shared.setPiP(false, for: page, webView: webView) }
-        controller.enter(session: page, webView: webView, automatic: false) {
-            PiPManager.shared.setPiP(true, for: page, webView: webView)
-        }
     }
 }
