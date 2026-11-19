@@ -1,20 +1,24 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import json,os,subprocess
+import json,os,subprocess,sys
 root=Path(__file__).resolve().parents[2]
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(root/'scripts'))
+from chromium_sdk_layout import native_architecture
+
+target = f'{native_architecture()}-apple-macosx15.5'
 
 with TemporaryDirectory(prefix='bark-ai-config-') as directory:
     out = Path(directory)
     home=out/'home'
     home.mkdir()
     package=out/'settings-package'
-    build=['swift','build','--package-path',str(root/'Packages/NookSettings'),'--scratch-path',str(package),'--jobs','2']
+    build=['swift','build','--package-path',str(root/'Packages/NookSettings'),'--scratch-path',str(package),'--jobs','2','--triple',target]
     source=(root/'Nook/Managers/AIManager/AIConfigService.swift').read_text().replace('import NookWeb\n','')
     (out/'AIConfigService.swift').write_text(source)
-    debug=package/'x86_64-apple-macosx/debug'
     binary=out/out.name
     manager=root/'Nook/Managers/AIManager'
-    compile=lambda: ['swiftc','-swift-version','5','-target','x86_64-apple-macosx15.5','-parse-as-library','-I',str(debug/'Modules'),
+    compile=lambda: ['swiftc','-swift-version','5','-target',target,'-parse-as-library','-I',str(debug/'Modules'),
      str(out/'AIConfigService.swift'),str(root/'Nook/Models/AI/AIKeychainStorage.swift'),str(manager/'AIProvider.swift'),
      str(manager/'Providers/AnthropicProvider.swift'),str(manager/'Providers/OpenAICompatibleProvider.swift'),str(manager/'Tools/BrowserTools.swift'),
      str(root/'Tests/ChromiumAIConfig/Main.swift'),*(str(debug/'NookSettings.build'/name) for name in ['AIModels.swift.o','MCPServerConfig.swift.o']),'-o',str(binary)]
@@ -22,6 +26,7 @@ with TemporaryDirectory(prefix='bark-ai-config-') as directory:
     p=subprocess.run(build,capture_output=True,text=True)
     (out/'build.log').write_text(p.stdout+p.stderr)
     if p.returncode:print(p.stdout+p.stderr);raise SystemExit(p.returncode)
+    debug = Path(subprocess.check_output([*build, '--show-bin-path'], text=True).strip())
     c=compile();(out/'command.json').write_text(json.dumps(c,indent=2))
     p=subprocess.run(c,capture_output=True,text=True);(out/'compile.log').write_text(p.stdout+p.stderr);print(p.stdout+p.stderr)
     if p.returncode:raise SystemExit(p.returncode)
