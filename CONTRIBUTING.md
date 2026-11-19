@@ -102,6 +102,7 @@ python3 scripts/bark-check.py page-host
 python3 scripts/bark-check.py profile-pages
 python3 scripts/bark-check.py extension-actions
 python3 scripts/bark-check.py live-fetch
+python3 scripts/bark-check.py vault
 ```
 
 To check the real unsigned Release build for both architectures, run the same
@@ -205,8 +206,12 @@ The shipping address walk submits two forms, accepts one save prompt, declines
 the other, and checks what Chromium retained after quit.
 [Run the address walk](Tests/ChromiumAddressSave/README.md)
 
-The Pawl walk uses an in-memory vault and a loopback sign-in form. It updates an
-existing login, creates another, and reads both back through Chromium. It also
+The `vault` check exercises the native consent UI with synthetic accounts and
+offscreen windows. The signed walk uses an in-memory vault and a loopback
+sign-in form. It dismisses the account picker with Escape, leaves the page and
+returns, then checks that the first password read follows an explicit choice.
+The walk updates an existing login, creates another, and reads both back through
+Chromium. It also
 fills a one-time code, cancels a passkey registration, and signs in with a
 discoverable passkey selected in Bark. The loopback site verifies a fresh
 challenge and the signature against the disposable vault’s public key.
