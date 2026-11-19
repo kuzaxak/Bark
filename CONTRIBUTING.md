@@ -14,7 +14,7 @@ Please be respectful to maintainers and disclose AI assistance.
 
 ## Development Setup
 
-You need a Mac and Xcode 26 or later. The package tests and native command-routing check run on Apple Silicon or Intel. Intel has a verified runtime pin and signed-app smoke. The native Apple Silicon runtime pin is pending.
+You need a Mac and Xcode 26 or later to build Bark. The package tests and native command-routing check run on Apple Silicon or Intel. Both have a pinned developer SDK and a signed app that passed the renderer smoke test on native hardware. Running the prebuilt app on a second Mac does not require Xcode.
 
 1. **Check out the Bark revision you want to build.** Run the commands below from the repository directory containing `Bark.xcodeproj` and `scripts/bark-check.py`.
 
@@ -171,7 +171,7 @@ The SDK headers build on Intel and Apple Silicon. Engine install and export, bui
 verification, and packaging default to the Mac’s native hardware architecture, even
 when Python runs under Rosetta. Use `--arch x86_64` or `--arch arm64` to work with
 artifacts for another architecture. The checkout needs a pin for the selected
-architecture. The ARM64 runtime pin is still pending.
+architecture. Both developer pins are in the checkout.
 
 `smoke` and `launch` require a pinned engine matching the host’s native architecture. Add `--require-official` to either command to verify the optimized SDK before opening Bark. The automated smoke test uses the same desktop lock as the native walks. It opens its loopback page after ten seconds of desktop inactivity and stops Bark when the renderer acknowledges the page. Exit status 3 means the desktop was occupied, locked, or in use during the test. For hands-on work, use `launch`. It keeps the fixture available and Bark running until you quit Bark or press Ctrl+C in the terminal. Both commands remove their disposable profiles when they finish.
 

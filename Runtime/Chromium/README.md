@@ -16,8 +16,9 @@ Pinned inputs:
 individual dependencies independently. The initial host is Intel macOS 15.8.1,
 Xcode 26.3 (17C529), SDK 26.2. The signed Intel developer build passed
 installation from a disk image and a Sparkle update with a disposable profile.
-Official builds require SDK 26.5. Native Apple Silicon and notarized release
-qualification remain open. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
+The signed ARM developer build rendered a loopback page on an M4 Pro running
+macOS 15.8.2. Official builds require SDK 26.5. ARM installation and update
+testing and notarized release qualification remain open. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
 
 Keep upstream's engine compilation deployment default, `13.0`, distinct from
 `mac_min_system_version = "15.5"` (the packaged `LSMinimumSystemVersion`) and the
@@ -66,8 +67,8 @@ The build selects the Mac’s native CPU, including when Python runs under Roset
 Use `build --arch x64` or `build --arch arm64` to cross-compile. The recipe selects
 the corresponding GN arguments and Rust target. GN links and packages Cargo's dylib
 from `src/out/BarkCargo/<target>/release/`. Each target has its own library
-and its own Chromium output directory. The app SDK pin currently qualifies
-the Intel engine.
+and its own Chromium output directory. The app has separate developer SDK pins
+for both architectures.
 
 An official optimized build requires the macOS SDK in `PINS.json` (26.5,
 build 25F70 for this Chromium revision). The recipe uses the selected Xcode's
@@ -401,19 +402,19 @@ opens the selected engine framework after registering the malloc zone and finds 
 The `BarkEngine.xcframework/macos-arm64_x86_64` slice contains one universal static library
 with no exported symbols and one copy of the public C header `barc_bridge_api.h` from
 `bark/bridge/`. The architecture-specific digests live beside it as
-`engine-artifact-x86_64.sha256` and, once qualified, `engine-artifact-arm64.sha256`.
+`engine-artifact-x86_64.sha256` and `engine-artifact-arm64.sha256`.
 The separate, ignored `Packages/BarkEngine/RuntimeArtifacts/<architecture>/Engine/` directory
 holds the exact framework, `Bark Packaging`, engine `Info.plist`, public header and
 `SHA256SUMS`. The shared public header is identical for both architectures.
 
-The Intel pin is available. The app executable and full Swift/AppKit shell have
-been built for both architectures from the universal headers. A signed ARM64 app
-requires a separately published and qualified ARM64 runtime pin.
+The app executable and Swift/AppKit shell build against the universal headers.
+Each signed developer app has launched with its pinned engine on its native
+architecture.
 
 | Component | Intel | Apple Silicon |
 | --- | --- | --- |
-| Bark launcher and Swift/AppKit framework | Thin Release build, signed with the Intel SDK | Thin Release cross-build on Intel |
-| Chromium and its child processes | Pinned x86_64 SDK | Native SDK receipt and on-device testing pending |
+| Bark launcher and Swift/AppKit framework | Signed thin Release build | Signed thin Release build, cross-compiled on Intel and run on an M4 Pro |
+| Chromium and its child processes | Pinned x86_64 developer SDK | Pinned arm64 developer SDK, native renderer smoke passed |
 | Rust adblock library and C SDK link library | x86_64 slice | arm64 slice |
 | Sparkle framework, updater and XPC services | x86_64 slice | arm64 slice |
 

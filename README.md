@@ -65,8 +65,9 @@ For two different iCloud accounts, use the controls in **Settings → Spaces**.
    account and turns off their sync on this Mac. Both accounts can edit the
    shared spaces.
 
-Bark's production iCloud container still needs Apple's `cloudkit.share` record
-type before the owner can issue the link.
+The owner can look up an invite code from a different iCloud account in
+Production. Issuing the link currently stops there. Bark's production
+container still needs Apple's `cloudkit.share` record type.
 
 Bark starts with a fresh iCloud dataset. Existing Nook cloud bookmarks and
 invitations stay in Nook. Turning sync off on a Mac keeps its local bookmarks.
@@ -80,8 +81,9 @@ For a bug report, choose **Help → Build Information…** in Bark. **Copy**
 includes the app build, Chromium version, processor architecture and exact
 engine SDK digest.
 
-This branch builds a signed Intel developer app for macOS 15.5 and later.
-Native Apple Silicon qualification and an official Bark download are pending.
+This branch builds separate signed developer apps for Intel and Apple Silicon
+on macOS 15.5 and later. Both have rendered a test page on native hardware.
+An official Bark download is pending.
 The repository’s earlier releases are published under the Nook name.
 [Earlier Nook releases](https://github.com/kuzaxak/Nook/releases)
 
@@ -92,8 +94,8 @@ also requires the matching Chromium SDK.
 
 Use a checkout containing `scripts/bark-check.py`, Xcode 26 with its Metal
 toolchain, a local Developer ID Application signing identity, and the engine SDK
-matching the checkout’s pin. The current runtime pin is for Intel. The engine
-recipe also describes building an ARM64 SDK for qualification.
+matching the checkout’s pin for your Mac. The two developer SDKs share the same
+public headers.
 [Contributor setup](CONTRIBUTING.md#native-command-routing-and-signed-bark) ·
 [Engine recipe](Runtime/Chromium/README.md#checkout-and-build)
 
