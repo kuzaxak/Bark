@@ -62,6 +62,22 @@ struct StartupTests {
                          && arguments.firstIndex(of: "--disable-features=MediaRouter")! < pages,
                          "Cast has no entry point: the engine starts with Media Router off, once, before any page: \(arguments)")
         }
+        // Older SDKs use both flags for app-owned admission and resource protection.
+        let sdkModeFlags = ["--barc-native-shell", "--barc-shared-native-window"]
+        for launch in [
+            ["Nook"],
+            ["Nook", "--barc-app-data-dir=/private/tmp/nook-startup-test", "--barc-app-profile=\(id.uuidString)"],
+            ["Nook", "--barc-native-shell=off", "--barc-shared-native-window=off",
+             "--", "--barc-native-shell", "--barc-shared-native-window"],
+        ] {
+            let arguments = try ChromiumStartupConfiguration(arguments: launch, applicationSupportDirectory: normalRoot)
+                .engineArguments(executable: "Nook")
+            let switches = arguments.prefix { $0 != "--" }
+            for flag in sdkModeFlags {
+                precondition(switches.filter { $0 == flag || $0.hasPrefix(flag + "=") } == [flag],
+                             "The shell must supply \(flag) exactly once as a trusted SDK argument.")
+            }
+        }
         func urls(_ value: Any) -> [URL] {
             Mirror(reflecting: value).children.flatMap { child -> [URL] in
                 if let url = child.value as? URL { return [url] }
