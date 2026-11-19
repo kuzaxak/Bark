@@ -54,6 +54,7 @@ revisions. These tests run before a full Chromium build is available.
 python3 -B -m unittest discover -s scripts/tests
 python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
 python3 -B -m unittest discover -s Tests/Shared
+python3 -B -m unittest discover -s Tests/ChromiumSDKLauncher
 python3 -B Tests/ChromiumAppShim/check.py
 ```
 
