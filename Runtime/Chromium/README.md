@@ -1054,6 +1054,9 @@ restore its original view's focus; delayed Vault replies cannot activate a windo
 or fill a changed target. Enabled pages discover fields even when Pawl was locked
 or unavailable at startup, so refocusing after recovery does not require toggling
 the setting. Disabling Pawl removes native field observation.
+A click or keyboard traversal that moves focus to a password or one-time-code
+field can open the picker. Press Down Arrow on an already-focused field to
+open it again, including after an autofocus or a dismissed picker.
 
 Password saving uses Chromium's validated submission and keeps its origin and
 profile through login redirects. The native save card belongs to the selected

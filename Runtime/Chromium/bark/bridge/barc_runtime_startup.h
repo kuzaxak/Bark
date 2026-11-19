@@ -10,6 +10,7 @@ class BrowserWindowInterface;
 class Profile;
 class GURL;
 namespace content {
+class BrowserContext;
 class WebContents;
 }
 namespace base {
@@ -17,6 +18,11 @@ class FilePath;
 }
 namespace password_manager { struct PasswordForm; }
 namespace barc {
+// Queried on the browser UI sequence. The first read seals the startup mode.
+bool UsesPawlPasswordProvider();
+// Called after WebUI registration and before the first profile exists.
+void ConfigurePawlPasswordManagement();
+bool RewritePawlPasswordManagement(GURL* url, content::BrowserContext*);
 // Called only by Chromium's validated password-save admission. Returns true
 // only when an opt-in model consumer owns the single save prompt.
 bool OfferVaultPasswordSave(content::WebContents* contents,

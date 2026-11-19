@@ -12,6 +12,8 @@
 #include "bark/browser/ui/bark_window_factory.h"
 #include "bark/browser/ui/bark_window_host.h"
 #include "base/base_switches.h"
+#include "base/functional/bind.h"
+#include "base/functional/callback_helpers.h"
 #include "base/command_line.h"
 #include "base/compiler_specific.h"
 #include "base/run_loop.h"
@@ -47,11 +49,18 @@
 #include "components/javascript_dialogs/app_modal_dialog_view.h"
 #include "components/tabs/public/tab_interface.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/navigation_controller.h"
+#include "content/public/browser/navigation_entry.h"
+#include "content/public/browser/navigation_entry_restore_context.h"
+#include "content/public/browser/render_frame_host.h"
+#include "content/public/browser/weak_document_ptr.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "content/public/test/test_utils.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
+#include "net/test/embedded_test_server/controllable_http_response.h"
 #include "testing/gtest_mac.h"
+#include "third_party/blink/public/common/page_state/page_state.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/md_text_button.h"
 
@@ -438,6 +447,128 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
   EXPECT_EQ(BARC_SPACE_SWITCH_SUPERSEDED, retired.status);
   EXPECT_EQ(home, retired.selected_client);
   EXPECT_EQ(retained_home_tab, retired.active_tab);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
+                       SpaceSwitchRestoresSelectedParkedContentsOnMount) {
+  net::test_server::ControllableHttpResponse response(embedded_test_server(),
+                                                      "/parked-restore");
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work = OpenProfile(kWorkProfile);
+  const int32_t home = OpenProfile(kHomeProfile, work);
+  auto* host = HostOf(work);
+  ASSERT_TRUE(host);
+  ASSERT_EQ(host, HostOf(home));
+  NSView* root = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
+  const int32_t work_tab = OpenPage(work, root, "/title1.html");
+  NSView* work_view = Place(work, work_tab, root);
+  ASSERT_EQ(1, barc_window_show(work));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return host->IsPageMounted(TabContents(work_tab)); }));
+  auto* work_contents = TabContents(work_tab);
+  auto work_document = work_contents->GetPrimaryMainFrame()->GetWeakDocumentPtr();
+
+  auto* home_owner = FindBrowser(home);
+  ASSERT_TRUE(home_owner);
+  auto* strip = home_owner->GetTabStripModel();
+  const int32_t home_tab = barc_window_tab_at(home, strip->active_index());
+  const int32_t background = barc_tab_create(home, "about:blank", 0);
+  ASSERT_NE(0, home_tab);
+  ASSERT_NE(0, background);
+  ASSERT_NE(home_tab, background);
+  auto* profile = home_owner->GetProfile();
+  ASSERT_NE(profile, FindBrowser(work)->GetProfile());
+
+  // Recreate the state of a session-restored tab before its first renderer.
+  // Use the stock contents replacement to keep the logical tab handle.
+  const GURL older = embedded_test_server()->GetURL("/title2.html");
+  const GURL restored = embedded_test_server()->GetURL("/parked-restore");
+  const auto restore_lazily = [&](int32_t tab, const GURL& target) {
+    content::WebContents::CreateParams params(profile);
+    params.initially_hidden = true;
+    params.desired_renderer_state =
+        content::WebContents::CreateParams::kNoRendererProcess;
+    auto contents = content::WebContents::Create(params);
+    auto context = content::NavigationEntryRestoreContext::Create();
+    std::vector<std::unique_ptr<content::NavigationEntry>> entries;
+    for (const auto& url : {older, target}) {
+      auto entry = content::NavigationEntry::Create();
+      entry->SetURL(url);
+      entry->SetPageState(blink::PageState::CreateFromURL(url), context.get());
+      entries.push_back(std::move(entry));
+    }
+    contents->GetController().Restore(1, content::RestoreType::kRestored,
+                                      &entries);
+    strip->DiscardWebContents(TabContents(tab), std::move(contents));
+  };
+  restore_lazily(home_tab, restored);
+  restore_lazily(background, embedded_test_server()->GetURL("/title3.html"));
+  auto* page = TabContents(home_tab);
+  auto* background_page = TabContents(background);
+  ASSERT_TRUE(page && background_page);
+  const int selected_index = strip->active_index();
+  ASSERT_EQ(page, strip->GetActiveWebContents());
+  ASSERT_TRUE(page->GetController().NeedsReload());
+  EXPECT_FALSE(page->GetPrimaryMainFrame()->IsRenderFrameLive());
+  EXPECT_FALSE(page->IsLoading());
+  ASSERT_TRUE(background_page->GetController().NeedsReload());
+
+  uint32_t tab_flags = 0;
+  const uint64_t observation = barc_tab_observe(
+      home, home_tab,
+      [](void* context, uint64_t, int32_t, int32_t, int32_t, const char*,
+         const char*, int32_t, uint32_t flags) {
+        *static_cast<uint32_t*>(context) = flags;
+      },
+      &tab_flags);
+  ASSERT_NE(0u, observation);
+  base::ScopedClosureRunner unobserve(
+      base::BindOnce(&barc_tab_unobserve, observation));
+
+  EXPECT_TRUE(page->GetController().NeedsReload());
+  EXPECT_FALSE(tab_flags & BARC_TAB_LOADING);
+  SpaceOutcomes outcomes;
+  ASSERT_EQ(1, outcomes.Switch(1, work, home, home_tab));
+  ASSERT_EQ(1u, outcomes.entries.size());
+  EXPECT_EQ(BARC_SPACE_SWITCH_APPLIED, outcomes.entries.front().result.status);
+  ASSERT_EQ(selected_index, strip->active_index());
+  ASSERT_EQ(page, strip->GetActiveWebContents());
+
+  // Selection or the normal native mount may start restoration. Do not
+  // trigger a second tab click, explicit navigation or forced activation.
+  [work_view removeFromSuperview];
+  Place(home, home_tab, root);
+  ASSERT_TRUE(host->IsPageMounted(page));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return page->IsLoading() && (tab_flags & BARC_TAB_LOADING);
+  }));
+  EXPECT_FALSE(host->IsPageMounted(work_contents));
+  EXPECT_EQ(work_contents->GetPrimaryMainFrame(),
+            work_document.AsRenderFrameHostIfValid());
+  EXPECT_FALSE(work_contents->IsLoading());
+  EXPECT_FALSE(host->IsPageMounted(background_page));
+  EXPECT_TRUE(background_page->GetController().NeedsReload());
+  EXPECT_FALSE(background_page->IsLoading());
+
+  response.WaitForRequest();
+  response.Send("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+                "<title>Restored after mount</title>");
+  response.Done();
+  ASSERT_TRUE(content::WaitForLoadStop(page));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return !(tab_flags & BARC_TAB_LOADING);
+  }));
+  EXPECT_EQ(restored, page->GetLastCommittedURL());
+  EXPECT_EQ(home_tab, barc_window_tab_at(home, strip->active_index()));
+  EXPECT_EQ(page, TabContents(home_tab));
+  EXPECT_EQ(profile, page->GetBrowserContext());
+  auto& controller = page->GetController();
+  EXPECT_FALSE(controller.NeedsReload());
+  EXPECT_TRUE(controller.CanGoBack());
+  ASSERT_EQ(2, controller.GetEntryCount());
+  EXPECT_EQ(older, controller.GetEntryAtIndex(0)->GetURL());
+  EXPECT_EQ(restored, controller.GetEntryAtIndex(1)->GetURL());
+  EXPECT_EQ(1, controller.GetCurrentEntryIndex());
 }
 
 IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,

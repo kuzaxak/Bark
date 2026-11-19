@@ -1,19 +1,20 @@
 diff --git a/chrome/browser/chrome_content_browser_client.cc b/chrome/browser/chrome_content_browser_client.cc
-index aa8b16f467..16072ad57a 100644
+index aa8b16f..d5a4dc8 100644
 --- a/chrome/browser/chrome_content_browser_client.cc
 +++ b/chrome/browser/chrome_content_browser_client.cc
-@@ -4,6 +4,10 @@
+@@ -4,6 +4,11 @@
  
  #include "chrome/browser/chrome_content_browser_client.h"
  
 +#if BUILDFLAG(IS_MAC)
++#include "bark/bridge/barc_runtime_startup.h"
 +#include "bark/browser/content_blocking/native_content_blocker.h"
 +#endif
 +
  #include <algorithm>
  #include <iterator>
  #include <map>
-@@ -390,6 +394,7 @@
+@@ -390,6 +395,7 @@
  #include "content/public/common/content_features.h"
  #include "content/public/common/content_switches.h"
  #include "content/public/common/url_constants.h"
@@ -21,7 +22,18 @@ index aa8b16f467..16072ad57a 100644
  #include "content/public/common/window_container_type.mojom-shared.h"
  #include "device/vr/buildflags/buildflags.h"
  #include "extensions/browser/browser_frame_context_data.h"
-@@ -6109,6 +6114,13 @@ ChromeContentBrowserClient::CreateURLLoaderThrottles(
+@@ -5131,6 +5137,10 @@ bool ChromeContentBrowserClient::
+ 
+ void ChromeContentBrowserClient::BrowserURLHandlerCreated(
+     BrowserURLHandler* handler) {
++#if BUILDFLAG(IS_MAC)
++  handler->AddHandlerPair(&barc::RewritePawlPasswordManagement,
++                          BrowserURLHandler::null_handler());
++#endif
+   // The group policy NTP URL handler must be registered before the other NTP
+   // URL handlers below. Also register it before the "parts" handlers, so the
+   // NTP policy takes precedence over extensions that override the NTP.
+@@ -6109,6 +6119,13 @@ ChromeContentBrowserClient::CreateURLLoaderThrottles(
    DCHECK_CURRENTLY_ON(BrowserThread::UI);
  
    std::vector<std::unique_ptr<blink::URLLoaderThrottle>> result;
@@ -35,7 +47,7 @@ index aa8b16f467..16072ad57a 100644
  
    DCHECK(browser_context);
    Profile* profile = Profile::FromBrowserContext(browser_context);
-@@ -6802,7 +6814,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
+@@ -6802,7 +6819,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
      bool* disable_secure_dns,
      network::mojom::URLLoaderFactoryOverridePtr* factory_override,
      scoped_refptr<base::SequencedTaskRunner> navigation_response_task_runner,
@@ -45,7 +57,7 @@ index aa8b16f467..16072ad57a 100644
  #if BUILDFLAG(ENABLE_EXTENSIONS_CORE)
    auto* web_request_api =
        extensions::BrowserContextKeyedAPIFactory<extensions::WebRequestAPI>::Get(
-@@ -6815,7 +6828,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
+@@ -6815,7 +6833,8 @@ void ChromeContentBrowserClient::WillCreateURLLoaderFactory(
          web_request_api->MaybeProxyURLLoaderFactory(
              browser_context, frame, render_process_id, type,
              std::move(navigation_id), ukm_source_id, factory_builder,
@@ -55,7 +67,7 @@ index aa8b16f467..16072ad57a 100644
      if (bypass_redirect_checks) {
        *bypass_redirect_checks = use_proxy_for_web_request;
      }
-@@ -6952,6 +6966,39 @@ ChromeContentBrowserClient::
+@@ -6952,6 +6971,39 @@ ChromeContentBrowserClient::
    return prefetch_handler;
  }
  

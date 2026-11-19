@@ -31,6 +31,8 @@ extern "C" {
 // leading size. Version 11 adds the window host's calls. Version 12 adds
 // explicit space switch outcomes. Version 13 requires Bark-owned browser windows on macOS.
 #define BARC_BRIDGE_VERSION 13
+#define BARC_HAS_PASSWORD_PROVIDER 1
+#define BARC_HAS_LOAD_PROGRESS 1
 #define BARC_HAS_RENDERER_STATE 1
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
@@ -342,6 +344,8 @@ enum BarcMediaFlags {
 typedef void (*BarcMediaCallback)(void* context, uint64_t observation,
     int32_t window, int32_t tab, uint32_t flags, const char* title,
     const char* artist, const char* album);
+typedef void (*BarcLoadProgressCallback)(void* context, uint64_t observation,
+                                        double progress, int loading);
 enum BarcMediaAction {
   BARC_MEDIA_PLAY = 0, BARC_MEDIA_PAUSE = 1,
   BARC_MEDIA_PREVIOUS_TRACK = 2, BARC_MEDIA_NEXT_TRACK = 3
@@ -621,6 +625,11 @@ enum BarcExtensionActionFlags {
 // this callback returns. Copy any values that the sidebar will retain.
 typedef void (*BarcExtensionActionCallback)(void* context, const char* extension_id,
     const char* title, const char* badge, int flags);
+
+typedef enum BarcPasswordProvider : int {
+  BARC_PASSWORD_PROVIDER_CHROMIUM = 0,
+  BARC_PASSWORD_PROVIDER_PAWL = 1,
+} BarcPasswordProvider;
 
 struct BarcBridge {
   size_t size;
@@ -1230,6 +1239,19 @@ struct BarcBridge {
                                             const char* extension_id, int pinned);
   int (* _Nonnull tab_invoke_extension)(int32_t window, int32_t tab,
                                         const char* extension_id);
+
+  // Browser process main thread, once before entering ChromeMain. Chromium is
+  // the default. Returns 0 for invalid, repeated, or late registration.
+  int (* _Nonnull set_password_provider)(BarcPasswordProvider provider);
+
+  // Optional V13 tail, guarded by the table's byte size. Binds to an existing
+  // live tab observation and borrows its context. First and later snapshots
+  // are delivered on the UI thread after navigation callbacks. The fraction
+  // is finite and in [0, 1], including zero. Loading is 0 or 1. Both describe
+  // the tab's current contents when sampled. Null clears the callback and
+  // cancels pending snapshots. Returns 0 for a stale token or duplicate bind.
+  int (* _Nullable tab_observe_load_progress)(
+      uint64_t observation, BarcLoadProgressCallback _Nullable callback);
 
   // Read the live primary document of an exact regular Bark tab on the UI
   // thread. Returns 1 with the OS renderer PID and 0/1 Blink document
