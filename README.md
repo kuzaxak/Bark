@@ -89,6 +89,10 @@ The launch command leaves a separate disposable profile open for hands-on testin
 To keep a personal browsing session, open the signed app normally. Its local data
 lives under `~/Library/Application Support/NookChromium`.
 
+In a signed build with a configured update feed, use **Bark → Check for Updates**
+for a manual check. Under **Settings → General** you can also turn on automatic
+checks and, when the build allows it, automatic downloads.
+
 ## How the browser fits together
 
 The app owns the executable, menus and window layout. The engine owns Chromium

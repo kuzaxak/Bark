@@ -23,7 +23,13 @@ public struct SettingsGeneralTab: View {
     @AppStorage("SUEnableAutomaticChecks") private var checksForUpdates = true
     @AppStorage("SUAutomaticallyUpdate") private var installsUpdates = true
 
-    public init() {}
+    private let updateControls: AnyView?
+
+    public init() { updateControls = nil }
+
+    public init<Content: View>(@ViewBuilder updateControls: () -> Content) {
+        self.updateControls = AnyView(updateControls())
+    }
 
     /// The provider list, shared by both platforms' spellings of the row.
     @ViewBuilder
@@ -93,7 +99,9 @@ public struct SettingsGeneralTab: View {
             Section {
                 DefaultBrowserRow()
                 Toggle("Warn before quitting \(ProductDisplayName.current)", isOn: $settings.askBeforeQuit)
-                if shows(.updates) {
+                if let updateControls {
+                    updateControls
+                } else if shows(.updates) {
                     Toggle("Check for updates automatically", isOn: $checksForUpdates)
                     Toggle("Download and install updates automatically", isOn: $installsUpdates)
                         .disabled(!checksForUpdates)

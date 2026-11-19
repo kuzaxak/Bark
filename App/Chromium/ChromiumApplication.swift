@@ -766,7 +766,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
               let shortcuts = manager.keyboardShortcutManager else { return }
         SettingsNavigation.shared.currentSettingsTab = tab
         if let settingsWindow { settingsWindow.makeKeyAndOrderFront(nil); return }
-        let view = SettingsWindow()
+        let view = SettingsWindow(updater: updater)
             .environmentObject(manager)
             .environmentObject(manager.gradientColorManager)
             .environment(manager.tabs)

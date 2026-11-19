@@ -11,6 +11,7 @@ import NookDesign
 import NookUI
 
 struct SettingsWindow: View {
+    var updater: ChromiumAppUpdater?
     @EnvironmentObject var browserManager: BrowserManager
     @EnvironmentObject var gradientColorManager: GradientColorManager
     @Environment(\.nookSettings) var nookSettings
@@ -31,6 +32,7 @@ struct SettingsWindow: View {
             Divider()
             SettingsDetailPane(
                 tab: tab,
+                updater: updater,
                 history: HistoryToolbar(
                     canGoBack: !back.isEmpty,
                     canGoForward: !forward.isEmpty,
@@ -205,6 +207,7 @@ private struct SettingsSidebarRow: View {
 
 private struct SettingsDetailPane: View {
     let tab: SettingsTabs
+    let updater: ChromiumAppUpdater?
     let history: HistoryToolbar
 
     var body: some View {
@@ -219,7 +222,9 @@ private struct SettingsDetailPane: View {
     private var tabPage: some View {
         switch tab {
         case .general:
-            SettingsGeneralTab()
+            SettingsGeneralTab {
+                updater?.automaticUpdateControls
+            }
         case .appearance:
             SettingsAppearanceTab()
         case .ai:

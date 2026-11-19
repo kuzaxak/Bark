@@ -11,7 +11,7 @@ public enum SettingsControl: CaseIterable {
     public func isShown(chromium: Bool) -> Bool {
         guard chromium else { return true }
         switch self {
-        // No Sparkle updater runs in the Chromium app.
+        // The Chromium host supplies its running updater's own controls.
         case .updates: return false
         // Moving a video to the sidebar goes through WebKit's picture in picture.
         case .sidebarVideo: return false
