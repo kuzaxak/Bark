@@ -107,17 +107,20 @@ from their source snapshot. A Git archive of the matching source works for
 intake. The app shell and documentation can change independently of the SDK.
 For official builds, Bark's Siso handler retains the
 digest of the profile explicitly passed to the browser-core compile. The
-receipt checks that compile before the raw framework link and matches the
-raw and packaged framework bytes. The versioned official compiler wrapper
-keeps this compile distinct from previous, unwitnessed build actions. A normal
+receipt checks the browser compile before the recorded raw framework link.
+It matches the Siso link digest to the raw and packaged framework bytes. The
+versioned official compiler wrapper keeps this compile distinct from previous,
+unwitnessed build actions. A normal
 `build --official` recognizes the previous official GN arguments, including
 outputs that predate the output-local SDK link and compiler wrapper. It writes
 the new arguments atomically. If other GN arguments differ or the output is
 bound to another SDK directory, use a fresh official output. A dry run leaves
 the existing output untouched.
 SDK publication rechecks the build outputs and includes the receipt in the
-pinned manifest. A consumer can verify an installed official
-SDK without the Chromium checkout using `bark-check.py engine --require-official`.
+pinned manifest. For receipts written before the link record was required,
+rerun the official build before publishing or handing off the SDK. Consumers
+can verify an installed official SDK without a Chromium checkout using
+`bark-check.py engine --require-official`.
 
 #### Prepare the first official SDK on its native Mac
 

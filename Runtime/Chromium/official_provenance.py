@@ -75,7 +75,7 @@ def recipe_inputs(arch):
 
     gn_arch, target = ARCHES[arch]
     return {
-        "format": 2,
+        "format": 3,
         "arch": arch,
         "chromium": PINS["chromium"],
         "depot_tools": PINS["depot_tools"],
@@ -158,15 +158,23 @@ def verify_pgo_compile(out, src, profile, expected_hash, linked, env):
     profile_entry = entries.get(str(profile), {})
     if profile_entry.get("digest", {}).get("hash") != expected_hash:
         raise ValueError("The official build has no matching Siso input record for the pinned PGO profile")
+    link_entry = entries.get(str(linked), {})
+    link_time = int(link_entry.get("id", {}).get("mod_time", 0))
+    link_hash = digest(linked)
+    if (not link_entry.get("cmd_hash") or not link_entry.get("edge_hash") or
+            link_time != linked.stat().st_mtime_ns or link_entry.get("digest", {}).get("hash") != link_hash):
+        raise ValueError("The official build has no matching Siso link record for the raw framework image")
+
     browser_object = out / BROWSER_OBJECT
     compiled = entries.get(str(browser_object), {})
     compiled_time = int(compiled.get("id", {}).get("mod_time", 0))
     profile_time = int(profile_entry.get("id", {}).get("mod_time", 0))
     if (not compiled.get("cmd_hash") or not compiled.get("edge_hash") or
-            not 0 < profile_time <= compiled_time <= linked.stat().st_mtime_ns or
+            not 0 < profile_time <= compiled_time <= link_time or
             not browser_object.is_file() or
             compiled.get("digest", {}).get("hash") != digest(browser_object)):
         raise ValueError("The official build has no matching Siso browser compile before the framework link")
+    return link_hash
 
 
 def record(out, src, arch, env):
@@ -176,10 +184,10 @@ def record(out, src, arch, env):
     if digest(out / "args.gn") != expected["gn_args_sha256"]:
         raise ValueError("The actual GN arguments do not match the official recipe")
     linked = out / RAW_FRAMEWORK_IMAGE
-    verify_pgo_compile(out, src, profile, expected["pgo_sha256"], linked, env)
+    link_hash = verify_pgo_compile(out, src, profile, expected["pgo_sha256"], linked, env)
     framework = out / "Bark.app/Contents/Frameworks" / FRAMEWORK
     packaged = framework_inputs(framework, arch)
-    if digest(linked) != packaged["framework_sha256"]:
+    if link_hash != packaged["framework_sha256"]:
         raise ValueError("The packaged official framework differs from the raw linked image")
     return {**expected, **packaged}
 

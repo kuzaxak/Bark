@@ -53,6 +53,10 @@ class OfficialProvenanceTests(unittest.TestCase):
         self.linked = self.out / provenance.RAW_FRAMEWORK_IMAGE
         self.linked.parent.mkdir(parents=True)
         self.linked.write_bytes(self.image.read_bytes())
+        self.link_entry = {
+            "name": str(self.linked), "digest": {"hash": provenance.digest(self.linked)},
+            "id": {"mod_time": self.linked.stat().st_mtime_ns}, "cmd_hash": "link command", "edge_hash": "link edge",
+        }
         self.browser_time = self.browser_object.stat().st_mtime_ns
         self.include_browser_compile = True
         mock = patch.object(provenance.subprocess, "check_output", side_effect=self.tools)
@@ -69,6 +73,8 @@ class OfficialProvenanceTests(unittest.TestCase):
             if self.include_browser_compile:
                 entries.append({"name": str(self.browser_object), "digest": {"hash": provenance.digest(self.browser_object)},
                                 "id": {"mod_time": self.browser_time}, "cmd_hash": "command", "edge_hash": "edge"})
+            if self.link_entry:
+                entries.append(self.link_entry)
             return json.dumps({"entries": entries})
         if tool == "lipo":
             return self.arch + "\n"
@@ -85,6 +91,15 @@ class OfficialProvenanceTests(unittest.TestCase):
     def test_pinned_receipt_and_framework_pass(self):
         self.sealed_receipt()
         provenance.verify_cached(self.artifact, self.arch)
+
+    def test_old_receipt_lacks_the_link_bound_format(self):
+        receipt = self.sealed_receipt()
+        data = json.loads(receipt.read_text())
+        data["format"] = 2
+        receipt.write_text(json.dumps(data))
+        (self.artifact / "SHA256SUMS").write_text(f"{provenance.digest(receipt)}  ./{provenance.RECEIPT}\n")
+        with self.assertRaisesRegex(ValueError, "does not match the pinned recipe"):
+            provenance.verify_cached(self.artifact, self.arch)
 
     def test_receipt_for_different_framework_is_refused(self):
         self.sealed_receipt()
@@ -292,11 +307,30 @@ class OfficialProvenanceTests(unittest.TestCase):
             provenance.record(self.out, self.src, self.arch, {})
         self.include_browser_compile = True
         os.utime(self.linked, ns=(self.browser_time - 1, self.browser_time - 1))
+        self.link_entry["id"]["mod_time"] = self.linked.stat().st_mtime_ns
         with self.assertRaisesRegex(ValueError, "no matching Siso browser compile"):
+            provenance.record(self.out, self.src, self.arch, {})
+
+    def test_raw_framework_requires_the_matching_siso_link(self):
+        saved = self.link_entry
+        for changed in (None, {**saved, "cmd_hash": ""},
+                        {**saved, "id": {"mod_time": saved["id"]["mod_time"] - 1}}):
+            with self.subTest(changed=changed):
+                self.link_entry = changed
+                with self.assertRaisesRegex(ValueError, "no matching Siso link record"):
+                    provenance.record(self.out, self.src, self.arch, {})
+
+        self.link_entry = saved
+        self.linked.write_bytes(b"unrelated framework replacement")
+        self.image.write_bytes(self.linked.read_bytes())
+        os.utime(self.linked, ns=(saved["id"]["mod_time"], saved["id"]["mod_time"]))
+        with self.assertRaisesRegex(ValueError, "no matching Siso link record"):
             provenance.record(self.out, self.src, self.arch, {})
 
     def test_packaged_framework_must_match_raw_link(self):
         self.linked.write_bytes(b"another linked image")
+        self.link_entry["id"]["mod_time"] = self.linked.stat().st_mtime_ns
+        self.link_entry["digest"]["hash"] = provenance.digest(self.linked)
         with self.assertRaisesRegex(ValueError, "differs from the raw linked image"):
             provenance.record(self.out, self.src, self.arch, {})
 

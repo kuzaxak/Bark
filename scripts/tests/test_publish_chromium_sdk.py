@@ -111,7 +111,6 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
             {"name": str(browser), "digest": {"hash": hashlib.sha256(browser.read_bytes()).hexdigest()},
              "id": {"mod_time": browser.stat().st_mtime_ns}, "cmd_hash": "command", "edge_hash": "edge"},
         ])
-        state_file.write_text(json.dumps(state))
         framework = self.build / "Bark.app/Contents/Frameworks/Bark Framework.framework"
         versioned = framework / "Versions/Current"
         sdk = pins["official_macos_sdk"]
@@ -131,6 +130,11 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
         raw_image = self.build / "obj/chrome/chrome_framework_shared_library/Bark Framework"
         raw_image.parent.mkdir(parents=True)
         shutil.copyfile(linked, raw_image)
+        state["entries"].append({"name": str(raw_image),
+                                 "digest": {"hash": hashlib.sha256(raw_image.read_bytes()).hexdigest()},
+                                 "id": {"mod_time": raw_image.stat().st_mtime_ns},
+                                 "cmd_hash": "link command", "edge_hash": "link edge"})
+        state_file.write_text(json.dumps(state))
         env = self.fixture["publisher_environment"](self.build, self.siso)
         subprocess.run([
             sys.executable, "-B", "-c", """
@@ -209,6 +213,30 @@ publication.finish = stop_before_promotion
         self.assertNotEqual(refused.returncode, 0)
         self.assertIn("official SDK receipt differs", refused.stderr)
         self.assertEqual(self.pin("arm64").read_bytes(), pin)
+
+    def test_same_arch_and_sdk_framework_replacement_cannot_publish(self):
+        self.make_official()
+        linked = self.build / "obj/chrome/chrome_framework_shared_library/Bark Framework"
+        packaged = self.build / "Bark.app/Contents/Frameworks/Bark Framework.framework/Versions/Current/Bark Framework"
+        sdk = json.loads((self.chromium / "PINS.json").read_text())["official_macos_sdk"]["version"]
+        replacement = self.work / "replacement.dylib"
+        self.fixture["fake_framework"](replacement, zone="Replacement image", arch=(
+            "-arch", "arm64", "-mmacosx-version-min=15.5",
+            f"-Wl,-platform_version,macos,15.5,{sdk}",
+        ))
+        self.assertNotEqual(linked.read_bytes(), replacement.read_bytes())
+        shutil.copyfile(replacement, linked)
+        shutil.copyfile(replacement, packaged)
+        # Even with metadata amended to match the replaced bytes, the actual
+        # Siso record still names the digest of the original linked image.
+        receipt_path = self.build / "official-build.json"
+        receipt = json.loads(receipt_path.read_text())
+        receipt["framework_sha256"] = hashlib.sha256(replacement.read_bytes()).hexdigest()
+        receipt_path.write_text(json.dumps(receipt))
+        refused = self.publish("--require-official")
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("no matching Siso link record", refused.stderr)
+        self.assertFalse(self.pin("arm64").exists())
 
     def test_sealed_copy_must_keep_the_verified_receipt_and_can_recover(self):
         self.make_official()
