@@ -373,9 +373,54 @@ private func checkPasswordManagementLanding() throws {
     print("Typed Pawl landing action verifies provider, current ownership and document lifetime")
 }
 
+/// Exercise the store used by an ordinary launch with a temporary Application Support directory.
+@MainActor private func checkPersistentAppStore() throws {
+    let files = FileManager.default
+    let support = files.temporaryDirectory.appendingPathComponent("BarkStorage-\(UUID())", isDirectory: true)
+    defer { try? files.removeItem(at: support) }
+
+    let legacy = support.appendingPathComponent("ee.qdo.nook", isDirectory: true)
+    try files.createDirectory(at: legacy, withIntermediateDirectories: true)
+    let legacyStore = legacy.appendingPathComponent("default.store")
+    let original = Data("untouched prior installation".utf8)
+    try original.write(to: legacyStore)
+
+    let startup = try ChromiumStartupConfiguration(arguments: ["Bark"], applicationSupportDirectory: support)
+    try startup.prepare()
+    let directory = startup.root.appendingPathComponent("App", isDirectory: true)
+    let visit = UUID()
+    try autoreleasepool {
+        let storage = try Persistence(directory: directory)
+        storage.container.mainContext.insert(
+            HistoryEntity(id: visit, url: "https://fixture.invalid/", title: "Saved", profileId: UUID()))
+        try storage.container.mainContext.save()
+    }
+    try autoreleasepool {
+        let storage = try Persistence(directory: directory)
+        let entries = try storage.container.mainContext.fetch(FetchDescriptor<HistoryEntity>())
+        precondition(entries.map(\.id) == [visit], "A normal launch must reopen the existing Bark history")
+    }
+
+    let unreadable = support.appendingPathComponent("Damaged Bark/App", isDirectory: true)
+    try files.createDirectory(at: unreadable, withIntermediateDirectories: true)
+    let damagedStore = unreadable.appendingPathComponent("default.store")
+    let damagedBytes = Data("invalid SQLite database for a failed open".utf8)
+    try damagedBytes.write(to: damagedStore)
+    do {
+        _ = try Persistence(directory: unreadable)
+        preconditionFailure("An unreadable Bark store must fail to open")
+    } catch {
+        let preserved = try Data(contentsOf: damagedStore)
+        precondition(preserved == damagedBytes, "A failed open must preserve the original database")
+    }
+    let preservedLegacy = try Data(contentsOf: legacyStore)
+    precondition(preservedLegacy == original, "Neither path may change the earlier installation")
+}
+
 @main
 private enum ProfileChecks {
     @MainActor static func main() async throws {
+        try checkPersistentAppStore()
         var tree = TabTree()
         let space = UUID()
         tree.createSpace(id: space, name: "Work", icon: "briefcase", accentHex: "#000000", after: nil)
