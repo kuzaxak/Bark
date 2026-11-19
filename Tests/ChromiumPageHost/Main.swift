@@ -519,6 +519,17 @@ private enum Native {
     let moves = probe.moves
     precondition(moves == (1, 1), "the sidebar went into the root once, and the root into its window once: \(moves)")
 
+    root!.sidebar = .hidden
+    let landing = NSView()
+    let noticeHeight = ChromiumSidebarShell.passwordSettingsHeight
+    precondition(host.setPageHeader(landing, replacing: nil, height: Int32(noticeHeight), in: window))
+    precondition(!landing.isHidden && landing.isDescendant(of: root!) && landing.frame.height == noticeHeight)
+    let pageBounds = root!.convert(page801.bounds, from: page801)
+    let headerBounds = root!.convert(landing.bounds, from: landing)
+    precondition(headerBounds.maxY <= pageBounds.minY, "The standalone password header insets the page with the sidebar hidden")
+    precondition(host.setPageHeader(nil, replacing: landing, height: 0, in: window))
+    root!.sidebar = .shown
+
     let opens = Native.opens
     Native.groups[81] = 80
     let page810 = NSView()

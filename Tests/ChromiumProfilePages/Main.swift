@@ -288,6 +288,54 @@ private func checkPasswordManagementCommand() {
     print("Native password management opens Bark Settings only for explicit commands with the selected Pawl provider")
 }
 
+@MainActor
+private func checkPasswordManagementLanding() throws {
+    let landing = ChromiumPasswordManagementLanding()
+    var currentOwner = true
+    var shown = 0
+    func action(provider: Bool? = true) -> (() -> Void)? {
+        landing.settingsAction(pawlEnabledAtLaunch: provider, ownerCurrent: { currentOwner },
+                               openSettings: { shown += 1 })
+    }
+    precondition(action() == nil, "An ordinary tab without a typed marker offers no action")
+    landing.update(true)
+    precondition(action(provider: nil) == nil && action(provider: false) == nil)
+    let original = action()!
+    precondition(shown == 0, "Displaying the action must not open Settings")
+    currentOwner = false
+    precondition(action() == nil)
+    original()
+    precondition(shown == 0, "A previously visible action cannot follow selection")
+    currentOwner = true
+    landing.update(false)
+    precondition(action() == nil, "Navigation must suppress the action")
+    landing.update(true)
+    original()
+    precondition(shown == 0, "A fresh landing cannot revive the previous action")
+    action()?()
+    precondition(shown == 1)
+
+    let navigation = try ChromiumPageNavigation(profileID: Native.profile, window: 550, tab: 551, bridge: Native.bridge)
+    defer { navigation.invalidate() }
+    let (token, observer) = Native.observers.first(where: { $0.value.2 == 550 })!
+    func emit(_ event: BarcTabEvent, flags: UInt32 = 0) {
+        observer.0?(observer.1, token, Int32(bitPattern: event.rawValue), 550, 551, nil, nil, 0, flags)
+    }
+    let adapter = navigation.passwordManagementLanding
+    emit(BARC_TAB_INITIAL)
+    precondition(!adapter.isAvailable)
+    adapter.update(true)
+    emit(BARC_TAB_STARTED, flags: BARC_TAB_LOADING.rawValue)
+    precondition(!adapter.isAvailable, "A new provisional navigation retires the displayed marker")
+    adapter.update(true)
+    navigation.load(URL(string: "https://fixture.invalid/")!)
+    precondition(!adapter.isAvailable, "App navigation retires the marker before the bridge responds")
+    adapter.update(true)
+    emit(BARC_TAB_STATE)
+    precondition(!adapter.isAvailable, "An ordinary state replaces the old landing")
+    print("Typed Pawl landing action verifies provider, current ownership and document lifetime")
+}
+
 @main
 private enum ProfileChecks {
     @MainActor static func main() async throws {
@@ -589,6 +637,7 @@ private enum ProfileChecks {
         precondition(Native.observers.isEmpty)
         try await checkScopedHistoryClear()
         checkPasswordManagementCommand()
+        try checkPasswordManagementLanding()
         print("Chromium profile page checks passed")
     }
 }

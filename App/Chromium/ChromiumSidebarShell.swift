@@ -137,7 +137,8 @@ struct ChromiumSidebarShell: View {
     }
 
     private var hostedLayers: some View {
-        layers
+        let passwordSettings = browserManager.passwordManagementLandingAction(in: window)
+        return layers
             .overlayPreferenceValue(FavoritePreviewAnchorKey.self) {
                 ChromiumFavoriteCard(anchor: $0, window: window, tabs: browserManager.tabs)
             }
@@ -167,7 +168,8 @@ struct ChromiumSidebarShell: View {
             .onChange(of: registry.activeWindowId) { _, _ in applyAccent() }
             .background {
                 ChromiumPageHeader(browserManager: browserManager, model: window,
-                    height: headerHeight, content: AnyView(headerContent))
+                    height: headerHeight(hasPasswordSettings: passwordSettings != nil),
+                    content: AnyView(headerContent(passwordSettings: passwordSettings)))
             }
     }
 
@@ -316,17 +318,27 @@ struct ChromiumSidebarShell: View {
         })
     }
 
-    private var headerHeight: Int32 {
+    static let passwordSettingsHeight: CGFloat = 38
+
+    private func headerHeight(hasPasswordSettings: Bool) -> Int32 {
         let toolbarHeight = browserManager.showsTopBar(in: window) ? TopBarMetrics.height : 0
         let developerHeight = browserManager.showsDeveloperBar(in: window) ? DeveloperBar.height : 0
-        return Int32(toolbarHeight + developerHeight)
+        return Int32(toolbarHeight + developerHeight + (hasPasswordSettings ? Self.passwordSettingsHeight : 0))
     }
-    private var headerContent: some View {
+    private func headerContent(passwordSettings: (() -> Void)?) -> some View {
         let showsToolbar = browserManager.showsTopBar(in: window)
         return VStack(spacing: 0) {
             if showsToolbar { TopBarView() }
             if browserManager.showsDeveloperBar(in: window), let page = browserManager.frontPage(in: window) {
                 DeveloperBar(session: page, showsAddress: !showsToolbar).id(page.itemID)
+            }
+            if let passwordSettings {
+                HStack {
+                    Spacer()
+                    Button("Open Password Settings", action: passwordSettings)
+                }
+                .padding(.horizontal, 12)
+                .frame(height: Self.passwordSettingsHeight)
             }
         }
         .environmentObject(browserManager)

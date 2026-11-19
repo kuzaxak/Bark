@@ -1,5 +1,30 @@
 // Licensed under GPL-3.0. See LICENSE.
 import Foundation
+import Observation
+
+/// The marker belongs to the renderer document identified by Chromium. Changes
+/// also invalidate the action closure of a previously rendered notice.
+@MainActor @Observable
+final class ChromiumPasswordManagementLanding {
+    private(set) var generation: UInt64 = 0
+    private(set) var isAvailable = false
+
+    func update(_ available: Bool) {
+        guard isAvailable != available else { return }
+        generation &+= 1
+        isAvailable = available
+    }
+
+    func settingsAction(pawlEnabledAtLaunch: Bool?, ownerCurrent: @escaping () -> Bool,
+                        openSettings: @escaping () -> Void) -> (() -> Void)? {
+        guard pawlEnabledAtLaunch == true, isAvailable, ownerCurrent() else { return nil }
+        let generation = generation
+        return { [weak self] in
+            guard let self, self.isAvailable, self.generation == generation, ownerCurrent() else { return }
+            openSettings()
+        }
+    }
+}
 
 /// Handles explicit submissions from Bark's own address controls.
 @MainActor

@@ -2,6 +2,7 @@
 import BarcChromium
 internal import BarkLoadProgress
 internal import BarkRendererState
+internal import BarkPasswordProvider
 import Darwin
 import Foundation
 import AppKit
@@ -34,6 +35,7 @@ final class ChromiumPageNavigation: PageNavigation {
     private(set) var state = PageNavigationState(canGoBack: false, canGoForward: false)
     var onStateChanged: ((PageNavigationState) -> Void)?
     var onEvent: ((PageNavigationEvent) -> Void)?
+    let passwordManagementLanding = ChromiumPasswordManagementLanding()
 
     private var vaultSaveCallback: (@MainActor (VaultNativeSubmission?) -> Void)?
     private var vaultPasskeyCallback: (@MainActor (VaultNativePasskeyRequest?) -> Void)?
@@ -163,6 +165,7 @@ final class ChromiumPageNavigation: PageNavigation {
 
     func search(_ query: String, kagiSessionToken: String?) -> Bool {
         guard !invalidated, window > 0 else { return false }
+        passwordManagementLanding.update(false)
         let accepted = query.withCString { query in
             if let token = kagiSessionToken { return token.withCString { bridge.tab_search(window, tab, query, $0) } }
             return bridge.tab_search(window, tab, query, nil)
@@ -172,6 +175,7 @@ final class ChromiumPageNavigation: PageNavigation {
 
     func load(_ url: URL) {
         guard !invalidated, window > 0 else { return }
+        passwordManagementLanding.update(false)
         let accepted = url.absoluteString.withCString { bridge.tab_navigate(window, tab, $0) }
         if accepted != 1, !invalidated {
             let error = NSError(domain: "Barc.Chromium.Command", code: 1,
@@ -197,12 +201,13 @@ final class ChromiumPageNavigation: PageNavigation {
     }
     @discardableResult func goToHistoryEntry(_ id: Int32) -> Bool {
         guard !invalidated, !isClosed, window > 0, id > 0 else { return false }
+        passwordManagementLanding.update(false)
         return bridge.tab_go_to_history_entry(window, tab, id) == 1
     }
 
-    @discardableResult func goBack() -> Bool { command(bridge.tab_go_back) }
-    @discardableResult func goForward() -> Bool { command(bridge.tab_go_forward) }
-    @discardableResult func reload() -> Bool { command(bridge.tab_reload) }
+    @discardableResult func goBack() -> Bool { navigationCommand(bridge.tab_go_back) }
+    @discardableResult func goForward() -> Bool { navigationCommand(bridge.tab_go_forward) }
+    @discardableResult func reload() -> Bool { navigationCommand(bridge.tab_reload) }
     func stop() {
         if command(bridge.tab_stop) { setLoadProgress(nil) }
     }
@@ -254,9 +259,15 @@ final class ChromiumPageNavigation: PageNavigation {
         !invalidated && window > 0 && action(window, tab) == 1
     }
 
+    private func navigationCommand(_ action: (Int32, Int32) -> Int32) -> Bool {
+        passwordManagementLanding.update(false)
+        return command(action)
+    }
+
     @discardableResult
     func executeNativePageCommand(_ command: Int32) -> Bool {
         guard !invalidated, !isClosed, window > 0 else { return false }
+        if command == Int32(BARC_PAGE_HARD_RELOAD.rawValue) { passwordManagementLanding.update(false) }
         return bridge.tab_execute_command(window, tab, command) == 1
     }
 
@@ -782,6 +793,7 @@ final class ChromiumPageNavigation: PageNavigation {
         observeVaultSave(nil)
         observeVaultPasskeys(nil)
         invalidated = true
+        passwordManagementLanding.update(false)
         state.media = nil
         state.loadProgress = nil
         cancelThumbnail()
@@ -821,6 +833,7 @@ final class ChromiumPageNavigation: PageNavigation {
         let ownerChanged = self.window != window
         self.window = window  // A live transfer changes the owner, never the page.
         if ownerChanged {
+            passwordManagementLanding.update(false)
             setLoadProgress(nil)
             guard !invalidated else { return false }
             cancelElementPicker()
@@ -921,6 +934,8 @@ final class ChromiumPageNavigation: PageNavigation {
             media?.isAudible = audible
         }
         let loading = flags & BARC_TAB_LOADING.rawValue != 0
+        passwordManagementLanding.update(window != 0 && !loading && event != BARC_TAB_STARTED &&
+            event != BARC_TAB_FAILED && BarkTabShowsPawlManagement(flags))
         let ended = event == BARC_TAB_FAILED || event == BARC_TAB_FINISHED
             || (event == BARC_TAB_COMMITTED && sameDocument)
         let began = event == BARC_TAB_STARTED || (event == BARC_TAB_COMMITTED && !sameDocument)

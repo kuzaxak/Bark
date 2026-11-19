@@ -22,3 +22,11 @@ static inline bool BarkSelectLaunchPasswordProvider(const struct BarcBridge *api
   return false;
 #endif
 }
+
+static inline bool BarkTabShowsPawlManagement(uint32_t flags) {
+#ifdef BARC_HAS_PAWL_MANAGEMENT
+  return (flags & BARC_TAB_PAWL_MANAGEMENT) != 0;
+#else
+  return false;
+#endif
+}

@@ -14,6 +14,12 @@ static int select_provider(BarcPasswordProvider provider) {
 
 int main(void) {
   struct BarcBridge bridge = {.size = sizeof(bridge)};
+  assert(!BarkTabShowsPawlManagement(0));
+#ifdef BARC_HAS_PAWL_MANAGEMENT
+  assert(BarkTabShowsPawlManagement(BARC_TAB_PAWL_MANAGEMENT | BARC_TAB_LOADING));
+#else
+  assert(!BarkTabShowsPawlManagement(8192));
+#endif
 #ifdef BARC_HAS_PASSWORD_PROVIDER
   bridge.set_password_provider = select_provider;
   assert(BarkSDKSupportsPasswordSelection());

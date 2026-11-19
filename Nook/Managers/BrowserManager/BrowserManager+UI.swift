@@ -101,6 +101,24 @@ extension BrowserManager: TabActions {
         return window.spaceID.flatMap(tabs.space)?.isAgent == false
     }
 
+    func passwordManagementLandingAction(in window: BrowserWindowState) -> (() -> Void)? {
+        guard let page = frontPage(in: window), !page.isPrivate, !page.isAgentPage,
+              let navigation = page.navigation as? ChromiumPageNavigation else { return nil }
+        let owner = navigation.nativeWindowID, tab = navigation.nativeTabID, space = window.spaceID
+        let document = page.nativeNavigationSerial
+        return navigation.passwordManagementLanding.settingsAction(pawlEnabledAtLaunch: tabs.vault?.pawlEnabledAtLaunch,
+            ownerCurrent: { [weak self, weak page, weak navigation, weak window] in
+                guard let self, let page, let navigation, let window,
+                      self.nativeOpenSettings != nil, self.ownsPasswordManagementCommand(window),
+                      window.window?.attachedSheet == nil, !window.nativePresentationIsPreparing,
+                      window.spaceID == space, self.frontPage(in: window) === page,
+                      !page.isLoading, !navigation.state.isLoading, !navigation.isClosed,
+                      page.navigation === navigation, page.nativeNavigationSerial == document,
+                      navigation.nativeWindowID == owner, navigation.nativeTabID == tab else { return false }
+                return self.tabs.nativePageHost?.isNativeSelection(navigation, in: window) == true
+            }, openSettings: { [weak self] in self?.nativeOpenSettings?(.privacy) })
+    }
+
     func offersPasswordManagementCommand(_ text: String, in window: BrowserWindowState,
                                           hasSearchOrPlacementOverride: Bool) -> Bool {
         ChromiumPasswordManagementCommand.offersSettings(
