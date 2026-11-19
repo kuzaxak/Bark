@@ -203,14 +203,21 @@ public class SearchManager {
         let generation = UUID()
         searchGeneration = generation
         isLoading = false
-        if !includeWebSuggestions { webRows = [] }
+        let input = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Internal management addresses can include the user's password search.
+        // Keep them local from the first scheme delimiter, including while typing.
+        let lowercaseInput = input.lowercased()
+        let internalAddress = tabs?.profileEngine == .chromium &&
+            (lowercaseInput.hasPrefix("chrome:") || lowercaseInput.hasPrefix("about:"))
+        let requestWebSuggestions = includeWebSuggestions && !internalAddress
+        if !requestWebSuggestions { webRows = [] }
         updateSpaceContext()
         let space = currentSpaceId
         if scope != .all {
             searchScope(scope, query: query, generation: generation, space: space)
             return
         }
-        guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        guard !input.isEmpty else {
             autofillTask?.cancel()
             autofillHost = nil
             historyRows = []
@@ -265,7 +272,7 @@ public class SearchManager {
 
         // Inline address editing may request local history only. In particular, a
         // complete URL must not be sent to the remote suggestion provider.
-        guard includeWebSuggestions else { return }
+        guard requestWebSuggestions else { return }
         isLoading = true
         searchTask = Task { [weak self] in
             do { try await Task.sleep(for: .milliseconds(125)) } catch { return }

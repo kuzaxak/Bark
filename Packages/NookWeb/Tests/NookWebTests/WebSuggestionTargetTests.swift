@@ -130,6 +130,23 @@ private struct SuggestionNoTokens: KagiTokenStore {
 @Suite(.serialized)
 @MainActor
 struct WebSuggestionTargetTests {
+    @Test(.timeLimit(.minutes(1))) func browserManagementAddressesStayOutOfRemoteSuggestions() async throws {
+        let f = try SuggestionFixture(); defer { f.close() }
+        _ = await f.nextRequest { f.manager.searchSuggestions(for: "ordinary query") }
+        SuggestionProtocol.finish()
+        await f.settle()
+        try #require(f.manager.suggestions.contains { $0.section == "Suggestions" })
+        let lookups = f.lookups
+
+        for address in ["chrome:", "chrome://password-manager/passwords?q=work",
+                        " ABOUT:password-manager/passwords "] {
+            f.manager.searchSuggestions(for: address)
+            try #require(!f.manager.isLoading)
+            #expect(!f.manager.suggestions.contains { $0.section == "Suggestions" })
+        }
+        #expect(f.lookups == lookups && SuggestionProtocol.requests.count == 1)
+    }
+
     @Test(.timeLimit(.minutes(1))) func editedProfileAndOrdinaryPaletteUseTheirOwnProviderWithoutCredentials() async throws {
         let f = try SuggestionFixture(); defer { f.close() }
         f.manager.setWebSuggestionTarget(for: f.workPage) { true }
