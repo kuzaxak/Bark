@@ -90,7 +90,7 @@ public final class NookSettingsService {
     private let facebookHideReelsKey = "settings.facebookHideReels"
     private let facebookHideSuggestedKey = "settings.facebookHideSuggested"
     private let redditSortHotKey = "settings.redditSortHot"
-    private let pawlVaultEnabledKey = "settings.pawlVaultEnabled"
+    private static let pawlVaultEnabledKey = "settings.pawlVaultEnabled"
     private let securityKeysEnabledKey = "settings.securityKeysEnabled"
 
     public var searchEngineId: String {
@@ -741,10 +741,15 @@ public final class NookSettingsService {
 
     public static let pawlVaultEnabledDidChange = Notification.Name("NookPawlVaultEnabledDidChange")
 
+    /// Reads only the provider choice before Chromium starts opening pages.
+    public static func savedPawlVaultSelection(in defaults: UserDefaults) -> Bool {
+        defaults.bool(forKey: pawlVaultEnabledKey)
+    }
+
     /// Fill and save passwords, and use passkeys, from the Pawl Vault app over its local socket.
     public var pawlVaultEnabled: Bool {
         didSet {
-            userDefaults.set(pawlVaultEnabled, forKey: pawlVaultEnabledKey)
+            userDefaults.set(pawlVaultEnabled, forKey: Self.pawlVaultEnabledKey)
             if pawlVaultEnabled != oldValue {
                 NotificationCenter.default.post(name: Self.pawlVaultEnabledDidChange, object: nil)
             }
@@ -976,7 +981,7 @@ public final class NookSettingsService {
         self.facebookHideReels = userDefaults.bool(forKey: facebookHideReelsKey)
         self.facebookHideSuggested = userDefaults.bool(forKey: facebookHideSuggestedKey)
         self.redditSortHot = userDefaults.bool(forKey: redditSortHotKey)
-        self.pawlVaultEnabled = userDefaults.bool(forKey: pawlVaultEnabledKey)
+        self.pawlVaultEnabled = Self.savedPawlVaultSelection(in: userDefaults)
         self.securityKeysEnabled = userDefaults.bool(forKey: securityKeysEnabledKey)
 
         if let data = userDefaults.data(forKey: siteSearchEntriesKey),

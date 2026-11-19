@@ -487,6 +487,7 @@
 		C1A000000000000000000004 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/ChromiumApp/SDKCompatibility";
                 MACH_O_TYPE = mh_dylib;
                 DEFINES_MODULE = YES;
                 FRAMEWORK_VERSION = A;
@@ -531,6 +532,7 @@
 		C1A000000000000000000005 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
+                SWIFT_INCLUDE_PATHS = "$(inherited) $(SRCROOT)/ChromiumApp/SDKCompatibility";
                 MACH_O_TYPE = mh_dylib;
                 DEFINES_MODULE = YES;
                 FRAMEWORK_VERSION = A;

@@ -13,9 +13,9 @@ final class ChromiumAppStorage {
     let devMCP: DevMCPConfiguration
     let tabsDirectory: URL
     let aiConfig: AIConfigService
-    let vault: VaultService?
+    let vault: VaultService
 
-    init(configuration: ChromiumStartupConfiguration) throws {
+    init(configuration: ChromiumStartupConfiguration, pawlEnabledAtLaunch: Bool? = nil) throws {
         let app = configuration.root.appendingPathComponent("App", isDirectory: true)
         persistence = try Persistence(directory: app)
         // A separate stable preferences domain; never reset or merge the
@@ -33,9 +33,10 @@ final class ChromiumAppStorage {
                                        keepsSidebarLeft: true)
         if configuration.isVerification {
             guard let profile = configuration.profileID else { throw StorageError.missingVerificationProfile }
-            vault = try VaultService(verificationSettings: settings, root: configuration.root, profile: profile)
+            vault = try VaultService(verificationSettings: settings, root: configuration.root, profile: profile,
+                                     pawlEnabledAtLaunch: pawlEnabledAtLaunch)
         } else {
-            vault = nil
+            vault = VaultService(settings: settings, pawlEnabledAtLaunch: pawlEnabledAtLaunch)
         }
         downloads = DownloadManager(historyFileURL: app.appendingPathComponent("Downloads.json"), usesNativeDownloads: true)
         tabsDirectory = app.appendingPathComponent("Tabs", isDirectory: true)

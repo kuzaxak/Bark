@@ -3731,6 +3731,38 @@ struct NativePageLifecycleTests {
 @Suite(.serialized)
 struct NativeVaultFormTests {
     private func agentCallbacks() async { for _ in 0..<40 { await Task.yield() } }
+    @Test func vaultLockDuringLookupUpdatesStatusImmediately() async throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let transport = SyntheticVaultRequests()
+        let vault = VaultService(settings: fixture.tabs.settings, client: transport, pawlEnabledAtLaunch: true)
+        #expect(await vault.refresh() == .connected)
+        await transport.availability("locked")
+        await #expect(throws: VaultClientError.server(.locked, "synthetic")) {
+            try await vault.send(VaultLogins(origin: "https://vault.synthetic.invalid", profile: nil))
+        }
+        #expect(vault.status == .locked)
+        #expect(!vault.isConnected)
+    }
+
+    @Test(arguments: [false, true])
+    func providerPreferenceAppliesAtNextLaunch(pawlAtLaunch: Bool) async throws {
+        let fixture = try NativeModelFixture()
+        defer { fixture.cleanup() }
+        let settings = fixture.tabs.settings
+        settings.pawlVaultEnabled = pawlAtLaunch
+        let transport = SyntheticVaultRequests()
+        let service = VaultService(settings: settings, client: transport,
+                                   pawlEnabledAtLaunch: NookSettingsService.savedPawlVaultSelection(in: fixture.defaults))
+        settings.pawlVaultEnabled = !pawlAtLaunch
+        #expect(service.isEnabled == pawlAtLaunch)
+        #expect((await service.refresh() == .connected) == pawlAtLaunch)
+        #expect((await transport.methods.contains("hello")) == pawlAtLaunch)
+        let relaunched = VaultService(settings: settings, client: SyntheticVaultRequests(),
+                                      pawlEnabledAtLaunch: NookSettingsService.savedPawlVaultSelection(in: fixture.defaults))
+        #expect(relaunched.isEnabled == !pawlAtLaunch)
+    }
+
     @Test(arguments: [false, true])
     func secretIsFetchedOnlyAfterPickerAndUsesExactOriginProfile(code: Bool) async throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }

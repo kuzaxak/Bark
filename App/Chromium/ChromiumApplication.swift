@@ -1,5 +1,6 @@
 import AppKit
 import BarcChromium
+internal import BarkPasswordProvider
 import Darwin
 import NookSettings
 import enum NookTabsCore.SpaceSyncShareLink
@@ -16,6 +17,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var didPresentInitialWindow = false
     private let miniAPI: ChromiumMiniWindowAPI
     private let configuration: ChromiumStartupConfiguration
+    private let pawlEnabledAtLaunch: Bool?
     private let pageHost: ChromiumNativePageHost
     private let catalog: ChromiumWindowCatalog
     private let profileDeletion: ChromiumProfileDeletion
@@ -48,11 +50,12 @@ final class ChromiumApplication: ChromiumStartupBridge {
     private var opened: (@MainActor (Int32?) -> Void)?
 
     private init(bridge: BarcBridge, engineMain: @escaping BarcEngineMain,
-                 configuration: ChromiumStartupConfiguration, updater: ChromiumAppUpdater?) {
+                 configuration: ChromiumStartupConfiguration, updater: ChromiumAppUpdater?, pawlEnabledAtLaunch: Bool?) {
         self.bridge = bridge
         self.engineMain = engineMain
         self.configuration = configuration
         self.updater = updater
+        self.pawlEnabledAtLaunch = pawlEnabledAtLaunch
         catalog = ChromiumWindowCatalog(bridge: bridge)
         profileDeletion = ChromiumProfileDeletion(bridge: bridge)
         downloads = ChromiumDownloads(bridge: bridge)
@@ -70,7 +73,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
     }
 
     // Entered only after stock main initialized allocator, loaded framework and checked its table.
-    static func run(bridge: BarcBridge, engineMain: @escaping BarcEngineMain, arguments: [String]) -> Int32 {
+    static func run(bridge: UnsafePointer<BarcBridge>, engineMain: @escaping BarcEngineMain, arguments: [String]) -> Int32 {
         do {
             let bundle = Bundle.main
             let info = bundle.infoDictionary ?? [:]
@@ -86,8 +89,21 @@ final class ChromiumApplication: ChromiumStartupBridge {
                 throw ChromiumStartupConfiguration.StartupError.invalidConfiguration
             }
             try config.prepare()
-            let app = ChromiumApplication(bridge: bridge, engineMain: engineMain,
-                                          configuration: config, updater: signedUpdater)
+            let pawlEnabledAtLaunch: Bool?
+            if BarkSDKSupportsPasswordSelection() {
+                guard let defaults = UserDefaults(suiteName: config.preferencesDomain) else {
+                    throw ChromiumAppStorage.StorageError.preferencesUnavailable
+                }
+                let enabled = NookSettingsService.savedPawlVaultSelection(in: defaults)
+                guard BarkSelectLaunchPasswordProvider(bridge, enabled) else {
+                    throw ChromiumStartupConfiguration.StartupError.providerRefused
+                }
+                pawlEnabledAtLaunch = enabled
+            } else {
+                pawlEnabledAtLaunch = nil
+            }
+            let app = ChromiumApplication(bridge: bridge.pointee, engineMain: engineMain,
+                                          configuration: config, updater: signedUpdater, pawlEnabledAtLaunch: pawlEnabledAtLaunch)
             let startup = ChromiumStartup(bridge: app, profile: config.profileID) { message in
                 fputs(message + "\n", stderr)
             }
@@ -363,7 +379,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
         // This runs only after runtime-ready. The persisted model UUID owns
         // the native profile; the CLI hint must never relabel a model profile.
         do {
-            let storage = try ChromiumAppStorage(configuration: configuration)
+            let storage = try ChromiumAppStorage(configuration: configuration, pawlEnabledAtLaunch: pawlEnabledAtLaunch)
             let onboardingSetup = ChromiumOnboardingSetup(appDirectory: storage.tabsDirectory.deletingLastPathComponent())
             let needsOnboarding = try onboardingSetup.requiresOnboarding(
                 explicitlyFinished: storage.settings.didFinishOnboarding,
@@ -807,7 +823,7 @@ public func barcNativeMain(
         guard let value = argv[index] else { return EXIT_FAILURE }
         arguments.append(String(cString: value))
     }
-    return ChromiumApplication.run(bridge: bridge.pointee, engineMain: engineMain, arguments: arguments)
+    return ChromiumApplication.run(bridge: bridge, engineMain: engineMain, arguments: arguments)
 }
 
 extension ExternalMiniWindowManager: ChromiumMiniRegistry {}

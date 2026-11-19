@@ -7,10 +7,12 @@ import NookSettings
 
 extension VaultService {
     /// Disposable Chromium verification always uses this in-memory transport.
-    public convenience init(verificationSettings settings: NookSettingsService, root: URL, profile: UUID) throws {
+    public convenience init(verificationSettings settings: NookSettingsService, root: URL, profile: UUID,
+                            pawlEnabledAtLaunch: Bool? = nil) throws {
         let origin = try VerificationVault.origin(in: root)
         if origin != nil { VerificationVault.record("Bark verification vault: ready") }
-        self.init(settings: settings, client: VerificationVault(origin: origin, profile: profile))
+        self.init(settings: settings, client: VerificationVault(origin: origin, profile: profile),
+                  pawlEnabledAtLaunch: pawlEnabledAtLaunch)
     }
 }
 

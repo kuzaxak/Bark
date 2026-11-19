@@ -298,7 +298,9 @@ private struct SettingsDetailPane: View {
         case .spaces:
             SpacesSettingsView()
         case .profiles:
-            ProfilesSettingsView()
+            ProfilesSettingsView {
+                SettingsNavigation.shared.currentSettingsTab = .privacy
+            }
         case .shortcuts:
             ShortcutsSettingsView()
         case .extensions:

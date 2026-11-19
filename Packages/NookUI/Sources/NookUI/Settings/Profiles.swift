@@ -23,7 +23,11 @@ public struct ProfilesSettingsView: View {
     @State private var deletionError: ProfileDeletionError?
     @State private var profilePageError: ProfilePageOpenError?
 
-    public init() {}
+    private let openPawlSettings: (() -> Void)?
+
+    public init(openPawlSettings: (() -> Void)? = nil) {
+        self.openPawlSettings = openPawlSettings
+    }
 
     private var selected: ProfileSummary? {
         tabs.profiles.first { $0.id == selection } ?? tabs.profiles.first
@@ -71,7 +75,7 @@ public struct ProfilesSettingsView: View {
 
     private var content: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("A profile keeps its own logins, cookies and history. Each space uses one profile, and several spaces can share it.")
+            Text("Each profile keeps its own cookies and history. Several spaces can share a profile.")
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, NookDesign.Spacing.xxl)
                 .padding(.top, NookDesign.Spacing.xxl)
@@ -81,7 +85,8 @@ public struct ProfilesSettingsView: View {
                     .padding(.leading, NookDesign.Spacing.xxl)
                     .padding(.vertical, NookDesign.Spacing.xxl)
                 if let profile = selected {
-                    ProfileDetailForm(profile: profile, profilePageError: $profilePageError)
+                    ProfileDetailForm(profile: profile, openPawlSettings: openPawlSettings,
+                                      profilePageError: $profilePageError)
                         .id(profile.id)
                         .scrollContentBackground(.hidden)
                 }
@@ -200,6 +205,7 @@ public struct ProfilesSettingsView: View {
 /// One profile's settings.
 struct ProfileDetailForm: View {
     let profile: ProfileSummary
+    let openPawlSettings: (() -> Void)?
     @Environment(TabsController.self) private var tabs
     @Environment(NookSettingsService.self) private var nookSettings
     @State private var dataSize: String?
@@ -265,16 +271,28 @@ struct ProfileDetailForm: View {
             if tabs.profileEngine == .chromium {
                 Section {
                     ForEach(ProfilePageDestination.allCases, id: \.self) { destination in
-                        Button(destination.profileSettingsLabel) {
-                            tabs.openProfilePage(profileID: profile.id, destination: destination) { result in
-                                if case .failure(let error) = result { profilePageError = error }
+                        if destination == .passwords, passwordControl == .pawl, openPawlSettings == nil {
+                            Text("Manage passwords in Pawl Vault.")
+                        } else if destination == .passwords {
+                            Button(passwordControl.label) {
+                                passwordControl.open(
+                                    profileID: profile.id, pawlSettings: { openPawlSettings?() }
+                                ) { profileID in
+                                    openProfileControls(.passwords, profileID: profileID)
+                                }
+                            }
+                        } else {
+                            Button(destination.profileSettingsLabel) {
+                                openProfileControls(destination, profileID: profile.id)
                             }
                         }
                     }
                 } header: {
                     Text("Profile Controls")
                 } footer: {
-                    Text("Opens controls for “\(profile.name)”.")
+                    Text(passwordControl == .pawl
+                         ? "Opens controls for “\(profile.name)”. Pawl Vault uses the same unlocked vault across profiles."
+                         : "Opens controls for “\(profile.name)”.")
                 }
             }
 
@@ -333,6 +351,21 @@ struct ProfileDetailForm: View {
             ForEach(nookSettings.customSearchEngines) { engine in
                 Text(engine.name).tag(String?.some(engine.id.uuidString))
             }
+        }
+    }
+
+    private var passwordControl: ProfilePasswordControl {
+        #if os(macOS)
+        ProfilePasswordControl(pawlEnabled: nookSettings.pawlVaultEnabled,
+                               effectivePawlEnabled: tabs.vault?.isEnabled)
+        #else
+        .chromium
+        #endif
+    }
+
+    private func openProfileControls(_ destination: ProfilePageDestination, profileID: UUID) {
+        tabs.openProfilePage(profileID: profileID, destination: destination) { result in
+            if case .failure(let error) = result { profilePageError = error }
         }
     }
 
@@ -413,7 +446,7 @@ private extension ProfilePageDestination {
         case .siteSettings: "Site Settings"
         case .clearData: "Clear Browsing Data"
         case .downloads: "Downloads"
-        case .passwords: "Password Manager"
+        case .passwords: ProfilePasswordControl.chromium.label
         }
     }
 }

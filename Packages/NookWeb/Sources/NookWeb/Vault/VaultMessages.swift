@@ -304,7 +304,7 @@ public enum VaultCodec {
 public enum VaultStatus: Equatable, Sendable {
     case connected
     case locked
-    /// The vault accepts only Nook builds signed by its own team; this one is not.
+    /// The signed vault declined this client identity. Older versions recognize only Nook.
     case notTeamSigned
     case notRunning
     case notPawlVault

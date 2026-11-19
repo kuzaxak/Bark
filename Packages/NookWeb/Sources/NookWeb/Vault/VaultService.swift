@@ -92,7 +92,11 @@ extension VaultNativePage {
 public final class VaultService {
     /// The last `hello`'s answer; nil while the setting is off or before the first answer.
     public private(set) var status: VaultStatus? {
-        didSet { if oldValue != status { NotificationCenter.default.post(name: Self.nativeStateChanged, object: self) } }
+        didSet {
+            guard oldValue != status else { return }
+            if (oldValue == .connected) != (status == .connected) { VaultBridge.syncAll() }
+            NotificationCenter.default.post(name: Self.nativeStateChanged, object: self)
+        }
     }
     fileprivate static let nativeStateChanged = Notification.Name("NookVaultNativeStateChanged")
 
@@ -111,29 +115,35 @@ public final class VaultService {
         return PublicSuffixList(text: url.flatMap { try? String(contentsOf: $0, encoding: .utf8) } ?? "")
     }()
 
-    public convenience init(settings: NookSettingsService) {
-        self.init(settings: settings, client: VaultClient())
+    /// Set by Chromium engines that select one password provider for their process lifetime.
+    public let pawlEnabledAtLaunch: Bool?
+
+    public convenience init(settings: NookSettingsService, pawlEnabledAtLaunch: Bool? = nil) {
+        self.init(settings: settings, client: VaultClient(), pawlEnabledAtLaunch: pawlEnabledAtLaunch)
     }
 
-    init(settings: NookSettingsService, client: any VaultRequests,
+    init(settings: NookSettingsService, client: any VaultRequests, pawlEnabledAtLaunch: Bool? = nil,
          passkeyKeyWindow: @escaping @MainActor () -> NSWindow? = { NSApp?.keyWindow }) {
         self.settings = settings
         self.client = client
         self.passkeyKeyWindow = passkeyKeyWindow
-        settingObserver = NotificationCenter.default.addObserver(
-            forName: NookSettingsService.pawlVaultEnabledDidChange, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.settingChanged() }
+        self.pawlEnabledAtLaunch = pawlEnabledAtLaunch
+        if pawlEnabledAtLaunch == nil {
+            settingObserver = NotificationCenter.default.addObserver(
+                forName: NookSettingsService.pawlVaultEnabledDidChange, object: nil, queue: .main
+            ) { [weak self] _ in
+                MainActor.assumeIsolated { self?.settingChanged() }
+            }
         }
         securityKeysObserver = NotificationCenter.default.addObserver(
             forName: NookSettingsService.securityKeysEnabledDidChange, object: nil, queue: .main
         ) { _ in
             MainActor.assumeIsolated { VaultBridge.syncAll() }
         }
-        if settings.pawlVaultEnabled { Task { await refresh() } }
+        if isEnabled { Task { await refresh() } }
     }
 
-    public var isEnabled: Bool { settings.pawlVaultEnabled }
+    public var isEnabled: Bool { pawlEnabledAtLaunch ?? settings.pawlVaultEnabled }
 
     public var securityKeysEnabled: Bool { settings.securityKeysEnabled }
 
@@ -154,16 +164,22 @@ public final class VaultService {
             answer = .notRunning
         }
         guard isEnabled else { return nil }
-        let wasConnected = isConnected
         status = answer
-        if isConnected != wasConnected { VaultBridge.syncAll() }
         return answer
     }
 
     func send<C: VaultCall>(_ call: C) async throws -> C.Reply {
         do { return try await client.send(call) }
         catch let error as VaultClientError {
-            if case .server = error {} else { status = VaultStatus(error) }
+            guard isEnabled else { throw error }
+            switch error {
+            case .server(.locked, _), .server(.unpaired, _):
+                status = VaultStatus(error)
+            case .server:
+                break // A refused request alone does not change the connection.
+            default:
+                status = VaultStatus(error)
+            }
             throw error
         }
     }

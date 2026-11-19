@@ -55,12 +55,25 @@ private struct PrivacyPreferenceSections: View {
         }
 
         Section("Passwords") {
+            let vault = browserManager.tabs.vault
+            let launchProvider = vault?.pawlEnabledAtLaunch
             settingToggle(
                 "Use Pawl Vault for passwords and passkeys",
-                detail: "Fill and save passwords and sign in with passkeys from the Pawl Vault app. \(ProductDisplayName.current) keeps no copy of them.",
+                detail: launchProvider != nil
+                    ? "Quit and reopen Bark to change password providers."
+                    : "Fill and save passwords and sign in with passkeys when Pawl Vault is connected.",
                 isOn: $settings.pawlVaultEnabled
             )
-            if nookSettings.pawlVaultEnabled, let vault = browserManager.tabs.vault {
+            if let launchProvider, launchProvider != nookSettings.pawlVaultEnabled {
+                Text(launchProvider
+                     ? "Pawl Vault is the current provider until you reopen Bark."
+                     : "Chromium’s password manager is the current provider until you reopen Bark.")
+                    .foregroundStyle(.secondary)
+            } else if launchProvider == nil && browserManager.engine == .chromium {
+                Text("In this version of Bark, Pawl Vault works alongside Chromium’s password manager.")
+                    .foregroundStyle(.secondary)
+            }
+            if let vault, vault.isEnabled {
                 LabeledContent("Status") {
                     vaultStatus(vault.status)
                 }
@@ -106,9 +119,9 @@ private struct PrivacyPreferenceSections: View {
         case nil: ("Checking…", .secondary)
         case .connected: ("Connected", .green)
         case .locked: ("Vault locked", .orange)
-        case .notTeamSigned: ("This \(ProductDisplayName.current) build is not signed by your team", .red)
-        case .notRunning: ("Pawl Vault is not running", .secondary)
-        case .notPawlVault: ("Not Pawl Vault (signature check failed)", .red)
+        case .notTeamSigned: ("Pawl Vault refused this browser. Use a signed build of \(ProductDisplayName.current) and a compatible version of Pawl Vault.", .red)
+        case .notRunning: ("Pawl Vault is unavailable. Open Pawl Vault and try again.", .secondary)
+        case .notPawlVault: ("\(ProductDisplayName.current) could not verify Pawl Vault’s signature.", .red)
         }
         return HStack(spacing: NookDesign.Spacing.xs) {
             Circle()

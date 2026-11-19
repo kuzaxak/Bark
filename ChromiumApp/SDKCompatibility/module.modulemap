@@ -1,0 +1,4 @@
+module BarkPasswordProvider {
+  header "BarkPasswordProvider.h"
+  export *
+}

@@ -110,7 +110,7 @@ struct ChromiumStartupConfiguration {
         return result
     }
 
-    enum StartupError: Error { case invalidConfiguration }
+    enum StartupError: Error { case invalidConfiguration, providerRefused }
 }
 
 /// Set before the model can write starter tabs. A pending setup survives an
