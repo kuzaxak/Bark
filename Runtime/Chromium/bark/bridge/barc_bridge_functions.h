@@ -66,6 +66,7 @@ void barc_tab_unobserve(uint64_t observation);
 int barc_tab_close_selecting(uint64_t observation, int32_t successor);
 int barc_tab_enable_peek(uint64_t observation, int enabled);
 int barc_tab_observe_media(uint64_t observation, BarcMediaCallback callback);
+int barc_tab_bind_favicon(uint64_t observation, BarcTabFaviconCallback callback);
 int barc_tab_observe_load_progress(uint64_t observation,
                                    BarcLoadProgressCallback callback);
 int barc_tab_capture_thumbnail(uint64_t observation, uint64_t request, BarcTabThumbnailCallback callback);

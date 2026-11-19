@@ -138,6 +138,7 @@ test("bark_browser_tests") {
     "//testing/gtest",
     "//ui/base",
     "//components/performance_manager",
+    "//skia",
     "//ui/gfx/codec",
     "//ui/views",
     "//ui/views:test_support",

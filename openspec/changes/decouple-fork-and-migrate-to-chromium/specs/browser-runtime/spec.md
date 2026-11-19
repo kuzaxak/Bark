@@ -95,6 +95,22 @@ The browser SHALL preserve navigation and live page state when switching spaces,
 - **THEN** the newer selection and its live document remain intact
 - **AND** the older request does not close the window or replace the newer layout
 
+### Requirement: Site icons identify the live page
+
+Bark SHALL display each live tab's current site icon in tab rows and matching open-tab search results.
+
+#### Scenario: Two profiles open the same URL
+
+- **GIVEN** Work and Personal each have the same URL open, and their pages supply red and blue icons respectively
+- **WHEN** the user searches for the tabs and then the Work page changes its icon to green
+- **THEN** the Work tab and its search result show green and the Personal tab and its result still show blue
+
+#### Scenario: Navigate to a page without a site icon
+
+- **GIVEN** a live tab shows its site's icon
+- **WHEN** it finishes navigating to a page without a site icon
+- **THEN** its tab row shows the generic page icon
+
 ### Requirement: Native navigation controls
 The browser SHALL provide working address editing, command-palette actions and back/forward history menus in the Chromium window, preserving the requested page and profile.
 

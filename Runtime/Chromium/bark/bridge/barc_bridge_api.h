@@ -34,6 +34,7 @@ extern "C" {
 #define BARC_HAS_PASSWORD_PROVIDER 1
 #define BARC_HAS_LOAD_PROGRESS 1
 #define BARC_HAS_RENDERER_STATE 1
+#define BARC_HAS_TAB_FAVICON 1
 #define BARC_HAS_PAWL_MANAGEMENT 1
 // The actual AppKit application delegate posts this notification on the main
 // thread. The sender is the delegate; userInfo[@"metadata"] is CKShareMetadata.
@@ -351,6 +352,9 @@ enum BarcMediaFlags {
 typedef void (*BarcMediaCallback)(void* context, uint64_t observation,
     int32_t window, int32_t tab, uint32_t flags, const char* title,
     const char* artist, const char* album);
+typedef void (*BarcTabFaviconCallback)(void* context, uint64_t observation,
+                                      const uint8_t* _Nullable png,
+                                      size_t length);
 typedef void (*BarcLoadProgressCallback)(void* context, uint64_t observation,
                                         double progress, int loading);
 enum BarcMediaAction {
@@ -1266,6 +1270,13 @@ struct BarcBridge {
   // This never starts, activates or selects a tab.
   int (* _Nonnull tab_renderer_state)(int32_t window, int32_t tab,
                                         int32_t* pid, int32_t* document_visible);
+
+  // Bind to a live tab observation on the UI thread. The initial snapshot
+  // and later changes borrow the observation context. PNG bytes are valid
+  // only during the callback, at most 32x32 pixels and 32768 bytes. Null
+  // bytes with length zero clear the icon. A null callback unbinds.
+  int (* _Nonnull tab_bind_favicon)(uint64_t observation,
+                                    BarcTabFaviconCallback _Nullable callback);
 };
 
 #ifdef __cplusplus

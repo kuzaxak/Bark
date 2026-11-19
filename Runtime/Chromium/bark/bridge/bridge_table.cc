@@ -122,6 +122,7 @@ constexpr BarcBridge kBridge = {
     .set_password_provider = &barc_set_password_provider,
     .tab_observe_load_progress = &barc_tab_observe_load_progress,
     .tab_renderer_state = &barc_tab_renderer_state,
+    .tab_bind_favicon = &barc_tab_bind_favicon,
 };
 }  // namespace
 

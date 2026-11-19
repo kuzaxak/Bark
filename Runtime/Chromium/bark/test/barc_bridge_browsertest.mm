@@ -281,6 +281,8 @@
 #include "net/test/embedded_test_server/controllable_http_response.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "ui/base/window_open_disposition.h"
+#include "third_party/skia/include/core/SkBitmap.h"
+#include "third_party/skia/include/core/SkColor.h"
 #include "ui/gfx/codec/png_codec.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "ui/shell_dialogs/fake_select_file_dialog.h"
@@ -334,6 +336,17 @@ struct NativeMediaEvent {
 };
 class NavigationEvents {
  public:
+  static void ReceiveFavicon(void* context, uint64_t observation,
+                             const uint8_t* png, size_t length) {
+    auto* self = static_cast<NavigationEvents*>(context);
+    EXPECT_EQ(self->token, observation);
+    EXPECT_EQ(png == nullptr, length == 0);
+    EXPECT_LE(length, 32768u);
+    self->favicon_samples.emplace_back();
+    if (png && length && length <= 32768)
+      self->favicon_samples.back().assign(png, UNSAFE_BUFFERS(png + length));
+  }
+  std::vector<std::vector<uint8_t>> favicon_samples;
   struct LoadSample {
     double progress;
     int loading;
@@ -4081,6 +4094,150 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest, NavigationObserverLifetimeAndTrans
     EXPECT_EQ("live", content::EvalJs(source_page, "unrelatedMarker"));
   }
 
+}
+
+IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
+                       FaviconTracksCommittedDocumentAndRetiresObservation) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t window = browser()->GetSessionID().id();
+  const int32_t tab = barc_window_tab_at(window, 0);
+  auto* contents = browser()->tab_strip_model()->GetWebContentsAt(0);
+  auto bind = barc_bridge_v13()->tab_bind_favicon;
+  ASSERT_TRUE(bind);
+  NavigationEvents observed;
+  const auto callback = NavigationEvents::ReceiveFavicon;
+  ASSERT_NE(0u, barc_tab_observe(window, tab, NavigationEvents::Receive, &observed));
+  ASSERT_EQ(1, bind(observed.token, callback));
+  EXPECT_EQ(0, bind(observed.token, callback));
+  EXPECT_TRUE(observed.favicon_samples.empty());
+  ASSERT_TRUE(base::test::RunUntil([&] { return !observed.favicon_samples.empty(); }));
+  EXPECT_TRUE(observed.favicon_samples.back().empty());
+
+  ASSERT_TRUE(content::NavigateToURL(
+      contents, embedded_test_server()->GetURL("/favicon/page_with_favicon.html")));
+  ASSERT_TRUE(base::test::RunUntil([&] { return !observed.favicon_samples.back().empty(); }));
+  const auto icon = observed.favicon_samples.back();
+  const auto bitmap = gfx::PNGCodec::Decode(icon);
+  ASSERT_FALSE(bitmap.drawsNothing());
+  EXPECT_LE(bitmap.width(), 32);
+  EXPECT_LE(bitmap.height(), 32);
+  ASSERT_EQ(1, bind(observed.token, nullptr));
+  const auto before_rebind = observed.favicon_samples.size();
+  ASSERT_EQ(1, bind(observed.token, callback));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return observed.favicon_samples.size() > before_rebind; }));
+  EXPECT_EQ(icon, observed.favicon_samples.back());
+
+  ASSERT_TRUE(content::ExecJs(contents,
+      "document.querySelector('link[rel=icon]').rel = 'apple-touch-icon';"));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return observed.favicon_samples.back().empty(); }));
+  ASSERT_TRUE(content::ExecJs(contents,
+      "document.querySelector('link[rel=apple-touch-icon]').rel = 'icon';"));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return !observed.favicon_samples.back().empty(); }));
+
+  ASSERT_TRUE(content::NavigateToURL(contents,
+      embedded_test_server()->GetURL("/title1.html")));
+  ASSERT_TRUE(base::test::RunUntil([&] { return observed.favicon_samples.back().empty(); }));
+  ASSERT_EQ(1, bind(observed.token, nullptr));
+  ASSERT_EQ(1, bind(observed.token, callback));
+  const auto delivered = observed.favicon_samples.size();
+  const auto token = observed.token;
+  barc_tab_unobserve(token);
+  EXPECT_EQ(0, bind(token, callback));
+  base::RunLoop().RunUntilIdle();
+  EXPECT_EQ(delivered, observed.favicon_samples.size());
+}
+
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       FaviconUsesOnlyTheObservedLogicalOwner) {
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(
+      [](const net::test_server::HttpRequest& request)
+          -> std::unique_ptr<net::test_server::HttpResponse> {
+        SkColor color;
+        if (request.relative_url == "/bark-favicon-red.png")
+          color = SK_ColorRED;
+        else if (request.relative_url == "/bark-favicon-blue.png")
+          color = SK_ColorBLUE;
+        else if (request.relative_url == "/bark-favicon-green.png")
+          color = SK_ColorGREEN;
+        else
+          return nullptr;
+        SkBitmap bitmap;
+        bitmap.allocN32Pixels(16, 16);
+        bitmap.eraseColor(color);
+        const auto png = gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, false);
+        CHECK(png);
+        auto response = std::make_unique<net::test_server::BasicHttpResponse>();
+        response->set_content_type("image/png");
+        response->set_content(std::string(
+            reinterpret_cast<const char*>(png->data()), png->size()));
+        return response;
+      }));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const int32_t work_id = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  auto* work = SharedWindow(work_id);
+  ASSERT_TRUE(work);
+  const int32_t personal_id = Open(kSharedPersonal, work_id, BARC_PROFILE_BLANK);
+  auto* personal = SharedWindow(personal_id);
+  ASSERT_TRUE(personal);
+  EXPECT_NE(work->GetProfile(), personal->GetProfile());
+  const int32_t work_tab = barc_window_tab_at(work_id, 0);
+  const int32_t personal_tab = barc_window_tab_at(personal_id, 0);
+  NavigationEvents first;
+  NavigationEvents second;
+  auto bind = barc_bridge_v13()->tab_bind_favicon;
+  ASSERT_TRUE(bind);
+  const auto callback = NavigationEvents::ReceiveFavicon;
+  EXPECT_EQ(0u, barc_tab_observe(personal_id, work_tab,
+                                 NavigationEvents::Receive, &first));
+  ASSERT_NE(0u, barc_tab_observe(work_id, work_tab,
+                                 NavigationEvents::Receive, &first));
+  ASSERT_NE(0u, barc_tab_observe(personal_id, personal_tab,
+                                 NavigationEvents::Receive, &second));
+  ASSERT_EQ(1, bind(first.token, callback));
+  ASSERT_EQ(1, bind(second.token, callback));
+
+  const GURL same_url = embedded_test_server()->GetURL("/title1.html");
+  ASSERT_NO_FATAL_FAILURE(Navigate(work, same_url));
+  ASSERT_NO_FATAL_FAILURE(Navigate(personal, same_url));
+  auto* work_contents = work->GetTabStripModel()->GetActiveWebContents();
+  auto* personal_contents = personal->GetTabStripModel()->GetActiveWebContents();
+  const auto set_icon = [](content::WebContents* contents, const char* path) {
+    return content::ExecJs(contents, content::JsReplace(R"(
+      let icon = document.querySelector('link[rel=icon]');
+      if (!icon) {
+        icon = document.createElement('link');
+        icon.rel = 'icon';
+        document.head.appendChild(icon);
+      }
+      icon.href = $1;
+    )", path));
+  };
+  const auto icon_is = [](const NavigationEvents& observation, SkColor color) {
+    if (observation.favicon_samples.empty() ||
+        observation.favicon_samples.back().empty())
+      return false;
+    const auto bitmap = gfx::PNGCodec::Decode(observation.favicon_samples.back());
+    return !bitmap.drawsNothing() && bitmap.getColor(0, 0) == color;
+  };
+  ASSERT_TRUE(set_icon(work_contents, "/bark-favicon-red.png"));
+  ASSERT_TRUE(set_icon(personal_contents, "/bark-favicon-blue.png"));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return icon_is(first, SK_ColorRED) && icon_is(second, SK_ColorBLUE);
+  }));
+
+  const size_t personal_delivered = second.favicon_samples.size();
+  ASSERT_TRUE(set_icon(work_contents, "/bark-favicon-green.png"));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return icon_is(first, SK_ColorGREEN); }));
+  ASSERT_TRUE(content::ExecJs(work_contents,
+      "document.querySelector('link[rel=icon]').rel = 'apple-touch-icon';"));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return first.favicon_samples.back().empty(); }));
+  EXPECT_EQ(personal_delivered, second.favicon_samples.size());
+  EXPECT_TRUE(icon_is(second, SK_ColorBLUE));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,

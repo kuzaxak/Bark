@@ -150,7 +150,11 @@
 #include "device/vr/buildflags/buildflags.h"
 #include "ui/base/base_window.h"
 #include "ui/gfx/geometry/insets.h"
+#include "components/favicon/content/content_favicon_driver.h"
+#include "components/favicon/core/favicon_driver_observer.h"
+#include "skia/ext/image_operations.h"
 #include "ui/gfx/codec/png_codec.h"
+#include "ui/gfx/image/image.h"
 #include "ui/gfx/codec/jpeg_codec.h"
 #include "extensions/browser/extensions_browser_client.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
@@ -209,6 +213,7 @@ class TabObservation : public content::WebContentsObserver,
                        public content::BrowsingDataRemover::Observer,
                        public ProfileManagerObserver,
                        public TabStripModelObserver,
+                       public favicon::FaviconDriverObserver,
                        public std::enable_shared_from_this<TabObservation> {
  public:
   TabObservation(uint64_t token, tabs::TabInterface* tab,
@@ -923,6 +928,8 @@ class TabObservation : public content::WebContentsObserver,
     context_ = nullptr;
     load_progress_callback_ = nullptr;
     load_progress_tasks_.InvalidateWeakPtrs();
+    favicon_callback_ = nullptr;
+    StopFaviconObservation();
     Observe(nullptr);
     UnbindOwner();
     detach_ = {};
@@ -1709,6 +1716,94 @@ class TabObservation : public content::WebContentsObserver,
     callback_(context_.get(), token_, event, window, tab_id(), url.c_str(),
               title.c_str(), error, flags);
   }
+  int SetFaviconCallback(BarcTabFaviconCallback callback) {
+    if (!active_ || closing_ || (favicon_callback_ && callback))
+      return 0;
+    favicon_callback_ = callback;
+    if (callback)
+      BindFaviconDriver();
+    else
+      StopFaviconObservation();
+    return 1;
+  }
+
+  void StopFaviconObservation() {
+    favicon_driver_.Reset();
+    favicon_tasks_.InvalidateWeakPtrs();
+    favicon_pending_ = false;
+  }
+
+  void BindFaviconDriver() {
+    if (!favicon_callback_ || !active_ || closing_ || !strip_ || !web_contents())
+      return;
+    auto* driver = favicon::ContentFaviconDriver::FromWebContents(web_contents());
+    if (driver && !favicon_driver_.IsObservingSource(driver)) {
+      favicon_driver_.Reset();
+      favicon_driver_.Observe(driver);
+    }
+    ScheduleFavicon();
+  }
+
+  void OnFaviconUpdated(favicon::FaviconDriver* driver,
+                        NotificationIconType type, const GURL&,
+                        bool, const gfx::Image&) override {
+    if (type == NON_TOUCH_16_DIP && favicon_driver_.IsObservingSource(driver))
+      ScheduleFavicon();
+  }
+
+  void ScheduleFavicon() {
+    if (!active_ || closing_ || !favicon_callback_ || favicon_pending_)
+      return;
+    favicon_pending_ = true;
+    // Read after all navigation/favicon observers have updated the commit.
+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostNonNestableTask(
+        FROM_HERE, base::BindOnce(&TabObservation::RefreshFavicon,
+                                  favicon_tasks_.GetWeakPtr()));
+  }
+
+  void RefreshFavicon() {
+    auto keep_alive = shared_from_this();
+    favicon_pending_ = false;
+    auto* contents = web_contents();
+    auto* tab = tab_.Get();
+    auto* owner = tab ? tab->GetBrowserWindowInterface() : nullptr;
+    if (!active_ || closing_ || discovery_stopped || !favicon_callback_ ||
+        !contents || contents->IsBeingDestroyed() || !owner ||
+        owner->IsDeleteScheduled() || strip_ != owner->GetTabStripModel() ||
+        tab->GetContents() != contents ||
+        owner->GetProfile() != contents->GetBrowserContext()) {
+      return;
+    }
+
+    std::optional<std::vector<uint8_t>> bytes;
+    const auto* entry = contents->GetController().GetLastCommittedEntry();
+    auto* driver = favicon::ContentFaviconDriver::FromWebContents(contents);
+    if (entry && !entry->IsInitialEntry() &&
+        entry->GetPageType() == content::PAGE_TYPE_NORMAL &&
+        driver && favicon_driver_.IsObservingSource(driver) &&
+        driver->FaviconIsValid()) {
+      SkBitmap bitmap = driver->GetFavicon().AsBitmap();
+      constexpr int kMaxDimension = 32;
+      const int longest = std::max(bitmap.width(), bitmap.height());
+      if (longest > kMaxDimension) {
+        const double scale = static_cast<double>(kMaxDimension) / longest;
+        bitmap = skia::ImageOperations::Resize(
+            bitmap, skia::ImageOperations::RESIZE_BEST,
+            std::max(1, static_cast<int>(bitmap.width() * scale)),
+            std::max(1, static_cast<int>(bitmap.height() * scale)));
+      }
+      if (!bitmap.drawsNothing())
+        bytes = gfx::PNGCodec::EncodeBGRASkBitmap(bitmap, false);
+    }
+    if (bytes && bytes->size() > 32768)
+      bytes.reset();
+    base::AutoReset<int> scope(&navigation_callback_depth,
+                              navigation_callback_depth + 1);
+    favicon_callback_(context_.get(), token_,
+                      bytes && !bytes->empty() ? bytes->data() : nullptr,
+                      bytes ? bytes->size() : 0);
+  }
+
   int SetLoadProgressCallback(BarcLoadProgressCallback callback) {
     if (!active_ || closing_ || !web_contents() ||
         (load_progress_callback_ && callback)) {
@@ -1973,6 +2068,7 @@ class TabObservation : public content::WebContentsObserver,
     }
     if (handle->HasCommitted()) {
       ScheduleLoadProgress();
+      BindFaviconDriver();
       CancelPicker();
       CancelFiles();
       translation_receiver_.reset();
@@ -2081,6 +2177,7 @@ class TabObservation : public content::WebContentsObserver,
   }
   void OnTabStripModelDestroyed(TabStripModel* strip) override {
     if (strip_ == strip) {
+      StopFaviconObservation();
       strip_ = nullptr;
       window_cancelled_ = {};
     }
@@ -2247,6 +2344,7 @@ class TabObservation : public content::WebContentsObserver,
                            content::BrowsingDataRemover::Observer> site_data_remover_{this};
 
   void UnbindOwner() {
+    StopFaviconObservation();
     vault_keys_.Unregister();
     ClearVaultFocus();
     CancelVaultPasskey();
@@ -2301,6 +2399,7 @@ class TabObservation : public content::WebContentsObserver,
   void Inserted(tabs::TabInterface*) {
     auto keep_alive = shared_from_this();
     BindOwner();
+    BindFaviconDriver();
     ScheduleLoadProgress();
     Emit(BARC_TAB_STATE);
     RefreshMedia();
@@ -2326,7 +2425,9 @@ class TabObservation : public content::WebContentsObserver,
     media_snapshot_.reset();
     media_document_ = {};
     media_refresh_pending_ = false;
+    StopFaviconObservation();
     Observe(replacement);
+    BindFaviconDriver();
     ScheduleLoadProgress();
     if (media_callback_) RefreshMedia(true);
     Emit(BARC_TAB_STATE);
@@ -2365,6 +2466,10 @@ class TabObservation : public content::WebContentsObserver,
     ObservationTable().erase(token_);
     Cancel();
   }
+  BarcTabFaviconCallback favicon_callback_ = nullptr;
+  bool favicon_pending_ = false;
+  base::ScopedObservation<favicon::FaviconDriver, favicon::FaviconDriverObserver>
+      favicon_driver_{this};
   BarcLoadProgressCallback load_progress_callback_ = nullptr;
   bool load_progress_pending_ = false;
   BarcMediaCallback media_callback_ = nullptr;
@@ -2392,6 +2497,7 @@ class TabObservation : public content::WebContentsObserver,
   base::CallbackListSubscription window_cancelled_;
   base::CallbackListSubscription detach_, insert_, discard_, picker_deactivate_;
   base::WeakPtrFactory<TabObservation> load_progress_tasks_{this};
+  base::WeakPtrFactory<TabObservation> favicon_tasks_{this};
 };
 TabObservation::ThumbnailCapture::ThumbnailCapture() = default;
 TabObservation::ThumbnailCapture::~ThumbnailCapture() = default;
@@ -2666,6 +2772,15 @@ int barc_tab_clear_site_data(uint64_t token, uint64_t request, int32_t action,
     return 0;
   const auto found = ObservationTable().find(token);
   return found != ObservationTable().end() && found->second->ClearSiteData(request, action, callback);
+}
+int barc_tab_bind_favicon(uint64_t observation, BarcTabFaviconCallback callback) {
+  if (!content::BrowserThread::CurrentlyOn(content::BrowserThread::UI) ||
+      discovery_stopped) {
+    return 0;
+  }
+  auto found = ObservationTable().find(observation);
+  return found != ObservationTable().end() &&
+         found->second->SetFaviconCallback(callback);
 }
 int barc_tab_observe_load_progress(uint64_t observation,
                                    BarcLoadProgressCallback callback) {
