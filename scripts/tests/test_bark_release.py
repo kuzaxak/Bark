@@ -144,12 +144,17 @@ class ReleaseTests(unittest.TestCase):
         settings = {**self.release, "CFBundleIdentifier": "ee.qdo.bark.test.00000000-0000-0000-0000-000000000001",
                     "BarkUpdateRehearsal": {"DataRoot": "/private/tmp/example", "Profile": "00000000-0000-0000-0000-000000000002"},
                     "SUEnableAutomaticChecks": False, "SUFeedURL": "http://127.0.0.1:8791/bark-macos-x86_64.xml"}
+        self.info_path.write_bytes(plistlib.dumps({**self.base, "CKSharingSupported": True}))
         configure_release(self.app, settings)
         info = plistlib.loads(self.info_path.read_bytes())
         self.assertNotIn("CFBundleDocumentTypes", info)
         expected = plistlib.loads(expected_additions(settings, self.root).read_bytes())["Info"]
         self.assertNotIn("CFBundleDocumentTypes", expected)
         self.assertEqual(expected["BarkUpdateRehearsal"], settings["BarkUpdateRehearsal"])
+        self.assertNotIn("CKSharingSupported", info)
+        with self.assertRaises(ValueError):
+            check_distribution_settings({**info, "CKSharingSupported": True}, "x86_64",
+                                        "http://127.0.0.1:8791/releases/")
         check_distribution_settings(info, "x86_64", "http://127.0.0.1:8791/releases/")
         with self.assertRaises(ValueError):
             check_distribution_settings(info, "x86_64", "http://127.0.0.1:9911/releases/")

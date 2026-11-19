@@ -497,6 +497,11 @@ python3 scripts/bark-check.py engine --require-official --arch "$arch" --engine 
     --identity "$BARK_SIGN_IDENTITY" --output (mktemp -d)/qualification
 ```
 
+A receiving Mac with Command Line Tools can run the update using a pre-signed
+rehearsal kit. Pass `--update-kit "$kit"` in place of `--identity` on that Mac.
+Prepare the kit on the signing Mac using the ordinary signed app and the
+SDK for the receiving architecture. [Prepare and run the update kit](../../Tests/ChromiumUpdate/README.md#rehearse-an-installed-update-on-a-second-mac-without-a-signing-identity)
+
 For a notarized release, also pass `--image "$disk_image"` to run the app
 copied from that DMG after Gatekeeper assessment. The walk checks three
 fresh launches, first input, and typing in the original draft on return.

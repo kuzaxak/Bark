@@ -1,4 +1,5 @@
 """Check Sparkle handoff and rehearsal inputs without launching an app."""
+import base64
 import contextlib
 import hashlib
 import json
@@ -9,8 +10,10 @@ import shutil
 import tempfile
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 import walk
+import update_kit
 
 
 class SparklePreparationTests(unittest.TestCase):
@@ -227,6 +230,114 @@ class UpdateBuildInputTest(unittest.TestCase):
             self.assertEqual(run.call_args.args[run.call_args.args.index("-derivedDataPath") + 1], derived)
             self.assertIn("-onlyUsePackageVersionsFromResolvedFile", run.call_args.args)
             self.assertIn("ARCHS=arm64", run.call_args.args)
+
+
+class PortableUpdateKitTests(unittest.TestCase):
+    def make_kit(self, kit):
+        kit.mkdir()
+        bundle_uuid = uuid4()
+        root = update_kit.profile_workspace(bundle_uuid) / "Profile"
+        settings = update_kit.rehearsal_settings(
+            bundle_uuid, root, str(uuid4()).upper(), "http://127.0.0.1:52397/bark-macos-arm64.xml",
+            base64.b64encode(bytes(range(32))).decode(),
+        )
+        evidence = {"sdk_pin": "1" * 64, "source_bundle_cdhash": "2" * 40}
+        for name in update_kit.PAYLOAD:
+            (kit / name).write_bytes(name.encode())
+        update_kit.write_kit(kit, "arm64", evidence, settings)
+        return settings, root
+
+    def read_kit(self, kit, arch="arm64", pin="1" * 64, candidate="2" * 40):
+        return update_kit.load_kit(kit, arch, pin, candidate)
+
+    def test_transferred_inputs_bind_exact_source_pin_and_cpu(self):
+        with tempfile.TemporaryDirectory() as folder:
+            kit = Path(folder) / "portable"
+            settings, root = self.make_kit(kit)
+            self.assertEqual(self.read_kit(kit), (settings, root, 52397))
+            for change in ({"arch": "x86_64"}, {"pin": "0" * 64}, {"candidate": "0" * 40}):
+                with self.subTest(change=change), self.assertRaisesRegex(ValueError, "does not match"):
+                    self.read_kit(kit, **change)
+            first, second = (kit / name for name in update_kit.KIT_FILES.values())
+            original, update = first.read_bytes(), second.read_bytes()
+            first.write_bytes(update)
+            second.write_bytes(original)
+            with self.assertRaisesRegex(ValueError, "payload has changed"):
+                self.read_kit(kit)
+            first.write_bytes(original)
+            second.write_bytes(update)
+            (kit / "signing-key").touch()
+            with self.assertRaisesRegex(ValueError, "must contain only"):
+                self.read_kit(kit)
+
+    def test_sealed_workspace_and_feed_reject_redirected_paths(self):
+        with tempfile.TemporaryDirectory() as folder:
+            kit = Path(folder) / "portable"
+            _, root = self.make_kit(kit)
+            receipt = kit / update_kit.MANIFEST
+            for replacement, error in [
+                ({"BarkUpdateRehearsal": {"DataRoot": str(Path.home()), "Profile": str(uuid4()).upper()}},
+                 "fresh disposable path"),
+                ({"SUFeedURL": "http://127.0.0.1:52397/bark-macos-x86_64.xml"}, "sealed loopback endpoint"),
+                ({"SUFeedURL": "https://example.org/bark-macos-arm64.xml"}, "sealed loopback endpoint"),
+            ]:
+                with self.subTest(replacement=replacement):
+                    original = receipt.read_text()
+                    data = json.loads(original)
+                    data["settings"].update(replacement)
+                    receipt.write_text(json.dumps(data))
+                    with self.assertRaisesRegex(ValueError, error):
+                        self.read_kit(kit)
+                    receipt.write_text(original)
+            real_lexists = update_kit.os.path.lexists
+
+            def existing_work(path):
+                return Path(path) == root.parent or real_lexists(path)
+
+            with patch.object(update_kit.os.path, "lexists", side_effect=existing_work), \
+                    self.assertRaisesRegex(ValueError, "fresh disposable path"):
+                self.read_kit(kit)
+
+    def test_feed_must_be_exact_loopback_appcast_before_signature_check(self):
+        with tempfile.TemporaryDirectory() as folder, walk.UpdateServer("bark-macos-arm64.xml") as server:
+            root = Path(folder)
+            server.image = root / "replacement.dmg"
+            server.image.write_bytes(b"candidate image")
+            server.image_route = update_kit.image_route("arm64")
+            info = {"SUFeedURL": server.origin + server.feed, "LSMinimumSystemVersion": "15.5",
+                    "CFBundleVersion": "101", "CFBundleShortVersionString": "1.0.1"}
+            feed = root / "appcast.xml"
+            signature = base64.b64encode(bytes(range(64))).decode()
+            walk.bark_release.write_appcast(feed, info, server.origin + server.image_route,
+                                            server.image.stat().st_size, signature)
+            valid = feed.read_bytes()
+            invalid_signature = walk.subprocess.CompletedProcess([], 1, stderr=b"Update signature does not match")
+            with patch.object(walk, "run") as signature_check, \
+                    patch.object(walk.subprocess, "run", return_value=invalid_signature):
+                walk.prepare_feed(server, feed, "public key", expected_info=info)
+                signature_check.assert_called_once()
+                self.assertEqual(server.feeds["valid"], valid)
+                self.assertNotEqual(server.feeds["bad"], valid)
+                signature_check.reset_mock()
+                feed.write_bytes(valid.replace(b"</channel>", b"<item><enclosure url='https://example.org/a.dmg'/>"
+                                               b"</item></channel>"))
+                with self.assertRaisesRegex(ValueError, "not the exact loopback feed"):
+                    walk.prepare_feed(server, feed, "public key", expected_info=info)
+                signature_check.assert_not_called()
+
+    def test_execution_needs_no_signing_identity_and_uses_native_cpu(self):
+        receiving = ["--kit", "/tmp/exported-kit", "--candidate-app", "/tmp/Bark.app",
+                     "--output", "/tmp/test-kit-evidence", "--require-official"]
+        with patch.dict(walk.os.environ, {}, clear=True):
+            _, args = walk.parse_args(receiving)
+            self.assertIsNone(args.identity)
+            self.assertIsNone(args.arch)
+            with self.assertRaises(SystemExit), contextlib.redirect_stderr(StringIO()):
+                walk.parse_args([*receiving, "--arch", "arm64"])
+            _, args = walk.parse_args(["--prepare-kit", "/tmp/new-kit", "--candidate-app", "/tmp/Bark.app",
+                                      "--identity", "Local", "--arch", "arm64"])
+            self.assertEqual(args.arch, "arm64")
+            self.assertIsNone(args.output)
 
 
 if __name__ == "__main__":

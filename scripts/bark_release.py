@@ -14,11 +14,13 @@ from urllib.parse import urlsplit
 from uuid import UUID
 import xml.etree.ElementTree as ET
 
+from bark_icloud_signing import SHARE_ACTIVATION
+
 
 REPO = Path(__file__).resolve().parents[1]
 HANDLER_KEYS = ("CFBundleURLTypes", "CFBundleDocumentTypes", "NSUserActivityTypes",
                 "ASWebAuthenticationSessionWebBrowserSupportCapabilities",
-                "UTExportedTypeDeclarations", "UTImportedTypeDeclarations")
+                "UTExportedTypeDeclarations", "UTImportedTypeDeclarations", SHARE_ACTIVATION)
 SPARKLE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 TEAM = "538SB59LX4"
 
@@ -81,7 +83,7 @@ def configure_release(app, settings):
     info["BarkChromiumVersion"] = engine_version
     if "BarkUpdateRehearsal" in settings:
         # A separately identified rehearsal app never advertises web or
-        # document handlers in the developer's Launch Services database.
+        # document handlers or receives iCloud invitations on the Mac.
         for key in HANDLER_KEYS:
             info.pop(key, None)
     path.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))

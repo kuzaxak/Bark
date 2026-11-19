@@ -27,11 +27,14 @@ REPO = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
 sys.path[:0] = [str(REPO / folder) for folder in ("scripts", "Runtime/Chromium", "Tests/Shared")]
 import bark_release
+from publish_chromium_sdk import file_digest
 from bark_icloud_signing import PROFILE_NAME
 from run_browser_tests import (
     QuartzConsole, SCREEN_LOCK, SCREEN_UNAVAILABLE, TEST_FRAMEWORK, ScreenUnavailable, require_idle_console, screen_lock,
 )
 from signed_walk import Screen, crash_reports, processes, verify_pinned_sdk, wait_for
+from update_kit import (KIT_FILES, MANIFEST, VERSIONS, image_route, load_kit, mount_app, profile_workspace,
+                        rehearsal_settings, write_kit)
 
 LSREGISTER = ("/System/Library/Frameworks/CoreServices.framework/Versions/Current/"
               "Frameworks/LaunchServices.framework/Versions/Current/Support/lsregister")
@@ -63,13 +66,14 @@ report('restored');
 
 
 class UpdateServer(ThreadingHTTPServer):
-    def __init__(self, feed):
-        super().__init__(("127.0.0.1", 0), UpdateRequest)
+    def __init__(self, feed, port=0):
+        super().__init__(("127.0.0.1", port), UpdateRequest)
         self.feed = "/" + feed
         self.origin = f"http://127.0.0.1:{self.server_port}"
         self.requests = []
         self.completed_downloads = []
         self.mode = "bad"
+        self.image_route = None
 
     def saw(self, path, start=0):
         return any(entry.startswith(path) for entry in self.requests[start:])
@@ -85,7 +89,7 @@ class UpdateRequest(BaseHTTPRequestHandler):
             self.reply(b"ok", "text/plain")
         elif path == self.server.feed:
             self.reply(self.server.feeds[self.server.mode], "application/xml")
-        elif path == "/" + self.server.image.name:
+        elif path == self.server.image_route:
             mode = self.server.mode
             with self.server.image.open("rb") as source:
                 self.headers_for("application/x-apple-diskimage", self.server.image.stat().st_size)
@@ -163,7 +167,8 @@ def stage_signed_candidate(check, candidate, stage, engine, work, arch, log):
     run("/usr/bin/ditto", candidate, app, stdout=log, stderr=subprocess.STDOUT)
     check["verify_candidate"](app, engine, work, arch)
     source_cdhash = bark_release.bundle_cdhash(app)
-    (app / "Contents" / PROFILE_NAME).unlink(missing_ok=True)
+    for name in (PROFILE_NAME, "embedded.mobileprovision"):
+        (app / "Contents" / name).unlink(missing_ok=True)
 
     # The ordinary signer consumes the unsigned engine and its signing inputs.
     # The copied engine was already verified against these exact SDK payloads.
@@ -184,7 +189,7 @@ def stage_signed_candidate(check, candidate, stage, engine, work, arch, log):
     return source_cdhash
 
 
-def versions(check, derived, engine, identity, arch, work, server, output, *, candidate_app=None, evidence=None):
+def versions(check, derived, engine, identity, arch, work, server, output, *, candidate_app=None, evidence=None, kit_stage=None):
     sparkle = None
     if candidate_app is None:
         products = derived / "Build/Products/Release"
@@ -192,10 +197,12 @@ def versions(check, derived, engine, identity, arch, work, server, output, *, ca
         if not (products / "Bark.app/Contents/MacOS/Bark").is_file() or not (sparkle / "sign_update").is_file():
             raise ValueError(f"Build Release/unsigned Bark with the locked packages in {derived} first.")
 
-    root = work / "Profile"
-    root.mkdir(mode=0o700)
+    bundle_uuid = uuid4()
+    root = work / "Profile" if kit_stage is None else profile_workspace(bundle_uuid) / "Profile"
     profile = str(uuid4()).upper()
-    check["seed_profile"](root, profile, server.origin + "/fixture")
+    if kit_stage is None:
+        root.mkdir(mode=0o700)
+        check["seed_profile"](root, profile, server.origin + "/fixture")
     keys = subprocess.check_output([
         "xcrun", "swift", "-e", """
 import CryptoKit
@@ -205,15 +212,7 @@ print(key.publicKey.rawRepresentation.base64EncodedString())
 print(key.rawRepresentation.base64EncodedString())
 """
     ], text=True).splitlines()
-    common = {
-        # Chromium app shims append a 70-byte suffix to this bundle ID.
-        "CFBundleIdentifier": f"ee.qdo.bark.test.{uuid4()}",
-        "BarkUpdateRehearsal": {"DataRoot": str(root), "Profile": profile},
-        "SUFeedURL": server.origin + server.feed,
-        "SUPublicEDKey": keys[0],
-        "SUVerifyUpdateBeforeExtraction": True,
-        "SUEnableAutomaticChecks": False,
-    }
+    common = rehearsal_settings(bundle_uuid, root, profile, server.origin + server.feed, keys[0])
     stage = work / "stage"
     stage.mkdir()
     unsigned = stage / "Bark.app"
@@ -244,7 +243,7 @@ print(key.rawRepresentation.base64EncodedString())
             if icon and (outer_icon(candidate) != icon or (candidate / icon).read_bytes() != icon_bytes):
                 raise RuntimeError("The candidate differs from the app target's declared icon")
         verify_icon(unsigned)
-        for version, build in (("1.0.0", "100"), ("1.0.1", "101")):
+        for build, version in VERSIONS.items():
             expectation = dict(common, CFBundleShortVersionString=version, CFBundleVersion=build)
             settings.append(expectation)
             info.write_bytes(base_info)
@@ -270,7 +269,15 @@ print(key.rawRepresentation.base64EncodedString())
                                            work, verify_staged=verify)
             if sparkle is None:
                 sparkle = work / "SourcePackages/artifacts/sparkle/Sparkle/bin"
-            if build == "100":
+            if kit_stage is not None:
+                image, = distribution.glob("*.dmg")
+                shutil.move(image, kit_stage / KIT_FILES[build])
+                if build == "101":
+                    feed = distribution / server.feed.removeprefix("/")
+                    shutil.move(feed, kit_stage / "appcast.xml")
+                    write_kit(kit_stage, arch, evidence, common)
+                    return
+            elif build == "100":
                 image, = distribution.glob("*.dmg")
                 with tempfile.TemporaryDirectory(dir=work, prefix="mount-") as mount:
                     run("hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mount, image,
@@ -283,24 +290,34 @@ print(key.rawRepresentation.base64EncodedString())
             else:
                 server.image, = distribution.glob("*.dmg")
                 feed = distribution / server.feed.removeprefix("/")
+                server.image_route = "/" + server.image.name
                 prepare_feed(server, feed, common["SUPublicEDKey"])
                 return installed, app, root, settings
 
 
-def prepare_feed(server, feed, key):
+def prepare_feed(server, feed, key, *, expected_info=None):
     payload = feed.read_bytes()
     enclosure = ElementTree.fromstring(payload).find("./channel/item/enclosure")
-    if enclosure is None or enclosure.attrib.get("url") != server.origin + "/" + server.image.name:
+    if enclosure is None or enclosure.attrib.get("url") != server.origin + server.image_route:
         raise RuntimeError("The rehearsal enclosure must remain on its own loopback server")
     attr = f"{{{bark_release.SPARKLE}}}edSignature"
     good_signature = enclosure.attrib[attr]
+    if expected_info is not None:
+        with tempfile.TemporaryDirectory(dir=feed.parent, prefix="feed-") as folder:
+            expected = Path(folder) / "appcast.xml"
+            bark_release.write_appcast(expected, expected_info, server.origin + server.image_route,
+                                       server.image.stat().st_size, good_signature)
+            if payload != expected.read_bytes():
+                raise ValueError("The appcast is not the exact loopback feed for this replacement disk image.")
+        run("xcrun", "swift", REPO / "scripts/VerifyBarkUpdate.swift", server.image, key, good_signature,
+            capture_output=True)
     signature = bytearray(base64.b64decode(good_signature, validate=True))
     if len(signature) != 64:
         raise RuntimeError("Unexpected Ed25519 signature length")
     signature[0] ^= 1
     wrong_signature = base64.b64encode(signature)
     wrong = subprocess.run(["xcrun", "swift", str(REPO / "scripts/VerifyBarkUpdate.swift"), str(server.image),
-                            key, wrong_signature.decode()], capture_output=True, timeout=30)
+                            key, wrong_signature.decode()], capture_output=True)
     if wrong.returncode != 1 or b"Update signature does not match" not in wrong.stderr:
         raise RuntimeError("Package verifier did not reject the changed signature")
     server.feeds = {"bad": payload.replace(good_signature.encode(), wrong_signature), "valid": payload}
@@ -451,7 +468,7 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
                 record("Installed v100 from its signed DMG and saved a draft through page UI")
                 check_updates()
                 approve_download()
-                archive_path = "/" + server.image.name
+                archive_path = server.image_route
                 wait_for("Sparkle did not request the archive with changed signature",
                          lambda: server.saw(archive_path), proc, timeout=60)
                 wait_for("Sparkle did not show an update error after the invalid signature",
@@ -596,6 +613,128 @@ def exercise(check, installed, newer, root, versions, arch, server, output, *, e
         raise RuntimeError("The candidate logged a fatal error or a crash report")
 
 
+def verify_ordinary_source(check, app, engine, work, arch):
+    info = app_info(app)
+    if info.get("CFBundleIdentifier") != "ee.qdo.bark" or "BarkUpdateRehearsal" in info:
+        raise ValueError("Use the non-rehearsal signed Bark.app as the ordinary source.")
+    requirement = bark_release.distribution_requirement(app, "ee.qdo.bark")
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", "-R",
+        requirement + ' and identifier "ee.qdo.bark"', app)
+    check["verify_candidate"](app, engine, work, arch)
+    return bark_release.bundle_cdhash(app)
+
+
+def prepare_kit(check, args, engine, qualification, arch):
+    candidate = args.candidate_app.resolve(strict=True)
+    kit = args.prepare_kit.parent.resolve() / args.prepare_kit.name
+    kit.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(kit):
+        raise ValueError("Choose a new destination for the rehearsal kit.")
+    with tempfile.TemporaryDirectory(prefix=".bark-update-kit-", dir=kit.parent) as directory, \
+         tempfile.TemporaryDirectory(prefix="bark-update-build-", dir="/private/tmp") as scratch, \
+         UpdateServer(bark_release.feed_name(arch)) as server:
+        work = Path(scratch)
+        stage = Path(directory) / "kit"
+        stage.mkdir(mode=0o700)
+        source_hash = verify_ordinary_source(check, candidate, engine, work, arch)
+        versions(check, None, engine, args.identity, arch, work, server, args.output or work,
+                 candidate_app=candidate, evidence=qualification, kit_stage=stage)
+        requirement = bark_release.distribution_requirement(candidate, "ee.qdo.bark")
+        for name in KIT_FILES.values():
+            run("/usr/bin/codesign", "--verify", "--strict", "-R", requirement, stage / name)
+        if qualification["source_bundle_cdhash"] != source_hash:
+            raise ValueError("The ordinary source app changed during kit preparation.")
+        load_kit(stage, arch, qualification["sdk_pin"], source_hash)
+        bark_release.publish_new(stage, kit)
+    print(f"Prepared a portable {arch} update kit at {kit}.", flush=True)
+
+
+def verify_kit_app(check, app, source, engine, work, arch, settings, requirement):
+    info = app_info(app)
+    if (any(info.get(key) != value for key, value in settings.items())
+            or set(bark_release.HANDLER_KEYS).intersection(info)
+            or any(os.path.lexists(app / "Contents" / name) for name in
+                   (PROFILE_NAME, "embedded.mobileprovision"))):
+        raise ValueError("The disk image app does not match the sealed disposable rehearsal.")
+    app_requirement = requirement + f' and identifier "{settings["CFBundleIdentifier"]}"'
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", app_requirement, app)
+    check["verify_candidate"](app, engine, work, arch, release_info=settings)
+    for binary in SHELL_IMAGES:
+        if not check["signed_mach_matches"](source / binary, app / binary, work, arch):
+            raise ValueError(f"The kit shell differs from its verified ordinary source at {binary}.")
+
+
+def run_kit(check, args, engine, qualification, arch, work, output):
+    source = args.candidate_app.resolve(strict=True)
+    source_hash = verify_ordinary_source(check, source, engine, work, arch)
+    kit = args.kit.resolve(strict=True)
+    # Copy validated regular names into private scratch, then validate the
+    # snapshot again. Mounts and downloads use only the verified snapshot.
+    load_kit(kit, arch, qualification["sdk_pin"], source_hash)
+    snapshot = work / "kit"
+    snapshot.mkdir()
+    for name in (MANIFEST, *KIT_FILES.values(), "appcast.xml"):
+        run("/bin/cp", "-cP", kit / name, snapshot / name)
+    common, root, port = load_kit(snapshot, arch, qualification["sdk_pin"], source_hash)
+    installed = work / "Applications/Bark.app"
+    installed.parent.mkdir()
+    original, replacement = (snapshot / KIT_FILES[build] for build in VERSIONS)
+    requirement = bark_release.distribution_requirement(source, "ee.qdo.bark")
+    for image in original, replacement:
+        run("/usr/bin/codesign", "--verify", "--strict", "-R", requirement, image)
+    settings = [dict(common, CFBundleShortVersionString=version, CFBundleVersion=build)
+                for build, version in VERSIONS.items()]
+    with UpdateServer(bark_release.feed_name(arch), port) as server:
+        server.image, server.image_route = replacement, image_route(arch)
+        feed = snapshot / "appcast.xml"
+        prepare_feed(server, feed, common["SUPublicEDKey"], expected_info={
+            **settings[1], "LSMinimumSystemVersion": app_info(source)["LSMinimumSystemVersion"],
+        })
+        with mount_app(original, work, run) as original_app:
+            verify_kit_app(check, original_app, source, engine, work, arch, settings[0], requirement)
+            original_hash = bark_release.bundle_cdhash(original_app)
+            run("/usr/bin/ditto", original_app, installed)
+            if bark_release.bundle_cdhash(installed) != original_hash:
+                raise ValueError("The installed original does not match its disk image.")
+        newer = work / "reference/Bark.app"
+        newer.parent.mkdir()
+        with mount_app(replacement, work, run) as replacement_app:
+            verify_kit_app(check, replacement_app, source, engine, work, arch, settings[1], requirement)
+            replacement_hash = bark_release.bundle_cdhash(replacement_app)
+            run("/usr/bin/ditto", replacement_app, newer)
+        if replacement_hash != bark_release.bundle_cdhash(newer) or original_hash == replacement_hash:
+            raise ValueError("The signed replacement does not match the verified, distinct update.")
+        if source_hash != bark_release.bundle_cdhash(source):
+            raise ValueError("The ordinary source app changed during verification.")
+        qualification.update(shell_source="signed-candidate", source_bundle_cdhash=source_hash,
+                             original_bundle_cdhash=original_hash, replacement_bundle_cdhash=replacement_hash,
+                             rehearsal_kit=file_digest(snapshot / MANIFEST))
+        with disposable_kit_profile(root, common["CFBundleIdentifier"]):
+            root.mkdir(mode=0o700)
+            check["seed_profile"](root, common["BarkUpdateRehearsal"]["Profile"], server.origin + "/fixture")
+            exercise(check, installed, newer, root, settings, arch, server, output, engine=engine,
+                     replacement_cdhash=replacement_hash)
+        (output / "candidate.json").write_text(json.dumps(qualification) + "\n")
+
+
+@contextlib.contextmanager
+def disposable_kit_profile(root, bundle_id):
+    # mkdir is exclusive, including when a previous attempt left a symlink.
+    root.parent.mkdir(mode=0o700)
+    try:
+        root_digest = hashlib.sha256(os.fsencode(root)).hexdigest()
+        domains = (bundle_id, "ee.qdo.nook.chromium-verification." + root_digest,
+                   "ee.qdo.nook.chromium-verification.aiProvider." + root_digest)
+        if os.path.lexists(Path.home() / "Library/Caches" / bundle_id) or any(
+            subprocess.run(["/usr/bin/defaults", "read", domain], capture_output=True).returncode == 0
+            for domain in domains
+        ):
+            raise ValueError("A previous rehearsal left defaults or cache state for this kit.")
+        yield
+    finally:
+        shutil.rmtree(root.parent)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     source = parser.add_mutually_exclusive_group()
@@ -604,31 +743,56 @@ def parse_args(argv=None):
     source.add_argument("--derived-data", type=Path,
                         help="Reuse existing unsigned Release Bark products (developer only)")
     parser.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"), help="Local Developer ID Application")
-    parser.add_argument("--output", type=Path, required=True, help="New evidence-only directory")
-    parser.add_argument("--require-official", action="store_true", help="verify the native official SDK before preparation")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--prepare-kit", type=Path, help="Sign and export a new portable rehearsal kit without launching")
+    mode.add_argument("--kit", type=Path, help="Run a transferred rehearsal kit without signing or building")
+    parser.add_argument("--arch", choices=("x86_64", "arm64"), help="Target CPU for kit preparation")
+    parser.add_argument("--output", type=Path, help="New evidence-only directory")
+    parser.add_argument("--require-official", action="store_true", help="verify the official SDK for the selected architecture")
     args = parser.parse_args(argv)
     if args.require_official and args.derived_data is not None:
         parser.error("--require-official does not accept unsigned products. Omit --derived-data.")
-    if not args.identity:
+    if (args.prepare_kit or args.kit) and args.candidate_app is None:
+        parser.error("A portable kit requires the exact ordinary --candidate-app.")
+    if args.arch and not args.prepare_kit:
+        parser.error("--arch is only available with --prepare-kit. Execution uses the native CPU.")
+    if not args.prepare_kit and args.output is None:
+        parser.error("--output is required when running a rehearsal.")
+    if args.output is not None:
+        args.output = args.output.resolve()
+    destination = args.prepare_kit or args.output
+    if args.kit and args.output.is_relative_to(args.kit.resolve()):
+        parser.error("Keep the evidence directory outside the transferred kit.")
+    if not args.kit and not args.identity:
         parser.error("Pass --identity or set BARK_SIGN_IDENTITY.")
-    output = args.output.resolve()
-    if output.is_relative_to(REPO) or (args.candidate_app and output.is_relative_to(args.candidate_app.resolve())):
-        parser.error("Choose a new evidence directory outside the repository and source app.")
+    for target in (destination, args.output):
+        if target is not None and (target.resolve().is_relative_to(REPO)
+                                   or (args.candidate_app and
+                                       target.resolve().is_relative_to(args.candidate_app.resolve()))):
+            parser.error("Choose a new destination outside the repository and source app.")
     return parser, args
 
 
 def main():
     parser, args = parse_args()
-    output = args.output.resolve()
+    output = args.output
     check = runpy.run_path(str(REPO / "scripts/bark-check.py"))
-    arch = check["native_architecture"]()
+    arch = args.arch or check["native_architecture"]()
     try:
         engine, qualification = verify_pinned_sdk(check, arch, require_official=args.require_official)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
-    output.mkdir(parents=True)
+    if output is not None:
+        output.mkdir(parents=True)
+    if args.prepare_kit:
+        prepare_kit(check, args, engine, qualification, arch)
+        return
     with tempfile.TemporaryDirectory(prefix="bark-update-", dir="/private/tmp") as directory:
         work = Path(directory)
+        if args.kit:
+            run_kit(check, args, engine, qualification, arch, work, output)
+            print("Installed update rehearsal passed.", flush=True)
+            return
         if args.candidate_app is not None:
             derived = None
         elif args.derived_data is None:

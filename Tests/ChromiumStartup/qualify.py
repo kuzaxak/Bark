@@ -97,12 +97,17 @@ def installed_size_bytes(app):
     return {"installed_app": sum(files.values()), "chromium_framework": sum(engine_files.values())}
 
 
-def qualify(app, image, identity, output):
+def verify_release_signature(app):
+    requirement = bark_release.distribution_requirement(app, "ee.qdo.bark") + ' and identifier "ee.qdo.bark"'
+    subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement, app], check=True)
+    return requirement
+
+
+def qualify(app, image, identity, output, *, update_kit=None):
     contributor = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     architecture = contributor["native_architecture"]()
     _, provenance = verify_official_sdk(contributor, architecture, app)
-    requirement = bark_release.distribution_requirement(app, "ee.qdo.bark") + ' and identifier "ee.qdo.bark"'
-    subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement, app], check=True)
+    requirement = verify_release_signature(app)
     candidate = {**provenance, "bundle_cdhash": bundle_cdhash(app)}
     info = plistlib.loads((app / "Contents/Info.plist").read_bytes())
     if info.get("CFBundleIdentifier") != "ee.qdo.bark":
@@ -128,8 +133,15 @@ def qualify(app, image, identity, output):
         result["macos"] = observations[0]["macos"]
         time.sleep(11)
         update = output / "installed-update"
-        walk(TESTS / "ChromiumUpdate/walk.py", ["--candidate-app", installed, "--identity", identity], update)
-        result["installed_update"] = check_update(json.loads((update / "candidate.json").read_text()), candidate)
+        signing = ["--kit", update_kit] if update_kit else ["--identity", identity]
+        walk(TESTS / "ChromiumUpdate/walk.py", ["--candidate-app", installed, *signing], update)
+        evidence = json.loads((update / "candidate.json").read_text())
+        result["installed_update"] = check_update(evidence, candidate)
+        if update_kit:
+            fingerprint = evidence.get("rehearsal_kit")
+            if not isinstance(fingerprint, str) or not re.fullmatch(r"[0-9a-f]{64}", fingerprint):
+                raise ValueError("The installed update did not identify its pre-signed rehearsal kit.")
+            result["installed_update"]["rehearsal_kit"] = fingerprint
         if bundle_cdhash(installed) != candidate["bundle_cdhash"]:
             raise ValueError("The source candidate changed during qualification.")
 
@@ -166,6 +178,7 @@ def check_release_receipt(receipt, image, architecture, app):
         raise ValueError("The release receipt belongs to a different Bark build.")
     validate_samples(result.get("startup"))
     checked_update_identities(result["installed_update"])
+    verify_release_signature(app)
 
 
 def release_receipt_main(argv):
@@ -189,18 +202,22 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--app", type=Path, required=True, help="Signed app built with the checkout's official SDK")
     parser.add_argument("--image", type=Path, help="Assess and run the copy installed from this notarized release DMG")
-    parser.add_argument("--identity", default=os.environ.get("BARK_SIGN_IDENTITY"), help="Local Developer ID Application")
+    signing = parser.add_mutually_exclusive_group()
+    signing.add_argument("--identity", help="Local Developer ID Application identity")
+    signing.add_argument("--update-kit", type=Path, help="Pre-signed update rehearsal for this app and native architecture")
     parser.add_argument("--output", type=Path, required=True, help="New evidence directory outside the checkout")
     args = parser.parse_args()
-    if not args.identity:
-        parser.error("Pass --identity or set BARK_SIGN_IDENTITY.")
+    identity = None if args.update_kit else args.identity or os.environ.get("BARK_SIGN_IDENTITY")
+    if not (args.update_kit or identity):
+        parser.error("Pass --update-kit, --identity, or set BARK_SIGN_IDENTITY.")
     output = args.output.resolve()
-    if output.is_relative_to(REPO) or output.is_relative_to(args.app.resolve()):
-        parser.error("Choose an evidence directory outside the checkout and app.")
+    if (output.is_relative_to(REPO) or output.is_relative_to(args.app.resolve())
+            or (args.update_kit and output.is_relative_to(args.update_kit.resolve()))):
+        parser.error("Choose an evidence directory outside the checkout, app and rehearsal kit.")
     try:
         output.mkdir(parents=True, exist_ok=False)
         qualify(args.app.resolve(strict=True), args.image.resolve(strict=True) if args.image else None,
-                args.identity, output)
+                identity, output, update_kit=args.update_kit.resolve(strict=True) if args.update_kit else None)
     except ScreenUnavailable as error:
         print(f"{error} See {output} for walk logs.", file=sys.stderr)
         return SCREEN_UNAVAILABLE

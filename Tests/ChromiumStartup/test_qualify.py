@@ -12,7 +12,7 @@ import qualify
 
 
 class OfficialQualificationTests(unittest.TestCase):
-    def run_candidate(self, root, *, mismatch=None, busy=False, install_image=True):
+    def run_candidate(self, root, *, mismatch=None, busy=False, install_image=True, update_kit=None):
         app = root / "Bark.app"
         (app / "Contents").mkdir(parents=True)
         (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
@@ -59,6 +59,10 @@ class OfficialQualificationTests(unittest.TestCase):
                 update = {**sdk, "source_bundle_cdhash": candidate["bundle_cdhash"],
                           "shell_source": "signed-candidate", "original_bundle_cdhash": "a" * 40,
                           "replacement_bundle_cdhash": "d" * 40}
+                if update_kit is not None:
+                    self.assertEqual(arguments, ["--candidate-app", installed, "--kit", update_kit])
+                    if mismatch != "kit":
+                        update["rehearsal_kit"] = "e" * 64
                 if mismatch == "update":
                     update["source_bundle_cdhash"] = "0" * 40
                 if mismatch == "sdk":
@@ -72,7 +76,8 @@ class OfficialQualificationTests(unittest.TestCase):
                 patch.object(qualify.subprocess, "run"), patch.object(qualify.time, "sleep"), \
                 patch.object(qualify.bark_release, "verify_installed_image", side_effect=exercise_image), \
                 patch.object(qualify, "walk", side_effect=walk):
-            qualify.qualify(app, image if install_image else None, "Test identity", output)
+            qualify.qualify(app, image if install_image else None, None if update_kit else "Test identity",
+                            output, update_kit=update_kit)
         self.assertEqual(len(runs), 4)
         return json.loads((output / "qualification.json").read_text())
 
@@ -86,6 +91,17 @@ class OfficialQualificationTests(unittest.TestCase):
             self.assertEqual(len(result["image_sha256"]), 64)
             self.assertEqual(result["size_bytes"], {"installed_app": 9, "chromium_framework": 6,
                                                      "download_dmg": len(b"fixture image")})
+
+    def test_receiving_mac_qualifies_the_installed_image_using_its_pre_signed_update(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            result = self.run_candidate(root, update_kit=root / "kit")
+            self.assertEqual(result["installed_update"]["rehearsal_kit"], "e" * 64)
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            with self.assertRaisesRegex(ValueError, "pre-signed rehearsal kit"):
+                self.run_candidate(root, update_kit=root / "kit", mismatch="kit")
+            self.assertFalse((root / "evidence/qualification.json").exists())
 
     def test_app_only_qualifies_without_admitting_a_release_receipt(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -105,8 +121,14 @@ class OfficialQualificationTests(unittest.TestCase):
             receipt, image, app = (root / "evidence/qualification.json",
                                    root / "candidate.dmg", root / "Bark.app")
             with patch.object(qualify, "bundle_cdhash", return_value=result["candidate"]["bundle_cdhash"]), \
-                    patch.object(qualify, "read_pin", return_value=result["candidate"]["sdk_pin"]):
+                    patch.object(qualify, "read_pin", return_value=result["candidate"]["sdk_pin"]), \
+                    patch.object(qualify, "verify_release_signature") as verify_signature:
                 qualify.check_release_receipt(receipt, image, "arm64", app)
+                verify_signature.assert_called_once_with(app)
+                verify_signature.side_effect = subprocess.CalledProcessError(1, "codesign")
+                with self.assertRaises(subprocess.CalledProcessError):
+                    qualify.check_release_receipt(receipt, image, "arm64", app)
+                verify_signature.side_effect = None
                 with self.assertRaisesRegex(ValueError, "release architecture"):
                     qualify.check_release_receipt(receipt, image, "x86_64", app)
                 for field, bad_value, reason in (

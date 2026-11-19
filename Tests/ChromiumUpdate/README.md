@@ -43,3 +43,35 @@ python3 Tests/ChromiumUpdate/controls.py --sparkle /path/to/Build/Products/Debug
 ```
 
 It checks for separate, accessible controls, exercises Sparkle's persisted preferences across app launches, and verifies that disabling checks also disables automatic downloads while preserving the download preference. It checks that an unstarted or rehearsal updater exposes neither control, and that a configuration forbidding automatic downloads exposes only the check control. The fixture uses unique bundle identifiers, disposable defaults, and a loopback feed with no server responses. It fails if Sparkle attempts a feed connection.
+
+### Rehearse an installed update on a second Mac without a signing identity
+
+On a signing Mac with Bark’s Developer ID Application identity, prepare the
+kit from the exact ordinary signed Bark.app and its installed SDK. The
+target architecture can differ from the signing Mac’s architecture.
+
+```fish
+python3 -B Tests/ChromiumUpdate/walk.py --prepare-kit "$kit" --arch arm64 \
+    --candidate-app "$signed_app" --identity "$BARK_SIGN_IDENTITY" --require-official
+```
+
+Transfer the kit, the same ordinary signed app, and the matching pinned SDK
+archive to the receiving Mac. The kit contains two signed rehearsal DMGs,
+the loopback appcast and a manifest. The temporary Sparkle signing key and
+provisioning profile stay off the receiving Mac. From the same tracked
+source and pin, install the SDK and run with the usual signed-walk Python,
+Accessibility authorization and idle desktop.
+
+```fish
+python3 -B scripts/bark-check.py engine --require-official --install --engine "$archive"
+"$BARK_WALK_PYTHON" -B Tests/ChromiumUpdate/walk.py --kit "$kit" \
+    --candidate-app "$signed_app" --output "$evidence" --require-official
+```
+
+The receiver uses its native architecture, verifies the ordinary app and
+SDK, and checks the kit’s signatures and shell against that app. It runs the
+same changed-signature refusal and valid-update handoff with a disposable
+profile. The loopback port is sealed into both rehearsal apps. If the port
+is busy, free it before retrying or prepare a fresh kit with a different
+port. Use a new evidence directory for each run. If a terminated run left
+profile, defaults or cache state, the verifier refuses to reuse that state.
