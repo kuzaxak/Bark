@@ -279,7 +279,8 @@ class TabObservation : public content::WebContentsObserver,
     return active_ && !closing_ && !discovery_stopped && vault_save_callback_ &&
         vault_submission_ && serial && vault_submission_->token == serial &&
         web_contents() && tab && tab->GetContents() == web_contents() && owner &&
-        !owner->IsDeleteScheduled() && owner == vault_submission_->owner.get() &&
+        !owner->IsDeleteScheduled() && !owner->GetProfile()->IsOffTheRecord() &&
+        owner == vault_submission_->owner.get() &&
         MountedVaultWidget();
   }
   void NotifyVaultSave() {
@@ -325,7 +326,7 @@ class TabObservation : public content::WebContentsObserver,
       ClearVaultSave();
     const auto origin = url::Origin::Create(credentials.url);
     if (!vault_save_callback_ || !active_ || closing_ || discovery_stopped || !owner ||
-        !MountedVaultWidget() ||
+        owner->GetProfile()->IsOffTheRecord() || !MountedVaultWidget() ||
         origin.opaque() || !(origin.scheme() == "https" ||
             (origin.scheme() == "http" && net::IsLocalhost(origin.GetURL()))) ||
         credentials.username_value.empty() || credentials.password_value.empty() ||

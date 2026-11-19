@@ -11165,6 +11165,52 @@ std::unique_ptr<password_manager::PasswordFormManagerForUI> VaultFormManager(
 }
 }  // namespace
 
+IN_PROC_BROWSER_TEST_F(BarcSharedNativeWindowBrowserTest,
+                       VaultSaveRefusesMountedPrivateProfile) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL login = embedded_test_server()->GetURL("/title1.html");
+  const int32_t regular = Open(kSharedWork, 0, BARC_PROFILE_BLANK);
+  SharedProfileResult opened;
+  barc_private_session_open_window(SharedProfileCompleted, &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t private_window = opened.Get<1>();
+
+  for (const int32_t window : {private_window, regular}) {
+    auto* owner = SharedWindow(window);
+    ASSERT_TRUE(owner);
+    EXPECT_EQ(window == private_window, owner->GetProfile()->IsOffTheRecord());
+    ASSERT_NO_FATAL_FAILURE(Navigate(owner, login));
+    auto* contents = owner->GetTabStripModel()->GetActiveWebContents();
+    ASSERT_TRUE(contents);
+    MountSelectedHostPage(owner);
+    auto* host = bark::BarkWindowHost::ForBrowser(owner);
+    ASSERT_TRUE(host && host->IsPageMounted(contents));
+    VaultSaveEvents events;
+    events.observation = barc_tab_observe(
+        window, barc_window_tab_at(window, 0), VaultSaveEvents::Tab, &events);
+    ASSERT_NE(0u, events.observation);
+    base::ScopedClosureRunner stop(base::BindOnce(
+        [](uint64_t token) { barc_tab_unobserve(token); }, events.observation));
+    ASSERT_EQ(1, barc_tab_observe_vault_save(events.observation, VaultSaveEvents::Save));
+    password_manager::PasswordForm credentials;
+    credentials.url = login;
+    credentials.username_value = u"synthetic-user";
+    credentials.password_value =
+        password_manager::PasswordString(std::u16string(u"synthetic-password"));
+    // Model a validated submission at the Pawl boundary itself. Chromium's
+    // default OTR save suppression must not be the only privacy fence.
+    if (window == regular) {
+      ASSERT_TRUE(barc::OfferVaultPasswordSave(contents, credentials));
+      ASSERT_TRUE(base::test::RunUntil([&] { return events.offers > 0; }));
+    } else {
+      EXPECT_FALSE(barc::OfferVaultPasswordSave(contents, credentials));
+      base::RunLoop().RunUntilIdle();
+    }
+    EXPECT_EQ(window == regular ? 1 : 0, events.offers);
+    EXPECT_EQ(window == regular, events.submission != 0);
+  }
+}
+
 // Exercise the production ChromePasswordManagerClient save/update admission,
 // not the Barc helper. Chromium's UI-manager object represents the accepted
 // submission; its original origin must survive the completed login redirect.
