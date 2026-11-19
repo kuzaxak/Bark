@@ -2,10 +2,16 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from contextlib import closing
 import glob, os, re, sqlite3, subprocess, sys, time
+
 root = Path(__file__).resolve().parents[2]
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(root / 'Tests/ChromiumImport'))
+sys.path.insert(0, str(root / "Tests/Shared"))
+from swift_check import build_package, swift_target
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 import fixtures
+
+target = swift_target()
 
 with TemporaryDirectory(prefix='bark-import-check-') as directory:
     out = Path(directory)
@@ -30,17 +36,12 @@ with TemporaryDirectory(prefix='bark-import-check-') as directory:
                 print('  %s:%d: %s' % r)
         raise SystemExit(1)
     scratch = out / 'nookweb'
-    p = subprocess.run(['swift', 'build', '--package-path', str(root / 'Packages/NookWeb'), '--scratch-path', str(scratch), '--jobs', '4'],
-                       capture_output=True, text=True)
-    if p.returncode:
-        print(p.stdout + p.stderr)
-        raise SystemExit(p.returncode)
-    debug = scratch / 'x86_64-apple-macosx/debug'
+    debug = build_package(root / 'Packages/NookWeb', scratch, target, jobs=4)
     objects = sorted(o for target in ['FaviconFinder', 'MuteableWKWebView', 'NookBlocker', 'NookSettings', 'NookTabsCore', 'NookTweaks', 'NookWeb', 'SwiftSoup']
                      for o in glob.glob(str(debug / f'{target}.build/*.o')))
     sources = sorted(str(p) for p in (root / 'Nook/Managers/ImportManager').glob('*.swift'))
     binary = out / 'chromium-import-check'
-    c = ['xcrun', 'swiftc', '-swift-version', '5', '-target', 'x86_64-apple-macosx15.5', '-parse-as-library', '-I', str(debug / 'Modules'),
+    c = ['xcrun', 'swiftc', '-swift-version', '5', '-target', target, '-parse-as-library', '-I', str(debug / 'Modules'),
          '-Xcc', '-fmodule-map-file=' + str(debug / 'MuteableWKWebView.build/module.modulemap'),
          '-I', str(root / 'Packages/NookWeb/Sources/MuteableWKWebView/include'),
          '-I', str(root / 'Nook/ThirdParty/AdblockRustFFI/NookAdblock.xcframework/macos-arm64_x86_64/Headers'),

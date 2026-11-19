@@ -1,7 +1,13 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import subprocess
+import sys
+
 root = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(root / "Tests/Shared"))
+from swift_check import swift_target
+
+target = swift_target()
 
 with TemporaryDirectory(prefix='bark-mouse-buttons-check-') as directory:
     out = Path(directory)
@@ -9,7 +15,7 @@ with TemporaryDirectory(prefix='bark-mouse-buttons-check-') as directory:
     a = source.index('/// What an extra mouse button does')
     (out / 'Shipped.swift').write_text('import AppKit\n\n' + source[a:source.index('// MARK: - Monitor')])
     binary = out / 'chromium-mouse-buttons-check'
-    c = ['swiftc', '-swift-version', '5', '-target', 'x86_64-apple-macosx15.5', '-parse-as-library',
+    c = ['swiftc', '-swift-version', '5', '-target', target, '-parse-as-library',
          str(out / 'Shipped.swift'), str(root / 'Tests/ChromiumMouseButtons/Main.swift'), '-o', str(binary)]
     p = subprocess.run(c, capture_output=True, text=True)
     print(p.stdout + p.stderr)
