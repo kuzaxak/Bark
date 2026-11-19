@@ -8,6 +8,7 @@
 ## 2. Signed Pawl client
 
 - [ ] 2.1 Admit the signed Bark identifier on the authorized Apple team alongside the legacy Nook client. Derive consent labels from the verified peer. Check signed Bark and Nook acceptance, same-team wrong identifiers, and ad hoc client rejection.
+  macOS evaluated the proposed requirement against genuine signed Bark and Nook. Both matched. A different signed app on the same team and an ad hoc executable with Bark's identifier were refused. Pawl build 7 still enforces its original requirement; the companion update and live socket checks remain open.
 - [ ] 2.2 Verify the shipped sandbox and socket with a separately signed Bark and Pawl using a disposable database. Exercise a locked vault and denied owner approval.
 
 ## 3. Chromium passwords
