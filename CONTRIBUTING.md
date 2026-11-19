@@ -47,6 +47,25 @@ You need a Mac and Xcode 26 or later. The package tests and native command-routi
 
 There is no app test target. Logic with its own checks lives in `Checks/` folders beside each package's sources and in `scripts/tests/`; each file says how to run it. Every package with a `Tests/` folder has a `swift test` suite, and CI runs them on each pull request.
 
+### Working on page and window behavior
+
+A tab’s saved state lives in `NookTabsCore`. `PageSession` follows a live
+page through the engine-neutral `PageNavigation` protocol. Implement a new
+Chromium operation in the native adapter using Bark’s public C bridge.
+`NativePageHost` owns creation, selection, transfer and acknowledged close.
+Check the page’s current window and profile before applying an asynchronous
+result. A transfer can preserve the document while changing the window
+that owns the next command. [Page navigation](Packages/NookWeb/Sources/NookWeb/PageNavigation.swift)
+· [Host contract](Packages/NookWeb/Sources/NookWeb/NativePageHost.swift)
+
+`ChromiumWindowRoot` mounts live page views in normal panes and Peek. Shared
+tab activation updates the app’s zoom and title-bar color. Chromium routes
+extension events through its own browser context. WebKit hosts that need
+extension callbacks implement `WebKitTabEventObserver`, and hosts that
+present WebKit dialogs supply `WebKitAlertPresenter`.
+[Window surfaces](App/Chromium/ChromiumWindowRoot.swift) ·
+[Tab observers](Packages/NookWeb/Sources/NookWeb/TabEventObserver.swift)
+
 ### Native command routing and signed Bark
 
 From a clean checkout, run the native command-window regression without an engine artifact.
