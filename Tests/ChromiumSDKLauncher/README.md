@@ -17,12 +17,30 @@ shasum -a 256 BarkBrowserTests-arm64.tar.gz > SHA256SUMS
 
 Send the archive, checksum and `sdk-metadata` directory alongside the Bark source with the matching ARM SDK pin. The archive includes GN’s runtime dependencies, Chromium version, and integrated bundle metadata. The packaged manifest records SHA-256 digests for the linked test executable and framework. The optional fixture source checks that the installed Chromium overlay matches the reviewed source at export. Use it after a completed exact-source build. Those bytes describe the installed overlay and do not prove which source the compiler used. Packaging verifies the raw SDK is a background-only refusal stub before including its bundle. Keep the extracted `src/out/Barc-arm64-official` layout so the launcher and executable can find their frameworks and test data.
 
-On the native Apple Silicon Mac, verify and unpack the archive into a fresh directory. From the matching Bark source, use the exact-case runner with an idle desktop. The guarded launcher checks the native architecture and the host-only marker of the test executable and both linked frameworks before execution, and uses the shared screen guard and a disposable profile.
+Use the producer's paired source snapshot if the transfer includes one. For an
+ordinary checkout at the same engine recipe, first stage the Intel and ARM64
+official pins and shared headers with [the paired metadata command](../../Runtime/Chromium/README.md#upgrade-a-bridge-shared-by-two-pinned-architectures).
+A developer pin from the same source revision cannot verify an official test
+runtime. If the transfer includes the complete official SDK archive, you can
+use the checksum list from the verified, installed SDK instead of copying the
+list separately:
+
+```fish
+cd /path/to/matching/Bark/source
+python3 -B scripts/bark-check.py engine --arch arm64 --require-official \
+    --engine /path/to/BarkSDK-arm64.tar.gz --install; or exit 1
+set sdk_pin (python3 -B scripts/chromium_sdk_layout.py digest Packages/BarkEngine arm64); or exit 1
+set sdk_metadata "$HOME/Library/Caches/BarkSDK/$sdk_pin/Engine"
+```
+
+On the native Apple Silicon Mac, verify and unpack the test archive into a fresh directory. From the matching Bark source, use the exact-case runner with an idle desktop. The guarded launcher checks the native architecture and the host-only marker of the test executable and both linked frameworks before execution, and uses the shared screen guard and a disposable profile.
 
 ```fish
 cd /path/to/handoff
 shasum -a 256 -c SHA256SUMS; or exit 1
-set sdk_metadata (pwd)/sdk-metadata
+if not set -q sdk_metadata
+    set sdk_metadata (pwd)/sdk-metadata
+end
 set staged (mktemp -d)
 tar -xzf BarkBrowserTests-arm64.tar.gz -C "$staged"; or exit 1
 cd /path/to/matching/Bark/source
