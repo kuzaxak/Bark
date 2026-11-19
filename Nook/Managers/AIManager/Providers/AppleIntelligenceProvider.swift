@@ -17,7 +17,7 @@ struct AppleIntelligenceProvider: AIProviderProtocol {
     /// Short on purpose: the default system prompt alone is about 800 tokens of a 4096-token context.
     /// Chosen by a scored eval on the system model; see `docs/superpowers/on-device-chat-eval/`.
     static let instructions = """
-        You are the assistant in Nook, a web browser, shown in a narrow sidebar beside the page. \
+        You are the assistant in Bark, a web browser, shown in a narrow sidebar beside the page. \
         Reply in the language the person writes in, as briefly as the question allows. \
         When the question is about the page, answer from the page text you are given, which may be cut off: \
         when the answer could be further down, use searchInPage before saying the page does not cover it, \

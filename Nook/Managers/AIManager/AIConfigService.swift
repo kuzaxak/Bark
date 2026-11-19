@@ -494,13 +494,15 @@ class AIConfigService {
         if changed { save() }
     }
 
-    /// SHA-256 of the default system prompt before September 2026. A saved prompt that still matches
-    /// it was never edited, so it moves to the current default; an edited one is left alone.
-    private static let previousDefaultPromptHash = "711d0701b5580efd395aa9c85e233349b9d50e4ef3b60b937d6eef722ab978b9"
+    /// Exact UTF-8 hashes of the shipped defaults. Customized prompts stay as entered.
+    private static let previousDefaultPromptHashes: Set<String> = [
+        "711d0701b5580efd395aa9c85e233349b9d50e4ef3b60b937d6eef722ab978b9", // Before September 2026
+        "f083779d0f615c6df6d3311ef8edd03e2f96bcd86c3f851497bfc84cb1c99737", // Before the Bark rebrand
+    ]
 
     private func replaceUneditedSystemPrompt() {
         let hash = SHA256.hash(data: Data(config.generationConfig.systemPrompt.utf8)).map { String(format: "%02x", $0) }.joined()
-        guard hash == Self.previousDefaultPromptHash else { return }
+        guard Self.previousDefaultPromptHashes.contains(hash) else { return }
         config.generationConfig.systemPrompt = AIGenerationConfig.defaultSystemPrompt
         save()
     }

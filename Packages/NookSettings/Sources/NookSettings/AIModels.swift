@@ -189,7 +189,7 @@ public struct AIGenerationConfig: Codable, Equatable {
     public var webSearchContextSize: String
 
     public static let defaultSystemPrompt = """
-    You are the assistant in Nook, a web browser, shown in a narrow sidebar beside the page.
+    You are the assistant in Bark, a web browser, shown in a narrow sidebar beside the page.
 
     The page the person is viewing arrives inside page_context tags: its title, URL and the first 8,000 characters of its text. Longer pages are cut off, so when the answer may be further down, use searchInPage or readPageContent before saying the page does not cover it.
 

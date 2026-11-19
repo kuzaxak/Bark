@@ -77,6 +77,27 @@ struct URLCitation: Equatable, Codable { let url: String; let title: String?; le
         precondition(UserDefaults.standard.object(forKey: migrated) == nil, "no migration mark")
         precondition(keychainItems.isEmpty, "no legacy key moved")
 
+        let defaultPrompt = AIGenerationConfig.defaultSystemPrompt
+        precondition(defaultPrompt.hasPrefix("You are the assistant in Bark,"))
+        precondition(first.generationConfig.systemPrompt == defaultPrompt, "fresh Bark config uses the renamed prompt")
+        let oldStockPrompt = defaultPrompt.replacingOccurrences(of: "assistant in Bark,", with: "assistant in Nook,")
+        func reopen(with prompt: String) -> AIConfigService {
+            var config = first.generationConfig
+            config.systemPrompt = prompt
+            first.generationConfig = config
+            return AIConfigService(configURL: injected, keychainService: "synthetic.a", migratesLegacySettings: false)
+        }
+        let upgraded = reopen(with: oldStockPrompt)
+        precondition(upgraded.generationConfig.systemPrompt == defaultPrompt, "the exact previous default is renamed")
+        let upgradedData = try Data(contentsOf: injected)
+        let upgradedConfig = try JSONDecoder().decode(AIConfiguration.self, from: upgradedData)
+        precondition(upgradedConfig.generationConfig.systemPrompt == defaultPrompt, "the renamed default survives reload")
+        for custom in [oldStockPrompt + "\n", "  Use Nook in historical comparisons.\n"] {
+            let reopened = reopen(with: custom)
+            precondition(reopened.generationConfig.systemPrompt.utf8.elementsEqual(custom.utf8),
+                         "a custom prompt's original UTF-8 bytes are preserved")
+        }
+
         first.updateProviderAPIKey("gemini", apiKey: fakeKey)
         first.setActiveProvider("gemini")
         first.addModelById("synthetic-model", displayName: nil, providerId: "gemini")
