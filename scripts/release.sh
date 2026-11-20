@@ -3,10 +3,10 @@
 #
 # Builds a release of the fork for its own Sparkle feed:
 #   scripts/release.sh 1.4.0.1             build, sign, notarize, DMG and appcast in build/release
-#   scripts/release.sh 1.4.0.1 --publish   also upload both to a GitHub release on kuzaxak/Nook
+#   scripts/release.sh 1.4.0.1 --publish   also upload both to a GitHub release on kuzaxak/Bark
 #   scripts/release.sh 1.4.0.1 --app-only  only build/release/Nook.app, signed and not notarized
 #
-# The app's feed is https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml, so the
+# The installed Nook feed is https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml, so the
 # newest published release is the update every install sees.
 #
 # Signing: the "Developer ID Application" identity of team 538SB59LX4 when the login Keychain has
@@ -56,7 +56,7 @@ export -n SPARKLE_KEY
 
 # A tag that already names another commit would get this build's binaries; stop before building.
 if [[ "$PUBLISH" == "--publish" ]]; then
-  REMOTE="https://github.com/kuzaxak/Nook.git"
+  REMOTE="https://github.com/kuzaxak/Bark.git"
   TAG_COMMIT="$(git ls-remote "$REMOTE" "refs/tags/$TAG^{}" | cut -f1)"
   [[ -n "$TAG_COMMIT" ]] || TAG_COMMIT="$(git ls-remote "$REMOTE" "refs/tags/$TAG" | cut -f1)"
   if [[ -n "$TAG_COMMIT" && "$TAG_COMMIT" != "$(git rev-parse HEAD)" ]]; then
@@ -154,18 +154,18 @@ else
   SPARKLE_KEY_SOURCE=(--account ee.qdo.nook)
 fi
 printf '%s' "${SPARKLE_KEY:-}" | "$SPARKLE_BIN/generate_appcast" "${SPARKLE_KEY_SOURCE[@]}" \
-  --download-url-prefix "https://github.com/kuzaxak/Nook/releases/download/$TAG/" \
-  --link "https://github.com/kuzaxak/Nook" "$OUT/feed"
+  --download-url-prefix "https://github.com/kuzaxak/Bark/releases/download/$TAG/" \
+  --link "https://github.com/kuzaxak/Bark" "$OUT/feed"
 # generate_appcast exits 0 and leaves the entry unsigned when the key doesn't match the app's.
 grep -q 'sparkle:edSignature=' "$OUT/feed/appcast.xml" || { echo "appcast.xml is unsigned; check the Sparkle key"; exit 1; }
 
 echo "Built $DMG and $OUT/feed/appcast.xml (version $VERSION, build $BUILD_NUMBER)"
 if [[ "$PUBLISH" == "--publish" ]]; then
   # A rerun after a failed upload replaces the files on the release it already made.
-  if gh release view "$TAG" --repo kuzaxak/Nook >/dev/null 2>&1; then
-    gh release upload "$TAG" "$DMG" "$OUT/feed/appcast.xml" --repo kuzaxak/Nook --clobber
+  if gh release view "$TAG" --repo kuzaxak/Bark >/dev/null 2>&1; then
+    gh release upload "$TAG" "$DMG" "$OUT/feed/appcast.xml" --repo kuzaxak/Bark --clobber
   else
-    gh release create "$TAG" "$DMG" "$OUT/feed/appcast.xml" --repo kuzaxak/Nook --target "$(git rev-parse HEAD)" \
+    gh release create "$TAG" "$DMG" "$OUT/feed/appcast.xml" --repo kuzaxak/Bark --target "$(git rev-parse HEAD)" \
       --title "Nook $VERSION" --notes-file "$NOTES"
   fi
 else

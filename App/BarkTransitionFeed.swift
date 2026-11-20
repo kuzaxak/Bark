@@ -2,7 +2,7 @@
 import Darwin
 
 enum BarkTransitionFeed {
-    private static let base = "https://github.com/kuzaxak/Nook/releases/latest/download"
+    private static let base = "https://github.com/kuzaxak/Bark/releases/latest/download"
 
     static func url(arm64Capability: Int32?, unavailableOnIntel: Bool = false) -> String? {
         switch arm64Capability {
