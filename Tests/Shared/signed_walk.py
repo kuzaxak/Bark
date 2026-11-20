@@ -249,14 +249,14 @@ def verify_native_candidate(contributor, app):
     return architecture
 
 
-def verify_pinned_sdk(contributor, architecture, app=None, *, require_official=False):
-    """Return the cached SDK and evidence only after the required checks pass."""
-    cached = contributor["cached_engine"](architecture)
-    if not cached.is_dir():
+def verify_pinned_sdk(contributor, architecture, app=None, *, require_official=False, engine_directory=None):
+    """Return the pinned SDK and evidence only after the required checks pass."""
+    source = engine_directory or contributor["cached_engine"](architecture)
+    if not source.is_dir():
         raise ValueError(f"Install this checkout's pinned {architecture} Bark SDK first.")
     with tempfile.TemporaryDirectory(prefix="bark-sdk-preflight-", dir="/private/tmp") as folder:
         working = Path(folder)
-        with contributor["pinned_engine"](str(cached), working, architecture, require_official=require_official) as engine:
+        with contributor["pinned_engine"](str(source), working, architecture, require_official=require_official) as engine:
             if app is not None:
                 contributor["verify_candidate"](app, engine, working, architecture)
             digest = hashlib.sha256((engine / "SHA256SUMS").read_bytes()).hexdigest()

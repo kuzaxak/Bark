@@ -174,13 +174,31 @@ class UpdateBuildInputTest(unittest.TestCase):
                     patch.object(walk.bark_release, "bundle_cdhash", side_effect=["replacement", "original"]), \
                     patch.object(walk, "exercise"), contextlib.redirect_stdout(StringIO()):
                 walk.main()
-            verify.assert_called_once_with(tools, "x86_64", require_official=True)
+            verify.assert_called_once_with(tools, "x86_64", require_official=True, engine_directory=None)
             build.assert_not_called()
             self.assertEqual(json.loads((output / "candidate.json").read_text()), {
                 "architecture": "x86_64", "sdk_pin": self.pin, "official": True,
                 "shell_source": "signed-candidate", "source_bundle_cdhash": "verified-source",
                 "original_bundle_cdhash": "original", "replacement_bundle_cdhash": "replacement",
             })
+
+    def test_kit_preparation_uses_the_explicit_official_sdk(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            engine = root / "Engine"
+            engine.mkdir()
+            tools = self.sdk_tools(engine)
+            tools["cached_engine"] = lambda _: self.fail("An explicit SDK must avoid the persistent cache.")
+            tools["pinned_engine"] = lambda *inputs, **kwargs: contextlib.nullcontext(Path(inputs[0]))
+            argv = ["walk.py", "--candidate-app", str(root / "Bark.app"), "--identity", "Fixture",
+                    "--prepare-kit", str(root / "kit"), "--arch", "arm64", "--require-official",
+                    "--engine", str(engine)]
+            with patch.object(walk.sys, "argv", argv), patch.object(walk.runpy, "run_path", return_value=tools), \
+                    patch.object(walk, "prepare_kit") as prepare:
+                walk.main()
+            self.assertEqual(prepare.call_args.args[2:], (engine, {
+                "architecture": "arm64", "sdk_pin": self.pin, "official": True,
+            }, "arm64"))
 
     def test_developer_rehearsal_passes_supplied_products_without_building(self):
         with tempfile.TemporaryDirectory() as folder:

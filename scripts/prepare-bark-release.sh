@@ -49,17 +49,40 @@ unset SPARKLE_SIGNING_KEY
 "$PYTHON" -B "$ROOT/scripts/bark-check.py" engine --require-official --arch arm64 --engine "$ARM_ENGINE"
 "$PYTHON" -B "$ROOT/scripts/bark-check.py" engine --require-official --arch x86_64 --engine "$INTEL_ENGINE"
 
-work="$(mktemp -d "$(dirname "$OUTPUT")/.bark-release.XXXXXXXX")"
 keychain_started=false
+qualification_stage=
+qualification_output=
+if [[ -n "${BARK_QUALIFICATION_OUTPUT:-}" ]]; then
+  qualification_output="$("$PYTHON" -B - "$ROOT" "$OUTPUT" "$BARK_QUALIFICATION_OUTPUT" <<'CHECK_OUTPUT'
+from pathlib import Path
+import sys
+
+root, release, destination = (Path(value).resolve() for value in sys.argv[1:])
+if destination.is_relative_to(root) or release.is_relative_to(destination) or destination.is_relative_to(release):
+    sys.exit("Choose a qualification directory outside the checkout and release output.")
+if destination.exists() or Path(sys.argv[-1]).is_symlink():
+    sys.exit("Choose a new qualification directory.")
+print(destination)
+CHECK_OUTPUT
+)"
+fi
+
+work="$(mktemp -d "$(dirname "$OUTPUT")/.bark-release.XXXXXXXX")"
 cleanup() {
   if [[ "$keychain_started" == true ]]; then
     GITHUB_ENV= "$ROOT/scripts/ci-keychain.sh" cleanup || true
   fi
   rm -rf "$work"
+  if [[ -n "$qualification_stage" ]]; then rm -rf "$qualification_stage"; fi
 }
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
+
+if [[ -n "$qualification_output" ]]; then
+  mkdir -p "$(dirname "$qualification_output")"
+  qualification_stage="$(mktemp -d "$(dirname "$qualification_output")/.bark-qualification.XXXXXXXX")"
+fi
 
 keychain_started=true
 GITHUB_ENV= "$ROOT/scripts/ci-keychain.sh" setup
@@ -85,6 +108,15 @@ for arch in arm64 x86_64; do
       --identity "$SIGN_IDENTITY" --notary-profile "$NOTARY_PROFILE" --download-base-url "$DOWNLOAD_BASE" \
       --ed-key-file - --output "$work/release-$arch"
   mv "$work/release-$arch/Bark-$VERSION-$BUILD-macos-$arch.dmg" "$work/release-$arch/bark-macos-$arch.xml" "$work/artifacts/"
+  if [[ -n "$qualification_stage" ]]; then
+    qualification="$qualification_stage/$arch"
+    mkdir "$qualification"
+    cp -R "$ROOT/Packages/BarkEngine/BarkEngine.xcframework/macos-arm64_x86_64/Headers/BarcChromium" "$qualification/headers"
+    "$PYTHON" -B "$ROOT/scripts/bark-check.py" engine --require-official --arch "$arch" --engine "$engine" \
+      --archive "$qualification/BarkSDK.tar.gz"
+    "$PYTHON" -B "$ROOT/Tests/ChromiumUpdate/walk.py" --prepare-kit "$qualification/kit" \
+      --candidate-app "$app" --arch "$arch" --identity "$SIGN_IDENTITY" --require-official --engine "$engine"
+  fi
 done
 
 (
@@ -100,13 +132,15 @@ xcrun stapler validate "$legacy_app"
 xcrun stapler validate "$legacy_image"
 cp "$legacy_image" "$LEGACY/build/release/feed/appcast.xml" "$work/artifacts/"
 
-"$PYTHON" -B - "$ROOT" "$work/artifacts" "$OUTPUT" <<'PY'
+"$PYTHON" -B - "$ROOT" "$work/artifacts" "$OUTPUT" "$qualification_stage" "$qualification_output" <<'PY'
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(sys.argv[1]) / "scripts"))
 from bark_release import publish_new
 
+if sys.argv[4]:
+    publish_new(Path(sys.argv[4]), Path(sys.argv[5]))
 publish_new(Path(sys.argv[2]), Path(sys.argv[3]))
 PY
 echo "Verified release packages are ready in $OUTPUT."

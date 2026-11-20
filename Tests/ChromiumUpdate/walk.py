@@ -754,6 +754,7 @@ def parse_args(argv=None):
     mode.add_argument("--prepare-kit", type=Path, help="Sign and export a new portable rehearsal kit without launching")
     mode.add_argument("--kit", type=Path, help="Run a transferred rehearsal kit without signing or building")
     parser.add_argument("--arch", choices=("x86_64", "arm64"), help="Target CPU for kit preparation")
+    parser.add_argument("--engine", type=Path, help="Explicit pinned SDK directory for kit preparation")
     parser.add_argument("--output", type=Path, help="New evidence-only directory")
     parser.add_argument("--require-official", action="store_true", help="verify the official SDK for the selected architecture")
     args = parser.parse_args(argv)
@@ -761,6 +762,8 @@ def parse_args(argv=None):
         parser.error("--require-official does not accept unsigned products. Omit --derived-data.")
     if (args.prepare_kit or args.kit) and args.candidate_app is None:
         parser.error("A portable kit requires the exact ordinary --candidate-app.")
+    if args.engine and (not args.prepare_kit or not args.engine.is_dir()):
+        parser.error("--engine requires an existing SDK directory and --prepare-kit.")
     if args.arch and not args.prepare_kit:
         parser.error("--arch is only available with --prepare-kit. Execution uses the native CPU.")
     if not args.prepare_kit and args.output is None:
@@ -786,7 +789,8 @@ def main():
     check = runpy.run_path(str(REPO / "scripts/bark-check.py"))
     arch = args.arch or check["native_architecture"]()
     try:
-        engine, qualification = verify_pinned_sdk(check, arch, require_official=args.require_official)
+        engine, qualification = verify_pinned_sdk(check, arch, require_official=args.require_official,
+                                                  engine_directory=args.engine)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.error(str(error))
     if output is not None:
