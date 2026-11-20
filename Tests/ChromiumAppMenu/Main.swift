@@ -175,12 +175,20 @@ enum Check {
         precondition(application.items.filter { $0.title == "Check for Updates…" }.count == 1)
 
         let view = main.item(withTag: 57327)!.submenu
-        precondition(help.items.count == 2 && help.items.first === originalHelp)
+        precondition(help.items.count == 3 && help.items.first === originalHelp)
         precondition(originalHelp.title == "Bark Help")
         precondition(originalHelp.keyEquivalent == "?" && originalHelp.keyEquivalentModifierMask == .command)
         precondition(press("?", [.command, .shift]) == [.barkHelp], "Command-Shift-/ opens Bark Help")
         precondition(added("Bark Help", in: help) == .barkHelp)
         precondition(added("Build Information…", in: help) == .buildInformation)
+        let reportProblem = help.items.first { $0.representedObject as? ChromiumAppMenu.Command == .reportProblem }!
+        sidebarVisible = nil
+        precondition(installer.validateMenuItem(reportProblem), "Reporting works without a usable browser window")
+        precondition(added("Report a Problem…", in: help) == .reportProblem)
+        sidebarVisible = true
+        let reportURL = ChromiumAppMenu.problemReportURL
+        precondition(reportURL.absoluteString == "https://github.com/kuzaxak/Bark/issues/new/choose",
+                     "Reporting opens the Bark issue chooser without sending page or build data")
         // File precedes View in the real menu. Chromium assigns Command-S to Save Page As.
         let file = main.item(withTag: 57326)!.submenu!
         let save = NSMenuItem(title: "Save Page As…", action: #selector(SaveRecorder.save(_:)), keyEquivalent: "s")
@@ -253,7 +261,7 @@ enum Check {
         let count = main.items.count
         installer.install(in: main)
         precondition(main.items.count == count && view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleSidebar }.count == 1, "install must not duplicate items")
-        precondition(help.items.count == 2 && help.items.first === originalHelp)
+        precondition(help.items.count == 3 && help.items.first === originalHelp)
         precondition(press("?", [.command, .shift]) == [.barkHelp], "reinstall preserves Help shortcut")
         precondition(view!.items.filter { $0.representedObject as? ChromiumAppMenu.Command == .toggleToolbar }.count == 1)
 

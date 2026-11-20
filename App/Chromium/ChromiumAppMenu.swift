@@ -4,6 +4,8 @@ import AppKit
 /// Routes the Chromium application menu to the controls in Bark's native window.
 @MainActor
 final class ChromiumAppMenu: NSObject {
+    static let problemReportURL = URL(string: "https://github.com/kuzaxak/Bark/issues/new/choose")!
+
     static func buildInformation(in bundle: Bundle) -> String {
         let info = bundle.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "unknown"
@@ -49,7 +51,7 @@ final class ChromiumAppMenu: NSObject {
     enum Command: Equatable {
         case about, settings, importBrowser, quit, newTab, reopenClosedTab, focusAddress, closeTab, history, downloads
         case toggleSidebar, toggleToolbar, toggleAIAssistant, commandBar, addSplitView, resizeSplitPanes
-        case nextSpace, previousSpace, manageExtensions, checkForUpdates, barkHelp, buildInformation
+        case nextSpace, previousSpace, manageExtensions, checkForUpdates, barkHelp, buildInformation, reportProblem
     }
 
     struct BrowserWindow {
@@ -155,8 +157,14 @@ final class ChromiumAppMenu: NSObject {
             help.target = self
             help.action = #selector(run(_:))
             help.representedObject = Command.barkHelp
-            if let menu = help.menu, !menu.items.contains(where: { $0.representedObject as? Command == .buildInformation }) {
-                menu.insertItem(make("Build Information…", .buildInformation), at: menu.index(of: help) + 1)
+            if let menu = help.menu {
+                let actions: [(String, Command)] = [("Build Information…", .buildInformation),
+                                                    ("Report a Problem…", .reportProblem)]
+                for (offset, action) in actions.enumerated() where !menu.items.contains(where: {
+                    $0.representedObject as? Command == action.1
+                }) {
+                    menu.insertItem(make(action.0, action.1), at: menu.index(of: help) + 1 + offset)
+                }
             }
         }
         guard !view.items.contains(where: { $0.identifier == Self.addedIdentifier }) else { return }
@@ -245,7 +253,7 @@ extension ChromiumAppMenu: NSMenuItemValidation {
             guard keyBrowserWindow() != nil else { return false }
         case .toggleToolbar:
             item.title = toolbarTitle
-        case .about, .settings, .importBrowser, .quit, .closeTab, .checkForUpdates, .barkHelp, .buildInformation:
+        case .about, .settings, .importBrowser, .quit, .closeTab, .checkForUpdates, .barkHelp, .buildInformation, .reportProblem:
             break
         }
         return isOffered(command)
