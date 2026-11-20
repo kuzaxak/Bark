@@ -182,7 +182,7 @@ def qualify(app, image, identity, output, *, update_kit=None):
           f"Receipt: {path}", flush=True)
 
 
-def check_release_receipt(receipt, image, architecture, app=None):
+def check_release_receipt(receipt, image, architecture, app=None, *, feed_url=None):
     result = json.loads(receipt.read_text())
     if result.get("installation") != "notarized-dmg":
         raise ValueError("Release qualification requires a notarized DMG installation.")
@@ -208,6 +208,11 @@ def check_release_receipt(receipt, image, architecture, app=None):
             raise ValueError("The disk image must contain the ordinary Bark application.")
         if (result.get("build"), result.get("version")) != (info["CFBundleVersion"], info["CFBundleShortVersionString"]):
             raise ValueError("The release receipt belongs to a different Bark build.")
+        if feed_url is not None:
+            expected = bark_release.production_settings(result["version"], result["build"],
+                                                        feed_url.rsplit("/", 1)[0], architecture)
+            if expected["SUFeedURL"] != feed_url or any(info.get(key) != value for key, value in expected.items()):
+                raise ValueError("The signed app has different production update settings.")
         verify_shell_source(installed, expected=shell_source_digest(REPO))
         if bundle_cdhash(installed) != candidate["bundle_cdhash"]:
             raise ValueError("The disk image app does not match the app in the qualification receipt.")
@@ -233,9 +238,10 @@ def release_receipt_main(argv):
     parser.add_argument("--image", type=Path, required=True)
     parser.add_argument("--app", type=Path, help="Optional original staging app to cross-check against the DMG")
     parser.add_argument("--arch", choices=("x86_64", "arm64"), required=True)
+    parser.add_argument("--feed-url", help="Check the installed app's signed update feed URL")
     args = parser.parse_args(argv)
     try:
-        check_release_receipt(args.receipt, args.image, args.arch, args.app)
+        check_release_receipt(args.receipt, args.image, args.arch, args.app, feed_url=args.feed_url)
     except (OSError, KeyError, ValueError, subprocess.CalledProcessError) as error:
         print(error, file=sys.stderr)
         return 1

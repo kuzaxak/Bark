@@ -191,17 +191,21 @@ def distribution_requirement(app, bundle_id):
         if match is None:
             raise ValueError("The rehearsal app must be signed by a Developer ID Application team.")
         team = match.group(1)
+    return developer_id_requirement(team)
+
+
+def developer_id_requirement(team):
     return (f'=anchor apple generic and certificate leaf[subject.OU] = "{team}" '
             'and certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
 
 
 def verify_installed_image(image, staged_app, working, requirement, verify_staged, *,
-                           exercise=None, assess_notarization=True, expected_cdhash=None):
+                           exercise=None, assess_notarization=True, expected_cdhash=None, app_name="Bark.app"):
     """Verify the installed copy against the selected code hash or staging app."""
     if assess_notarization:
         subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
                         "--context", "context:primary-signature", "--verbose=4", image], check=True)
-    app_name = staged_app.name if staged_app else "Bark.app"
+    app_name = staged_app.name if staged_app else app_name
     expected_info = (staged_app / "Contents/Info.plist").read_bytes() if staged_app else None
     if staged_app and expected_cdhash is None:
         expected_cdhash = bundle_cdhash(staged_app)
