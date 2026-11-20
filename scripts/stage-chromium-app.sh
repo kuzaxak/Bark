@@ -251,7 +251,7 @@ if [[ $# -ge 2 && $# -le 4 && $1 == --check-signed ]]; then
   [[ -f "$ADDITIONS" ]] || refuse "Missing the app's additions: $ADDITIONS"
   [[ -f "$ENGINE_ENTITLEMENTS" ]] || refuse "Missing the engine's app entitlements: $ENGINE_ENTITLEMENTS"
   python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" \
-    --engine-info "$engine/engine-Info.plist" --app "$2"
+    --engine-info "$engine/engine-Info.plist" --launcher-headers "$engine/Headers" --app "$2"
   check_outer_metadata "$2" "$engine/engine-Info.plist"
   check_bundle "$2" signed
   additions signed "$ADDITIONS" "$2" "$ENGINE_ENTITLEMENTS" "$ENGINE_HEADERS"
@@ -302,8 +302,6 @@ APP_STRINGS=$(/usr/bin/strings -a "$APP_MAIN")
 [[ "$APP_STRINGS" == *"NookNativeShell.framework/Versions/A/NookNativeShell"* && "$APP_STRINGS" == *"barc_native_main"* ]] ||
   refuse 'App executable lacks the required native bootstrap'
 ENGINE_VERSION=$(plist "$ENGINE_INFO" CFBundleShortVersionString)
-[[ "$APP_STRINGS" == *"$ENGINE_FRAMEWORK_NAME/Versions/$ENGINE_VERSION/Bark Framework"* ]] ||
-  refuse 'App executable was built for another engine version'
 ENGINE_BINARY="$ENGINE_FRAMEWORK/Versions/$ENGINE_VERSION/Bark Framework"
 [[ -f "$ENGINE_BINARY" ]] || refuse "Missing versioned engine executable: $ENGINE_BINARY"
 [[ $(/usr/bin/readlink "$ENGINE_FRAMEWORK/Versions/Current") == "$ENGINE_VERSION" ]] ||
@@ -313,7 +311,6 @@ ENGINE_BINARY="$ENGINE_FRAMEWORK/Versions/$ENGINE_VERSION/Bark Framework"
 # The zone registration in main must run before any other library can start a thread.
 [[ $(/usr/bin/otool -L "$APP_MAIN" | /usr/bin/tail -n +2 | /usr/bin/awk '{print $1}') == /usr/lib/libSystem.B.dylib ]] ||
   refuse 'App executable must link only libSystem'
-require_architecture "$APP_MAIN"
 require_architecture "$NATIVE"
 require_architecture "$ENGINE_BINARY"
 /usr/bin/otool -hv "$NATIVE" | /usr/bin/grep -q DYLIB || refuse 'Native shell must be a dylib, not an executable'
@@ -339,6 +336,8 @@ for symbol in barc_engine_main barc_bridge; do
   /usr/bin/grep -x "_$NAMED" <<<"$ENGINE_EXPORTS" > /dev/null ||
     refuse "Engine does not export $NAMED, which the app resolves: built for another bridge version"
 done
+python3 -B "$REPO/scripts/check-chromium-architectures.py" --arch "$ARCH" --shell-image "$APP_MAIN" \
+  --engine-info "$ENGINE_INFO" --launcher-headers "$PRODUCTS/include/BarcChromium"
 ! /usr/bin/strings -a "$NATIVE" | /usr/bin/grep -qE 'barc_(engine_main|bridge)_v[0-9]+' ||
   refuse "Native shell names an engine symbol: only main resolves the engine: $NATIVE"
 trap '/bin/rm -rf "$OUTPUT" "$PACKAGING"' EXIT

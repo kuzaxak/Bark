@@ -220,6 +220,34 @@ def compile_shim(output, version=VERSION, headers=PUBLIC_HEADERS, extra=INTEL, l
     return run.returncode == 0
 
 
+def staging_headers(root):
+    module = root / 'BarcChromium'
+    module.mkdir(parents=True)
+    for name in HEADER_NAMES:
+        shutil.copy2(RUNTIME / name, module / name)
+    (module / DIGEST_HEADER).write_text(f'#define BARC_PUBLIC_HEADERS_SHA256 "{headers_digest()}"\n')
+    for architecture in ('x86_64', 'arm64'):
+        (module / f'barc_engine_version_{architecture}.h').write_text(
+            f'#define BARC_CHROMIUM_VERSION "{VERSION}"\n')
+    return root
+
+
+def compile_stale_digest(output, headers, arch=INTEL):
+    with tempfile.TemporaryDirectory(prefix='bark-stale-sdk-') as folder:
+        stale_headers = Path(folder) / 'include'
+        shutil.copytree(headers, stale_headers)
+        module = stale_headers / 'BarcChromium'
+        api = module / 'barc_bridge_api.h'
+        api.chmod(0o644)
+        api.write_bytes(api.read_bytes() + b'\n/* Earlier v13 SDK fixture. */\n')
+        digest = module / DIGEST_HEADER
+        stale = headers_digest(module)
+        assert digest_in(digest) != stale
+        digest.chmod(0o644)
+        digest.write_text(f'#define BARC_PUBLIC_HEADERS_SHA256 "{stale}"\n')
+        assert compile_shim(output, headers=stale_headers, extra=arch)
+
+
 def write_plist(path, **values):
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(plistlib.dumps(values))
@@ -1266,7 +1294,7 @@ publication.publish(Path(sys.argv[1]), "x86_64", True, sys.argv[2], sys.argv[3])
                                       same_text(published / 'Headers/BarcChromium' / n, RUNTIME / n) for n in HEADER_NAMES))
 
 
-def stage_cases(work, shim, framework_lib, shell_lib):
+def stage_cases(work, shim, framework_lib, shell_lib, headers):
     def inputs(name):
         return make_inputs(work / name, shim, framework_lib, shell_lib)
 
@@ -1406,13 +1434,18 @@ def stage_cases(work, shim, framework_lib, shell_lib):
 
     def other_version(a, e, p):
         other = work / 'other-version-shim'
-        assert compile_shim(other, version='1.2.3.4')
+        assert compile_shim(other, version='1.2.3.4', headers=headers)
         shutil.copy2(other, a / 'Contents/MacOS/Bark')
     refused('other-version', 'a main built for another engine version', 'another engine version', other_version)
 
+    def stale_digest(app, engine, products):
+        compile_stale_digest(app / 'Contents/MacOS/Bark', products / 'include')
+    refused('stale-launcher-sdk-headers', 'a same-v13 main compiled against different SDK headers',
+            'launcher was compiled against different SDK headers', stale_digest, sealed=False)
+
     def extra_library(a, e, p):
         library = work / 'linked-shim'
-        assert compile_shim(library, libs=('-framework', 'AppKit', '-Wl,-needed_framework,AppKit'))
+        assert compile_shim(library, headers=headers, libs=('-framework', 'AppKit', '-Wl,-needed_framework,AppKit'))
         shutil.copy2(library, a / 'Contents/MacOS/Bark')
     refused('extra-library', 'a main that links more than libSystem', 'must link only libSystem', extra_library)
 
@@ -1522,7 +1555,7 @@ def stage_cases(work, shim, framework_lib, shell_lib):
             additions={'Info': {'CFBundleDocumentTypes': [{**SPACE_DOCUMENT, 'CFBundleTypeIconFile': 'Missing.icns'}]}})
 
     fat_main = work / 'fat-main-binary'
-    assert compile_shim(fat_main, extra=('-arch', 'x86_64', '-arch', 'arm64'))
+    assert compile_shim(fat_main, headers=headers, extra=('-arch', 'x86_64', '-arch', 'arm64'))
     refused('fat-main', 'a main that is not exactly x86_64', 'must be exactly x86_64',
             lambda a, e, p: shutil.copy2(fat_main, a / 'Contents/MacOS/Bark'))
     fat_shell = work / 'fat-shell.dylib'
@@ -1666,14 +1699,14 @@ def archive_transport_cases(fixture, artifact, contributor):
             check('export preserves an existing archive', False)
 
 
-def arm_artifact_cases(work):
+def arm_artifact_cases(work, headers):
     fixture = work / 'arm64-fixtures'
     fixture.mkdir()
     arch = ('-arch', 'arm64')
     framework = fixture / 'arm-framework.dylib'
     shell = fixture / 'arm-shell.dylib'
     shim = fixture / 'arm-main'
-    compile_shim(shim, extra=('-arch', 'arm64'))
+    assert compile_shim(shim, headers=headers, extra=arch)
     fake_shell(shell, arch=arch)
     fake_framework(framework, arch=arch)
     app, artifact, products = make_inputs(fixture / 'candidate', shim, framework, shell, architecture='arm64')
@@ -1736,33 +1769,39 @@ def arm_artifact_cases(work):
           contributor['signed_mach_matches'](shell, signed, fixture, 'arm64'))
 
 
-def signed_cases(work, mach_o):
+def signed_cases(work, mach_o, headers):
     """`--check-signed` on a signed candidate: one blocker library, no Mach-O left unsigned, and the engine's
     entitlements and the declared additions, nothing else."""
     libraries = f'Contents/Frameworks/{FRAMEWORK}/Versions/{VERSION}/Libraries'
     artifact = work / 'signed-engine'
     write_plist(artifact / 'Bark Packaging/app-entitlements.plist', **ENGINE_ENTITLEMENTS)
     write_plist(artifact / 'engine-Info.plist', **ENGINE_PLIST)
+    (artifact / 'Headers').mkdir()
+    for name in (*HEADER_NAMES, DIGEST_HEADER):
+        shutil.copy2(headers / 'BarcChromium' / name, artifact / 'Headers' / name)
     additions = additions_file(work / 'signed-additions.plist', FIXTURE_ADDITIONS)
     listed_info = {'NSCalendarsUsageDescription': 'Fixture calendars', 'CFBundleDocumentTypes': [ENGINE_DOCUMENT, SPACE_DOCUMENT],
                    'UTImportedTypeDeclarations': [SPACE_TYPE]}
     listed_entitlements = {**ENGINE_ENTITLEMENTS, CALENDAR: True}
     main_binary = work / 'signed-main'
-    compile_c('int main(void) { return 0; }\n', main_binary)
+    assert compile_shim(main_binary, headers=headers)
     engine_binary = work / 'signed-framework.dylib'
     fake_framework(engine_binary)
     native_binary = work / 'signed-native.dylib'
     fake_shell(native_binary)
 
-    def check_signed(name, mutate=None, info=listed_info, entitlements=listed_entitlements):
+    def check_signed(name, mutate=None, info=listed_info, entitlements=listed_entitlements, *,
+                     main=main_binary, sdk_digest=None):
         app = work / name / 'Bark.app'
         (app / 'Contents/MacOS').mkdir(parents=True)
-        shutil.copy2(main_binary, app / 'Contents/MacOS/Bark')
+        shutil.copy2(main, app / 'Contents/MacOS/Bark')
         write_plist(app / 'Contents/Info.plist', CFBundleExecutable='Bark', CFBundleIdentifier=BUNDLE_ID,
                     CFBundlePackageType='APPL', CFBundleShortVersionString='1.5.4', BarkChromiumVersion=VERSION, **info)
         localized = app / 'Contents/Resources/en.lproj'
         localized.mkdir(parents=True)
         shutil.copyfile(APP_RESOURCES / 'en.lproj/InfoPlist.strings', localized / 'InfoPlist.strings')
+        if sdk_digest is not None:
+            (localized.parent / 'BarkEngineSDK.sha256').write_text(sdk_digest + '\n')
         write_plist(work / name / 'entitlements.plist', **entitlements)
         # codesign refuses a bundle whose fake framework is not a framework, so the app is signed before it is added.
         subprocess.run(['codesign', '--force', '--sign', '-', '--entitlements', str(work / name / 'entitlements.plist'), str(app)],
@@ -1781,14 +1820,23 @@ def signed_cases(work, mach_o):
 
     (artifact / 'SHA256SUMS').write_text('signed fixture manifest\n')
     identity_info = {**listed_info, 'BarkEngineSDKResource': 'BarkEngineSDK.sha256'}
-    for name, digest in [('missing', None), ('wrong', '0' * 64), ('matching', sha256(artifact / 'SHA256SUMS'))]:
-        def identity_resource(app):
-            if digest is not None:
-                (app / 'Contents/Resources/BarkEngineSDK.sha256').write_text(digest + '\n')
-        run = check_signed('signed-sdk-' + name, identity_resource, info=identity_info)
+    sdk_digest = sha256(artifact / 'SHA256SUMS')
+    for name, digest in [('missing', None), ('wrong', '0' * 64), ('matching', sdk_digest)]:
+        run = check_signed('signed-sdk-' + name, info=identity_info, sdk_digest=digest)
         check('signed SDK identity ' + name,
               run.returncode == 0 if name == 'matching' else
               run.returncode != 0 and 'differs from the engine manifest' in run.stderr, run.stderr)
+
+    stale = work / 'signed-stale-digest'
+    compile_stale_digest(stale, headers)
+    other_version = work / 'signed-other-version'
+    assert compile_shim(other_version, version='156.0.8078.79', headers=headers)
+    for name, launcher, error in [
+        ('signed-compiled-other-headers', stale, 'launcher was compiled against different SDK headers'),
+        ('signed-compiled-other-version', other_version, 'launcher was built for another engine version'),
+    ]:
+        run = check_signed(name, info=identity_info, main=launcher, sdk_digest=sdk_digest)
+        check(f'--check-signed refuses {name}', run.returncode != 0 and error in run.stderr, run.stderr)
 
     revision = 'a' * 40 + '-refs/branch-heads/8078@{#1735}'
     write_plist(artifact / 'engine-Info.plist', **ENGINE_PLIST, SCMRevision=revision)
@@ -1927,9 +1975,12 @@ def main():
             framework_lib = work / 'recipe-framework.dylib'
             fake_framework(framework_lib)
         publish_cases(work, framework_lib)
-        stage_cases(work, shim, framework_lib, shell_lib)
-        arm_artifact_cases(work)
-        signed_cases(work, shell_lib)
+        headers = staging_headers(work / 'staging-sdk-headers')
+        staging_shim = work / 'staging-main'
+        assert compile_shim(staging_shim, headers=headers)
+        stage_cases(work, staging_shim, framework_lib, shell_lib, headers)
+        arm_artifact_cases(work, headers)
+        signed_cases(work, shell_lib, headers)
         make_writable(work)
     print(f'{len(failures)} failed')
     sys.exit(1 if failures else 0)

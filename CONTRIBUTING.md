@@ -137,7 +137,9 @@ python3 -B scripts/bark-check.py shell --arch arm64
 These commands build the Bark scheme with the committed bridge headers and
 locked Swift packages in temporary DerivedData. Each verifies that the outer
 app executable and native shell framework are thin Mach-O images for the
-requested architecture. The check needs no installed Chromium SDK, signing
+requested architecture. It also reads the framework version path and public
+header digest compiled into the launcher and checks them against the selected
+SDK headers. The check needs no installed Chromium SDK, signing
 identity, or repository `build/` directory and never launches the app.
 
 With Xcode and a local Developer ID Application identity, build a signed Bark app from a clean checkout. Supply the engine directory or archive matching the committed SDK pin for your Mac. Xcode resolves the committed package lockfile.

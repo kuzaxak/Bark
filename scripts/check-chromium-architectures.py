@@ -6,6 +6,7 @@ import argparse
 import os
 from pathlib import Path
 import plistlib
+import re
 import stat
 import subprocess
 import sys
@@ -49,6 +50,32 @@ def check_shell_image(path, architecture):
         library = line.strip().partition(" (")[0]
         if any(framework in Path(library).parts for framework in ("WebKit.framework", "WebKitLegacy.framework")):
             raise ValueError(f"Bark shell links a retired WebKit framework: {path} -> {library}")
+
+
+def check_launcher_sdk(path, headers, architecture, engine_info=None):
+    digest_header = headers / "barc_public_headers_sha256.h"
+    digest = re.fullmatch(r'#define BARC_PUBLIC_HEADERS_SHA256 "([0-9a-f]{64})"\n', digest_header.read_text())
+    if not digest:
+        raise ValueError(f"Invalid SDK public header digest: {digest_header}")
+    if engine_info is None:
+        version_header = headers / f"barc_engine_version_{architecture}.h"
+        version = re.fullmatch(r'#define BARC_CHROMIUM_VERSION "([0-9]+(?:\.[0-9]+){3})"\n', version_header.read_text())
+        if not version:
+            raise ValueError(f"Invalid SDK version header: {version_header}")
+        engine_version = version[1]
+    else:
+        with engine_info.open("rb") as handle:
+            engine_version = plistlib.load(handle).get("CFBundleShortVersionString")
+    # These are the literals main uses for dlopen and for its runtime header comparison.
+    result = subprocess.run(["/usr/bin/otool", "-X", "-v", "-s", "__TEXT", "__cstring", path],
+                            capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError(f"Cannot inspect the Bark launcher's C strings: {path}")
+    literals = result.stdout.splitlines()
+    if f"../Frameworks/Bark Framework.framework/Versions/{engine_version}/Bark Framework" not in literals:
+        raise ValueError(f"Bark launcher was built for another engine version: expected {engine_version} in {path}")
+    if digest[1] not in literals:
+        raise ValueError(f"Bark launcher was compiled against different SDK headers: expected {digest[1]} in {path}")
 
 
 def check_framework(framework, architecture, engine_info=None):
@@ -128,8 +155,11 @@ def main():
     mode.add_argument("--shell-image", action="store_true", help="check the Bark launcher or Swift shell and its engine boundary")
     mode.add_argument("--image", action="store_true", help="require a specific Mach-O executable or dylib")
     parser.add_argument("--engine-info", type=Path, help="require the engine metadata version")
+    parser.add_argument("--launcher-headers", type=Path, help="check the app launcher's compiled SDK header digest and version")
     parser.add_argument("--arch", choices=ARCHITECTURES, help="defaults to native hardware")
     args = parser.parse_args()
+    if args.launcher_headers and not (args.app or args.shell_image):
+        parser.error("--launcher-headers requires --app or the launcher's --shell-image")
     try:
         architecture = args.arch or native_architecture()
         if args.app:
@@ -140,6 +170,9 @@ def main():
             check_image(args.path, architecture, image_header(args.path))
         else:
             check_framework(args.path, architecture, args.engine_info)
+        if args.launcher_headers:
+            launcher = args.path / "Contents/MacOS/Bark" if args.app else args.path
+            check_launcher_sdk(launcher, args.launcher_headers, architecture, args.engine_info)
     except (OSError, ValueError) as error:
         sys.exit(str(error))
 

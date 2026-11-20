@@ -374,7 +374,11 @@ the early malloc zone, loads the engine framework, then the shell's fixed bundle
 entry; `ChromeMain` owns the sole application loop. Helpers keep Chromium's own main.
 There is no core-only application launch path or WebKit fallback. Its copy of the
 zone registration must match the pinned revision. The launcher opens the
-versioned framework directory named by its SDK header. The app enters the engine through
+versioned framework directory named by its SDK header. Before signing, staging
+checks the framework path and the public-header digest in the compiled launcher
+against the selected SDK. Signed-app verification repeats both checks. A header
+change can alter the digest while leaving the bridge version the same.
+The app enters the engine through
 `barc_engine_main_v<N>` and calls it only through the table `barc_bridge_v<N>()` returns; both
 names carry the bridge version, so an app and framework built for different versions abort
 in main with a message naming the version the app needs. main also aborts when the table is

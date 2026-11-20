@@ -619,10 +619,10 @@ def check_release_shell(architecture):
         try:
             run(*release_shell_build_args(derived, architecture))
             verify_xcode_component(app)
-            for image in (app / "Contents/MacOS/Bark",
-                          products / "NookNativeShell.framework/Versions/A/NookNativeShell"):
-                run(sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
-                    "--arch", architecture, "--shell-image", image)
+            check = (sys.executable, "-B", REPO / "scripts/check-chromium-architectures.py",
+                     "--arch", architecture, "--shell-image")
+            run(*check, app / "Contents/MacOS/Bark", "--launcher-headers", headers_directory(PACKAGE))
+            run(*check, products / "NookNativeShell.framework/Versions/A/NookNativeShell")
         finally:
             unregister_unsigned_shell(app)
     print(f"Built and verified the unsigned {architecture} Bark Release shell.")

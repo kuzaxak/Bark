@@ -149,7 +149,8 @@ class ArchitectureTests(unittest.TestCase):
                 app = products / "Bark.app"
                 checker = CLI.parent / "check-chromium-architectures.py"
                 check_args = (sys.executable, "-B", checker, "--arch", architecture, "--shell-image")
-                self.assertEqual(launcher, call(*check_args, app / "Contents/MacOS/Bark"))
+                headers = self.cli["headers_directory"](self.cli["PACKAGE"])
+                self.assertEqual(launcher, call(*check_args, app / "Contents/MacOS/Bark", "--launcher-headers", headers))
                 self.assertEqual(framework, call(*check_args, products /
                                                  "NookNativeShell.framework/Versions/A/NookNativeShell"))
                 unregister.assert_called_once_with(app)
