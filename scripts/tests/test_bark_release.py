@@ -2,6 +2,7 @@
 
 import base64
 import hashlib
+import os
 import plistlib
 import shutil
 import subprocess
@@ -14,7 +15,7 @@ import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from bark_release import (SPARKLE, TEAM, check_distribution_settings, configure_release,
-                          expected_additions, make_distribution, make_personal_image, production_settings,
+                          expected_additions, make_distribution, make_personal_image, notarize, production_settings,
                           verify_installed_image, write_appcast)
 
 
@@ -61,6 +62,22 @@ class ReleaseTests(unittest.TestCase):
                      "CFBundleDocumentTypes": [{"CFBundleTypeName": "Web page"}]}
         self.info_path.write_bytes(plistlib.dumps(self.base))
         self.release = production_settings("1.4.0.2", "102", "https://update.example/bark/", "x86_64")
+
+    def test_notarize_uses_the_runner_keychain_when_configured(self):
+        image = self.root / "Bark.dmg"
+        for keychain in ("", "/private/tmp/runner keychain-db"):
+            with self.subTest(keychain=keychain), mock.patch.dict(os.environ, {"NOTARY_KEYCHAIN": keychain}), \
+                    mock.patch("bark_release.subprocess.check_output", return_value='{"status":"Accepted"}') as submit, \
+                    mock.patch("bark_release.subprocess.run") as staple:
+                notarize(image, image, "nook-notary")
+                command = ["xcrun", "notarytool", "submit", image, "--keychain-profile", "nook-notary"]
+                if keychain:
+                    command.extend(("--keychain", keychain))
+                submit.assert_called_once_with([*command, "--wait", "--output-format", "json"], text=True)
+                self.assertEqual(staple.call_args_list, [
+                    mock.call(["xcrun", "stapler", "staple", image], check=True),
+                    mock.call(["xcrun", "stapler", "validate", image], check=True),
+                ])
 
     def test_assesses_sealed_app_copied_from_read_only_image(self):
         image = self.root / "Bark.dmg"

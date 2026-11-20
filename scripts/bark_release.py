@@ -134,8 +134,10 @@ def check_distribution_settings(info, architecture, download_base):
 
 
 def notarize(artifact, upload, profile):
-    response = subprocess.check_output(["xcrun", "notarytool", "submit", upload, "--keychain-profile", profile,
-                                        "--wait", "--output-format", "json"], text=True)
+    command = ["xcrun", "notarytool", "submit", upload, "--keychain-profile", profile]
+    if keychain := os.environ.get("NOTARY_KEYCHAIN"):
+        command.extend(("--keychain", keychain))
+    response = subprocess.check_output([*command, "--wait", "--output-format", "json"], text=True)
     submission = json.loads(response)
     if submission.get("status") != "Accepted":
         raise ValueError(f"Notarization {submission.get('id')} returned {submission.get('status')}.")
