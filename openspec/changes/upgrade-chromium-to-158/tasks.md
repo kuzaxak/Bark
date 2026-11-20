@@ -23,4 +23,4 @@ The implementation branch is `codex/bark-chromium-158`. The signed comparison bu
 ## 4. Qualify the signed candidates
 
 - [ ] 4.1 Run the native engine regressions on each architecture. Cover the Google account chooser, Web Store approval and cancellation, Pawl password and OTP ownership, and superseded profile selection. Record any skipped cases by architecture.
-- [ ] 4.2 Exercise normal startup, first input, a profile switch with a pending permission prompt, an extension installation in the intended space, and a warm tab switch in each signed app. Record which candidate and architecture passed before distribution pins are promoted.
+- [ ] 4.2 Exercise normal startup, first input, a profile switch with a pending permission prompt, an extension installation in the intended space, Cmd-click opening a background tab in the second space of a shared profile (P7), and a warm tab switch in each signed app. Record which candidate and architecture passed before distribution pins are promoted.
