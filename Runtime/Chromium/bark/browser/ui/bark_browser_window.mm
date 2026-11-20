@@ -666,10 +666,6 @@ BarkBrowserWindow::GetWebContentsModalDialogHostFor(
 void BarkBrowserWindow::ShowAvatarBubbleFromAvatarButton(
     bool is_source_accelerator) {}
 
-void BarkBrowserWindow::MaybeShowProfileSwitchIPH() {}
-
-void BarkBrowserWindow::MaybeShowSupervisedUserProfileSignInIPH() {}
-
 void BarkBrowserWindow::ShowHatsDialog(
     const std::string& site_id,
     const std::optional<std::string>& hats_histogram_name,
