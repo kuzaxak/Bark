@@ -60,12 +60,13 @@ and the remaining 46 destination URLs must receive no document requests.
 
 Use the full Bark source revision and the official SDK archive for the
 candidate’s architecture. Supply the DMG and native qualification receipt
-from the same candidate run.
+from the same candidate run. Use the [signed-walk Python](../../CONTRIBUTING.md#run-the-signed-ui-walks)
+for both commands.
 
 ```fish
-python3 -B scripts/bark-check.py engine --arch "$arch" --require-official \
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch "$arch" --require-official \
     --engine "$sdk_archive" --install
-and python3 -B Tests/ChromiumStartup/qualify.py check-release-receipt \
+and "$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py check-release-receipt \
     --arch "$arch" --image "$image" --receipt "$receipt"
 ```
 

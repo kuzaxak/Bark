@@ -208,7 +208,11 @@ def pinned_engine(source, working, architecture, require_official=False):
     path = Path(source).expanduser()
     if not path.is_dir():
         if not hasattr(tarfile, "data_filter"):
-            raise ValueError("Engine archives require Python with the tarfile data extraction filter.")
+            raise ValueError(
+                "Engine archives require Python with the tarfile data extraction filter. "
+                'Set up the Python 3.13 signed-walk environment in CONTRIBUTING.md and rerun with '
+                '"$BARK_WALK_PYTHON" -B scripts/bark-check.py followed by the same arguments.'
+            )
         archive = path
         if urlsplit(source).scheme == "https":
             archive = working / "engine.tar"

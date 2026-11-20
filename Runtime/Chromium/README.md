@@ -197,14 +197,15 @@ the receiver gets. Give the receiver the three archives and the producer's
 `SHA256SUMS`. On the receiving native Mac, run `shasum -a 256 -c SHA256SUMS`
 in their directory and check all three match. This distinguishes signed app
 builds that use the same SDK. Extract the source tarball into an empty directory
-or check out the revision recorded in its filename. From that source root, install
-the SDK with `python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$archive"`.
+or check out the revision recorded in its filename. From that source root, use
+the [signed-walk Python](../../CONTRIBUTING.md#run-the-signed-ui-walks) to install
+the SDK with `"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$archive"`.
 Unpack the signed app and check its embedded engine and shell against the
 installed SDK and the source archive.
 
 ```fish
-set shell_source (python3 scripts/bark-check.py shell-source)
-and python3 scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
+set shell_source ("$BARK_WALK_PYTHON" -B scripts/bark-check.py shell-source)
+and "$BARK_WALK_PYTHON" -B scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
     --require-official --shell-source "$shell_source"
 ```
 
@@ -513,10 +514,11 @@ python3 scripts/bark-check.py engine --require-official --arch "$arch" \
 
 On each receiving Mac, use the paired source checkout and a signed app built
 with its native SDK. Install the archive before starting the desktop walk.
-Use the local Python configured for Bark’s signed walks.
+Use the local [Python configured for Bark’s signed walks](../../CONTRIBUTING.md#run-the-signed-ui-walks)
+for both commands.
 
 ```fish
-python3 scripts/bark-check.py engine --require-official --arch "$arch" --engine "$archive" --install
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --require-official --arch "$arch" --engine "$archive" --install
 "$BARK_WALK_PYTHON" -B Tests/ChromiumStartup/qualify.py --app "$signed_app" \
     --identity "$BARK_SIGN_IDENTITY" --output (mktemp -d)/qualification
 ```

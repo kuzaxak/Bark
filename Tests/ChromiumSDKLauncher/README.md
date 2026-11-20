@@ -31,11 +31,12 @@ official pins and shared headers with [the paired metadata command](../../Runtim
 A developer pin from the same source revision cannot verify an official test
 runtime. If the transfer includes the complete official SDK archive, you can
 use the checksum list from the verified, installed SDK instead of copying the
-list separately:
+list separately. Use the [signed-walk Python](../../CONTRIBUTING.md#run-the-signed-ui-walks)
+to install the archive:
 
 ```fish
 cd /path/to/matching/Bark/source
-python3 -B scripts/bark-check.py engine --arch arm64 --require-official \
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch arm64 --require-official \
     --engine /path/to/BarkSDK-arm64.tar.gz --install; or exit 1
 set sdk_pin (python3 -B scripts/chromium_sdk_layout.py digest Packages/BarkEngine arm64); or exit 1
 set sdk_metadata "$HOME/Library/Caches/BarkSDK/$sdk_pin/Engine"

@@ -40,6 +40,14 @@ class ImplicitEngineTests(unittest.TestCase):
             with self.cli["pinned_engine"](source, self.root, "arm64", official) as engine:
                 return engine, verifier.call_args_list
 
+    def test_archive_without_safe_filter_names_the_receiver_python(self):
+        without_filter = Mock(spec=["open"])
+        with patch.dict(self.cli, {"tarfile": without_filter}):
+            with self.assertRaisesRegex(ValueError, r"tarfile data extraction filter.*BARK_WALK_PYTHON"):
+                with self.cli["pinned_engine"](str(self.root / "SDK.tar.gz"), self.root, "arm64"):
+                    self.fail("The archive was accepted without a safe extraction filter.")
+        without_filter.open.assert_not_called()
+
     def test_implicit_uses_cache_when_valid(self):
         self.assertEqual(self.resolve(), (self.cache, [call(self.cache, "arm64", False)]))
 

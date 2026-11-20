@@ -19,8 +19,8 @@ The walk generates an ephemeral Sparkle key and uses an OS-assigned loopback por
 For official qualification on the receiving Mac, use the tracked source and its matching pin. Install the transferred native SDK archive, then run the walk with a local Developer ID Application identity.
 
 ```fish
-python3 scripts/bark-check.py engine --require-official --install --engine /path/to/BarkSDK.tar.gz
-python3 Tests/ChromiumUpdate/walk.py --require-official --output /private/tmp/bark-official-update-evidence \
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --require-official --install --engine /path/to/BarkSDK.tar.gz
+"$BARK_WALK_PYTHON" -B Tests/ChromiumUpdate/walk.py --require-official --output /private/tmp/bark-official-update-evidence \
   --identity 'Developer ID Application: …'
 ```
 
@@ -59,11 +59,11 @@ Transfer the kit, the same ordinary signed app, and the matching pinned SDK
 archive to the receiving Mac. The kit contains two signed rehearsal DMGs,
 the loopback appcast and a manifest. The temporary Sparkle signing key and
 provisioning profile stay off the receiving Mac. From the same tracked
-source and pin, install the SDK and run with the usual signed-walk Python,
-Accessibility authorization and idle desktop.
+source and pin, use the [signed-walk Python](../../CONTRIBUTING.md#run-the-signed-ui-walks)
+for both commands. The walk requires Accessibility authorization and an idle desktop.
 
 ```fish
-python3 -B scripts/bark-check.py engine --require-official --install --engine "$archive"
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --require-official --install --engine "$archive"
 "$BARK_WALK_PYTHON" -B Tests/ChromiumUpdate/walk.py --kit "$kit" \
     --candidate-app "$signed_app" --output "$evidence" --require-official
 ```

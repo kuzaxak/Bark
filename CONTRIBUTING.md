@@ -181,14 +181,14 @@ and after staging differ. Build from an isolated source snapshot when reproducib
 The digest does not encode the compiler, signing identity or a Git commit. Older signed apps
 can still be verified without `--shell-source`. Release packaging requires the field.
 
-`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use Python with the `tarfile` data extraction filter for archives. You can also use `BARK_ENGINE_SOURCE` or the ignored `Packages/BarkEngine/RuntimeArtifacts/<architecture>/Engine/` directory.
+`--engine` accepts a directory, a tar archive, or an HTTPS tar archive with the engine files at the root or under `Engine/`. Use the [signed-walk Python](#run-the-signed-ui-walks) for archives. The Python bundled with older Command Line Tools lacks the required `tarfile` data extraction filter. You can also use `BARK_ENGINE_SOURCE` or the ignored `Packages/BarkEngine/RuntimeArtifacts/<architecture>/Engine/` directory.
 Existing Intel artifacts in the former `macos-x86_64/Engine/` location remain usable. The install command keeps a verified copy under `~/Library/Caches/BarkSDK/<pin>/Engine`. A fresh checkout can then build using that pin. The verifier compares the signed app’s embedded files with the selected SDK.
 If a cached engine is incomplete, repeat `engine --install --engine /path/to/Engine` with a matching SDK directory or archive. Bark verifies the replacement before switching the cache to it.
 To transfer the pinned SDK to another Mac, export it on the build machine and install it on the receiving machine from a checkout with the same pin.
 
 ```fish
 python3 scripts/bark-check.py engine --arch x86_64 --archive ~/Downloads/BarkSDK-x86_64.tar.gz
-python3 scripts/bark-check.py engine --arch x86_64 --install --engine ~/Downloads/BarkSDK-x86_64.tar.gz
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch x86_64 --install --engine ~/Downloads/BarkSDK-x86_64.tar.gz
 ```
 
 The export checks the finished archive against the checkout before creating the requested file. Add `--require-official` on both machines to require an optimized engine with verified build provenance.
@@ -206,7 +206,7 @@ begin
     and set -l sdk "BarkSDK-$arch-$pin"
     and set -l download (mktemp -d)
     and gh run download "$run_id" --repo kuzaxak/Nook --name "$sdk" --dir "$download"
-    and python3 scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$download/$sdk.tar.gz"
+    and "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$download/$sdk.tar.gz"
 end
 ```
 
@@ -241,6 +241,7 @@ Individual walks list any additional permissions they use.
 set -l walk_env "$HOME/Library/Caches/BarkSDK/signed-walk-python"
 python3.13 -m venv "$walk_env"
 "$walk_env/bin/python" -m pip install -r Tests/Shared/requirements-macos.txt
+set -gx BARK_WALK_PYTHON "$walk_env/bin/python"
 source "$walk_env/bin/activate.fish"
 ```
 
