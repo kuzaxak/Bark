@@ -27,10 +27,9 @@ public struct SplitHalfLabel: View {
 
     public var body: some View {
         let title = tabs.title(for: item)
-        let session = tabs.session(for: item.id)
         Button(action: { RowPress.click { tabs.select(item.id, in: windowState) } }) {
             HStack(spacing: NookDesign.Tab.iconGap) {
-                ItemFavicon(session: session)
+                ItemFavicon(item: item)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                     .clipShape(NookDesign.Radius.shape(NookDesign.Radius.xs))
                 Text(title)

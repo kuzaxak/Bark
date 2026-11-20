@@ -66,7 +66,8 @@ public final class PageSession: NSObject, Identifiable {
     /// Last committed URL (or the URL being loaded when nothing has committed yet).
     public var url: URL
     public var title: String
-    private var faviconImage: PlatformImage?
+    private(set) var faviconImage: PlatformImage?
+    @ObservationIgnored private var faviconURL: URL?
     public var favicon: SwiftUI.Image {
         faviconImage.map(SwiftUI.Image.init(platformImage:)) ?? SwiftUI.Image(systemName: "globe")
     }
@@ -233,6 +234,7 @@ public final class PageSession: NSObject, Identifiable {
         didSet {
             guard oldValue !== navigation else { return }
             faviconImage = nil
+            faviconURL = nil
             loadProgress = nil
             nativeVaultNotice = nil
             #if os(macOS)
@@ -431,7 +433,15 @@ public final class PageSession: NSObject, Identifiable {
     }
 
     private func applyNavigationState(_ state: PageNavigationState, applyingInitialMedia: Bool = false) {
-        if faviconImage !== state.favicon { faviconImage = state.favicon }
+        let iconChanged = faviconImage !== state.favicon
+        if iconChanged { faviconImage = state.favicon }
+        if iconChanged || faviconURL != state.faviconURL {
+            faviconURL = state.faviconURL
+            if let icon = state.favicon, let png = state.faviconPNG,
+               let url = state.faviconURL, let profileID = navigation?.profileID {
+                controller?.rememberFavicon(png, image: icon, url: url, profileID: profileID, for: self)
+            }
+        }
         canGoBack = state.canGoBack
         canGoForward = state.canGoForward
         if let muted = state.isAudioMuted, isAudioMuted != muted { isAudioMuted = muted }

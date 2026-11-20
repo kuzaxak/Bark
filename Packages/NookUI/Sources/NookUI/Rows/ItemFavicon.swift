@@ -40,16 +40,17 @@ extension TabsController {
 
 // MARK: - Favicon
 
-/// A row or tile favicon from its live page, with a globe for an unloaded page.
+/// A row or tile favicon, available for a saved page before it loads.
 public struct ItemFavicon: View {
-    let session: PageSession?
+    let item: Item
+    @Environment(TabsController.self) private var tabs
 
-    public init(session: PageSession?) {
-        self.session = session
+    public init(item: Item) {
+        self.item = item
     }
 
     public var body: some View {
-        (session?.favicon ?? Image(systemName: "globe"))
+        tabs.favicon(for: item)
             .resizable()
             .scaledToFit()
     }

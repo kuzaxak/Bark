@@ -2490,6 +2490,88 @@ struct NativePageLifecycleTests {
         #expect(f.host.selectionCount == selections + 1)
     }
 
+    @Test func faviconSurvivesBookmarkCloseReopenAndApplicationRestart() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let session = try #require(f.tabs.selectedSession(in: f.window))
+        let native = f.host.finishCreate(0)
+        let itemID = session.itemID
+        let space = try #require(f.window.spaceID)
+        let url = try #require(f.tabs.item(itemID)?.url)
+        let (png, icon) = try testFavicon()
+        native.state.url = url
+        native.onEvent?(.committed(url))
+        f.tabs.pin(itemID, to: .pinned(spaceID: space))
+        #expect(f.tabs.item(itemID)?.url == url)
+        native.state.favicon = icon
+        native.state.faviconPNG = png
+        native.state.faviconURL = url
+        native.onStateChanged?(native.state)
+        #expect(f.tabs.faviconImage(for: try #require(f.tabs.item(itemID))) === icon)
+
+        f.tabs.close(itemID)
+        f.host.finishClose(0, admitted: true)
+        let bookmark = try #require(f.tabs.item(itemID))
+        #expect(f.tabs.session(for: itemID) == nil)
+        #expect(f.tabs.faviconImage(for: bookmark) === icon)
+        f.tabs.saveNow()
+        let restored = f.restored(at: f.tabs.directory)
+        let restoredItem = try #require(restored.item(itemID))
+        #expect(restored.session(for: itemID) == nil)
+        #expect(restored.faviconImage(for: restoredItem)?.size == icon.size)
+
+        f.tabs.reopenLastClosed(in: f.window)
+        #expect(f.tabs.faviconImage(for: bookmark) === icon)
+    }
+
+    @Test func faviconCacheKeepsExactPageAndProfileAndDropsDeletedProfile() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        let cache = f.tabs.siteFavicons
+        let profile = UUID()
+        let otherProfile = UUID()
+        let first = URL(string: "https://icons.example/1")!
+        let second = URL(string: "https://icons.example/2")!
+        let (png, icon) = try testFavicon()
+        cache.remember(png, image: icon, profile: profile, url: first)
+        cache.remember(png, image: icon, profile: otherProfile, url: second)
+        #expect(cache.image(profile: profile, url: second) == nil)
+        #expect(cache.image(profile: otherProfile, url: first) == nil)
+        f.tabs.forgetProfile(profile)
+        let restored = f.restored(at: f.tabs.directory).siteFavicons
+        #expect(restored.image(profile: profile, url: first) == nil)
+        #expect(restored.image(profile: otherProfile, url: second)?.size == icon.size)
+    }
+
+    @Test func privateFaviconNeverEntersPersistentCache() throws {
+        let f = try NativeModelFixture()
+        defer { f.cleanup() }
+        _ = f.host.finishCreate(0)
+        let window = f.privateWindow()
+        let url = URL(string: "https://private-icons.example/")!
+        let itemID = try #require(f.tabs.open(url: url, in: window, placement: .newTab))
+        let page = f.host.finishCreate(f.host.creates.count - 1)
+        let profileID = try #require(page.profileID)
+        let (png, icon) = try testFavicon()
+        page.state.favicon = icon
+        page.state.faviconPNG = png
+        page.state.faviconURL = url
+        page.onStateChanged?(page.state)
+        #expect(f.tabs.faviconImage(for: try #require(f.tabs.item(itemID))) === icon)
+        #expect(f.tabs.siteFavicons.image(profile: profileID, url: url) == nil)
+        f.tabs.saveNow()
+        #expect(!FileManager.default.fileExists(atPath: f.tabs.directory.appendingPathComponent("site-favicons.plist").path))
+    }
+
+    private func testFavicon() throws -> (Data, PlatformImage) {
+        let bitmap = try #require(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 2,
+            pixelsHigh: 2, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+            isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 8, bitsPerPixel: 32))
+        bitmap.setColor(.red, atX: 0, y: 0)
+        let png = try #require(bitmap.representation(using: .png, properties: [:]))
+        return (png, try #require(SiteFaviconCache.decodePNG(png)))
+    }
+
     @Test func pendingSwitcherCaptureCannotReturnAfterRecentBudgetPrunesNilImage() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let first = try #require(f.tabs.selectedSession(in: f.window))

@@ -139,7 +139,7 @@ public class SearchManager {
 
         /// Read on each row render so the exact tab's icon can change without a new query.
         @MainActor public func favicon(in tabs: TabsController) -> SwiftUI.Image {
-            tabs.session(for: itemID)?.favicon ?? SwiftUI.Image(systemName: "globe")
+            tabs.item(itemID).map(tabs.favicon(for:)) ?? SwiftUI.Image(systemName: "globe")
         }
     }
 

@@ -1,4 +1,8 @@
 // Licensed under GPL-3.0. See LICENSE.
+#if BARK_CATALOG_FRAMEWORK
+@testable import NookNativeShell
+#endif
+import AppKit
 import BarcChromium
 import Foundation
 import NookBlocker
@@ -437,6 +441,35 @@ private enum NavigationChecks {
         page = nil
 
         Native.reset()
+        let faviconPage = try Native.page()
+        let iconBitmap = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 1, pixelsHigh: 1,
+            bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB, bytesPerRow: 4, bitsPerPixel: 32)!
+        iconBitmap.setColor(.red, atX: 0, y: 0)
+        let icon = iconBitmap.representation(using: .png, properties: [:])!
+        let firstSite = "https://fixture.test/before"
+        let provisionalSite = "https://fixture.test/redirect"
+        let finalSite = "https://fixture.test/after"
+        Native.emit(Int32(BARC_TAB_COMMITTED.rawValue), url: firstSite)
+        Native.emit(Int32(BARC_TAB_STARTED.rawValue), url: provisionalSite, flags: BARC_TAB_LOADING.rawValue)
+        icon.withUnsafeBytes {
+            faviconPage.receiveFavicon(token: 41, bytes: $0.bindMemory(to: UInt8.self).baseAddress, count: icon.count)
+        }
+        precondition(faviconPage.state.favicon != nil && faviconPage.state.faviconPNG == icon)
+        precondition(faviconPage.state.faviconURL?.absoluteString == firstSite,
+                     "An icon delivered during a provisional navigation belongs to the committed page")
+        Native.emit(Int32(BARC_TAB_COMMITTED.rawValue), url: finalSite, flags: BARC_TAB_LOADING.rawValue)
+        precondition(faviconPage.state.favicon == nil && faviconPage.state.faviconPNG == nil && faviconPage.state.faviconURL == nil)
+        icon.withUnsafeBytes {
+            faviconPage.receiveFavicon(token: 41, bytes: $0.bindMemory(to: UInt8.self).baseAddress, count: icon.count)
+        }
+        precondition(faviconPage.state.faviconURL?.absoluteString == finalSite)
+        let sameDocument = finalSite + "#more"
+        Native.emit(Int32(BARC_TAB_COMMITTED.rawValue), url: sameDocument, flags: BARC_TAB_SAME_DOCUMENT.rawValue)
+        precondition(faviconPage.state.faviconURL?.absoluteString == sameDocument && faviconPage.state.faviconPNG == icon,
+                     "Same-document commits retain the observed icon at the new URL")
+        faviconPage.invalidate()
+
         let thumbnailPage = try Native.page()
         var thumbnailResults: [Data?] = []
         precondition(thumbnailPage.captureThumbnail { thumbnailResults.append($0) })

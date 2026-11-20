@@ -124,6 +124,7 @@ public final class TabsController {
     @ObservationIgnored public var pageTranslation: (() -> PageTranslationSetting)?
     /// AI page translations, one store per profile, beside the tab state.
     @ObservationIgnored public let translationCaches: TranslationCaches
+    @ObservationIgnored let siteFavicons: SiteFaviconCache
     /// A page started loading with no window showing it: a link opened in the background.
     @ObservationIgnored public var onPageLoadedInBackground: ((PageSession) -> Void)?
     /// The main tree changed; space sync reads it to find what to send.
@@ -172,6 +173,7 @@ public final class TabsController {
         self.siteRouting = siteRouting
         self.history = history
         self.directory = directory
+        siteFavicons = SiteFaviconCache(directory: directory)
         translationCaches = TranslationCaches(directory: directory.deletingLastPathComponent().appendingPathComponent("TranslationCache", isDirectory: true))
         let store = TabStore(directory: directory)
         self.store = store
@@ -241,6 +243,7 @@ public final class TabsController {
     public func saveNow() {
         store.save(tree, device)
         store.flush()
+        siteFavicons.flush()
     }
 
 
@@ -265,6 +268,7 @@ public final class TabsController {
         for window in regularWindows { mirror(window) }
         store.save(tree, device)
         store.flush()
+        siteFavicons.flush()
     }
 
     /// A late native beforeunload veto reversed an accepted app-close phase.
@@ -619,6 +623,7 @@ public final class TabsController {
 
     /// Drops a data store no space uses any more.
     func forgetProfile(_ storeID: UUID) {
+        siteFavicons.removeProfile(storeID)
         spaceProfiles[storeID] = nil
         history?.deleteHistory(forProfile: storeID)
         device.dropKeptProfile(storeID)

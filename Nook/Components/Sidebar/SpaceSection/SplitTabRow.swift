@@ -47,10 +47,9 @@ private struct SplitHalfTab: View {
     @ObservedObject private var dragSession = NookDragSessionManager.shared
 
     var body: some View {
-        let session = tabs.session(for: item.id)
         NookDragSourceView(
             item: NookDragItem(tabId: item.id, title: tabs.title(for: item), urlString: tabs.currentURL(for: item)?.absoluteString ?? ""),
-            icon: session?.favicon,
+            icon: tabs.favicon(for: item),
             zoneID: zoneID,
             manager: dragSession
         ) {

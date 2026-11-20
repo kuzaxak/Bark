@@ -245,10 +245,9 @@ struct SpaceView: View {
         if let split, row.id == split.anchorID {
             SplitTabRow(items: split.items, zoneID: zone)
         } else {
-            let session = tabs.session(for: row.item.id)
             NookDragSourceView(
                 item: NookDragItem(tabId: row.item.id, title: tabs.title(for: row.item), urlString: tabs.currentURL(for: row.item)?.absoluteString ?? ""),
-                icon: row.item.isFolder ? Image(systemName: "folder.fill") : session?.favicon,
+                icon: row.item.isFolder ? Image(systemName: "folder.fill") : tabs.favicon(for: row.item),
                 zoneID: zone,
                 manager: dragSession
             ) {

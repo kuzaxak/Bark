@@ -7,8 +7,6 @@ internal import BarkPasswordProvider
 import Darwin
 import Foundation
 import AppKit
-import ImageIO
-import UniformTypeIdentifiers
 import NookBlocker
 import NookWeb
 
@@ -48,6 +46,7 @@ final class ChromiumPageNavigation: PageNavigation {
     private var window: Int32
     private var nextThumbnailRequest: UInt64 = 0
     private var thumbnailGeneration: UInt64 = 0
+    private var faviconDocumentURL: URL?
     private var thumbnailRequest: (id: UInt64, generation: UInt64, window: Int32, limit: Int,
                                    completion: @MainActor (Data?) -> Void)?
     private var nextFileRequest: UInt64 = 0
@@ -809,6 +808,8 @@ final class ChromiumPageNavigation: PageNavigation {
         state.media = nil
         state.loadProgress = nil
         state.favicon = nil
+        state.faviconPNG = nil
+        state.faviconURL = nil
         cancelThumbnail()
         cancelSiteData()
         cancelStyle()
@@ -850,6 +851,8 @@ final class ChromiumPageNavigation: PageNavigation {
             if state.loadProgress != nil || state.favicon != nil {
                 state.loadProgress = nil
                 state.favicon = nil
+                state.faviconPNG = nil
+                state.faviconURL = nil
                 onStateChanged?(state)
             }
             guard !invalidated else { return false }
@@ -873,24 +876,16 @@ final class ChromiumPageNavigation: PageNavigation {
 
     func receiveFavicon(token: UInt64, bytes: UnsafePointer<UInt8>?, count: Int) {
         guard !invalidated, token != 0, token == observation, window != 0 else { return }
-        let image = Self.decodeFavicon(bytes: bytes, count: count)
-        guard image != nil || state.favicon != nil else { return }
-        state.favicon = image
-        onStateChanged?(state)
-    }
-
-    private static func decodeFavicon(bytes: UnsafePointer<UInt8>?, count: Int) -> NSImage? {
-        guard let bytes, (1...32_768).contains(count) else { return nil }
         // The bridge lends the buffer only until this callback returns.
-        let data = Data(bytes: bytes, count: count)
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              CGImageSourceGetType(source) as String? == UTType.png.identifier,
-              CGImageSourceGetCount(source) == 1,
-              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
-              let width = properties[kCGImagePropertyPixelWidth] as? Int, (1...32).contains(width),
-              let height = properties[kCGImagePropertyPixelHeight] as? Int, (1...32).contains(height),
-              let bitmap = CGImageSourceCreateImageAtIndex(source, 0, nil) else { return nil }
-        return NSImage(cgImage: bitmap, size: NSSize(width: width, height: height))
+        let data = bytes.flatMap { (1...32_768).contains(count) ? Data(bytes: $0, count: count) : nil }
+        let image = data.flatMap(SiteFaviconCache.decodePNG)
+        let png = image == nil ? nil : data
+        let url = image == nil ? nil : faviconDocumentURL
+        guard png != state.faviconPNG || url != state.faviconURL else { return }
+        state.favicon = image
+        state.faviconPNG = png
+        state.faviconURL = url
+        onStateChanged?(state)
     }
 
     func receiveLoadProgress(token: UInt64, progress: Double, loading: Int32) {
@@ -973,6 +968,11 @@ final class ChromiumPageNavigation: PageNavigation {
             media?.isAudible = audible
         }
         let loading = flags & BARC_TAB_LOADING.rawValue != 0
+        if event == BARC_TAB_COMMITTED || ((event == BARC_TAB_INITIAL || event == BARC_TAB_FINISHED) && !loading) {
+            faviconDocumentURL = url
+        } else if event == BARC_TAB_FAILED && !provisional {
+            faviconDocumentURL = nil
+        }
         passwordManagementLanding.update(window != 0 && !loading && event != BARC_TAB_STARTED &&
             event != BARC_TAB_FAILED && BarkTabShowsPawlManagement(flags))
         let ended = event == BARC_TAB_FAILED || event == BARC_TAB_FINISHED
@@ -990,6 +990,12 @@ final class ChromiumPageNavigation: PageNavigation {
             loadProgress: loading && !began && !ended ? state.loadProgress : nil)
         if !(event == BARC_TAB_COMMITTED && !sameDocument) && !(event == BARC_TAB_FAILED && !provisional) {
             snapshot.favicon = state.favicon
+            snapshot.faviconPNG = state.faviconPNG
+            snapshot.faviconURL = state.faviconURL
+            if state.favicon != nil, event == BARC_TAB_COMMITTED && sameDocument ||
+                (event == BARC_TAB_FINISHED && !loading && state.faviconURL == nil) {
+                snapshot.faviconURL = faviconDocumentURL
+            }
         }
         if state != snapshot {
             state = snapshot

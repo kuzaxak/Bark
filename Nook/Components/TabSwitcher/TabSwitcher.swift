@@ -155,7 +155,7 @@ struct TabSwitcherOverlay: View {
                         .scaledToFit()
                 } else {
                     // A tab whose page has no available picture shows its icon large.
-                    ItemFavicon(session: session)
+                    ItemFavicon(item: item)
                         .frame(width: NookDesign.Size.essentialsTile, height: NookDesign.Size.essentialsTile)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -191,7 +191,7 @@ struct TabSwitcherOverlay: View {
             .overlay(NookDesign.Radius.shape(NookDesign.Radius.md).strokeBorder(NookDesign.Surface.hairline))
 
             HStack(spacing: NookDesign.Spacing.sm) {
-                ItemFavicon(session: session)
+                ItemFavicon(item: item)
                     .frame(width: NookDesign.Size.favicon, height: NookDesign.Size.favicon)
                 Text(tabs.title(for: item))
                     .font(NookDesign.Font.body)

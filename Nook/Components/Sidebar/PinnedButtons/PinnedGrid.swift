@@ -194,14 +194,14 @@ private struct PinnedTile: View {
         let live = LiveFavorites.kind(of: item, in: windowState, tabs: tabs)
         NookDragSourceView(
             item: NookDragItem(tabId: item.id, title: tabs.title(for: item), urlString: url),
-            icon: session?.favicon,
+            icon: tabs.favicon(for: item),
             zoneID: zone,
             manager: dragSession
         ) {
             PinnedTabView(
                 tabName: tabs.title(for: item),
                 tabURL: url,
-                tabIcon: ItemFavicon(session: session),
+                tabIcon: ItemFavicon(item: item),
                 isActive: tabs.selectedItemID(in: windowState) == item.id,
                 isUnloaded: session?.isUnloaded ?? true,
                 hasLeftPinnedURL: tabs.hasLeftHome(item.id),
