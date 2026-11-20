@@ -125,16 +125,19 @@ also requires the matching Chromium SDK.
 Use a checkout containing `scripts/bark-check.py`, Xcode 26 with its Metal
 toolchain, a local Developer ID Application signing identity, and the engine SDK
 matching the checkout’s pin for your Mac. The two developer SDKs share the same
-public headers.
+public headers. For an optimized SDK, the publisher also supplies the receipt
+digests in `Packages/BarkEngine`. With those files in your checkout, add
+`--require-official` to the commands below to verify the optimized build.
 [Contributor setup](CONTRIBUTING.md#native-command-routing-and-signed-bark) ·
 [Engine recipe](Runtime/Chromium/README.md#checkout-and-build)
 
 With the matching SDK archive, you can build and sign Bark from the app
-sources alone. The build creates `build/Bark.app`. Run these commands from
-the repository root and supply your SDK and signing identity.
+sources alone. The example uses Python 3.13 to unpack the SDK archive.
+Run these commands from the repository root and supply your SDK and signing
+identity. The build creates `build/Bark.app`.
 
 ```fish
-python3 scripts/bark-check.py engine --install --engine /path/to/BarkSDK.tar.gz
+python3.13 scripts/bark-check.py engine --install --engine /path/to/BarkSDK.tar.gz
 set -lx BARK_SIGN_IDENTITY 'Developer ID Application: Your Name (TEAMID)'
 python3 scripts/bark-check.py build
 python3 scripts/bark-check.py smoke build/Bark.app

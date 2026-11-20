@@ -4,14 +4,15 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-import plistlib
-import re
 import stat
 import subprocess
 import sys
 import tempfile
 
 HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE.parents[1] / "scripts"))
+from chromium_sdk_layout import file_digest as digest, official_framework_inputs
+
 PINS = json.loads((HERE / "PINS.json").read_text())
 CHROMIUM_VERSION = (HERE / "CHROMIUM_VERSION").read_text().strip()
 RECEIPT = "official-build.json"
@@ -22,37 +23,9 @@ V8_BUILTINS_PROFILE = Path("v8/tools/builtins-pgo/profiles/x64.profile")
 ARCHES = {"x86_64": ("x64", "mac"), "arm64": ("arm64", "mac-arm")}
 
 
-def digest(path):
-    with path.open("rb") as stream:
-        result = sha256()
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            result.update(chunk)
-        return result.hexdigest()
-
-
 def framework_inputs(framework, arch):
-    relative = Path("Versions/Current")
-    info_path = framework / relative / "Resources/Info.plist"
-    image = framework / relative / "Bark Framework"
-    with info_path.open("rb") as stream:
-        info = plistlib.load(stream)
-    sdk = PINS["official_macos_sdk"]
-    if (info.get("DTSDKName"), info.get("DTSDKBuild")) != ("macosx" + sdk["version"], sdk["build"]):
-        raise ValueError(f"Official Bark SDK requires embedded macOS {sdk['version']} ({sdk['build']}); "
-                         f"framework reports {info.get('DTSDKName')} ({info.get('DTSDKBuild')})")
-    if info.get("CFBundleShortVersionString") != CHROMIUM_VERSION:
-        raise ValueError("The framework version does not match pinned Chromium")
-    revision = str(info.get("SCMRevision", "")).partition("-")[0]
-    if revision != PINS["chromium"]:
-        raise ValueError("The framework revision does not match pinned Chromium")
-    if subprocess.check_output(["/usr/bin/lipo", "-archs", image], text=True).strip() != arch:
-        raise ValueError(f"The official framework must be thin {arch}")
-    commands = subprocess.check_output(["/usr/bin/otool", "-l", image], text=True)
-    sdk_commands = re.findall(r"cmd LC_BUILD_VERSION\s+cmdsize \d+\s+platform (\d+)"
-                              r"\s+minos [\d.]+\s+sdk ([\d.]+)", commands)
-    if sdk_commands != [("1", sdk["version"])]:
-        raise ValueError(f"The framework Mach-O does not report the pinned macOS SDK: {sdk_commands}")
-    return {"framework_sha256": digest(image), "framework_info_sha256": digest(info_path)}
+    return official_framework_inputs(framework, arch, PINS["official_macos_sdk"],
+                                     CHROMIUM_VERSION, PINS["chromium"])
 
 
 def engine_source_digest():

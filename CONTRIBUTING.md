@@ -144,7 +144,15 @@ With Xcode and a local Developer ID Application identity, build a signed Bark ap
 
 For app development you can omit `Runtime/` and `Tests/` from the checkout. The app tools read the public headers and architecture pins from `Packages/BarkEngine` and verify the framework in the signed app against the supplied SDK. The Release shell CI builds both architectures from this layout. Include `Tests/` to run the repository's app regression suites.
 
-For official qualification, `--require-official` also checks the SDK against the reviewed engine recipe. Use the full Bark source revision for that check. To build the SDK itself, follow the [Chromium build instructions](Runtime/Chromium/README.md#checkout-and-build).
+For an optimized SDK, use `--require-official` on the install, build and verification commands.
+An app-only checkout reads the architecture’s official SDK seal from `Packages/BarkEngine`.
+It checks the SDK files against the pinned manifest, matches the official build receipt,
+and inspects the framework’s architecture, Chromium revision and macOS SDK. A full checkout
+also checks the receipt against the engine recipe in that checkout.
+Older official pins can still be verified in their matching full source. To add the seals to
+an existing official pair, run the current `pair-sdk` tool against the matching engine recipe
+with the two published manifests, receipts and public headers.
+[SDK publication and pairing](Runtime/Chromium/README.md#publishing-the-engine)
 
 ```fish
 python3 scripts/bark-check.py engine --install --engine /path/to/Engine

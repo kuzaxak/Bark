@@ -5,9 +5,12 @@
 import argparse
 import ctypes
 import hashlib
+import json
 import os
 from pathlib import Path
 import platform
+import plistlib
+import re
 import shutil
 import stat
 import subprocess
@@ -65,6 +68,30 @@ def file_digest(path):
     return digest.hexdigest()
 
 
+def official_framework_inputs(framework, arch, sdk, chromium_version, chromium_revision):
+    relative = Path("Versions/Current")
+    info_path = framework / relative / "Resources/Info.plist"
+    image = framework / relative / "Bark Framework"
+    with info_path.open("rb") as stream:
+        info = plistlib.load(stream)
+    if (info.get("DTSDKName"), info.get("DTSDKBuild")) != ("macosx" + sdk["version"], sdk["build"]):
+        raise ValueError(f"Official Bark SDK requires embedded macOS {sdk['version']} ({sdk['build']}); "
+                         f"framework reports {info.get('DTSDKName')} ({info.get('DTSDKBuild')})")
+    if info.get("CFBundleShortVersionString") != chromium_version:
+        raise ValueError("The framework version does not match pinned Chromium")
+    revision = str(info.get("SCMRevision", "")).partition("-")[0]
+    if revision != chromium_revision:
+        raise ValueError("The framework revision does not match pinned Chromium")
+    if subprocess.check_output(["/usr/bin/lipo", "-archs", image], text=True).strip() != arch:
+        raise ValueError(f"The official framework must be thin {arch}")
+    commands = subprocess.check_output(["/usr/bin/otool", "-l", image], text=True)
+    sdk_commands = re.findall(r"cmd LC_BUILD_VERSION\s+cmdsize \d+\s+platform (\d+)"
+                              r"\s+minos [\d.]+\s+sdk ([\d.]+)", commands)
+    if sdk_commands != [("1", sdk["version"])]:
+        raise ValueError(f"The framework Mach-O does not report the pinned macOS SDK: {sdk_commands}")
+    return {"framework_sha256": file_digest(image), "framework_info_sha256": file_digest(info_path)}
+
+
 def directory_id(path):
     try:
         info = path.lstat()
@@ -115,6 +142,15 @@ def native_architecture():
 
 def headers_directory(package):
     return package / XCFRAMEWORK / SLICE / "Headers/BarcChromium"
+
+
+def official_seal_name(architecture):
+    return f"engine-artifact-{architecture}.official.json"
+
+
+def official_seal_bytes(sdk_sha256, receipt_sha256):
+    return (json.dumps({"sdk_sha256": sdk_sha256, "receipt_sha256": receipt_sha256},
+                       sort_keys=True, indent=2) + "\n").encode("ascii")
 
 
 def legacy_slice(package):

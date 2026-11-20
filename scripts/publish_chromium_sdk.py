@@ -17,12 +17,13 @@ from tempfile import TemporaryDirectory, mkdtemp
 from uuid import UUID, uuid4
 
 from chromium_sdk_layout import (ARCHITECTURES, artifact_directory, directory_id, file_digest, headers_directory,
-                                 pin_file, read_pin, remove_work, swap)
+                                 official_seal_bytes, official_seal_name, pin_file, read_pin, remove_work, swap)
 
 CHROMIUM = Path(__file__).resolve().parents[1] / "Runtime/Chromium"
 sys.path.insert(0, str(CHROMIUM))
 HEADERS = ("barc_bridge_api.h", "barc_public_headers_sha256.h")
 FRAMEWORK = "Bark Framework.framework"
+OFFICIAL_RECEIPT = "official-build.json"
 
 
 def version_header_name(architecture):
@@ -111,6 +112,26 @@ def write_atomic(work, target, content):
     temporary.replace(target)
 
 
+def update_metadata(headers, work, contents, *, remove=()):
+    if all((headers / name).is_file() and (headers / name).read_bytes() == data
+           for name, data in contents.items()) and not any((headers / name).exists() for name in remove):
+        return
+    with TemporaryDirectory(prefix="metadata-", dir=work) as tmp:
+        replacement = Path(tmp) / headers.name
+        shutil.copytree(headers, replacement, symlinks=True)
+        for name in remove:
+            (replacement / name).unlink(missing_ok=True)
+        for name, data in contents.items():
+            write_atomic(work, replacement / name, data)
+        swap(replacement, headers)
+
+
+def has_official_receipt(engine):
+    path = engine / OFFICIAL_RECEIPT
+    require_regular_metadata(path)
+    return path.is_file()
+
+
 def destination_paths(package, architecture, work):
     engine = artifact_directory(package, architecture)
     headers = headers_directory(package)
@@ -133,6 +154,7 @@ def destination_paths(package, architecture, work):
     for arch in ARCHITECTURES:
         require_regular_metadata(headers / f"engine-artifact-{arch}.sha256")
         require_regular_metadata(headers / version_header_name(arch))
+        require_regular_metadata(headers / official_seal_name(arch))
     return engine, headers, pin
 
 
@@ -166,7 +188,8 @@ def pair_metadata(engine, architecture):
             raise ValueError(f"{architecture} metadata differs from its SDK manifest: {name}")
         return data
 
-    receipt = json.loads(read_entry(RECEIPT))
+    receipt_bytes = read_entry(RECEIPT)
+    receipt = json.loads(receipt_bytes)
     headers = {name: read_entry("Headers/" + name) for name in HEADERS}
     versioned = f"{FRAMEWORK}/Versions/{CHROMIUM_VERSION}"
     expected = recipe_inputs(architecture)
@@ -179,19 +202,21 @@ def pair_metadata(engine, architecture):
         raise ValueError(f"The {architecture} receipt differs from the selected source recipe or SDK manifest")
     if headers[HEADERS[0]] != (CHROMIUM / "bark/bridge" / HEADERS[0]).read_bytes():
         raise ValueError(f"The {architecture} SDK public API differs from the selected source")
-    return headers, pin, version_header(CHROMIUM_VERSION)
+    seal = official_seal_bytes(pin, hashlib.sha256(receipt_bytes).hexdigest())
+    return headers, pin, version_header(CHROMIUM_VERSION), seal
 
 
 def stage_sdk_pair(package, intel, arm):
     """Install the two pins and their shared headers as one receiver-side change."""
     contents = {}
     for arch, source in (("x86_64", intel), ("arm64", arm)):
-        shared, pin, version = pair_metadata(source, arch)
+        shared, pin, version, seal = pair_metadata(source, arch)
         if any(name in contents and contents[name] != data for name, data in shared.items()):
             raise ValueError("The Intel and ARM64 SDKs have different public headers")
         contents.update(shared)
         contents[f"engine-artifact-{arch}.sha256"] = (pin + "\n").encode()
         contents[version_header_name(arch)] = version
+        contents[official_seal_name(arch)] = seal
 
     package = package.resolve(strict=True)
     headers = headers_directory(package)
@@ -240,11 +265,16 @@ def finish(package, pending, *, recovering):
     if recovering:
         if verified_digest(prepared) != digest:
             raise ValueError("SDK differs from its publication record")
+        # Old default-mode journals only marked explicit --require-official.
+        official = official or has_official_receipt(prepared)
         if official:
             verify_official_sdk(prepared, architecture)
     contents = {name: (prepared / "Headers" / name).read_bytes() for name in HEADERS}
     contents[version_header_name(architecture)] = engine_version_header(prepared)
     contents[pin.name] = f"{digest}\n".encode()
+    seal = official_seal_name(architecture)
+    if official:
+        contents[seal] = official_seal_bytes(digest, file_digest(prepared / OFFICIAL_RECEIPT))
 
     if not promoted:
         if live.exists():
@@ -261,15 +291,9 @@ def finish(package, pending, *, recovering):
             swap(candidate, live)
         else:
             candidate.rename(live)
-    # Commit the version and pin together. The journal bridges the separate
-    # runtime and metadata swaps, so a reader will fail its pin check between them.
-    with TemporaryDirectory(prefix="metadata-", dir=pending) as tmp:
-        work = Path(tmp)
-        replacement = work / headers.name
-        shutil.copytree(headers, replacement, symlinks=True)
-        for name, data in contents.items():
-            write_atomic(work, replacement / name, data)
-        swap(replacement, headers)
+    # The journal bridges the runtime and metadata swaps. Readers fail
+    # closed between them because the manifest does not match the old pin.
+    update_metadata(headers, pending, contents, remove=() if official else (seal,))
     # Retire the journal atomically before removing the previously published tree.
     retired = pending.with_name(f"work-{uuid4().hex}")
     pending.rename(retired)
@@ -315,7 +339,8 @@ def publish(package, architecture, replace, build, script, *, require_official=F
             directory_id(abandoned)
             remove_work(abandoned)
         pending = state / "pending"
-        if not require_official:
+        official = require_official or has_official_receipt(Path(build))
+        if not official:
             recover_previous(package, state)
         work = Path(mkdtemp(prefix="work-", dir=state))
         candidate = None
@@ -333,7 +358,8 @@ def publish(package, architecture, replace, build, script, *, require_official=F
                             *flags, build, package], check=True, pass_fds=(lock,))
             digest = verified_digest(prepared)
             version = engine_version_header(prepared)
-            if require_official:
+            official = official or has_official_receipt(prepared)
+            if official:
                 verify_official_sdk(prepared, architecture)
                 # An invalid official request must leave any pending pin untouched.
                 recover_previous(package, state, preserve=candidate)
@@ -350,15 +376,17 @@ def publish(package, architecture, replace, build, script, *, require_official=F
                     except (OSError, ValueError):
                         identical = False
                     if identical:
-                        # Older publications already have the correct pin and
-                        # bytes. Backfill only this architecture's version.
-                        write_atomic(work, headers / version_header_name(architecture), version)
+                        contents = {version_header_name(architecture): version}
+                        seal = official_seal_name(architecture)
+                        if official:
+                            contents[seal] = official_seal_bytes(digest, file_digest(prepared / OFFICIAL_RECEIPT))
+                        update_metadata(headers, work, contents, remove=() if official else (seal,))
                         print(f"Verified existing SDK: {engine}\nArtifact SHA: {digest}")
                         return
                 if not replace:
                     raise ValueError(f"Engine already published. Use --replace to publish different inputs: {engine}")
             record = {"arch": architecture, "digest": digest, "identity": directory_id(candidate),
-                      "slot": candidate.name, "official": require_official}
+                      "slot": candidate.name, "official": official}
             (work / "transaction.json").write_text(json.dumps(record))
             work.rename(pending)
             engine, digest = finish(package, pending, recovering=False)

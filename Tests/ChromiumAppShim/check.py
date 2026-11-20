@@ -921,8 +921,8 @@ def paired_publication_case(work, accepted):
               received.returncode == 0, received.stderr)
 
     official = verify('x86_64', artifact_of(next_packages['x86_64'], 'x86_64'), '--require-official')
-    check('official qualification requires the full reviewed recipe on the receiver',
-          official.returncode != 0 and 'Runtime/Chromium' in official.stderr
+    check('the app-only receiver refuses official qualification of a developer SDK',
+          official.returncode != 0 and 'published x86_64 SDK seal' in official.stderr
           and 'Traceback' not in official.stderr, official.stderr)
 
     # An old pin cannot remain next to shared metadata from the second epoch.

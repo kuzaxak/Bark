@@ -93,7 +93,8 @@ class SourceTests(unittest.TestCase):
                         shell._RUST / "Cargo.lock", shell._RUST / "target/compiled",
                         "Packages/BarkEngine/RuntimeArtifacts/x86_64/Engine/framework",
                         sdk / "macos-x86_64/Engine/framework",
-                        sdk / "macos-arm64_x86_64/Headers/BarcChromium/engine-artifact-x86_64.sha256"):
+                        sdk / "macos-arm64_x86_64/Headers/BarcChromium/engine-artifact-x86_64.sha256",
+                        sdk / "macos-arm64_x86_64/Headers/BarcChromium/engine-artifact-x86_64.official.json"):
             self.write(ignored, b"changed")
         self.assertEqual(shell.shell_source_digest(self.root), original)
         self.assertEqual(shell.shell_source_digest(archive), original)

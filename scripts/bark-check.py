@@ -29,8 +29,9 @@ from uuid import uuid4
 sys.dont_write_bytecode = True
 # The signed walkers load this file with runpy rather than importing it.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from chromium_sdk_layout import (ARCHITECTURES, FRAMEWORK_BINARY, directory_id, download_https, local_engine,
-                                 native_architecture, read_pin, remove_work, require_host_only_image, swap)
+from chromium_sdk_layout import (ARCHITECTURES, FRAMEWORK_BINARY, directory_id, download_https, file_digest,
+                                 headers_directory, local_engine, native_architecture, official_framework_inputs,
+                                 official_seal_name, read_pin, remove_work, require_host_only_image, swap)
 from bark_macos_console import (SCREEN_LOCK, SCREEN_UNAVAILABLE, QuartzConsole, ScreenUnavailable,
                                 interrupted, require_idle_console, screen_lock)
 from bark_icloud_signing import BUNDLE_ID, PROFILE_NAME, authorized_entitlements, load_profile
@@ -124,14 +125,48 @@ def cached_engine(architecture):
     return Path.home() / "Library/Caches/BarkSDK" / read_pin(PACKAGE, architecture) / "Engine"
 
 
+def published_official_receipt(engine, architecture, seal):
+    if seal.is_symlink() or not seal.is_file():
+        raise ValueError(f"App-only official verification needs the published {architecture} SDK seal: {seal}")
+    manifest = engine / "SHA256SUMS"
+    receipt = engine / "official-build.json"
+    if any(p.is_symlink() or not p.is_file() for p in (manifest, receipt)):
+        raise ValueError("Expected a regular official build receipt and SDK manifest.")
+    pin = read_pin(PACKAGE, architecture)
+    receipt_hash = file_digest(receipt)
+    expected = {"sdk_sha256": pin, "receipt_sha256": receipt_hash}
+    if (json.loads(seal.read_bytes()) != expected or file_digest(manifest) != pin
+            or manifest.read_text().splitlines().count(f"{receipt_hash}  ./official-build.json") != 1):
+        raise ValueError(f"The {architecture} official SDK seal does not match the pinned manifest and receipt.")
+    data = json.loads(receipt.read_bytes())
+    if not isinstance(data, dict) or (data.get("format"), data.get("arch")) != (3, architecture):
+        raise ValueError(f"Expected an official build receipt for {architecture}.")
+    return data
+
+
 def check_official_engine(engine, architecture):
     recipe = REPO / "Runtime/Chromium"
-    if not (recipe / "official_provenance.py").is_file():
-        raise ValueError("Official SDK qualification needs Runtime/Chromium from the matching Bark source revision.")
-    sys.path.insert(0, str(recipe))
-    from official_provenance import verify_cached
-
-    verify_cached(engine, architecture)
+    seal = headers_directory(PACKAGE) / official_seal_name(architecture)
+    if recipe.exists() or recipe.is_symlink():
+        if not (recipe / "official_provenance.py").is_file():
+            raise ValueError("Incomplete Runtime/Chromium in this checkout. Restore the matching engine recipe.")
+        sys.path.insert(0, str(recipe))
+        from official_provenance import verify_cached
+        verify_cached(engine, architecture)
+        # Historical pins can establish provenance from their original source alone.
+        if seal.exists() or seal.is_symlink():
+            published_official_receipt(engine, architecture, seal)
+    else:
+        receipt = published_official_receipt(engine, architecture, seal)
+        sdk = receipt.get("SDK")
+        revision = receipt.get("chromium")
+        if (not isinstance(sdk, dict) or not all(isinstance(sdk.get(k), str) for k in ("build", "version"))
+                or not isinstance(revision, str)):
+            raise ValueError("The official receipt lacks its macOS SDK and Chromium revision.")
+        version = plistlib.loads((engine / "engine-Info.plist").read_bytes()).get("CFBundleShortVersionString")
+        actual = official_framework_inputs(engine / FRAMEWORK, architecture, sdk, version, revision)
+        if any(receipt.get(k) != value for k, value in actual.items()):
+            raise ValueError("The official SDK receipt does not match the packaged framework.")
     print(f"Verified official Bark SDK provenance at {engine}", flush=True)
 
 

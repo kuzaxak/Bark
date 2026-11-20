@@ -160,7 +160,7 @@ present. The shared SDK headers must still match the other architecture’s
 pinned headers. Check the resulting metadata change before adopting the pin.
 
 For a private handoff, commit the shared bridge header and its digest along
-with each architecture’s launcher version header and pin on the local
+with each architecture’s launcher version header, pin and official seal on the local
 qualification branch. Both SDKs in a two-architecture handoff must supply the
 same bridge API. Use one source archive for the pair and send each Mac its
 matching SDK. The example below packages one official architecture. For a
@@ -171,7 +171,7 @@ identity.
 ```fish
 set -l headers (python3 scripts/chromium_sdk_layout.py headers Packages/BarkEngine "$arch")
 set -l metadata "$headers/barc_bridge_api.h" "$headers/barc_public_headers_sha256.h" \
-    "$headers/barc_engine_version_$arch.h" "$headers/engine-artifact-$arch.sha256"
+    "$headers/barc_engine_version_$arch.h" "$headers/engine-artifact-$arch.*"
 git add -- $metadata
 git diff --cached --quiet -- $metadata; or git commit --only -m "Pin the $arch SDK for native qualification" -- $metadata
 
@@ -497,10 +497,14 @@ python3 scripts/bark-check.py pair-sdk \
 
 This checks each receipt against the target architecture, current engine
 recipe and framework hashes recorded in its manifest. It checks the API and
-generated digest header and installs both pins, the bridge headers and each
-architecture’s launcher version header together. The
-pins are calculated from the original manifests. Full SDK verification on
-each receiving Mac follows below.
+generated digest header and installs both pins, the bridge headers, each
+architecture’s launcher version header and its official seal together.
+The seal records the SHA-256 of the original SDK manifest and the verified
+build receipt. Include these files in the app source that goes to contributors.
+An app-only checkout can then verify the optimized framework against the
+published receipt. The same command in a full checkout also checks the local
+engine recipe. To backfill the seals for an older official pair, use the current
+pairing tool with that pair’s original engine recipe and transfer files.
 
 Send this staged metadata to both builders. From that source snapshot, each
 builder can write its archive using the Engine path printed above.

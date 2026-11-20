@@ -95,6 +95,16 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
             f"Headers/BarcChromium/engine-artifact-{arch}.sha256"
         )
 
+    def official_seal(self, arch):
+        return self.pin(arch).with_name(f"engine-artifact-{arch}.official.json")
+
+    def expected_seal(self, package, arch):
+        artifact = package / "RuntimeArtifacts" / arch / "Engine"
+        return {
+            "sdk_sha256": hashlib.sha256((artifact / "SHA256SUMS").read_bytes()).hexdigest(),
+            "receipt_sha256": hashlib.sha256((artifact / "official-build.json").read_bytes()).hexdigest(),
+        }
+
     def version(self, arch):
         return self.pin(arch).with_name(f"barc_engine_version_{arch}.h")
 
@@ -243,6 +253,7 @@ out = Path(sys.argv[2])
             v8_template = self.build.parent.parent / "v8"
             published = self.publish("--require-official", arch=arch)
             self.assertEqual(published.returncode, 0, published.stderr)
+            self.assertEqual(json.loads(self.official_seal(arch).read_text()), self.expected_seal(self.package, arch))
 
         receiver = self.repo / "Packages/BarkEngine"
         dest = receiver / "BarkEngine.xcframework" / self.fixture["SLICE_NAME"] / "Headers/BarcChromium"
@@ -260,9 +271,9 @@ out = Path(sys.argv[2])
                 shutil.copy2(artifact / name, sources[arch] / name)
 
         cli = [sys.executable, "-B", self.repo / "scripts/bark-check.py"]
-        def pair(intel, arm):
+        def pair(intel, arm, destination=receiver):
             return subprocess.run([*cli, "pair-sdk", "--x86-64", intel, "--arm64", arm,
-                                   "--package", receiver], capture_output=True, text=True)
+                                   "--package", destination], capture_output=True, text=True)
         def snapshot():
             return {p.name: p.read_bytes() for p in dest.iterdir()}
 
@@ -279,9 +290,13 @@ out = Path(sys.argv[2])
             artifact = self.package / "RuntimeArtifacts" / arch / "Engine"
             self.assertEqual((dest / self.pin(arch).name).read_bytes(), self.pin(arch).read_bytes())
             self.assertEqual((dest / self.version(arch).name).read_bytes(), self.version(arch).read_bytes())
+            self.assertEqual(json.loads((dest / self.official_seal(arch).name).read_text()),
+                             self.expected_seal(self.package, arch))
             verified = subprocess.run([*cli, "engine", "--arch", arch, "--engine", artifact,
                                        "--require-official"], capture_output=True, text=True)
             self.assertEqual(verified.returncode, 0, verified.stderr)
+
+        self.verify_app_only_receivers(receiver, pair, sources["x86_64"])
 
         accepted = snapshot()
         arm_version = dest / self.version("arm64").name
@@ -319,6 +334,125 @@ out = Path(sys.argv[2])
             self.assertIn("different public headers" if arch == "arm64" else "does not describe", refused.stderr)
             self.assertEqual(snapshot(), accepted)
 
+
+    def verify_app_only_receivers(self, receiver, pair, compact_intel):
+        thin = self.work / "app-only"
+        shutil.copytree(self.repo / "scripts", thin / "scripts")
+        shutil.copytree(self.repo / "ChromiumApp", thin / "ChromiumApp")
+        shutil.copytree(receiver, thin / "Packages/BarkEngine")
+        self.assertFalse((thin / "Runtime").exists())
+        metadata = thin / "Packages/BarkEngine" / self.pin("arm64").relative_to(self.package).parent
+        arm = self.package / "RuntimeArtifacts/arm64/Engine"
+
+        def verify(root, arch, engine, *, official=True):
+            flags = ["--require-official"] if official else []
+            return subprocess.run([sys.executable, "-B", root / "scripts/bark-check.py", "engine",
+                                   "--arch", arch, "--engine", engine, *flags],
+                                  cwd=root, capture_output=True, text=True)
+
+        for arch in ("arm64", "x86_64"):
+            accepted = verify(thin, arch, self.package / "RuntimeArtifacts" / arch / "Engine")
+            self.assertEqual(accepted.returncode, 0, accepted.stderr)
+
+        seal = metadata / self.official_seal("arm64").name
+        original = seal.read_bytes()
+        seal.unlink()
+        refused = verify(thin, "arm64", arm)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("official verification needs", refused.stderr)
+        seal.symlink_to(self.official_seal("arm64"))
+        linked = verify(thin, "arm64", arm)
+        self.assertNotEqual(linked.returncode, 0, linked.stdout)
+        self.assertIn("official verification needs", linked.stderr)
+        seal.unlink()
+        for field in ("receipt_sha256", "sdk_sha256"):
+            with self.subTest(tampered_field=field):
+                seal.write_text(json.dumps({**json.loads(original), field: "0" * 64}))
+                refused = verify(thin, "arm64", arm)
+                self.assertNotEqual(refused.returncode, 0, refused.stdout)
+                self.assertIn("official SDK seal does not match", refused.stderr)
+                self.assertEqual(verify(thin, "arm64", arm, official=False).returncode, 0)
+        seal.write_bytes(original)
+
+        # Replacing only the normal pin must not convert a different, valid
+        # developer SDK into an officially qualified SDK.
+        dev_package = self.work / "developer-package"
+        developer_build = self.make_build("arm64", "156.0.8078.105")
+        published = subprocess.run(["/bin/bash", self.publisher, "--arch", "arm64",
+                                    developer_build, dev_package],
+                                   env=self.fixture["publisher_environment"](developer_build, self.siso),
+                                   capture_output=True, text=True)
+        self.assertEqual(published.returncode, 0, published.stderr)
+        self.addCleanup(self.fixture["make_writable"], dev_package)
+        dev = dev_package / "RuntimeArtifacts/arm64/Engine"
+        local_pin = metadata / self.pin("arm64").name
+        normal_pin = local_pin.read_bytes()
+        developer_pin = hashlib.sha256((dev / "SHA256SUMS").read_bytes()).hexdigest()
+        local_pin.write_text(developer_pin + "\n")
+        self.assertEqual(verify(thin, "arm64", dev, official=False).returncode, 0)
+        refused = verify(thin, "arm64", dev)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        seal.write_text(json.dumps({**json.loads(original), "sdk_sha256": developer_pin}))
+        refused = verify(thin, "arm64", dev)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("regular official build receipt", refused.stderr)
+        local_pin.write_bytes(normal_pin)
+        seal.write_bytes(original)
+
+        partial = thin / "Runtime/Chromium"
+        partial.mkdir(parents=True)
+        shutil.copyfile(self.chromium / "PINS.json", partial / "PINS.json")
+        refused = verify(thin, "arm64", arm)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("Incomplete Runtime/Chromium", refused.stderr)
+
+        wrapper = self.chromium / "bark/tools/override_cc.c"
+        source = wrapper.read_bytes()
+        wrapper.write_bytes(source + b"\n/* drift after the official seal was published */\n")
+        try:
+            refused = verify(self.repo, "arm64", arm)
+            self.assertNotEqual(refused.returncode, 0, refused.stdout)
+            self.assertRegex(refused.stderr, r"official SDK receipt.*recipe")
+        finally:
+            wrapper.write_bytes(source)
+
+        shutil.rmtree(partial.parent)
+        self.verify_compact_framework_sdk(thin, arm, pair, compact_intel, verify)
+
+    def verify_compact_framework_sdk(self, thin, arm, pair, compact_intel, verify):
+        # Compact transfer can authenticate hashes and recipe inputs, but does
+        # not carry the framework plist itself for the producer to inspect.
+        mismatched = self.work / "wrong-sdk-arm"
+        shutil.copytree(arm, mismatched, symlinks=True)
+        self.addCleanup(self.fixture["make_writable"], mismatched)
+        info = (mismatched / "Bark Framework.framework/Versions/Current/Resources/Info.plist").resolve()
+        receipt = mismatched / "official-build.json"
+        manifest = mismatched / "SHA256SUMS"
+        for path in (info, receipt, manifest):
+            path.chmod(0o644)
+        self.fixture["write_plist"](info, **{**self.fixture["read_plist"](info), "DTSDKBuild": "25Z999"})
+        receipt.write_text(json.dumps({**json.loads(receipt.read_text()),
+                                      "framework_info_sha256": hashlib.sha256(info.read_bytes()).hexdigest()}))
+        updates = {path.relative_to(mismatched).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+                   for path in (info, receipt)}
+        rows = []
+        for line in manifest.read_text().splitlines():
+            digest, name = line.split("  ./", 1)
+            rows.append(f"{updates.get(name, digest)}  ./{name}\n")
+        manifest.write_text("".join(rows))
+        for path in (info, receipt, manifest):
+            path.chmod(0o444)
+        compact_arm = self.work / "wrong-sdk-arm-compact"
+        shutil.copytree(mismatched / "Headers", compact_arm / "Headers")
+        shutil.copy2(receipt, compact_arm / receipt.name)
+        shutil.copy2(manifest, compact_arm / manifest.name)
+        paired = pair(compact_intel, compact_arm, thin / "Packages/BarkEngine")
+        self.assertEqual(paired.returncode, 0, paired.stderr)
+        ordinary = verify(thin, "arm64", mismatched, official=False)
+        self.assertEqual(ordinary.returncode, 0, ordinary.stderr)
+        refused = verify(thin, "arm64", mismatched)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("25Z999", refused.stderr)
 
     def test_only_verified_official_publication_can_omit_finder_pseudolocales(self):
         source = self.build / "Bark.app/Contents/Resources"
@@ -474,9 +608,29 @@ publication.write_atomic = stop_before_pin
         self.assertEqual(stopped.returncode, 75, stopped.stderr)
         self.assertTrue(json.loads(journal.read_text())["official"])
         self.assertFalse(self.pin("arm64").exists())
+        self.assertFalse(self.official_seal("arm64").exists())
 
         recovered = self.publish("--require-official")
         self.assertEqual(recovered.returncode, 0, recovered.stderr)
         self.assertIn("Recovered SDK publication", recovered.stdout)
         self.assertTrue(self.pin("arm64").is_file())
         self.assertFalse(journal.exists())
+        seal = self.official_seal("arm64")
+        expected = self.expected_seal(self.package, "arm64")
+        self.assertEqual(json.loads(seal.read_text()), expected)
+        original_pin = self.pin("arm64").read_bytes()
+        seal.unlink()
+        backfilled = self.publish()
+        self.assertEqual(backfilled.returncode, 0, backfilled.stderr)
+        self.assertEqual(json.loads(seal.read_text()), expected)
+        self.assertEqual(self.pin("arm64").read_bytes(), original_pin)
+
+        developer = self.make_build("arm64", "156.0.8078.105")
+        refused = self.publish(build=developer)
+        self.assertNotEqual(refused.returncode, 0, refused.stdout)
+        self.assertIn("--replace", refused.stderr)
+        self.assertEqual(json.loads(seal.read_text()), expected)
+        downgraded = self.publish("--replace", build=developer)
+        self.assertEqual(downgraded.returncode, 0, downgraded.stderr)
+        self.assertNotEqual(self.pin("arm64").read_bytes(), original_pin)
+        self.assertFalse(seal.exists())
