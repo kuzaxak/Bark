@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from replay_gate import check_patches_at
 from update_checkout import advance
 
 
@@ -55,6 +56,26 @@ class RecipeUpdateTests(unittest.TestCase):
         (root / "bark/tool").chmod(0o755 if name == "new" else 0o644)
         (root / "chromium_src" / name).write_text(name)
         return root
+
+    def test_upgrade_rehearsal_uses_the_requested_commit_and_leaves_local_edits(self):
+        old_revision = self.git("rev-parse", "HEAD").decode().strip()
+        (self.src / "engine.cc").write_text("new upstream behavior\n")
+        self.git("-c", "core.hooksPath=/dev/null", "-c", "user.name=Fixture", "-c", "user.email=test@local",
+                 "-c", "commit.gpgsign=false", "commit", "-qm", "Conflicting upstream", "--", "engine.cc")
+        (self.src / "unrelated.cc").write_text("staged by contributor\n")
+        self.git("add", "unrelated.cc")
+        (self.src / "engine.cc").write_text("local work\n")
+        status = self.git("status", "--porcelain")
+        index = self.git("ls-files", "--stage")
+
+        check_patches_at(self.src, old_revision, self.before)
+        with self.assertRaisesRegex(SystemExit, "patch does not apply"):
+            check_patches_at(self.src, "HEAD", self.before)
+
+        self.assertEqual(self.git("status", "--porcelain"), status)
+        self.assertEqual(self.git("ls-files", "--stage"), index)
+        self.assertEqual((self.src / "engine.cc").read_text(), "local work\n")
+        self.assertEqual(self.output.read_bytes(), b"compiled")
 
     def test_dry_run_and_partial_retry_preserve_build_outputs_and_index(self):
         original_index = self.git("ls-files", "--stage")

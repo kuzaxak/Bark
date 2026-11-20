@@ -9,19 +9,21 @@ Pinned inputs:
 
 | Input | Revision |
 | --- | --- |
-| Chromium 156.0.8078.80 | `fb096c0011f9d50f0a264a9376420cdea9c421e3` |
+| Chromium 158.0.8127.37 | `b8c2be851f62f6a394ec57955d7f31335d7cb6d4` |
 | depot_tools | `500126d6e351e4f0834b70f71b454ce5c3733c54` |
 
 `DEPS` at the Chromium revision owns dependency/toolchain pins. Do not update
 individual dependencies independently. The initial host is Intel macOS 15.8.1,
-Xcode 26.3 (17C529), SDK 26.2. The signed Intel developer build passed
+Xcode 26.3 (17C529), SDK 26.2. The signed Chromium 156 Intel developer build passed
 installation from a disk image and a Sparkle update with a disposable profile.
-The signed ARM developer build rendered a loopback page on an M4 Pro running
+The signed Chromium 156 ARM developer build rendered a loopback page on an M4 Pro running
 macOS 15.8.2. On that Mac the update walk installed build 100 from its signed
 DMG and verified both the installed app and the build 101 reference copy.
 The Sparkle handoff still needs an ARM desktop with Accessibility and
-event-posting access. Official builds require SDK 26.5 and separate notarized
-release qualification. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
+event-posting access. Bark pins the universal SDK 26.5 (25F70) for official builds on both
+architectures. Chromium 158 also defines an ARM-only toolchain. The signed
+156 results qualify those historical candidates. The 158 recipe still needs
+its own native and notarized release qualification. See the [installed update walk](../../Tests/ChromiumUpdate/README.md).
 
 Keep upstream's engine compilation deployment default, `13.0`, distinct from
 `mac_min_system_version = "15.5"` (the packaged `LSMinimumSystemVersion`) and the
@@ -256,33 +258,79 @@ Engine binaries, profiles, logs and outputs are local artifacts. The recipe
 compiles the inputs to the publishing step below. The bytes depend on the local
 SDK and Rust compiler versions.
 
-Upstream instructions: [Chromium macOS build](https://chromium.googlesource.com/chromium/src/+/fb096c0011f9d50f0a264a9376420cdea9c421e3/docs/mac_build_instructions.md).
+See the macOS build instructions in the pinned source at `docs/mac_build_instructions.md`.
 
 ### Upgrade the Chromium revision
 
-Use a local qualification branch and retain the previous SDK and source
-revision. Resolve the new upstream tag to its commit and update
-`PINS.json` and `CHROMIUM_VERSION`. Read `chrome/build/mac.pgo.txt` and
-`chrome/build/mac-arm.pgo.txt` at that commit. If either selector changes,
-fetch its exact object with Chromium’s PGO updater, verify it against the
-upstream object’s checksum at the applicable encoding, and pin the SHA-256
-of the decompressed profile. Check the new `DEPS` V8 revision and its
-`include/v8-version.h`. If it changes, verify the versioned Google
-`x64.profile` and refresh the V8 revision, version and SHA-256 in `PINS.json`.
+**Select the release.** Find the latest desktop **Stable Channel Update** that
+names Mac. The same channel feed also contains limited Early Stable rollouts.
+Check the Intel and Apple Silicon serving records and resolve the exact
+four-part source tag in Chromium's repository. Record the tag, full commit
+and prior Bark revision in the migration task before editing the pins.
+[Chrome Releases](https://chromereleases.googleblog.com/search/label/Desktop%20Update) ·
+[Mac serving history](https://versionhistory.googleapis.com/v1/chrome/platforms/mac/channels/stable/versions/all/releases) ·
+[ARM serving history](https://versionhistory.googleapis.com/v1/chrome/platforms/mac_arm64/channels/stable/versions/all/releases)
 
-Prepare a fresh gclient root for the new revision. If a patch conflicts,
-adapt the tracked patch against the new base and repeat preparation from a
-pristine root. Check the patch budget and exact replay before compiling.
+**Check the existing patch stack against both commits.** In a Bark
+qualification branch, set `old_src` to the previous Chromium source checkout
+and `target_tag` to the selected tag. The following fish commands fetch into
+a fresh checkout. The patch check uses a temporary Git index and can also
+read a checkout where Bark's recipe has already been applied.
 
 ```fish
 set barc_repo "$PWD"
-set recipe "$barc_repo/Runtime/Chromium/build_engine.py"
+set chromium "$barc_repo/Runtime/Chromium"
+set recipe "$chromium/build_engine.py"
 set upgrade_root (mktemp -d "$HOME/Library/Caches/chromium-upgrade.XXXXXXXX")
 set engine_checkout "$upgrade_root/checkout"
-python3 "$recipe" prepare --checkout "$engine_checkout" --jobs 8; and \
-    python3 "$recipe" check --checkout "$engine_checkout"; and \
-    python3 "$barc_repo/Runtime/Chromium/budget.py" --check
+set new_src "$engine_checkout/src"
+set origin https://chromium.googlesource.com/chromium/src.git
+function rehearse_bark_upgrade
+    set -l old_rev (git -C "$old_src" rev-parse HEAD); or return 1
+    python3 "$chromium/replay_gate.py" "$old_src" --check-patches-at "$old_rev"; or return 1
+    git init "$new_src"; and git -C "$new_src" remote add origin "$origin"; or return 1
+    git -C "$new_src" -c protocol.version=2 fetch --depth=1 --no-tags origin "refs/tags/$target_tag"; or return 1
+    set -l target_rev (git -C "$new_src" rev-parse 'FETCH_HEAD^{commit}'); or return 1
+    git -C "$new_src" checkout --detach "$target_rev"; or return 1
+    python3 "$chromium/replay_gate.py" "$new_src" --check-patches-at "$target_rev"
+end
+rehearse_bark_upgrade
 ```
+
+For each rejection compare the old upstream file, the old Bark change and
+the new upstream implementation. Preserve upstream fixes and port the Bark
+behavior to its current owner. A moved file may require renaming its patch.
+Regenerate only affected per-file diffs against the pristine target and
+repeat the temporary-index check. One failed hunk can make a whole file
+fail. A clean patch application still needs a compile to catch API changes
+in the mounted Bark code.
+
+**Refresh the inputs.** Set `CHROMIUM_VERSION` and the Chromium commit in
+`PINS.json`. Read both `chrome/build/{mac,mac-arm}.pgo.txt` selectors at
+that commit. Verify the downloaded storage objects against their published
+checksums, then record the SHA-256 of the **decompressed profile bytes**
+consumed by LLVM. Read V8's revision from `DEPS`, its version from
+`include/v8-version.h` and verify the matching builtins profile named
+by each architecture's GN configuration. Review upstream macOS SDK and
+depot_tools changes with the actual target DEPS. Keep fixture provenance
+attached to the bytes it describes.
+
+**Prepare and compile.** The target source was checked out above, so resume
+preparation in that same isolated root. This synchronizes the target
+dependencies, runs hooks, applies the corrected stack and verifies the whole
+working tree against the recipe.
+
+```fish
+python3 "$recipe" prepare --resume --checkout "$engine_checkout" --jobs 8; and \
+    python3 "$recipe" check --checkout "$engine_checkout"; and \
+    python3 "$recipe" build --checkout "$engine_checkout" --jobs 8
+```
+
+The developer build links the engine, its packaging target and Bark browser
+tests. Use the specific compile or link failure to port remaining API changes.
+For a source correction on the same upstream and dependency pins, use the
+`update --from-revision` flow above to retain compiled objects. Keep the
+previous signed app and both of its SDK pins available through qualification.
 
 Follow [first official SDK preparation](#prepare-the-first-official-sdk-on-its-native-mac)
 to publish and verify each architecture's pin. Each SDK supplies a version
