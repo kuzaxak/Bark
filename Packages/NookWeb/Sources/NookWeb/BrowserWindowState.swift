@@ -31,7 +31,17 @@ public class BrowserWindowState {
     /// A pending initial product may join actual preparation outcomes. This is
     /// a terminal notification, not presentation ownership or a retry scheduler.
     @ObservationIgnored public var nativePresentationDidSettle: (@MainActor (Bool) -> Void)?
-    @ObservationIgnored var nativeSelectionGeneration: UUID?
+    @ObservationIgnored var nativeSelectionGeneration: UUID? {
+        didSet {
+            guard let interrupted = nativeSpaceSwitchInterrupted,
+                  oldValue == interrupted.generation, nativeSelectionGeneration != oldValue else { return }
+            nativeSpaceSwitchInterrupted = nil
+            // Let the new selection finish updating its ownership before the
+            // interrupted request is allowed to close its unselected tab.
+            Task { @MainActor in interrupted.finish() }
+        }
+    }
+    @ObservationIgnored var nativeSpaceSwitchInterrupted: (generation: UUID, finish: @MainActor () -> Void)?
     @ObservationIgnored var nativeSpaceSwitch: (generation: UUID, destination: UUID)?
     /// Relative space commands follow the outstanding request until Chromium settles it.
     var pendingNativeSpaceID: UUID? {

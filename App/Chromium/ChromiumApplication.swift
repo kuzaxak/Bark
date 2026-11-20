@@ -525,9 +525,15 @@ final class ChromiumApplication: ChromiumStartupBridge {
             manager.tabs.onProfileSearch = { [profileSearch] id, page, seed, selection, choices, completion in
                 profileSearch.read(profile: id, page: page, seed: seed, selection: selection, includeChoices: choices, completion: completion)
             }
-            manager.tabs.onOpenProfilePage = { [weak profilePages] profile, destination, canPresent, completion in
-                guard let profilePages else { completion(.failure(.presentationUnavailable)); return }
-                profilePages.open(profile, destination: destination, canPresent: canPresent, completion: completion)
+            manager.tabs.onOpenProfilePage = { [weak self, weak tabs = manager.tabs] _, destination, window, spaceID, canPresent, completion in
+                guard let tabs else { completion(.failure(.presentationUnavailable)); return }
+                tabs.presentProfilePageTab(destination, in: window, spaceID: spaceID, canPresent: canPresent) {
+                    [weak self, weak window] result in
+                    if case .success = result, self?.settingsWindow?.isKeyWindow == true {
+                        window?.bringToFront()
+                    }
+                    completion(result)
+                }
             }
             manager.nativeOpenSettings = { [weak self] tab in self?.showSettings(tab) }
             manager.tabs.onSpaceDeletionNotice = { message in

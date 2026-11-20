@@ -29,9 +29,9 @@ private enum Native {
     static var calls: [String] = []
     static var observers: [UInt64: (BarcTabCallback?, UnsafeMutableRawPointer?, Int32, Int32)] = [:]
     static var token: UInt64 = 1
-    static var showAccepted = true
+    static var navigateAccepted = true
     static var onAttach: (() -> Void)?
-    static var onShow: (() -> Void)?
+    static var onNavigate: (() -> Void)?
     static var roots: [Int32: ChromiumWindowRoot] = [:]
     static var members: [Int32: Set<Int32>] = [:]
     static var activeTabs: [Int32: Int32] = [:]
@@ -84,10 +84,6 @@ private enum Native {
             output.pointee.active_tab = Native.activeTabs[window] ?? Native.members[window]?.first ?? 0
             return 1
         } }
-        bridge.window_show = { _ in MainActor.assumeIsolated {
-            Native.calls.append("show"); Native.onShow?()
-            return Native.showAccepted ? 1 : 0
-        } }
         bridge.window_close = { _ in MainActor.assumeIsolated { Native.calls.append("close"); return 1 } }
         bridge.tab_observe = { window, tab, callback, context in MainActor.assumeIsolated {
             let token = Native.token; Native.token += 1
@@ -100,7 +96,8 @@ private enum Native {
         bridge.tab_observe_vault_save = { _, _ in 1 }
         bridge.tab_observe_vault_passkeys = { _, _ in 1 }
         bridge.tab_navigate = { _, _, url in MainActor.assumeIsolated {
-            Native.calls.append("navigate:" + String(cString: url!)); return 1
+            Native.calls.append("navigate:" + String(cString: url!)); Native.onNavigate?()
+            return Native.navigateAccepted ? 1 : 0
         } }
         bridge.tab_go_back = { window, tab in MainActor.assumeIsolated { Native.calls.append("back:\(window):\(tab)"); return 1 } }
         bridge.tab_go_forward = { window, tab in MainActor.assumeIsolated { Native.calls.append("forward:\(window):\(tab)"); return 1 } }
@@ -247,7 +244,7 @@ private func checkScopedHistoryClear() async throws {
     window.isIncognito = false
     clear(UUID()); expectFailure(.profileUnavailable)
 
-    tabs.onOpenProfilePage = { profile, destination, _, completion in
+    tabs.onOpenProfilePage = { profile, destination, _, _, _, completion in
         precondition(profile.id == workID && destination == .clearData)
         completion(.failure(.presentationFailed))
     }
@@ -256,7 +253,7 @@ private func checkScopedHistoryClear() async throws {
     precondition(workBefore.entries.map(\.url) == [urlA] && clears.isEmpty)
 
     var finish: ((Result<Void, ProfilePageOpenError>) -> Void)?
-    tabs.onOpenProfilePage = { profile, destination, canPresent, completion in
+    tabs.onOpenProfilePage = { profile, destination, _, _, canPresent, completion in
         precondition(profile.id == workID && destination == .clearData && canPresent())
         finish = completion
     }
@@ -474,37 +471,21 @@ private enum ProfileChecks {
         Native.profile = profile.id
         let presenter = ChromiumProfilePagePresenter(bridge: Native.bridge)
         var outcomes: [Result<Void, ProfilePageOpenError>] = []
-        presenter.open(profile, destination: .settings, canPresent: { false }) { outcomes.append($0) }
+        func openUtility(_ profile: ProfileSummary, while canPresent: @escaping @MainActor () -> Bool) {
+            presenter.openRecovery(profile, canPresent: canPresent, openSettings: {}) {
+                outcomes.append($0.map { _ in () })
+            }
+        }
+        openUtility(profile, while: { false })
         precondition(Native.calls.isEmpty)
         guard case .failure(.profileUnavailable) = outcomes.removeLast() else { preconditionFailure() }
 
-        let routes: [(ProfilePageDestination, String)] = [(.settings, "chrome://settings/"),
-            (.extensions, "chrome://extensions/"), (.privacy, "chrome://settings/privacy"),
-            (.secureConnections, "chrome://settings/security"),
-            (.siteSettings, "chrome://settings/content"), (.clearData, "chrome://settings/clearBrowserData"), (.downloads, "chrome://settings/downloads"), (.passwords, "chrome://password-manager/passwords")]
-        for (index, route) in routes.enumerated() {
-            Native.calls = []
-            presenter.open(profile, destination: route.0, canPresent: { true }) { outcomes.append($0) }
-            precondition(outcomes.isEmpty, "Dispatch is not admission")
-            let window = Int32(index + 10)
-            Native.opened(window)
-            guard case .success = outcomes.removeLast() else { preconditionFailure() }
-            precondition(presenter.ownsNativeWindow(window))
-            precondition(Native.calls == ["open:" + profile.id.uuidString, "root", "select", "navigate:" + route.1, "show"])
-            let controls = Native.controls(window)
-            Native.close(window, flags: 0)
-            // A plain CLOSED reaches the presenter on a later main-actor turn.
-            for _ in 0..<8 where presenter.ownsNativeWindow(window) { await Task.yield() }
-            precondition(!presenter.ownsNativeWindow(window))
-            precondition(controls.superview == nil)
-        }
-
         // The root contains both the inert native page and its Swift controls.
         Native.calls = []
-        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(51)
         guard case .success = outcomes.removeLast() else { preconditionFailure("A host window opens the profile page") }
-        precondition(Native.calls == ["open:" + profile.id.uuidString, "root", "select", "navigate:chrome://extensions/", "show"], "\(Native.calls)")
+        precondition(Native.calls == ["open:" + profile.id.uuidString, "root", "select", "navigate:chrome://settings/"], "\(Native.calls)")
         let hostPage = Native.pageViews[510]!
         let hostRoot = sequence(first: hostPage as NSView, next: \.superview).lazy.compactMap { $0 as? ChromiumWindowRoot }.first
         precondition(hostRoot === Native.roots[51] && presenter.ownsNativeWindow(51), "The root shows the profile page")
@@ -514,18 +495,18 @@ private enum ProfileChecks {
         for _ in 0..<8 where presenter.ownsNativeWindow(51) { await Task.yield() }
         precondition(!presenter.ownsNativeWindow(51))
 
-        // A kept/no-space identity is presented directly, never under the active space.
+        // Startup recovery keeps using its exact retained profile without a space.
         let kept = TabTree().profiles(keeping: [KeptProfile(profile)]).first!
         precondition(kept.spaceIDs.isEmpty && kept.id == profile.id)
         Native.calls = []
-        presenter.open(kept, destination: .passwords, canPresent: { true }) { outcomes.append($0) }
+        openUtility(kept, while: { true })
         Native.opened(30)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.first == "open:" + kept.id.uuidString)
         Native.close(30)
         var available = true
         Native.calls = []
-        presenter.open(kept, destination: .passwords, canPresent: { available }) { outcomes.append($0) }
+        openUtility(kept, while: { available })
         available = false
         Native.opened(20)
         guard case .failure(.profileUnavailable) = outcomes.removeLast() else { preconditionFailure() }
@@ -533,14 +514,14 @@ private enum ProfileChecks {
 
         // A foreign native identity is neither shown nor closed as if it were ours.
         Native.calls = []; Native.profile = UUID()
-        presenter.open(profile, destination: .secureConnections, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(21)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.count == 1)
         Native.profile = profile.id
 
         Native.calls = []; Native.unsupportedWindows = [22]
-        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(22)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls == ["open:" + profile.id.uuidString])
@@ -549,7 +530,7 @@ private enum ProfileChecks {
 
         // An owner ending reentrantly during attachment cannot be shown/admitted.
         Native.calls = []; Native.onAttach = { Native.close(23) }
-        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(23); Native.onAttach = nil
         precondition(outcomes.count == 1)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
@@ -558,38 +539,38 @@ private enum ProfileChecks {
 
         Native.calls = []; available = true
         Native.onAttach = { available = false }
-        presenter.open(profile, destination: .secureConnections, canPresent: { available }) { outcomes.append($0) }
+        openUtility(profile, while: { available })
         Native.opened(25); Native.onAttach = nil
         guard case .failure(.profileUnavailable) = outcomes.removeLast() else { preconditionFailure() }
         precondition(!Native.calls.contains("show"))
         Native.close(25)
 
-        Native.calls = []; Native.onShow = { Native.close(26) }
-        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
-        Native.opened(26); Native.onShow = nil
+        Native.calls = []; Native.onNavigate = { Native.close(26) }
+        openUtility(profile, while: { true })
+        Native.opened(26); Native.onNavigate = nil
         precondition(outcomes.count == 1)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
 
         Native.calls = []; available = true
-        Native.onShow = { available = false }
-        presenter.open(profile, destination: .privacy, canPresent: { available }) { outcomes.append($0) }
-        Native.opened(27); Native.onShow = nil
+        Native.onNavigate = { available = false }
+        openUtility(profile, while: { available })
+        Native.opened(27); Native.onNavigate = nil
         guard case .failure(.profileUnavailable) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(Native.calls.suffix(2) == ["show", "close"])
+        precondition(Native.calls.suffix(2) == ["navigate:chrome://settings/", "close"])
         Native.close(27)
 
-        Native.calls = []; Native.showAccepted = false
-        presenter.open(profile, destination: .clearData, canPresent: { true }) { outcomes.append($0) }
+        Native.calls = []; Native.navigateAccepted = false
+        openUtility(profile, while: { true })
         Native.opened(24)
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls.last == "close")
-        Native.close(24); Native.showAccepted = true
+        Native.close(24); Native.navigateAccepted = true
         precondition(Native.observers.isEmpty)
 
         // A displayed header does not follow transferred contents. Retained old
         // controls and queued callbacks cannot target either window afterwards.
         Native.calls = []
-        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(40)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
         let header = Native.controls(40)
@@ -611,7 +592,7 @@ private enum ProfileChecks {
 
         // Membership admission also protects actions before the queued owner
         // notification reaches this observer.
-        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(48)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
         let queuedHeader = Native.controls(48)
@@ -624,7 +605,7 @@ private enum ProfileChecks {
         precondition(Native.calls.isEmpty && queuedHeader.superview == nil && Native.members[49]?.contains(480) == true)
 
         // Exact expected-view comparison preserves a replacement product header.
-        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(42)
         guard case .success = outcomes.removeLast() else { preconditionFailure() }
         let replacedHeader = Native.controls(42)
@@ -647,39 +628,39 @@ private enum ProfileChecks {
         Native.onAttach = {
             Native.roots[50] = rejectedReplacement
         }
-        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(50); Native.onAttach = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.roots[50] === rejectedReplacement)
         precondition(Native.calls == ["open:" + profile.id.uuidString, "root"] && Native.observers.isEmpty)
 
         // Transfers inside pending native callbacks fail exactly once without
-        // closing/showing/navigating the old owner or following the live tab.
+        // closing the old owner or following the live tab.
         Native.calls = []
         Native.onAttach = { Native.transfer(44, to: 45) }
-        presenter.open(profile, destination: .settings, canPresent: { true }) { outcomes.append($0) }
+        openUtility(profile, while: { true })
         Native.opened(44); Native.onAttach = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
         precondition(Native.calls == ["open:" + profile.id.uuidString, "root"])
         precondition(Native.members[45]?.contains(440) == true && Native.observers.isEmpty)
         Native.calls = []
-        Native.onShow = { Native.transfer(46, to: 47) }
-        presenter.open(profile, destination: .privacy, canPresent: { true }) { outcomes.append($0) }
-        Native.opened(46); Native.onShow = nil
+        Native.onNavigate = { Native.transfer(46, to: 47) }
+        openUtility(profile, while: { true })
+        Native.opened(46); Native.onNavigate = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(Native.calls.last == "show" && !Native.calls.contains("close"))
+        precondition(Native.calls.last == "navigate:chrome://settings/" && !Native.calls.contains("close"))
         precondition(Native.members[47]?.contains(460) == true && outcomes.isEmpty && Native.observers.isEmpty)
-        // A reentrant Show may replace the selection while the original tab stays in the window.
+        // A reentrant navigation may replace the selection while the original tab stays in the window.
         // Refusal can revoke our controls without closing the newly selected tab's window.
         Native.calls = []
-        Native.onShow = {
+        Native.onNavigate = {
             Native.members[52]?.insert(521)
             Native.activeTabs[52] = 521
         }
-        presenter.open(profile, destination: .extensions, canPresent: { true }) { outcomes.append($0) }
-        Native.opened(52); Native.onShow = nil
+        openUtility(profile, while: { true })
+        Native.opened(52); Native.onNavigate = nil
         guard case .failure(.presentationFailed) = outcomes.removeLast() else { preconditionFailure() }
-        precondition(Native.calls.last == "show" && Native.activeTabs[52] == 521)
+        precondition(Native.calls.last == "navigate:chrome://settings/" && Native.activeTabs[52] == 521)
         precondition(!presenter.ownsNativeWindow(52) && Native.observers.isEmpty)
 
         // Kept-only recovery returns only its admitted, still-owned native handle.

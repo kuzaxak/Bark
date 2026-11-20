@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Open Chromium quick links for a profile with no spaces in signed Bark."""
+"""Open each Chromium quick link in the requested profile's space in signed Bark."""
 
 import json
 from pathlib import Path
@@ -16,14 +16,24 @@ from signed_walk import Accessibility, run_walk, wait_for
 def main():
     fixture = {}
     profile_name = "Archive Fixture"
+    space_name = "Archive First"
 
     def prepare(root, _origin, _app, _profile):
         fixture["id"] = str(uuid4()).upper()
         fixture["engine"] = root / "Engine"
-        path = root / "App/Tabs/device.json"
-        device = json.loads(path.read_text())
-        device["state"].setdefault("keptProfiles", []).append({"id": fixture["id"], "name": profile_name})
-        path.write_text(json.dumps(device) + "\n")
+        tabs = root / "App/Tabs"
+        structure = json.loads((tabs / "structure.json").read_text())
+        device = json.loads((tabs / "device.json").read_text())
+        for name, order in ((space_name, "W"), ("Archive Second", "X")):
+            space = str(uuid4()).upper()
+            tab = str(uuid4()).upper()
+            structure["spaces"].append(dict(
+                structure["spaces"][0], id=space, name=name, order=order,
+                profileName=profile_name, dataStoreID=fixture["id"]))
+            device["items"].append(dict(device["items"][0], id=tab, parent={"tabs": {"spaceID": space}}))
+            device["state"]["windows"][0]["selectedItemBySpace"] += [space, tab]
+        for name, value in (("structure", structure), ("device", device)):
+            (tabs / f"{name}.json").write_text(json.dumps(value) + "\n")
 
     def exercise(screen, process, _events, output):
         access = Accessibility(screen, process)
@@ -32,6 +42,7 @@ def main():
             "Open Profile Settings": ("Settings", "chrome://settings/"),
             "Extensions": ("Extensions", "chrome://extensions/"),
             "Privacy and Security": ("Settings - Privacy and security", "chrome://settings/privacy"),
+            "Secure Connections": ("Settings - Security", "chrome://settings/security"),
             "Site Settings": ("Settings - Site settings", "chrome://settings/content"),
             "Clear Browsing Data": ("Settings - Privacy and security", "chrome://settings/clearBrowserData"),
             "Downloads": ("Settings - Downloads", "chrome://settings/downloads"),
@@ -45,6 +56,8 @@ def main():
                 return pid.split("=")[-1] == str(process.pid) and screen.windows()
 
             wait_for("The disposable Bark window did not become frontmost", frontmost, process)
+            product = wait_for("The product window did not become key",
+                               lambda: access.attribute(access.application, "AXFocusedWindow"), process)
             screen.guard()
             access.ax.AXUIElementSetAttributeValue(access.application, "AXEnhancedUserInterface", True)
             screen.key(",", screen.command)
@@ -57,22 +70,19 @@ def main():
                            and any(profile_name in name for name in access.names(element)))
             access.press(profile)
             directory = fixture["engine"] / ("Barc-" + fixture["id"].lower())
-            if directory.exists():
-                raise RuntimeError("The no-space profile was already open before its first quick link")
             def web_url(element):
                 url = access.attribute(element, "AXURL")
                 return str(url.absoluteString()) if url else None
 
             for label, (title, expected_url) in links.items():
                 access.press(access.control(label, ("AXButton",), root=settings))
-                utility = wait_for(f"{label} did not open an owned utility",
-                                   lambda: access.owner("Close Window", ("AXButton",)), process)
-                access.control(profile_name, root=utility)
-                wait_for("The no-space profile's Chromium directory was not created",
+                wait_for("The product window did not return to the front",
+                         lambda: access.attribute(access.application, "AXFocusedWindow") == product, process)
+                access.control(space_name, ("AXMenuButton",), root=product)
+                wait_for("The requested profile's Chromium directory was not created",
                          lambda: directory.is_dir(), process)
-                access.control(title, ("AXStaticText",), root=utility)
                 area = wait_for(f"{label} did not open {expected_url}", lambda: next(
-                    (element for element in access.tree(utility)
+                    (element for element in access.tree(product)
                      if access.attribute(element, "AXRole") == "AXWebArea"
                      and web_url(element) == expected_url), None), process)
                 detail = {}
@@ -90,12 +100,20 @@ def main():
                     detail["dialog"] = access.names(dialog)
                     detail["cancel_button"] = "Cancel"
                 screen.screenshot(output / ("-".join(label.lower().split()) + ".png"))
+                if label == "Clear Browsing Data":
+                    access.press(access.control("Cancel", ("AXButton",), root=dialog))
                 results[label] = {"title": title, "profile": profile_name, "directory": directory.name,
-                                  "url": web_url(area), **detail}
+                                  "space": space_name, "url": web_url(area), **detail}
                 (output / "quick-links.json").write_text(json.dumps(results, indent=2) + "\n")
-                access.press(access.control("Close Window", ("AXButton",), root=utility))
-                wait_for("Utility window did not close",
-                         lambda: access.owner("Close Window", ("AXButton",)) is None, process)
+                screen.keys["w"] = 13
+                screen.key("w", screen.command)
+                wait_for(f"{label} tab did not close", lambda: all(
+                    access.attribute(element, "AXRole") != "AXWebArea" or web_url(element) != expected_url
+                    for element in access.tree(product)), process)
+                if len(results) != len(links):
+                    screen.key(",", screen.command)
+                    wait_for("Settings did not return to the front",
+                             lambda: access.attribute(access.application, "AXFocusedWindow") == settings, process)
             screen.key("q", screen.command)
             screen.press_button(wait_for("Missing Quit confirmation", lambda: screen.button("Quit"), process))
         except Exception:

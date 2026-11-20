@@ -4,23 +4,22 @@ import NookTabsCore
 import NookWeb
 import SwiftUI
 
-/// Utility pages are native lifetimes, never saved tabs or an alternate profile registry.
+/// Startup recovery owns a native utility window before there is a model space.
 @MainActor
 final class ChromiumProfilePagePresenter {
     @MainActor private final class Request {
         let id = UUID()
         let profile: ProfileSummary
-        let destination: ProfilePageDestination
         let canPresent: @MainActor () -> Bool
-        let recoveryAction: (@MainActor () -> Void)?
+        let recoveryAction: @MainActor () -> Void
         var cancelled = false
         var completion: (@MainActor (Result<Int32, ProfilePageOpenError>) -> Void)?
         weak var presenter: ChromiumProfilePagePresenter?
-        init(profile: ProfileSummary, destination: ProfilePageDestination,
+        init(profile: ProfileSummary,
              canPresent: @escaping @MainActor () -> Bool,
-             recoveryAction: (@MainActor () -> Void)?,
+             recoveryAction: @escaping @MainActor () -> Void,
              completion: @escaping @MainActor (Result<Int32, ProfilePageOpenError>) -> Void) {
-            self.profile = profile; self.destination = destination
+            self.profile = profile
             self.canPresent = canPresent; self.completion = completion; self.recoveryAction = recoveryAction
         }
     }
@@ -28,8 +27,7 @@ final class ChromiumProfilePagePresenter {
         let navigation: ChromiumPageNavigation
         var view: NSView?
         var presenter: ChromiumHostPresenter?
-        let isRecovery: Bool
-        init(navigation: ChromiumPageNavigation, isRecovery: Bool) { self.navigation = navigation; self.isRecovery = isRecovery }
+        init(navigation: ChromiumPageNavigation) { self.navigation = navigation }
     }
     private let bridge: BarcBridge
     private var requests: [UUID: Request] = [:]
@@ -41,24 +39,28 @@ final class ChromiumProfilePagePresenter {
     /// origin blacklist. A released utility window's later pages remain eligible.
     func ownsNativeWindow(_ window: Int32) -> Bool { pages[window] != nil }
 
-    func open(_ profile: ProfileSummary, destination: ProfilePageDestination,
-              canPresent: @escaping @MainActor () -> Bool,
-              completion: @escaping @MainActor (Result<Void, ProfilePageOpenError>) -> Void) {
-        openPage(profile, destination: destination, canPresent: canPresent, recoveryAction: nil) {
-            completion($0.map { _ in () })
-        }
-    }
-
     /// The already-admitted utility is startup's native owner; no model space is invented.
     func openRecovery(_ profile: ProfileSummary, canPresent: @escaping @MainActor () -> Bool,
                       openSettings: @escaping @MainActor () -> Void,
                       completion: @escaping @MainActor (Result<Int32, ProfilePageOpenError>) -> Void) {
-        openPage(profile, destination: .settings, canPresent: canPresent,
-                 recoveryAction: openSettings, completion: completion)
+        guard canPresent() else { completion(.failure(.profileUnavailable)); return }
+        let request = Request(profile: profile, canPresent: canPresent,
+                              recoveryAction: openSettings, completion: completion)
+        request.presenter = self
+        requests[request.id] = request
+        profile.id.uuidString.withCString { uuid in
+            bridge.profile_open_window(uuid, BARC_PROFILE_BLANK, { status, window, pointer in
+                MainActor.assumeIsolated {
+                    guard let pointer else { return }
+                    let request = Unmanaged<Request>.fromOpaque(pointer).takeUnretainedValue()
+                    request.presenter?.opened(request, status: status, window: window)
+                }
+            }, Unmanaged.passUnretained(request).toOpaque())
+        }
     }
 
     func ownsRecoveryWindow(_ window: Int32, profile: UUID, activeTab: Int32) -> Bool {
-        guard let page = pages[window], page.isRecovery, page.navigation.profileID == profile,
+        guard let page = pages[window], page.navigation.profileID == profile,
               page.navigation.nativeTabID == activeTab else { return false }
         return ownsControls(page, window: window)
     }
@@ -72,26 +74,6 @@ final class ChromiumProfilePagePresenter {
             return callback
         }
         callbacks.forEach { $0(.failure(.presentationUnavailable)) }
-    }
-
-    private func openPage(_ profile: ProfileSummary, destination: ProfilePageDestination,
-                          canPresent: @escaping @MainActor () -> Bool,
-                          recoveryAction: (@MainActor () -> Void)?,
-                          completion: @escaping @MainActor (Result<Int32, ProfilePageOpenError>) -> Void) {
-        guard canPresent() else { completion(.failure(.profileUnavailable)); return }
-        let request = Request(profile: profile, destination: destination, canPresent: canPresent,
-                              recoveryAction: recoveryAction, completion: completion)
-        request.presenter = self
-        requests[request.id] = request
-        profile.id.uuidString.withCString { uuid in
-            bridge.profile_open_window(uuid, BARC_PROFILE_BLANK, { status, window, pointer in
-                MainActor.assumeIsolated {
-                    guard let pointer else { return }
-                    let request = Unmanaged<Request>.fromOpaque(pointer).takeUnretainedValue()
-                    request.presenter?.opened(request, status: status, window: window)
-                }
-            }, Unmanaged.passUnretained(request).toOpaque())
-        }
     }
 
     private func opened(_ request: Request, status: barc_profile_status, window: Int32) {
@@ -109,7 +91,7 @@ final class ChromiumProfilePagePresenter {
         }
         do {
             let navigation = try ChromiumPageNavigation(profileID: request.profile.id, window: window, tab: tab, bridge: bridge)
-            let page = Page(navigation: navigation, isRecovery: request.recoveryAction != nil)
+            let page = Page(navigation: navigation)
             let canUse: () -> Bool = { [weak self, weak page] in
                 guard let self, let page else { return false }
                 return self.ownsControls(page, window: window)
@@ -144,17 +126,11 @@ final class ChromiumProfilePagePresenter {
                   presenter.showPage(tab, of: window) else {
                 refuse(request, window: window, page: page); return
             }
-            let accepted = request.destination.nativeURL.withCString { bridge.tab_navigate(window, tab, $0) }
+            let accepted = "chrome://settings/".withCString { bridge.tab_navigate(window, tab, $0) }
             guard accepted == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window) else {
                 refuse(request, window: window, page: page); return
             }
-            // Startup owns the first Show for recovery, after it revalidates
-            // this exact attached utility. Ordinary profile links still show here.
-            if request.recoveryAction == nil {
-                guard bridge.window_show(window) == 1, !request.cancelled, request.canPresent(), ownsControls(page, window: window) else {
-                    refuse(request, window: window, page: page); return
-                }
-            }
+            // Startup shows the attached utility after revalidating native ownership.
             finish(request, .success(window))
         } catch {
             refuse(request, window: window, tab: tab)
@@ -223,27 +199,12 @@ final class ChromiumProfilePagePresenter {
     }
 }
 
-private extension ProfilePageDestination {
-    var nativeURL: String {
-        switch self {
-        case .settings: "chrome://settings/"
-        case .extensions: "chrome://extensions/"
-        case .privacy: "chrome://settings/privacy"
-        case .secureConnections: "chrome://settings/security"
-        case .siteSettings: "chrome://settings/content"
-        case .clearData: "chrome://settings/clearBrowserData"
-        case .downloads: "chrome://settings/downloads"
-        case .passwords: "chrome://password-manager/passwords"
-        }
-    }
-}
-
 struct ChromiumProfilePageView: View {
     let profile: ProfileSummary
     let navigation: ChromiumPageNavigation
     let canUse: () -> Bool
     let close: () -> Void
-    var recoveryAction: (@MainActor () -> Void)? = nil
+    let recoveryAction: @MainActor () -> Void
     @State private var state = PageNavigationState(canGoBack: false, canGoForward: false)
 
     var body: some View {
@@ -258,10 +219,8 @@ struct ChromiumProfilePageView: View {
                 Button(action: reload) { Image(systemName: "arrow.clockwise") }
                     .accessibilityLabel("Reload")
             }
-            if recoveryAction != nil {
-                Text("A profile change needs attention.").font(.callout)
-                Button("Open Profile Recovery", action: openRecovery)
-            }
+            Text("A profile change needs attention.").font(.callout)
+            Button("Open Profile Recovery", action: openRecovery)
             Text(state.title ?? "Profile Settings").lineLimit(3)
             Button("Close Window", action: close)
             Spacer()
@@ -275,7 +234,7 @@ struct ChromiumProfilePageView: View {
         }
     }
 
-    func openRecovery() { if canUse() { recoveryAction?() } }
+    func openRecovery() { if canUse() { recoveryAction() } }
     func goBack() { if canUse() { _ = navigation.goBack() } }
     func goForward() { if canUse() { _ = navigation.goForward() } }
     func reload() { if canUse() { _ = navigation.reload() } }

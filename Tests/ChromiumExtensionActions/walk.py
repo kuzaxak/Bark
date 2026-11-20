@@ -52,8 +52,8 @@ def serve():
             worker.join()
 
 
-def install_extension(screen, access, fixture):
-    access.menu("Manage Extensions")
+def install_extension(screen, access, source, fixture):
+    manager = open_manager(access, source)
     developer_mode = access.control("Developer mode", ("AXCheckBox", "AXSwitch", "AXButton"))
     if access.attribute(developer_mode, "AXValue") in (False, None, 0, "0"):
         access.press(developer_mode)
@@ -99,27 +99,24 @@ def install_extension(screen, access, fixture):
              lambda: not access.find("Select", ("AXButton",)), access.process, timeout=5)
     access.control(EXTENSION)
     print("Installed the fixture in Chromium’s extension manager", flush=True)
+    return manager
 
 
 def open_manager(access, source):
     access.menu("Manage Extensions")
-    manager = wait_for("Missing extension utility window",
-                       lambda: access.owner("Load unpacked", ("AXButton",)), access.process)
-    if manager == source:
-        raise RuntimeError("The extension manager replaced the source window")
+    manager = wait_for("Missing extension manager tab",
+                       lambda: access.owner("Developer mode", ("AXCheckBox", "AXSwitch", "AXButton")), access.process)
+    if manager != source:
+        raise RuntimeError("The extension manager opened outside the invoking window")
     return manager
 
 
-def close_manager(access, manager, source):
-    close = access.find("Close Window", ("AXButton",), root=manager)
-    close = close or access.attribute(manager, "AXCloseButton")
-    if close is None:
-        raise RuntimeError("Missing extension utility close button")
-    access.press(close)
-    wait_for("Extension utility did not close",
-             lambda: manager not in access.windows(), access.process)
-    wait_for("Source window did not regain focus",
-             lambda: access.attribute(access.application, "AXFocusedWindow") == source, access.process)
+def close_manager(screen, access, source):
+    screen.keys["w"] = 13
+    screen.key("w", screen.command)
+    wait_for("The source tab did not return after closing the manager",
+             lambda: access.find(SOURCE, ("AXHeading",), root=source)
+             and access.attribute(access.application, "AXFocusedWindow") == source, access.process)
 
 
 def fixture_remove_button(access, manager):
@@ -156,7 +153,7 @@ def verify_removal(screen, access, source, events, output):
         remove = wait_for("Missing Remove on the fixture's card",
                           lambda: fixture_remove_button(access, manager), access.process)
         access.press(remove)
-        dialog = wait_for("Missing fixture removal confirmation in the extension utility",
+        dialog = wait_for("Missing fixture removal confirmation in the extension manager",
                           lambda: fixture_removal_dialog(access, manager), access.process)
         screen.screenshot(output / f"uninstall-{choice.lower()}.png", include_owned_windows=True)
         access.press(access.control(choice, ("AXButton",), root=dialog))
@@ -168,7 +165,7 @@ def verify_removal(screen, access, source, events, output):
         else:
             wait_for("The uninstalled fixture remained in the manager",
                      lambda: not access.find(EXTENSION, ("AXHeading",), root=manager), access.process)
-        close_manager(access, manager, source)
+        close_manager(screen, access, source)
 
         ready = events.count("/ready")
         screen.key("r", screen.command)
@@ -202,12 +199,8 @@ def exercise(screen, process, events, output):
         source = wait_for("Missing source window", lambda: access.owner(SOURCE), process)
         fixture = output / "Bark unpacked action fixture"
         shutil.copytree(HERE / "fixture", fixture)
-        install_extension(screen, access, fixture)
-        utility = wait_for("Missing extension utility window",
-                           lambda: access.owner("Load unpacked", ("AXButton",)), process)
-        if utility == source:
-            raise RuntimeError("The extension manager replaced the source window")
-        close_manager(access, utility, source)
+        install_extension(screen, access, source, fixture)
+        close_manager(screen, access, source)
 
         pin, unpin = f"Pin {ACTION}", f"Unpin {ACTION}"
         show_site_controls(screen, access, source)

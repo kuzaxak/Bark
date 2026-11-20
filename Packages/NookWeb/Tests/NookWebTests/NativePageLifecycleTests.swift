@@ -5369,7 +5369,7 @@ private final class DetachedNativeOwner: NativePageResourceOwner {
 }
 
 @MainActor
-final class ControlledNativeHost: NativePageHost {
+class ControlledNativeHost: NativePageHost {
     final class Creation {
         let profileID: UUID
         var cancelled = false

@@ -267,12 +267,12 @@ struct ProfileEngineTests {
         #expect(privateProfile.id != id)
     }
 
-    @Test func nativeExtensionCommandCapturesSelectedProfileWithoutRetargetingOrPageCreation() throws {
+    @Test func nativeExtensionCommandCapturesInvokingSpaceRatherThanSplitPaneProfile() throws {
         let f = try ProfileFixture(); defer { f.cleanup() }
         let tabs = f.makeTabs()
         let work = try #require(tabs.tree.orderedSpaces.first?.id)
         let personal = try #require(tabs.createSpace(name: "Personal", icon: "", accentHex: "#123456", after: work))
-        let personalID = try #require(tabs.tree.dataStoreID(for: personal))
+        let workID = try #require(tabs.tree.dataStoreID(for: work))
         let window = BrowserWindowState()
         tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
         window.spaceID = personal
@@ -283,18 +283,18 @@ struct ProfileEngineTests {
         let original = tabs.tree
         var valid: (@MainActor () -> Bool)?, finish: (@MainActor (Result<Void, ProfilePageOpenError>) -> Void)?
         var calls = 0, successes = 0
-        tabs.onOpenProfilePage = { profile, destination, canPresent, completion in
+        tabs.onOpenProfilePage = { profile, destination, target, space, canPresent, completion in
             calls += 1
-            #expect(profile.id == personalID && destination == .extensions)
+            #expect(profile.id == workID && destination == .extensions && target === window && space == work)
             valid = canPresent; finish = completion
         }
         tabs.openExtensionControls(in: window) { if case .success = $0 { successes += 1 } }
         #expect(calls == 1 && valid?() == true)
         window.selectedItemBySpace[work] = nil; window.spaceID = work
         tabs.windowRegistry.unregister(window.id)
-        #expect(valid?() == true) // Admitted controls belong to the captured profile independently.
+        #expect(valid?() == false)
         finish?(.success(())); finish?(.success(()))
-        #expect(successes == 1 && tabs.tree == original && tabs.sessions.isEmpty)
+        #expect(successes == 0 && tabs.tree == original && tabs.sessions.isEmpty)
     }
 
     @Test func nativeExtensionCommandRefusesPrivateMissingAndDeletedOwners() throws {
@@ -303,7 +303,7 @@ struct ProfileEngineTests {
         let work = try #require(tabs.createSpace(name: "Work", icon: "", accentHex: "#123456", after: nil))
         let window = BrowserWindowState(); window.spaceID = work
         var calls = 0, failures = 0
-        tabs.onOpenProfilePage = { _, _, _, _ in calls += 1 }
+        tabs.onOpenProfilePage = { _, _, _, _, _, _ in calls += 1 }
         let completed: @MainActor (Result<Void, ProfilePageOpenError>) -> Void = {
             if case .failure = $0 { failures += 1 }
         }
@@ -327,7 +327,7 @@ struct ProfileEngineTests {
         let window = BrowserWindowState(); window.spaceID = work
         tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
         var valid: (@MainActor () -> Bool)?, finish: (@MainActor (Result<Void, ProfilePageOpenError>) -> Void)?
-        tabs.onOpenProfilePage = { _, _, canPresent, completion in valid = canPresent; finish = completion }
+        tabs.onOpenProfilePage = { _, _, _, _, canPresent, completion in valid = canPresent; finish = completion }
         var error: ProfilePageOpenError?
         tabs.openExtensionControls(in: window) { if case .failure(let value) = $0 { error = value } }
         #expect(valid?() == true)
@@ -337,7 +337,7 @@ struct ProfileEngineTests {
         #expect(error == .profileUnavailable && tabs.sessions.isEmpty)
     }
 
-    @Test func profileControlsRouteEveryDestinationToRequestedInactiveProfileWithoutTreeEdits() throws {
+    @Test func profileControlsChooseFirstMatchingSpaceAndKeepMatchingCurrentSpace() throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
         let tabs = fixture.makeTabs()
@@ -348,11 +348,15 @@ struct ProfileEngineTests {
         tabs.windowRegistry.register(window)
         tabs.windowRegistry.setActive(window)
         window.spaceID = personal
+        let anotherWork = try #require(tabs.createSpace(name: "Other Work", icon: "person", accentHex: "#123456",
+                                                      after: work, sharingLoginsWith: work))
         let original = tabs.tree
+        var expectedSpace = work
         var observed: [ProfilePageDestination] = []
         var successes = 0
-        tabs.onOpenProfilePage = { profile, destination, canPresent, completion in
-            #expect(profile.id == profileID && profile.name == "Work")
+        tabs.onOpenProfilePage = { profile, destination, target, space, canPresent, completion in
+            #expect(profile.id == profileID && profile.name == "Work" && target === window)
+            #expect(space == expectedSpace)
             #expect(canPresent())
             observed.append(destination)
             completion(.success(()))
@@ -365,10 +369,14 @@ struct ProfileEngineTests {
         #expect(observed == [.settings, .extensions, .privacy, .secureConnections, .siteSettings, .clearData, .downloads, .passwords])
         #expect(successes == observed.count && tabs.tree == original)
         #expect(window.spaceID == personal && window.selectedItemID == nil)
+        window.spaceID = anotherWork
+        expectedSpace = anotherWork
+        tabs.openProfilePage(profileID: profileID, destination: .passwords) { _ in }
+        #expect(observed.count == ProfilePageDestination.allCases.count + 1)
 
         let privateProfile = Profile.createEphemeral()
         var privateFailure: ProfilePageOpenError?
-        tabs.onOpenProfilePage = { _, _, _, _ in Issue.record("An ephemeral profile reached the presenter") }
+        tabs.onOpenProfilePage = { _, _, _, _, _, _ in Issue.record("An ephemeral profile reached the presenter") }
         tabs.openProfilePage(profileID: privateProfile.id, destination: .secureConnections) {
             if case .failure(let error) = $0 { privateFailure = error }
         }
@@ -376,7 +384,7 @@ struct ProfileEngineTests {
     }
 
     @Test(arguments: [ProfilePageDestination.extensions, .passwords, .secureConnections])
-    func keptProfileControlsNeedNoWindowOrSpaceAssignment(destination: ProfilePageDestination) throws {
+    func keptProfileControlsRequireAnAssignedSpace(destination: ProfilePageDestination) throws {
         let fixture = try ProfileFixture()
         defer { fixture.cleanup() }
         let tabs = fixture.makeTabs()
@@ -385,17 +393,15 @@ struct ProfileEngineTests {
         tabs.deleteSpace(work, keepingLeftProfile: true)
         let original = tabs.tree
         let kept = tabs.device.keptProfiles
-        var invoked = false
-        tabs.onOpenProfilePage = { profile, requested, canPresent, completion in
-            #expect(profile.id == profileID && profile.spaceIDs.isEmpty)
-            #expect(requested == destination && canPresent())
-            invoked = true
-            completion(.success(()))
-        }
+        let window = BrowserWindowState()
+        window.spaceID = tabs.tree.orderedSpaces.first?.id
+        tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
+        tabs.onOpenProfilePage = { _, _, _, _, _, _ in Issue.record("A kept profile has no route") }
+        var failure: ProfilePageOpenError?
         tabs.openProfilePage(profileID: profileID, destination: destination) { result in
-            if case .failure = result { Issue.record("Kept profile routing unexpectedly failed") }
+            if case .failure(let error) = result { failure = error }
         }
-        #expect(invoked && tabs.windowRegistry.windows.isEmpty)
+        #expect(failure == .presentationUnavailable)
         #expect(tabs.tree == original && tabs.device.keptProfiles == kept)
     }
 
@@ -408,7 +414,9 @@ struct ProfileEngineTests {
         let profileID = try #require(tabs.tree.dataStoreID(for: work))
         var canPresent: (@MainActor () -> Bool)?
         var finish: (@MainActor (Result<Void, ProfilePageOpenError>) -> Void)?
-        tabs.onOpenProfilePage = { profile, _, valid, completion in
+        let window = BrowserWindowState(); window.spaceID = work
+        tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
+        tabs.onOpenProfilePage = { profile, _, _, _, valid, completion in
             #expect(profile.id == profileID)
             canPresent = valid
             finish = completion
@@ -424,7 +432,7 @@ struct ProfileEngineTests {
         finish?(.success(()))
         finish?(.success(()))
         #expect(errors == [.profileUnavailable])
-        tabs.onOpenProfilePage = { _, _, _, _ in Issue.record("Deleted profile reached presenter") }
+        tabs.onOpenProfilePage = { _, _, _, _, _, _ in Issue.record("Deleted profile reached presenter") }
         tabs.openProfilePage(profileID: profileID, destination: .settings) {
             if case .failure(let error) = $0 { errors.append(error) }
         }
@@ -440,7 +448,7 @@ struct ProfileEngineTests {
         tabs.windowRegistry.register(window)
         let id = try #require(window.ephemeralProfile?.id)
         let original = tabs.tree
-        tabs.onOpenProfilePage = { _, _, _, _ in Issue.record("Private identity reached regular presenter") }
+        tabs.onOpenProfilePage = { _, _, _, _, _, _ in Issue.record("Private identity reached regular presenter") }
         var failure: ProfilePageOpenError?
         tabs.openProfilePage(profileID: id, destination: .passwords) {
             if case .failure(let error) = $0 { failure = error }
@@ -461,6 +469,73 @@ struct ProfileEngineTests {
         }
         #expect(error == .presentationUnavailable && tabs.tree == original)
         #expect(tabs.sessions.isEmpty && tabs.windowRegistry.windows.isEmpty)
+    }
+
+    @Test func profilePagesSelectOnlyAfterTheNativeWindowAdmitsTheExactTab() throws {
+        let fixture = try ProfileFixture(); defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs()
+        let host = ProfileSpaceSwitchHost()
+        tabs.nativePageHost = host
+        tabs.onOpenProfilePage = { [weak tabs] _, destination, window, space, canPresent, completion in
+            tabs?.presentProfilePageTab(destination, in: window, spaceID: space,
+                                       canPresent: canPresent, completion: completion)
+        }
+        let work = try #require(tabs.orderedSpaces.first?.id)
+        let personal = try #require(tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: work))
+        let workProfile = try #require(tabs.tree.dataStoreID(for: work))
+        let personalProfile = try #require(tabs.tree.dataStoreID(for: personal))
+        let window = BrowserWindowState(); window.spaceID = work
+        tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
+        var completed = 0
+        let completion: @MainActor (Result<Void, ProfilePageOpenError>) -> Void = {
+            if case .success = $0 { completed += 1 }
+        }
+
+        tabs.openExtensionControls(in: window, completion: completion)
+        _ = host.finishCreate(0)
+        #expect(host.requestedProfiles == [workProfile])
+        #expect(window.selectedItemID == nil && completed == 0)
+        host.admit(window)
+        let workManager = try #require(window.selectedItemID)
+        #expect(tabs.item(workManager)?.url == ProfilePageDestination.extensions.url)
+
+        tabs.openProfilePage(profileID: personalProfile, destination: .extensions, completion: completion)
+        _ = host.finishCreate(1)
+        #expect(host.requestedProfiles == [workProfile, personalProfile])
+        #expect(window.spaceID == work && window.selectedItemID == workManager && completed == 1)
+        host.admit(window)
+        let personalManager = try #require(window.selectedItemID)
+        #expect(personalManager != workManager && window.spaceID == personal && completed == 2)
+        #expect(tabs.item(personalManager)?.parent == .tabs(spaceID: personal))
+        #expect(tabs.item(workManager)?.parent == .tabs(spaceID: work))
+    }
+
+    @Test func supersededProfilePageDoesNotLeaveATabOrReclaimTheWindow() async throws {
+        let fixture = try ProfileFixture(); defer { fixture.cleanup() }
+        let tabs = fixture.makeTabs()
+        let host = ProfileSpaceSwitchHost()
+        tabs.nativePageHost = host
+        tabs.onOpenProfilePage = { [weak tabs] _, destination, window, space, canPresent, completion in
+            tabs?.presentProfilePageTab(destination, in: window, spaceID: space,
+                                       canPresent: canPresent, completion: completion)
+        }
+        let work = try #require(tabs.orderedSpaces.first?.id)
+        let personal = try #require(tabs.createSpace(name: "Personal", icon: "house", accentHex: "#123456", after: work))
+        let profile = try #require(tabs.tree.dataStoreID(for: personal))
+        let window = BrowserWindowState(); window.spaceID = work
+        tabs.windowRegistry.register(window); tabs.windowRegistry.setActive(window)
+        var failures: [ProfilePageOpenError] = []
+        tabs.openProfilePage(profileID: profile, destination: .settings) {
+            if case .failure(let failure) = $0 { failures.append(failure) }
+        }
+        _ = host.finishCreate(0)
+        let abandoned = try #require(tabs.children(of: .tabs(spaceID: personal)).first?.id)
+        tabs.setSpace(work, in: window)
+        await liveCallbacks()
+        #expect(failures == [.presentationFailed] && window.spaceID == work)
+        #expect(host.closes.count == 1)
+        host.finishClose(0, admitted: true)
+        #expect(tabs.item(abandoned) == nil && window.spaceID == work)
     }
 
     @Test func nativeLiveSourcesReportUnavailableWithoutAnInstalledBridge() async throws {
@@ -638,7 +713,7 @@ struct ProfileEngineTests {
         #expect(recovered.device.pendingProfileDeletion == PendingProfileDeletion(target: target, survivor: survivor))
         #expect(recovered.profile(forStore: target) == nil)
         var controlOpened = false
-        recovered.onOpenProfilePage = { _, _, _, _ in controlOpened = true }
+        recovered.onOpenProfilePage = { _, _, _, _, _, _ in controlOpened = true }
         recovered.openProfilePage(profileID: target, destination: .settings) { _ in }
         #expect(!controlOpened)
         // Native may have cleared its restart marker. A refusal in a new process
@@ -803,6 +878,33 @@ struct ProfileEngineTests {
         #expect(tabs.sessions.isEmpty)
     }
 
+}
+
+@MainActor
+private final class ProfileSpaceSwitchHost: ControlledNativeHost, NativeSpaceSwitchHost {
+    private(set) var requestedProfiles: [UUID] = []
+    private var admission: (@MainActor (BrowserWindowState) -> Void)?
+
+    func switchSpace(to profile: Profile, page: (any PageNavigation)?, in window: BrowserWindowState,
+                     isCurrent: @escaping @MainActor () -> Bool,
+                     completion: @escaping @MainActor (NativeSpaceSwitchOutcome) -> Void) {
+        requestedProfiles.append(profile.id)
+        admission = { [weak self, weak window] target in
+            guard let self, window === target, isCurrent() else { return }
+            if let page {
+                self.nativeSelectedPage = page as? NativeTestPage
+                self.nativeSelectedWindow = target.id
+                precondition(self.acceptNativeSelection(page, in: target))
+            }
+            completion(.applied(page))
+        }
+    }
+
+    func admit(_ window: BrowserWindowState) {
+        let callback = admission
+        admission = nil
+        callback?(window)
+    }
 }
 
 @MainActor

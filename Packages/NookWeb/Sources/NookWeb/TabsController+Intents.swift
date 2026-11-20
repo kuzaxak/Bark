@@ -310,17 +310,19 @@ extension TabsController {
             (window.isIncognito ? window.ephemeralProfile === profile : isProfileAvailable(profile.id))
     }
 
-    private func switchNativeSpace(_ spaceID: UUID, itemID: UUID?, in window: BrowserWindowState,
-                                   through host: any NativeSpaceSwitchHost, onApplied: (@MainActor () -> Void)? = nil) {
+    func switchNativeSpace(_ spaceID: UUID, itemID: UUID?, in window: BrowserWindowState,
+                           through host: any NativeSpaceSwitchHost, onApplied: (@MainActor () -> Void)? = nil,
+                           onFinished: (@MainActor (Bool) -> Void)? = nil) {
         guard !isTerminating, windowRegistry.windows[window.id] === window,
               let profile = window.isIncognito ? window.ephemeralProfile : profile(forSpace: spaceID),
-              canSelect(profile, forSpace: spaceID, in: window) else { return }
+              canSelect(profile, forSpace: spaceID, in: window) else { onFinished?(false); return }
         let generation = UUID()
         window.nativeSpaceSwitch = (generation, spaceID)
         guard cancelNativeSplit(in: window), window.nativeSpaceSwitch?.generation == generation,
-              windowRegistry.windows[window.id] === window else { return }
+              windowRegistry.windows[window.id] === window else { onFinished?(false); return }
         let previous = window.nativeSelectionSession
         window.nativeSelectionGeneration = generation
+        if let onFinished { window.nativeSpaceSwitchInterrupted = (generation, { onFinished(false) }) }
         window.nativeSelectionSession = nil
 
         let current = { [weak self, weak window, weak host] in
@@ -411,6 +413,7 @@ extension TabsController {
             }
             guard current() else { return }
             window.nativeSpaceSwitch = nil
+            if window.nativeSpaceSwitchInterrupted?.generation == generation { window.nativeSpaceSwitchInterrupted = nil }
             window.nativeSelectionGeneration = nil
             window.nativeSelectionSession = nil
             if applied && presented && window.spaceID == spaceID { onApplied?() }
@@ -424,6 +427,8 @@ extension TabsController {
             if window.nativeSelectionGeneration == nil {
                 window.nativePresentationDidSettle?(presented)
             }
+            onFinished?(applied && presented && window.spaceID == spaceID &&
+                        window.selectedItemID == itemID && window.nativeSelectionGeneration == nil)
         }
 
         if previous?.itemID != itemID { previous?.cancelNativePreparation(in: window) }
