@@ -9,6 +9,8 @@ import runpy
 import sys
 
 
+PSEUDOLOCALES = ("ar_XB", "en_XA")
+
 CASE_LABELS = {
     'en-US': {
         'IDS_SETTINGS_ABOUT_PROGRAM': 'About Bark',
@@ -46,7 +48,18 @@ def check_about_page(framework, header, data_pack):
     print('Checked the About page in the installed Settings scripts')
 
 
-def check_installed(resources, generated, settings_header, data_pack):
+def missing_installed_packs(expected, installed, *, allow_missing_pseudolocales=False):
+    missing = expected - installed
+    if allow_missing_pseudolocales:
+        for locale in PSEUDOLOCALES:
+            family = {path for path in expected
+                      if path.parent.stem == locale or path.parent.stem.startswith(f'{locale}_')}
+            if family <= missing:
+                missing -= family
+    return missing
+
+
+def check_installed(resources, generated, settings_header, data_pack, *, allow_missing_pseudolocales=False):
     localizations = {path.parent.stem for path in resources.glob('*.lproj/InfoPlist.strings')}
     if not localizations:
         raise ValueError(f'No app localizations in {resources}')
@@ -62,10 +75,13 @@ def check_installed(resources, generated, settings_header, data_pack):
     if missing := localizations - names:
         raise ValueError(f'No generated browser strings for installed locales {sorted(missing)}')
     installed = set(framework.glob('*.lproj/locale.pak'))
-    if expected.keys() != installed:
-        raise ValueError(f'Pack inventory differs. Missing {sorted(expected.keys() - installed)}. '
-                         f'Unexpected {sorted(installed - expected.keys())}.')
-    for path, source in expected.items():
+    missing = missing_installed_packs(expected.keys(), installed,
+                                      allow_missing_pseudolocales=allow_missing_pseudolocales)
+    unexpected = installed - expected.keys()
+    if missing or unexpected:
+        raise ValueError(f'Pack inventory differs. Missing {sorted(missing)}. Unexpected {sorted(unexpected)}.')
+    for path in sorted(installed):
+        source = expected[path]
         final = data_pack.ReadDataPack(path).resources
         for key, value in data_pack.ReadDataPack(source).resources.items():
             if final.get(key) != value:
@@ -74,7 +90,28 @@ def check_installed(resources, generated, settings_header, data_pack):
     check_about_page(framework, settings_header, data_pack)
 
 
-def check(grit_source, output, header_path, app):
+def check_labels(locale, messages, ids, labels):
+    base_locale, _, gender = locale.partition('_')
+    failures = []
+    for name in labels['_BARK_PRODUCT_LABELS']:
+        value = messages.get(ids[name], b'').decode()
+        # GRIT gender packs are sparse overrides. The base pack supplies the
+        # fallback for strings that do not have a gender-specific translation.
+        if not value and not gender:
+            failures.append(f'{locale} missing product label: {name}')
+            continue
+        localized = labels['_BARK_LOCALIZED_BRANDS'].get((base_locale, name))
+        forbidden = labels['_BARK_CHROMIUM_NAMES'] + ((localized[0],) if localized else ())
+        if any(brand in value for brand in forbidden):
+            failures.append(f'{locale} {name} retains an old browser name: {value}')
+    for name, expected in CASE_LABELS.get(locale, {}).items():
+        value = messages.get(ids[name], b'').decode()
+        if expected not in value:
+            failures.append(f'{locale} {name} expected {expected!r}: {value}')
+    return failures
+
+
+def check(grit_source, output, header_path, app, *, allow_missing_pseudolocales=False):
     sys.path.insert(0, str(grit_source / 'tools/grit'))
     from grit.format import data_pack
 
@@ -89,16 +126,7 @@ def check(grit_source, output, header_path, app):
     for file in files:
         locale = file.stem.removeprefix('branded_strings_')
         messages = data_pack.ReadDataPack(file).resources
-        for name in labels['_BARK_PRODUCT_LABELS']:
-            value = messages.get(ids[name], b'').decode()
-            localized = labels['_BARK_LOCALIZED_BRANDS'].get((locale.split('_')[0], name))
-            forbidden = labels['_BARK_CHROMIUM_NAMES'] + ((localized[0],) if localized else ())
-            if any(brand in value for brand in forbidden):
-                failures.append(f'{locale} {name} retains an old browser name: {value}')
-        for name, expected in CASE_LABELS.get(locale, {}).items():
-            value = messages.get(ids[name], b'').decode()
-            if expected not in value:
-                failures.append(f'{locale} {name} expected {expected!r}: {value}')
+        failures.extend(check_labels(locale, messages, ids, labels))
 
     locales = {file.stem.removeprefix('branded_strings_') for file in files}
     if missing := CASE_LABELS.keys() - locales:
@@ -107,7 +135,8 @@ def check(grit_source, output, header_path, app):
         raise SystemExit('\n'.join(failures))
     print(f'Verified localized Bark product labels and Chromium V8 attribution in {len(files)} packs')
     if app is not None:
-        check_installed(app / 'Contents/Resources', files, header_path.with_name('settings_resources.h'), data_pack)
+        check_installed(app / 'Contents/Resources', files, header_path.with_name('settings_resources.h'), data_pack,
+                        allow_missing_pseudolocales=allow_missing_pseudolocales)
 
 
 if __name__ == '__main__':
@@ -116,6 +145,11 @@ if __name__ == '__main__':
     parser.add_argument('output', type=Path, help='Generated Bark locale pack directory')
     parser.add_argument('--header', type=Path, help='Optional explicit generated branded_strings.h')
     parser.add_argument('--app', type=Path, help='Also check every packaged product string in this Bark.app')
+    parser.add_argument('--allow-missing-pseudolocales', action='store_true',
+                        help='Allow an optimized engine to omit ar-XB and en-XA and all variants')
     args = parser.parse_args()
+    if args.allow_missing_pseudolocales and args.app is None:
+        parser.error('--allow-missing-pseudolocales requires --app')
     check(args.grit_source.resolve(), args.output.resolve(),
-          args.header or args.output.parents[1] / 'chrome/grit/branded_strings.h', args.app)
+          args.header or args.output.parents[1] / 'chrome/grit/branded_strings.h', args.app,
+          allow_missing_pseudolocales=args.allow_missing_pseudolocales)

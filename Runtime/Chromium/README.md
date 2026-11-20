@@ -559,11 +559,13 @@ before Chromium packs them into the framework. Given a prepared checkout, compar
 the generated labels with a staged or signed app, including its installed locales
 and grammatical-gender variants. The same command checks that the installed About
 page shows the engine version and credits and leaves update checks to Bark’s app menu.
-Use the output directory for the app's architecture.
+Use the output directory that produced the installed app’s SDK. Optimized engines
+can omit the two developer pseudolocales. The [branding check](../../Tests/ChromiumWebUIBranding/README.md)
+documents how to verify that package layout.
 
 ```fish
 set -l src "$engine_checkout/src"
-python3 Tests/ChromiumWebUIBranding/check.py "$src" "$src/out/Barc-x64/gen/bark/app" --app build/Bark.app
+python3 Tests/ChromiumWebUIBranding/check.py "$src" "$src/out/Barc-x64/gen/bark/app" --app "$signed_app"
 ```
 
 The outer bundle and native shell inherit the project's `MARKETING_VERSION` and
