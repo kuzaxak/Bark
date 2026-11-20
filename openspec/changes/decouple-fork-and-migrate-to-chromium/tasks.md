@@ -142,6 +142,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 - [ ] 8.5 Exercise a signed application update and recovery with realistic profile data; verify the correct architecture receives a compatible package.
 - [ ] 8.6 Add version/provenance diagnostics, license notices and an engine-update runbook; rehearse one engine bump through the smoke and extension gates.
   Signed Intel Bark’s Help menu reports the app build, Chromium version, architecture and verified engine manifest digest. The target-specific packaging tests cover both architectures.
+  The 156.0.8078.80 → 156.0.8078.105 input rehearsal applied 291 patches on both commits. The November 20 milestone upgrade is on local branch `codex/bark-chromium-158` from `b347698f`. Target the November 17 Mac Stable release 158.0.8127.37 (`b8c2be851f62f6a394ec57955d7f31335d7cb6d4`). The original M156 stack applied directly to 247 of 291 M158 files. Track the port, native builds and qualification on that branch. Build 123 is the signed M156 testing baseline.
 
 ## 9. Integrated qualification (G6)
 
