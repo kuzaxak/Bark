@@ -137,8 +137,10 @@ public final class VaultService {
 
     public var isEnabled: Bool { pawlEnabledAtLaunch ?? settings.pawlVaultEnabled }
 
-    /// Opens the installed vault at the person's request.
-    public func openPawlVault() -> Bool { isEnabled && openPawlApplication() }
+    /// Opens the installed vault at the person's request, including before a pending relaunch.
+    public func openPawlVault() -> Bool {
+        (isEnabled || settings.pawlVaultEnabled) && openPawlApplication()
+    }
 
     /// Paired and unlocked as of the last `hello`.
     public var isConnected: Bool { isEnabled && status == .connected }

@@ -308,9 +308,8 @@ def close_settings(controls, settings):
 def require_exclusive_pawl(controls, settings, output):
     if controls.find("Pawl Vault works alongside Chromium", (), partial=True, root=settings):
         raise RuntimeError("This signed Bark uses Pawl alongside Chromium. Exclusive provider selection requires a newer SDK.")
-    # The relaunch notice requires an engine-selected provider, and Connected
-    # appears only when Pawl is the active provider for this session.
-    controls.require("Quit and reopen Bark to change password providers.", root=settings, partial=True)
+    # Only an engine-selected provider has an Active provider row.
+    controls.require("Active provider", root=settings, partial=True)
     controls.require("Connected", root=settings)
     controls.screen.screenshot(output / "pawl-provider-at-launch.png", include_owned_windows=True)
     print("Verified that the signed app selected Pawl at engine startup", flush=True)

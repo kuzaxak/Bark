@@ -6,7 +6,7 @@
 //  Created by Maciek Bagiński on 04/08/2025.
 //
 //  A space's sidebar outline: pinned section rows, the separator and new-tab button, then
-//  tabs section rows. Rows come flattened from `TabsController.rows(space:)`; each section is
+//  tabs section rows. Rows come flattened from `TabsController.rows(space:in:)`; each section is
 //  one drop zone whose rows all share `Tab.stride` height (including vertical card insets), which the
 //  drop position math in `NookDragSessionManager` relies on.
 //
@@ -54,7 +54,7 @@ struct SpaceView: View {
     }
 
     var body: some View {
-        let rows = tabs.rows(space: spaceID)
+        let rows = tabs.rows(space: spaceID, in: windowState)
         let pinned = rows.filter { $0.section == .pinned }
         let regular = rows.filter { $0.section == .tabs }
         let split = splitPanes(in: rows)
@@ -69,7 +69,7 @@ struct SpaceView: View {
                 }
 
                 VStack(spacing: NookDesign.Spacing.sectionGap) {
-                    separatorAndNewTab(regular: regular)
+                    separatorAndNewTab(regular: regular, hasPinnedRows: !pinned.isEmpty)
                     sectionList(.tabs(spaceID: spaceID), rows: regular, split: split, showsTail: true)
                 }
             }
@@ -82,7 +82,12 @@ struct SpaceView: View {
         // show the tab; a click on a visible row scrolls nothing.
         .onChange(of: windowState.selectedItemID) { _, itemID in
             guard isActive, let itemID, !dragSession.isDragging else { return }
-            withAnimation(NookDesign.Motion.standard) { proxy.scrollTo(itemID) }
+            // A selected tab in a collapsed folder may have just been inserted.
+            DispatchQueue.main.async {
+                guard windowState.spaceID == spaceID, windowState.selectedItemID == itemID,
+                      !dragSession.isDragging else { return }
+                withAnimation(NookDesign.Motion.standard) { proxy.scrollTo(itemID) }
+            }
         }
         .onChange(of: windowState.sidebarRevealItemID, initial: true) { _, itemID in
             guard isActive, let itemID else { return }
@@ -267,8 +272,7 @@ struct SpaceView: View {
         func contains(_ id: UUID) -> Bool { items.contains { $0.id == id } }
     }
 
-    /// The window's split, anchored at the row of its first pane that has one: a favorite has
-    /// none, nor a tab inside a closed folder.
+    /// The window's split, anchored at the row of its first pane that appears in the outline.
     private func splitPanes(in rows: [Row]) -> SplitPanes? {
         guard let split = windowState.split,
               let anchor = split.itemIDs.first(where: { id in rows.contains { $0.id == id } })
@@ -280,7 +284,7 @@ struct SpaceView: View {
 
     // MARK: - Separator and New Tab
 
-    private func separatorAndNewTab(regular: [Row]) -> some View {
+    private func separatorAndNewTab(regular: [Row], hasPinnedRows: Bool) -> some View {
         let looseTabs = regular.filter { $0.depth == 0 && !$0.item.isFolder }.map(\.item.id)
         return VStack(spacing: NookDesign.Spacing.xs) {
             SpaceSeparator(
@@ -297,7 +301,7 @@ struct SpaceView: View {
             )
             .padding(.horizontal, NookDesign.Spacing.md)
 
-            if tabs.rows(space: spaceID).allSatisfy({ $0.section != .pinned }), dragSession.isDragging {
+            if !hasPinnedRows, dragSession.isDragging {
                 // Reuse the New Tab slot, so revealing an empty pin target cannot push the
                 // whole list down beneath the pointer at the start of a drag.
                 sectionList(.pinned(spaceID: spaceID), rows: [], split: nil, showsTail: false)

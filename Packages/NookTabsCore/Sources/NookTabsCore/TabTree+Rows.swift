@@ -3,7 +3,7 @@ import Foundation
 
 extension TabTree {
     /// Sidebar rows for one space: the pinned section, then the tabs section. The children of a
-    /// folder or a parent tab appear only while it is open.
+    /// folder or a parent tab appear while it is open.
     public func visibleRows(space spaceID: UUID, openFolders: Set<UUID>) -> [Row] {
         visibleRows(space: spaceID, openFolders: openFolders, children: childrenByParent())
     }
@@ -23,6 +23,19 @@ extension TabTree {
         walk(.pinned(spaceID: spaceID), depth: 0, section: .pinned)
         walk(.tabs(spaceID: spaceID), depth: 0, section: .tabs)
         return rows
+    }
+
+    /// Show a hidden selection just below its outermost collapsed folder. The row keeps its
+    /// underlying item and parent, even when the intermediate folders are hidden.
+    public func revealingSelectedTab(_ selectedItemID: UUID, in rows: [Row], openFolders: Set<UUID>) -> [Row] {
+        guard let tab = item(selectedItemID), !tab.isFolder,
+              let chain = liveFolderChain(of: selectedItemID),
+              let folderID = chain.folders.last(where: { !openFolders.contains($0) }),
+              let index = rows.firstIndex(where: { $0.id == folderID && $0.item.isFolder }) else { return rows }
+        let folder = rows[index]
+        var visible = rows
+        visible.insert(Row(item: tab, depth: folder.depth + 1, section: folder.section, hasChildren: false), at: index + 1)
+        return visible
     }
 
     /// Where a drop lands, given the visible rows of one section.

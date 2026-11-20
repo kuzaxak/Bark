@@ -112,7 +112,7 @@ def main():
             def provider_notice():
                 if controls.find("Pawl Vault works alongside Chromium", (), partial=True, root=settings):
                     raise RuntimeError("This signed Bark uses Pawl alongside Chromium. Exclusive provider selection requires a newer SDK.")
-                return controls.find("Quit and reopen Bark to change password providers.", (), partial=True, root=settings)
+                return controls.find("Active provider", (), partial=True, root=settings)
 
             wait_for("Missing launch-time Pawl provider notice", provider_notice, process)
             controls.require(UNAVAILABLE, root=settings, partial=True)

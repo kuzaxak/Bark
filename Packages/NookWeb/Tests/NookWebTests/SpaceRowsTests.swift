@@ -1,6 +1,7 @@
 // Licensed under GPL-3.0. See LICENSE.
 import Foundation
 import Observation
+import Synchronization
 import Testing
 import NookTabsCore
 @testable import NookWeb
@@ -101,5 +102,49 @@ struct SpaceRowsTests {
         #expect(changes { _ = host.tabs.open(url: URL(string: "https://two.invalid")!, in: host.window, placement: .background, parent: .tabs(spaceID: spaceID)) },
                 "a new tab")
         #expect(changes { host.tabs.toggleFolder(folder) }, "a folder closing")
+    }
+
+    @Test func aClosedFolderShowsOnlyTheWindowsSelectedBookmark() throws {
+        let host = try Host(); defer { host.cleanup() }
+        let spaceID = try #require(host.window.spaceID)
+        let outside = try #require(host.window.selectedItemID)
+        let outer = try #require(host.tabs.createFolder(title: "Outer", in: .pinned(spaceID: spaceID), after: nil))
+        let inner = try #require(host.tabs.createFolder(title: "Inner", in: .folder(itemID: outer), after: nil))
+        let bookmark = try #require(host.tabs.open(url: URL(string: "https://selected.invalid")!, in: host.window,
+                                                   placement: .background, parent: .folder(itemID: inner)))
+        let sibling = try #require(host.tabs.open(url: URL(string: "https://sibling.invalid")!, in: host.window,
+                                                  placement: .background, parent: .folder(itemID: inner)))
+        let other = BrowserWindowState()
+        host.registry.register(other)
+        host.tabs.attach(window: other)
+        host.tabs.select(outside, in: other)
+
+        func pinned() -> [Row] { host.tabs.rows(space: spaceID, in: host.window).filter { $0.section == .pinned } }
+        host.tabs.toggleFolder(inner)
+        host.tabs.toggleFolder(outer)
+        #expect(pinned().map(\.id) == [outer])
+
+        let heard = Mutex(false)
+        withObservationTracking { _ = pinned() } onChange: { heard.withLock { $0 = true } }
+        host.tabs.select(bookmark, in: host.window)
+        #expect(heard.withLock { $0 })
+        #expect(pinned().map(\.id) == [outer, bookmark])
+        #expect(pinned().map(\.depth) == [0, 1])
+        #expect(pinned().last?.item.parent == .folder(itemID: inner))
+        #expect(!host.tabs.isOpen(folder: outer))
+        #expect(!host.tabs.isOpen(folder: inner))
+        #expect(!host.tabs.rows(space: spaceID, in: other).contains { $0.id == bookmark })
+
+        host.tabs.select(sibling, in: host.window)
+        #expect(pinned().map(\.id) == [outer, sibling])
+        host.tabs.toggleFolder(outer)
+        #expect(pinned().map(\.id) == [outer, inner, sibling])
+        #expect(pinned().map(\.depth) == [0, 1, 2])
+        host.tabs.toggleFolder(inner)
+        #expect(Set(pinned().map(\.id)) == [outer, inner, bookmark, sibling])
+        #expect(pinned().filter { $0.id == sibling }.count == 1)
+        host.tabs.toggleFolder(inner)
+        host.tabs.select(outside, in: host.window)
+        #expect(pinned().map(\.id) == [outer, inner])
     }
 }

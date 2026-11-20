@@ -4434,39 +4434,54 @@ struct NativeVaultFormTests {
         #expect(native.vaultFills.count == 1 && native.vaultFills.first?.2 == "123456")
     }
 
-    @Test(arguments:["notRunning", "locked"])
-    func refocusingAfterVaultRecoveryRestoresFillSaveAndPasskeys(initial:String) async throws {
+    @Test(arguments: ["notRunning", "locked"], [false, true])
+    func refocusingAfterVaultRecoveryRestoresFillSaveAndPasskeys(initial: String, previouslyConnected: Bool) async throws {
+        func waitForState(_ predicate: () -> Bool) async -> Bool {
+            let deadline = ContinuousClock.now + .seconds(1)
+            while !predicate() && ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(1))
+            }
+            return predicate()
+        }
+
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
-        await transport.availability(initial)
+        await transport.availability(previouslyConnected ? "available" : initial)
         let vault = VaultService(settings:f.tabs.settings,client:transport)
         vault.presenter = presenter; f.tabs.vault = vault
         _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        #expect(native.vaultFocus != nil && native.vaultSave == nil && native.passkeyCallback == nil)
-        native.focusVault(); await agentCallbacks()
+        #expect(native.vaultFocus != nil)
+        #expect((native.vaultSave != nil) == previouslyConnected)
+        #expect((native.passkeyCallback != nil) == previouslyConnected)
+        await transport.availability(initial)
+        native.focusVault()
+        let unavailableStatus: VaultStatus = initial == "locked" ? .locked : .notRunning
+        #expect(await waitForState { vault.status == unavailableStatus })
         #expect(presenter.nativeCompletion == nil && native.vaultFills.isEmpty)
+        #expect(native.vaultSave == nil && native.passkeyCallback == nil)
         let before = await transport.methods
-        #expect(!before.contains("logins") && !before.contains("password") && !before.contains("code"))
+        #expect(before.contains("logins") == previouslyConnected)
+        #expect(!before.contains("password") && !before.contains("code"))
         // Stay on the same page. The next field gesture must discover the unlocked vault.
         await transport.availability("available")
-        native.focusVault(); await agentCallbacks()
-        #expect(vault.isConnected && presenter.nativeCompletion != nil)
+        native.focusVault()
+        #expect(await waitForState { vault.isConnected && presenter.nativeCompletion != nil })
         #expect(native.vaultSave != nil && native.passkeyCallback != nil)
         let metadataOnly = await transport.methods
         #expect(!metadataOnly.contains("password") && !metadataOnly.contains("code"))
-        presenter.pick(); await agentCallbacks()
-        #expect(native.vaultFills.count == 1 && native.vaultFills.first?.2 == "synthetic-password")
-        native.submitVault(); await agentCallbacks()
-        #expect(presenter.loginAction == .create && presenter.saveCompletion != nil)
+        presenter.pick()
+        #expect(await waitForState { native.vaultFills.count == 1 && native.vaultFills.first?.2 == "synthetic-password" })
+        native.submitVault()
+        #expect(await waitForState { presenter.loginAction == .create && presenter.saveCompletion != nil })
         #expect(await transport.saves.isEmpty)
         presenter.saveCompletion?(false)
-        native.requestPasskey(operation: 1); await agentCallbacks()
-        #expect(presenter.nativeCompletion != nil && native.passkeyReplies.isEmpty)
-        presenter.pick(); await agentCallbacks()
+        native.requestPasskey(operation: 1)
+        #expect(await waitForState { presenter.nativeCompletion != nil && native.passkeyReplies.isEmpty })
+        presenter.pick()
+        #expect(await waitForState { native.passkeyReplies.count == 1 && native.passkeyReplies.first?.1 != nil })
         #expect(await transport.assertedCredentials == ["AQ"])
-        #expect(native.passkeyReplies.count == 1 && native.passkeyReplies.first?.1 != nil)
     }
 
     @Test func nativeNavigationUsesExistingThrottledVaultStatusRefresh() async throws {
@@ -4542,19 +4557,21 @@ struct NativeVaultFormTests {
         #expect(saves.first?.3 == native.profileID?.uuidString)
     }
 
-    @Test func vaultLauncherUsesEffectiveProvider() throws {
+    @Test func vaultLauncherUsesSavedAndActiveProvider() throws {
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let transport = SyntheticVaultRequests()
         var launches = 0
         let launch: @MainActor () -> Bool = { launches += 1; return true }
-        f.tabs.settings.pawlVaultEnabled = true
+        f.tabs.settings.pawlVaultEnabled = false
         let disabled = VaultService(settings: f.tabs.settings, client: transport, pawlEnabledAtLaunch: false,
                                     openPawlApplication: launch)
         #expect(!disabled.openPawlVault() && launches == 0)
+        f.tabs.settings.pawlVaultEnabled = true
+        #expect(!disabled.isEnabled && disabled.openPawlVault() && launches == 1)
         f.tabs.settings.pawlVaultEnabled = false
         let enabled = VaultService(settings: f.tabs.settings, client: transport, pawlEnabledAtLaunch: true,
                                    openPawlApplication: launch)
-        #expect(enabled.openPawlVault() && launches == 1)
+        #expect(enabled.isEnabled && enabled.openPawlVault() && launches == 2)
     }
 
     @Test(arguments: ["open", "decline", "stale", "private", "ephemeral", "unavailable"])

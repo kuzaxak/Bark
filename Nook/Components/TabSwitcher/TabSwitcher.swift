@@ -42,6 +42,9 @@ enum TabSwitcher {
         window.tabSwitcher = state
         install(window: window, tabs: tabs)
         schedulePresent(window)
+        // The current tab may never have been left before, or it may have navigated
+        // since its last capture. Request its picture while Chromium still shows it.
+        tabs.controllableSession(in: window)?.captureSwitcherSnapshot()
     }
 
     /// Shows the card once Control has been held `presentDelay`; a tap let go sooner never draws it.
@@ -149,16 +152,16 @@ struct TabSwitcherOverlay: View {
                 if let picture = session?.switcherSnapshot {
                     Image(platformImage: picture)
                         .resizable()
-                        .aspectRatio(contentMode: .fill)
+                        .scaledToFit()
                 } else {
-                    // A tab with no picture yet (never left while on screen) shows its icon large.
+                    // A tab whose page has no available picture shows its icon large.
                     ItemFavicon(session: session)
                         .frame(width: NookDesign.Size.essentialsTile, height: NookDesign.Size.essentialsTile)
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .background(NookDesign.Surface.fill)
                 }
             }
             .frame(width: tileWidth - NookDesign.Spacing.md, height: pictureHeight)
+            .background(NookDesign.Surface.fill)
             // The tab's Peek over it, as the window shows it and as Arc's card draws it.
             .overlay {
                 if let peek {
@@ -168,17 +171,17 @@ struct TabSwitcherOverlay: View {
                             if let picture = peek.switcherSnapshot {
                                 Image(platformImage: picture)
                                     .resizable()
-                                    .aspectRatio(contentMode: .fill)
+                                    .scaledToFit()
                             } else {
                                 peek.favicon
                                     .resizable()
                                     .scaledToFit()
                                     .frame(width: NookDesign.Size.essentialsFavicon, height: NookDesign.Size.essentialsFavicon)
                                     .frame(maxWidth: .infinity, maxHeight: .infinity)
-                                    .background(NookDesign.Surface.raised)
                             }
                         }
                         .frame(width: (tileWidth - NookDesign.Spacing.md) * 0.82, height: pictureHeight - 2 * NookDesign.Spacing.xs)
+                        .background(NookDesign.Surface.raised)
                         .clipShape(NookDesign.Radius.shape(NookDesign.Radius.sm))
                         .nookElevation(.raised)
                     }

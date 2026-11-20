@@ -382,6 +382,13 @@ public final class TabsController {
         owner(ofSpace: spaceID).map { tree($0).favorites(of: spaceID) } ?? []
     }
 
+    public func rows(space spaceID: UUID, in window: BrowserWindowState) -> [Row] {
+        let visible = rows(space: spaceID)
+        guard window.spaceID == spaceID, let selected = window.selectedItemID,
+              let owner = owner(ofSpace: spaceID) else { return visible }
+        return tree(owner).revealingSelectedTab(selected, in: visible, openFolders: openFolders(owner))
+    }
+
     public func rows(space spaceID: UUID) -> [Row] {
         guard let owner = owner(ofSpace: spaceID) else { return [] }
         let open = openFolders(owner)

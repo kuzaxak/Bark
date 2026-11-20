@@ -46,7 +46,7 @@ def exercise(screen, process, events, output):
     def privacy():
         access.control("Open Profiles", ("AXButton",), root=settings)
         access.control("Passwords", root=settings)
-        return access.control("Use Pawl Vault for passwords and passkeys", root=settings)
+        return access.control("Password provider", root=settings)
 
     def toolbar_toggle():
         for element in access.tree(settings):

@@ -6,6 +6,7 @@
 //  Created by Jonathan Caudill on 15/08/2025.
 //
 
+import AppKit
 import SwiftUI
 import NookDesign
 import NookSettings
@@ -19,38 +20,41 @@ private struct PrivacyPreferenceSections: View {
     var body: some View {
         @Bindable var settings = nookSettings
 
-        Section("Passwords") {
-            let vault = browserManager.tabs.vault
-            let launchProvider = vault?.pawlEnabledAtLaunch
-            settingToggle(
-                "Use Pawl Vault for passwords and passkeys",
-                detail: launchProvider != nil
-                    ? "Quit and reopen Bark to change password providers."
-                    : "Fill and save passwords and sign in with passkeys when Pawl Vault is connected.",
-                isOn: $settings.pawlVaultEnabled
-            )
-            if let launchProvider, launchProvider != nookSettings.pawlVaultEnabled {
-                Text(launchProvider
-                     ? "Pawl Vault is the current provider until you reopen Bark."
-                     : "Chromium’s password manager is the current provider until you reopen Bark.")
-                    .foregroundStyle(.secondary)
-            } else if launchProvider == nil {
-                Text("In this version of Bark, Pawl Vault works alongside Chromium’s password manager.")
+        let vault = browserManager.tabs.vault
+        let launchProvider = vault?.pawlEnabledAtLaunch
+        Section {
+            Picker("Password provider", selection: $settings.pawlVaultEnabled) {
+                Text("Chromium").tag(false)
+                Text("Pawl Vault").tag(true)
+            }
+            .accessibilityLabel("Password provider")
+            if let launchProvider {
+                LabeledContent("Active provider", value: launchProvider ? "Pawl Vault" : "Chromium")
+                if launchProvider != nookSettings.pawlVaultEnabled {
+                    Text("Quit and reopen Bark to use your selected provider.")
+                        .foregroundStyle(.secondary)
+                }
+            } else if nookSettings.pawlVaultEnabled {
+                Text("Pawl Vault works alongside Chromium’s password manager in this build.")
                     .foregroundStyle(.secondary)
             }
-            if let vault, vault.isEnabled {
-                LabeledContent("Status") {
-                    vaultStatus(vault.status)
-                }
-                // While this pane shows, follow the vault: unlocking happens there.
-                .task {
-                    while !Task.isCancelled {
-                        await vault.refresh()
-                        try? await Task.sleep(for: .seconds(3))
+            if let vault, vault.isEnabled || nookSettings.pawlVaultEnabled {
+                if vault.isEnabled {
+                    LabeledContent("Pawl Vault status") {
+                        vaultStatus(vault.status)
+                    }
+                    .task { await vault.refresh() }
+                    .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                        Task { await vault.refresh() }
                     }
                 }
-                Button("Open Pawl Vault") {
-                    showVaultOpenFailure = !vault.openPawlVault()
+                HStack {
+                    Button(vault.status == .locked ? "Open Pawl Vault to Unlock" : "Open Pawl Vault") {
+                        showVaultOpenFailure = !vault.openPawlVault()
+                    }
+                    if vault.isEnabled {
+                        Button("Check Connection") { Task { await vault.refresh() } }
+                    }
                 }
                 .alert("Open Pawl Vault from Applications", isPresented: $showVaultOpenFailure) {
                     Button("OK") {}
@@ -58,6 +62,8 @@ private struct PrivacyPreferenceSections: View {
                     Text("Bark couldn’t open a verified copy of Pawl Vault. Open the edition that holds your database, then return here to check its status.")
                 }
             }
+        } header: {
+            Text("Passwords")
         }
 
         Section("History") {
