@@ -7,6 +7,15 @@ import Testing
 
 @MainActor
 struct NativeBlockerModelTests {
+    @Test func urlhausUpdatesUseThirtyMegabyteLimit() throws {
+        let urlhaus = try #require(FilterListManager.defaultLists.first { $0.filename == "urlhaus-filter.txt" })
+        let range = try #require(urlhaus.knownSizeRange)
+        #expect(range.contains(11_600_000))
+        #expect(range.contains(30_000_000))
+        #expect(!range.contains(30_000_001))
+        #expect(!range.contains(9_999))
+    }
+
     private func drainSettings() async {
         for _ in 0..<3 {
             await withCheckedContinuation { continuation in
