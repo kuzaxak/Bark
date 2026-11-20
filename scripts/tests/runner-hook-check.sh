@@ -71,4 +71,18 @@ job refused "candidate workflow on the legacy runner" \
   GITHUB_REPOSITORY=kuzaxak/Nook GITHUB_WORKFLOW_REF="$candidate@$candidate_ref" \
   GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF="$candidate_ref"
 
+bark_release=kuzaxak/Nook/.github/workflows/bark-release.yml
+job runs "Bark release dispatched on the shipping branch" \
+  GITHUB_REPOSITORY=kuzaxak/Nook GITHUB_WORKFLOW_REF="$bark_release@refs/heads/pawl-dev" \
+  GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/pawl-dev
+job refused "Bark release dispatched on a topic branch" \
+  GITHUB_REPOSITORY=kuzaxak/Nook GITHUB_WORKFLOW_REF="$bark_release@refs/heads/topic" \
+  GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/topic
+job refused "Bark tag event on the signing runner" \
+  GITHUB_REPOSITORY=kuzaxak/Nook GITHUB_WORKFLOW_REF="$bark_release@refs/tags/bark-v2.0.0-rc.1" \
+  GITHUB_EVENT_NAME=push GITHUB_REF=refs/tags/bark-v2.0.0-rc.1
+job refused "Bark fork cannot dispatch to the signing runner" \
+  GITHUB_REPOSITORY=fork/Nook GITHUB_WORKFLOW_REF="$bark_release@refs/heads/pawl-dev" \
+  GITHUB_EVENT_NAME=workflow_dispatch GITHUB_REF=refs/heads/pawl-dev
+
 echo "runner hook check passed"

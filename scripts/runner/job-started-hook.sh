@@ -2,7 +2,7 @@
 # Licensed under GPL-3.0. See LICENSE.
 #
 # Job-started hook of the self-hosted nook-release runner: by default it takes only
-# .github/workflows/release.yml of kuzaxak/Nook, for a v* tag push or workflow_dispatch. Installed
+# the Nook tag workflow and the Bark release dispatched from the trusted default branch. Installed
 # outside the runner's work directory:
 #   cp scripts/runner/job-started-hook.sh ~/actions-runner-nook/hooks/job-started.sh
 #   chmod 755 ~/actions-runner-nook/hooks/job-started.sh
@@ -23,6 +23,13 @@ allowed() {
     return
   fi
   [[ $# == 0 ]] || return 1
+  # The public tag event only dispatches the build. Code on this Mac runs
+  # exclusively from the reviewed release workflow on the shipping branch.
+  if [[ "${GITHUB_WORKFLOW_REF:-}" == kuzaxak/Nook/.github/workflows/bark-release.yml@refs/heads/pawl-dev ]]; then
+    [[ "${GITHUB_REPOSITORY:-}" == kuzaxak/Nook && "${GITHUB_EVENT_NAME:-}" == workflow_dispatch &&
+       "${GITHUB_REF:-}" == refs/heads/pawl-dev ]]
+    return
+  fi
   [[ "${GITHUB_WORKFLOW_REF:-}" == kuzaxak/Nook/.github/workflows/release.yml@* ]] || return 1
   case "${GITHUB_EVENT_NAME:-}" in
     push) [[ "${GITHUB_REF:-}" == refs/tags/v* ]] ;;

@@ -433,6 +433,32 @@ limits and measured changes in the release ticket. The release receipt verifier
 remeasures the download, app and Chromium framework from the supplied DMG.
 [Verify a transferred release candidate](Tests/ChromiumStartup/README.md#verify-a-transferred-release-candidate)
 
+### Release Bark 2.0.0 from GitHub Actions
+
+Push the reviewed Chromium source to the existing default branch and tag that
+commit `bark-v2.0.0-rc.N`, where N is a new positive integer. **Build Bark release**
+dispatches the tag's commit from the default branch so future runs can restore
+the same Actions cache. The tag and branch tip must match at dispatch. The
+trusted `nook-release` Mac builds both architectures, including the ARM64
+cross-build. It uses the pinned macOS SDK, Chromium's release compiler and
+architecture-specific browser PGO profiles. Optional repository variables
+`BARK_CHROMIUM_CHECKOUT`, `BARK_MACOS_SDK` and `BARK_ENGINE_JOBS` select the
+existing checkout, SDK and parallel job count on that runner.
+
+The runner retains the Chromium source, Ninja outputs and verified SDKs across
+attempts. GitHub Actions caches only the finished SDK pair and its metadata under
+the engine and toolchain fingerprint. Each restore verifies the manifests and
+official build receipts before using either engine. A shell-only change can
+reuse both SDKs. On a port or compile failure, fix the source and push a new
+candidate tag. The previous tag remains a record of the attempted build.
+
+The signing job packages two Bark DMGs and the universal Nook transition with
+the established Developer ID, notary and Sparkle credentials. Native hosted Mac
+jobs exercise the signed updates. After qualification, the release job commits
+the exact paired SDK pins, creates `bark-v2.0.0`, uploads a GitHub draft and
+promotes it to Latest after checking its asset digests. Latest must serve
+`appcast.xml`, `bark-macos-arm64.xml` and `bark-macos-x86_64.xml`.
+
 ### Prepare a Bark distribution candidate
 
 The manual **Prepare Bark Candidate** workflow uses the architecture's pinned official SDK. It checks the build receipt and embedded framework before signing, then qualifies the signed app and notarized, stapled DMG on a native desktop. After qualification passes, it uploads the DMG, Sparkle appcast and a separate qualification receipt for review. Feed and download publication are separate release steps. The public Nook transition feed uses **Release Nook** from a revision containing the shared Nook Xcode scheme. The workflow checks the selected revision before opening the signing keychain.

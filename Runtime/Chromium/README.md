@@ -747,14 +747,11 @@ publication, make the DMG available at the appcast’s enclosure URL before
 making that appcast available on the Bark feed.
 
 Existing Nook installations request `kuzaxak/Nook/releases/latest/download/appcast.xml`.
-Keep that asset and its signed Nook download available at the existing endpoint.
-A Bark-only release marked latest in that repository would displace the feed.
-Sparkle 2.8.1 looks for an app with the installed name or bundle ID. An archive
-containing `Bark.app` with ID `ee.qdo.bark` cannot update `Nook.app` in place.
-Renaming the archive member to `Nook.app` would overwrite the existing installation.
-For manual testing, install the signed Bark DMG alongside Nook and open Bark
-from Applications. The signed transition and subsequent update on both native
-architectures still require release qualification.
+For the 2.0.0 migration this feed supplies a universal Nook 1.5.5. Its updater
+selects the ordinary Bark feed for the Mac's processor and uses Sparkle's
+`SUBundleName` to recognize `Bark.app` inside the native DMG. Preserve the
+legacy XML on subsequent Latest releases. It points to the signed transition
+DMG on the immutable 2.0.0 release. See the [release procedure](../../CONTRIBUTING.md#release-bark-200-from-github-actions).
 
 ### Regression scope and remaining qualification
 

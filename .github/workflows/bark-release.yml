@@ -1,0 +1,213 @@
+name: Build Bark release
+
+on:
+  push:
+    tags: ['bark-v2.0.0-rc.*']
+  workflow_dispatch:
+    inputs:
+      candidate:
+        description: Immutable Bark 2.0.0 candidate tag on the default branch
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  start:
+    if: github.event_name == 'push' && github.repository == 'kuzaxak/Nook'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      # Run on the default ref so future tags can read the verified Actions SDK cache.
+      - name: Start the tagged build on the default branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REF_NAME" =~ ^bark-v2\.0\.0-rc\.[1-9][0-9]*$ ]]
+          gh workflow run bark-release.yml --repo "$GITHUB_REPOSITORY" --ref "$DEFAULT_BRANCH" -f candidate="$GITHUB_REF_NAME"
+
+  build:
+    if: >-
+      github.event_name == 'workflow_dispatch' && github.repository == 'kuzaxak/Nook' &&
+      github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: [self-hosted, macOS, X64, nook-release]
+    timeout-minutes: 3600
+    concurrency:
+      group: bark-release-engine-and-signing
+      cancel-in-progress: false
+    outputs:
+      source: ${{ steps.source.outputs.sha }}
+    env:
+      CANDIDATE_TAG: ${{ inputs.candidate }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Verify the committed source and pinned SDK toolchain
+        id: source
+        env:
+          CONFIGURED_SDK: ${{ vars.BARK_MACOS_SDK }}
+          CONFIGURED_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
+        run: |
+          set -euo pipefail
+          [[ "$CANDIDATE_TAG" =~ ^bark-v2\.0\.0-rc\.[1-9][0-9]*$ ]]
+          test "$(git rev-parse "refs/tags/$CANDIDATE_TAG^{commit}")" = "$GITHUB_SHA"
+          echo "sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          sdk="${CONFIGURED_SDK:-$HOME/Library/Caches/BarkSDK/toolchains/MacOSX26.5-25F70/MacOSX26.5.sdk}"
+          python="${CONFIGURED_WALK_PYTHON:-$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python}"
+          test -d "$sdk"
+          test -x "$python"
+          echo "sdk=$sdk" >> "$GITHUB_OUTPUT"
+          echo "BARK_WALK_PYTHON=$python" >> "$GITHUB_ENV"
+      - name: Restore or compile the optimized Chromium SDKs
+        id: engines
+        uses: ./.github/actions/bark-official-sdks
+        with:
+          macos-sdk: ${{ steps.source.outputs.sdk }}
+          checkout: ${{ vars.BARK_CHROMIUM_CHECKOUT }}
+          jobs: ${{ vars.BARK_ENGINE_JOBS || '8' }}
+          save-cache: 'true'
+      - name: Record engine provenance
+        env:
+          SDK_CACHE_KEY: ${{ steps.engines.outputs.cache-key }}
+        run: echo "Verified both official Chromium engines with cache key \`$SDK_CACHE_KEY\`." >> "$GITHUB_STEP_SUMMARY"
+
+  package:
+    needs: build
+    runs-on: [self-hosted, macOS, X64, nook-release]
+    timeout-minutes: 240
+    concurrency:
+      group: bark-release-engine-and-signing
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.build.outputs.source }}
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Locate the signing runner toolchain
+        id: tools
+        env:
+          CONFIGURED_SDK: ${{ vars.BARK_MACOS_SDK }}
+          CONFIGURED_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
+        run: |
+          echo "sdk=${CONFIGURED_SDK:-$HOME/Library/Caches/BarkSDK/toolchains/MacOSX26.5-25F70/MacOSX26.5.sdk}" >> "$GITHUB_OUTPUT"
+          echo "BARK_WALK_PYTHON=${CONFIGURED_WALK_PYTHON:-$HOME/Library/Caches/BarkSDK/signed-walk-python/bin/python}" >> "$GITHUB_ENV"
+      # This job has fresh artifact credentials after the potentially multi-day engine build.
+      - name: Restore and verify the SDK pair for signing
+        id: engines
+        uses: ./.github/actions/bark-official-sdks
+        with:
+          macos-sdk: ${{ steps.tools.outputs.sdk }}
+          checkout: ${{ vars.BARK_CHROMIUM_CHECKOUT }}
+          jobs: ${{ vars.BARK_ENGINE_JOBS || '8' }}
+          save-cache: 'true'
+      - name: Install the verified pair for release receipt checks
+        env:
+          ARM_ENGINE: ${{ steps.engines.outputs.arm64-engine }}
+          INTEL_ENGINE: ${{ steps.engines.outputs.x86_64-engine }}
+        run: |
+          "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch arm64 --engine "$ARM_ENGINE" --require-official --install
+          "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch x86_64 --engine "$INTEL_ENGINE" --require-official --install
+      - name: Check out the released Nook source with the transition updater
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" a85053fd783510b442d0b450e13034dd77bb7855
+      - name: Build and notarize the Intel, Apple Silicon and transition images
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          NOOK_PROVISIONING_PROFILE: ${{ secrets.NOOK_PROVISIONING_PROFILE }}
+          SPARKLE_SIGNING_KEY: ${{ secrets.SPARKLE_SIGNING_KEY }}
+          BARK_ICLOUD_PROFILE: ${{ vars.BARK_ICLOUD_PROFILE }}
+          ARM_ENGINE: ${{ steps.engines.outputs.arm64-engine }}
+          INTEL_ENGINE: ${{ steps.engines.outputs.x86_64-engine }}
+          BARK_QUALIFICATION_OUTPUT: ${{ runner.temp }}/bark-qualification-kits
+        run: |
+          caffeinate -i scripts/prepare-bark-release.sh "$ARM_ENGINE" "$INTEL_ENGINE" \
+            "$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" "$RUNNER_TEMP/bark-release-assets"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bark-release-assets
+          path: ${{ runner.temp }}/bark-release-assets
+          compression-level: 0
+          if-no-files-found: error
+          overwrite: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bark-release-qualification-arm64
+          path: ${{ runner.temp }}/bark-qualification-kits/arm64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bark-release-qualification-x86_64
+          path: ${{ runner.temp }}/bark-qualification-kits/x86_64
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
+          overwrite: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: bark-official-headers
+          path: ${{ steps.engines.outputs.metadata }}
+          if-no-files-found: error
+          overwrite: true
+      - name: Release the temporary Nook source checkout
+        if: always()
+        run: |
+          legacy="$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          if [[ -d "$legacy" ]]; then git worktree remove --force "$legacy"; fi
+
+  qualify:
+    needs: [build, package]
+    uses: ./.github/workflows/bark-release-qualification.yml
+    with:
+      source_ref: ${{ needs.build.outputs.source }}
+      release_artifact: bark-release-assets
+
+  release:
+    needs: [build, qualify]
+    runs-on: [self-hosted, macOS, X64, nook-release]
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    env:
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      SOURCE_COMMIT: ${{ needs.build.outputs.source }}
+      BARK_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ needs.build.outputs.source }}
+          fetch-depth: 0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: bark-official-headers
+          path: ${{ runner.temp }}/bark-official-headers
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: bark-release-assets
+          path: ${{ runner.temp }}/release
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          pattern: bark-qualified-*
+          path: ${{ runner.temp }}/release
+          merge-multiple: true
+      - name: Commit the qualified SDK pins and publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/runner/promote-bark-2.sh "$RUNNER_TEMP/bark-official-headers" "$RUNNER_TEMP/release"
