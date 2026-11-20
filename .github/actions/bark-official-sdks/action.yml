@@ -1,0 +1,103 @@
+name: Prepare official Bark SDKs
+description: Restore a verified SDK pair or build both official Chromium engines
+inputs:
+  macos-sdk:
+    description: Absolute path to the pinned macOS SDK on the trusted runner
+    required: true
+  checkout:
+    description: Optional runner-local Chromium checkout to adopt
+    default: ''
+  jobs:
+    description: Parallel engine compiler jobs
+    default: '6'
+  save-cache:
+    description: Allow saving the verified pair when running on the default branch
+    default: 'false'
+outputs:
+  package:
+    description: Package directory containing the official SDK pair
+    value: ${{ steps.restore.outputs.package || steps.build.outputs.package }}
+  x86_64-engine:
+    description: Verified Intel engine artifact directory
+    value: ${{ steps.restore.outputs.x86_64-engine || steps.build.outputs.x86_64-engine }}
+  arm64-engine:
+    description: Verified Apple Silicon engine artifact directory
+    value: ${{ steps.restore.outputs.arm64-engine || steps.build.outputs.arm64-engine }}
+  metadata:
+    description: Paired SDK metadata directory in the receiving checkout
+    value: ${{ steps.restore.outputs.metadata || steps.build.outputs.metadata }}
+  cache-hit:
+    description: Whether an exact cache entry passed SDK verification
+    value: ${{ steps.restore.outputs.accepted || 'false' }}
+  cache-key:
+    description: Exact SDK pair cache key
+    value: ${{ steps.inputs.outputs.key }}
+runs:
+  using: composite
+  steps:
+    - name: Identify official SDK recipe and tools
+      id: inputs
+      shell: bash
+      env:
+        BARK_MACOS_SDK: ${{ inputs.macos-sdk }}
+      run: |
+        set -euo pipefail
+        if [[ -e build/official-sdk-cache || -L build/official-sdk-cache ]]; then
+          echo "The SDK cache restore directory must start empty." >&2
+          exit 1
+        fi
+        digest="$(python3 -B scripts/runner/build_official_engines.py --print-sdk-cache-key --macos-sdk "$BARK_MACOS_SDK")"
+        [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+        printf 'key=bark-official-sdk-pair-v1-%s\n' "$digest" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the exact official SDK pair
+      id: cache
+      continue-on-error: true
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: build/official-sdk-cache
+        key: ${{ steps.inputs.outputs.key }}
+
+    - name: Verify both restored SDK receipts, files and paired metadata
+      id: restore
+      if: steps.cache.outputs.cache-hit == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+        if python3 -B scripts/runner/cache_official_sdks.py restore build/official-sdk-cache; then
+          echo "accepted=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "::warning::The restored SDK pair failed validation. Building from the trusted local checkout."
+        fi
+
+    - name: Build official engines and verify the pair
+      id: build
+      if: steps.restore.outputs.accepted != 'true'
+      shell: bash
+      env:
+        BARK_MACOS_SDK: ${{ inputs.macos-sdk }}
+        BARK_REUSE_CHECKOUT: ${{ inputs.checkout }}
+        BARK_BUILD_JOBS: ${{ inputs.jobs }}
+        BARK_CACHE_SAVE: ${{ inputs.save-cache == 'true' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+        BARK_EXACT_CACHE: ${{ steps.cache.outputs.cache-hit }}
+      run: |
+        set -euo pipefail
+        work="$(mktemp -d "$RUNNER_TEMP/bark-official-sdks.XXXXXXXX")"
+        args=(--macos-sdk "$BARK_MACOS_SDK" --output "$work" --jobs "$BARK_BUILD_JOBS")
+        if [[ -n "$BARK_REUSE_CHECKOUT" ]]; then
+          args+=(--checkout "$BARK_REUSE_CHECKOUT")
+        fi
+        python3 -B scripts/runner/build_official_engines.py "${args[@]}"
+        args=()
+        if [[ "$BARK_CACHE_SAVE" == true && "$BARK_EXACT_CACHE" != true ]]; then
+          args+=(--cache-root build/official-sdk-cache)
+        fi
+        python3 -B scripts/runner/cache_official_sdks.py accept "$work/Package" "${args[@]}"
+
+    - name: Save the paired official SDKs for matching release tags
+      if: steps.build.outputs.cacheable == 'true'
+      continue-on-error: true
+      uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+      with:
+        path: build/official-sdk-cache
+        key: ${{ steps.inputs.outputs.key }}
