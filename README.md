@@ -34,6 +34,11 @@ The repository’s earlier releases are published under the Nook name.
 Choose **Help → Bark Help** for a quick guide to the browser’s window controls.
 
 - Switch spaces from the sidebar to return to the tabs for that space and profile.
+  Opening a bookmark inside a collapsed folder shows the active bookmark beneath
+  the folder. Selecting another tab hides that row again.
+- Hold Control and press Tab to preview recent tabs. Press Shift+Tab while
+  holding Control to move backward. Release Control to switch to the highlighted
+  tab. A quick Control+Tab switches directly to the previous tab.
 - In **Settings → General → Performance**, set **On Startup** to **Last Tab Only**
   to restore the pages shown in your saved windows and splits. Background tabs
   load when you select them.
@@ -63,19 +68,22 @@ Choose **Help → Bark Help** for a quick guide to the browser’s window contro
 
 ### Website passwords
 
-Choose Pawl Vault in **Settings → Privacy → Passwords** and check its connection
-status there. Pawl uses the same unlocked vault across Bark profiles. With a
-compatible vault connected, Bark asks before saving a new login or updating an
-existing one. Older connected vaults offer manual management in Pawl.
-Chromium identifies the field and site. Bark presents the account picker and
-asks Pawl for the password or one-time code after you select an account.
+Open **Bark → Settings → Privacy → Passwords** and choose **Pawl Vault** under
+**Password provider**. Open Pawl Vault, unlock the database that holds your
+login, then choose **Check Connection** in Bark. The signed Pawl Vault 0.1.3
+(build 10) test release accepts Bark. Build 7 accepts the legacy Nook client.
 
-The pinned Chromium build supports Pawl alongside its built-in manager. Pawl
-Vault 0.1.2 (build 7) accepts the legacy Nook signing identity and refuses Bark.
-Exclusive mode requires a Pawl release that accepts Bark and a provider-capable
-Chromium SDK. On that SDK, a provider change takes effect when Bark reopens.
-With Pawl selected, locking or closing it pauses saved-password fills and offers
-to save. Choosing Chromium again restores access to its existing logins.
+On a website with a matching vault entry, click the password field and select
+your account from the Pawl menu beneath it. Bark asks Pawl for the password
+or one-time code after you select an entry. The same unlocked vault serves all
+Bark profiles. With Pawl build 10, open Pawl to save new logins or update
+passwords.
+
+On engines with exclusive provider support, Settings shows the **Active
+provider**. Quit and reopen Bark after changing providers. With Pawl active,
+locking or closing the vault pauses fills. Selecting **Chromium** and reopening
+Bark restores access to Chromium's existing logins. Older engines show a
+notice that Pawl and Chromium are both active.
 [Provider integration design](openspec/changes/select-pawl-vault-provider/design.md)
 
 ### Connect an MCP client
