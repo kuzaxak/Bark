@@ -3,7 +3,7 @@ name: macOS Package Tests
 on:
   pull_request:
   push:
-    branches: [develop, pawl-dev]
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -85,6 +85,7 @@ jobs:
           python3 -B scripts/bark-check.py profile-deletion
           python3 -B scripts/bark-check.py blocker
           python3 -B scripts/bark-check.py page-tweaks
+          python3 -B Tests/ChromiumWindowHost/check.py
           python3 -B Tests/ChromiumSiteControls/check.py
           python3 -B Tests/ChromiumStartup/check.py
           test ! -e build

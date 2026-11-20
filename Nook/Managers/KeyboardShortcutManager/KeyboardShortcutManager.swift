@@ -363,10 +363,16 @@ class KeyboardShortcutManager {
                   let page = browserManager.frontPage(in: window),
                   let native = page.navigation as? ChromiumPageNavigation else { return }
             let owner = native.nativeWindowID, tab = native.nativeTabID
+            let document = page.nativeNavigationSerial
             DispatchQueue.main.async { [weak browserManager, weak window, weak page, weak native] in
                 guard let browserManager, let window, let page, let native,
                       page.navigation === native, native.nativeWindowID == owner, native.nativeTabID == tab else { return }
-                _ = browserManager.performNativePageCommand(command, in: window, page: page)
+                if command.isZoomCommand {
+                    guard page.nativeNavigationSerial == document else { return }
+                    browserManager.zoomFromKeyboard(command, in: window, page: page)
+                } else {
+                    _ = browserManager.performNativePageCommand(command, in: window, page: page)
+                }
             }
             return
         }

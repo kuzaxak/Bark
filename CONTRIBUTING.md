@@ -220,7 +220,7 @@ begin
     and set -l pin (python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")
     and set -l sdk "BarkSDK-$arch-$pin"
     and set -l download (mktemp -d)
-    and gh run download "$run_id" --repo kuzaxak/Nook --name "$sdk" --dir "$download"
+    and gh run download "$run_id" --repo kuzaxak/Bark --name "$sdk" --dir "$download"
     and "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch "$arch" --require-official --install --engine "$download/$sdk.tar.gz"
 end
 ```
@@ -435,7 +435,9 @@ remeasures the download, app and Chromium framework from the supplied DMG.
 
 ### Release Bark 2.0.0 from GitHub Actions
 
-Push the reviewed Chromium source to the existing default branch and tag that
+Develop Chromium fixes on `release/2.0` and changes to the universal Nook transition on
+`release/1.5.5`. Merge reviewed fixes into `main`, update the pinned transition
+revision when its source changes, and tag that
 commit `bark-v2.0.0-rc.N`, where N is a new positive integer. **Build Bark release**
 dispatches the tag's commit from the default branch so future runs can restore
 the same Actions cache. The tag and branch tip must match at dispatch. The
@@ -474,7 +476,7 @@ Use a separate runner with the matching `bark-candidate-x86_64` or `bark-candida
 
 ```bash
 #!/bin/bash
-exec "$HOME/actions-runner-bark/hooks/job-started-guard.sh" --bark-candidate refs/heads/pawl-dev
+exec "$HOME/actions-runner-bark/hooks/job-started-guard.sh" --bark-candidate refs/heads/main
 ```
 
 The runner-side guard permits only this repository’s Bark candidate workflow on that ref. Keep the signing runner separate from PR jobs and the legacy Nook release runner. The [local packaging commands](Runtime/Chromium/README.md#prepare-bark-distribution-files) use the same checks.
@@ -511,7 +513,7 @@ connected services. Check the owner of an older identifier before changing it.
 
 ### Before You Start
 
-- Check existing pull requests for related work. Discuss substantial changes with the maintainers before implementation. [Bark pull requests](https://github.com/kuzaxak/Nook/pulls)
+- Check existing pull requests for related work. Discuss substantial changes with the maintainers before implementation. [Bark pull requests](https://github.com/kuzaxak/Bark/pulls)
 - Keep each pull request focused on one feature or fix.
 
 ### Creating Pull Requests
@@ -540,7 +542,7 @@ connected services. Check the owner of an older identifier before changing it.
 
 ## Reporting bugs and requesting features
 
-The fork currently accepts pull requests. When proposing a fix or feature, include the details below in the relevant pull request. [Bark pull requests](https://github.com/kuzaxak/Nook/pulls)
+The project accepts pull requests. When proposing a fix or feature, include the details below in the relevant pull request. [Bark pull requests](https://github.com/kuzaxak/Bark/pulls)
 
 ### Bug Reports
 

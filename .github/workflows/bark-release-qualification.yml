@@ -70,7 +70,7 @@ jobs:
           receipts="$RUNNER_TEMP/bark-qualified"
           mkdir "$work" "$receipts"
           curl --fail --location --retry 3 --output "$work/Nook-1.5.4-universal.dmg" \
-            https://github.com/kuzaxak/Nook/releases/download/v1.5.4/Nook-1.5.4-universal.dmg
+            https://github.com/kuzaxak/Bark/releases/download/v1.5.4/Nook-1.5.4-universal.dmg
           curl --fail --location --retry 3 --output "$work/Sparkle-2.8.1.tar.xz" \
             https://github.com/sparkle-project/Sparkle/releases/download/2.8.1/Sparkle-2.8.1.tar.xz
           (
@@ -93,7 +93,7 @@ jobs:
             --update-kit "$RUNNER_TEMP/bark-qualification/kit" --output "$output"
           python -B Tests/ChromiumStartup/qualify.py check-release-receipt --app "$app" --image "$image" \
             --receipt "$output/qualification.json" --arch "$BARK_QUALIFICATION_ARCH" \
-            --feed-url "https://github.com/kuzaxak/Nook/releases/latest/download/bark-macos-$BARK_QUALIFICATION_ARCH.xml"
+            --feed-url "https://github.com/kuzaxak/Bark/releases/latest/download/bark-macos-$BARK_QUALIFICATION_ARCH.xml"
           cp "$output/qualification.json" "$RUNNER_TEMP/bark-qualified/qualification-$BARK_QUALIFICATION_ARCH.json"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

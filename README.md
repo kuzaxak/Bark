@@ -27,7 +27,7 @@ An official Bark download is pending.
 To check a signed app against its SDK and source, follow the
 [verification guide](CONTRIBUTING.md#verify-a-signed-app-on-another-mac).
 The repository’s earlier releases are published under the Nook name.
-[Earlier Nook releases](https://github.com/kuzaxak/Nook/releases)
+[Earlier Nook releases](https://github.com/kuzaxak/Bark/releases)
 
 ## Using Bark
 
@@ -193,7 +193,7 @@ The two digests distinguish releases that share a version number.
 The contributor guide lists package tests, AppKit command-routing checks and
 signed-app walks for Peek, compact windows and installed updates.
 [Contributing](CONTRIBUTING.md) · [Browser checks](Tests) ·
-[Pull requests](https://github.com/kuzaxak/Nook/pulls)
+[Pull requests](https://github.com/kuzaxak/Bark/pulls)
 
 ## Origins and licensing
 

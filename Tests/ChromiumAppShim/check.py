@@ -1845,7 +1845,7 @@ def signed_cases(work, mach_o, headers):
           run.returncode != 0 and 'SCMRevision differs from the pinned engine' in run.stderr, run.stderr)
     write_plist(artifact / 'engine-Info.plist', **ENGINE_PLIST)
 
-    universal = work / 'signed-Sparkle'
+    universal = work / 'sparkle-universal.dylib'
     compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'x86_64', '-arch', 'arm64')
 
     def add_signed_sparkle(app):

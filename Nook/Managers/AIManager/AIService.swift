@@ -43,8 +43,7 @@ class AIService {
     // Max agentic tool-call iterations to prevent infinite loops
     private let maxToolIterations = 20
 
-    // Per-conversation flag: if the user chose "Allow All This Chat", skip further approval prompts
-    private var autoApprovedThisChat: Bool = false
+    private var chatToolApprovals = ChatToolApprovals()
 
     /// Read-only tools that are safe to auto-approve even in `.askBeforeExecuting` mode
     private static let readOnlyTools: Set<String> = [
@@ -280,7 +279,7 @@ class AIService {
 
     func clearMessages() {
         messages.removeAll()
-        autoApprovedThisChat = false
+        chatToolApprovals = ChatToolApprovals()
     }
 
     // MARK: - Tool Collection
@@ -344,13 +343,13 @@ class AIService {
 
             // executeJavaScript is left to the confirmation handler below, which prompts on every call
             if executionMode == .askBeforeExecuting && Self.mutatingTools.contains(toolCall.name)
-                && toolCall.name != "executeJavaScript" && !autoApprovedThisChat && !approved {
+                && toolCall.name != "executeJavaScript" && !chatToolApprovals.allows(.browser) && !approved {
                 let approval = await requestToolApproval(toolName: toolCall.name, args: toolCall.arguments)
                 switch approval {
                 case .allow:
                     break // proceed with this single execution
                 case .allowAll:
-                    autoApprovedThisChat = true
+                    chatToolApprovals.allow(.browser)
                 case .deny:
                     Self.log.info("User denied tool execution: \(toolCall.name)")
                     return AIToolResult(toolCallId: toolCall.id, toolName: toolCall.name, content: "User denied execution of \(toolCall.name).", isError: true)
@@ -382,13 +381,14 @@ class AIService {
             if configService.browserToolsConfig.executionMode == .disabled {
                 return AIToolResult(toolCallId: toolCall.id, toolName: toolCall.name, content: "Tools are disabled.", isError: true)
             }
-            if !autoApprovedThisChat {
+            let approvalScope = ChatToolApprovals.Scope.mcpServer(serverId)
+            if !chatToolApprovals.allows(approvalScope) {
                 let approval = await requestToolApproval(toolName: toolName, args: toolCall.arguments, mcpServerId: serverId)
                 switch approval {
                 case .allow:
                     break // proceed with this single execution
                 case .allowAll:
-                    autoApprovedThisChat = true
+                    chatToolApprovals.allow(approvalScope)
                 case .deny:
                     Self.log.info("User denied tool execution: \(toolCall.name)")
                     return AIToolResult(toolCallId: toolCall.id, toolName: toolCall.name, content: "User denied execution of \(toolCall.name).", isError: true)
@@ -476,7 +476,7 @@ class AIService {
         alert.addButton(withTitle: "Deny")
         alert.addButton(withTitle: "Allow")
         if offerAllowAll {
-            alert.addButton(withTitle: "Allow All This Chat")
+            alert.addButton(withTitle: mcpServerId == nil ? "Allow All This Chat" : "Allow This Server for This Chat")
         }
 
         // A selectable text view holding focus would take Return away from the default button.

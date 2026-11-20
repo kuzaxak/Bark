@@ -140,6 +140,8 @@ final class ChromiumWindowRoot: NSView {
     private let sidebarColumn = Container()
     private let overlayLayer = Overlay()
     private weak var overlay: NSView?
+    private var zoomIndicator: (view: NSVisualEffectView, target: Pane, percent: Int)?
+    private var zoomDismissal: Task<Void, Never>?
     private weak var librarySwipeSurface: NSView?
     private var placedLights: Lights?
     private weak var sidebarView: NSView?
@@ -210,6 +212,79 @@ final class ChromiumWindowRoot: NSView {
         view.autoresizingMask = [.width, .height]
         overlayLayer.addSubview(view)
         overlay = view
+    }
+
+    func showsZoomTarget(tab: Int32, of owner: Int32) -> Bool {
+        zoomSlot(for: Pane(client: owner, tab: tab)) != nil
+    }
+
+    func showZoomPercent(_ percent: Int, tab: Int32, of owner: Int32) {
+        let target = Pane(client: owner, tab: tab)
+        guard window?.isKeyWindow == true, zoomSlot(for: target) != nil else { return }
+        if zoomIndicator?.target != target || zoomIndicator?.percent != percent {
+            hideZoomPercent()
+            let percentage = (Double(percent) / 100).formatted(.percent.precision(.fractionLength(0)))
+            let announcement = String(localized: "Page zoom: \(percentage)")
+            let label = NSTextField(labelWithString: percentage)
+            label.font = .monospacedDigitSystemFont(ofSize: 13, weight: .semibold)
+            label.alignment = .center
+            label.setAccessibilityLabel(announcement)
+            let indicator = NSVisualEffectView()
+            indicator.material = .hudWindow
+            indicator.blendingMode = .withinWindow
+            indicator.state = .active
+            indicator.wantsLayer = true
+            indicator.layer?.cornerRadius = 7
+            indicator.layer?.masksToBounds = true
+            indicator.frame.size = CGSize(width: max(52, label.fittingSize.width + 20), height: 30)
+            label.frame = indicator.bounds.insetBy(dx: 8, dy: (30 - label.fittingSize.height) / 2)
+            indicator.addSubview(label)
+            overlayLayer.addSubview(indicator)
+            zoomIndicator = (indicator, target, percent)
+            layoutZoomPercent()
+            guard zoomIndicator != nil else { return }
+            NSAccessibility.post(element: self, notification: .announcementRequested,
+                                 userInfo: [.announcement: announcement, .priority: NSAccessibilityPriorityLevel.medium.rawValue])
+        }
+        zoomDismissal?.cancel()
+        zoomDismissal = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(1.5)) } catch { return }
+            self?.hideZoomPercent()
+        }
+    }
+
+    private func zoomSlot(for target: Pane) -> Slot? {
+        guard !pageHidden, !crashedTabs.contains(target.tab) else { return nil }
+        if let card = peekCard {
+            return card.peek.page == target && showsPeekPage(card.peek) ? card.slot : nil
+        }
+        guard client == target.client, shownTab == target.tab else { return nil }
+        return slots.first {
+            $0.pane == target && $0.container.superview === pageFrame && $0.heldView != nil
+        }
+    }
+
+    private func layoutZoomPercent() {
+        guard let indicator = zoomIndicator else { return }
+        guard let slot = zoomSlot(for: indicator.target), window?.isKeyWindow == true else {
+            hideZoomPercent()
+            return
+        }
+        let size = indicator.view.frame.size
+        let pane = overlayLayer.convert(slot.container.bounds, from: slot.container)
+        guard pane.width >= size.width + 8, pane.height >= size.height + 8 else {
+            hideZoomPercent()
+            return
+        }
+        indicator.view.frame.origin = CGPoint(x: pane.midX - size.width / 2,
+                                               y: pane.minY + min(12, pane.height - size.height))
+    }
+
+    private func hideZoomPercent() {
+        zoomDismissal?.cancel()
+        zoomDismissal = nil
+        zoomIndicator?.view.removeFromSuperview()
+        zoomIndicator = nil
     }
 
     /// Where a download that starts now flies from, in window coordinates: the pointer while it is
@@ -346,6 +421,7 @@ final class ChromiumWindowRoot: NSView {
     var pageHidden = false {
         didSet {
             guard pageHidden != oldValue else { return }
+            if pageHidden { hideZoomPercent() }
             allSlots.forEach { $0.heldView?.isHidden = pageHidden }
             if !pageHidden { focusPage() }
         }
@@ -388,6 +464,7 @@ final class ChromiumWindowRoot: NSView {
     isolated deinit {
         windowObservers.forEach(NotificationCenter.default.removeObserver)
         cancelStartupSplitFocus()
+        zoomDismissal?.cancel()
     }
 
     override var isFlipped: Bool { true }
@@ -457,6 +534,7 @@ final class ChromiumWindowRoot: NSView {
             if let card = peekCard, card.peek.source != pane { removePeek() }
             guard current() else { return false }
             if pageFullscreen { layoutPageArea() }
+            else { layoutZoomPercent() }
             guard current() else { return false }
             if changed { focusPage() }
             return current()
@@ -546,16 +624,21 @@ final class ChromiumWindowRoot: NSView {
     private func handle(_ change: ChromiumWindowHostChange) {
         switch change {
         case .pageRetired(let tab, let view):
+            if zoomIndicator?.target.tab == tab { hideZoomPercent() }
             crashedTabs.remove(tab)
             pageRetired(view)
         case .fullscreen(let page, let selected):
-            if selected > 0 { client = selected }
+            if selected > 0, selected != client {
+                hideZoomPercent()
+                client = selected
+            }
             guard page != pageFullscreen else { return }
             pageFullscreen = page
             applyLayout()
             applyLights()
         case .pageCrashed(let tab, let view):
             crashedTabs.insert(tab)
+            if zoomIndicator?.target.tab == tab { hideZoomPercent() }
             for slot in allSlots where slot.pane?.tab == tab && slot.holds(view) { slot.setCrashed(true) }
         case .extensionActionsChanged:
             extensionActionsChanged?()
@@ -707,6 +790,7 @@ final class ChromiumWindowRoot: NSView {
         }
         layoutDividers(panes.flatMap { pageFullscreen || split?.panes.contains(nil) == true ? nil : $0 } ?? [], in: area)
         layoutPeek(in: area, washFrame: washFrame)
+        layoutZoomPercent()
     }
 
     var canResizeSplit: Bool {
@@ -798,6 +882,7 @@ final class ChromiumWindowRoot: NSView {
         super.viewDidMoveToWindow()
         windowObservers.forEach(NotificationCenter.default.removeObserver)
         windowObservers = []
+        hideZoomPercent()
         guard let window else { cancelStartupSplitFocus(); return }
         // AppKit rebuilds the titlebar when the window leaves full screen.
         windowObservers.append(NotificationCenter.default.addObserver(
@@ -814,7 +899,10 @@ final class ChromiumWindowRoot: NSView {
             })
         windowObservers.append(NotificationCenter.default.addObserver(
             forName: NSWindow.didResignKeyNotification, object: window, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.cancelStartupSplitFocus() }
+                MainActor.assumeIsolated {
+                    self?.cancelStartupSplitFocus()
+                    self?.hideZoomPercent()
+                }
             })
         applyLights()
     }

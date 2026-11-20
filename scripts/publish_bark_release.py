@@ -19,7 +19,8 @@ from bark_release import (REPO, SPARKLE, SPARKLE_PUBLIC_KEY, TEAM, check_version
 from chromium_sdk_layout import file_digest
 
 
-REPOSITORY = "kuzaxak/Nook"
+REPOSITORY = "kuzaxak/Bark"
+NOOK_FEED = "https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml"
 GITHUB = f"https://github.com/{REPOSITORY}"
 FEED_BASE = f"{GITHUB}/releases/latest/download"
 TRANSITION_TAG = "bark-v2.0.0"
@@ -102,7 +103,7 @@ def check_transition(image):
             "CFBundleVersion": TRANSITION_BUILD,
             "SUBundleName": "Bark",
             "SUPublicEDKey": SPARKLE_PUBLIC_KEY,
-            "SUFeedURL": f"{FEED_BASE}/appcast.xml",
+            "SUFeedURL": NOOK_FEED,
         }
         if any(info.get(key) != value for key, value in expected.items()):
             raise ValueError("The signed universal app does not match the legacy transition metadata.")

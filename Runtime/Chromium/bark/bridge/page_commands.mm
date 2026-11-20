@@ -89,6 +89,7 @@
 #include "base/json/json_reader.h"
 #include "base/json/json_writer.h"
 #include "base/version_info/version_info.h"
+#include "components/zoom/zoom_controller.h"
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/ui/webui/certificate_viewer/certificate_viewer_webui.h"
 #include "content/public/browser/document_user_data.h"
@@ -289,6 +290,13 @@ int barc_tab_execute_command(int32_t window_id, int32_t tab_id,
       bark::IsNativeSpacePageSuppressed(window) ||
       window->GetTabStripModel()->GetActiveWebContents() != tab->GetContents())
     return 0;
+  if (command == BARC_PAGE_ZOOM_PERCENT) {
+    auto* contents = tab->GetContents();
+    if (contents->IsBeingDestroyed() || contents->IsCrashed())
+      return 0;
+    auto* zoom = zoom::ZoomController::FromWebContents(contents);
+    return zoom ? zoom->GetZoomPercent() : 0;
+  }
   if (command == BARC_PAGE_HARD_RELOAD &&
       NativeContentBlocker::IsRegistered() &&
       tab->GetContents()->GetUserData(&kApplicationLaunchKey)) return 0;

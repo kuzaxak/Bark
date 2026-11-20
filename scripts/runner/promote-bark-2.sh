@@ -53,6 +53,9 @@ args=(--version 2.0.0 --build 202611200002 --commit "$final" --previous-latest v
 if [[ ${#push_refs[@]} != 0 ]]; then git push --atomic origin "${push_refs[@]}"; fi
 "$python" -B scripts/publish_bark_release.py "${args[@]}" --publish
 for feed in appcast.xml bark-macos-x86_64.xml bark-macos-arm64.xml; do
-  curl -fsSL --retry 3 "https://github.com/kuzaxak/Nook/releases/latest/download/$feed" -o "$RUNNER_TEMP/$feed"
+  curl -fsSL --retry 3 "https://github.com/kuzaxak/Bark/releases/latest/download/$feed" -o "$RUNNER_TEMP/$feed"
   cmp "$assets/$feed" "$RUNNER_TEMP/$feed"
 done
+# Installed Nook releases use the original repository URL.
+curl -fsSL --retry 3 https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml -o "$RUNNER_TEMP/nook-legacy-appcast.xml"
+cmp "$assets/appcast.xml" "$RUNNER_TEMP/nook-legacy-appcast.xml"

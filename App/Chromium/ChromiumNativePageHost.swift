@@ -802,6 +802,14 @@ final class ChromiumNativePageHost: NativeSpaceSwitchHost {
         return mounts[window.id]?.presenter.root
     }
 
+    func zoomFeedbackRoot(for page: ChromiumPageNavigation, in window: BrowserWindowState) -> ChromiumWindowRoot? {
+        guard let (mount, row) = admission(page, in: window),
+              row.selected_client == page.nativeWindowID, row.presentedTab == page.nativeTabID,
+              mount.presenter.ownsSidebar(page.nativeWindowID),
+              mount.presenter.root.showsZoomTarget(tab: page.nativeTabID, of: page.nativeWindowID) else { return nil }
+        return mount.presenter.root
+    }
+
     @discardableResult
     func focusPresentedPage(_ page: ChromiumPageNavigation, in window: BrowserWindowState,
                             replacing: (NSResponder?) -> Bool) -> Bool {

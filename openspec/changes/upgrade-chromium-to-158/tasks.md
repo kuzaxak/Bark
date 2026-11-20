@@ -1,6 +1,6 @@
 # Chromium 158 upgrade
 
-The implementation branch is `codex/bark-chromium-158`. The signed comparison build is Bark 1.5.4 (123), recorded at `codex/bark-1.5.4-123`. Both desktops are reserved for the maintainer’s interactive checks.
+The Chromium release branch is `release/2.0`. Nook transition changes live on `release/1.5.5`. Both integrate into `main`. The signed comparison build is Bark 1.5.4 (123), recorded at `codex/bark-1.5.4-123`. Both desktops are reserved for the maintainer’s interactive checks.
 
 ## 1. Select and pin upstream
 
@@ -17,7 +17,7 @@ The implementation branch is `codex/bark-chromium-158`. The signed comparison bu
 
 - [x] 3.1 Complete the pinned dependency sync, hooks and exact prepared-tree comparison on Intel. The prepared tree matched all 289 patches and 90 mounted files at Chromium 158.0.8127.37. The x86_64 Rust matcher compiled.
 - [ ] 3.2 Compile and link the M158 Intel engine, packaging target and Bark browser tests. Resolve remaining compile or link failures and repeat the patch budget and replay checks after recipe edits. Developer GN generation passed on Intel with Xcode 26.3 and macOS SDK 26.2. The developer compile was stopped without errors to prioritize the official x64 build with macOS SDK 26.5 (25F70). Official GN generation passed, the pinned Intel PGO and V8 profiles matched, and Clang began the PGO build.
-- [ ] 3.3 Compile and link the corresponding Apple Silicon targets. Record where compilation ran. Native execution on the ARM Mac is pending access to that host.
+- [ ] 3.3 Compile and link the corresponding Apple Silicon targets. Record where compilation ran. The Intel Actions runner cross-compiles the ARM target. Native ARM qualification runs on a hosted macOS runner.
 - [ ] 3.4 Produce the candidate SDK and signed app for each architecture. Verify the embedded engine revision, bridge headers, SDK identity, architecture and host-only launcher from the packaged candidate.
 
 ## 4. Qualify the signed candidates
@@ -30,11 +30,11 @@ The implementation branch is `codex/bark-chromium-158`. The signed comparison bu
 - [x] 5.1 Reserve the deployed Nook build sequence for the two-hop upgrade. Xcode resolves Bark 2.0.0 (202611200002) after Nook 1.5.4 (202611050920) and the universal Nook 1.5.5 transition (202611200001).
 - [ ] 5.2 Build, sign and notarize the universal Nook 1.5.5 transition from the released Nook source with the original update key. Verify that standard and renamed installations can reach their native Bark appcast. Preserve automatic update preferences and access to Export Space.
 - [ ] 5.3 Exercise both signed updates from a copy of the published Nook 1.5.4 on each processor. Check existing install path, relaunch, physical processor under Rosetta, preserved on-disk Nook data and the next Bark update. Keep the public feed on the previous release until qualification passes.
-- [ ] 5.4 Promote both official SDK pins and receipts. Archive the implemented OpenSpec, integrate the reviewed changes into the existing default branch of `kuzaxak/Nook` and push. Preserve a source ref for the transition.
+- [ ] 5.4 Promote both official SDK pins and receipts. Archive the implemented OpenSpec, integrate the reviewed changes into `main` in `kuzaxak/Bark` and push. Preserve a source ref for the transition.
 - [ ] 5.5 Publish the qualified Apple Silicon and Intel DMGs, both Bark appcasts, and legacy `appcast.xml` together on GitHub Latest. Verify the original Nook installation URL, both Bark feeds and their immutable signed download URLs after publication.
 
 ## 6. Compile and qualify in GitHub Actions
 
 - [x] 6.1 Stop standalone local compilation, retain its verified M158 checkout and use the connected `nook-release` runner for official PGO builds. The official Intel compile reached 1,505 actions locally before it was stopped. Both architectures still require a linked release build.
 - [x] 6.2 Keep Chromium source and incremental outputs on the runner. Cache the verified SDK pair in Actions using the release recipe, target inputs and toolchain fingerprint. Revalidate restored artifacts before signing. [Build and cache procedure](../../../CONTRIBUTING.md#release-bark-200-from-github-actions)
-- [x] 6.3 Prepare the universal Nook transition at `a85053fd` and the tag-triggered workflow for signing, native hosted tests and publication. Actual notarization, native execution and delivery remain tracked above.
+- [x] 6.3 Prepare the universal Nook transition at `815c69d0` on `release/1.5.5` and the tag-triggered workflow for signing, native hosted tests and publication. Actual notarization, native execution and delivery remain tracked above.

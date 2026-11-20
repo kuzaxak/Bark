@@ -44,7 +44,8 @@ def check(out):
     mcp = ROOT / "Nook/Managers/AIManager/MCP"
     subprocess.run(["swiftc", "-swift-version", "5", "-target", target, "-parse-as-library",
                     "-I", settings / "Modules", ROOT / "Nook/Models/AI/MCPModels.swift",
-                    mcp / "MCPTransport.swift", mcp / "MCPClient.swift", ROOT / "Tests/DevMCP/Client.swift",
+                    mcp / "MCPTransport.swift", mcp / "MCPClient.swift", mcp.parent / "ChatToolApprovals.swift",
+                    ROOT / "Tests/DevMCP/Client.swift",
                     settings / "NookSettings.build/MCPServerConfig.swift.o",
                     settings / "NookSettings.build/ProductDisplayName.swift.o", "-o", binary], check=True)
     transcript = out / "handshake.jsonl"

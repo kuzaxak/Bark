@@ -47,8 +47,9 @@ struct ChromiumUpdateConfiguration {
                   components.query == nil, info["SUEnableAutomaticChecks"] as? Bool == false else { return nil }
         } else {
             // Existing Nook installations own this feed and share Bark's update signing key.
+            let path = feed.standardized.path.lowercased()
             let isNookFeed = host.lowercased() == "github.com" &&
-                feed.standardized.path.lowercased().hasPrefix("/kuzaxak/nook/releases/") &&
+                (path.hasPrefix("/kuzaxak/nook/releases/") || path.hasPrefix("/kuzaxak/bark/releases/")) &&
                 feed.lastPathComponent == "appcast.xml"
             guard components.scheme == "https", !isNookFeed,
                   feed.lastPathComponent != Self.otherArchitectureFeed else { return nil }

@@ -142,6 +142,21 @@ public struct TabTree: Codable, Equatable, Sendable {
         return hostID
     }
 
+    /// Loose tabs that Clear can close, preserving the full trail of each protected tab.
+    public func tabsToClear(in spaceID: UUID, keeping protectedIDs: Set<UUID>) -> [UUID] {
+        var kept = Set<UUID>()
+        for id in protectedIDs {
+            var root = id
+            var seen: Set<UUID> = [id]
+            while let parent = trailParent(of: root), seen.insert(parent).inserted {
+                root = parent
+            }
+            kept.insert(root)
+        }
+        return children(of: .tabs(spaceID: spaceID))
+            .filter { !$0.isFolder && !kept.contains($0.id) }.map(\.id)
+    }
+
     /// A live tab with children.
     public func hasChildren(_ id: UUID) -> Bool {
         items.values.contains { $0.deletedAt == nil && $0.parent == .folder(itemID: id) }
