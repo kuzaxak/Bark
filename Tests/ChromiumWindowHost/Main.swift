@@ -103,6 +103,7 @@ fileprivate final class PageView: NSView {
         reentrantSelectionOfRetiredPane()
         lightsCases()
         zoomFeedbackCases()
+        crashReportCase()
 
         Engine.rootAccepted = 0
         let refused = ChromiumWindowRoot(bridge: table(), client: 5)
@@ -312,6 +313,22 @@ fileprivate final class PageView: NSView {
         precondition(Engine.unobserved == [Engine.token], "a released root stops observing")
         compactCases()
         print("Window host root: Arc's sidebar, page frame and lights; the Library in the sidebar's column; hides, reveals and full screen; one page at a time, crashed and retired pages, observes until released")
+    }
+
+    @MainActor static func crashReportCase() {
+        let card = ChromiumCrashedPage(frame: CGRect(x: 0, y: 0, width: 400, height: 300))
+        var reloads = 0
+        var reports = 0
+        card.reload = { reloads += 1 }
+        card.reportProblem = { reports += 1 }
+        let stack = card.subviews.compactMap { $0 as? NSStackView }.first!
+        let actions = stack.arrangedSubviews.compactMap { $0 as? NSButton }
+        precondition(actions.map(\.title) == ["Reload", "Report a Problem…"], "Reload stays the first action")
+        precondition(actions[1].keyEquivalent.isEmpty, "Reporting takes no keyboard equivalent from Reload")
+        actions[0].performClick(nil)
+        precondition(reloads == 1 && reports == 0, "Reload only retries the crashed page")
+        actions[1].performClick(nil)
+        precondition(reloads == 1 && reports == 1, "Reporting needs no live page or browser window")
     }
 
     @MainActor static func zoomFeedbackCases() {

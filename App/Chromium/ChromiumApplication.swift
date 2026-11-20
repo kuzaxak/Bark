@@ -477,7 +477,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     NSApp.orderFrontStandardAboutPanel(options: ChromiumAppMenu.aboutOptions(chromiumVersion: version))
                 case .barkHelp: self?.showBarkHelp()
                 case .buildInformation: self?.showBuildInformation()
-                case .reportProblem: _ = NSWorkspace.shared.open(ChromiumAppMenu.problemReportURL)
+                case .reportProblem: ChromiumProblemReport.open()
                 case .checkForUpdates:
                     if self?.acceptsWindows == true { self?.updater?.checkForUpdates() }
                 case .settings: manager.openSettings(tab: .general)

@@ -10,6 +10,7 @@ with TemporaryDirectory(prefix='bark-app-menu-check-') as directory:
     out = Path(directory)
     binary = out / 'chromium-app-menu-check'
     c = ['swiftc', '-swift-version', '5', '-target', swift_target(), '-parse-as-library',
+         str(root / 'App/Chromium/ChromiumProblemReport.swift'),
          str(root / 'App/Chromium/ChromiumAppMenu.swift'), str(root / 'App/Chromium/ChromiumStartup.swift'),
          str(root / 'App/Chromium/ChromiumUpdateConfiguration.swift'), str(root / 'Tests/ChromiumAppMenu/Main.swift'), '-o', str(binary)]
     p = subprocess.run(c, capture_output=True, text=True)

@@ -167,6 +167,7 @@ final class ChromiumPageSlot {
 /// What a page's place shows while its renderer is gone.
 final class ChromiumCrashedPage: NSView {
     var reload: (() -> Void)?
+    var reportProblem: () -> Void = ChromiumProblemReport.open
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -174,8 +175,9 @@ final class ChromiumCrashedPage: NSView {
         layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         let title = NSTextField(labelWithString: "This page crashed")
         title.font = .systemFont(ofSize: 17, weight: .semibold)
-        let button = NSButton(title: "Reload", target: self, action: #selector(reloadPage))
-        let stack = NSStackView(views: [title, button])
+        let reloadButton = NSButton(title: "Reload", target: self, action: #selector(reloadPage))
+        let reportButton = NSButton(title: "Report a Problem…", target: self, action: #selector(reportPageProblem))
+        let stack = NSStackView(views: [title, reloadButton, reportButton])
         stack.orientation = .vertical
         stack.spacing = 12
         stack.translatesAutoresizingMaskIntoConstraints = false
@@ -188,4 +190,5 @@ final class ChromiumCrashedPage: NSView {
     required init?(coder: NSCoder) { nil }
 
     @objc private func reloadPage() { reload?() }
+    @objc private func reportPageProblem() { reportProblem() }
 }

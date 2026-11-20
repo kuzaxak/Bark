@@ -4,8 +4,6 @@ import AppKit
 /// Routes the Chromium application menu to the controls in Bark's native window.
 @MainActor
 final class ChromiumAppMenu: NSObject {
-    static let problemReportURL = URL(string: "https://github.com/kuzaxak/Bark/issues/new/choose")!
-
     static func buildInformation(in bundle: Bundle) -> String {
         let info = bundle.infoDictionary ?? [:]
         let version = info["CFBundleShortVersionString"] as? String ?? "unknown"

@@ -186,7 +186,7 @@ enum Check {
         precondition(installer.validateMenuItem(reportProblem), "Reporting works without a usable browser window")
         precondition(added("Report a Problem…", in: help) == .reportProblem)
         sidebarVisible = true
-        let reportURL = ChromiumAppMenu.problemReportURL
+        let reportURL = ChromiumProblemReport.url
         precondition(reportURL.absoluteString == "https://github.com/kuzaxak/Bark/issues/new/choose",
                      "Reporting opens the Bark issue chooser without sending page or build data")
         // File precedes View in the real menu. Chromium assigns Command-S to Save Page As.
