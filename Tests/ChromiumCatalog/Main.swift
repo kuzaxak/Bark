@@ -912,6 +912,22 @@ private final class CatalogApplication: NSApplication {
     tabs.select(research.itemID, in: window)
     precondition(window.spaceID == researchSpace)
     assertCommands(research, in: window)
+
+    // Cmd-click can create a background tab with no JavaScript opener.
+    // Both windows use Work's profile but display different spaces.
+    Native.tabs += [Native.tab(6480, window: 640), Native.tab(6481, window: 642),
+                    Native.tab(6482, window: 640, opener: 6400)]
+    discover()
+    let linked = page(6480), otherLink = page(6481), explicitOpener = page(6482)
+    guard tabs.spaceID(of: linked.itemID) == researchSpace else {
+        fputs("Cmd-click placed the background tab outside the source window’s Research space\n", stderr)
+        exit(1)
+    }
+    precondition(tabs.isNativePageOwner(linked, in: window) && tabs.opener(of: linked.itemID) == nil)
+    precondition(tabs.spaceID(of: otherLink.itemID) == Native.work && tabs.isNativePageOwner(otherLink, in: other))
+    precondition(tabs.spaceID(of: explicitOpener.itemID) == Native.work && tabs.opener(of: explicitOpener.itemID) == work.itemID)
+    assertCommands(research, in: window)
+    assertCommands(otherPage, in: other)
     tabs.setSpace(sharedEmpty, in: window)
     precondition(window.spaceID == sharedEmpty && window.showsNativeEmptySpace &&
                  tabs.controllableSession(in: window) == nil && Native.windows[640]?.active_tab == 6401)
@@ -1012,6 +1028,13 @@ private final class CatalogApplication: NSApplication {
         after: sharedEmpty, sharingLoginsWith: Native.work)!
     tabs.setSpace(favorites, in: window)
     precondition(window.spaceID == favorites)
+    assertCommands(work, in: window)
+    Native.tabs.append(Native.tab(6483, window: 640, opener: 6400))
+    discover()
+    let favoriteLink = page(6483)
+    precondition(tabs.spaceID(of: favoriteLink.itemID) == favorites &&
+                 tabs.opener(of: favoriteLink.itemID) == work.itemID && tabs.isNativePageOwner(favoriteLink, in: window),
+                 "A link from a displayed shared favorite belongs in the space showing that favorite")
     assertCommands(work, in: window)
     tabs.setSpace(Native.work, in: window)
     precondition(window.spaceID == Native.work)

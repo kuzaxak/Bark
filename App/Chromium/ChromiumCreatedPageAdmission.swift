@@ -1158,8 +1158,8 @@ final class ChromiumCreatedPageAdmission {
         }
 
         // Resolve newly created opener chains in this single callback. Each
-        // successful pass consumes rows. An unmodeled/popup opener falls back
-        // to this exact profile's existing space without altering the JS opener.
+        // successful pass consumes rows. A page without a modeled opener uses
+        // the destination window's space when it belongs to the native profile.
         let candidateIDs = Set(candidates.map(\.tab))
         var created: Set<Int32> = []
         var deferBatchOpeners = true
@@ -1184,8 +1184,15 @@ final class ChromiumCreatedPageAdmission {
                         !product.state.isIncognito && tabs.space(id) != nil &&
                         tabs.tree.dataStoreID(for: id) == profileID && tabs.isProfileAvailable(profileID) ? id : nil
                     }
+                } else if opener == nil, !product.state.isIncognito,
+                          let windowSpace = product.state.spaceID,
+                          tabs.space(windowSpace) != nil,
+                          tabs.tree.dataStoreID(for: windowSpace) == profileID {
+                    // Cmd-click creates a native tab without a JavaScript opener.
+                    targetSpace = windowSpace
                 } else {
-                    targetSpace = space(for: profileID, opener: opener, in: product.state)
+                    targetSpace = opener.flatMap { tabs.displayedSharedFavoriteSpace(of: $0, in: product.state) } ??
+                        space(for: profileID, opener: opener, in: product.state)
                 }
                 let detached = detachedPage(tab.tab)
                 guard let space = targetSpace,

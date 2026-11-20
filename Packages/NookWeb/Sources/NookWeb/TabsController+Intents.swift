@@ -822,7 +822,7 @@ extension TabsController {
     }
 
     /// The window's space when `itemID` is a favorite stored under another space it shares with.
-    private func sharedFavoriteSpace(of itemID: UUID, in window: BrowserWindowState?) -> UUID? {
+    func sharedFavoriteSpace(of itemID: UUID, in window: BrowserWindowState?) -> UUID? {
         guard let window, let current = window.spaceID, let owner = owner(ofItem: itemID) else { return nil }
         let source = tree(owner)
         guard case .favorites(let home) = source.section(of: itemID), home != current,

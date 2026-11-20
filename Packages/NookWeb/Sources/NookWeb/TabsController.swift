@@ -953,6 +953,14 @@ public final class TabsController {
         pageOwners[session.itemID] == window.id && windowRegistry.windows[window.id] === window
     }
 
+    /// The current space of a live shared favorite displayed in its native window.
+    public func displayedSharedFavoriteSpace(of session: PageSession, in window: BrowserWindowState) -> UUID? {
+        guard !window.isIncognito, let space = sharedFavoriteSpace(of: session.itemID, in: window),
+              shows(session.itemID, in: window), isNativePageOwner(session, in: window),
+              let page = session.navigation, nativePageHost?.canAdoptPage(page, in: window) == true else { return nil }
+        return space
+    }
+
     /// Brings forward the window holding the item's live page.
     public func showOwnerWindow(of itemID: UUID) {
         pageOwnerWindow(of: itemID)?.windowHandle?.bringToFront()
@@ -1219,7 +1227,10 @@ public final class TabsController {
         }
         guard isCurrent() else { return nil }
         if let opener {
-            guard tree.spaceID(of: opener) == spaceID, tree.item(opener)?.url != nil else { return nil }
+            guard tree.item(opener)?.url != nil,
+                  tree.spaceID(of: opener) == spaceID || liveSessions[opener].flatMap({
+                      displayedSharedFavoriteSpace(of: $0, in: window)
+                  }) == spaceID else { return nil }
         }
         let generation = select ? UUID() : nil
         if let generation {
