@@ -37,3 +37,26 @@ The upgrade record SHALL identify the Chromium version and verification reached 
 
 - **WHEN** an Intel candidate completes its native checks and the Apple Silicon engine has only been cross-compiled
 - **THEN** the record identifies native verification for Intel and outstanding native execution for Apple Silicon
+
+### Requirement: Upgrade existing Nook installations to Chromium
+
+The existing Nook update feed SHALL offer an authenticated path to the Chromium-based Bark release for each supported Mac.
+
+#### Scenario: Existing installations adopt the new browser
+
+- **GIVEN** an installed Nook 1.5.4 using its published update feed and allowing automatic updates
+- **WHEN** the Chromium migration is released and the user completes the normal update and relaunch cycle
+- **THEN** the installation becomes Bark for the Mac's native processor, including when Nook ran under Rosetta
+- **AND** subsequent checks find updates for that processor
+- **AND** existing Nook profile files remain available on disk
+
+#### Scenario: A user defers the migration
+
+- **GIVEN** a Nook installation with automatic update checks turned off
+- **WHEN** the Chromium release becomes available
+- **THEN** the existing installation can still open and export its spaces until the user chooses to update
+
+#### Scenario: A Nook user skips the initial Chromium release
+
+- **WHEN** a Nook 1.5.4 installation first checks its published update URL after a later Bark release
+- **THEN** it can still authenticate the universal transition update and reach the supported native Bark release

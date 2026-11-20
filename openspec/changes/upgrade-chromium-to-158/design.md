@@ -22,3 +22,7 @@ Clean patch application cannot detect a changed C++ signature or a UI action rea
 ## Migration Plan
 
 Keep M158 on a qualification branch. Produce and verify each SDK and its matching signed Bark candidate before changing distribution pins. Use build 123 as the comparison app with a separate copy of the test profile. Preserve the pre-upgrade copy for rollback because Chromium may migrate data on first launch.
+
+Existing Nook 1.5.4 installations use a single appcast and Sparkle 2.8.1. That version cannot select a download by processor architecture. The first item in the legacy feed therefore upgrades Nook to a universal Nook 1.5.5, built from its last released source with the same bundle identity and update key. This intermediate build selects the Bark appcast for the physical Mac, including on Apple Silicon running Nook under Rosetta. Its Sparkle bundle name is `Bark`, allowing Sparkle to find the signed `Bark.app` in the ordinary architecture-specific DMG when replacing Nook at its installed path.
+
+Use build numbers 202611050920 (published Nook), 202611200001 (transition) and 202611200002 (Bark 2.0.0). Sparkle checks the installed app's build number a second time during installation. Keep the legacy appcast on every GitHub Latest release alongside both Bark appcasts. Its signed Nook download stays at the immutable 2.0.0 release URL so an installation that skips this release can still take the first hop. The update replaces the app. Bark keeps Chromium profiles and its opt-in iCloud dataset separate from earlier Nook data.

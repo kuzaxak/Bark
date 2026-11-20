@@ -9,6 +9,7 @@ Signed Bark build 123 uses Chromium 156.0.8078.80. Chromium 158 is now the gener
 - Port Bark’s engine recipe and browser integration to Chromium 158.0.8127.37 on Intel and Apple Silicon.
 - Make the patch rehearsal runnable from a clean Bark checkout against a specified Chromium commit. Document how to select Stable, review conflicts, verify build inputs, resume a build and qualify each architecture.
 - Exercise the host-only launcher, profile and permission ownership, Web Store consent and password provider on the new candidate before replacing a signed build.
+- Release the Chromium migration as Bark 2.0.0 on the existing Nook repository and update feed. Existing Nook users can upgrade through Sparkle with their usual update preferences.
 
 ## Capabilities
 

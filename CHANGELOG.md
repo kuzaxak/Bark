@@ -4,6 +4,10 @@
 
 ### Moving from Nook to Bark on macOS
 
+Bark 2.0.0 moves web pages to Chromium 158. The sidebar, spaces, split panes and command bar are native macOS controls. The release targets macOS 15.5 or later and has separate downloads for Apple Silicon and Intel.
+
+Bark's upgrade from Nook uses the existing update feed and respects your automatic update preference. If Nook 1.5.4 has never checked for updates, choose **Check for Updates** once. The first update, Nook 1.5.5, selects the correct Bark download for your Mac. The next update replaces the application you normally open. To bring bookmarks and folders with you, choose **Export Space…** for each space in Nook before that second update, then import them in **Bark → Settings → Spaces**. Bark opens its existing Chromium profile if you have used it on this Mac. Otherwise it starts a new profile and you sign in to websites again.
+
 Bark starts with its own iCloud data. Existing bookmarks, shared spaces and invitations stay in Nook. To bring a space across, export it as a `.nookspace` file and import it in Bark. In a Bark build with iCloud support, choose **Settings → Spaces → iCloud Sync → Enable Sync** on each Mac, then choose which spaces to sync. Until you enable sync, your bookmarks stay on that Mac.
 
 ### Added
