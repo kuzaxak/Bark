@@ -47,6 +47,12 @@ enum Check {
                      "A key the person bound to Undo Close Tab shows")
         precondition(ShortcutAction.zoomIn.showsKey(KeyCombination(key: "=", modifiers: [.command])), "Other actions show their keys")
 
+        let zoomShortcuts: [ShortcutAction] = [.zoomIn, .zoomOut, .actualSize]
+        precondition(zoomShortcuts.allSatisfy { $0.pageCommand?.isZoomCommand == true },
+                     "All three zoom shortcuts receive page zoom feedback")
+        precondition(PageCommand.allCases.filter(\.isZoomCommand).count == zoomShortcuts.count,
+                     "Other page commands leave the zoom indicator alone")
+
         let defaults = KeyboardShortcut.defaultShortcuts
         let bound = defaults.filter { !$0.keyCombination.key.isEmpty }
         let shared = Dictionary(grouping: bound, by: \.keyCombination.lookupKey).filter { $0.value.count > 1 }.mapValues { $0.map(\.action) }

@@ -282,6 +282,12 @@ final class ChromiumPageNavigation: PageNavigation {
         return bridge.tab_execute_command(window, tab, command) == 1
     }
 
+    var nativeZoomPercent: Int? {
+        guard !invalidated, !isClosed, window > 0 else { return nil }
+        let percent = bridge.tab_execute_command(window, tab, Int32(BARC_PAGE_ZOOM_PERCENT.rawValue))
+        return percent > 0 ? Int(percent) : nil
+    }
+
     var certificateState: SiteCertificateState {
         guard !invalidated, !isClosed, window > 0 else { return .unavailable }
         switch bridge.tab_execute_command(window, tab, Int32(BARC_PAGE_CERTIFICATE_STATE.rawValue)) {

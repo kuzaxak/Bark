@@ -102,6 +102,7 @@ fileprivate final class PageView: NSView {
         reentrantPresentationCases()
         reentrantSelectionOfRetiredPane()
         lightsCases()
+        zoomFeedbackCases()
 
         Engine.rootAccepted = 0
         let refused = ChromiumWindowRoot(bridge: table(), client: 5)
@@ -311,6 +312,50 @@ fileprivate final class PageView: NSView {
         precondition(Engine.unobserved == [Engine.token], "a released root stops observing")
         compactCases()
         print("Window host root: Arc's sidebar, page frame and lights; the Library in the sidebar's column; hides, reveals and full screen; one page at a time, crashed and retired pages, observes until released")
+    }
+
+    @MainActor static func zoomFeedbackCases() {
+        let root = ChromiumWindowRoot(bridge: table(), client: 5)
+        let window = ZoomFixtureWindow(contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
+                                       styleMask: [.titled], backing: .buffered, defer: true)
+        window.isReleasedWhenClosed = false
+        window.contentView = root
+        let first = PageView(), second = PageView(), peek = PageView()
+        Engine.pages = [10: first, 11: second, 12: peek]
+        defer { Engine.pages = [:] }
+        let left = ChromiumWindowRoot.Pane(client: 5, tab: 10)
+        let right = ChromiumWindowRoot.Pane(client: 5, tab: 11)
+        let layout = ChromiumWindowRoot.Split(panes: [left, right], vertical: false, dividers: [0.5], focused: 10)
+        precondition(root.showSplit(layout))
+        func labels(in view: NSView) -> [NSTextField] {
+            if let label = view as? NSTextField, label.superview is NSVisualEffectView { return [label] }
+            return view.subviews.flatMap { labels(in: $0) }
+        }
+        root.showZoomPercent(110, tab: 11, of: 5)
+        precondition(labels(in: root).isEmpty, "an unfocused pane gets no indicator")
+        let before = window.firstResponder
+        root.showZoomPercent(110, tab: 10, of: 5)
+        root.showZoomPercent(125, tab: 10, of: 5)
+        let shown = labels(in: root)
+        precondition(shown.count == 1 && shown[0].stringValue == (1.25).formatted(.percent),
+                     "a repeat replaces the old percentage")
+        precondition(window.firstResponder === before, "the zoom indicator leaves the responder alone")
+        let labelFrame = inRoot(shown[0], root)
+        precondition(inRoot(first, root).contains(labelFrame), "the indicator stays in the focused pane")
+        let point = NSPoint(x: labelFrame.midX, y: labelFrame.midY)
+        precondition(root.hitTest(root.convert(point, to: root.superview))?.isDescendant(of: first) == true,
+                     "the indicator leaves pointer input with the page")
+        precondition(root.show(tab: 11, of: 5) && labels(in: root).isEmpty, "a pane switch clears the indicator")
+        let card = ChromiumWindowRoot.Peek(source: right, page: .init(client: 5, tab: 12))
+        let header = NSView(), actions = NSView()
+        precondition(root.showPeek(card, header: header, actions: actions, dismiss: {}) != 0)
+        root.showZoomPercent(90, tab: 11, of: 5)
+        precondition(labels(in: root).isEmpty, "the covered source is no longer the zoom target")
+        root.showZoomPercent(90, tab: 12, of: 5)
+        precondition(labels(in: root).count == 1 && inRoot(peek, root).contains(inRoot(labels(in: root)[0], root)),
+                     "the indicator belongs to the Peek page")
+        NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        precondition(labels(in: root).isEmpty, "the indicator clears when the window loses the keys")
     }
 
     @MainActor static func reentrantPresentationCases() {
@@ -1099,4 +1144,8 @@ private final class CountingPage: NSView {
 /// Stands in for the Library's swipe surface, which takes scroll events only.
 private final class ScrollOnly: NSView {
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+private final class ZoomFixtureWindow: NSWindow {
+    override var isKeyWindow: Bool { true }
 }

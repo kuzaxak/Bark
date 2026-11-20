@@ -1,6 +1,13 @@
 import BarcChromium
 
 extension PageCommand {
+    var isZoomCommand: Bool {
+        switch self {
+        case .zoomIn, .zoomOut, .actualSize: true
+        default: false
+        }
+    }
+
     var nativeBrowserCommand: Int32? {
         switch self {
         case .find: Int32(BARC_PAGE_FIND.rawValue)

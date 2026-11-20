@@ -185,7 +185,9 @@ enum BarcPageCommand {
   // Only the certificate viewer opened for this document and holding the
   // physical key window qualifies. The state query does not dismiss it.
   BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED = 17,
-  BARC_PAGE_CLOSE_CERTIFICATE_VIEWER = 18
+  BARC_PAGE_CLOSE_CERTIFICATE_VIEWER = 18,
+  // Returns the active page zoom percent, or zero if unavailable.
+  BARC_PAGE_ZOOM_PERCENT = 19
 };
 enum BarcCertificateState {
   BARC_CERTIFICATE_UNAVAILABLE = 0,

@@ -86,6 +86,7 @@ source_set("bridge") {
     "//components/tabs:public",
     "//components/viz/common",
     "//components/web_modal",
+    "//components/zoom",
     "//content/public/browser",
     "//device/vr/buildflags",
     "//extensions/browser",

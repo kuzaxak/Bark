@@ -33,6 +33,27 @@ extension BrowserManager {
         performNativePageCommand(command, in: window, page: page)
     }
 
+    /// The engine can refuse a zoom step at its bounds (including a reset at
+    /// default zoom). Still report the authoritative level of the same page.
+    func zoomFromKeyboard(_ command: PageCommand, in window: BrowserWindowState, page: PageSession) {
+        guard command.isZoomCommand,
+              let native = page.navigation as? ChromiumPageNavigation,
+              let host = tabs.nativePageHost as? ChromiumNativePageHost else { return }
+        let tab = native.nativeTabID, owner = native.nativeWindowID, document = page.nativeNavigationSerial
+        func currentRoot() -> ChromiumWindowRoot? {
+            guard windowRegistry?.windows[window.id] === window,
+                  windowRegistry?.activeWindow === window, let keyWindow = CommandWindow.key,
+                  window.window === keyWindow, frontPage(in: window) === page,
+                  page.navigation === native, page.nativeNavigationSerial == document,
+                  native.nativeTabID == tab, native.nativeWindowID == owner else { return nil }
+            return host.zoomFeedbackRoot(for: native, in: window)
+        }
+        guard let root = currentRoot() else { return }
+        _ = native.performNativePageCommand(command)
+        guard currentRoot() === root, let percent = native.nativeZoomPercent else { return }
+        root.showZoomPercent(percent, tab: tab, of: owner)
+    }
+
     /// Product page commands never fall through to a lazy WebKit surface.
     @discardableResult
     func performNativePageCommand(_ command: PageCommand, in window: BrowserWindowState,
