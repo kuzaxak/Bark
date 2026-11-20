@@ -32,7 +32,8 @@ class FirstOfficialPublicationTests(unittest.TestCase):
         rust = Path("Nook/ThirdParty/AdblockRustFFI")
         shutil.copytree(ROOT / rust, self.repo / rust,
                         ignore=shutil.ignore_patterns("NookAdblock.xcframework", "tests"))
-        (self.repo / "ChromiumApp").symlink_to(ROOT / "ChromiumApp", target_is_directory=True)
+        # The resource parity tests add files to this copy during publication.
+        shutil.copytree(ROOT / "ChromiumApp", self.repo / "ChromiumApp")
         pins_path = self.chromium / "PINS.json"
         pins = json.loads(pins_path.read_text())
         for target in ("mac", "mac-arm"):
