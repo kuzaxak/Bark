@@ -33,7 +33,7 @@ class OfficialProvenanceTests(unittest.TestCase):
             "DTSDKName": "macosx" + sdk["version"],
             "DTSDKBuild": sdk["build"],
             "CFBundleShortVersionString": provenance.CHROMIUM_VERSION,
-            "SCMRevision": provenance.PINS["chromium"] + "-refs/branch-heads/8078@{#1705}",
+            "SCMRevision": provenance.PINS["chromium"] + "-refs/branch-heads/8127@{#1692}",
         }))
         (self.out / "args.gn").write_bytes(build_engine.engine_args("x64", True))
         self.pin = provenance.PINS["official_pgo_profiles"]["mac"]

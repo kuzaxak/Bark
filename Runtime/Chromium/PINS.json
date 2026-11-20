@@ -1,21 +1,21 @@
 {
-  "chromium": "fb096c0011f9d50f0a264a9376420cdea9c421e3",
+  "chromium": "b8c2be851f62f6a394ec57955d7f31335d7cb6d4",
   "depot_tools": "500126d6e351e4f0834b70f71b454ce5c3733c54",
   "official_macos_sdk": {
     "version": "26.5",
     "build": "25F70"
   },
   "official_pgo_profiles": {
-    "mac": "chrome-mac-8078-1793210039-d0da025478573e13f407f013182890d1e5d06d00-2bf76a0407535d2fe700f41a1ec47590d03948c0.profdata",
-    "mac-arm": "chrome-mac-arm-8078-1793210039-70a79c5304368db0122ec98c91db5c4c6851ed9a-2bf76a0407535d2fe700f41a1ec47590d03948c0.profdata"
+    "mac": "chrome-mac-8127-1794332994-233cfe33b8e5b98243490df2fc1fa976fcefbba0-f2bd4d376eb6b6f39598e14e7b2d83aa5f5e4578.profdata",
+    "mac-arm": "chrome-mac-arm-8127-1794355046-b82a3291b4e601ca7bb3204990dee47813d1054d-a059438ae17f35f9bd8a169ce1d97ef2ed8d5029.profdata"
   },
   "official_pgo_sha256": {
-    "mac": "9acafe2a2140cc9751ac68c89bc76625c95950d6018892150913131cd06226e5",
-    "mac-arm": "1acb662d07e224d2c38f2f8cb80b63c06b5b4c927ec90b79adde5843a26c5b88"
+    "mac": "37fcf24941f785f99c7fcab05320a50c450812d111be189c9ce18ac6e1dd2100",
+    "mac-arm": "7e57c60838e577ccf1e27993bfc320844892b1f990499342d36a22471b34ce2c"
   },
   "official_v8_builtins": {
-    "version": "15.6.75.27",
-    "revision": "c9b3cfcab30ace06c21f9b48a0f0a34805e81e9d",
-    "sha256": "dee60b6c63ef4bfe4f2f0c0b0a1bf3edcab97a2b0297fcdcf7d5023c72cdc780"
+    "version": "15.8.62.31",
+    "revision": "b601a2347f005e8bfadd32f285df97ffba5cf1bd",
+    "sha256": "fe25d0db99744740ffd1c91a50a4c17ea8732e2f3f72c7cecc72f36ea7a9c074"
   }
 }
