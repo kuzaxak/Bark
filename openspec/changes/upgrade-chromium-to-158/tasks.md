@@ -25,6 +25,8 @@ The Chromium release branch is `release/2.0`. Nook transition changes live on `r
 - [ ] 4.1 Run the native engine regressions on each architecture. Cover the Google account chooser, Web Store approval and cancellation, Pawl password and OTP ownership, and superseded profile selection. Record any skipped cases by architecture.
 - [ ] 4.2 Exercise normal startup, first input, a profile switch with a pending permission prompt, an extension installation in the intended space, Cmd-click opening a background tab in the second space of a shared profile (P7), and a warm tab switch in each signed app. Record which candidate and architecture passed before distribution pins are promoted.
 
+- [ ] 4.3 Check opening the public `https://github.com/kuzaxak/Bark/actions` page on the signed Chromium 158 candidates. On 2026-11-20 at 16:59:04 EET an Intel build 124 renderer terminated during this visit. Its Crashpad framework UUID matched the installed Bark build. Chromium 156.0.8078.80 hit `DCHECK(root_node_)` in Blink’s `StyleTraversalRoot::Update`. The browser remained running. The same check exists in the 158 source. Its initiating condition and behavior on the signed 158 builds remain unverified. Capture a successful page render and interaction, or the diagnostic outcome, on each processor.
+
 ## 5. Release Bark 2.0.0 to existing Nook users
 
 - [x] 5.1 Reserve the deployed Nook build sequence for the two-hop upgrade. Xcode resolves Bark 2.0.0 (202611200002) after Nook 1.5.4 (202611050920) and the universal Nook 1.5.5 transition (202611200001).

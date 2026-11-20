@@ -16,6 +16,7 @@ with TemporaryDirectory(prefix='bark-window-host-check-') as directory:
     table = write_bridge_fixture(headers / 'BarcChromium/barc_bridge_api.h', out / 'BridgeTable.swift')
     c = ['swiftc', '-swift-version', '5', '-target', f'{platform.machine()}-apple-macosx15.5', '-parse-as-library',
          '-I', str(headers),
+         str(root / 'App/Chromium/ChromiumProblemReport.swift'),
          str(root / 'App/Chromium/ChromiumWindowRoot.swift'), str(root / 'App/Chromium/ChromiumWindowHostLink.swift'), str(root / 'App/Chromium/ChromiumCompactRoot.swift'), str(root / 'App/Window/WindowFrameInteraction.swift'),
          str(root / 'App/Chromium/ChromiumPagePanel.swift'), str(root / 'Nook/Components/Sidebar/Menu/LibrarySwipeDecision.swift'),
          str(root / 'Nook/Components/Browser/Window/SplitDrop.swift'), str(root / 'Nook/Components/WebsiteView/SplitDividerView.swift'),

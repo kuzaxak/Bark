@@ -477,6 +477,7 @@ final class ChromiumApplication: ChromiumStartupBridge {
                     NSApp.orderFrontStandardAboutPanel(options: ChromiumAppMenu.aboutOptions(chromiumVersion: version))
                 case .barkHelp: self?.showBarkHelp()
                 case .buildInformation: self?.showBuildInformation()
+                case .reportProblem: ChromiumProblemReport.open()
                 case .checkForUpdates:
                     if self?.acceptsWindows == true { self?.updater?.checkForUpdates() }
                 case .settings: manager.openSettings(tab: .general)
@@ -695,6 +696,8 @@ final class ChromiumApplication: ChromiumStartupBridge {
         With Shift-click Peek enabled, Shift-click a link or focus it and press Shift-Return. While Peek is open, choose View → \(split) to keep it in a split, or press Escape to return to the source.
 
         In a compact window, choose Open in Space to move the page into the main window.
+
+        If a page crashes, choose Help → Report a Problem… to open Bark’s GitHub issue form.
         """
         alert.addButton(withTitle: "Done")
         presentInformation(alert)

@@ -184,9 +184,7 @@ that exact version inside the app, checks its bridge version,
 header digest and function table size, then passes the table to the Swift shell.
 A change to the sidebar or command palette can use the same pinned engine.
 Bark can import bookmarks and history from another browser on request.
-For a bug report, open **Help → Build Information** and copy the app build,
-Chromium version, architecture, shell source SHA-256 and engine SDK pin.
-The two digests distinguish releases that share a version number.
+Choose **Report a Problem…** on the crashed page or in **Help**. On build 124 or if Bark quits, use the issue form in any browser. Include the approximate time, your time zone, what you clicked, and whether other tabs stayed open. **Help → Build Information** shows the app build, Chromium version and architecture. [Report a Bark problem](https://github.com/kuzaxak/Bark/issues/new?template=bug-report.yml)
 [App entry point](ChromiumApp) · [Swift window code](App/Chromium) ·
 [Engine SDK](Packages/BarkEngine) · [Chromium integration](Runtime/Chromium)
 
