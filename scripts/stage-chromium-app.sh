@@ -308,6 +308,8 @@ ENGINE_BINARY="$ENGINE_FRAMEWORK/Versions/$ENGINE_VERSION/Bark Framework"
   refuse "Versions/Current must point to $ENGINE_VERSION"
 [[ $(plist "$ENGINE_FRAMEWORK/Versions/$ENGINE_VERSION/Resources/Info.plist" CFBundleShortVersionString) == "$ENGINE_VERSION" ]] ||
   refuse "Framework CFBundleShortVersionString must match the app's $ENGINE_VERSION"
+# otool prints a separate header and dependency list for each fat slice.
+require_architecture "$APP_MAIN"
 # The zone registration in main must run before any other library can start a thread.
 [[ $(/usr/bin/otool -L "$APP_MAIN" | /usr/bin/tail -n +2 | /usr/bin/awk '{print $1}') == /usr/lib/libSystem.B.dylib ]] ||
   refuse 'App executable must link only libSystem'
