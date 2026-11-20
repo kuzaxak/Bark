@@ -50,6 +50,8 @@ The pinned Bitwarden Desktop 2026.10.4 [manifest generator](https://github.com/b
 
 A separate Chromium user-data directory does not isolate the vendor desktop app: Bitwarden's [release IPC path](https://github.com/bitwarden/clients/blob/94f753799058775f04190d6083d33692d7e59645/apps/desktop/desktop_native/core/src/ipc/mod.rs) uses its macOS App Group container, with a cache fallback; its socket-directory override is compiled out of release builds. Use a dedicated disposable macOS account and vault for the vendor workflow. Preserve the vendor binary/signature and normal permissions. Biometric success additionally requires Touch ID-capable hardware; a missing-capability result does not pass that case. Package inspection alone qualifies none of these workflows.
 
+P7 reproduced against the build 123 shell. The build 124 shell passed the native catalog regression for two windows using different spaces of one profile, including a link from a shared favorite. Both signed build 124 images passed mounted-app verification. The Intel and ARM columns track the interactive installed-app check.
+
 ## Site, media and native-runtime matrix
 
 | ID | Mandatory installed-build case | Intel | ARM |
