@@ -75,21 +75,35 @@ final class ChromiumPageSlot {
     let pane: ChromiumWindowRoot.Pane?
     let container = FlippedView()
     weak var view: NSView?
-    let crashed = ChromiumCrashedPage()
+    private var crashCard: ChromiumCrashedPage?
+    private let reload: () -> Void
     private var empty: NSView?
 
     init(pane: ChromiumWindowRoot.Pane?, bridge: BarcBridge) {
         self.pane = pane
         container.wantsLayer = true
         container.layer?.masksToBounds = true
-        crashed.isHidden = true
-        crashed.frame = container.bounds
-        crashed.autoresizingMask = [.width, .height]
-        crashed.reload = {
+        reload = { [reloadTab = bridge.tab_reload] in
             guard let pane else { return }
-            _ = bridge.tab_reload(pane.client, pane.tab)
+            _ = reloadTab(pane.client, pane.tab)
         }
-        container.addSubview(crashed)
+    }
+
+    var showsCrash: Bool { crashCard != nil }
+
+    func setCrashed(_ show: Bool) {
+        guard showsCrash != show else { return }
+        if show {
+            let card = ChromiumCrashedPage(frame: container.bounds)
+            card.autoresizingMask = [.width, .height]
+            card.reload = reload
+            crashCard = card
+            container.addSubview(card)
+        } else {
+            let card = crashCard
+            crashCard = nil
+            card?.removeFromSuperview()
+        }
     }
 
     /// The page while it is still in this slot; nil once another root took it.
@@ -115,21 +129,21 @@ final class ChromiumPageSlot {
             view.autoresizingMask = [.width, .height]
             guard isCurrent() else { return false }
             self.view = view
-            container.addSubview(view, positioned: .below, relativeTo: crashed)
+            container.addSubview(view, positioned: .below, relativeTo: crashCard)
             guard isCurrent() else { return false }
         } else {
             self.view = view
         }
         view.isHidden = hidden
         guard isCurrent() else { return false }
-        crashed.isHidden = !isCrashed
+        setCrashed(isCrashed)
         return isCurrent()
     }
 
     /// Autoresizing rounds a fractional container size; the page takes it exactly.
     func fillContainer() {
         heldView?.frame = container.bounds
-        crashed.frame = container.bounds
+        crashCard?.frame = container.bounds
         empty?.frame = container.bounds
     }
 

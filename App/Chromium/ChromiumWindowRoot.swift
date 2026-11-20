@@ -339,7 +339,7 @@ final class ChromiumWindowRoot: NSView {
     }
 
     func showsCrashedPage(tab: Int32) -> Bool {
-        allSlots.contains { $0.pane?.tab == tab && !$0.crashed.isHidden }
+        allSlots.contains { $0.pane?.tab == tab && $0.showsCrash }
     }
 
     /// The window shows no page of its own: an empty space, or a page another window holds.
@@ -556,12 +556,12 @@ final class ChromiumWindowRoot: NSView {
             applyLights()
         case .pageCrashed(let tab, let view):
             crashedTabs.insert(tab)
-            for slot in allSlots where slot.pane?.tab == tab && slot.holds(view) { slot.crashed.isHidden = false }
+            for slot in allSlots where slot.pane?.tab == tab && slot.holds(view) { slot.setCrashed(true) }
         case .extensionActionsChanged:
             extensionActionsChanged?()
         case .pageRestored(let tab):
             crashedTabs.remove(tab)
-            for slot in allSlots where slot.pane?.tab == tab { slot.crashed.isHidden = true }
+            for slot in allSlots where slot.pane?.tab == tab { slot.setCrashed(false) }
         }
     }
 
@@ -571,7 +571,7 @@ final class ChromiumWindowRoot: NSView {
         if let card = peekCard, let view, card.slot.view.map({ Unmanaged.passUnretained($0).toOpaque() }) == view {
             if card.slot.heldView != nil { card.slot.view?.removeFromSuperview() }
             card.slot.view = nil
-            card.slot.crashed.isHidden = true
+            card.slot.setCrashed(false)
             guard let next = bridge.tab_native_view(card.peek.page.client, card.peek.page.tab), next != view else {
                 hidePeek(generation: card.generation)
                 return
@@ -583,7 +583,7 @@ final class ChromiumWindowRoot: NSView {
               let pane = slot.pane else { return }
         if slot.heldView != nil { slot.view?.removeFromSuperview() }
         slot.view = nil
-        slot.crashed.isHidden = true
+        slot.setCrashed(false)
         guard let next = bridge.tab_native_view(pane.client, pane.tab), next != view else {
             if split == nil { shownTab = 0 }
             return

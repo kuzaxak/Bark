@@ -80,7 +80,7 @@ final class ChromiumCompactRoot: NSView {
         return true
     }
 
-    var showsCrashedPage: Bool { slot.map { !$0.crashed.isHidden } ?? false }
+    var showsCrashedPage: Bool { slot.map { $0.showsCrash } ?? false }
 
     private func makeSlot(tab: Int32) -> ChromiumPageSlot {
         if let old = slot {
@@ -101,7 +101,7 @@ final class ChromiumCompactRoot: NSView {
                   slot.view.map({ Unmanaged.passUnretained($0).toOpaque() }) == view else { return }
             if slot.heldView != nil { slot.view?.removeFromSuperview() }
             slot.view = nil
-            slot.crashed.isHidden = true
+            slot.setCrashed(false)
             if let next = bridge.tab_native_view(pane.client, pane.tab), next != view { show(tab: pane.tab) } else { shownTab = 0 }
         case .fullscreen(let page, _):
             guard page != pageFullscreen else { return }
@@ -110,11 +110,11 @@ final class ChromiumCompactRoot: NSView {
             applyLights()
         case .pageCrashed(let tab, let view):
             crashedTabs.insert(tab)
-            if let slot, slot.pane?.tab == tab, slot.holds(view) { slot.crashed.isHidden = false }
+            if let slot, slot.pane?.tab == tab, slot.holds(view) { slot.setCrashed(true) }
         case .extensionActionsChanged: break
         case .pageRestored(let tab):
             crashedTabs.remove(tab)
-            if let slot, slot.pane?.tab == tab { slot.crashed.isHidden = true }
+            if let slot, slot.pane?.tab == tab { slot.setCrashed(false) }
         }
     }
 
