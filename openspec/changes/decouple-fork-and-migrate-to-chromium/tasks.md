@@ -166,11 +166,12 @@ Keep each item open until its stated acceptance check passes. The maintainer own
 - [ ] 10.9 Open Manage Extensions as a selected tab inside the invoking space and window. Confirm the page manages that space’s profile, including when another profile also has a manager tab.
 - [ ] 10.10 Open the Chrome Web Store from that space, view an extension, add it through the normal consent prompt, and verify it appears in that profile’s manager. The current engine cancels the install dialog when the requesting Bark window has no Chromium BrowserView. Verify approval, cancellation and profile isolation.
 - [ ] 10.11 Apply the same routing to every profile settings shortcut. If the invoking space uses the requested profile, select the settings tab there. Otherwise switch the same browser window to the first regular space of that profile in sidebar order, then select the tab. Verify another window, a superseding selection, and a profile with no available space.
+- [ ] 10.12 Recover automatically after the user chooses a Pawl entry and the companion opens its password or consent dialog. On return, fill the same field in the original tab once. A cancelled prompt, navigation, changed field, or deliberate tab, space or window switch must discard the approval. Verify both passwords and codes.
 
 | Tasks | Assigned agent | Current handoff |
 | --- | --- | --- |
 | 10.1–10.2 | Coordinator and architecture builders | Crash reports share a FedCM chooser stack. Build 122 signed on both architectures. The maintainer owns live retests. |
-| 10.3–10.4 | `pawl_settings` | Provider and companion contract checked. Engine commit `a440a2ce` adds the GitHub and split-field regressions. Build 122 predates those changes. |
+| 10.3–10.4, 10.12 | `pawl_settings` | Provider and companion contract checked. Engine commit `a440a2ce` adds the GitHub and split-field regressions. Build 122 predates those changes. Investigate the reported focus warning during companion authorization separately. |
 | 10.5–10.6 | `tab_preview`, `folder_visibility` | Switcher preview and selected bookmark shipped for manual testing in 122. |
 | 10.7–10.8 | `tab_preview`, with independent review by `pawl_settings` | Favicon persistence and warm tab mounting have focused regressions. Check the next signed build against the recordings. |
 | 10.9, 10.11 | `folder_visibility` | Replace the normal utility-window route. Verify same-space and cross-profile ownership before packaging. |
