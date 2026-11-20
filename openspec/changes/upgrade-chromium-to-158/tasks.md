@@ -1,6 +1,6 @@
 # Chromium 158 upgrade
 
-The implementation branch is `codex/bark-chromium-158`. The signed comparison build is Bark 1.5.4 (123), recorded at `codex/bark-1.5.4-123`. Both desktops are reserved for the maintainer’s interactive checks.
+The Chromium release branch is `release/2.0`. Nook transition changes live on `release/1.5.5`. Both integrate into `main`. The signed comparison build is Bark 1.5.4 (123), recorded at `codex/bark-1.5.4-123`. Both desktops are reserved for the maintainer’s interactive checks.
 
 ## 1. Select and pin upstream
 
@@ -17,7 +17,7 @@ The implementation branch is `codex/bark-chromium-158`. The signed comparison bu
 
 - [x] 3.1 Complete the pinned dependency sync, hooks and exact prepared-tree comparison on Intel. The prepared tree matched all 289 patches and 90 mounted files at Chromium 158.0.8127.37. The x86_64 Rust matcher compiled.
 - [ ] 3.2 Compile and link the M158 Intel engine, packaging target and Bark browser tests. Resolve remaining compile or link failures and repeat the patch budget and replay checks after recipe edits. Developer GN generation passed on Intel with Xcode 26.3 and macOS SDK 26.2. The developer compile was stopped without errors to prioritize the official x64 build with macOS SDK 26.5 (25F70). Official GN generation passed, the pinned Intel PGO and V8 profiles matched, and Clang began the PGO build.
-- [ ] 3.3 Compile and link the corresponding Apple Silicon targets. Record where compilation ran. Native execution on the ARM Mac is pending access to that host.
+- [ ] 3.3 Compile and link the corresponding Apple Silicon targets. Record where compilation ran. The Intel Actions runner cross-compiles the ARM target. Native ARM qualification runs on a hosted macOS runner.
 - [ ] 3.4 Produce the candidate SDK and signed app for each architecture. Verify the embedded engine revision, bridge headers, SDK identity, architecture and host-only launcher from the packaged candidate.
 
 ## 4. Qualify the signed candidates
