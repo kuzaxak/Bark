@@ -11349,9 +11349,48 @@ struct VaultFocusEvents {
 };
 std::unique_ptr<net::test_server::HttpResponse> VaultForm(
     const net::test_server::HttpRequest& request) {
-  if (request.relative_url != "/vault-form") return nullptr;
+  if (request.relative_url != "/vault-form" &&
+      request.relative_url != "/vault-otp-forms" &&
+      request.relative_url != "/vault-github-login" &&
+      request.relative_url != "/vault-github-otp") {
+    return nullptr;
+  }
   auto response = std::make_unique<net::test_server::BasicHttpResponse>();
   response->set_content_type("text/html");
+  if (request.relative_url == "/vault-github-login") {
+    response->set_content("<form><input id=username autocomplete=username>"
+        "<input id=password type=password autocomplete=current-password></form>");
+    return response;
+  }
+  if (request.relative_url == "/vault-github-otp") {
+    response->set_content(R"HTML(
+      <form><label>Authentication code
+        <input id=app_totp name=app_otp inputmode=numeric pattern="[0-9]*" autofocus>
+      </label></form>
+    )HTML");
+    return response;
+  }
+  if (request.relative_url == "/vault-otp-forms") {
+    response->set_content(R"HTML(
+      <form><label>Verification code <input id=verification name=verificationCode
+        inputmode=numeric maxlength=6></label></form>
+      <form id=split>
+        <input id=before value=keep>
+        <input id=d1 aria-label="Digit 1" maxlength=1 autocomplete=one-time-code>
+        <input id=d2 aria-label="Digit 2" maxlength=1>
+        <input id=d3 aria-label="Digit 3" maxlength=1>
+        <input id=d4 aria-label="Digit 4" maxlength=1>
+        <input id=d5 aria-label="Digit 5" maxlength=1>
+        <input id=d6 aria-label="Digit 6" maxlength=1>
+        <input id=after value=keep>
+      </form>
+      <form><label>Promo code <input id=promo name=promo_code maxlength=6></label></form>
+      <form><label>ZIP code <input id=zip name=zip maxlength=5 autocomplete=postal-code></label></form>
+      <form><label>Security code <input id=cvc name=cvc maxlength=3 autocomplete=cc-csc></label></form>
+      <button id=blur>Leave</button>
+    )HTML");
+    return response;
+  }
   response->set_content("<form><input id=u autocomplete=username>"
       "<input id=p type=password autocomplete=current-password>"
       "<input id=otp autocomplete=one-time-code></form><button id=blur>Leave</button>");
@@ -11701,6 +11740,102 @@ IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultFocusedPasswordAndOtpUseTypedFi
   content::SimulateMouseClickOrTapElementWithId(contents, "p");
   content::RunAllTasksUntilIdle();
   EXPECT_EQ(0, barc_tab_vault_focus_is_current(events.observation, password));
+}
+
+IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest,
+                       VaultOtpRecognizesNamedAndSplitFieldsOnly) {
+  MountSelectedHostPage(browser());
+  browser()->GetWindow()->Show();
+  embedded_test_server()->RegisterRequestHandler(base::BindRepeating(&VaultForm));
+  ASSERT_TRUE(embedded_test_server()->Start());
+  const GURL url = embedded_test_server()->GetURL("/vault-otp-forms");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), url));
+  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  const int32_t window = browser()->GetSessionID().id();
+  VaultFocusEvents events;
+  events.observation = barc_tab_observe(window, barc_window_tab_at(window, 0),
+                                       VaultFocusEvents::Tab, &events);
+  ASSERT_NE(0u, events.observation);
+  base::ScopedClosureRunner stop(
+      base::BindOnce([](uint64_t token) { barc_tab_unobserve(token); },
+                     events.observation));
+  ASSERT_EQ(1, barc_tab_observe_vault(events.observation, VaultFocusEvents::Focus));
+  contents->Focus();
+
+  for (const char* id : {"promo", "zip", "cvc"}) {
+    SCOPED_TRACE(id);
+    content::SimulateMouseClickOrTapElementWithId(contents, id);
+    ASSERT_TRUE(base::test::RunUntil([&] {
+      return content::EvalJs(contents, "document.activeElement.id") == id;
+    }));
+    PressVaultSuggestionArrow(contents);
+    content::RunAllTasksUntilIdle();
+    EXPECT_EQ(0u, events.focus);
+  }
+
+  content::SimulateMouseClickOrTapElementWithId(contents, "verification");
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.focus != 0; }));
+  EXPECT_EQ(1, events.kind);
+  EXPECT_EQ(url::Origin::Create(url).Serialize(), events.origin);
+  const uint64_t named_focus = events.focus;
+  ASSERT_EQ(1, barc_tab_fill_vault(events.observation, named_focus, "", "024680"));
+  EXPECT_EQ("024680", content::EvalJs(contents, "verification.value"));
+
+  content::SimulateMouseClickOrTapElementWithId(contents, "d3");
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return events.focus != 0 && events.focus != named_focus;
+  }));
+  EXPECT_EQ(1, events.kind);
+  EXPECT_EQ("d3", content::EvalJs(contents, "document.activeElement.id"));
+  EXPECT_EQ(0, barc_tab_fill_vault(events.observation, events.focus, "", "01234"));
+
+  constexpr char kDigitValues[] = R"JS(
+    Array.from(document.querySelectorAll('#split input[maxlength="1"]'),
+               field => field.value).join(',')
+  )JS";
+  EXPECT_EQ(",,,,,", content::EvalJs(contents, kDigitValues));
+  content::SimulateMouseClickOrTapElementWithId(contents, "blur");
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.focus == 0; }));
+  content::SimulateMouseClickOrTapElementWithId(contents, "d3");
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.focus != 0; }));
+  EXPECT_EQ(1, events.kind);
+  const uint64_t split_focus = events.focus;
+  ASSERT_EQ(1, barc_tab_fill_vault(events.observation, split_focus, "", "012345"));
+  EXPECT_EQ(0, barc_tab_fill_vault(events.observation, split_focus, "", "999999"));
+  EXPECT_EQ("0,1,2,3,4,5", content::EvalJs(contents, kDigitValues));
+  EXPECT_EQ("keep:keep", content::EvalJs(contents, "before.value+':'+after.value"));
+  EXPECT_EQ("024680", content::EvalJs(contents, "verification.value"));
+  EXPECT_EQ("::", content::EvalJs(contents, "promo.value+':'+zip.value+':'+cvc.value"));
+
+  // GitHub-style two-step sign-in replaces the password document with a
+  // separate OTP document whose field is already focused by the page.
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(
+      browser(), embedded_test_server()->GetURL("/vault-github-login")));
+  contents->Focus();
+  content::SimulateMouseClickOrTapElementWithId(contents, "password");
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.focus != 0; }));
+  EXPECT_EQ(0, events.kind);
+  const uint64_t previous_document_focus = events.focus;
+
+  const GURL otp_url = embedded_test_server()->GetURL("/vault-github-otp");
+  ASSERT_TRUE(ui_test_utils::NavigateToURL(browser(), otp_url));
+  ASSERT_TRUE(base::test::RunUntil([&] {
+    return content::EvalJs(contents, "document.activeElement.id") == "app_totp";
+  }));
+  EXPECT_EQ(0, barc_tab_vault_focus_is_current(events.observation,
+                                               previous_document_focus));
+  ASSERT_TRUE(content::ExecJs(contents, "app_totp.click()"));
+  content::RunAllTasksUntilIdle();
+  EXPECT_EQ(0u, events.focus);
+  EXPECT_EQ("", content::EvalJs(contents, "app_totp.value"));
+
+  content::SimulateMouseClickOrTapElementWithId(contents, "app_totp");
+  ASSERT_TRUE(base::test::RunUntil([&] { return events.focus != 0; }));
+  EXPECT_NE(previous_document_focus, events.focus);
+  EXPECT_EQ(1, events.kind);
+  EXPECT_EQ(url::Origin::Create(otp_url).Serialize(), events.origin);
+  ASSERT_EQ(1, barc_tab_fill_vault(events.observation, events.focus, "", "012345"));
+  EXPECT_EQ("012345", content::EvalJs(contents, "app_totp.value"));
 }
 
 IN_PROC_BROWSER_TEST_F(BarcPawlBrowserTest, VaultFieldCapabilityEndsOnBlurNavigationAndUnobserve) {

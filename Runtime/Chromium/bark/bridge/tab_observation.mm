@@ -10,6 +10,7 @@
 #include <set>
 #include <string>
 #include <string_view>
+#include <vector>
 #include <objc/runtime.h>
 
 #include "bark/browser/ui/bark_window_host.h"
@@ -83,6 +84,7 @@
 #include "components/autofill/core/browser/foundations/scoped_autofill_managers_observation.h"
 #include "components/password_manager/content/browser/content_password_manager_driver.h"
 #include "components/password_manager/core/browser/password_form.h"
+#include "components/password_manager/core/common/password_manager_util.h"
 #include "base/functional/bind.h"
 #include "base/functional/callback_helpers.h"
 #include "base/strings/utf_string_conversions.h"
@@ -168,6 +170,55 @@
 using namespace barc::internal;
 
 namespace {
+// The vault approves these exact fields for this document. Chromium can merge
+// renderer forms, so a split widget must also share its original form and frame.
+using VaultCodeFields = std::vector<autofill::FieldGlobalId>;
+
+bool IsVaultCodeInput(const autofill::AutofillField& field) {
+  using enum autofill::FormControlType;
+  const auto type = field.form_control_type();
+  return field.is_focusable() && field.is_visible() && field.is_enabled() &&
+         !field.is_readonly() && (type == kInputText || type == kInputTelephone ||
+                                  type == kInputNumber || type == kInputPassword) &&
+         (field.html_type() == autofill::HtmlFieldType::kUnspecified ||
+          field.html_type() == autofill::HtmlFieldType::kOneTimeCode);
+}
+
+bool HasVaultCodeHint(const autofill::AutofillField& field) {
+  using password_manager::util::IsLikelyOtp;
+  return field.html_type() == autofill::HtmlFieldType::kOneTimeCode ||
+         field.Type().GetTypes().contains(autofill::ONE_TIME_CODE) ||
+         IsLikelyOtp(field.name_attribute(), field.id_attribute(), {}) ||
+         IsLikelyOtp(field.label(), field.aria_label(), {}) ||
+         IsLikelyOtp(field.placeholder(), {}, {});
+}
+
+VaultCodeFields CodeFieldsFor(const autofill::FormStructure& form,
+                             const autofill::AutofillField& trigger) {
+  if (!IsVaultCodeInput(trigger)) return {};
+  if (trigger.max_length() != 1) {
+    return HasVaultCodeHint(trigger) ? VaultCodeFields{trigger.global_id()}
+                                     : VaultCodeFields{};
+  }
+  const auto& fields = form.fields();
+  auto first = std::ranges::find(fields, &trigger, &std::unique_ptr<autofill::AutofillField>::get);
+  if (first == fields.end()) return {};
+  const auto is_box = [&](const auto& f) {
+    return f->max_length() == 1 && IsVaultCodeInput(*f) &&
+           f->renderer_form_id() == trigger.renderer_form_id() &&
+           f->origin() == trigger.origin() &&
+           (!f->IsPasswordInputElement() || HasVaultCodeHint(*f));
+  };
+  while (first != fields.begin() && is_box(*std::prev(first))) --first;
+  auto last = std::find_if_not(first, fields.end(), is_box);
+  if (last - first < 4 || last - first > 8 ||
+      !std::any_of(first, last, [](const auto& f) { return HasVaultCodeHint(*f); }))
+    return {};
+  VaultCodeFields result;
+  for (auto it = first; it != last; ++it) result.push_back((*it)->global_id());
+  return result;
+}
+
 class NativeBlockInfoBar final : public ConfirmInfoBarDelegate {
  public:
   explicit NativeBlockInfoBar(base::RepeatingClosure continue_request)
@@ -459,7 +510,7 @@ class TabObservation : public content::WebContentsObserver,
     autofill::FormGlobalId form;
     autofill::FieldGlobalId field;
     autofill::FieldRendererId username;
-    bool code;
+    VaultCodeFields code_fields;
     gfx::RectF bounds;
   };
   void NotifyVaultFocus() {
@@ -482,7 +533,7 @@ class TabObservation : public content::WebContentsObserver,
             const auto& focus = *self->vault_focus_;
             serial = focus.token;
             origin = focus.document.AsRenderFrameHostIfValid()->GetLastCommittedOrigin().Serialize();
-            kind = focus.code ? 1 : 0;
+            kind = focus.code_fields.empty() ? 0 : 1;
             rect = focus.bounds;
             native = self->web_contents()->GetRenderWidgetHostView()->GetNativeView().GetNativeNSView();
           }
@@ -554,9 +605,10 @@ class TabObservation : public content::WebContentsObserver,
         static_cast<autofill::ContentAutofillDriver&>(manager->driver()).render_frame_host() != cache_frame) return false;
     const auto* form = manager->FindCachedFormById(vault_focus_->form);
     const auto* field = form ? form->GetFieldById(vault_focus_->field) : nullptr;
-    return field && field->is_focusable() &&
-        (vault_focus_->code ? field->html_type() == autofill::HtmlFieldType::kOneTimeCode :
-         field->form_control_type() == autofill::FormControlType::kInputPassword);
+    if (!field || !field->is_focusable()) return false;
+    const auto code_fields = CodeFieldsFor(*form, *field);
+    return code_fields == vault_focus_->code_fields &&
+           (!code_fields.empty() || field->IsPasswordInputElement());
   }
   void InvalidateVaultIfNeeded() {
     if (vault_submission_ && !VaultSaveCurrent(vault_submission_->token)) ClearVaultSave();
@@ -618,6 +670,7 @@ class TabObservation : public content::WebContentsObserver,
   void OnAfterFormsSeen(autofill::AutofillManager&, base::span<const autofill::FormGlobalId>,
                        base::span<const autofill::FormGlobalId>) override {
     InvalidateVaultIfNeeded();
+    TryAdmitPendingVaultFocus();
   }
   void OnAutofillManagerStateChanged(autofill::AutofillManager& manager,
       autofill::AutofillManager::LifecycleState,
@@ -721,10 +774,10 @@ class TabObservation : public content::WebContentsObserver,
         (origin.scheme() == "http" && (origin.host() == "localhost" || origin.host() == "127.0.0.1")))) return;
     auto pair = manager.FindFormAndField(form_id, field_id);
     if (!pair.form_structure || !pair.autofill_field) return;
-    const bool code = pair.autofill_field->html_type() == autofill::HtmlFieldType::kOneTimeCode;
-    if (!code && pair.autofill_field->form_control_type() != autofill::FormControlType::kInputPassword) return;
+    auto code_fields = CodeFieldsFor(*pair.form_structure, *pair.autofill_field);
+    if (code_fields.empty() && !pair.autofill_field->IsPasswordInputElement()) return;
     autofill::FieldRendererId username;
-    if (!code) {
+    if (code_fields.empty()) {
       for (const auto& field : pair.form_structure->fields()) {
         if (field->host_frame() == field_id.frame_token && field->is_focusable() &&
             (field->Type().GetTypes().contains(autofill::USERNAME) || field->autocomplete_attribute() == "username")) {
@@ -739,7 +792,7 @@ class TabObservation : public content::WebContentsObserver,
     if (!widget) return;
     CHECK_NE(vault_serial_, UINT64_MAX);
     const uint64_t serial = ++vault_serial_;
-    vault_focus_.emplace(VaultFocus{serial, frame->GetWeakDocumentPtr(), cache_frame->GetWeakDocumentPtr(), manager.GetWeakPtr(), owner->GetWeakPtr(), widget->GetWeakPtr(), form_id, field_id, username, code, pair.autofill_field->bounds()});
+    vault_focus_.emplace(VaultFocus{serial, frame->GetWeakDocumentPtr(), cache_frame->GetWeakDocumentPtr(), manager.GetWeakPtr(), owner->GetWeakPtr(), widget->GetWeakPtr(), form_id, field_id, username, std::move(code_fields), pair.autofill_field->bounds()});
     if (!VaultCurrent(serial)) { vault_focus_.reset(); return; }
     NotifyVaultFocus();
   }
@@ -757,13 +810,36 @@ class TabObservation : public content::WebContentsObserver,
     if (!driver) return false;
     // Consume before sending a typed driver command; no reusable secret capability.
     vault_focus_.reset();
-    if (request.code)
-      driver->FillField(request.field.renderer_id, base::UTF8ToUTF16(secret),
-          autofill::FieldPropertiesFlags::kAutofilledOnUserTrigger, base::DoNothing());
-    else
-      driver->FillSuggestionById(request.username, request.field.renderer_id,
-          base::UTF8ToUTF16(username), base::UTF8ToUTF16(secret),
-          autofill::AutofillSuggestionTriggerSource::kManualFallbackPasswords);
+    if (!request.code_fields.empty()) {
+      const std::string_view code(secret);
+      if (code.empty() || code.size() > 8 || !base::IsStringASCII(code))
+        return false;
+      const auto& targets = request.code_fields;
+      if (targets.size() > 1 && code.size() != targets.size()) return false;
+      const auto* form = request.manager->FindCachedFormById(request.form);
+      const auto* trigger = form->GetFieldById(request.field);
+      if (targets.size() == 1 && trigger->max_length() && code.size() > trigger->max_length())
+        return false;
+      // Send one same-document Autofill operation so page input listeners receive
+      // Chromium's normal fill events. There is no refill, submit, or page script.
+      std::vector<autofill::FormFieldData> fields;
+      absl::flat_hash_map<autofill::FieldGlobalId, autofill::FieldType> types;
+      for (const auto& target : targets) {
+        auto& data = fields.emplace_back(*form->GetFieldById(target));
+        data.set_value(base::ASCIIToUTF16(targets.size() == 1 ? code :
+                                          code.substr(fields.size() - 1, 1)));
+        data.set_is_autofilled_according_to_renderer(true);
+        data.set_force_override(true);
+        types.emplace(target, autofill::ONE_TIME_CODE);
+      }
+      return request.manager->driver().ApplyFormAction(
+          autofill::mojom::FormActionType::kFill, autofill::mojom::ActionPersistence::kFill,
+          fields, autofill::FillId::Create(), /*supports_refill=*/false,
+          trigger->origin(), types).size() == targets.size();
+    }
+    driver->FillSuggestionById(request.username, request.field.renderer_id,
+        base::UTF8ToUTF16(username), base::UTF8ToUTF16(secret),
+        autofill::AutofillSuggestionTriggerSource::kManualFallbackPasswords);
     return true;
   }
 

@@ -75,6 +75,7 @@ source_set("bridge") {
     "//components/infobars/core",
     "//components/os_crypt/common:keychain_password_mac",
     "//components/password_manager/content/browser",
+    "//components/password_manager/core/common",
     "//components/permissions",
     "//components/search_engines",
     "//components/sessions:session_id",

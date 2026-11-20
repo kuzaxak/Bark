@@ -1,0 +1,14 @@
+diff --git a/third_party/blink/renderer/core/input/event_handler.cc b/third_party/blink/renderer/core/input/event_handler.cc
+--- a/third_party/blink/renderer/core/input/event_handler.cc
++++ b/third_party/blink/renderer/core/input/event_handler.cc
+@@ -956,5 +956,10 @@
+       mouse_event.button == WebPointerProperties::Button::kLeft) {
+     HitTestResult result = mev.GetHitTestResult();
+     result.SetToShadowHostIfInUAShadowRoot();
++    if (auto* input = DynamicTo<HTMLInputElement>(result.InnerNode());
++        input && input == frame_->GetDocument()->FocusedElement()) {
++      frame_->GetDocument()->SendFocusNotification(input,
++                                                  mojom::blink::FocusType::kMouse);
++    }
+     frame_->GetChromeClient().WillDispatchPointerDown(*result.InnerNode());
+   }
