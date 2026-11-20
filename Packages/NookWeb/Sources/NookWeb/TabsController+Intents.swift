@@ -541,6 +541,34 @@ extension TabsController {
         remove(itemID, promotingChildren: !item.isFolder, preferredSuccessor: opener)
     }
 
+    /// Clear acts on the shared tree, so keep the current pages of every window using it.
+    public func tabsToClear(in spaceID: UUID) -> [UUID] {
+        guard let owner = owner(ofSpace: spaceID) else { return [] }
+        _ = windowRegistry.registrationRevision
+        let windows: [BrowserWindowState]
+        switch owner {
+        case .main: windows = regularWindows
+        case .privateWindow(let window): windows = [window]
+        }
+        var protectedIDs = Set<UUID>()
+        for window in windows {
+            guard let selected = window.selectedItemID else { continue }
+            protectedIDs.insert(selected)
+            if let split = window.split, split.contains(selected) {
+                protectedIDs.formUnion(split.itemIDs)
+            }
+        }
+        return tree(owner).tabsToClear(in: spaceID, keeping: protectedIDs)
+    }
+
+    public func clearTabs(in spaceID: UUID) {
+        for id in tabsToClear(in: spaceID) {
+            remove(id, promotingChildren: false, revalidateAfterRelease: { [weak self] in
+                self?.tabsToClear(in: spaceID).contains(id) == true
+            })
+        }
+    }
+
     /// Deletes an item and its subtree from the sidebar, pinned tabs and favorites included.
     /// Pages end; reopening the closed entry puts it back in its place.
     public func remove(_ itemID: UUID) {
@@ -549,15 +577,16 @@ extension TabsController {
 
     /// `archiving` files the closed entry with the archive sweep's, apart from the person's closes.
     func remove(_ itemID: UUID, promotingChildren: Bool, archiving: Bool = false,
-                preferredSuccessor: ((BrowserWindowState) -> UUID?)? = nil) {
+                preferredSuccessor: ((BrowserWindowState) -> UUID?)? = nil,
+                revalidateAfterRelease: (() -> Bool)? = nil) {
         guard let owner = owner(ofItem: itemID) else { return }
         let ids = promotingChildren ? [itemID] : tree(owner).subtree(of: itemID)
         if releaseNativePagesBeforeMutation(ids, preferredSuccessor: preferredSuccessor, then: { [weak self] in
             guard let self else { return }
             let current = promotingChildren ? [itemID] : self.tree(owner).subtree(of: itemID)
-            guard Set(current) == Set(ids) else { return }
+            guard Set(current) == Set(ids), revalidateAfterRelease?() != false else { return }
             self.remove(itemID, promotingChildren: promotingChildren, archiving: archiving,
-                        preferredSuccessor: preferredSuccessor)
+                        preferredSuccessor: preferredSuccessor, revalidateAfterRelease: revalidateAfterRelease)
         }) { return }
         if let item = tree(owner).item(itemID) { dismissFromLiveFolder(item) }
         moveSelectionOff(Set(ids), preferredSuccessor: preferredSuccessor)

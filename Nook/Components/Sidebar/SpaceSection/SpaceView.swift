@@ -288,15 +288,15 @@ struct SpaceView: View {
         return VStack(spacing: NookDesign.Spacing.xs) {
             SpaceSeparator(
                 isHovering: $isSidebarHovered,
-                // Clear empties the section: a tab goes with its whole trail.
-                onClear: { looseTabs.forEach(tabs.remove) },
+                onClear: { tabs.clearTabs(in: spaceID) },
                 onOrganize: nookSettings.tabOrganizerEnabled && tabOrganizerManager.isAvailable ? {
                     Task {
                         await tabOrganizerManager.organizeTabs(in: spaceID, using: tabs)
                     }
                 } : nil,
                 isOrganizing: tabOrganizerManager.isOrganizing,
-                tabCount: looseTabs.count
+                tabCount: looseTabs.count,
+                clearCount: tabs.tabsToClear(in: spaceID).count
             )
             .padding(.horizontal, NookDesign.Spacing.md)
 
