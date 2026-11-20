@@ -146,11 +146,12 @@ jobs:
       - name: Install the pinned SDK for this runner
         env:
           BARK_ENGINE_SOURCE: ${{ vars.BARK_ENGINE_SOURCE }}
+          BARK_WALK_PYTHON: ${{ vars.BARK_WALK_PYTHON }}
         run: |
           set -euo pipefail
           arch="$(python3 scripts/chromium_sdk_layout.py native-arch)"
           pin="$(python3 scripts/chromium_sdk_layout.py digest Packages/BarkEngine "$arch")"
-          python3 scripts/bark-check.py engine --arch "$arch" --engine "$BARK_ENGINE_SOURCE" --install
+          "${BARK_WALK_PYTHON:-python3}" -B scripts/bark-check.py engine --arch "$arch" --engine "$BARK_ENGINE_SOURCE" --install
           printf 'BARK_SMOKE_ARCH=%s\nBARK_SMOKE_PIN=%s\nBARK_SMOKE_WORK=\n' "$arch" "$pin" >> "$GITHUB_ENV"
 
       - name: Build Bark from an empty output directory

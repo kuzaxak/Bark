@@ -166,7 +166,7 @@ same bridge API. Use one source archive for the pair and send each Mac its
 matching SDK. The example below packages one official architecture. For a
 developer SDK, omit `--require-official` throughout. Run the commands from
 `$barc_repo` with `BARK_SIGN_IDENTITY` set to a local Developer ID Application
-identity.
+identity and `BARK_WALK_PYTHON` set to the [signed-walk Python](../../CONTRIBUTING.md#run-the-signed-ui-walks).
 
 ```fish
 set -l headers (python3 scripts/chromium_sdk_layout.py headers Packages/BarkEngine "$arch")
@@ -181,11 +181,11 @@ set -l archive "$handoff/BarkSDK-$arch-$pin.tar.gz"
 set -l revision (git rev-parse HEAD)
 set -l sources "Bark-source-$revision.tar.gz"
 git archive --format=tar.gz --output="$handoff/$sources" "$revision"
-env -u BARK_ENGINE_SOURCE python3 scripts/bark-check.py engine --arch "$arch" --require-official \
+env -u BARK_ENGINE_SOURCE "$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --arch "$arch" --require-official \
     --archive "$archive"
 mkdir "$handoff/source"
 tar -xzf "$handoff/$sources" -C "$handoff/source"
-python3 "$handoff/source/scripts/bark-check.py" build --arch "$arch" --require-official --engine "$archive" \
+"$BARK_WALK_PYTHON" -B "$handoff/source/scripts/bark-check.py" build --arch "$arch" --require-official --engine "$archive" \
     --output "$handoff/Bark.app"
 ditto -c -k --keepParent "$handoff/Bark.app" "$handoff/Bark-$arch.zip"
 pushd "$handoff"
@@ -512,7 +512,7 @@ builder can write its archive using the Engine path printed above.
 ```fish
 set -l engine (python3 scripts/chromium_sdk_layout.py artifact "$package" "$arch")
 set -l archive "$handoff/BarkSDK-$arch.tar.gz"
-python3 scripts/bark-check.py engine --require-official --arch "$arch" \
+"$BARK_WALK_PYTHON" -B scripts/bark-check.py engine --require-official --arch "$arch" \
     --engine "$engine" --archive "$archive"
 ```
 
