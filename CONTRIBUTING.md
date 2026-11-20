@@ -542,11 +542,13 @@ connected services. Check the owner of an older identifier before changing it.
 
 ## Reporting bugs and requesting features
 
-The project accepts pull requests. When proposing a fix or feature, include the details below in the relevant pull request. [Bark pull requests](https://github.com/kuzaxak/Bark/pulls)
+Open an issue to report a problem or request a feature. Submit a pull request when you have a code change. [Bark issues](https://github.com/kuzaxak/Bark/issues) · [Bark pull requests](https://github.com/kuzaxak/Bark/pulls)
 
 ### Bug Reports
 
-Be descriptive and thorough. Include:
+For a crash, include the approximate time, time zone and whether other tabs or windows remained usable. The issue form is public. Keep private URLs, tokens and raw crash dumps on your Mac. [Browser bug or crash form](https://github.com/kuzaxak/Bark/issues/new?template=bug-report.yml)
+
+Include the following when available.
 
 - **macOS version**
 - **Bark version and build number**

@@ -1,0 +1,34 @@
+name: Browser bug or crash
+description: Report unexpected behavior in Bark on macOS.
+body:
+  - type: markdown
+    attributes:
+      value: Reports are public. For a page crash, include the time and whether other tabs stayed open. Share only information you are comfortable publishing. Keep private addresses, query strings, account details and raw crash dumps on your Mac.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: What happened?
+      description: Describe what you saw and what you expected. For a crash, say whether the page, the window or Bark itself closed.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How can we see it?
+      description: Include steps and, if appropriate, a public site or path. If it happened once, describe the last action you remember.
+  - type: input
+    id: build
+    attributes:
+      label: Bark version and build
+      description: Find this under Help → Build Information when Bark is open.
+      placeholder: 1.5.4 (124)
+  - type: input
+    id: mac
+    attributes:
+      label: Mac and macOS
+      placeholder: Intel or Apple Silicon, macOS version
+  - type: input
+    id: time
+    attributes:
+      label: Approximate time and time zone
+      placeholder: "20 November, 16:59 EET"
