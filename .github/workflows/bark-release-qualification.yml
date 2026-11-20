@@ -95,6 +95,14 @@ jobs:
             --receipt "$output/qualification.json" --arch "$BARK_QUALIFICATION_ARCH" \
             --feed-url "https://github.com/kuzaxak/Bark/releases/latest/download/bark-macos-$BARK_QUALIFICATION_ARCH.xml"
           cp "$output/qualification.json" "$RUNNER_TEMP/bark-qualified/qualification-$BARK_QUALIFICATION_ARCH.json"
+      - name: Check the public GitHub Actions page on the signed candidate
+        shell: bash
+        run: |
+          # The previous qualification used this hosted desktop. Let its idle guard reset.
+          sleep 11
+          python -B Tests/ChromiumGitHubActions/walk.py --require-official \
+            --app "$RUNNER_TEMP/bark-migration/Bark.app" --output "$RUNNER_TEMP/bark-github-actions"
+          cp "$RUNNER_TEMP/bark-github-actions/actions.png" "$RUNNER_TEMP/bark-qualified/actions-$BARK_QUALIFICATION_ARCH.png"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: bark-qualified-${{ matrix.arch }}

@@ -7,11 +7,11 @@ People can report a problem after losing a page and decide which information to 
 
 ### Requirement: A renderer failure leaves a reporting route available
 
-Bark SHALL offer a Help action that opens a user-editable issue form independently of the current page. The form SHALL also be reachable from another browser after Bark quits.
+Bark SHALL offer a crash-card action beside Reload and a Help action that opens a user-editable issue form independently of the current page. The form SHALL also be reachable from another browser after Bark quits.
 
 #### Scenario: Request help after a tab crashes
 
-- **WHEN** the user chooses Report a Problem after a page crashes or with all browser windows closed
+- **WHEN** the user chooses Report a Problem on the crashed page or from Help with all browser windows closed
 - **THEN** the issue chooser opens and the user can describe what happened before submitting
 
 #### Scenario: File a report from an older release
