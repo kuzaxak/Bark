@@ -226,6 +226,8 @@ class ReleaseTests(unittest.TestCase):
                 def read(command, **kwargs):
                     tool = Path(command[0]).name
                     if tool == "codesign":
+                        if command[-1] == self.app:
+                            return "CDHash=abc123\n"
                         self.assertIn(command[-1], staged)
                         return f"TeamIdentifier={app_team}\nCDHash=abc123\n"
                     if tool == "du":
@@ -282,6 +284,60 @@ class ReleaseTests(unittest.TestCase):
                             verified.assert_not_called()
                         self.assertFalse(output.exists())
 
+    def test_distribution_preserves_its_signed_source_directory(self):
+        configure_release(self.app, self.release)
+        alias = self.root / "source-app"
+        alias.symlink_to(self.app, target_is_directory=True)
+        app_paths = [self.app, alias]
+        case_alias = self.root / "bARk.ApP"
+        if case_alias.exists():
+            self.assertTrue(case_alias.samefile(self.app))
+            app_paths.append(case_alias)
+        with mock.patch("bark_release.subprocess.run") as run:
+            for app_path in app_paths:
+                parent = app_path / "Contents" / "new-exports"
+                with self.subTest(path=app_path), self.assertRaisesRegex(ValueError, "outside the signed application"):
+                    make_distribution(self.app, parent / "release", "x86_64", "signer",
+                                      "https://downloads.example", None, "-", self.root)
+                self.assertFalse(parent.exists())
+            run.assert_not_called()
+
+        # Resolve the parent before creating directories when the final target is outside the app.
+        destination = self.app / "unused" / ".." / ".." / "release"
+        with mock.patch("bark_release.bundle_cdhash", return_value="ab" * 20), \
+                mock.patch("bark_release.stage_disk_image", side_effect=InterruptedError):
+            with self.assertRaises(InterruptedError):
+                make_distribution(self.app, destination, "x86_64", "signer",
+                                  "https://downloads.example", self.root, "-", self.root)
+        self.assertFalse((self.app / "unused").exists())
+        self.assertFalse((self.root / "release").exists())
+
+    def test_distribution_keeps_the_app_selected_before_sparkle_resolution(self):
+        configure_release(self.app, self.release)
+        resolved = False
+        output = self.root / "release"
+
+        def code_hash(app):
+            if app == self.app and not resolved:
+                return "aa" * 20
+            return "bb" * 20
+
+        def run(command, **kwargs):
+            nonlocal resolved
+            if command[0] == "xcodebuild":
+                resolved = True
+            else:
+                self.assertEqual(command[:2], ["/usr/bin/ditto", self.app])
+                shutil.copytree(command[1], command[2])
+
+        with mock.patch("bark_release.bundle_cdhash", side_effect=code_hash), \
+                mock.patch("bark_release.subprocess.run", side_effect=run):
+            with self.assertRaisesRegex(ValueError, "source app changed"):
+                make_distribution(self.app, output, "x86_64", "signer",
+                                  "https://downloads.example", None, "-", self.root)
+        self.assertTrue(resolved)
+        self.assertFalse(output.exists())
+
     def test_personal_image_requires_the_ordinary_application(self):
         destination = self.root / "Bark.dmg"
         for metadata in [
@@ -295,7 +351,7 @@ class ReleaseTests(unittest.TestCase):
                 self.assertFalse(destination.exists())
 
     def test_personal_image_requires_the_reopened_app_to_match(self):
-        for mismatch in (True, False):
+        for mismatch in ("installed", "after-staging", None):
             with self.subTest(mismatch=mismatch):
                 destination = self.root / f"Bark-mismatch-{mismatch}.dmg"
                 copies = []
@@ -318,7 +374,9 @@ class ReleaseTests(unittest.TestCase):
                     if command[0] == "du":
                         return b"1"
                     installed_copy = len(copies) > 1 and command[-1] == copies[-1]
-                    return "CDHash=bad456\n" if mismatch and installed_copy else "CDHash=abc123\n"
+                    if (mismatch == "installed" and installed_copy) or (mismatch == "after-staging" and verified.called):
+                        return "CDHash=bad456\n"
+                    return "CDHash=abc123\n"
 
                 with mock.patch("bark_release.subprocess.run", side_effect=run), mock.patch(
                     "bark_release.subprocess.check_output", side_effect=read,

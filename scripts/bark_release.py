@@ -196,14 +196,15 @@ def distribution_requirement(app, bundle_id):
 
 
 def verify_installed_image(image, staged_app, working, requirement, verify_staged, *,
-                           exercise=None, assess_notarization=True):
-    """Verify a copy from the release image, optionally comparing the staging app."""
+                           exercise=None, assess_notarization=True, expected_cdhash=None):
+    """Verify the installed copy against the selected code hash or staging app."""
     if assess_notarization:
         subprocess.run(["/usr/sbin/spctl", "--assess", "--type", "open",
                         "--context", "context:primary-signature", "--verbose=4", image], check=True)
     app_name = staged_app.name if staged_app else "Bark.app"
     expected_info = (staged_app / "Contents/Info.plist").read_bytes() if staged_app else None
-    expected_cdhash = bundle_cdhash(staged_app) if staged_app else None
+    if staged_app and expected_cdhash is None:
+        expected_cdhash = bundle_cdhash(staged_app)
     with TemporaryDirectory(prefix="install-check-", dir=working) as directory:
         root = Path(directory)
         mount = root / "image"
@@ -220,9 +221,9 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
             subprocess.run(["/usr/bin/hdiutil", "detach", mount], check=True)
         subprocess.run(["/usr/bin/codesign", "--verify", "--deep", "--strict", "-R", requirement,
                         installed], check=True)
-        if staged_app and ((installed / "Contents/Info.plist").read_bytes() != expected_info
-                           or bundle_cdhash(installed) != expected_cdhash):
-            raise ValueError("The app copied from the disk image differs from the signed staging app.")
+        if ((expected_info is not None and (installed / "Contents/Info.plist").read_bytes() != expected_info)
+                or (expected_cdhash is not None and bundle_cdhash(installed) != expected_cdhash)):
+            raise ValueError("The app copied from the disk image differs from the selected signed app.")
         if verify_staged:
             verify_staged(installed)
         if assess_notarization:
@@ -232,14 +233,15 @@ def verify_installed_image(image, staged_app, working, requirement, verify_stage
             exercise(installed)
 
 
-def stage_disk_image(app, info, image, stage, identity, verify_staged, notary_profile=None):
+def stage_disk_image(app, info, source_cdhash, image, stage, identity, verify_staged, notary_profile=None):
     """Stage the original signed bundle with the Applications shortcut and sign the image."""
     bundle_id, version = info["CFBundleIdentifier"], info["CFBundleShortVersionString"]
     volume = stage / "volume"
     volume.mkdir()
     installed = volume / "Bark.app"
     subprocess.run(["/usr/bin/ditto", app, installed], check=True)
-    if plistlib.loads((installed / "Contents/Info.plist").read_bytes()) != info:
+    if (plistlib.loads((installed / "Contents/Info.plist").read_bytes()) != info
+            or bundle_cdhash(installed) != source_cdhash):
         raise ValueError("The source app changed while the release was being staged.")
     if info.get("BarkChromiumVersion") != framework_version(installed):
         raise ValueError("The declared Chromium version differs from the embedded engine.")
@@ -263,7 +265,17 @@ def stage_disk_image(app, info, image, stage, identity, verify_staged, notary_pr
         notarize(image, image, notary_profile)
     subprocess.run(["codesign", "--verify", "--strict", "-R", requirement, image], check=True)
     verify_installed_image(image, installed, stage, app_requirement, verify_staged,
-                           assess_notarization=bool(notary_profile))
+                           assess_notarization=bool(notary_profile), expected_cdhash=source_cdhash)
+
+
+def distribution_output(app, path):
+    path = Path(path)
+    output = path.parent.resolve() / path.name
+    resolved = output.resolve()
+    # Different spellings can name the same bundle on a case-insensitive volume.
+    if any(parent.is_dir() and parent.samefile(app) for parent in (resolved, *resolved.parents)):
+        raise ValueError("Choose an output outside the signed application bundle.")
+    return output
 
 
 def make_personal_image(app, output, identity, verify_staged):
@@ -273,16 +285,14 @@ def make_personal_image(app, output, identity, verify_staged):
         raise ValueError("Personal browsing requires an ordinary signed ee.qdo.bark app.")
     if not identity:
         raise ValueError("Supply a Developer ID identity for signing the disk image.")
-    output = Path(output).absolute()
-    if output.resolve().is_relative_to(app.resolve()):
-        raise ValueError("Write the disk image outside the signed application bundle.")
+    output = distribution_output(app, output)
     if output.suffix != ".dmg" or os.path.lexists(output):
         raise ValueError(f"Choose a new .dmg file: {output}")
     output.parent.mkdir(parents=True, exist_ok=True)
     with TemporaryDirectory(prefix=".bark-image-", dir=output.parent) as directory:
         stage = Path(directory)
         image = stage / "Bark.dmg"
-        stage_disk_image(app, info, image, stage, identity, verify_staged)
+        stage_disk_image(app, info, bundle_cdhash(app), image, stage, identity, verify_staged)
         publish_new(image, output)
     print(f"Packaged signed Bark for normal browsing at {output}", flush=True)
 
@@ -294,9 +304,10 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
     bundle_id, version, build = check_distribution_settings(info, architecture, download_base_url)
     if not identity:
         raise ValueError("Supply a Developer ID identity for signing the disk image.")
-    output_directory = Path(output_directory).absolute()
+    output_directory = distribution_output(app, output_directory)
     if os.path.lexists(output_directory):
         raise ValueError(f"Choose a new distribution output directory: {output_directory}")
+    source_cdhash = bundle_cdhash(app)
     if sparkle_bin is None:
         packages = working / "SourcePackages"
         subprocess.run(["xcodebuild", "-resolvePackageDependencies", "-project", REPO / "Bark.xcodeproj",
@@ -310,7 +321,7 @@ def make_distribution(app, output_directory, architecture, identity, download_ba
         published = stage / "release"
         published.mkdir()
         image = published / f"Bark-{version}-{build}-macos-{architecture}.dmg"
-        stage_disk_image(app, info, image, stage, identity, verify_staged, notary_profile)
+        stage_disk_image(app, info, source_cdhash, image, stage, identity, verify_staged, notary_profile)
         signature = subprocess.check_output([Path(sparkle_bin) / "sign_update", "--ed-key-file", ed_key_file,
                                               "-p", image], text=True).strip()
         subprocess.run(["xcrun", "swift", REPO / "scripts/VerifyBarkUpdate.swift", image, info["SUPublicEDKey"],

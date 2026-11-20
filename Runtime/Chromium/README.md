@@ -683,8 +683,10 @@ python3 scripts/bark-check.py package "$bark_app" --require-official --arch "$ba
     --ed-key-file "$sparkle_key_file" --notary-profile "$notary_profile"
 ```
 
-Choose a path ending in `Bark.app` for `$bark_app`. The package command
-re-verifies its embedded SDK and produces
+Choose a path ending in `Bark.app` for `$bark_app` and a new directory outside
+that bundle for `$bark_candidate_directory`. The package command checks that
+the staged copy and the app read back from the DMG have the selected app’s
+signed code hash. It verifies the embedded SDK and produces
 `Bark-<version>-<build>-macos-<arch>.dmg` and `bark-macos-<arch>.xml`. The
 notarytool profile enables notarization and stapling of the app and image.
 Use the private key matching the pinned public key. `--ed-key-file -` accepts
