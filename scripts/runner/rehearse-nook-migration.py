@@ -47,7 +47,7 @@ def app_record(app, identifier, version, build, architectures, *, bundle_name=No
             raise ValueError(f"{app}: expected {key}={value!r}, found {info.get(key)!r}")
     requirement = f'{developer_id_requirement(TEAM)} and identifier "{identifier}"'
     run("/usr/bin/codesign", "--verify", "--strict", "--deep", "-R", requirement, app)
-    run("/usr/bin/lipo", "-verify_arch", *architectures, app / "Contents/MacOS" / info["CFBundleExecutable"])
+    run("/usr/bin/lipo", app / "Contents/MacOS" / info["CFBundleExecutable"], "-verify_arch", *architectures)
     return {
         "bundle_id": identifier, "version": version, "build": build,
         "bundle_cdhash": bundle_cdhash(app), "feed_url": info.get("SUFeedURL"),

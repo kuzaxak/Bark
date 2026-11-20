@@ -125,7 +125,7 @@ done
 )
 legacy_app="$LEGACY/build/release/Nook.app"
 legacy_image="$LEGACY/build/release/feed/Nook-1.5.5-universal.dmg"
-/usr/bin/lipo -verify_arch arm64 x86_64 "$legacy_app/Contents/MacOS/Nook"
+/usr/bin/lipo "$legacy_app/Contents/MacOS/Nook" -verify_arch arm64 x86_64
 /usr/bin/codesign --verify --deep --strict "$legacy_app"
 /usr/bin/codesign --verify --strict "$legacy_image"
 xcrun stapler validate "$legacy_app"
