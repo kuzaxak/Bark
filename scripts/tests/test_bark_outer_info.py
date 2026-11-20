@@ -2,16 +2,21 @@
 """Test the separation between Xcode's shell product and signed Bark metadata."""
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import plistlib
+import shutil
+import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 
 SCRIPTS = Path(__file__).resolve().parents[1]
 REPO = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
-from bark_outer_info import materialize_info, verify_build_info
+from bark_outer_info import (ENGLISH_REASON, PERMISSION_KEYS, UNMODIFIED_LOCALES,
+                             localize_permission_reasons, materialize_info, verify_build_info)
 
 
 class BarkOuterInfoTests(unittest.TestCase):
@@ -40,6 +45,56 @@ class BarkOuterInfoTests(unittest.TestCase):
             "DTXcode": "2630",
             "DTXcodeBuild": "17C529",
         }
+
+    def test_shipped_localizations_change_only_the_seven_permission_keys(self):
+        sources = REPO / "ChromiumApp/Resources"
+        reasons = json.loads((sources.parent / "PermissionReasons.json").read_text())
+
+        def parse(path):
+            return plistlib.loads(subprocess.check_output(
+                ["/usr/bin/plutil", "-convert", "xml1", "-o", "-", path]))
+
+        with TemporaryDirectory() as tmp:
+            resources = Path(tmp)
+            for source in sources.glob("*.lproj"):
+                shutil.copytree(source, resources / source.name)
+            localize_permission_reasons(resources, reasons)
+            localize_permission_reasons(resources, reasons)
+            for path in resources.glob("*.lproj/InfoPlist.strings"):
+                source = sources / path.relative_to(resources)
+                locale = path.parent.stem
+                with self.subTest(locale=locale):
+                    if locale in UNMODIFIED_LOCALES:
+                        self.assertEqual(path.read_bytes(), source.read_bytes())
+                    else:
+                        expected = parse(source)
+                        expected.update(dict.fromkeys(PERMISSION_KEYS, reasons[locale]))
+                        self.assertEqual(plistlib.loads(path.read_bytes()), expected)
+        self.assertEqual(reasons["de"], "Sobald Bark Zugriff hat, können Websites dich um Zugriff bitten.")
+        self.assertIn("Barkile", reasons["et"])
+        self.assertIn("Bark को", reasons["hi"])
+        self.assertTrue(reasons["ar"].startswith("\u200f"))
+        self.assertTrue(reasons["he"].startswith("\u200f"))
+        self.assertTrue(reasons["nb"].startswith("Når Bark"))
+
+    def test_missing_locale_and_changed_reasons_are_reported_without_overwriting(self):
+        with TemporaryDirectory() as tmp:
+            resources = Path(tmp)
+            path = resources / "de.lproj/InfoPlist.strings"
+            path.parent.mkdir()
+            # Localized nibs may exist without bundle-info translations.
+            (resources / "Base.lproj").mkdir()
+            reasons = {"de": "Sobald Bark Zugriff hat"}
+            original = dict.fromkeys(PERMISSION_KEYS, ENGLISH_REASON)
+            original["NSCameraUsageDescription"] = "A different upstream translation"
+            path.write_bytes(plistlib.dumps(original))
+            with self.assertRaisesRegex(ValueError, "Missing Bark permission localizations: et"):
+                localize_permission_reasons(resources, {**reasons, "et": "Barkile"})
+            with self.assertRaisesRegex(ValueError, "Missing Bark permission translations: de"):
+                localize_permission_reasons(resources, {})
+            with self.assertRaisesRegex(ValueError, "Unexpected Bark permission reason in de NSCamera"):
+                localize_permission_reasons(resources, reasons)
+            self.assertEqual(plistlib.loads(path.read_bytes()), original)
 
     def test_inert_build_identity_and_shape_are_required(self):
         verify_build_info(self.build)

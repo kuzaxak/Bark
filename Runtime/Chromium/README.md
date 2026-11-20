@@ -361,10 +361,10 @@ the app-owned `ChromiumApp/Info.plist` to its output copy and embeds
 sets the product name, the integrated app and framework bundle identifier
 `ee.qdo.bark`, and the helper names. Its patch is
 `patches/chrome/app/theme/chromium/BRANDING.patch`.
-It does not reach `chromium_strings.grd`, so that file's patch sets the product name, helper name, window title
-formats and macOS permission reason there. Changing a translatable message drops its
-translations, so those strings show in English in every locale. The file's other
-messages still say Chromium.
+The `chromium_strings.grd` patch sets the product and helper names, window title
+formats and English macOS permission reason. Changing that source sentence
+changes its GRIT translation ID. When staging the app, Bark supplies the
+localized reasons macOS reads from the bundle.
 
 Application launch requires runtime-ready/lifecycle hooks and the framework
 produced by the `BarkNativeShell` Xcode target. Its bundle retains the launcher’s
@@ -551,8 +551,14 @@ independently when its headers match the other accepted architecture.
 The app target copies its outer resources from `ChromiumApp/Resources`. Bark owns
 its display name, declared app and document artwork, and localized bundle identity.
 The SDK publisher checks the scripting definition, policy manifest, copyright and
-localized permission descriptions against the engine. Helper icons and the engine's
-internal assets stay inside the pinned framework.
+raw localized resources against the engine. For the shipping app, staging
+applies `ChromiumApp/PermissionReasons.json` to the seven macOS privacy
+keys that explain how websites can request access. The catalog adapts the
+pinned Chromium translations of `IDS_RUNTIME_PERMISSION_OS_REASON_TEXT`
+(GRIT message 8013436988911883588 in `chrome/app/resources/chromium_strings_*.xtb`).
+When changing Chromium revisions, check the translations and the inflected
+Bark names against those inputs. The network and calendar prompts have
+separate purpose descriptions.
 
 Bark’s macOS resource build applies its product name to translated browser labels
 before Chromium packs them into the framework. Given a prepared checkout, compare
