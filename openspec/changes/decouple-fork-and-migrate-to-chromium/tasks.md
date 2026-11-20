@@ -167,6 +167,7 @@ Keep each item open until its stated acceptance check passes. The maintainer own
 - [ ] 10.10 Open the Chrome Web Store from that space, view an extension, add it through the normal consent prompt, and verify it appears in that profile’s manager. The current engine cancels the install dialog when the requesting Bark window has no Chromium BrowserView. Verify approval, cancellation and profile isolation.
 - [ ] 10.11 Apply the same routing to every profile settings shortcut. If the invoking space uses the requested profile, select the settings tab there. Otherwise switch the same browser window to the first regular space of that profile in sidebar order, then select the tab. Verify another window, a superseding selection, and a profile with no available space.
 - [ ] 10.12 Recover automatically after the user chooses a Pawl entry and the companion opens its password or consent dialog. On return, fill the same field in the original tab once. A cancelled prompt, navigation, changed field, or deliberate tab, space or window switch must discard the approval. Verify both passwords and codes.
+- [ ] 10.13 Keep long URLs on one horizontally scrolling line while editing in the sidebar or toolbar. From a caret in the middle, Command–Shift–Right selects to the actual URL end and Command–Shift–Left selects to its start. Preserve the full query when copying or editing. Screenshot `photo_2026-11-20 05.40.31.jpeg`; use a synthetic long URL for tests.
 
 | Tasks | Assigned agent | Current handoff |
 | --- | --- | --- |
@@ -176,6 +177,7 @@ Keep each item open until its stated acceptance check passes. The maintainer own
 | 10.7–10.8 | `tab_preview`, with independent review by `pawl_settings` | Favicon persistence and warm tab mounting have focused regressions. Check the next signed build against the recordings. |
 | 10.9, 10.11 | `folder_visibility` | Replace the normal utility-window route. Verify same-space and cross-profile ownership before packaging. |
 | 10.10 | `tab_preview` | Repair the native Web Store install prompt and test it against its owning tab. |
+| 10.13 | `tab_preview` | Assigned after the Web Store patch. Check the native editor with a synthetic long query. |
 | Integrated build | `pawl_settings` (Intel), `folder_visibility` (ARM) | Use one reviewed engine revision and the reviewed shell for both installers. Desktop use is reserved for the maintainer. |
 
 Related follow-ups already have their own records. Space switching and toolbar placement have archived changes. Folder disclosure and search paths, certificate inspection, hidden stock Chromium windows, checkout/build cleanup, signing and size, and cross-account bookmark sharing remain discoverable in the integration history and their respective migration/rebrand tasks.
