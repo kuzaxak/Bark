@@ -282,9 +282,13 @@ final class ChromiumPageNavigation: PageNavigation {
         return bridge.tab_execute_command(window, tab, command) == 1
     }
 
+    // BARC_PAGE_ZOOM_PERCENT in the runtime header. The pinned SDK header
+    // gains this name when both architectures adopt that runtime.
+    private static let zoomPercentCommand = BarcPageCommand(rawValue: 19)
+
     var nativeZoomPercent: Int? {
         guard !invalidated, !isClosed, window > 0 else { return nil }
-        let percent = bridge.tab_execute_command(window, tab, Int32(BARC_PAGE_ZOOM_PERCENT.rawValue))
+        let percent = bridge.tab_execute_command(window, tab, Int32(Self.zoomPercentCommand.rawValue))
         return percent > 0 ? Int(percent) : nil
     }
 
