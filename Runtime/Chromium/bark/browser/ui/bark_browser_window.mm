@@ -48,6 +48,22 @@
 #include "ui/views/cocoa/native_widget_mac_ns_window_host.h"
 #include "ui/views/widget/widget.h"
 
+namespace {
+[[gnu::used, gnu::retain, gnu::section("__TEXT,__barkhostonly")]]
+const char kBarkHostOnlyCapability[] = "BARK_MAC_HOST_ONLY_FACTORY_V1";
+}  // namespace
+
+bool BrowserWindow::CanCreateInNativeWindow(const SessionID& owner) {
+  return bark::HostToJoin(owner) != nullptr;
+}
+
+std::unique_ptr<BrowserWindow, BrowserWindowDeleter>
+BrowserWindow::CreateBrowserWindow(BrowserWindowInterface* browser,
+                                   bool user_gesture,
+                                   bool in_tab_dragging) {
+  return bark::CreateHostWindow(browser);
+}
+
 namespace bark {
 
 namespace {

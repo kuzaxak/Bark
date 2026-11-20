@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <set>
 #include <string>
 #include <vector>
@@ -14,6 +15,7 @@
 #include "base/base_switches.h"
 #include "base/command_line.h"
 #include "base/functional/callback_helpers.h"
+#include "base/memory/scoped_refptr.h"
 #include "base/test/bind.h"
 #include "base/test/run_until.h"
 #include "base/test/test_future.h"
@@ -41,6 +43,7 @@
 #include "chrome/browser/ui/toasts/toast_controller.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
+#include "chrome/browser/ui/webid/identity_dialog_controller.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -63,6 +66,8 @@
 #include "content/public/browser/eye_dropper_listener.h"
 #include "content/public/browser/render_widget_host_view.h"
 #include "content/public/browser/web_contents.h"
+#include "content/public/browser/webid/identity_request_account.h"
+#include "content/public/browser/webid/identity_request_dialog_controller.h"
 #include "content/public/test/browser_test.h"
 #include "content/public/test/browser_test_utils.h"
 #include "extensions/browser/extension_registrar.h"
@@ -73,6 +78,7 @@
 #include "net/test/embedded_test_server/http_request.h"
 #include "net/test/embedded_test_server/http_response.h"
 #include "testing/gmock/include/gmock/gmock.h"
+#include "third_party/blink/public/mojom/webid/federated_request.mojom-shared.h"
 #include "third_party/skia/include/core/SkBitmap.h"
 #import "ui/base/cocoa/nsmenu_additions.h"
 #include "ui/base/test/scoped_fake_nswindow_fullscreen.h"
@@ -84,6 +90,7 @@
 #include "ui/menus/simple_menu_model.h"
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/test/widget_test.h"
+#include "ui/views/view.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
@@ -363,6 +370,76 @@ IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest, BubbleAnchorsFollowThePage) {
     return bubble->GetAnchorRect().x() == page.right() - 8;
   }));
   ExpectAtThePageTopRight(bubble);
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostStockUiBrowserTest,
+                       PassiveFedCmChooserUsesSelectedHostWindow) {
+  ASSERT_TRUE(embedded_test_server()->Start());
+  OpenPlacedPage("/title1.html");
+
+  // Two logical browser windows share one native host. Switching the client
+  // does not change the active tab of the client that requested sign-in.
+  base::test::TestFuture<barc_profile_status, int32_t> opened;
+  barc_profile_open_in_native_window(
+      window_, "1ce7cd11-ad68-4181-8f00-803cf02d2eac", BARC_PROFILE_BLANK,
+      [](barc_profile_status status, int32_t window, void* data) {
+        static_cast<base::test::TestFuture<barc_profile_status, int32_t>*>(data)
+            ->SetValue(status, window);
+      },
+      &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t other = opened.Get<1>();
+  ASSERT_EQ(Window()->host(),
+            bark::BarkBrowserWindow::FromBrowser(FindBrowser(other))->host());
+  ASSERT_EQ(1, barc_window_select(window_));
+
+  const auto provider = base::MakeRefCounted<content::IdentityProviderData>(
+      "idp.example", content::IdentityProviderMetadata(),
+      content::ClientMetadata(GURL(), GURL(), GURL(), gfx::Image()),
+      blink::mojom::RpContext::kSignIn, std::nullopt,
+      std::vector<content::IdentityRequestDialogDisclosureField>{
+          content::IdentityRequestDialogDisclosureField::kName,
+          content::IdentityRequestDialogDisclosureField::kEmail},
+      /*has_login_status_mismatch=*/false);
+  const auto account = base::MakeRefCounted<content::IdentityRequestAccount>(
+      "account", "jane@idp.example", "Jane Doe", "jane@idp.example",
+      "Jane Doe", "Jane", GURL(), "", "", std::vector<std::string>(),
+      std::vector<std::string>(), std::vector<std::string>(),
+      std::vector<std::string>());
+  account->identity_provider = provider;
+  using DismissReason = content::IdentityRequestDialogController::DismissReason;
+  base::test::TestFuture<DismissReason> dismissed;
+  IdentityDialogController controller(Contents());
+  ASSERT_EQ(1, barc_window_select(other));
+  ASSERT_TRUE(controller.ShowAccountsDialog(
+      content::RelyingPartyData(u"rp.example", u""), {provider}, {account}, {},
+      blink::mojom::RpMode::kPassive, base::DoNothing(), base::DoNothing(),
+      dismissed.GetCallback(), base::DoNothing()));
+
+  EXPECT_TRUE(Bubbles().empty());
+  EXPECT_FALSE(dismissed.IsReady());
+  ASSERT_EQ(1, barc_window_select(window_));
+  auto* bubble = WaitForBubble();
+  ASSERT_NE(nullptr, bubble);
+  ASSERT_NE(nullptr, bubble->GetAnchorView());
+  EXPECT_EQ(Window()->host()->widget(), bubble->GetAnchorView()->GetWidget());
+  const gfx::Rect page = Window()->GetPageBoundsInScreen();
+  EXPECT_TRUE(page.Contains(bubble->GetWidget()->GetWindowBoundsInScreen()));
+
+  ASSERT_EQ(1, barc_window_select(other));
+  EXPECT_EQ(Contents(),
+            FindBrowser(window_)->GetTabStripModel()->GetActiveWebContents());
+  ASSERT_TRUE(base::test::RunUntil([&] { return Bubbles().empty(); }));
+  EXPECT_FALSE(dismissed.IsReady());
+
+  ASSERT_EQ(1, barc_window_select(window_));
+  bubble = WaitForBubble();
+  ASSERT_NE(nullptr, bubble);
+  views::test::WidgetDestroyedWaiter closed(bubble->GetWidget());
+  bubble->GetWidget()->CloseWithReason(
+      views::Widget::ClosedReason::kCloseButtonClicked);
+  EXPECT_EQ(DismissReason::kCloseButton, dismissed.Get());
+  closed.Wait();
 }
 
 // A prompt of a client that is not the window's selected one, such as one that

@@ -1,0 +1,44 @@
+diff --git a/chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.cc b/chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.cc
+index 7e0fb25..1e303d7 100644
+--- a/chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.cc
++++ b/chrome/browser/ui/views/webid/fedcm_account_selection_view_desktop.cc
+@@ -116,6 +116,12 @@ FedCmAccountSelectionView::FedCmAccountSelectionView(
+       page_actions::PageActionObserver(kActionFederation),
+       tab_(tab),
+       scoped_user_data_(std::in_place, tab->GetUnownedUserDataHost(), *this) {
++  if (auto* owner = tab_->GetBrowserWindowInterface()) {
++    tab_subscriptions_.push_back(owner->RegisterNativeWindowSelectionChanged(
++        base::BindRepeating(
++            &FedCmAccountSelectionView::UpdateDialogVisibilityAndPosition,
++            weak_ptr_factory_.GetWeakPtr())));
++  }
+   tab_subscriptions_.push_back(tab_->RegisterDidActivate(
+       base::BindRepeating(&FedCmAccountSelectionView::TabForegrounded,
+                           weak_ptr_factory_.GetWeakPtr())));
+@@ -1233,8 +1239,14 @@ FedCmAccountSelectionView::GetURLLoaderFactory() {
+ }
+
+ views::View* FedCmAccountSelectionView::GetAnchorView() {
+-  return BrowserElementsViews::From(tab_->GetBrowserWindowInterface())
+-      ->RetrieveView(kActiveContentsWebViewRetrievalId);
++  auto* elements = BrowserElementsViews::From(tab_->GetBrowserWindowInterface());
++  if (auto* view = elements->RetrieveView(kActiveContentsWebViewRetrievalId)) {
++    return view;
++  }
++  // A native page host mounts WebContents without a Views WebView. The widget
++  // supplies the parent; the bubble computes its bounds from the requesting page.
++  auto* widget = elements->GetPrimaryWindowWidget();
++  return widget ? widget->GetClientContentsView() : nullptr;
+ }
+
+ AccountSelectionViewBase* FedCmAccountSelectionView::CreateDialogView(
+@@ -1489,7 +1501,8 @@ gfx::Rect FedCmAccountSelectionView::GetDialogBounds() {
+ }
+
+ void FedCmAccountSelectionView::ShouldShowDialog(bool& should_show) {
+-  if (!can_show_ui_) {
++  auto* owner = tab_ ? tab_->GetBrowserWindowInterface() : nullptr;
++  if (!tab_ || !can_show_ui_ || (owner && !owner->IsSelectedForNativeWindow())) {
+     should_show = false;
+     return;
+   }

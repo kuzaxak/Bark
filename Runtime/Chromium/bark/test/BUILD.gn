@@ -43,6 +43,7 @@ test("bark_browser_tests") {
     "//chrome/browser/ui/passwords",
     "//chrome/browser/ui/toasts",
     "//chrome/browser/ui/toasts/api:toasts",
+    "//chrome/browser/ui/webid",
     "//chrome/browser/ui/autofill/payments",
     "//chrome/browser/devtools:test_support",
     "//components/remote_cocoa/app_shim",
