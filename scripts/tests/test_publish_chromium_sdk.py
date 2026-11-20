@@ -28,6 +28,9 @@ class FirstOfficialPublicationTests(unittest.TestCase):
         self.repo = self.work / "repo"
         self.chromium = self.repo / "Runtime/Chromium"
         shutil.copytree(ROOT / "Runtime/Chromium", self.chromium)
+        # The synthetic framework and its integrated plist use the shim fixture's
+        # version, independently of the production Chromium pin.
+        (self.chromium / "CHROMIUM_VERSION").write_text(self.fixture["VERSION"] + "\n")
         shutil.copytree(ROOT / "scripts", self.repo / "scripts")
         rust = Path("Nook/ThirdParty/AdblockRustFFI")
         shutil.copytree(ROOT / rust, self.repo / rust,
