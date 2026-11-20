@@ -1,16 +1,16 @@
 diff --git a/chrome/browser/ui/browser_commands.cc b/chrome/browser/ui/browser_commands.cc
-index 14f5a7598d..89f90e5dfc 100644
+index 224dc66bf6..72ec93c5c4 100644
 --- a/chrome/browser/ui/browser_commands.cc
 +++ b/chrome/browser/ui/browser_commands.cc
 @@ -17,6 +17,7 @@
+ #include "base/check_deref.h"
  #include "base/command_line.h"
- #include "base/containers/adapters.h"
  #include "base/feature_list.h"
 +#include "base/functional/bind.h"
  #include "base/i18n/rtl.h"
  #include "base/memory/scoped_refptr.h"
  #include "base/memory/weak_ptr.h"
-@@ -252,6 +253,8 @@
+@@ -257,6 +258,8 @@
  #endif
  
  #if BUILDFLAG(IS_MAC)
@@ -19,7 +19,7 @@ index 14f5a7598d..89f90e5dfc 100644
  #include "chrome/browser/web_applications/extensions/launch.h"
  #endif
  
-@@ -1009,6 +1012,13 @@ void OpenWindowWithRestoredTabs(Profile* profile) {
+@@ -1003,6 +1006,13 @@ void OpenWindowWithRestoredTabs(Profile* profile) {
  }
  
  void OpenURLOffTheRecord(Profile* profile, const GURL& url) {
@@ -33,7 +33,7 @@ index 14f5a7598d..89f90e5dfc 100644
    ScopedTabbedBrowserDisplayer displayer(
        profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
    AddSelectedTabWithURL(displayer.browser_window_interface(), url,
-@@ -1299,12 +1309,19 @@ base::WeakPtr<content::NavigationHandle> OpenCurrentURL(
+@@ -1295,12 +1305,19 @@ base::WeakPtr<content::NavigationHandle> OpenCurrentURL(
  
  void Stop(BrowserWindowInterface* browser) {
    base::RecordAction(UserMetricsAction("Stop"));
@@ -54,7 +54,7 @@ index 14f5a7598d..89f90e5dfc 100644
    // Web apps should open a window to their launch page.
    if (auto* const app_browser_controller =
            web_app::AppBrowserController::From(browser)) {
-@@ -1343,6 +1360,25 @@ void NewWindow(BrowserWindowInterface* browser) {
+@@ -1339,6 +1356,25 @@ void NewWindow(BrowserWindowInterface* browser) {
  }
  
  void NewIncognitoWindow(Profile* profile) {
@@ -80,7 +80,7 @@ index 14f5a7598d..89f90e5dfc 100644
    NewEmptyWindow(profile->GetPrimaryOTRProfile(/*create_if_needed=*/true));
  }
  
-@@ -1471,7 +1507,9 @@ void CloseTab(BrowserWindowInterface* browser) {
+@@ -1467,7 +1503,9 @@ void CloseTab(BrowserWindowInterface* browser) {
    // the split.
    const bool only_active_split_tab_selected =
        active_tab->IsSplit() &&

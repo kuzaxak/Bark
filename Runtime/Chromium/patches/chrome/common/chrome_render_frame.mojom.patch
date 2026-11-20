@@ -1,16 +1,16 @@
 diff --git a/chrome/common/chrome_render_frame.mojom b/chrome/common/chrome_render_frame.mojom
-index c5b742e2fe..96738b23e3 100644
+index de6e6c8d88..f3dd4d398a 100644
 --- a/chrome/common/chrome_render_frame.mojom
 +++ b/chrome/common/chrome_render_frame.mojom
-@@ -12,6 +12,7 @@ import "mojo/public/mojom/base/string16.mojom";
- import "mojo/public/mojom/base/unguessable_token.mojom";
+@@ -13,6 +13,7 @@ import "mojo/public/mojom/base/unguessable_token.mojom";
  import "skia/public/mojom/bitmap.mojom";
+ import "third_party/blink/public/mojom/tokens/tokens.mojom";
  import "third_party/blink/public/mojom/window_features/window_features.mojom";
 +import "third_party/blink/public/mojom/tokens/tokens.mojom";
  import "ui/gfx/geometry/mojom/geometry.mojom";
  import "url/mojom/url.mojom";
  
-@@ -27,7 +28,80 @@ enum ImageFormat {
+@@ -28,7 +29,80 @@ enum ImageFormat {
  };
  
  // Messages sent from chrome to the render frame.
@@ -91,7 +91,7 @@ index c5b742e2fe..96738b23e3 100644
    // Updates the window features of the main frame's render view.
    SetWindowFeatures(blink.mojom.WindowFeatures window_features);
  
-@@ -184,4 +258,24 @@ interface ChromeRenderFrame {
+@@ -185,4 +259,24 @@ interface ChromeRenderFrame {
    PdfPageCaptured(mojo_base.mojom.String16 contents,
                    string pdf_lang,
                    url.mojom.Url page_url);

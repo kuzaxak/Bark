@@ -1,5 +1,5 @@
 diff --git a/ui/views/window/non_client_view.h b/ui/views/window/non_client_view.h
-index 11551d82f6..bc53fb08f6 100644
+index 9c32ddd77d..d4d988059b 100644
 --- a/ui/views/window/non_client_view.h
 +++ b/ui/views/window/non_client_view.h
 @@ -6,6 +6,7 @@
@@ -41,9 +41,9 @@ index 11551d82f6..bc53fb08f6 100644
 +  std::unique_ptr<FrameView> ReleaseClientFrame(ClientView* client);
 +
    // Replaces the current |overlay_view_| (if any) with the specified one.
-   void SetOverlayView(View* view);
- 
-@@ -136,10 +163,15 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
+   template <typename T>
+   T* SetOverlayView(std::unique_ptr<T> view) {
+@@ -143,10 +170,15 @@ class VIEWS_EXPORT NonClientView : public View, public ViewTargeterDelegate {
    // dynamically as the system settings change.
    std::unique_ptr<FrameView> frame_view_;
  
@@ -59,4 +59,4 @@ index 11551d82f6..bc53fb08f6 100644
 +  raw_ptr<ClientView, DanglingUntriaged> client_view_;
  
    // The overlay view, when non-NULL and visible, takes up the entire widget and
-   // is placed on top of the ClientView and FrameView.
+   // is placed on top of the ClientView and FrameView. Since this class holds

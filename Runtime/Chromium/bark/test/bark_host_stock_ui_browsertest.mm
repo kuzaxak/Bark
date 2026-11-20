@@ -735,7 +735,7 @@ class BarkHostCommandBrowserTest : public BarkHostStockUiBrowserTest {
   }
   bool WillExecute(int command, bool before_first_responder) {
     bool will_execute = false;
-    Host()->WillExecuteCommand(command, WindowOpenDisposition::CURRENT_TAB,
+    Host()->WillExecuteCommand(command, WindowOpenDisposition::kCurrentTab,
                                before_first_responder, &will_execute);
     return will_execute;
   }

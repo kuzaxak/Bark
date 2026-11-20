@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
-index 83ce5b5..c79f0de 100644
+index 396b18bf34..b74d946fa3 100644
 --- a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
 +++ b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
 @@ -12,6 +12,7 @@
@@ -29,7 +29,7 @@ index 83ce5b5..c79f0de 100644
 @@ -82,25 +85,53 @@ std::u16string GetRatingAccessibleName(double rating, int rating_count) {
        rating, rating_count);
  }
-
+ 
 +// Bark can prompt only for the foreground tab its host already presents.
 +bool CanPresentInstallPrompt(ExtensionInstallPromptShowParams& params) {
 +  if (params.WasParentDestroyed() || !params.CanShowForBrowserOwner())
@@ -58,7 +58,7 @@ index 83ce5b5..c79f0de 100644
      std::unique_ptr<ExtensionInstallPromptShowParams> show_params,
      ExtensionInstallPrompt::DoneCallback done_callback,
      std::unique_ptr<InstallPromptData> prompt) {
-   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
+   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M162);
  
 -  // If the dialog has to be parented to WebContents, force activate the
 -  // contents. See crbug.com/40059470.
@@ -85,7 +85,7 @@ index 83ce5b5..c79f0de 100644
    gfx::NativeWindow parent_window = show_params->GetParentWindow();
    auto dialog = std::make_unique<ExtensionInstallDialogView>(
        std::move(show_params), std::move(done_callback), std::move(prompt));
-@@ -372,6 +403,11 @@ void ExtensionInstallDialogView::VisibilityChanged(views::View* starting_from,
+@@ -368,6 +399,11 @@ void ExtensionInstallDialogView::VisibilityChanged(views::View* starting_from,
  }
  
  void ExtensionInstallDialogView::AddedToWidget() {
@@ -97,18 +97,18 @@ index 83ce5b5..c79f0de 100644
    auto title_container = CreateTitleContainer();
    GetBubbleFrameView()->SetTitleView(std::move(title_container));
  
-@@ -382,6 +418,7 @@ void ExtensionInstallDialogView::AddedToWidget() {
+@@ -378,6 +414,7 @@ void ExtensionInstallDialogView::AddedToWidget() {
  
  void ExtensionInstallDialogView::OnDialogCanceled() {
-   DCHECK(done_callback_);
+   CHECK(done_callback_, base::NotFatalUntil::M162);
 +  browser_close_subscription_ = {};
  
    // The dialog will be closed, so stop observing for any extension changes
    // that could potentially crop up during that process (like the extension
-@@ -396,6 +433,11 @@ void ExtensionInstallDialogView::OnDialogCanceled() {
+@@ -392,6 +429,11 @@ void ExtensionInstallDialogView::OnDialogCanceled() {
  
  void ExtensionInstallDialogView::OnDialogAccepted() {
-   DCHECK(done_callback_);
+   CHECK(done_callback_, base::NotFatalUntil::M162);
 +  if (!CanPresentInstallPrompt(*show_params_)) {
 +    OnDialogCanceled();
 +    return;
@@ -117,9 +117,9 @@ index 83ce5b5..c79f0de 100644
  
    // The dialog will be closed, so stop observing for any extension changes
    // that could potentially crop up during that process (like the extension
-@@ -406,7 +448,18 @@ void ExtensionInstallDialogView::OnDialogAccepted() {
-       prompt_->type() == InstallPromptData::EXTENSION_REQUEST_PROMPT;
-   DCHECK(expect_justification == !!justification_view_);
+@@ -403,7 +445,18 @@ void ExtensionInstallDialogView::OnDialogAccepted() {
+   CHECK(expect_justification == !!justification_view_,
+         base::NotFatalUntil::M162);
  
 +  views::ViewTracker alive(this);
    prompt_->OnDialogAccepted();
@@ -135,8 +135,8 @@ index 83ce5b5..c79f0de 100644
 +  }
  
    // Permissions are withheld at installation when the prompt specifies it and
-   // `grant_permissions_checkbox_` wasn't selected.
-@@ -451,6 +504,11 @@ bool ExtensionInstallDialogView::ShouldAllowKeyEventsDuringInputProtection()
+   // the "On click" site access radio button is selected.
+@@ -447,6 +500,11 @@ bool ExtensionInstallDialogView::ShouldAllowKeyEventsDuringInputProtection()
    return false;
  }
  

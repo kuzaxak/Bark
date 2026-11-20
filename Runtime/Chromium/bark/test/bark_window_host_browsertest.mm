@@ -1973,7 +1973,7 @@ IN_PROC_BROWSER_TEST_F(BarkWindowHostBrowserTest,
         auto* native = static_cast<views::NativeWidgetMac*>(
             host->widget()->native_widget());
         EXPECT_FALSE(native->ExecuteCommand(
-            IDC_NEW_TAB, WindowOpenDisposition::CURRENT_TAB, false));
+            IDC_NEW_TAB, WindowOpenDisposition::kCurrentTab, false));
         EXPECT_TRUE(done->GetTabStripModel()->empty());
         ++delivered;
       }));

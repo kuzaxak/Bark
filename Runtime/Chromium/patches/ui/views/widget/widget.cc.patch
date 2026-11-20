@@ -1,5 +1,5 @@
 diff --git a/ui/views/widget/widget.cc b/ui/views/widget/widget.cc
-index 35d5b656d9..ccc5f80825 100644
+index eb2f39791d..4592809ecc 100644
 --- a/ui/views/widget/widget.cc
 +++ b/ui/views/widget/widget.cc
 @@ -59,6 +59,7 @@
@@ -10,14 +10,14 @@ index 35d5b656d9..ccc5f80825 100644
  #include "ui/views/views_delegate.h"
  #include "ui/views/views_features.h"
  #include "ui/views/widget/any_widget_observer_singleton.h"
-@@ -605,6 +606,7 @@ void Widget::Init(InitParams params) {
-     non_client_view_ =
+@@ -606,6 +607,7 @@ void Widget::Init(InitParams params) {
          new NonClientView(widget_delegate_->CreateClientView(this));
+     non_client_view_->SetOverlayView(widget_delegate_->CreateOverlayView());
      non_client_view_->SetFrameView(CreateFrameView());
 +    non_client_view_->frame_view()->client_delegate_ = widget_delegate_;
-     non_client_view_->SetOverlayView(widget_delegate_->CreateOverlayView());
  
      // Bypass the layout that happens in Widget::SetContentsView().
+     // LayoutImmediately() will occur after setting the initial bounds below.
 @@ -1066,8 +1068,10 @@ void Widget::CloseWithReason(ClosedReason closed_reason) {
  
    internal::AnyWidgetObserverSingleton::GetInstance()->OnAnyWidgetClosing(this);
@@ -126,7 +126,7 @@ index 35d5b656d9..ccc5f80825 100644
  void Widget::Close() {
    CloseWithReason(ClosedReason::kUnspecified);
  }
-@@ -3090,8 +3182,10 @@ void Widget::HandleWidgetDestroying() {
+@@ -3093,8 +3185,10 @@ void Widget::HandleWidgetDestroying() {
    if (non_client_view_) {
      non_client_view_->WindowClosing();
    }
@@ -139,7 +139,7 @@ index 35d5b656d9..ccc5f80825 100644
    }
  }
  
-@@ -3114,6 +3208,17 @@ void Widget::HandleWidgetDestroyed() {
+@@ -3117,6 +3211,17 @@ void Widget::HandleWidgetDestroyed() {
  
    native_widget_destroyed_ = true;
    auto weak_ptr = GetWeakPtr();

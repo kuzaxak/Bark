@@ -1,4 +1,5 @@
 diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/browser/extensions/extension_uninstall_dialog.cc
+index 07ced68d81..a6e5f99fbd 100644
 --- a/chrome/browser/extensions/extension_uninstall_dialog.cc
 +++ b/chrome/browser/extensions/extension_uninstall_dialog.cc
 @@ -14,8 +14,10 @@
@@ -20,10 +21,10 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
  #include "ui/base/page_transition_types.h"
  #include "ui/base/window_open_disposition.h"
  #include "ui/display/display.h"
-@@ -81,6 +84,37 @@
-
+@@ -81,6 +84,37 @@ ExtensionUninstallDialog::ExtensionUninstallDialog(
+ 
  ExtensionUninstallDialog::~ExtensionUninstallDialog() = default;
-
+ 
 +#if !BUILDFLAG(IS_ANDROID)
 +std::unique_ptr<ExtensionUninstallDialog>
 +ExtensionUninstallDialog::CreateForBrowser(Profile* profile,
@@ -58,19 +59,19 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
  void ExtensionUninstallDialog::ConfirmUninstallByExtension(
      const scoped_refptr<const Extension>& extension,
      const scoped_refptr<const Extension>& triggering_extension,
-@@ -95,6 +129,8 @@
+@@ -95,6 +129,8 @@ void ExtensionUninstallDialog::ConfirmUninstall(
      UninstallReason reason,
      UninstallSource source) {
-   DCHECK(thread_checker_.CalledOnValidThread());
+   CHECK(thread_checker_.CalledOnValidThread(), base::NotFatalUntil::M161);
 +  if (!profile_ || !delegate_)
 +    return;
-
+ 
    UMA_HISTOGRAM_ENUMERATION("Extensions.UninstallSource", source,
                              NUM_UNINSTALL_SOURCES);
-@@ -102,10 +138,8 @@
+@@ -102,10 +138,8 @@ void ExtensionUninstallDialog::ConfirmUninstall(
    extension_ = extension;
    uninstall_reason_ = reason;
-
+ 
 -  if (!profile_)
 -    return;
 -
@@ -80,27 +81,27 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
      OnDialogClosed(CLOSE_ACTION_CANCELED);
      return;
    }
-@@ -127,11 +161,16 @@
-
+@@ -127,19 +161,34 @@ void ExtensionUninstallDialog::ConfirmUninstall(
+ 
  void ExtensionUninstallDialog::OnIconUpdated(ChromeAppIcon* icon) {
    // Ignore initial update.
 -  if (!icon_ || dialog_shown_)
 +  if (!icon_ || dialog_shown_ || !profile_ || !delegate_)
      return;
-   DCHECK_EQ(icon, icon_.get());
-
+   CHECK_EQ(icon, icon_.get(), base::NotFatalUntil::M161);
+ 
    dialog_shown_ = true;
-+
+ 
 +  if (!CanShowForBrowserOwner()) {
 +    OnDialogClosed(CLOSE_ACTION_CANCELED);
 +    return;
 +  }
-
++
    if (parent() && parent_window_tracker_->WasNativeWindowDestroyed()) {
      OnDialogClosed(CLOSE_ACTION_CANCELED);
-@@ -139,7 +178,17 @@
+     return;
    }
-
+ 
    if (g_on_will_show_callback != nullptr) {
 +    const auto weak_this = AsWeakPtr();
      g_on_will_show_callback->Run();
@@ -114,11 +115,11 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
 +    OnDialogClosed(CLOSE_ACTION_CANCELED);
 +    return;
    }
-
+ 
    switch (ScopedTestDialogAutoConfirm::GetAutoConfirmValue()) {
-@@ -183,6 +232,11 @@
+@@ -183,6 +232,11 @@ bool ExtensionUninstallDialog::ShouldShowCheckbox() const {
  }
-
+ 
  void ExtensionUninstallDialog::OnDialogClosed(CloseAction action) {
 +  Delegate* const delegate = delegate_.get();
 +  if (!delegate)
@@ -128,12 +129,12 @@ diff --git a/chrome/browser/extensions/extension_uninstall_dialog.cc b/chrome/br
    // Ensure the dialog isn't notified of an uninstallation after the dialog was
    // closed.
    registry_observation_.Reset();
-@@ -218,7 +272,7 @@
+@@ -218,7 +272,7 @@ void ExtensionUninstallDialog::OnDialogClosed(CloseAction action) {
      case CLOSE_ACTION_LAST:
        NOTREACHED();
    }
 -  delegate_->OnExtensionUninstallDialogClosed(success, error);
 +  delegate->OnExtensionUninstallDialogClosed(success, error);
  }
-
+ 
  bool ExtensionUninstallDialog::Uninstall(std::u16string* error) {

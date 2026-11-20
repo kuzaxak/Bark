@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/ui/autofill/autofill_context_menu_manager.cc b/chrome/browser/ui/autofill/autofill_context_menu_manager.cc
-index fbf05e2..29d060b 100644
+index 4ce843b1b9..8fbcfaf797 100644
 --- a/chrome/browser/ui/autofill/autofill_context_menu_manager.cc
 +++ b/chrome/browser/ui/autofill/autofill_context_menu_manager.cc
-@@ -78,6 +78,15 @@ constexpr char kFeedbackPlaceholder[] =
+@@ -73,6 +73,15 @@ constexpr char kFeedbackPlaceholder[] =
  // Constant determining the icon size in the context menu.
  constexpr int kContextMenuIconSize = 16;
  
@@ -15,10 +15,10 @@ index fbf05e2..29d060b 100644
 +  return client && !client->UsesExternalPasswordProvider();
 +}
 +
- bool ShouldShowAutofillContextMenu(const content::ContextMenuParams& params) {
-   if (params.is_content_editable_for_autofill) {
-     return true;
-@@ -219,12 +228,19 @@ bool AutofillContextMenuManager::IsCommandIdSupported(int command_id) {
+ // Returns true if the given id is one generated for autofill context menu.
+ bool IsAutofillCustomCommandId(
+     AutofillContextMenuManager::CommandId command_id) {
+@@ -161,12 +170,19 @@ bool AutofillContextMenuManager::IsCommandIdSupported(int command_id) {
  }
  
  bool AutofillContextMenuManager::IsCommandIdEnabled(int command_id) {
@@ -40,25 +40,22 @@ index fbf05e2..29d060b 100644
      return;
    }
    if (command_id ==
-@@ -367,10 +383,13 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
-         ShouldAddPasswordsManualFallbackItem(*password_manager_driver);
-   }
+@@ -277,11 +293,12 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
+   const bool add_passwords_fallback =
+       ShouldAddPasswordsManualFallbackItem(*rfh, params_);
  
 +  const size_t first_fallback_item = menu_model_->GetItemCount();
    if (add_passwords_fallback) {
--    Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
--    password_manager::PasswordCounter* counter =
--        PasswordCounterFactory::GetForProfile(profile);
-+    password_manager::PasswordCounter* counter = nullptr;
-+    if (CanUseBrowserPasswords(rfh)) {
-+      Profile* profile = Profile::FromBrowserContext(rfh->GetBrowserContext());
-+      counter = PasswordCounterFactory::GetForProfile(profile);
-+    }
+     ContentPasswordManagerDriver& password_manager_driver =
+         CHECK_DEREF(ContentPasswordManagerDriver::GetForRenderFrameHost(rfh));
      const bool select_passwords_option_shown =
-         counter && counter->autofillable_passwords() > 0;
-     AddPasswordsManualFallbackItems(*password_manager_driver,
-@@ -381,9 +400,9 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
-           CHECK_DEREF(password_manager_driver));
+-        ShouldShowSelectPasswordContextMenuItem(*rfh, params_);
++        CanUseBrowserPasswords(rfh) && ShouldShowSelectPasswordContextMenuItem(*rfh, params_);
+     AddPasswordsManualFallbackItems(password_manager_driver,
+                                     select_passwords_option_shown);
+ 
+@@ -290,9 +307,9 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
+           password_manager_driver);
      }
    }
 -  const bool add_at_memory_fallback = MaybeAddAtMemoryItem();
@@ -69,7 +66,7 @@ index fbf05e2..29d060b 100644
      menu_model_->AddSeparator(ui::NORMAL_SEPARATOR);
    }
  }
-@@ -411,7 +430,10 @@ bool AutofillContextMenuManager::ShouldAddPasswordsManualFallbackItem(
+@@ -300,7 +317,10 @@ void AutofillContextMenuManager::MaybeAddAutofillManualFallbackItems() {
  void AutofillContextMenuManager::AddPasswordsManualFallbackItems(
      ContentPasswordManagerDriver& password_manager_driver,
      bool add_select_password_option) {
@@ -80,7 +77,7 @@ index fbf05e2..29d060b 100644
        password_manager_util::ManualPasswordGenerationEnabled(
            &password_manager_driver) &&
        password_manager_driver.IsPasswordFieldForPasswordManager(
-@@ -421,7 +443,8 @@ void AutofillContextMenuManager::AddPasswordsManualFallbackItems(
+@@ -310,7 +330,8 @@ void AutofillContextMenuManager::AddPasswordsManualFallbackItems(
        webauthn::IsPasskeyFromAnotherDeviceContextMenuEnabled(
            delegate_->GetRenderFrameHost(), params_.form_renderer_id.value(),
            params_.field_renderer_id.value());

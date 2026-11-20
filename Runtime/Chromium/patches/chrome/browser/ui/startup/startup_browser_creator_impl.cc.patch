@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/startup/startup_browser_creator_impl.cc b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
-index c19d4ba646..82bf493792 100644
+index 6b030c1f66..832149a8a0 100644
 --- a/chrome/browser/ui/startup/startup_browser_creator_impl.cc
 +++ b/chrome/browser/ui/startup/startup_browser_creator_impl.cc
 @@ -103,7 +103,17 @@
@@ -20,7 +20,7 @@ index c19d4ba646..82bf493792 100644
  
  // Utility functions ----------------------------------------------------------
  
-@@ -294,12 +304,34 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenURLsInBrowser(
+@@ -294,14 +304,36 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenURLsInBrowser(
    return OpenTabsInBrowser(browser, process_startup, tabs, TabOverWrite::kNo);
  }
  
@@ -40,6 +40,8 @@ index c19d4ba646..82bf493792 100644
 +    TabOverWrite is_active_tab_overwrite,
 +    bool existing_single_tab_popup,
 +    content::WebContents* existing_contents) {
+   // TODO(crbug.com/577331562): CHECK-exclusion: Convert to a CHECK once we are
+   // confident it won't be triggered.
    DCHECK(!tabs.empty());
 +  if (existing_single_tab_popup) {
 +#if BUILDFLAG(IS_MAC)
@@ -56,7 +58,7 @@ index c19d4ba646..82bf493792 100644
  
    // If we don't yet have a profile, try to use the one we're given from
    // |browser|. While we may not end up actually using |browser| (since it
-@@ -323,7 +355,8 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+@@ -327,7 +359,8 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
  
    const bool create_new_browser =
        !browser ||
@@ -66,7 +68,7 @@ index c19d4ba646..82bf493792 100644
    if (create_new_browser) {
      CHECK(profile_);
      // In some conditions a new browser object cannot be created. The most
-@@ -371,9 +404,7 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+@@ -375,9 +408,7 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
      // This avoids us getting into an infinite loop asking ourselves to open
      // a URL, should the handler be (incorrectly) configured to be us. Anyone
      // asking us to open such a URL should really ask the handler directly.
@@ -77,21 +79,17 @@ index c19d4ba646..82bf493792 100644
      if (process_startup == chrome::startup::IsProcessStartup::kNo &&
          !handled_by_chrome) {
        continue;
-@@ -442,8 +473,11 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
-       // user-typed omnibox navigation.
-       params.initiator_origin = url::Origin();
-     }
--    params.disposition = first_tab ? WindowOpenDisposition::NEW_FOREGROUND_TAB
--                                   : WindowOpenDisposition::NEW_BACKGROUND_TAB;
+@@ -452,6 +483,9 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+     params.disposition = (first_tab && !open_in_background)
+                              ? WindowOpenDisposition::kNewForegroundTab
+                              : WindowOpenDisposition::kNewBackgroundTab;
 +    if (existing_contents) params.source_contents = existing_contents;
-+    params.disposition = (existing_single_tab_popup || existing_contents)
-+        ? WindowOpenDisposition::CURRENT_TAB
-+        : first_tab ? WindowOpenDisposition::NEW_FOREGROUND_TAB
-+                    : WindowOpenDisposition::NEW_BACKGROUND_TAB;
++    if (existing_single_tab_popup || existing_contents)
++      params.disposition = WindowOpenDisposition::kCurrentTab;
      params.tabstrip_add_types = add_types;
  
  #if BUILDFLAG(ENABLE_RLZ)
-@@ -454,9 +488,19 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
+@@ -462,9 +496,19 @@ BrowserWindowInterface* StartupBrowserCreatorImpl::OpenTabsInBrowser(
      }
  #endif  // BUILDFLAG(ENABLE_RLZ)
  

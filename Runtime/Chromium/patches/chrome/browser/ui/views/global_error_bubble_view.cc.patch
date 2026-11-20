@@ -1,22 +1,22 @@
 diff --git a/chrome/browser/ui/views/global_error_bubble_view.cc b/chrome/browser/ui/views/global_error_bubble_view.cc
+index 114713db85..7a82f01cc8 100644
 --- a/chrome/browser/ui/views/global_error_bubble_view.cc
 +++ b/chrome/browser/ui/views/global_error_bubble_view.cc
-@@ -20,7 +20,9 @@
- #include "chrome/browser/ui/global_error/global_error_service_factory.h"
- #include "chrome/browser/ui/views/chrome_layout_provider.h"
- #include "chrome/browser/ui/views/elevation_icon_setter.h"
-+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
- #include "chrome/browser/ui/views/interaction/browser_elements_views.h"
-+#include "ui/base/base_window.h"
+@@ -23,6 +23,7 @@
+ #include "chrome/browser/ui/views/frame/browser_view.h"
+ #include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
  #include "chrome/browser/ui/views/toolbar/app_menu_control.h"
++#include "ui/base/base_window.h"
  #include "ui/base/buildflags.h"
  #include "ui/base/metadata/metadata_impl_macros.h"
-@@ -47,9 +49,38 @@
-           : nullptr;
-   views::BubbleAnchor anchor =
-       anchor_view ? views::BubbleAnchor(anchor_view) : views::BubbleAnchor();
+ #include "ui/base/mojom/dialog_button.mojom.h"
+@@ -48,12 +49,42 @@ GlobalErrorBubbleViewBase* GlobalErrorBubbleViewBase::ShowStandardBubbleView(
+       anchor = control->GetAnchor();
+     }
+   }
++  const bool has_app_menu_anchor = static_cast<bool>(anchor);
 +#if BUILDFLAG(IS_MAC)
-+  if (!anchor) {
++  if (!has_app_menu_anchor) {
 +    // The Bark window has an app-owned root and no toolbar menu button.
 +    auto* window = browser->GetWindow();
 +    auto* buttons = ToolbarButtonProvider::From(browser);
@@ -31,9 +31,13 @@ diff --git a/chrome/browser/ui/views/global_error_bubble_view.cc b/chrome/browse
 +#endif
    GlobalErrorBubbleView* bubble_view = new GlobalErrorBubbleView(
        anchor, views::BubbleBorder::TOP_RIGHT, browser, error);
+-  if (anchor) {
++  if (has_app_menu_anchor) {
+     bubble_view->SetHighlightedElement(kToolbarAppMenuButtonElementId);
+   }
    views::BubbleDialogDelegateView::CreateBubble(bubble_view);
 +#if BUILDFLAG(IS_MAC)
-+  if (!anchor_view) {
++  if (!has_app_menu_anchor) {
 +    bubble_view->owner_selection_subscription_ =
 +        browser->RegisterNativeWindowSelectionChanged(base::BindRepeating(
 +            [](GlobalErrorBubbleView* bubble,

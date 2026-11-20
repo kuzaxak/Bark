@@ -1,11 +1,11 @@
 diff --git a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc b/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
-index 52aad86bfb..875af8d21b 100644
+index 38babc1061..acda2b9a5a 100644
 --- a/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
 +++ b/chrome/browser/ui/extensions/hosted_app_browser_controller.cc
 @@ -186,11 +186,8 @@ void HostedAppBrowserController::Uninstall(
    }
  
-   DCHECK(!uninstall_dialog_);
+   CHECK(!uninstall_dialog_, base::NotFatalUntil::M162);
 -  uninstall_dialog_ = ExtensionUninstallDialog::Create(
 -      browser()->GetProfile(),
 -      browser()->GetWindow() ? browser()->GetWindow()->GetNativeWindow()

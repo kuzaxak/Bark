@@ -1021,7 +1021,7 @@ IN_PROC_BROWSER_TEST_F(BarcPrivateCommandBrowserTest,
   chrome::OpenURLOffTheRecord(browser()->GetProfile(), GURL("about:blank"));
   for (const GURL& url : {GURL("about:blank"), GURL("chrome://history")}) {
     NavigateParams params(browser(), url, ui::PAGE_TRANSITION_LINK);
-    params.disposition = WindowOpenDisposition::OFF_THE_RECORD;
+    params.disposition = WindowOpenDisposition::kOffTheRecord;
     EXPECT_FALSE(Navigate(&params));
   }
   EXPECT_FALSE(browser()->GetProfile()->HasPrimaryOTRProfile());
@@ -1106,7 +1106,7 @@ IN_PROC_BROWSER_TEST_F(BarcProfilesBrowserTest,
   content::DownloadTestObserverInProgress observer(downloads, 1);
   ui_test_utils::NavigateToURLWithDisposition(
       work, embedded_test_server()->GetURL(content::SlowDownloadHttpResponse::kKnownSizeUrl),
-      WindowOpenDisposition::NEW_BACKGROUND_TAB, ui_test_utils::BROWSER_TEST_NO_WAIT);
+      WindowOpenDisposition::kNewBackgroundTab, ui_test_utils::BROWSER_TEST_NO_WAIT);
   observer.WaitForFinished();
   download::SimpleDownloadManager::DownloadVector items;
   downloads->GetAllDownloads(&items);

@@ -1,5 +1,5 @@
 diff --git a/components/performance_manager/features.cc b/components/performance_manager/features.cc
-index 283284c8a1..c6c3386e14 100644
+index 5667f9107a..a852991928 100644
 --- a/components/performance_manager/features.cc
 +++ b/components/performance_manager/features.cc
 @@ -7,6 +7,7 @@
@@ -25,5 +25,5 @@ index 283284c8a1..c6c3386e14 100644
 +}
 +
  #if !BUILDFLAG(IS_ANDROID)
- BASE_FEATURE(kPerformanceControlsPPMSurvey, base::FEATURE_DISABLED_BY_DEFAULT);
- 
+ BASE_FEATURE(kPerformanceControlsPerformanceSurvey,
+              base::FEATURE_DISABLED_BY_DEFAULT);

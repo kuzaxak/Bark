@@ -1,13 +1,16 @@
 diff --git a/chrome/browser/download/bubble/download_bubble_ui_controller.cc b/chrome/browser/download/bubble/download_bubble_ui_controller.cc
-index 5feeec201c..c8679a26ad 100644
+index 1594c55744..789779e0e7 100644
 --- a/chrome/browser/download/bubble/download_bubble_ui_controller.cc
 +++ b/chrome/browser/download/bubble/download_bubble_ui_controller.cc
-@@ -360,6 +360,8 @@ void DownloadBubbleUIController::RetryDownload(
+@@ -360,6 +360,11 @@ void DownloadBubbleUIController::RetryDownload(
      DownloadUIModel* model,
      DownloadCommands::Command command) {
-   DCHECK(command == DownloadCommands::RETRY);
-+  if (const auto* item = model->GetDownloadItem(); item &&
-+      item->GetDownloadSource() == download::DownloadSource::NATIVE_SOCIAL_MEDIA) return;
+   CHECK(command == DownloadCommands::RETRY, base::NotFatalUntil::M161);
++  if (const auto* item = model->GetDownloadItem();
++      item && item->GetDownloadSource() ==
++                  download::DownloadSource::NATIVE_SOCIAL_MEDIA) {
++    return;
++  }
    display_controller_->HideBubble();
    content::DownloadManager* download_manager = profile_->GetDownloadManager();
    if (!download_manager) {

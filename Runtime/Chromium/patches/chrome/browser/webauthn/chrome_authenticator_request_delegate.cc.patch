@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
-index 64cc583..87b5892 100644
+index 6c8b888328..60c9ded17f 100644
 --- a/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
 +++ b/chrome/browser/webauthn/chrome_authenticator_request_delegate.cc
 @@ -3,6 +3,10 @@
@@ -13,7 +13,7 @@ index 64cc583..87b5892 100644
  
  #include <algorithm>
  #include <array>
-@@ -532,6 +536,9 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
+@@ -687,6 +691,9 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
      std::optional<std::string_view> user_name,
      bool browser_provided_passkeys_available,
      device::FidoDiscoveryFactory* discovery_factory) {
@@ -22,8 +22,8 @@ index 64cc583..87b5892 100644
 +#endif
    DCHECK(request_type == device::FidoRequestType::kGetAssertion ||
           resident_key_requirement.has_value());
- 
-@@ -548,6 +555,12 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
+   request_source_ = request_source;
+@@ -704,6 +711,12 @@ void ChromeAuthenticatorRequestDelegate::ConfigureDiscoveries(
      return;
    }
  
@@ -36,7 +36,7 @@ index 64cc583..87b5892 100644
    // Configure the enclave authenticator.
    if (browser_provided_passkeys_available && !IsVirtualEnvironmentEnabled() &&
        request_source == RequestSource::kWebAuthentication) {
-@@ -767,6 +780,18 @@ void ChromeAuthenticatorRequestDelegate::OnTransportAvailabilityEnumerated(
+@@ -923,6 +936,18 @@ void ChromeAuthenticatorRequestDelegate::OnTransportAvailabilityEnumerated(
    barrier_->SetTransportAvailabilityInfo(std::move(data));
  }
  

@@ -1,10 +1,10 @@
 diff --git a/content/public/browser/render_frame_host.h b/content/public/browser/render_frame_host.h
-index cac64d560e..f36b055436 100644
+index 64232afdb3..0536aa6086 100644
 --- a/content/public/browser/render_frame_host.h
 +++ b/content/public/browser/render_frame_host.h
-@@ -50,12 +50,12 @@
- #include "third_party/perfetto/include/perfetto/tracing/traced_value_forward.h"
+@@ -51,12 +51,12 @@
  #include "ui/accessibility/ax_node_id_forward.h"
+ #include "ui/base/ime/text_input_type.h"
  #include "ui/gfx/native_ui_types.h"
 +#include "url/gurl.h"
  
@@ -16,7 +16,7 @@ index cac64d560e..f36b055436 100644
  class SkBitmap;
  
  namespace network {
-@@ -1155,6 +1155,10 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
+@@ -1166,6 +1166,10 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
    // during call to RenderFrameHostImpl::DidNavigate which happens after commit.
    virtual bool IsErrorDocument() const = 0;
  
@@ -27,7 +27,7 @@ index cac64d560e..f36b055436 100644
    // Return checked and weak references, respectively, to the current document
    // in this RenderFrameHost, which will be no longer valid once the
    // RenderFrameHost is deleted or navigates to another document.
-@@ -1205,6 +1209,14 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
+@@ -1216,6 +1220,14 @@ class CONTENT_EXPORT RenderFrameHost : public IPC::Listener {
    virtual std::vector<base::SafeRef<NavigationHandle>>
    GetPendingCommitCrossDocumentNavigations() const = 0;
  

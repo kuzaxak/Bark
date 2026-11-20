@@ -1,4 +1,5 @@
 diff --git a/content/browser/browser_process_io_thread.cc b/content/browser/browser_process_io_thread.cc
+index 878eeeb79c..02ee7007f4 100644
 --- a/content/browser/browser_process_io_thread.cc
 +++ b/content/browser/browser_process_io_thread.cc
 @@ -4,6 +4,10 @@
@@ -12,19 +13,18 @@ diff --git a/content/browser/browser_process_io_thread.cc b/content/browser/brow
  #include "base/clang_profiling_buildflags.h"
  #include "base/compiler_specific.h"
  #include "base/debug/alias.h"
-@@ -11,6 +15,7 @@
- #include "base/functional/callback_helpers.h"
+@@ -12,6 +16,7 @@
+ #include "base/metrics/histogram_functions.h"
  #include "base/threading/hang_watcher.h"
  #include "base/threading/thread_restrictions.h"
 +#include "base/time/time.h"
  #include "base/trace_event/memory_dump_manager.h"
  #include "build/build_config.h"
  #include "content/browser/browser_child_process_host_impl.h"
-@@ -31,6 +36,38 @@
- #endif
+@@ -33,6 +38,38 @@
  
  namespace content {
-+
+ 
 +namespace {
 +
 +constexpr base::TimeDelta NetworkServiceShutdownWaitTimeout() {
@@ -56,10 +56,11 @@ diff --git a/content/browser/browser_process_io_thread.cc b/content/browser/brow
 +  return NetworkServiceShutdownWaitTimeout();
 +}
 +#endif
- 
++
  BrowserProcessIOThread::BrowserProcessIOThread(
      std::unique_ptr<BrowserIOThreadDelegate> delegate)
-@@ -106,23 +143,19 @@
+     : base::Thread(BrowserThreadImpl::GetThreadName(BrowserThread::IO),
+@@ -107,23 +144,19 @@ void BrowserProcessIOThread::IOThreadRun(base::RunLoop* run_loop) {
  }
  
  void BrowserProcessIOThread::ProcessHostCleanUp() {
@@ -90,11 +91,11 @@ diff --git a/content/browser/browser_process_io_thread.cc b/content/browser/brow
        ChildProcessHostImpl* child_process =
            static_cast<ChildProcessHostImpl*>(it.GetHost());
        auto& process = child_process->GetPeerProcess();
-@@ -130,8 +163,13 @@
+@@ -131,8 +164,13 @@ void BrowserProcessIOThread::ProcessHostCleanUp() {
          continue;
        base::ScopedAllowBaseSyncPrimitives scoped_allow_base_sync_primitives;
        const base::TimeTicks start_time = base::TimeTicks::Now();
--      process.WaitForExitWithTimeout(
+-      const bool exited = process.WaitForExitWithTimeout(
 -          base::Seconds(kMaxSecondsToWaitForNetworkProcess), nullptr);
 +      const base::TimeDelta wait_timeout = NetworkServiceShutdownWaitTimeout();
 +#if BUILDFLAG(IS_MAC)
@@ -102,7 +103,7 @@ diff --git a/content/browser/browser_process_io_thread.cc b/content/browser/brow
 +          (start_time + wait_timeout).ToInternalValue(),
 +          std::memory_order_relaxed);
 +#endif
-+      process.WaitForExitWithTimeout(wait_timeout, nullptr);
++      const bool exited = process.WaitForExitWithTimeout(wait_timeout, nullptr);
        // Record time spent for the method call.
        base::TimeDelta network_wait_time = base::TimeTicks::Now() - start_time;
-       DVLOG(1) << "Waited " << network_wait_time.InMilliseconds()
+       base::UmaHistogramTimes("Shutdown.NetworkService.WaitTime",

@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/extensions/chrome_extensions_browser_client.cc b/chrome/browser/extensions/chrome_extensions_browser_client.cc
-index 982247172e..3bbbbb30e5 100644
+index db5853715c..a2b6b6afb9 100644
 --- a/chrome/browser/extensions/chrome_extensions_browser_client.cc
 +++ b/chrome/browser/extensions/chrome_extensions_browser_client.cc
 @@ -20,6 +20,9 @@
@@ -12,15 +12,15 @@ index 982247172e..3bbbbb30e5 100644
  #include "build/chromeos_buildflags.h"
  #include "chrome/browser/app_mode/app_mode_utils.h"
  #include "chrome/browser/browser_process.h"
-@@ -81,6 +84,7 @@
+@@ -82,6 +85,7 @@
  #include "chrome/browser/safe_browsing/safe_browsing_service.h"
  #include "chrome/browser/search_engines/template_url_service_factory.h"
  #include "chrome/browser/task_manager/web_contents_tags.h"
 +#include "components/tabs/public/tab_interface.h"
  #include "extensions/buildflags/buildflags.h"
+ #include "extensions/common/event_args.h"
  #include "ui/base/page_transition_types.h"
- #if !BUILDFLAG(IS_ANDROID)
-@@ -113,6 +117,12 @@
+@@ -116,6 +120,12 @@
  #include "components/update_client/configurator.h"
  #include "components/update_client/update_client.h"
  #include "components/version_info/version_info.h"
@@ -33,7 +33,7 @@ index 982247172e..3bbbbb30e5 100644
  #include "content/public/browser/browser_context.h"
  #include "content/public/browser/browser_thread.h"
  #include "content/public/browser/render_process_host.h"
-@@ -168,6 +178,14 @@
+@@ -171,6 +181,14 @@
  #include "chrome/common/extensions/manifest_handlers/settings_overrides_handler.h"
  #endif
  
@@ -48,7 +48,7 @@ index 982247172e..3bbbbb30e5 100644
  namespace extensions {
  
  namespace {
-@@ -762,6 +780,110 @@ bool ChromeExtensionsBrowserClient::IsWebUIAllowedToMakeNetworkRequests(
+@@ -770,6 +788,110 @@ bool ChromeExtensionsBrowserClient::IsWebUIAllowedToMakeNetworkRequests(
        origin);
  }
  
@@ -158,8 +158,8 @@ index 982247172e..3bbbbb30e5 100644
 +
  network::mojom::NetworkContext*
  ChromeExtensionsBrowserClient::GetSystemNetworkContext() {
-   DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
-@@ -1326,13 +1448,24 @@ ChromeExtensionsBrowserClient::CreateInstallPrompt(
+   CHECK_CURRENTLY_ON(content::BrowserThread::UI, base::NotFatalUntil::M161);
+@@ -1351,13 +1473,24 @@ ChromeExtensionsBrowserClient::CreateInstallPrompt(
  }
  
  std::unique_ptr<ExtensionInstallPromptClient>

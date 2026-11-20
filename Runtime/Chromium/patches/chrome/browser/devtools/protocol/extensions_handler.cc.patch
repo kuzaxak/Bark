@@ -1,21 +1,22 @@
 diff --git a/chrome/browser/devtools/protocol/extensions_handler.cc b/chrome/browser/devtools/protocol/extensions_handler.cc
+index f385520f69..2249782e12 100644
 --- a/chrome/browser/devtools/protocol/extensions_handler.cc
 +++ b/chrome/browser/devtools/protocol/extensions_handler.cc
 @@ -27,6 +27,10 @@
  #include "extensions/browser/unpacked_installer.h"
  #include "extensions/common/manifest.h"
-
+ 
 +#if BUILDFLAG(IS_MAC)
 +#include "bark/browser/ui/bark_extension_popup.h"
 +#endif
 +
  namespace {
-
+ 
  // Gets an extension with ID `id`. If no extension is found, returns a
-@@ -188,16 +192,30 @@
-   BrowserWindowInterface* browser =
-       extensions::browser_window_util::GetBrowserForTabContents(*web_contents);
-
+@@ -192,6 +196,16 @@ protocol::DispatchResponse ExtensionsHandler::TriggerAction(
+         "Tab target is not attached to a browser window.");
+   }
+ 
 +  if (!browser) {
 +    return protocol::Response::ServerError("Tab has no browser window.");
 +  }
@@ -28,20 +29,12 @@ diff --git a/chrome/browser/devtools/protocol/extensions_handler.cc b/chrome/bro
 +#else
    ExtensionsContainer* extension_container =
        ExtensionsContainer::From(*browser);
--
-   ToolbarActionViewModel* extension_model =
--      extension_container->GetActionForId(extension_id);
-+      extension_container ? extension_container->GetActionForId(extension_id)
-+                          : nullptr;
-+  if (!extension_model) {
-+    return protocol::Response::ServerError("Extension action unavailable.");
-+  }
-
-   extension_model->ExecuteUserAction(
+   if (extension_container == nullptr) {
+@@ -210,6 +224,7 @@ protocol::DispatchResponse ExtensionsHandler::TriggerAction(
        ExtensionActionViewModel::InvocationSource::kCdp);
-
+ 
    return protocol::DispatchResponse::Success();
 +#endif  // BUILDFLAG(IS_MAC)
  }
-
+ 
  ExtensionsHandler::ExtensionsHandler(protocol::UberDispatcher* dispatcher,

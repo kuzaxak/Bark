@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/profiles/nuke_profile_directory_utils.cc b/chrome/browser/profiles/nuke_profile_directory_utils.cc
-index 5c46d57e88..086a2b9308 100644
+index 4e57543269..87f8e3c19d 100644
 --- a/chrome/browser/profiles/nuke_profile_directory_utils.cc
 +++ b/chrome/browser/profiles/nuke_profile_directory_utils.cc
 @@ -4,6 +4,7 @@
@@ -10,7 +10,7 @@ index 5c46d57e88..086a2b9308 100644
  #include <map>
  
  #include "base/check_op.h"
-@@ -137,6 +138,13 @@ bool IsProfileDirectoryMarkedForDeletion(const base::FilePath& profile_path) {
+@@ -138,6 +139,13 @@ bool IsProfileDirectoryMarkedForDeletion(const base::FilePath& profile_path) {
           it->second == ProfileDeletionStage::MARKED;
  }
  
@@ -22,5 +22,5 @@ index 5c46d57e88..086a2b9308 100644
 +}
 +
  void CancelProfileDeletion(const base::FilePath& path) {
-   DCHECK(!ProfilesToDelete().contains(path) ||
-          ProfilesToDelete()[path] == ProfileDeletionStage::SCHEDULING);
+   CHECK(!ProfilesToDelete().contains(path) ||
+             ProfilesToDelete()[path] == ProfileDeletionStage::SCHEDULING,

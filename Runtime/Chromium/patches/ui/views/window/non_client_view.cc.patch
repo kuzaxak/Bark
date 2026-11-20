@@ -1,5 +1,5 @@
 diff --git a/ui/views/window/non_client_view.cc b/ui/views/window/non_client_view.cc
-index a2f1617725..7f17a1ca0b 100644
+index 3289f06c2e..741ef6b9ce 100644
 --- a/ui/views/window/non_client_view.cc
 +++ b/ui/views/window/non_client_view.cc
 @@ -4,18 +4,22 @@
@@ -154,8 +154,8 @@ index a2f1617725..7f17a1ca0b 100644
 +  return released;
  }
  
- void NonClientView::SetOverlayView(View* view) {
-@@ -81,6 +192,11 @@ CloseRequestResult NonClientView::OnWindowCloseRequested() {
+ void NonClientView::SetOverlayViewInternal(std::unique_ptr<View> view) {
+@@ -82,6 +193,11 @@ CloseRequestResult NonClientView::OnWindowCloseRequested() {
  
  void NonClientView::WindowClosing() {
    client_view_->WidgetClosing();
@@ -167,11 +167,11 @@ index a2f1617725..7f17a1ca0b 100644
  }
  
  void NonClientView::UpdateFrame() {
-@@ -177,6 +293,7 @@ void NonClientView::ViewHierarchyChanged(
+@@ -178,6 +294,7 @@ void NonClientView::ViewHierarchyChanged(
    // the various setters, and create and add children directly in the
    // constructor.
    if (details.is_add && GetWidget() && details.child == this) {
 +    frame_view_->BindClientView(client_view_);
      AddChildViewAt(frame_view_.get(), 0);
      frame_view_->InsertClientView(client_view_);
-     if (overlay_view_) {
+     if (owned_overlay_view_) {

@@ -1120,7 +1120,7 @@ IN_PROC_BROWSER_TEST_F(BarcBridgeBrowserTest,
       first,
       embedded_test_server()->GetURL(
           content::SlowDownloadHttpResponse::kKnownSizeUrl),
-      WindowOpenDisposition::CURRENT_TAB, ui_test_utils::BROWSER_TEST_NO_WAIT);
+      WindowOpenDisposition::kCurrentTab, ui_test_utils::BROWSER_TEST_NO_WAIT);
   progress.WaitForFinished();
   ASSERT_EQ(1u, progress.NumDownloadsSeenInState(
                     download::DownloadItem::IN_PROGRESS));

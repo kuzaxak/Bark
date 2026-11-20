@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/devtools/devtools_window.cc b/chrome/browser/devtools/devtools_window.cc
-index 7613579e79..d816bb204e 100644
+index cf994792b4..91477eea4a 100644
 --- a/chrome/browser/devtools/devtools_window.cc
 +++ b/chrome/browser/devtools/devtools_window.cc
-@@ -928,7 +928,7 @@ void DevToolsWindow::ToggleDevToolsWindow(
+@@ -931,7 +931,7 @@ void DevToolsWindow::ToggleDevToolsWindow(
    // If window is docked and visible, we hide it on toggle. If window is
    // undocked, we show (activate) it.
    if (!window->is_docked_ || do_open) {
@@ -11,7 +11,7 @@ index 7613579e79..d816bb204e 100644
    } else {
      DevToolsClosedByAction closed_by;
      switch (toggled_by) {
-@@ -1015,7 +1015,10 @@ void DevToolsWindow::MaybeCreateAndAddNavigationThrottle(
+@@ -1018,7 +1018,10 @@ void DevToolsWindow::MaybeCreateAndAddNavigationThrottle(
    registry.AddThrottle(std::make_unique<Throttle>(registry, window));
  }
  
@@ -23,7 +23,7 @@ index 7613579e79..d816bb204e 100644
    if (life_stage_ == kLoadCompleted) {
      Show(action);
      return;
-@@ -1651,6 +1654,7 @@ void DevToolsWindow::WebContentsCreated(
+@@ -1667,6 +1670,7 @@ void DevToolsWindow::WebContentsCreated(
  }
  
  void DevToolsWindow::CloseContents(WebContents* source) {
@@ -31,7 +31,7 @@ index 7613579e79..d816bb204e 100644
    // We shouldn't get here as long as we're owned by the browser.
    CHECK(!browser_);
    life_stage_ = kClosing;
-@@ -1721,6 +1725,7 @@ void DevToolsWindow::ActivateWindow() {
+@@ -1737,6 +1741,7 @@ void DevToolsWindow::ActivateWindow() {
  }
  
  void DevToolsWindow::CloseWindow() {
@@ -39,23 +39,23 @@ index 7613579e79..d816bb204e 100644
    if (is_docked_) {
      Close(DevToolsClosedByAction::kCloseButton);
    } else {
-@@ -1735,6 +1740,7 @@ void DevToolsWindow::CloseWindow() {
+@@ -1751,6 +1756,7 @@ void DevToolsWindow::CloseWindow() {
  }
  
  void DevToolsWindow::Close(DevToolsClosedByAction closed_by) {
 +  requested_panel_.reset();
-   DCHECK(is_docked_);
+   CHECK(is_docked_, base::NotFatalUntil::M161);
    life_stage_ = kClosing;
    main_web_contents_->DispatchBeforeUnload(false /* auto_cancel */);
-@@ -1779,7 +1785,6 @@ void DevToolsWindow::SetIsDocked(bool dock_requested) {
+@@ -1795,7 +1801,6 @@ void DevToolsWindow::SetIsDocked(bool dock_requested) {
      return;
    }
  
--  DCHECK(can_dock_ || !dock_requested);
+-  CHECK(can_dock_ || !dock_requested, base::NotFatalUntil::M161);
    if (!can_dock_) {
      dock_requested = false;
    }
-@@ -2102,6 +2107,11 @@ void DevToolsWindow::CreateDevToolsBrowser() {
+@@ -2147,6 +2152,11 @@ void DevToolsWindow::CreateDevToolsBrowser() {
  }
  
  void DevToolsWindow::DoAction(const DevToolsToggleAction& action) {

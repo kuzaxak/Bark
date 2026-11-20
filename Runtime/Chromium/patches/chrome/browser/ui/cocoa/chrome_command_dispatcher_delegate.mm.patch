@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm b/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm
-index 96e3c9bb38..b35515109b 100644
+index 299294b..24d188d 100644
 --- a/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm
 +++ b/chrome/browser/ui/cocoa/chrome_command_dispatcher_delegate.mm
 @@ -8,6 +8,7 @@
@@ -54,7 +54,7 @@ index 96e3c9bb38..b35515109b 100644
  @implementation ChromeCommandDispatcherDelegate
  
  - (BOOL)eventHandledByViewsFocusManager:(NSEvent*)event
-@@ -96,6 +134,23 @@
+@@ -96,6 +134,23 @@ - (BOOL)eventHandledByViewsFocusManager:(NSEvent*)event
    // By not passing the event to AppKit, we do lose out on the brief
    // highlighting of the NSMenu.
    CommandForKeyEventResult result = CommandForKeyEvent(event);
@@ -66,7 +66,7 @@ index 96e3c9bb38..b35515109b 100644
 +    bool reserved = false;
 +    if (bridge) {
 +      bridge->host()->WillExecuteCommand(result.chrome_command,
-+                                         WindowOpenDisposition::CURRENT_TAB,
++                                         WindowOpenDisposition::kCurrentTab,
 +                                         /*is_before_first_responder=*/true,
 +                                         &reserved);
 +    }
@@ -78,7 +78,7 @@ index 96e3c9bb38..b35515109b 100644
    // Ignore new tab/window events if |event| is a key repeat to prevent
    // users from accidentally opening too many empty tabs or windows.
    if (event.isARepeat && (result.chrome_command == IDC_NEW_TAB ||
-@@ -157,6 +212,13 @@
+@@ -157,6 +212,13 @@ - (BOOL)eventHandledByViewsFocusManager:(NSEvent*)event
      result.from_main_menu = false;
    }
  

@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
-index 3bc40bcc91..b61f9ac31c 100644
+index 3c3aaff..1e1245e 100644
 --- a/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
 +++ b/chrome/browser/ui/browser_web_contents_delegate/browser_web_contents_delegate.cc
-@@ -118,6 +118,7 @@
+@@ -120,6 +120,7 @@
  #endif
  
  #if BUILDFLAG(IS_MAC)
@@ -10,12 +10,12 @@ index 3bc40bcc91..b61f9ac31c 100644
  #include "ui/display/display.h"
  #include "ui/display/screen.h"
  #include "ui/display/types/display_constants.h"
-@@ -568,6 +569,13 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
+@@ -601,6 +602,13 @@ content::WebContents* BrowserWebContentsDelegate::OpenURLFromTab(
      }
    }
  
 +#if BUILDFLAG(IS_MAC)
-+  if (params.disposition == WindowOpenDisposition::NEW_WINDOW &&
++  if (params.disposition == WindowOpenDisposition::kNewWindow &&
 +      barc::RequestPeekForShiftClick(source, params)) {
 +    return nullptr;
 +  }

@@ -1,5 +1,5 @@
 diff --git a/tools/metrics/histograms/enums.xml b/tools/metrics/histograms/enums.xml
-index 356d608cb0..d994fe99dc 100644
+index cf586ad497..b08eb24e95 100644
 --- a/tools/metrics/histograms/enums.xml
 +++ b/tools/metrics/histograms/enums.xml
 @@ -687,6 +687,7 @@ uploading your change for review.  These are checked by presubmit scripts.
@@ -9,8 +9,8 @@ index 356d608cb0..d994fe99dc 100644
 +  <int value="196628" label="kEmbedder-kNativeCosmeticPolicyChanged"/>
  </enum>
  
- <enum name="BackgroundColorChangeOrigin">
-@@ -6003,6 +6004,7 @@ shown properly on the user-facing crash UI.
+ <enum name="BackgroundSyncResultPattern">
+@@ -5975,6 +5976,7 @@ shown properly on the user-facing crash UI.
    <int value="51" label="kDetach">
      A request was received to detach a frame within a BFCached page.
    </int>

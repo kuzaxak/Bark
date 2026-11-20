@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/profiles/profiles_state.cc b/chrome/browser/profiles/profiles_state.cc
-index d1fcd93ded..6aa3c9c582 100644
+index 50c28686f1..755523c134 100644
 --- a/chrome/browser/profiles/profiles_state.cc
 +++ b/chrome/browser/profiles/profiles_state.cc
 @@ -100,6 +100,12 @@ void SetLastUsedProfile(const base::FilePath& profile_dir) {
@@ -14,7 +14,7 @@ index d1fcd93ded..6aa3c9c582 100644
 +  }
  
    PrefService* local_state = g_browser_process->local_state();
-   DCHECK(local_state);
+   CHECK(local_state, base::NotFatalUntil::M162);
 @@ -299,8 +305,15 @@ void RemoveBrowsingDataForProfile(const base::FilePath& profile_path) {
      return;
  

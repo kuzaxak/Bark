@@ -1,8 +1,8 @@
 diff --git a/chrome/browser/ui/unload_controller.cc b/chrome/browser/ui/unload_controller.cc
-index fb499c2360..eed3832f66 100644
+index 9cefffb0e2..054d3b0f91 100644
 --- a/chrome/browser/ui/unload_controller.cc
 +++ b/chrome/browser/ui/unload_controller.cc
-@@ -66,7 +66,9 @@ namespace {
+@@ -67,7 +67,9 @@ namespace {
  // Returns a pair [last_window, last_window_for_profile] indicating if `browser`
  // is the only browser in total and for this profile.
  // Ignores browsers that are in the process of closing.
@@ -13,7 +13,7 @@ index fb499c2360..eed3832f66 100644
    bool last_window = true;
    bool last_window_for_profile = true;
    ForEachCurrentBrowserWindowInterfaceOrderedByActivation(
-@@ -75,6 +77,8 @@ std::pair<bool, bool> IsLastWindow(const BrowserWindowInterface* browser) {
+@@ -76,6 +78,8 @@ std::pair<bool, bool> IsLastWindow(const BrowserWindowInterface* browser) {
          // closing. Window closing may be delayed, and windows that are in the
          // process of closing don't count against our totals.
          if (other_browser == browser ||
@@ -22,7 +22,7 @@ index fb499c2360..eed3832f66 100644
              other_browser->capabilities()->IsAttemptingToCloseBrowser()) {
            return true;
          }
-@@ -181,6 +185,8 @@ void UnloadController::OnWindowClosing() {
+@@ -182,6 +186,8 @@ void UnloadController::OnWindowClosing() {
      return;
    }
  
@@ -31,7 +31,7 @@ index fb499c2360..eed3832f66 100644
    // Don't use GetForProfileIfExisting here, we want to force creation of the
    // session service so that user can restore what was open.
    SessionServiceBase* service =
-@@ -218,6 +224,22 @@ void UnloadController::OnWindowClosing() {
+@@ -219,6 +225,22 @@ void UnloadController::OnWindowClosing() {
    }
  }
  
@@ -54,7 +54,7 @@ index fb499c2360..eed3832f66 100644
  UnloadController::UnloadController(BrowserWindowInterface* browser)
      : browser_(browser),
        scoped_unowned_user_data_(browser->GetUnownedUserDataHost(), *this),
-@@ -432,8 +454,10 @@ bool UnloadController::BeforeUnloadFired(content::WebContents* contents,
+@@ -448,8 +470,10 @@ bool UnloadController::BeforeUnloadFired(content::WebContents* contents,
    }
  
    if (!proceed) {
@@ -66,7 +66,7 @@ index fb499c2360..eed3832f66 100644
      return false;
    }
  
-@@ -496,9 +520,74 @@ UnloadController::GetBrowserClosingStatus() const {
+@@ -512,9 +536,74 @@ UnloadController::GetBrowserClosingStatus() const {
    }
  }
  
@@ -142,7 +142,7 @@ index fb499c2360..eed3832f66 100644
    cancel_download_confirmation_state_ =
        CancelDownloadConfirmationState::kResponseReceived;
    // The devtools browser gets its beforeunload events as the results of
-@@ -509,7 +598,7 @@ bool UnloadController::RunBeforeUnloadForShutdown(
+@@ -525,7 +614,7 @@ bool UnloadController::RunBeforeUnloadForShutdown(
      return false;
    }
  
@@ -151,7 +151,7 @@ index fb499c2360..eed3832f66 100644
    if (tabs_needing_before_unload_fired_.empty()) {
      return false;
    }
-@@ -521,22 +610,36 @@ bool UnloadController::RunBeforeUnloadForShutdown(
+@@ -537,22 +626,36 @@ bool UnloadController::RunBeforeUnloadForShutdown(
    return !skip_beforeunload;
  }
  
@@ -191,7 +191,7 @@ index fb499c2360..eed3832f66 100644
    if (!is_attempting_to_close_browser()) {
      CHECK(tabs_needing_unload_fired_.empty());
    }
-@@ -545,6 +648,7 @@ UnloadController::GetTabsNeedingBeforeUnloadFired() const {
+@@ -561,6 +664,7 @@ UnloadController::GetTabsNeedingBeforeUnloadFired() const {
    for (int i = 0; i < browser_->tab_strip_model()->count(); ++i) {
      content::WebContents* const contents =
          browser_->tab_strip_model()->GetWebContentsAt(i);
@@ -199,7 +199,7 @@ index fb499c2360..eed3832f66 100644
      const bool should_fire_beforeunload =
          contents->NeedToFireBeforeUnloadOrUnloadEvents() ||
          DevToolsWindow::NeedsToInterceptBeforeUnload(contents);
-@@ -569,7 +673,11 @@ void UnloadController::CancelWindowClose() {
+@@ -585,7 +689,11 @@ void UnloadController::CancelWindowClose() {
      DevToolsWindow::OnPageCloseCanceled(it);
    }
    tabs_needing_unload_fired_.clear();
@@ -211,7 +211,7 @@ index fb499c2360..eed3832f66 100644
    base::RepeatingCallback<void(bool)> on_close_confirmed =
        std::move(on_close_confirmed_);
    TransitionTo(State::kIdle);
-@@ -581,7 +689,19 @@ void UnloadController::CancelWindowClose() {
+@@ -597,7 +705,19 @@ void UnloadController::CancelWindowClose() {
      CHECK(on_close_confirmed.is_null());
    }
  
@@ -232,7 +232,7 @@ index fb499c2360..eed3832f66 100644
  }
  
  ////////////////////////////////////////////////////////////////////////////////
-@@ -630,7 +750,7 @@ void UnloadController::OnTabStripModelChanged(
+@@ -646,7 +766,7 @@ void UnloadController::OnTabStripModelChanged(
  void UnloadController::TabStripEmpty() {
    // Set state_ here, so that extensions, etc, do not attempt to add tabs to the
    // browser before it closes.
@@ -241,7 +241,7 @@ index fb499c2360..eed3832f66 100644
      TransitionTo(State::kUnloadCompleted);
    }
  }
-@@ -954,7 +1074,8 @@ bool UnloadController::IsUnclosableApp() const {
+@@ -970,7 +1090,8 @@ bool UnloadController::IsUnclosableApp() const {
  
  UnloadController::WarnBeforeClosingResult
  UnloadController::MaybeWarnBeforeClosing(
@@ -251,7 +251,7 @@ index fb499c2360..eed3832f66 100644
    // If the browser can close right away (we've indicated that we want to skip
    // before-unload handlers by setting `force_skip_warning_user_on_close_` to
    // true or there are no pending downloads we need to prompt about) then
-@@ -964,7 +1085,8 @@ UnloadController::MaybeWarnBeforeClosing(
+@@ -980,7 +1101,8 @@ UnloadController::MaybeWarnBeforeClosing(
    }
  
    // `CanCloseWithInProgressDownloads()` may trigger a modal dialog.
@@ -261,17 +261,17 @@ index fb499c2360..eed3832f66 100644
    if (can_close_with_downloads) {
      return WarnBeforeClosingResult::kOkToClose;
    }
-@@ -978,7 +1100,8 @@ UnloadController::MaybeWarnBeforeClosing(
+@@ -994,7 +1116,8 @@ UnloadController::MaybeWarnBeforeClosing(
  
  UnloadController::DownloadCloseType
  UnloadController::OkToCloseWithInProgressDownloads(
 -    int* num_downloads_blocking) const {
 +    int* num_downloads_blocking,
 +    base::span<BrowserWindowInterface* const> closing_browsers) const {
-   DCHECK(num_downloads_blocking);
+   CHECK(num_downloads_blocking, base::NotFatalUntil::M162);
    *num_downloads_blocking = 0;
  
-@@ -996,7 +1119,8 @@ UnloadController::OkToCloseWithInProgressDownloads(
+@@ -1012,7 +1135,8 @@ UnloadController::OkToCloseWithInProgressDownloads(
  
    // Figure out how many windows are open total, and associated with this
    // profile, that are relevant for the ok-to-close decision.
@@ -281,7 +281,7 @@ index fb499c2360..eed3832f66 100644
  
    // If there aren't any other windows, we're at browser shutdown,
    // which would cancel all current downloads.
-@@ -1026,7 +1150,8 @@ UnloadController::OkToCloseWithInProgressDownloads(
+@@ -1042,7 +1166,8 @@ UnloadController::OkToCloseWithInProgressDownloads(
    return DownloadCloseType::kOk;
  }
  
@@ -291,7 +291,7 @@ index fb499c2360..eed3832f66 100644
  #if BUILDFLAG(IS_MAC) || BUILDFLAG(IS_CHROMEOS)
    // On Mac and ChromeOS, non-incognito and non-Guest downloads can still
    // continue after window is closed.
-@@ -1044,8 +1169,8 @@ bool UnloadController::CanCloseWithInProgressDownloads() {
+@@ -1060,8 +1185,8 @@ bool UnloadController::CanCloseWithInProgressDownloads() {
    }
  
    int num_downloads_blocking;
@@ -302,7 +302,7 @@ index fb499c2360..eed3832f66 100644
    if (dialog_type == DownloadCloseType::kOk) {
      return true;
    }
-@@ -1057,7 +1182,7 @@ bool UnloadController::CanCloseWithInProgressDownloads() {
+@@ -1073,7 +1198,7 @@ bool UnloadController::CanCloseWithInProgressDownloads() {
    BrowserWindow::FromBrowser(browser_)->ConfirmBrowserCloseWithPendingDownloads(
        num_downloads_blocking, dialog_type,
        base::BindOnce(&UnloadController::InProgressDownloadResponse,
@@ -311,7 +311,7 @@ index fb499c2360..eed3832f66 100644
  
    // Return false so the browser does not close.  We'll close if the user
    // confirms in the dialog.
-@@ -1068,7 +1193,11 @@ base::WeakPtr<UnloadController> UnloadController::GetWeakPtr() {
+@@ -1084,7 +1209,11 @@ base::WeakPtr<UnloadController> UnloadController::GetWeakPtr() {
    return weak_factory_.GetWeakPtr();
  }
  
@@ -324,7 +324,7 @@ index fb499c2360..eed3832f66 100644
    if (cancel_downloads) {
      cancel_download_confirmation_state_ =
          CancelDownloadConfirmationState::kResponseReceived;
-@@ -1087,8 +1216,12 @@ void UnloadController::InProgressDownloadResponse(bool cancel_downloads) {
+@@ -1103,8 +1232,12 @@ void UnloadController::InProgressDownloadResponse(bool cancel_downloads) {
    // kUnloadCompleted when the downloads tab below is added; otherwise tab
    // strip observers may skip this browser because it is still attempting to
    // close.
@@ -337,7 +337,7 @@ index fb499c2360..eed3832f66 100644
  
    // Show the download page so the user can figure-out what downloads are still
    // in-progress.
-@@ -1107,6 +1240,11 @@ void UnloadController::FinishWarnBeforeClosing(WarnBeforeClosingResult result) {
+@@ -1123,6 +1256,11 @@ void UnloadController::FinishWarnBeforeClosing(WarnBeforeClosingResult result) {
    }
  }
  

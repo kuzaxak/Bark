@@ -1,11 +1,11 @@
 diff --git a/chrome/BUILD.gn b/chrome/BUILD.gn
-index d98c86e..957261c 100644
+index 06bfcf5a90..ad994914fa 100644
 --- a/chrome/BUILD.gn
 +++ b/chrome/BUILD.gn
-@@ -535,35 +535,26 @@ if (is_win) {
+@@ -540,35 +540,26 @@ if (is_win) {
      }
    }
-
+ 
 -  mac_app_bundle("chrome_app") {
 -    output_name = chrome_product_full_name
 -
@@ -20,45 +20,47 @@ index d98c86e..957261c 100644
        "CHROMIUM_CREATOR=$chrome_mac_creator_code",
      ]
 +  }
-
--    sources = [
--      "app/chrome_exe_main_mac.cc",
--      "app/llvm_profile_util.cc",
--      "app/llvm_profile_util.h",
--    ]
--
--    configs += [ "//build/config/compiler:wexit_time_destructors" ]
+ 
+-    sources = [ "app/chrome_exe_main_mac.c" ]
 -
 -    deps = [
 -      "//base:compiler_specific",
--      "//base/allocator:early_zone_registration_apple",
 -      "//build:branding_buildflags",
 -      "//build/config/compiler:compiler_buildflags",
 -      "//chrome/common:buildflags",
--      "//chrome/common:version_header",
+-      "//content/public/app:aperitif",
 -    ]
+-
+-    # Links the framework's shared library directly, after libaperitif, so
+-    # that the framework's load command follows libaperitif's. `+link` can't
+-    # be used: it adds the framework as `-framework`, which the Apple link
+-    # rule places before all shared libraries. The framework itself is copied
+-    # into the bundle by `:chrome_versioned_bundle_data` in `bundle_deps`.
+-    deps += [ ":chrome_framework+link_nested" ]
 +  mac_app_bundle("chrome_app") {
 +    output_name = chrome_product_full_name
 +    info_plist = "//bark/app/sdk_only-Info.plist"
-+    sources = [ "//bark/app/bark_sdk_only_main.cc" ]
-
++    sources = [ "//bark/app/bark_sdk_only_main.c" ]
+ 
      bundle_deps = [
        ":chrome_app_strings_bundle_data",
 +      ":chrome_integrated_app_info_plist",
        ":chrome_resources",
        ":chrome_versioned_bundle_data",
      ]
-@@ -580,22 +571,6 @@ if (is_win) {
-       ldflags = [ "-Wl,-exported_symbols_list," +
-                   rebase_path("app/app.exports", root_build_dir) ]
+@@ -587,24 +578,6 @@ if (is_win) {
+       ldflags += [ "-Wl,-exported_symbols_list," +
+                    rebase_path("app/app.exports", root_build_dir) ]
      }
 -
 -    if (is_component_build) {
--      # In a component build, the framework is directly linked to the
--      # executable because dlopen() and loading all the dependent dylibs
--      # is time-consuming, see https://crbug.com/40176946.
--      deps += [ ":chrome_framework+link" ]
--      ldflags = [ "-Wl,-rpath,@executable_path/../Frameworks" ]
+-      ldflags += [
+-        "-Wl,-rpath,@executable_path/../Frameworks",
+-
+-        # Add an rpath to the Libraries directory in the versioned framework
+-        # so that @rpath/libaperitif.dylib resolves.
+-        "-Wl,-rpath,@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_framework_version/Libraries",
+-      ]
 -
 -      # The Framework is packaged inside the .app bundle. But when using the
 -      # component build, all the dependent shared libraries of :chrome_dll are
@@ -69,17 +71,31 @@ index d98c86e..957261c 100644
 -      data_deps = [ ":chrome_framework" ]
 -    }
    }
-
+ 
    if (verify_dynamic_libraries) {
-@@ -1323,6 +1298,7 @@ if (is_win) {
-
+@@ -621,12 +594,7 @@ if (is_win) {
+         rebase_path(inputs[0], root_out_dir),
+         "--exact-match",
+ 
+-        # Do not --allow more libraries here without consulting with the
+-        # security team (security-dev@chromium.org).
+-        "--allow",
+-        "@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_framework_version/Libraries/libaperitif.dylib",
+-        "--allow",
+-        "@executable_path/../Frameworks/$chrome_framework_name.framework/Versions/$chrome_framework_version/$chrome_framework_name",
++        # The SDK-only executable never loads the browser engine.
+         "--allow",
+         "/usr/lib/libSystem.B.dylib",
+       ]
+@@ -1339,6 +1307,7 @@ if (is_win) {
+ 
      deps = [
        ":dependencies",
 +      "//bark:engine",
        "//build:chromeos_buildflags",
        "//chrome/app:command_ids",
        "//chrome/browser:chrome_browser_application_mac",
-@@ -1395,6 +1371,7 @@ if (is_win) {
+@@ -1407,6 +1376,7 @@ if (is_win) {
        ":optimization_guide_library",
        ":swiftshader_binaries",
        ":widevine_cdm_library",

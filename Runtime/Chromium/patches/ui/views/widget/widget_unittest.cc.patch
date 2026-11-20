@@ -1,16 +1,8 @@
 diff --git a/ui/views/widget/widget_unittest.cc b/ui/views/widget/widget_unittest.cc
-index 1b14038e59..64c1f7f64c 100644
+index 067b01c57a..90ed1c1dc9 100644
 --- a/ui/views/widget/widget_unittest.cc
 +++ b/ui/views/widget/widget_unittest.cc
-@@ -74,6 +74,7 @@
- #include "ui/views/test/widget_activation_waiter.h"
- #include "ui/views/test/widget_test.h"
- #include "ui/views/view_test_api.h"
-+#include "ui/views/view_tracker.h"
- #include "ui/views/views_features.h"
- #include "ui/views/views_test_suite.h"
- #include "ui/views/widget/native_widget_delegate.h"
-@@ -84,8 +85,11 @@
+@@ -85,7 +85,9 @@
  #include "ui/views/widget/widget_deletion_observer.h"
  #include "ui/views/widget/widget_removals_observer.h"
  #include "ui/views/widget/widget_utils.h"
@@ -18,11 +10,9 @@ index 1b14038e59..64c1f7f64c 100644
  #include "ui/views/window/dialog_delegate.h"
 +#include "ui/views/window/frame_view.h"
  #include "ui/views/window/native_frame_view.h"
-+#include "ui/views/window/non_client_view.h"
+ #include "ui/views/window/non_client_view.h"
  
- #if defined(USE_AURA)
- #include "ui/aura/window.h"
-@@ -267,6 +271,277 @@ class EventCountHandler : public ui::EventHandler {
+@@ -269,6 +271,277 @@ class EventCountHandler : public ui::EventHandler {
    std::map<ui::EventType, int> event_count_;
  };
  

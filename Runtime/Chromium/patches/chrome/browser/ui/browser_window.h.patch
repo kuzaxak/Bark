@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/browser_window.h b/chrome/browser/ui/browser_window.h
-index 6e4b4388d9..a91fd5cc20 100644
+index 3b0e66f8a9..857414f721 100644
 --- a/chrome/browser/ui/browser_window.h
 +++ b/chrome/browser/ui/browser_window.h
 @@ -34,6 +34,7 @@
@@ -42,4 +42,4 @@ index 6e4b4388d9..a91fd5cc20 100644
 +
    virtual void ShowAvatarBubbleFromAvatarButton(bool is_source_accelerator) = 0;
  
-   // Attempts showing the In-Product-Help for profile Switching. This is called
+   // Shows User Happiness Tracking Survey's dialog after the survey associated

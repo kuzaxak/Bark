@@ -2911,7 +2911,7 @@ int barc_tab_create_peek(uint64_t observation, int32_t serial,
   content::WebContents::CreateParams create(target->GetProfile());
   auto blank = content::WebContents::Create(create);
   NavigateParams insert(target, std::move(blank));
-  insert.disposition = WindowOpenDisposition::NEW_BACKGROUND_TAB;
+  insert.disposition = WindowOpenDisposition::kNewBackgroundTab;
   insert.window_action = NavigateParams::WindowAction::kNoAction;
   Navigate(&insert);
   target = Window(target_id);
@@ -2972,7 +2972,7 @@ int barc_tab_create_peek(uint64_t observation, int32_t serial,
     return refuse();
   // The existing observer is now bound. Reuse Chromium's captured stock link
   // parameters (initiator/referrer/protocol handling), never a replayed URL.
-  request->params.disposition = WindowOpenDisposition::CURRENT_TAB;
+  request->params.disposition = WindowOpenDisposition::kCurrentTab;
   content::NavigationController::LoadURLParams load(request->params);
   peek_alive->GetContents()->GetController().LoadURLWithParams(load);
   barc::BrowserDiscoveryChanged();
@@ -3077,7 +3077,7 @@ bool RequestPeekForOptionClick(content::WebContents* source, const GURL& url,
     if (observation->CanRequestPeek(frame) && observation->TakeOptionClick()) {
       content::OpenURLParams params(url, content::Referrer(frame->GetLastCommittedURL(),
                                                            network::mojom::ReferrerPolicy::kDefault),
-                                    WindowOpenDisposition::NEW_BACKGROUND_TAB,
+                                    WindowOpenDisposition::kNewBackgroundTab,
                                     ui::PAGE_TRANSITION_LINK, /*is_renderer_initiated=*/true);
       params.initiator_origin = initiator;
       params.user_gesture = true;
