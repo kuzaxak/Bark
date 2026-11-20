@@ -244,14 +244,18 @@ class BuildArchitectureTests(unittest.TestCase):
                 commands["run"].assert_not_called()
                 self.assertEqual(output_args.read_bytes(), invalid)
 
-            output_args.write_bytes(previous)
+            # Upgrade the root-level SDK link recipe from an interrupted release build.
+            previous_sdk_args = configured.replace(b"xcode_links/MacOSX.sdk", b"MacOSX.sdk")
+            output_args.write_bytes(previous_sdk_args)
+            old_sdk_link = out / "MacOSX.sdk"
+            old_sdk_link.symlink_to(sdk, target_is_directory=True)
             commands["run"].side_effect = InterruptedError("profile preparation")
             for _ in range(2):
                 with self.assertRaisesRegex(InterruptedError, "profile preparation"):
                     build_engine.build(checkout, checkout / "tools", {}, args)
                 self.assertEqual(output_args.read_bytes(), configured)
-                self.assertEqual(set(out.iterdir()), {output_args, existing_product, out / "MacOSX.sdk"})
-                self.assertEqual((out / "MacOSX.sdk").readlink(), sdk)
+                self.assertEqual(set(out.iterdir()), {output_args, existing_product, old_sdk_link, out / "xcode_links"})
+                self.assertEqual((out / "xcode_links/MacOSX.sdk").readlink(), sdk)
 
     def test_official_build_checks_sdk_version_and_build_id(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -289,7 +293,7 @@ class BuildArchitectureTests(unittest.TestCase):
             for arch in ("x64", "arm64"):
                 out = root / "src/out" / f"Barc-{arch}-official"
                 out.mkdir(parents=True)
-                link = out / "MacOSX.sdk"
+                link = out / "xcode_links/MacOSX.sdk"
                 build_engine.bind_official_sdk(out, sdk, dry_run=True)
                 self.assertFalse(link.is_symlink())
                 build_engine.bind_official_sdk(out, sdk, dry_run=False)
@@ -329,7 +333,7 @@ class BuildArchitectureTests(unittest.TestCase):
                              for call in commands["run"].call_args_list}
                     for command in ("cargo", "xcrun", "gn", "autoninja"):
                         self.assertEqual(calls[command]["SDKROOT"], str(sdk))
-                    self.assertIn(f'mac_sdk_path = "//out/Barc-{arch}-official/MacOSX.sdk"\n'.encode(),
+                    self.assertIn(f'mac_sdk_path = "//out/Barc-{arch}-official/xcode_links/MacOSX.sdk"\n'.encode(),
                                   build_engine.engine_args(arch, True))
                     self.assertFalse(checkout.exists())
                     self.assertEqual(env["SDKROOT"], "/unexpected/installed.sdk")

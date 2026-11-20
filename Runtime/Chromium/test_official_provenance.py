@@ -299,7 +299,7 @@ class OfficialProvenanceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "source recipe changed"):
                 build_engine.build(self.root, self.root / "depot_tools", {}, options)
         self.assertEqual(record.call_args.args[3]["SDKROOT"], str(sdk))
-        self.assertEqual((self.out / "MacOSX.sdk").readlink(), sdk)
+        self.assertEqual((self.out / "xcode_links/MacOSX.sdk").readlink(), sdk)
         self.assertFalse((self.out / provenance.RECEIPT).exists())
 
     def test_wrong_receipt_profile_digest_fails_even_when_sealed(self):

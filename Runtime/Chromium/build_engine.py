@@ -307,6 +307,7 @@ def official_sdk(path=None):
 
 DEVELOPER_CC_WRAPPER = "bark_override_cc"
 OFFICIAL_CC_WRAPPER = "bark_official_pgo_cc_v1"
+OFFICIAL_SDK_LINK = Path("xcode_links/MacOSX.sdk")
 
 
 def compiler_wrapper_arg(wrapper):
@@ -314,16 +315,20 @@ def compiler_wrapper_arg(wrapper):
 
 
 def official_sdk_arg(arch):
-    return f'mac_sdk_path = "//out/Barc-{arch}-official/MacOSX.sdk"\n'.encode()
+    return f'mac_sdk_path = "//out/Barc-{arch}-official/{OFFICIAL_SDK_LINK}"\n'.encode()
 
 
 def bind_official_sdk(out, sdk, *, dry_run):
-    link = out / "MacOSX.sdk"
+    # V8 metagen copies xcode_links into its temporary GN query output.
+    link = out / OFFICIAL_SDK_LINK
+    if link.parent.is_symlink() or (link.parent.exists() and not link.parent.is_dir()):
+        raise ValueError(f"{link.parent}: expected a local SDK links directory")
     if link.is_symlink() and link.readlink() == sdk:
         return
     if link.is_symlink() or link.exists():
         raise ValueError(f"{link}: already bound to another SDK or occupied. Use a fresh official output.")
     if not dry_run:
+        link.parent.mkdir(exist_ok=True)
         link.symlink_to(sdk, target_is_directory=True)
 
 
@@ -371,8 +376,13 @@ def build(checkout, depot_tools, env, args):
         accepted_args = {configured_args}
         if args.official:
             prior_args = configured_args.removesuffix(official_sdk_arg(args.arch))
-            accepted_args.update((prior_args, prior_args.replace(compiler_wrapper_arg(OFFICIAL_CC_WRAPPER),
-                                                                 compiler_wrapper_arg(DEVELOPER_CC_WRAPPER))))
+            prior_sdk_arg = f'mac_sdk_path = "//out/Barc-{args.arch}-official/MacOSX.sdk"\n'.encode()
+            accepted_args.update({
+                prior_args + prior_sdk_arg,
+                prior_args,
+                prior_args.replace(compiler_wrapper_arg(OFFICIAL_CC_WRAPPER),
+                                   compiler_wrapper_arg(DEVELOPER_CC_WRAPPER)),
+            })
         if existing_args not in accepted_args:
             raise ValueError(f"{output_args}: differs from the requested recipe. "
                              f"Move {out} aside and rerun to create a fresh GN output directory.")
