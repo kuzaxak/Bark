@@ -11,6 +11,8 @@ struct ClearTabsTests {
         defer { host.cleanup() }
         let spaceID = try #require(host.window.spaceID)
         let section = Parent.tabs(spaceID: spaceID)
+        let initialTab = try #require(host.window.selectedItemID)
+        let initialPage = try #require(host.tabs.session(for: initialTab)?.navigation)
         let other = BrowserWindowState()
         host.registry.register(other)
         host.tabs.attach(window: other)
@@ -33,17 +35,25 @@ struct ClearTabsTests {
         let folder = try #require(host.tabs.createFolder(title: "Folder", in: section, after: nil))
         let folderTab = try open("folder-tab", in: .folder(itemID: folder))
         host.tabs.select(selected, in: host.window)
-        host.window.split = try #require(SplitRecord([loose, hidden]))
+        host.window.split = SplitRecord([loose, hidden])
         let split = try #require(SplitRecord(panes))
         try #require(host.tabs.presentNativeSplit(split, activeItemID: panes[1], in: other))
 
         let targets = host.tabs.tabsToClear(in: spaceID)
-        #expect(Set(targets).isSuperset(of: [loose, hidden]))
+        #expect(Set(targets).isSuperset(of: [initialTab, loose, hidden]))
         let protected = [root, child, selected, sibling, pinned, folder, folderTab] + panes
         #expect(Set(targets).isDisjoint(with: protected))
 
         host.tabs.clearTabs(in: spaceID)
 
+        // The first-launch tab owns a live native page. Its item stays until the host
+        // acknowledges the close, unlike the cold tabs that Clear removes immediately.
+        try #require(host.native.closes.count == 1)
+        #expect(host.native.closes[0].page === initialPage)
+        #expect(host.tabs.tree.item(initialTab) != nil)
+        host.native.finishClose(0, admitted: true)
+
+        #expect(host.tabs.tree.item(initialTab) == nil)
         #expect(host.tabs.tree.item(loose) == nil)
         #expect(host.tabs.tree.item(looseChild) == nil)
         #expect(host.tabs.tree.item(hidden) == nil)
