@@ -57,6 +57,7 @@ jobs:
           python3 -B -m unittest discover -s Runtime/Chromium -p 'test_*.py'
           python3 -B -m unittest discover -s Tests/Shared
           python3 -B -m unittest discover -s Tests/ChromiumSDKLauncher
+          python3 -B -m unittest discover -s Tests/ChromiumWebUIBranding
           python3 -B Tests/ChromiumSDKLauncher/check_helper_roles.py
           python3 -B -m unittest discover -s Tests/ChromiumStartup
           python3 -B -m unittest discover -s Tests/ChromiumUpdate
