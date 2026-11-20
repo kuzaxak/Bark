@@ -256,6 +256,7 @@ struct URLBarView: View {
                                 onCancel: cancelEditing,
                                 onMove: moveSuggestionSelection,
                                 onEndEditing: cancelEditing)
+            .frame(maxWidth: .infinity)
             .frame(height: 22)
     }
 
@@ -815,7 +816,7 @@ private struct SplitAddressSearchField: NSViewRepresentable {
     let onMove: (Int) -> Void
     let onEndEditing: () -> Void
 
-    final class Field: NSTextField {
+    final class Field: ChromiumAddressTextField {
         private var didRequestFocus = false
 
         override func viewDidMoveToWindow() {
@@ -848,6 +849,7 @@ private struct SplitAddressSearchField: NSViewRepresentable {
         func control(_ control: NSControl, textView: NSTextView,
                      doCommandBy commandSelector: Selector) -> Bool {
             guard !textView.hasMarkedText() else { return false }
+            if ChromiumAddressTextField.moveToDocumentEdge(commandSelector, in: textView) { return true }
             switch commandSelector {
             case #selector(NSResponder.insertNewline(_:)): parent.onSubmit()
             case #selector(NSResponder.cancelOperation(_:)): parent.onCancel()
@@ -862,13 +864,12 @@ private struct SplitAddressSearchField: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> Field {
-        let field = Field()
+        let field = Field(frame: .zero)
         field.placeholderString = "Search or Enter URL..."
         field.font = .systemFont(ofSize: 14)
         field.isBordered = false
         field.drawsBackground = false
         field.focusRingType = .none
-        field.usesSingleLineMode = true
         field.stringValue = text
         field.delegate = context.coordinator
         field.setAccessibilityLabel("Search or Enter URL...")

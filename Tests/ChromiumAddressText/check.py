@@ -10,7 +10,7 @@ with TemporaryDirectory(prefix='bark-address-text-check-') as directory:
     b = source.index('\n    }\n', a) + 7
     (out / 'Shipped.swift').write_text('import Foundation\n\nenum URLBarView {\n' + source[a:b] + '}\n')
     binary = out / 'chromium-address-text-check'
-    c = ['swiftc', '-swift-version', '5', '-parse-as-library', str(out / 'Shipped.swift'), str(root / 'Tests/ChromiumAddressText/Main.swift'), '-o', str(binary)]
+    c = ['swiftc', '-swift-version', '5', '-parse-as-library', str(out / 'Shipped.swift'), str(root / 'App/Chromium/ChromiumAddressTextField.swift'), str(root / 'Tests/ChromiumAddressText/Main.swift'), '-o', str(binary)]
     p = subprocess.run(c, capture_output=True, text=True)
     print(p.stdout + p.stderr)
     if p.returncode:

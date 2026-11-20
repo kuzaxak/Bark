@@ -401,6 +401,7 @@ struct CommandPaletteView: View {
                         text: $text
                     )
                     .textFieldStyle(.plain)
+                    .lineLimit(1)
                     .font(NookDesign.Font.heading)
                     .foregroundColor(textFieldColor)
                     .tint(gradientColorManager.accentColor)
@@ -760,6 +761,16 @@ struct CommandPaletteView: View {
         // Arrow keys arrive flagged as keypad and function keys, and Caps Lock rides along with
         // anything, so neither counts as a modifier here.
         let modifiers = press.modifiers.subtracting([.numericPad, .function, .capsLock])
+        if commandPalette.addressEdit != nil, modifiers == [.command, .shift], let editor = fieldEditor {
+            if press.key == .leftArrow {
+                editor.moveToBeginningOfDocumentAndModifySelection(nil)
+                return .handled
+            }
+            if press.key == .rightArrow {
+                editor.moveToEndOfDocumentAndModifySelection(nil)
+                return .handled
+            }
+        }
         if press.key == .delete || press.characters == "\u{7F}" {
             if modifiers.contains(.shift), removeSelectedHistoryRow() { return .handled }
             if modifiers.contains(.option) {
