@@ -21,6 +21,13 @@
 
 #include "BarcChromium/barc_bridge_api.h"
 #include "BarcChromium/barc_public_headers_sha256.h"
+#if defined(__arm64__)
+#include "BarcChromium/barc_engine_version_arm64.h"
+#elif defined(__x86_64__)
+#include "BarcChromium/barc_engine_version_x86_64.h"
+#else
+#error Unsupported Bark SDK architecture
+#endif
 #include "early_zone_registration_apple.h"
 
 extern "C" {
@@ -119,7 +126,7 @@ __attribute__((visibility("default"))) int main(int argc, char* argv[]) {
   }
 
   char* framework_path = JoinPath(
-      parent_dir, "../Frameworks/Bark Framework.framework/Versions/" ENGINE_VERSION_STRING "/Bark Framework");
+      parent_dir, "../Frameworks/Bark Framework.framework/Versions/" BARC_CHROMIUM_VERSION "/Bark Framework");
   void* library = dlopen(framework_path, RTLD_LAZY | RTLD_LOCAL | RTLD_FIRST);
   if (!library) {
     FatalError("dlopen %s: %s.", framework_path, dlerror());

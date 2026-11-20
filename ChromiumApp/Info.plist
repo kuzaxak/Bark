@@ -168,8 +168,6 @@
 	<string>$(PRODUCT_NAME)</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
-	<key>BarkChromiumVersion</key>
-	<string>$(CHROMIUM_ENGINE_VERSION)</string>
 	<key>BarkEngineSDKResource</key>
 	<string>BarkEngineSDK.sha256</string>
 	<key>CFBundleShortVersionString</key>
@@ -238,8 +236,6 @@
 	<string>banner</string>
 	<key>OSAScriptingDefinition</key>
 	<string>scripting.sdef</string>
-	<key>SCMRevision</key>
-	<string>fb096c0011f9d50f0a264a9376420cdea9c421e3-refs/branch-heads/8078@{#1705}</string>
 	<key>UTExportedTypeDeclarations</key>
 	<array>
 		<dict>

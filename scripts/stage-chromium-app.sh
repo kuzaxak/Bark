@@ -90,6 +90,8 @@ engine_version = engine['CFBundleShortVersionString']
 app_engine_version = app.get('BarkChromiumVersion', app.get('CFBundleShortVersionString'))
 if app_engine_version != engine_version:
     sys.exit(f'App engine version {app_engine_version!r} must match the pinned engine {engine_version!r}')
+if app.get('SCMRevision') != engine.get('SCMRevision'):
+    sys.exit("Bark's SCMRevision differs from the pinned engine")
 
 source = len(sys.argv) == 4 and sys.argv[3] == 'source'
 if 'BarkEngineSDKResource' in app:
@@ -343,7 +345,7 @@ trap '/bin/rm -rf "$OUTPUT" "$PACKAGING"' EXIT
 /usr/bin/ditto "$APP" "$OUTPUT"
 APP_INFO="$OUTPUT/Contents/Info.plist"
 if [[ $(plist "$APP_INFO" CFBundleIdentifier) == ee.qdo.bark.build ]]; then
-  python3 -B "$REPO/scripts/bark_outer_info.py" "$APP_INFO"
+  python3 -B "$REPO/scripts/bark_outer_info.py" "$APP_INFO" "$ENGINE_INFO"
 fi
 [[ $(plist "$APP_INFO" CFBundleIdentifier) == ee.qdo.bark ]] || refuse 'App bundle identifier must be exactly ee.qdo.bark'
 [[ $(plist "$APP_INFO" NSPrincipalClass) == BrowserCrApplication ]] ||

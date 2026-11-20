@@ -164,8 +164,9 @@ checks and, when the build allows it, automatic downloads.
 
 The app owns the executable, menus and window layout. The engine owns Chromium
 profiles, documents and renderer processes. The Swift shell compiles against
-the public C headers in `Packages/BarkEngine`. At startup, Bark’s launcher
-loads the Chromium framework embedded in the app, checks its bridge version,
+the public C headers in `Packages/BarkEngine`. Publishing the SDK supplies the
+framework version for each architecture. At startup, Bark’s launcher opens
+that exact version inside the app, checks its bridge version,
 header digest and function table size, then passes the table to the Swift shell.
 A change to the sidebar or command palette can use the same pinned engine.
 Bark can import bookmarks and history from another browser on request.

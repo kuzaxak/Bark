@@ -159,10 +159,10 @@ bash "$barc_repo/scripts/publish-chromium-engine.sh" --arch "$arch" --require-of
 present. The shared SDK headers must still match the other architecture’s
 pinned headers. Check the resulting metadata change before adopting the pin.
 
-For a private handoff, commit the published bridge header, generated header
-digest and the pin for each architecture you distribute together on the local
+For a private handoff, commit the shared bridge header and its digest along
+with each architecture’s launcher version header and pin on the local
 qualification branch. Both SDKs in a two-architecture handoff must supply the
-same public headers. Use one source archive for the pair and send each Mac its
+same bridge API. Use one source archive for the pair and send each Mac its
 matching SDK. The example below packages one official architecture. For a
 developer SDK, omit `--require-official` throughout. Run the commands from
 `$barc_repo` with `BARK_SIGN_IDENTITY` set to a local Developer ID Application
@@ -170,7 +170,8 @@ identity.
 
 ```fish
 set -l headers (python3 scripts/chromium_sdk_layout.py headers Packages/BarkEngine "$arch")
-set -l metadata "$headers/barc_bridge_api.h" "$headers/barc_public_headers_sha256.h" "$headers/engine-artifact-$arch.sha256"
+set -l metadata "$headers/barc_bridge_api.h" "$headers/barc_public_headers_sha256.h" \
+    "$headers/barc_engine_version_$arch.h" "$headers/engine-artifact-$arch.sha256"
 git add -- $metadata
 git diff --cached --quiet -- $metadata; or git commit --only -m "Pin the $arch SDK for native qualification" -- $metadata
 
@@ -269,12 +270,6 @@ of the decompressed profile. Check the new `DEPS` V8 revision and its
 `include/v8-version.h`. If it changes, verify the versioned Google
 `x64.profile` and refresh the V8 revision, version and SHA-256 in `PINS.json`.
 
-Set `CHROMIUM_ENGINE_VERSION` for both outer app configurations in
-`Bark.xcodeproj/project.pbxproj` and match the new Chromium-generated
-`SCMRevision` in `ChromiumApp/Info.plist`. Staging checks the latter against
-the engine’s outer metadata and the shim uses the former to load the
-exact framework version.
-
 Prepare a fresh gclient root for the new revision. If a patch conflicts,
 adapt the tracked patch against the new base and repeat preparation from a
 pristine root. Check the patch budget and exact replay before compiling.
@@ -290,8 +285,12 @@ python3 "$recipe" prepare --checkout "$engine_checkout" --jobs 8; and \
 ```
 
 Follow [first official SDK preparation](#prepare-the-first-official-sdk-on-its-native-mac)
-to publish and verify each architecture's pin. Build the signed app against
-that pin. On the matching native Mac, run the engine suite from the official
+to publish and verify each architecture's pin. Each SDK supplies a version
+header used to compile the launcher's exact framework path. Build the signed
+app against that pin. Staging checks the path and copies the engine version
+and `SCMRevision` into the shipping Info.plist.
+
+On the matching native Mac, run the engine suite from the official
 output, then exercise startup and extension actions in the signed app. Use
 the [signed walk environment](../../CONTRIBUTING.md#run-the-signed-ui-walks).
 
@@ -374,8 +373,8 @@ only libSystem. It registers
 the early malloc zone, loads the engine framework, then the shell's fixed bundle-local
 entry; `ChromeMain` owns the sole application loop. Helpers keep Chromium's own main.
 There is no core-only application launch path or WebKit fallback. Its copy of the
-zone registration must match the pinned revision, and `CHROMIUM_ENGINE_VERSION` in the
-target's build settings must match `chrome/VERSION`. The app enters the engine through
+zone registration must match the pinned revision. The launcher opens the
+versioned framework directory named by its SDK header. The app enters the engine through
 `barc_engine_main_v<N>` and calls it only through the table `barc_bridge_v<N>()` returns; both
 names carry the bridge version, so an app and framework built for different versions abort
 in main with a message naming the version the app needs. main also aborts when the table is
@@ -498,7 +497,8 @@ python3 scripts/bark-check.py pair-sdk \
 
 This checks each receipt against the target architecture, current engine
 recipe and framework hashes recorded in its manifest. It checks the API and
-generated digest header and installs both pins and headers together. The
+generated digest header and installs both pins, the bridge headers and each
+architecture’s launcher version header together. The
 pins are calculated from the original manifests. Full SDK verification on
 each receiving Mac follows below.
 
@@ -578,13 +578,14 @@ version to the bundle metadata, so a release number works across all locales.
 file fails its checksums at the next staging. From the engine source root, with depot_tools
 on `PATH`, publish the architecture you built. The publisher defaults to native hardware.
 For a cross-build, pass `--arch x86_64` or `--arch arm64` and the corresponding GN output. It checks
-each Mach-O in the framework and writes only the selected architecture’s artifact and pin.
-If the other architecture already has a pin, the public headers must match it.
+each Mach-O in the framework and writes the selected architecture’s artifact,
+launcher version header and pin. If the other architecture already has a pin,
+the shared bridge headers must match it.
 The publisher verifies a complete read-only SDK before publishing it. Repeating the
 same publish verifies the installed local artifact. Pass `--replace` to publish a
 different build over the same local destination or repair an incomplete older artifact.
 An interrupted publish resumes on the next invocation. Existing cached SDK versions
-are unaffected. Commit the public headers and matching pin after validation:
+are unaffected. Commit the generated headers and matching pin after validation.
 
 ```fish
 set gn_cpu (python3 "$barc_repo/scripts/chromium_sdk_layout.py" native-arch --gn)

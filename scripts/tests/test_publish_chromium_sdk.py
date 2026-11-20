@@ -56,10 +56,14 @@ class FirstOfficialPublicationTests(unittest.TestCase):
         path.write_text('#!/bin/bash\n' + commands + '\n')
         path.chmod(0o755)
 
-    def make_build(self, arch):
-        framework = self.work / f"{arch}.dylib"
+    def make_build(self, arch, version=None):
+        name = f"{arch}-{version}" if version else arch
+        framework = self.work / f"{name}.dylib"
         self.fixture["fake_framework"](framework, arch=("-arch", arch))
-        return self.fixture["fake_engine_build"](self.work / arch, framework)
+        info = dict(self.fixture["ENGINE_PLIST"])
+        if version is not None:
+            info["CFBundleShortVersionString"] = version
+        return self.fixture["fake_engine_build"](self.work / name, framework, engine_info=info)
 
     def publish(self, *options, build=None, arch="arm64"):
         build = self.build if build is None else build
@@ -90,6 +94,68 @@ publication.publish(Path(sys.argv[2]), sys.argv[3], True, sys.argv[4], sys.argv[
         return self.package / "BarkEngine.xcframework" / self.fixture["SLICE_NAME"] / (
             f"Headers/BarcChromium/engine-artifact-{arch}.sha256"
         )
+
+    def version(self, arch):
+        return self.pin(arch).with_name(f"barc_engine_version_{arch}.h")
+
+    def test_single_architecture_version_upgrade_and_legacy_backfill(self):
+        for arch in ("arm64", "x86_64"):
+            build = self.build if arch == "arm64" else self.make_build(arch)
+            published = self.publish(build=build, arch=arch)
+            self.assertEqual(published.returncode, 0, published.stderr)
+            self.assertEqual(self.version(arch).read_bytes(), b'#define BARC_CHROMIUM_VERSION "156.0.8078.80"\n')
+
+        artifact = self.package / "RuntimeArtifacts/arm64/Engine"
+        prior = self.pin("arm64").read_bytes()
+        engine_inode = artifact.stat().st_ino
+        self.version("arm64").unlink()
+        repeat = self.publish()
+        self.assertEqual(repeat.returncode, 0, repeat.stderr)
+        self.assertIn("Verified existing SDK", repeat.stdout)
+        self.assertEqual(artifact.stat().st_ino, engine_inode)
+        self.assertEqual(self.pin("arm64").read_bytes(), prior)
+        self.assertEqual(self.version("arm64").read_bytes(), self.version("x86_64").read_bytes())
+
+        upgrade = self.make_build("arm64", "156.0.8078.105")
+        intel_pin = self.pin("x86_64").read_bytes()
+        stopped = self.in_transaction("""
+import os
+write = publication.write_atomic
+def stop_before_pin(work, target, content):
+    if target.name == 'engine-artifact-arm64.sha256':
+        os._exit(75)
+    write(work, target, content)
+publication.write_atomic = stop_before_pin
+""", build=upgrade)
+        self.assertEqual(stopped.returncode, 75, stopped.stderr)
+        self.assertEqual(self.pin("arm64").read_bytes(), prior)
+        self.assertEqual(self.version("arm64").read_bytes(), self.version("x86_64").read_bytes())
+
+        recovered = self.publish(build=upgrade)
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        self.assertIn("Recovered SDK publication", recovered.stdout)
+        self.assertNotEqual(self.pin("arm64").read_bytes(), prior)
+        self.assertEqual(self.version("arm64").read_bytes(), b'#define BARC_CHROMIUM_VERSION "156.0.8078.105"\n')
+        self.assertEqual(self.pin("x86_64").read_bytes(), intel_pin)
+        self.assertEqual(self.version("x86_64").read_bytes(), b'#define BARC_CHROMIUM_VERSION "156.0.8078.80"\n')
+
+    def test_publication_rejects_framework_version_mismatch_and_metadata_symlink(self):
+        info = self.build / "Bark.app/Contents/Frameworks/Bark Framework.framework/Versions/Current/Resources/Info.plist"
+        self.fixture["write_plist"](info, CFBundleShortVersionString="156.0.8078.105")
+        refused = self.publish()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("framework differs from engine-Info.plist", refused.stderr)
+        self.assertFalse(self.pin("arm64").exists())
+
+        self.fixture["write_plist"](info, CFBundleShortVersionString=self.fixture["VERSION"])
+        target = self.work / "do-not-overwrite"
+        target.write_bytes(b"sentinel")
+        self.version("arm64").symlink_to(target)
+        refused = self.publish()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Expected a regular SDK metadata file", refused.stderr)
+        self.assertEqual(target.read_bytes(), b"sentinel")
+        self.assertFalse(self.pin("arm64").exists())
 
     def make_official(self, arch="arm64", v8_template=None):
         chromium = self.chromium
@@ -212,11 +278,21 @@ out = Path(sys.argv[2])
         for arch in sources:
             artifact = self.package / "RuntimeArtifacts" / arch / "Engine"
             self.assertEqual((dest / self.pin(arch).name).read_bytes(), self.pin(arch).read_bytes())
+            self.assertEqual((dest / self.version(arch).name).read_bytes(), self.version(arch).read_bytes())
             verified = subprocess.run([*cli, "engine", "--arch", arch, "--engine", artifact,
                                        "--require-official"], capture_output=True, text=True)
             self.assertEqual(verified.returncode, 0, verified.stderr)
 
         accepted = snapshot()
+        arm_version = dest / self.version("arm64").name
+        arm_version.unlink()
+        arm_version.symlink_to(self.version("arm64"))
+        refused = pair(sources["x86_64"], sources["arm64"])
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("Expected a regular SDK metadata file", refused.stderr)
+        self.assertTrue(arm_version.is_symlink())
+        arm_version.unlink()
+        arm_version.write_bytes(accepted[arm_version.name])
         digest_header = sources["arm64"] / "Headers/barc_public_headers_sha256.h"
         digest_header.chmod(0o644)
         digest_header.write_text("incomplete transfer")

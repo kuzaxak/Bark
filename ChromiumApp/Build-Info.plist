@@ -18,8 +18,6 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
-	<key>BarkChromiumVersion</key>
-	<string>$(CHROMIUM_ENGINE_VERSION)</string>
 	<key>LSBackgroundOnly</key>
 	<true/>
 </dict>

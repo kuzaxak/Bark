@@ -17,6 +17,10 @@ from bark_outer_info import materialize_info, verify_build_info
 class BarkOuterInfoTests(unittest.TestCase):
     def setUp(self):
         self.template = plistlib.loads((REPO / "ChromiumApp/Info.plist").read_bytes())
+        self.engine = {
+            "CFBundleShortVersionString": "156.0.8078.105",
+            "SCMRevision": "b" * 40 + "-refs/branch-heads/8078@{#1742}",
+        }
         self.build = {
             "CFBundleExecutable": "Bark",
             "CFBundleIdentifier": "ee.qdo.bark.build",
@@ -24,7 +28,6 @@ class BarkOuterInfoTests(unittest.TestCase):
             "CFBundlePackageType": "APPL",
             "CFBundleShortVersionString": "1.5.4",
             "CFBundleVersion": "120",
-            "BarkChromiumVersion": "156.0.8078.80",
             "LSBackgroundOnly": True,
             "BuildMachineOSBuild": "24G419",
             "CFBundleSupportedPlatforms": ["MacOSX"],
@@ -55,7 +58,7 @@ class BarkOuterInfoTests(unittest.TestCase):
                 with self.subTest(key=key, value=value), self.assertRaises(ValueError):
                     verify_build_info({**self.build, key: value})
         for key in ("CFBundleIdentifier", "LSBackgroundOnly", "CFBundleExecutable",
-                    "CFBundleShortVersionString", "CFBundleVersion", "BarkChromiumVersion"):
+                    "CFBundleShortVersionString", "CFBundleVersion"):
             with self.subTest(missing=key), self.assertRaises(ValueError):
                 modified = dict(self.build)
                 del modified[key]
@@ -78,7 +81,7 @@ class BarkOuterInfoTests(unittest.TestCase):
 
     def test_shipping_metadata_restores_handlers_and_keeps_xcode_provenance(self):
         build_before, template_before = deepcopy(self.build), deepcopy(self.template)
-        info = materialize_info(self.build, self.template)
+        info = materialize_info(self.build, self.template, self.engine)
         self.assertEqual(self.build, build_before)
         self.assertEqual(self.template, template_before)
         self.assertEqual(info["CFBundleIdentifier"], "ee.qdo.bark")
@@ -89,7 +92,9 @@ class BarkOuterInfoTests(unittest.TestCase):
         self.assertEqual(info["NSPrincipalClass"], "BrowserCrApplication")
         self.assertEqual(info["OSAScriptingDefinition"], "scripting.sdef")
         self.assertNotIn("LSBackgroundOnly", info)
-        for key in ("CFBundleShortVersionString", "CFBundleVersion", "BarkChromiumVersion"):
+        self.assertEqual(info["BarkChromiumVersion"], self.engine["CFBundleShortVersionString"])
+        self.assertEqual(info["SCMRevision"], self.engine["SCMRevision"])
+        for key in ("CFBundleShortVersionString", "CFBundleVersion"):
             self.assertEqual(info[key], self.build[key])
         for key in ("CFBundleURLTypes", "CFBundleDocumentTypes", "UTExportedTypeDeclarations",
                     "ASWebAuthenticationSessionWebBrowserSupportCapabilities"):
@@ -106,7 +111,21 @@ class BarkOuterInfoTests(unittest.TestCase):
     def test_unknown_template_setting_fails_closed(self):
         template = {**self.template, "Unresolved": {"Nested": ["$(UNDEFINED_BARK_SETTING)"]}}
         with self.assertRaises(ValueError):
-            materialize_info(self.build, template)
+            materialize_info(self.build, template, self.engine)
+
+    def test_legacy_build_version_must_match_the_selected_sdk(self):
+        build = {**self.build, "BarkChromiumVersion": self.engine["CFBundleShortVersionString"]}
+        result = materialize_info(build, self.template, self.engine)
+        self.assertEqual(result["BarkChromiumVersion"], build["BarkChromiumVersion"])
+        build["BarkChromiumVersion"] = "156.0.8078.80"
+        with self.assertRaisesRegex(ValueError, "differs from the pinned engine"):
+            materialize_info(build, self.template, self.engine)
+
+    def test_shipping_requires_a_version_and_revision_from_the_sdk(self):
+        for key, value in (("CFBundleShortVersionString", "156.0"), ("CFBundleShortVersionString", 156),
+                           ("SCMRevision", ""), ("SCMRevision", None)):
+            with self.subTest(key=key, value=value), self.assertRaises(ValueError):
+                materialize_info(self.build, self.template, {**self.engine, key: value})
 
 
 if __name__ == "__main__":

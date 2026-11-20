@@ -6,6 +6,7 @@ import fcntl
 import hashlib
 import json
 import os
+import plistlib
 import re
 import shutil
 from pathlib import Path
@@ -21,6 +22,44 @@ from chromium_sdk_layout import (ARCHITECTURES, artifact_directory, directory_id
 CHROMIUM = Path(__file__).resolve().parents[1] / "Runtime/Chromium"
 sys.path.insert(0, str(CHROMIUM))
 HEADERS = ("barc_bridge_api.h", "barc_public_headers_sha256.h")
+FRAMEWORK = "Bark Framework.framework"
+
+
+def version_header_name(architecture):
+    return f"barc_engine_version_{architecture}.h"
+
+
+def version_header(version):
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", version):
+        raise ValueError("Expected a four-component ASCII Chromium version")
+    return f'#define BARC_CHROMIUM_VERSION "{version}"\n'.encode("ascii")
+
+
+def engine_version_header(engine):
+    def read_version(path):
+        require_regular_metadata(path)
+        info = plistlib.loads(path.read_bytes())
+        if not isinstance(info, dict):
+            raise ValueError(f"Expected SDK version metadata in {path}")
+        return info.get("CFBundleShortVersionString")
+
+    version = read_version(engine / "engine-Info.plist")
+    content = version_header(version)
+    versions = engine / FRAMEWORK / "Versions"
+    for path in (versions.parent, versions, versions / version, versions / version / "Resources"):
+        if directory_id(path) is None:
+            raise ValueError(f"Missing versioned SDK framework directory: {path}")
+    binary = versions / version / "Bark Framework"
+    require_regular_metadata(binary)
+    if ((versions / "Current").readlink() != Path(version) or not binary.is_file()
+            or read_version(versions / version / "Resources/Info.plist") != version):
+        raise ValueError("The versioned SDK framework differs from engine-Info.plist")
+    return content
+
+
+def require_regular_metadata(path):
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        raise ValueError(f"Expected a regular SDK metadata file: {path}")
 
 
 def sdk_manifest(engine):
@@ -88,9 +127,12 @@ def destination_paths(package, architecture, work):
                 continue
             raise ValueError(f"SDK architecture directory contains another entry: {child}")
         directory_id(engine)
-    for path in (*[headers / name for name in HEADERS], pin):
-        if path.is_symlink() or (path.exists() and not path.is_file()):
-            raise ValueError(f"Expected a regular SDK metadata file: {path}")
+    directory_id(headers)
+    for name in HEADERS:
+        require_regular_metadata(headers / name)
+    for arch in ARCHITECTURES:
+        require_regular_metadata(headers / f"engine-artifact-{arch}.sha256")
+        require_regular_metadata(headers / version_header_name(arch))
     return engine, headers, pin
 
 
@@ -112,7 +154,7 @@ def verify_official_sdk(engine, architecture):
 
 def pair_metadata(engine, architecture):
     """Read the transfer metadata subset of an already published official SDK."""
-    from official_provenance import CHROMIUM_VERSION, FRAMEWORK, RECEIPT, recipe_inputs
+    from official_provenance import CHROMIUM_VERSION, RECEIPT, recipe_inputs
 
     pin, manifest = sdk_manifest(engine)
     def read_entry(name):
@@ -137,18 +179,19 @@ def pair_metadata(engine, architecture):
         raise ValueError(f"The {architecture} receipt differs from the selected source recipe or SDK manifest")
     if headers[HEADERS[0]] != (CHROMIUM / "bark/bridge" / HEADERS[0]).read_bytes():
         raise ValueError(f"The {architecture} SDK public API differs from the selected source")
-    return headers, pin
+    return headers, pin, version_header(CHROMIUM_VERSION)
 
 
 def stage_sdk_pair(package, intel, arm):
     """Install the two pins and their shared headers as one receiver-side change."""
     contents = {}
     for arch, source in (("x86_64", intel), ("arm64", arm)):
-        shared, pin = pair_metadata(source, arch)
+        shared, pin, version = pair_metadata(source, arch)
         if any(name in contents and contents[name] != data for name, data in shared.items()):
             raise ValueError("The Intel and ARM64 SDKs have different public headers")
         contents.update(shared)
         contents[f"engine-artifact-{arch}.sha256"] = (pin + "\n").encode()
+        contents[version_header_name(arch)] = version
 
     package = package.resolve(strict=True)
     headers = headers_directory(package)
@@ -162,6 +205,8 @@ def stage_sdk_pair(package, intel, arm):
             raise ValueError(f"SDK publication state must be inside its package: {state}")
         if (state / "pending").exists():
             raise ValueError("Finish the interrupted SDK publication before staging a pair")
+        for name in contents:
+            require_regular_metadata(headers / name)
         state.mkdir(parents=True, exist_ok=True)
         with TemporaryDirectory(prefix="work-pair-", dir=state) as tmp:
             work = Path(tmp)
@@ -191,12 +236,16 @@ def finish(package, pending, *, recovering):
     promoted = directory_id(live) == identity
     if not promoted and directory_id(candidate) != identity:
         raise ValueError("Cannot find the prepared SDK in either publication directory")
+    prepared = engine if promoted else candidate / "Engine"
     if recovering:
-        recovered_engine = engine if promoted else candidate / "Engine"
-        if verified_digest(recovered_engine) != digest:
+        if verified_digest(prepared) != digest:
             raise ValueError("SDK differs from its publication record")
         if official:
-            verify_official_sdk(recovered_engine, architecture)
+            verify_official_sdk(prepared, architecture)
+    contents = {name: (prepared / "Headers" / name).read_bytes() for name in HEADERS}
+    contents[version_header_name(architecture)] = engine_version_header(prepared)
+    contents[pin.name] = f"{digest}\n".encode()
+
     if not promoted:
         if live.exists():
             # Keep the same inode for Finder windows that are still writing it.
@@ -212,10 +261,15 @@ def finish(package, pending, *, recovering):
             swap(candidate, live)
         else:
             candidate.rename(live)
-    for name in HEADERS:
-        write_atomic(pending, headers / name, (engine / "Headers" / name).read_bytes())
-    # The pin is the commit marker for existing fail-closed SDK readers.
-    write_atomic(pending, pin, f"{digest}\n".encode())
+    # Commit the version and pin together. The journal bridges the separate
+    # runtime and metadata swaps, so a reader will fail its pin check between them.
+    with TemporaryDirectory(prefix="metadata-", dir=pending) as tmp:
+        work = Path(tmp)
+        replacement = work / headers.name
+        shutil.copytree(headers, replacement, symlinks=True)
+        for name, data in contents.items():
+            write_atomic(work, replacement / name, data)
+        swap(replacement, headers)
     # Retire the journal atomically before removing the previously published tree.
     retired = pending.with_name(f"work-{uuid4().hex}")
     pending.rename(retired)
@@ -278,6 +332,7 @@ def publish(package, architecture, replace, build, script, *, require_official=F
             subprocess.run(["/bin/bash", script, "--prepare", work, prepared, "--arch", architecture,
                             *flags, build, package], check=True, pass_fds=(lock,))
             digest = verified_digest(prepared)
+            version = engine_version_header(prepared)
             if require_official:
                 verify_official_sdk(prepared, architecture)
                 # An invalid official request must leave any pending pin untouched.
@@ -295,6 +350,9 @@ def publish(package, architecture, replace, build, script, *, require_official=F
                     except (OSError, ValueError):
                         identical = False
                     if identical:
+                        # Older publications already have the correct pin and
+                        # bytes. Backfill only this architecture's version.
+                        write_atomic(work, headers / version_header_name(architecture), version)
                         print(f"Verified existing SDK: {engine}\nArtifact SHA: {digest}")
                         return
                 if not replace:

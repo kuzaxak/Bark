@@ -19,21 +19,32 @@ def verify_build_info(info):
     interactive = set(HANDLER_KEYS) | {"NSPrincipalClass", "OSAScriptingDefinition", "NSAppleScriptEnabled"}
     if found := interactive.intersection(info):
         raise ValueError(f"Bark build component declares interactive services: {', '.join(sorted(found))}")
-    for key in ("CFBundleShortVersionString", "CFBundleVersion", "BarkChromiumVersion"):
+    versions = ["CFBundleShortVersionString", "CFBundleVersion"]
+    if "BarkChromiumVersion" in info:
+        versions.append("BarkChromiumVersion")
+    for key in versions:
         value = info.get(key)
         if not isinstance(value, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", value):
             raise ValueError(f"Invalid build component version in {key}")
 
 
-def materialize_info(info, template):
+def materialize_info(info, template, engine):
     verify_build_info(info)
+    version = engine.get("CFBundleShortVersionString")
+    revision = engine.get("SCMRevision")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){3}", version):
+        raise ValueError("Expected a four-part Chromium version in engine-Info.plist")
+    if not isinstance(revision, str) or not revision.strip():
+        raise ValueError("Missing Chromium SCMRevision in engine-Info.plist")
+    # Earlier Xcode products carried their compile-time version in the plist.
+    if "BarkChromiumVersion" in info and info["BarkChromiumVersion"] != version:
+        raise ValueError("The build component version differs from the pinned engine")
     settings = {
         "EXECUTABLE_NAME": info["CFBundleExecutable"],
         "PRODUCT_NAME": "Bark",
         "PRODUCT_BUNDLE_IDENTIFIER": "ee.qdo.bark",
         "MARKETING_VERSION": info["CFBundleShortVersionString"],
         "CURRENT_PROJECT_VERSION": info["CFBundleVersion"],
-        "CHROMIUM_ENGINE_VERSION": info["BarkChromiumVersion"],
     }
 
     def expand(match):
@@ -44,6 +55,8 @@ def materialize_info(info, template):
 
     # Only validated version numbers and fixed product identifiers enter this XML.
     result = plistlib.loads(re.sub(rb"\$\(([^)]+)\)", expand, plistlib.dumps(template)))
+    result["BarkChromiumVersion"] = version
+    result["SCMRevision"] = revision
     for key, value in info.items():
         if key.startswith("DT") or key in {"BuildMachineOSBuild", "CFBundleSupportedPlatforms"}:
             result[key] = value
@@ -54,7 +67,9 @@ if __name__ == "__main__":
     try:
         output = Path(sys.argv[1])
         template = Path(__file__).resolve().parents[1] / "ChromiumApp/Info.plist"
-        info = materialize_info(plistlib.loads(output.read_bytes()), plistlib.loads(template.read_bytes()))
+        engine = Path(sys.argv[2])
+        info = materialize_info(plistlib.loads(output.read_bytes()), plistlib.loads(template.read_bytes()),
+                                plistlib.loads(engine.read_bytes()))
         output.write_bytes(plistlib.dumps(info, fmt=plistlib.FMT_BINARY))
     except (OSError, ValueError) as error:
         sys.exit(str(error))

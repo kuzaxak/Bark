@@ -2,6 +2,7 @@
 """Runs the outer app's main, the public headers, publishing and staging against fake engine products."""
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from unittest.mock import patch
 import hashlib
 import json
@@ -169,20 +170,15 @@ def digest_in(header):
     return found and found[1]
 
 
-TABLE_SIZE = None
-
-
-def table_size():
-    """sizeof(struct BarcBridge) as the published header declares it."""
-    global TABLE_SIZE
-    if TABLE_SIZE is None:
-        with tempfile.TemporaryDirectory() as directory:
-            probe = Path(directory) / 'size'
-            compile_c('#include <stdio.h>\n#include "BarcChromium/barc_bridge_api.h"\n'
-                      'int main(void) { printf("%zu", sizeof(struct BarcBridge)); return 0; }\n',
-                      probe, '-arch', native_architecture(), f'-I{PUBLIC_HEADERS}')
-            TABLE_SIZE = int(subprocess.check_output([str(probe)], text=True))
-    return TABLE_SIZE
+@lru_cache
+def table_size(headers=MODULE):
+    """sizeof(struct BarcBridge) as the chosen header declares it."""
+    with tempfile.TemporaryDirectory() as directory:
+        probe = Path(directory) / 'size'
+        compile_c('#include <stdio.h>\n#include "barc_bridge_api.h"\n'
+                  'int main(void) { printf("%zu", sizeof(struct BarcBridge)); return 0; }\n',
+                  probe, '-arch', native_architecture(), f'-I{headers}')
+        return int(subprocess.check_output([str(probe)], text=True))
 
 
 def fake_framework(output, entry=ENTRY, zone=DELEGATING_ZONE, arch=INTEL, digest=headers_digest(),
@@ -207,9 +203,18 @@ def compile_shim(output, version=VERSION, headers=PUBLIC_HEADERS, extra=INTEL, l
     sources = sorted(str(p) for p in SHIM.glob('*.cc'))
     if not sources:
         return False
-    run = subprocess.run(['xcrun', 'clang++', *extra, '-std=c++20', '-fno-exceptions', '-fno-rtti',
-                          *libs, '-O2', f'-DENGINE_VERSION_STRING="{version}"', f'-I{headers}', *sources, '-o', str(output)],
-                         capture_output=True, text=True)
+    with tempfile.TemporaryDirectory(prefix='bark-fixture-headers-') as folder:
+        includes = [f'-I{headers}']
+        if version is not None:
+            module = Path(folder) / 'BarcChromium'
+            module.mkdir()
+            for architecture in ('x86_64', 'arm64'):
+                (module / f'barc_engine_version_{architecture}.h').write_text(
+                    f'#define BARC_CHROMIUM_VERSION "{version}"\n')
+            includes.insert(0, f'-I{folder}')
+        run = subprocess.run(['xcrun', 'clang++', *extra, '-std=c++20', '-fno-exceptions', '-fno-rtti',
+                              *libs, '-O2', *includes, *sources, '-o', str(output)],
+                             capture_output=True, text=True)
     if run.returncode:
         print(run.stderr)
     return run.returncode == 0
@@ -224,20 +229,20 @@ def read_plist(path):
     return plistlib.loads(path.read_bytes())
 
 
-def versioned_framework(root, binary=None):
+def versioned_framework(root, binary=None, version=VERSION):
     framework = root / FRAMEWORK
-    (framework / f'Versions/{VERSION}').mkdir(parents=True)
-    (framework / 'Versions/Current').symlink_to(VERSION)
+    (framework / f'Versions/{version}').mkdir(parents=True)
+    (framework / 'Versions/Current').symlink_to(version)
     (framework / 'Bark Framework').symlink_to('Versions/Current/Bark Framework')
-    write_plist(framework / f'Versions/{VERSION}/Resources/Info.plist', CFBundleShortVersionString=VERSION)
+    write_plist(framework / f'Versions/{version}/Resources/Info.plist', CFBundleShortVersionString=version)
     (framework / 'Resources').symlink_to('Versions/Current/Resources')
-    (framework / f'Versions/{VERSION}/Libraries').mkdir()
+    (framework / f'Versions/{version}/Libraries').mkdir()
     (framework / 'Libraries').symlink_to('Versions/Current/Libraries')
-    (framework / f'Versions/{VERSION}/Helpers').mkdir()
+    (framework / f'Versions/{version}/Helpers').mkdir()
     (framework / 'Helpers').symlink_to('Versions/Current/Helpers')
-    (framework / f'Versions/{VERSION}/Libraries/libnook_adblock.dylib').write_text('blocker library')
+    (framework / f'Versions/{version}/Libraries/libnook_adblock.dylib').write_text('blocker library')
     if binary:
-        shutil.copy2(binary, framework / f'Versions/{VERSION}/Bark Framework')
+        shutil.copy2(binary, framework / f'Versions/{version}/Bark Framework')
     return framework
 
 
@@ -633,6 +638,66 @@ def launch_cases(work, shim, framework_lib, shell_lib, no_entry_lib, quiet_lib, 
     check('main links only libSystem', linked == ['/usr/lib/libSystem.B.dylib'], linked)
 
 
+def point_upgrade_case(work, fixtures, arch):
+    shim, _, shell, _, quiet = fixtures
+    architecture = arch[1]
+    version = '156.0.8078.105'
+    revision = 'a' * 40 + '-refs/branch-heads/8078@{#1735}'
+    from bark_outer_info import materialize_info
+
+    component_template = read_plist(SHIM / 'Build-Info.plist')
+    component = {**component_template, 'CFBundleExecutable': 'Bark',
+                 'CFBundleIdentifier': 'ee.qdo.bark.build', 'CFBundleShortVersionString': '1.5.4',
+                 'CFBundleVersion': '120'}
+    sdk_info = {'CFBundleShortVersionString': version, 'SCMRevision': revision}
+    engine_info = materialize_info(component, read_plist(SHIM / 'Info.plist'), sdk_info)
+    del engine_info['BarkEngineSDKResource'], engine_info['BarkChromiumVersion']
+    engine_info.update(sdk_info)
+    framework = work / 'point-upgrade-engine.dylib'
+    fake_framework(framework, arch=arch, size=table_size(RUNTIME))
+    app, artifact, products = make_inputs(work / 'point-upgrade', shim, framework, shell,
+                                          architecture=architecture, engine_info=engine_info)
+    write_plist(app / 'Contents/Info.plist', **component, **XCODE_ONLY_KEYS)
+    headers = products / 'include'
+    sdk_version = headers / 'BarcChromium' / f'barc_engine_version_{architecture}.h'
+    check('publishing the point upgrade generates the matching architecture SDK header',
+          f'#define BARC_CHROMIUM_VERSION "{version}"' in sdk_version.read_text())
+    executable = app / 'Contents/MacOS/Bark'
+    assert compile_shim(executable, version=None, headers=headers, extra=arch)
+    output = work / 'point-output/Bark.app'
+    output.parent.mkdir()
+    staged = stage(app, artifact, products, output, architecture=architecture)
+    check('the publisher-derived point version stages without any launcher setting override',
+          staged.returncode == 0, staged.stderr)
+    if staged.returncode != 0:
+        return
+    info = read_plist(output / 'Contents/Info.plist')
+    check('point upgrade preserves exact engine revision and version',
+          info.get('SCMRevision') == revision and info.get('BarkChromiumVersion') == version and
+          info.get('CFBundleShortVersionString') == '1.5.4', info)
+
+    log = work / 'point-launch.log'
+    log.touch()
+    env = {**os.environ, 'SHIM_LOG': str(log), 'DYLD_INSERT_LIBRARIES': str(quiet)}
+    installed = output / 'Contents/MacOS/Bark'
+    run = subprocess.run([installed], env=env, capture_output=True, text=True, timeout=30)
+    check('point-upgraded native launcher enters the matching staged SDK and shell',
+          run.returncode == 23 and 'chrome-main' in log.read_text().splitlines(),
+          (run.returncode, run.stderr, log.read_text()))
+
+    assert compile_shim(executable, version=VERSION, headers=headers, extra=arch)
+    rejected = stage(app, artifact, products, work / 'stale-output/Bark.app', architecture=architecture)
+    check('point-upgraded SDK staging refuses the stale compiled bootstrap',
+          rejected.returncode != 0 and 'built for another engine version' in rejected.stderr, rejected.stderr)
+    shutil.copy2(executable, installed)
+    log.write_text('')
+    run = subprocess.run([installed], env=env, capture_output=True, text=True, timeout=30)
+    check('an older launcher cannot follow Current into the upgraded SDK',
+          run.returncode == ABORT_STATUS and not log.read_text() and
+          f'Versions/{VERSION}/Bark Framework' in run.stderr,
+          (run.returncode, run.stderr, log.read_text()))
+
+
 def artifact_of(package, architecture='x86_64'):
     return package / 'RuntimeArtifacts' / architecture / 'Engine'
 
@@ -650,14 +715,15 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def engine_binary(build):
-    return build / f'Bark.app/Contents/Frameworks/{FRAMEWORK}/Versions/{VERSION}/Bark Framework'
+def engine_binary(build, version=VERSION):
+    return build / f'Bark.app/Contents/Frameworks/{FRAMEWORK}/Versions/{version}/Bark Framework'
 
 
-def write_build_record(build, **headers):
+def write_build_record(build, version=VERSION, **headers):
     """What `siso fs export` reports: each input's digest and modification time as of the last build."""
     source = build.parents[1]
-    linked = engine_binary(build).stat().st_mtime_ns if engine_binary(build).exists() else 0
+    binary = engine_binary(build, version)
+    linked = binary.stat().st_mtime_ns if binary.exists() else 0
     entries = [{'name': str(build / 'obj/unrelated.o'), 'id': {'mod_time': linked}}]
     for name, directory in ENGINE_HEADER_DIRECTORIES.items():
         entry = {'name': str(source / directory / name), 'id': {'mod_time': linked - 1_000_000_000},
@@ -670,22 +736,23 @@ def write_build_record(build, **headers):
     (build / 'fake-siso-state.json').write_text(json.dumps({'entries': entries}))
 
 
-def fake_engine_build(root, framework_lib):
+def fake_engine_build(root, framework_lib, engine_info=ENGINE_PLIST):
     """What the engine's build directory holds: its SDK-only bundle, integrated app metadata and signing recipe."""
     build = root / 'source/out/Barc-x64'
     engine = build / 'Bark.app/Contents'
     (engine / 'MacOS').mkdir(parents=True)
     (engine / 'MacOS/Bark').write_text('SDK-only launcher')
     write_plist(engine / 'Info.plist', CFBundleIdentifier='ee.qdo.bark.sdk', LSBackgroundOnly=True)
-    write_plist(build / 'gen/chrome/chrome_integrated_app_info_plist.plist', **ENGINE_PLIST)
+    write_plist(build / 'gen/chrome/chrome_integrated_app_info_plist.plist', **engine_info)
     (engine / 'Frameworks').mkdir()
-    versioned_framework(engine / 'Frameworks', framework_lib)
+    version = engine_info['CFBundleShortVersionString']
+    versioned_framework(engine / 'Frameworks', framework_lib, version)
     shutil.copytree(APP_RESOURCES, engine / 'Resources')
     (build / 'Bark Packaging/signing').mkdir(parents=True)
     (build / 'Bark Packaging/sign_chrome.py').write_text('import signing\n')
     (build / 'Bark Packaging/signing/__init__.py').write_text('')
     write_plist(build / 'Bark Packaging/app-entitlements.plist', **ENGINE_ENTITLEMENTS)
-    write_build_record(build)
+    write_build_record(build, version=version)
     return build
 
 
@@ -710,9 +777,10 @@ def make_writable(path):
     subprocess.run(['chmod', '-R', 'u+w', str(path)], check=True)
 
 
-def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architecture='x86_64'):
+def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architecture='x86_64',
+                engine_info=ENGINE_PLIST):
     root.mkdir()
-    build = fake_engine_build(root, framework_lib)
+    build = fake_engine_build(root, framework_lib, engine_info)
     package = root / 'package'
     run = publish(build, package, architecture=architecture)
     assert run.returncode == 0, run.stderr
@@ -723,7 +791,7 @@ def make_inputs(root, shim, framework_lib, shell_lib, writable=True, architectur
     app = root / 'app/Bark.app/Contents'
     (app / 'MacOS').mkdir(parents=True)
     shutil.copy2(shim, app / 'MacOS/Bark')
-    write_plist(app / 'Info.plist', **ENGINE_PLIST, **XCODE_ONLY_KEYS, BarkEngineSDKResource='BarkEngineSDK.sha256')
+    write_plist(app / 'Info.plist', **engine_info, **XCODE_ONLY_KEYS, BarkEngineSDKResource='BarkEngineSDK.sha256')
     shutil.copytree(APP_RESOURCES, app / 'Resources')
 
     products = root / 'products'
@@ -1722,6 +1790,13 @@ def signed_cases(work, mach_o):
               run.returncode == 0 if name == 'matching' else
               run.returncode != 0 and 'differs from the engine manifest' in run.stderr, run.stderr)
 
+    revision = 'a' * 40 + '-refs/branch-heads/8078@{#1735}'
+    write_plist(artifact / 'engine-Info.plist', **ENGINE_PLIST, SCMRevision=revision)
+    run = check_signed('signed-other-engine-revision', info={**listed_info, 'SCMRevision': 'b' * 40})
+    check('--check-signed refuses a different Chromium revision with the same version',
+          run.returncode != 0 and 'SCMRevision differs from the pinned engine' in run.stderr, run.stderr)
+    write_plist(artifact / 'engine-Info.plist', **ENGINE_PLIST)
+
     universal = work / 'signed-Sparkle'
     compile_c('int fixture(void) { return 0; }\n', universal, '-dynamiclib', '-arch', 'x86_64', '-arch', 'arm64')
 
@@ -1835,6 +1910,7 @@ def main():
         runtime.mkdir()
         fixtures = launch_fixtures(runtime, native)
         launch_cases(runtime, *fixtures, native)
+        point_upgrade_case(runtime, fixtures, native)
 
         # Keep static SDK fixture and rejection cases on their stated architecture.
         shim, framework_lib, shell_lib, *_ = fixtures
