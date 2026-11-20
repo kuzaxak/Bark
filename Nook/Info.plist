@@ -60,6 +60,8 @@
 	<string>Websites you allow can use your camera, for example for video calls.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Websites you allow can use your microphone, for example for calls.</string>
+	<key>SUBundleName</key>
+	<string>Bark</string>
 	<key>SUAllowsAutomaticUpdates</key>
 	<true/>
 	<key>SUAutomaticallyInstall</key>

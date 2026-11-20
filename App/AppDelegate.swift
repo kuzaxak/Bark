@@ -71,6 +71,9 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
         setupURLEventHandling()
         setupMouseButtonHandling()
         setupSleepWakeHandling()
+        // A menu action is otherwise the first access to the lazy controller.
+        // Starting it here gives the existing automatic-update preference effect.
+        _ = updaterController
         let didFinishOnboarding = userDefaults.bool(forKey: "settings.didFinishOnboarding")
 
         if let window = NSApplication.shared.windows.first {
@@ -344,6 +347,10 @@ class AppDelegate: NSObject, NSApplicationDelegate, SPUUpdaterDelegate {
 // MARK: - Sparkle Delegate
 
 extension AppDelegate {
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        BarkTransitionFeed.nativeURL
+    }
+
     /// Called when Sparkle finds a valid update
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         Task { @MainActor in

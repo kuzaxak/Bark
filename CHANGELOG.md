@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.5
+
+This Nook update prepares the switch to Bark, the new Chromium-based browser. Bark has its own browser profiles and iCloud sync. Nook's local data stays on this Mac.
+
+Before updating to Bark, use Settings → Spaces → Export Space to save any space you want to bring over. Bark can open those files and restore favorites, pinned tabs and open tabs. Cookies, website sessions, history, passwords and existing iCloud shares stay with Nook. You may need to sign back in to websites and reconnect integrations in Bark.
+
 ## 1.5.4
 
 A page with a certificate that is not valid, such as a device opened by its IP address, says why and can be opened anyway, as in Safari, instead of showing a blank tab.

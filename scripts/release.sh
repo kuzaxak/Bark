@@ -32,6 +32,21 @@ PUBLISH="${2:-}"
 [[ -z "$PUBLISH" || "$PUBLISH" == "--publish" || "$PUBLISH" == "--app-only" ]] || { echo "Unknown option: $PUBLISH"; exit 1; }
 TAG="v$VERSION"
 BUILD_NUMBER="$(date -u +%Y%m%d%H%M)"
+if [[ "$VERSION" == "1.5.5" ]]; then
+  # The second hop compares the new Bark bundle against this exact build.
+  BUILD_NUMBER=202611200001
+  if [[ "$PUBLISH" == "--publish" ]]; then
+    echo "Publish the Nook 1.5.5 transition with its matching Bark release."
+    exit 1
+  fi
+  if [[ "$PUBLISH" != "--app-only" ]]; then
+    [[ "${NOOK_RELEASE_TAG:-}" == "bark-v2.0.0" ]] || {
+      echo "Set NOOK_RELEASE_TAG=bark-v2.0.0 when packaging Nook 1.5.5."
+      exit 1
+    }
+    TAG="$NOOK_RELEASE_TAG"
+  fi
+fi
 TEAM=538SB59LX4
 BUILD_ENTITLEMENTS="$PWD/Nook/Nook-CI.entitlements"
 SPARKLE_BIN="build/SourcePackages/artifacts/sparkle/Sparkle/bin"
