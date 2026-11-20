@@ -158,7 +158,15 @@ fileprivate final class PageView: NSView {
             let field = NSTextField()
             sidebar.addSubview(field)
             window.makeFirstResponder(first.input)
+            let warmViewport = second.bounds.size
+            var firstAttachedSize: NSSize?
+            first.onSuperviewChange = {
+                if first.isDescendant(of: root) { firstAttachedSize = first.bounds.size }
+            }
             precondition(root.show(tab: 10, of: 5) && window.firstResponder === first.input, "a newly shown page takes the keys")
+            precondition(firstAttachedSize == warmViewport,
+                         "a previously shown tab attaches at the final viewport, without an intermediate empty surface")
+            first.onSuperviewChange = nil
             precondition(root.show(tab: 11, of: 5) && window.firstResponder === second.input, "a tab switch moves the keys to the new page")
             window.makeFirstResponder(field)
             let editing = window.firstResponder
@@ -484,6 +492,8 @@ fileprivate final class PageView: NSView {
         precondition(inRoot(pages[0], root) == CGRect(x: 247, y: 10, width: 466, height: 780)
                      && inRoot(pages[1], root) == CGRect(x: 723, y: 10, width: 467, height: 780),
                      "side by side with a 10 pt gap, filling the page frame: \(inRoot(pages[0], root)) \(inRoot(pages[1], root))")
+        precondition(pages[1].firstMountedSize == pages[1].bounds.size,
+                     "an incoming split pane mounts with its final viewport")
         let containers = [pages[0].superview!, pages[1].superview!]
         precondition(containers[0] !== containers[1] && containers.allSatisfy { $0.layer?.cornerRadius == 7 && $0.layer?.masksToBounds == true },
                      "each pane is its own rounded rectangle")
@@ -1073,6 +1083,11 @@ fileprivate final class PageView: NSView {
 
 /// A page view that counts how often it entered or left a window.
 private final class CountingPage: NSView {
+    private(set) var firstMountedSize: NSSize?
+    override func viewDidMoveToSuperview() {
+        super.viewDidMoveToSuperview()
+        if superview != nil, firstMountedSize == nil { firstMountedSize = bounds.size }
+    }
     let input = Focusable()
     private(set) var windowMoves = 0
     override init(frame: NSRect) { super.init(frame: frame); addSubview(input) }

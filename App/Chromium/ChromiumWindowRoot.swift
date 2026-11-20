@@ -245,6 +245,11 @@ final class ChromiumWindowRoot: NSView {
         var dividers: [CGFloat]
         /// The pane with the keys.
         var focused: Int32
+
+        func frames(in area: CGRect) -> [CGRect] {
+            SplitDrop.paneFrames(in: area, count: panes.count, vertical: vertical,
+                                 dividers: dividers, gap: Arc.splitGap)
+        }
     }
 
     /// The split shown; nil while one page fills the page frame.
@@ -283,9 +288,12 @@ final class ChromiumWindowRoot: NSView {
         defer { presentationDepth -= 1 }
         func current() -> Bool { presentationRevision == revision }
         var free = slots
-        let next = split.panes.map { pane -> Slot in
-            if let index = free.firstIndex(where: { $0.pane == pane }) { return free.remove(at: index) }
-            return Slot(pane: pane, bridge: bridge)
+        let frames = split.frames(in: pageArea)
+        let next = split.panes.enumerated().map { index, pane -> Slot in
+            if let existing = free.firstIndex(where: { $0.pane == pane }) { return free.remove(at: existing) }
+            let slot = Slot(pane: pane, bridge: bridge)
+            slot.container.frame = pageFullscreen ? pageArea : frames[index]
+            return slot
         }
         let focusChanged = shownTab != split.focused || slots.first(where: { $0.pane?.tab == split.focused }) == nil
         guard use(next, while: current) else { return false }
@@ -455,6 +463,11 @@ final class ChromiumWindowRoot: NSView {
         }
         let slot = slots.first { $0.pane == pane } ?? Slot(pane: pane, bridge: bridge)
         let changed = view !== slot.view || view.superview !== slot.container || slots.count != 1 || shownTab != tab
+        // A parked renderer keeps its last viewport. Mount it at the final
+        // size so Chromium does not resize it through a zero-sized surface.
+        if slot.container.superview !== pageFrame {
+            slot.container.frame = pageArea
+        }
         guard use([slot], while: current), place(view, in: slot, while: current) else { return false }
         split = nil
         shownTab = tab
@@ -671,9 +684,7 @@ final class ChromiumWindowRoot: NSView {
         pagePanels.frame = area
         header?.isHidden = pageFullscreen
         header?.frame = CGRect(x: 0, y: 0, width: pageFrame.bounds.width, height: barHeight)
-        let panes = split.map { split in
-            SplitDrop.paneFrames(in: area, count: split.panes.count, vertical: split.vertical, dividers: split.dividers, gap: Arc.splitGap)
-        }
+        let panes = split?.frames(in: area)
         var washFrame = area
         for (index, slot) in slots.enumerated() {
             let paneFrame = pageFullscreen ? nil : panes.flatMap { $0.indices.contains(index) ? $0[index] : nil }
