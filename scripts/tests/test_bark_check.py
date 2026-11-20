@@ -40,13 +40,27 @@ class ImplicitEngineTests(unittest.TestCase):
             with self.cli["pinned_engine"](source, self.root, "arm64", official) as engine:
                 return engine, verifier.call_args_list
 
-    def test_archive_without_safe_filter_names_the_receiver_python(self):
+    def test_archive_without_safe_filter_names_a_standalone_python(self):
+        archive = self.root / "SDK.tar.gz"
+        archive.touch()
         without_filter = Mock(spec=["open"])
+        diagnostic = r"tarfile data extraction filter.*python3\.13"
         with patch.dict(self.cli, {"tarfile": without_filter}):
-            with self.assertRaisesRegex(ValueError, r"tarfile data extraction filter.*BARK_WALK_PYTHON"):
-                with self.cli["pinned_engine"](str(self.root / "SDK.tar.gz"), self.root, "arm64"):
-                    self.fail("The archive was accepted without a safe extraction filter.")
+            for source in (str(archive), "https://downloads.example/SDK.tar.gz"):
+                with self.subTest(source=source), self.assertRaisesRegex(ValueError, diagnostic):
+                    with self.cli["pinned_engine"](source, self.root, "arm64"):
+                        self.fail("The archive was accepted without a safe extraction filter.")
+            output = self.root / "export" / "SDK.tar.gz"
+            with self.assertRaisesRegex(ValueError, diagnostic):
+                self.cli["archive_engine"](self.local, output, "arm64")
+            self.assertFalse(output.parent.exists())
         without_filter.open.assert_not_called()
+
+    def test_missing_sdk_path_is_reported_before_archive_requirements(self):
+        missing = self.root / "missing-sdk"
+        with patch.dict(self.cli, {"tarfile": Mock(spec=[])}):
+            with self.assertRaisesRegex(ValueError, "SDK directory or archive file at .*missing-sdk"):
+                self.resolve(str(missing))
 
     def test_implicit_uses_cache_when_valid(self):
         self.assertEqual(self.resolve(), (self.cache, [call(self.cache, "arm64", False)]))

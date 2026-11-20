@@ -8,7 +8,8 @@ AppKit. Chromium renders the pages.
 ## Install a signed build
 
 Open the DMG for your Mac, drag **Bark** into **Applications**, eject the image,
-and open Bark from Applications. Bark keeps tabs, bookmarks and website
+and open Bark from Applications. Installing and running the signed app requires
+only macOS. Bark keeps tabs, bookmarks and website
 sign-ins in `~/Library/Application Support/NookChromium`. An existing Bark
 profile on that Mac opens automatically. You can quit and reopen the app to
 check that your session persists. On a Mac where you have only used Arc, Chrome
@@ -23,6 +24,8 @@ and `bark-check.py launch` use temporary profiles for testing.
 This branch builds separate signed developer apps for Intel and Apple Silicon
 on macOS 15.5 and later. Both have rendered a test page on native hardware.
 An official Bark download is pending.
+To check a signed app against its SDK and source, follow the
+[verification guide](CONTRIBUTING.md#verify-a-signed-app-on-another-mac).
 The repository’s earlier releases are published under the Nook name.
 [Earlier Nook releases](https://github.com/kuzaxak/Nook/releases)
 

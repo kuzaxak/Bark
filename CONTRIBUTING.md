@@ -166,15 +166,20 @@ python3 scripts/bark-check.py launch build/Bark.app
 
 `build` creates its output directory, compiles the Release shell, stages the pinned engine and signs the app locally. A successful rebuild replaces `build/Bark.app` after verification. Quit that copy before replacing it. Temporary compilation, staging and signing files are removed at the end of each build. Use `--output /path/to/Bark.app` to choose a different destination. Local signing leaves notarization to the distribution workflow.
 
+#### Verify a signed app on another Mac
+
 To verify an existing signed app, use `python3 scripts/bark-check.py verify /path/to/Bark.app`.
 **Help → Build Information** reports a shell source SHA-256 separately from the engine SDK pin.
 To check a signed app against its source and engine, run the following from the candidate's
-checkout or extracted source archive. Set `arch` to the architecture of the app.
+checkout or extracted app-only source archive. On a receiving Mac, Command Line Tools
+supply the signature and Mach-O inspection tools. Use Python 3.13 to read a compressed
+SDK, or pass an unpacked `Engine` directory with the system Python. Set `arch` to the
+architecture of the app.
 
 ```fish
 set arch arm64
 set shell_source (python3 scripts/bark-check.py shell-source)
-and python3 scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
+and python3.13 -B scripts/bark-check.py verify /path/to/Bark.app --arch "$arch" \
     --engine /path/to/BarkSDK.tar.gz --shell-source "$shell_source"
 ```
 

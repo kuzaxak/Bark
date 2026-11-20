@@ -220,6 +220,15 @@ def install_engine(engine, architecture, require_official=False):
     print(f"Installed pinned SDK at {destination}")
 
 
+def require_sdk_archive_support():
+    if not hasattr(tarfile, "data_filter"):
+        raise ValueError(
+            "SDK archives require Python with the tarfile data extraction filter. "
+            "Rerun the same command using python3.13 -B scripts/bark-check.py "
+            'or your configured "$BARK_WALK_PYTHON".'
+        )
+
+
 @contextmanager
 def pinned_engine(source, working, architecture, require_official=False):
     if not source:
@@ -242,14 +251,12 @@ def pinned_engine(source, working, architecture, require_official=False):
         source = str(local)
     path = Path(source).expanduser()
     if not path.is_dir():
-        if not hasattr(tarfile, "data_filter"):
-            raise ValueError(
-                "Engine archives require Python with the tarfile data extraction filter. "
-                'Set up the Python 3.13 signed-walk environment in CONTRIBUTING.md and rerun with '
-                '"$BARK_WALK_PYTHON" -B scripts/bark-check.py followed by the same arguments.'
-            )
+        remote = urlsplit(str(source)).scheme == "https"
+        if not remote and not path.is_file():
+            raise ValueError(f"Expected an SDK directory or archive file at {path}")
+        require_sdk_archive_support()
         archive = path
-        if urlsplit(source).scheme == "https":
+        if remote:
             archive = working / "engine.tar"
             download_https(source, archive)
         unpacked = working / "engine"
@@ -267,6 +274,8 @@ def archive_engine(engine, output, architecture, require_official=False):
         raise FileExistsError(f"SDK archive already exists: {output}")
     if output.resolve().is_relative_to(engine.resolve()):
         raise ValueError("Choose an archive destination outside the SDK.")
+
+    require_sdk_archive_support()
 
     def portable_metadata(entry):
         entry.uid = entry.gid = entry.mtime = 0
