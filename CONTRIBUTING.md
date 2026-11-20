@@ -408,22 +408,30 @@ python3 Tests/ChromiumStartup/walk.py --app build/Bark.app --require-official --
 
 ### Measuring package size for Q1
 
-Measure the signed app extracted from the exact distribution being qualified. Run the commands from the source revision that pins its SDK, once per native architecture. For an update, measure the Sparkle ZIP served by the feed. For an initial installation, measure the distributed disk image.
+Measure the signed app copied from the DMG for the architecture being qualified.
+Bark’s Sparkle appcast points to that same DMG for a full update. Run these
+commands from the source revision that pins its SDK.
 
 ```fish
 set app /path/to/extracted/Bark.app
-set archive /path/to/Bark-release.zip
+set image /path/to/Bark-release.dmg
 set arch (python3 scripts/chromium_sdk_layout.py native-arch)
 python3 -B scripts/bark-check.py verify --arch "$arch" --require-official "$app"; or exit 1
 /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$app/Contents/Info.plist"
-shasum -a 256 "$archive"
-stat -f 'Download bytes: %z' "$archive"
+shasum -a 256 "$image"
+stat -f 'Download bytes: %z' "$image"
 du -A -s -k "$app"
 du -s -k "$app"
 du -A -k -d 1 "$app/Contents/Frameworks" | sort -nr
 ```
 
-Record the archive digest, download bytes, apparent bundle size and allocated bundle size in KiB, with the build number, SDK pin, architecture and macOS version. The per-framework breakdown identifies which component grew. APFS clones and compression affect allocated space. Compare the same architecture and archive format with the preceding release. Capture the agreed size limits and measured deltas in the release ticket before promotion.
+Record the DMG’s SHA-256 and download bytes, the apparent and allocated app sizes
+in KiB, the build number, SDK pin, architecture and macOS version. The framework
+breakdown shows which component grew. APFS clones and compression affect allocated
+space. Compare the same architecture with the preceding release and record agreed
+limits and measured changes in the release ticket. The release receipt verifier
+remeasures the download, app and Chromium framework from the supplied DMG.
+[Verify a transferred release candidate](Tests/ChromiumStartup/README.md#verify-a-transferred-release-candidate)
 
 ### Prepare a Bark distribution candidate
 

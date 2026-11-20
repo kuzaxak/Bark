@@ -184,6 +184,10 @@ class OfficialQualificationTests(unittest.TestCase):
                                           "replacement_bundle_cdhash": "a" * 40}, "distinct signed"),
                     ("candidate", {**result["candidate"], "sdk_pin": "f" * 64}, "SDK pin"),
                     ("build", "119", "Bark build"),
+                    ("size_bytes", {}, "package sizes"),
+                    ("size_bytes", dict(result["size_bytes"], download_dmg=1), "package sizes"),
+                    ("size_bytes", dict(result["size_bytes"], installed_app=1), "package sizes"),
+                    ("size_bytes", dict(result["size_bytes"], chromium_framework=1), "package sizes"),
                 ):
                     with self.subTest(field=field, reason=reason):
                         receipt.write_text(json.dumps({**result, field: bad_value}))

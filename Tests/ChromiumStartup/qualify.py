@@ -99,8 +99,8 @@ def checked_update_identities(update):
     return {"original_bundle_cdhash": original, "replacement_bundle_cdhash": replacement}
 
 
-def installed_size_bytes(app):
-    """Logical payload bytes, counting regular files once regardless of framework aliases."""
+def package_size_bytes(app, image=None):
+    """Measure logical installed bytes by inode and the size of the distributed DMG."""
     engine = app / "Contents/Frameworks/Bark Framework.framework"
     pending = [app]
     files, engine_files = {}, {}
@@ -114,7 +114,10 @@ def installed_size_bytes(app):
                 files[file_id] = info.st_size
                 if path.is_relative_to(engine):
                     engine_files[file_id] = info.st_size
-    return {"installed_app": sum(files.values()), "chromium_framework": sum(engine_files.values())}
+    sizes = {"installed_app": sum(files.values()), "chromium_framework": sum(engine_files.values())}
+    if image is not None:
+        sizes["download_dmg"] = image.stat().st_size
+    return sizes
 
 
 def verify_release_signature(app):
@@ -138,9 +141,7 @@ def qualify(app, image, identity, output, *, update_kit=None):
               "build": info["CFBundleVersion"]}
 
     def exercise(installed):
-        result["size_bytes"] = installed_size_bytes(installed)
-        if image:
-            result["size_bytes"]["download_dmg"] = image.stat().st_size
+        result["size_bytes"] = package_size_bytes(installed, image)
         observations = []
         for index in range(1, 4):
             if index > 1:
@@ -213,6 +214,12 @@ def check_release_receipt(receipt, image, architecture, app=None):
         _, verified = verify_official_sdk(contributor, architecture, installed)
         if candidate.get("sdk_pin") != verified["sdk_pin"]:
             raise ValueError("The release receipt belongs to a different SDK pin.")
+        recorded = result.get("size_bytes")
+        measured = package_size_bytes(installed, image)
+        if not isinstance(recorded, dict) or any(
+            type(recorded.get(key)) is not int or recorded[key] != size for key, size in measured.items()
+        ):
+            raise ValueError("The release receipt's package sizes differ from the DMG or installed app.")
 
     with TemporaryDirectory(prefix="bark-receipt-", dir="/private/tmp") as work:
         bark_release.verify_installed_image(image, app, Path(work), app_requirement, verify_copy)

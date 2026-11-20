@@ -74,6 +74,7 @@ If you also have the signed staging app, add `--app "$app"` to compare it
 with the image. The check mounts the DMG read-only and copies Bark to a
 temporary directory. It checks the image signature, Gatekeeper assessments
 and the installed app’s signature and identity. It compares the embedded
-framework with the official SDK.
+framework with the official SDK and remeasures the DMG, installed app and
+embedded Chromium framework against the byte counts in the receipt.
 The startup measurements and installed update identities come from the
 native walk recorded in the receipt. The verifier can run without opening Bark.
