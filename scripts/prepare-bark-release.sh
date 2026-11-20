@@ -21,8 +21,8 @@ BARK_PROFILE="${BARK_ICLOUD_PROFILE:-$HOME/Downloads/Bark_Developer_ID_CloudKit.
 VERSION=2.0.0
 BUILD=202611200002
 TAG=bark-v2.0.0
-LEGACY_REVISION=a85053fd783510b442d0b450e13034dd77bb7855
-RELEASES=https://github.com/kuzaxak/Nook/releases
+LEGACY_REVISION=815c69d0f98e0ced5ea1eda90d86063f1423980d
+RELEASES=https://github.com/kuzaxak/Bark/releases
 FEED_BASE="$RELEASES/latest/download"
 DOWNLOAD_BASE="$RELEASES/download/$TAG"
 

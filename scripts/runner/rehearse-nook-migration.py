@@ -19,7 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "scripts"))
 from bark_release import SPARKLE, SPARKLE_PUBLIC_KEY, TEAM, bundle_cdhash, developer_id_requirement
 
-RELEASES = "https://github.com/kuzaxak/Nook/releases"
+RELEASES = "https://github.com/kuzaxak/Bark/releases"
+NOOK_FEED = "https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml"
 ENCLOSURES = RELEASES + "/download/bark-v2.0.0/"
 FEEDS = RELEASES + "/latest/download/"
 NOOK_154_SHA256 = "bba44fe5ec819c21e07478334e89adb35386980fc7ab418b764a98d5f9fbac39"
@@ -134,13 +135,13 @@ def rehearse(arch, release, legacy_image, cli, working, receipts):
     with mounted(legacy_image, working) as mount:
         run("/usr/bin/ditto", mount / "Nook.app", target)
     first = app_record(target, *legacy)
-    if first["feed_url"] != FEEDS + "appcast.xml":
+    if first["feed_url"] != NOOK_FEED:
         raise ValueError("The existing Nook installation uses an unexpected update feed.")
 
     records = [{**first, "image": legacy_image.name, "image_sha256": NOOK_154_SHA256}]
     for identity, image, feed, signed_name, signed_feed, bundle_name in (
         (transition, release / "Nook-1.5.5-universal.dmg", release / "appcast.xml",
-         "Nook.app", FEEDS + "appcast.xml", "Bark"),
+         "Nook.app", NOOK_FEED, "Bark"),
         (bark, release / f"Bark-2.0.0-202611200002-macos-{arch}.dmg", release / f"bark-macos-{arch}.xml",
          "Bark.app", FEEDS + f"bark-macos-{arch}.xml", None),
     ):

@@ -1,7 +1,7 @@
 #!/bin/bash
 # Licensed under GPL-3.0. See LICENSE.
 #
-# Stores the secrets .github/workflows/release.yml needs in kuzaxak/Nook:
+# Stores the secrets .github/workflows/release.yml needs in kuzaxak/Bark:
 #   scripts/setup-release-secrets.sh ~/Desktop/devid.p12
 #
 # Export the identity first: Keychain Access → login → My Certificates → "Developer ID
@@ -12,7 +12,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-REPO=kuzaxak/Nook
+REPO=kuzaxak/Bark
 TEAM=538SB59LX4
 P12="${1:?usage: scripts/setup-release-secrets.sh path/to/devid.p12}"
 

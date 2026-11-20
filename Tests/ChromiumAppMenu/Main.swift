@@ -316,6 +316,8 @@ enum Check {
             ("https://github.com/kuzaxak/Nook/releases/latest/download/appcast.xml", false),
             ("https://github.com/kuzaxak/Nook/releases/download/v1.5.4/appcast.xml", false),
             ("https://github.com/kuzaxak/Nook/releases/latest/download" + feedPath, true),
+            ("https://github.com/kuzaxak/Bark/releases/latest/download/appcast.xml", false),
+            ("https://github.com/kuzaxak/Bark/releases/latest/download" + feedPath, true),
             ("https://updates.synthetic.invalid/appcast.xml", true),
             ("https://updates.synthetic.invalid/bark.xml", true),
         ]

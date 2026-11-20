@@ -142,7 +142,7 @@ class PublicationTests(unittest.TestCase):
     def test_tagged_commit_can_be_behind_default_but_must_remain_reachable(self):
         github = release.GitHub()
         tip = "2" * 40
-        base = {"default_branch": "pawl-dev"}
+        base = {"default_branch": "main"}
         remote_ref = {"object": {"sha": tip}}
         with patch.object(github, "api", side_effect=[base, remote_ref, {"status": "ahead"}]) as api:
             github.require_release_commit(COMMIT, tagged=True)

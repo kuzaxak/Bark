@@ -16,21 +16,21 @@ set -euo pipefail
 allowed() {
   if [[ "${1:-}" == --bark-candidate ]]; then
     [[ $# == 2 && "$2" == refs/heads/?* ]] || return 1
-    [[ "${GITHUB_REPOSITORY:-}" == kuzaxak/Nook &&
+    [[ "${GITHUB_REPOSITORY:-}" == kuzaxak/Bark &&
        "${GITHUB_EVENT_NAME:-}" == workflow_dispatch &&
        "${GITHUB_REF:-}" == "$2" &&
-       "${GITHUB_WORKFLOW_REF:-}" == "kuzaxak/Nook/.github/workflows/bark-candidate.yml@$2" ]]
+       "${GITHUB_WORKFLOW_REF:-}" == "kuzaxak/Bark/.github/workflows/bark-candidate.yml@$2" ]]
     return
   fi
   [[ $# == 0 ]] || return 1
   # The public tag event only dispatches the build. Code on this Mac runs
   # exclusively from the reviewed release workflow on the shipping branch.
-  if [[ "${GITHUB_WORKFLOW_REF:-}" == kuzaxak/Nook/.github/workflows/bark-release.yml@refs/heads/pawl-dev ]]; then
-    [[ "${GITHUB_REPOSITORY:-}" == kuzaxak/Nook && "${GITHUB_EVENT_NAME:-}" == workflow_dispatch &&
-       "${GITHUB_REF:-}" == refs/heads/pawl-dev ]]
+  if [[ "${GITHUB_WORKFLOW_REF:-}" == kuzaxak/Bark/.github/workflows/bark-release.yml@refs/heads/main ]]; then
+    [[ "${GITHUB_REPOSITORY:-}" == kuzaxak/Bark && "${GITHUB_EVENT_NAME:-}" == workflow_dispatch &&
+       "${GITHUB_REF:-}" == refs/heads/main ]]
     return
   fi
-  [[ "${GITHUB_WORKFLOW_REF:-}" == kuzaxak/Nook/.github/workflows/release.yml@* ]] || return 1
+  [[ "${GITHUB_WORKFLOW_REF:-}" == kuzaxak/Bark/.github/workflows/release.yml@* ]] || return 1
   case "${GITHUB_EVENT_NAME:-}" in
     push) [[ "${GITHUB_REF:-}" == refs/tags/v* ]] ;;
     workflow_dispatch) return 0 ;;
