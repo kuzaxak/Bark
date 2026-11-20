@@ -285,8 +285,8 @@ struct ExtensionLibraryView: View {
                         browserManager.manageExtensions()
                         onDismiss()
                     }
+                    Button("Add Extension…", action: openWebStore)
                 }
-                Button("Add Extension…", action: openWebStore)
                 if !isPrivate {
                     Divider()
                     Button("All Site Settings…", action: onShowMoreMenu)

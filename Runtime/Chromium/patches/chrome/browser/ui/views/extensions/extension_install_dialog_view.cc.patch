@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
-index 83ce5b59c1..cac422869b 100644
+index 83ce5b5..c79f0de 100644
 --- a/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
 +++ b/chrome/browser/ui/views/extensions/extension_install_dialog_view.cc
 @@ -12,6 +12,7 @@
@@ -26,52 +26,66 @@ index 83ce5b59c1..cac422869b 100644
  #include "ui/views/widget/widget.h"
  #include "ui/views/widget/widget_delegate.h"
  #include "ui/views/window/dialog_delegate.h"
-@@ -88,6 +91,25 @@ void ShowExtensionInstallDialogImpl(
+@@ -82,25 +85,53 @@ std::u16string GetRatingAccessibleName(double rating, int rating_count) {
+       rating, rating_count);
+ }
+
++// Bark can prompt only for the foreground tab its host already presents.
++bool CanPresentInstallPrompt(ExtensionInstallPromptShowParams& params) {
++  if (params.WasParentDestroyed() || !params.CanShowForBrowserOwner())
++    return false;
++  auto* owner = params.GetBrowserOwner();
++  auto* contents = params.GetParentWebContents();
++  if (!owner || BrowserView::GetBrowserViewForBrowser(owner))
++    return true;
++  if (owner->GetProfile()->IsOffTheRecord())
++    return false;
++  return !contents ||
++         (owner->GetTabStripModel()->GetActiveWebContents() == contents &&
++          contents->GetVisibility() == content::Visibility::VISIBLE &&
++          contents->GetTopLevelNativeWindow() == params.GetParentWindow());
++}
++
++void AbortInstallPrompt(ExtensionInstallPrompt::DoneCallback done_callback) {
++  base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
++      FROM_HERE,
++      base::BindOnce(std::move(done_callback),
++                     ExtensionInstallPrompt::DoneCallbackPayload(
++                         ExtensionInstallPrompt::Result::ABORTED)));
++}
++
+ void ShowExtensionInstallDialogImpl(
+     std::unique_ptr<ExtensionInstallPromptShowParams> show_params,
+     ExtensionInstallPrompt::DoneCallback done_callback,
      std::unique_ptr<InstallPromptData> prompt) {
    DCHECK_CURRENTLY_ON(content::BrowserThread::UI);
  
-+  if (show_params->WasParentDestroyed() ||
-+      !show_params->CanShowForBrowserOwner()) {
-+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-+        FROM_HERE,
-+        base::BindOnce(std::move(done_callback),
-+                       ExtensionInstallPrompt::DoneCallbackPayload(
-+                           ExtensionInstallPrompt::Result::ABORTED)));
+-  // If the dialog has to be parented to WebContents, force activate the
+-  // contents. See crbug.com/40059470.
++  if (!CanPresentInstallPrompt(*show_params)) {
++    AbortInstallPrompt(std::move(done_callback));
 +    return;
 +  }
-+  auto* owner = show_params->GetBrowserOwner();
-+  if (owner && !BrowserView::GetBrowserViewForBrowser(owner)) {
-+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-+        FROM_HERE,
-+        base::BindOnce(std::move(done_callback),
-+                       ExtensionInstallPrompt::DoneCallbackPayload(
-+                           ExtensionInstallPrompt::Result::ABORTED)));
-+    return;
-+  }
-+
-   // If the dialog has to be parented to WebContents, force activate the
-   // contents. See crbug.com/40059470.
    content::WebContents* web_contents = show_params->GetParentWebContents();
-@@ -101,6 +123,18 @@ void ShowExtensionInstallDialogImpl(
+   BrowserWindowInterface* browser =
+       web_contents ? GlobalBrowserCollection::GetInstance()->FindBrowserWithTab(
+                          web_contents)
+                    : nullptr;
+-
+-  if (browser &&
++  if (browser && BrowserView::GetBrowserViewForBrowser(browser) &&
+       browser->GetTabStripModel()->GetActiveWebContents() != web_contents) {
      BrowserWebContentsDelegate::From(browser)->ActivateContents(web_contents);
    }
- 
-+  // Activation may invoke observers that close/reparent the tab. Never use a
-+  // native parent left behind by that outgoing logical owner.
-+  if (show_params->WasParentDestroyed() ||
-+      !show_params->CanShowForBrowserOwner() ||
-+      (owner && !BrowserView::GetBrowserViewForBrowser(owner))) {
-+    base::SingleThreadTaskRunner::GetCurrentDefault()->PostTask(
-+        FROM_HERE,
-+        base::BindOnce(std::move(done_callback),
-+                       ExtensionInstallPrompt::DoneCallbackPayload(
-+                           ExtensionInstallPrompt::Result::ABORTED)));
+-
++  if (!CanPresentInstallPrompt(*show_params)) {
++    AbortInstallPrompt(std::move(done_callback));
 +    return;
 +  }
    gfx::NativeWindow parent_window = show_params->GetParentWindow();
    auto dialog = std::make_unique<ExtensionInstallDialogView>(
        std::move(show_params), std::move(done_callback), std::move(prompt));
-@@ -372,6 +406,11 @@ void ExtensionInstallDialogView::VisibilityChanged(views::View* starting_from,
+@@ -372,6 +403,11 @@ void ExtensionInstallDialogView::VisibilityChanged(views::View* starting_from,
  }
  
  void ExtensionInstallDialogView::AddedToWidget() {
@@ -83,7 +97,7 @@ index 83ce5b59c1..cac422869b 100644
    auto title_container = CreateTitleContainer();
    GetBubbleFrameView()->SetTitleView(std::move(title_container));
  
-@@ -382,6 +421,7 @@ void ExtensionInstallDialogView::AddedToWidget() {
+@@ -382,6 +418,7 @@ void ExtensionInstallDialogView::AddedToWidget() {
  
  void ExtensionInstallDialogView::OnDialogCanceled() {
    DCHECK(done_callback_);
@@ -91,12 +105,11 @@ index 83ce5b59c1..cac422869b 100644
  
    // The dialog will be closed, so stop observing for any extension changes
    // that could potentially crop up during that process (like the extension
-@@ -396,6 +436,12 @@ void ExtensionInstallDialogView::OnDialogCanceled() {
+@@ -396,6 +433,11 @@ void ExtensionInstallDialogView::OnDialogCanceled() {
  
  void ExtensionInstallDialogView::OnDialogAccepted() {
    DCHECK(done_callback_);
-+  if (show_params_->WasParentDestroyed() ||
-+      !show_params_->CanShowForBrowserOwner()) {
++  if (!CanPresentInstallPrompt(*show_params_)) {
 +    OnDialogCanceled();
 +    return;
 +  }
@@ -104,7 +117,7 @@ index 83ce5b59c1..cac422869b 100644
  
    // The dialog will be closed, so stop observing for any extension changes
    // that could potentially crop up during that process (like the extension
-@@ -406,7 +452,19 @@ void ExtensionInstallDialogView::OnDialogAccepted() {
+@@ -406,7 +448,18 @@ void ExtensionInstallDialogView::OnDialogAccepted() {
        prompt_->type() == InstallPromptData::EXTENSION_REQUEST_PROMPT;
    DCHECK(expect_justification == !!justification_view_);
  
@@ -114,8 +127,7 @@ index 83ce5b59c1..cac422869b 100644
 +    return;
 +  // Prompt observers can close the owner or move its source tab. Never grant
 +  // permissions after such a callback invalidated the original admission.
-+  if (show_params_->WasParentDestroyed() ||
-+      !show_params_->CanShowForBrowserOwner()) {
++  if (!CanPresentInstallPrompt(*show_params_)) {
 +    std::move(done_callback_)
 +        .Run(ExtensionInstallPrompt::DoneCallbackPayload(
 +            ExtensionInstallPrompt::Result::ABORTED));
@@ -124,7 +136,7 @@ index 83ce5b59c1..cac422869b 100644
  
    // Permissions are withheld at installation when the prompt specifies it and
    // `grant_permissions_checkbox_` wasn't selected.
-@@ -451,6 +509,11 @@ bool ExtensionInstallDialogView::ShouldAllowKeyEventsDuringInputProtection()
+@@ -451,6 +504,11 @@ bool ExtensionInstallDialogView::ShouldAllowKeyEventsDuringInputProtection()
    return false;
  }
  

@@ -24,6 +24,7 @@
 #include "chrome/app/chrome_command_ids.h"
 #include "chrome/browser/devtools/devtools_window.h"
 #include "chrome/browser/devtools/devtools_window_testing.h"
+#include "chrome/browser/extensions/extension_install_prompt_show_params.h"
 #include "chrome/browser/extensions/extension_uninstall_dialog.h"
 #include "chrome/browser/media/router/media_router_feature.h"
 #include "chrome/browser/printing/print_preview_dialog_controller.h"
@@ -41,9 +42,11 @@
 #include "chrome/browser/ui/tabs/tab_strip_model.h"
 #include "chrome/browser/ui/toasts/api/toast_id.h"
 #include "chrome/browser/ui/toasts/toast_controller.h"
+#include "chrome/browser/ui/views/extensions/extension_install_dialog_view.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_bubble_delegate_view.h"
 #include "chrome/browser/ui/views/passwords/password_bubble_view_base.h"
 #include "chrome/browser/ui/webid/identity_dialog_controller.h"
+#include "chrome/common/chrome_switches.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/common/pref_names.h"
 #include "chrome/test/base/ui_test_utils.h"
@@ -73,6 +76,8 @@
 #include "extensions/browser/extension_registrar.h"
 #include "extensions/browser/extension_registry.h"
 #include "extensions/common/extension_builder.h"
+#include "extensions/common/extensions_client.h"
+#include "extensions/common/switches.h"
 #include "net/dns/mock_host_resolver.h"
 #include "net/test/embedded_test_server/embedded_test_server.h"
 #include "net/test/embedded_test_server/http_request.h"
@@ -91,6 +96,7 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/test/widget_test.h"
 #include "ui/views/view.h"
+#include "ui/views/view_utils.h"
 #include "ui/views/widget/widget.h"
 
 namespace {
@@ -141,12 +147,15 @@ class BarkHostStockUiBrowserTest : public InProcessBrowserTest {
  protected:
   // A shown host window whose app root holds one loaded page, placed.
   int32_t OpenPlacedPage(const char* path) {
+    return OpenPlacedPage(embedded_test_server()->GetURL(path));
+  }
+
+  int32_t OpenPlacedPage(const GURL& url) {
     const int32_t window = barc_window_new_peer(browser()->GetSessionID().id());
     EXPECT_GT(window, 0);
     root_ = [[NSView alloc] initWithFrame:NSMakeRect(0, 0, 800, 600)];
     EXPECT_EQ(1, barc_window_set_root_view(window, (__bridge void*)root_));
-    tab_ = barc_tab_create(
-        window, embedded_test_server()->GetURL(path).spec().c_str(), 1);
+    tab_ = barc_tab_create(window, url.spec().c_str(), 1);
     EXPECT_NE(0, tab_);
     EXPECT_TRUE(content::WaitForLoadStop(TabContents(tab_)));
     EXPECT_EQ(1, barc_window_show(window));
@@ -1080,6 +1089,166 @@ IN_PROC_BROWSER_TEST_F(BarkHostExtensionDialogBrowserTest,
   EXPECT_TRUE(base::test::RunUntil([&] { return ModalDialogs().empty(); }));
   content::RunAllTasksUntilIdle();
   EXPECT_TRUE(Installed(*extension));
+}
+
+class BarkHostWebStoreBrowserTest : public BarkHostExtensionDialogBrowserTest {
+ public:
+  void SetUpCommandLine(base::CommandLine* command_line) override {
+    BarkHostExtensionDialogBrowserTest::SetUpCommandLine(command_line);
+    command_line->AppendSwitchASCII(extensions::switches::kAppsGalleryURL,
+                                    "http://www.example.com/");
+  }
+
+ protected:
+  static constexpr char kExtensionId[] = "enfkhcelefdadlmkffamgdlgplcionje";
+
+  GURL StoreFile(const char* basename) {
+    return embedded_test_server()->GetURL(
+        "www.example.com",
+        std::string("/extensions/api_test/webstore_private/") + basename);
+  }
+
+  void StartStore() {
+    host_resolver()->AddRule("www.example.com", "127.0.0.1");
+    ASSERT_TRUE(embedded_test_server()->Start());
+    auto* command_line = base::CommandLine::ForCurrentProcess();
+    command_line->AppendSwitchASCII(switches::kAppsGalleryUpdateURL,
+                                    StoreFile("extension.crx").spec());
+    extensions::ExtensionsClient::Get()->InitializeWebStoreUrls(command_line);
+  }
+
+  void BeginInstall() {
+    ASSERT_EQ(true, content::EvalJs(Contents(), content::JsReplace(R"(
+      (async () => {
+        const manifest = await (await fetch($2)).text();
+        globalThis.installResult = new Promise(resolve => {
+          chrome.webstorePrivate.beginInstallWithManifest3({
+            id: $1, manifest, iconUrl: $3
+          }, result => resolve(chrome.runtime.lastError?.message ?? result));
+        });
+        return true;
+      })()
+    )", kExtensionId, StoreFile("extension/manifest.json"),
+       StoreFile("extension/icon.png"))));
+  }
+
+  GURL StorePage() {
+    return embedded_test_server()->GetURL("www.example.com", "/title1.html");
+  }
+
+  ExtensionInstallDialogView* WaitForInstallPrompt() {
+    auto* prompt = WaitForModalDialog();
+    return prompt ? views::AsViewClass<ExtensionInstallDialogView>(
+                        prompt->widget_delegate()->GetContentsView())
+                  : nullptr;
+  }
+
+  void VerifyPromptOwner(ExtensionInstallDialogView* prompt) {
+    auto* params = prompt->GetShowParamsForTesting();
+    EXPECT_EQ(FindBrowser(window_), params->GetBrowserOwner());
+    EXPECT_EQ(Contents(), params->GetParentWebContents());
+    EXPECT_EQ(Window()->host()->widget()->GetNativeWindow(),
+              params->GetParentWindow());
+  }
+
+  content::EvalJsResult CompleteInstall() {
+    return content::EvalJs(Contents(), content::JsReplace(R"(
+      new Promise(resolve => chrome.webstorePrivate.completeInstall(
+        $1, () => resolve(chrome.runtime.lastError?.message ?? 'installed')))
+    )", kExtensionId));
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(BarkHostWebStoreBrowserTest,
+                       SelectedStoreCanCancelThenInstallWithConsent) {
+  ASSERT_NO_FATAL_FAILURE(StartStore());
+  OpenPlacedPage(StorePage());
+  auto* registry = extensions::ExtensionRegistry::Get(Profile());
+  ASSERT_NO_FATAL_FAILURE(BeginInstall());
+  auto* prompt = WaitForInstallPrompt();
+  ASSERT_TRUE(prompt);
+  ASSERT_NO_FATAL_FAILURE(VerifyPromptOwner(prompt));
+  prompt->CancelDialog();
+  EXPECT_EQ("User cancelled install", content::EvalJs(Contents(), "installResult"));
+  EXPECT_FALSE(registry->GetInstalledExtension(kExtensionId));
+  ASSERT_TRUE(base::test::RunUntil([&] { return ModalDialogs().empty(); }));
+
+  ASSERT_NO_FATAL_FAILURE(BeginInstall());
+  prompt = WaitForInstallPrompt();
+  ASSERT_TRUE(prompt);
+  ASSERT_NO_FATAL_FAILURE(VerifyPromptOwner(prompt));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return prompt->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk); }));
+  prompt->AcceptDialog();
+  EXPECT_EQ("", content::EvalJs(Contents(), "installResult"));
+  EXPECT_EQ("installed", CompleteInstall());
+  EXPECT_TRUE(registry->enabled_extensions().Contains(kExtensionId));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostWebStoreBrowserTest,
+                       SwitchingTheLogicalOwnerRefusesPendingStoreConsent) {
+  ASSERT_NO_FATAL_FAILURE(StartStore());
+  OpenPlacedPage(StorePage());
+  base::test::TestFuture<barc_profile_status, int32_t> opened;
+  barc_profile_open_in_native_window(
+      window_, "699448bb-3423-47bd-abba-4db7ec996ad4", BARC_PROFILE_BLANK,
+      [](barc_profile_status status, int32_t window, void* data) {
+        static_cast<base::test::TestFuture<barc_profile_status, int32_t>*>(data)
+            ->SetValue(status, window);
+      },
+      &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  const int32_t other = opened.Get<1>();
+  ASSERT_EQ(Window()->host(),
+            bark::BarkBrowserWindow::FromBrowser(FindBrowser(other))->host());
+  ASSERT_EQ(1, barc_window_select(window_));
+  ASSERT_NO_FATAL_FAILURE(BeginInstall());
+  auto* prompt = WaitForInstallPrompt();
+  ASSERT_TRUE(prompt);
+  ASSERT_NO_FATAL_FAILURE(VerifyPromptOwner(prompt));
+  ASSERT_TRUE(base::test::RunUntil(
+      [&] { return prompt->IsDialogButtonEnabled(ui::mojom::DialogButton::kOk); }));
+  auto pending = prompt->GetWidget()->GetWeakPtr();
+  ASSERT_EQ(1, barc_window_select(other));
+  if (pending && !pending->IsClosed())
+    pending->widget_delegate()->AsDialogDelegate()->AcceptDialog();
+  EXPECT_EQ("User cancelled install", content::EvalJs(Contents(), "installResult"));
+  EXPECT_EQ(std::string(kExtensionId) +
+                " does not match a previous call to beginInstallWithManifest3",
+            CompleteInstall());
+  EXPECT_FALSE(extensions::ExtensionRegistry::Get(Profile())
+                   ->GetInstalledExtension(kExtensionId));
+  EXPECT_FALSE(extensions::ExtensionRegistry::Get(FindBrowser(other)->GetProfile())
+                   ->GetInstalledExtension(kExtensionId));
+}
+
+IN_PROC_BROWSER_TEST_F(BarkHostWebStoreBrowserTest,
+                       PrivateStoreCannotInstall) {
+  ASSERT_NO_FATAL_FAILURE(StartStore());
+  base::test::TestFuture<barc_profile_status, int32_t> opened;
+  barc_private_session_open_window(
+      [](barc_profile_status status, int32_t window, void* data) {
+        static_cast<base::test::TestFuture<barc_profile_status, int32_t>*>(data)
+            ->SetValue(status, window);
+      },
+      &opened);
+  ASSERT_EQ(BARC_PROFILE_OK, opened.Get<0>());
+  window_ = opened.Get<1>();
+  ASSERT_TRUE(Profile()->IsOffTheRecord());
+  tab_ = barc_tab_create(window_, StorePage().spec().c_str(), 1);
+  ASSERT_NE(0, tab_);
+  ASSERT_TRUE(content::WaitForLoadStop(Contents()));
+  // Chromium independently rejects completion in Guest, even if the page
+  // reaches its production API. Unsupported renderer bindings are valid too.
+  EXPECT_EQ(true, content::EvalJs(Contents(), content::JsReplace(R"(
+      !globalThis.chrome?.webstorePrivate?.completeInstall ||
+      new Promise(resolve => chrome.webstorePrivate.completeInstall(
+        $1, () => resolve(chrome.runtime.lastError?.message ===
+                           'Apps cannot be installed in guest/incognito mode')))
+    )", kExtensionId)));
+  EXPECT_TRUE(ModalDialogs().empty());
+  EXPECT_FALSE(extensions::ExtensionRegistry::Get(Profile())
+                   ->GetInstalledExtension(kExtensionId));
 }
 
 IN_PROC_BROWSER_TEST_F(BarkHostCommandBrowserTest, CastHasNoEntryPoint) {
