@@ -4445,33 +4445,98 @@ struct NativeVaultFormTests {
         #expect(native.vaultFills.isEmpty)
     }
 
-    @Test(arguments:["otherWindow","applicationInactive"])
-    func windowTransitionCancelsSecretWithoutFocusingOrLateFill(change:String) async throws {
+    @Test(arguments: ["replyFirst", "returnFirst", "nilBeforeResign", "addressBar", "otherWindow", "paneDetached", "fieldChanged", "profileChanged", "denied"], [false, true])
+    func pawlAuthorizationReturnsOnlyToTheExactField(change: String, code: Bool) async throws {
         _ = NSApplication.shared
         let f = try NativeModelFixture(); defer { f.cleanup() }
         f.tabs.settings.pawlVaultEnabled = true
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
-        let vault = VaultService(settings:f.tabs.settings,client:transport)
-        vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
-        let native = f.host.finishCreate(0)
-        let owner = NSWindow(contentRect:CGRect(x:0,y:0,width:640,height:480),styleMask:.borderless,backing:.buffered,defer:true)
-        owner.isReleasedWhenClosed = false; owner.contentView = native.vaultView
+        let owner = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 640, height: 480),
+                             styleMask: .borderless, backing: .buffered, defer: true)
+        owner.isReleasedWhenClosed = false
         defer { owner.close() }
-        native.focusVault(); await agentCallbacks()
-        await transport.holdSecret(); presenter.pick()
+        let expectedPeer = VaultVerifiedPeer(pid: 33, auditToken: Data([12]))
+        await transport.setFillPeer(expectedPeer)
+        var ownerReady = true
+        var pageKeepsResponder = true
+        var activations: [pid_t] = []
+        let vault = VaultService(settings: f.tabs.settings, client: transport,
+                                 fillOwnerIsActive: { ownerReady && $0 === owner },
+                                 fillOwnerKeepsPageResponder: { _, _ in pageKeepsResponder },
+                                 returnFromPawl: { peer, window in
+                                     #expect(window === owner)
+                                     #expect(peer.auditToken == expectedPeer.auditToken)
+                                     activations.append(peer.pid)
+                                 })
+        vault.presenter = presenter
+        f.tabs.vault = vault
+        _ = await vault.refresh()
+        let native = f.host.finishCreate(0)
+        owner.contentView = native.vaultView
+        native.focusVault(code: code)
+        let token = native.vaultSerial
+        await agentCallbacks()
+        try #require(presenter.nativeCompletion != nil)
+        await transport.holdSecret()
+        presenter.pick()
         for await _ in transport.started.stream { break }
-        if change == "otherWindow" {
-            let other = NSWindow(contentRect:.zero,styleMask:.borderless,backing:.buffered,defer:true)
-            other.isReleasedWhenClosed = false
-            NotificationCenter.default.post(name:NSWindow.didBecomeKeyNotification,object:other)
-            other.close()
-        } else {
-            NotificationCenter.default.post(name:NSApplication.didResignActiveNotification,object:NSApplication.shared)
+
+        let center = NotificationCenter.default
+        native.vaultCurrent = false
+        if change == "nilBeforeResign" || change == "addressBar" {
+            pageKeepsResponder = change != "addressBar"
+            native.vaultFocus?(nil)
+            #expect(native.vaultFieldIsCurrent(token) == pageKeepsResponder)
         }
-        await transport.releaseSecret(); await agentCallbacks()
+        if change != "addressBar" {
+            ownerReady = false
+            center.post(name: NSApplication.didResignActiveNotification, object: NSApplication.shared)
+            native.vaultFocus?(nil)
+            #expect(native.vaultFieldIsCurrent(token))
+        }
         #expect(native.vaultFills.isEmpty)
-        let page = try #require(f.window.selectedItemID.flatMap { f.tabs.session(for:$0) })
-        #expect(page.nativeVaultNotice != nil)
+
+        switch change {
+        case "otherWindow":
+            let other = NSWindow(contentRect: .zero, styleMask: .borderless,
+                                 backing: .buffered, defer: true)
+            other.isReleasedWhenClosed = false
+            center.post(name: NSWindow.didBecomeKeyNotification, object: other)
+            other.close()
+        case "paneDetached":
+            owner.contentView = NSView()
+        case "fieldChanged":
+            native.vaultDocumentCurrent = false
+            native.vaultFocus?(nil)
+        case "profileChanged":
+            native.vaultProfileOverride = UUID()
+        default: break
+        }
+
+        func returnToOwner() {
+            ownerReady = true
+            native.vaultCurrent = true
+            center.post(name: NSApplication.didBecomeActiveNotification, object: NSApplication.shared)
+            center.post(name: NSWindow.didBecomeKeyNotification, object: owner)
+        }
+
+        if change == "returnFirst" { returnToOwner() }
+        await transport.releaseSecret(denied: change == "denied")
+        await agentCallbacks()
+        if change != "returnFirst" { #expect(native.vaultFills.isEmpty) }
+        if change == "replyFirst" || change == "nilBeforeResign" { #expect(activations == [expectedPeer.pid]) }
+        else { #expect(activations.isEmpty) }
+
+        returnToOwner()
+        await agentCallbacks()
+        if change == "replyFirst" || change == "returnFirst" || change == "nilBeforeResign" {
+            #expect(native.vaultFills.count == 1)
+            #expect(native.vaultFills.first?.0 == token)
+            #expect(native.vaultFills.first?.1 == (code ? "" : "synthetic-user"))
+            #expect(native.vaultFills.first?.2 == (code ? "123456" : "synthetic-password"))
+        } else {
+            #expect(native.vaultFills.isEmpty)
+        }
         #expect(!owner.isVisible)
     }
 
@@ -5209,7 +5274,12 @@ private actor SyntheticVaultRequests: VaultRequests {
     var locked = false
     func availability(_ state:String) { connected = state != "notRunning"; locked = state == "locked" }
     var held = false
-    var pending: CheckedContinuation<Void,Never>?
+    var pending: CheckedContinuation<Bool,Never>?
+    private var fillPeer: VaultVerifiedPeer?
+    func setFillPeer(_ peer: VaultVerifiedPeer) { fillPeer = peer }
+    func sendForFill<C: VaultCall>(_ call: C) async throws -> (C.Reply, VaultVerifiedPeer?) {
+        (try await send(call), fillPeer)
+    }
     var holdLookup = false
     var lookupPending: CheckedContinuation<Void,Error>?
     nonisolated let lookupStarted = AsyncStream<Void>.makeStream(bufferingPolicy:.bufferingOldest(1))
@@ -5217,7 +5287,7 @@ private actor SyntheticVaultRequests: VaultRequests {
     func failLookup() { lookupPending?.resume(throwing:VaultClientError.server(.badRequest,"synthetic")); lookupPending = nil }
     nonisolated let started = AsyncStream<Void>.makeStream(bufferingPolicy:.bufferingOldest(1))
     func holdSecret() { held = true }
-    func releaseSecret() { held = false; pending?.resume(); pending = nil }
+    func releaseSecret(denied: Bool = false) { held = false; pending?.resume(returning: denied); pending = nil }
     func disconnect() { connected = false }
     func send<C:VaultCall>(_ call:C) async throws -> C.Reply {
         if C.method == "hello", holdHello {
@@ -5249,7 +5319,9 @@ private actor SyntheticVaultRequests: VaultRequests {
         }
         if C.method == "password" || C.method == "code" {
             started.continuation.yield(())
-            if held { await withCheckedContinuation { pending = $0 } }
+            if held, await withCheckedContinuation({ pending = $0 }) {
+                throw VaultClientError.server(.denied, "synthetic")
+            }
         }
         if C.method == "register" || C.method == "assert" {
             ceremonies.append((C.method,params["rpId"] as! String,params["clientDataHash"] as! String,

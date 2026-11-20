@@ -14,6 +14,11 @@ import AppKit
 import Foundation
 import Security
 
+struct VaultVerifiedPeer: Sendable {
+    let pid: pid_t
+    let auditToken: Data
+}
+
 public actor VaultClient {
     /// `~/Library/Group Containers/group.com.kuzaxak.pawlvault/browser-bridge.sock`. Debug builds
     /// may point at another socket with `NOOK_VAULT_SOCKET`; the signature check still applies.
@@ -32,6 +37,7 @@ public actor VaultClient {
 
     private let socketPath: String
     private var socketFD: Int32 = -1
+    private var peer: VaultVerifiedPeer?
     private var lines = VaultLineBuffer()
     private var nextID = 1
 
@@ -58,9 +64,15 @@ public actor VaultClient {
         }
     }
 
+    func sendForFill<C: VaultCall>(_ call: C) async throws -> (C.Reply, VaultVerifiedPeer?) {
+        let reply = try send(call)
+        return (reply, peer)
+    }
+
     public func disconnect() {
         if socketFD >= 0 { close(socketFD) }
         socketFD = -1
+        peer = nil
         lines = VaultLineBuffer()
     }
 
@@ -92,10 +104,11 @@ public actor VaultClient {
             close(fd)
             throw VaultClientError.notRunning
         }
-        guard Self.isPawlVault(fd) else {
+        guard let peer = Self.verifiedPawlPeer(fd) else {
             close(fd)
             throw VaultClientError.notPawlVault
         }
+        self.peer = peer
         socketFD = fd
         lines = VaultLineBuffer()
     }
@@ -116,12 +129,31 @@ public actor VaultClient {
         return workspace.open(url)
     }
 
+    /// Requests cooperative activation only from the exact process that answered a selected read.
+    @MainActor
+    static func returnFromPawl(_ peer: VaultVerifiedPeer, to window: NSWindow) {
+        guard window.isVisible, NSApp?.isActive == false,
+              NSApp?.keyWindow == nil || NSApp?.keyWindow === window,
+              NSApp?.mainWindow == nil || NSApp?.mainWindow === window,
+              let pawl = NSWorkspace.shared.frontmostApplication,
+              pawl.processIdentifier == peer.pid, isPawlVault(auditToken: peer.auditToken) else { return }
+        _ = NSRunningApplication.current.activate(from: pawl, options: [])
+    }
+
     /// The peer's audit token, resolved to its code and checked against the vault's requirement.
-    private static func isPawlVault(_ fd: Int32) -> Bool {
+    private static func verifiedPawlPeer(_ fd: Int32) -> VaultVerifiedPeer? {
         var token = audit_token_t()
         var length = socklen_t(MemoryLayout<audit_token_t>.size)
-        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0 else { return false }
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERTOKEN, &token, &length) == 0 else { return nil }
         let tokenData = withUnsafeBytes(of: &token) { Data($0) }
+        var pid: pid_t = 0
+        length = socklen_t(MemoryLayout<pid_t>.size)
+        guard getsockopt(fd, SOL_LOCAL, LOCAL_PEERPID, &pid, &length) == 0,
+              pid > 0, isPawlVault(auditToken: tokenData) else { return nil }
+        return VaultVerifiedPeer(pid: pid, auditToken: tokenData)
+    }
+
+    private static func isPawlVault(auditToken tokenData: Data) -> Bool {
         var code: SecCode?
         var requirement: SecRequirement?
         guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributeAudit: tokenData] as CFDictionary, [], &code) == errSecSuccess,

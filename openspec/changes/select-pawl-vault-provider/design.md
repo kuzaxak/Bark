@@ -43,6 +43,8 @@ The provider-capable source is tracked in `Runtime/Chromium`. It touches 290 ups
 
 **Credential selection.** The native field token identifies the document and field. Bark also keeps the entries presented to the user. A password fetch targets the chosen entry ID and the reply must carry the original username, compared before display formatting. The one-time-code method returns only a code, so Bark checks the selected entry against the entries offered for that field before requesting it. For passkeys, the relying party can allow several credentials or leave discovery open. Bark filters the picker against that request and verifies the assertion carries the credential ID the user picked.
 
+**Device-owner authorization focus.** Once Bark dispatches an authorized credential read, macOS may temporarily give focus to Pawl's authorization UI. Bark keeps the original native field capability while its document, pane, window and profile stay current. A successful reply from the same live, signed peer can request cooperative app activation if that process still owns the foreground. Bark checks the original key window and renderer focus once they return before delivering a value. A change to the original field or owner ends the request. A reply awaiting focus expires within five seconds or at the end of the one-time code's remaining lifetime, whichever comes first.
+
 **Concurrent writes.** Pawl v1 chooses the first exact host and username match at the time of `save`. A login that looked new at browser consent can overwrite a concurrently created entry. A v1 server also ignores unknown fields on `save`. The Chromium client therefore uses two distinct methods when Pawl advertises `conditionalLoginWrites` in its existing v1 `hello` reply.
 
 | Step | Contract |

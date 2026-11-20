@@ -58,6 +58,17 @@ Bark SHALL honor a Pawl credential selection only for the chosen account in the 
 - **WHEN** the user opens the chooser and switches space, pane or profile before Pawl replies
 - **THEN** the result is discarded and neither page receives a secret
 
+#### Scenario: Pawl authorization temporarily takes focus
+- **GIVEN** the user chose a password or one-time code for the selected field
+- **WHEN** Pawl asks for device-owner authorization and the user approves it
+- **THEN** Bark fills the original selected field once its window and field have focus again, without asking the user to select the account a second time
+
+#### Scenario: User leaves the original page during Pawl authorization
+- **GIVEN** the user chose a password or one-time code and Pawl is authorizing the request
+- **WHEN** the user dismisses authorization, switches the selected Bark tab, pane, profile or window, or changes the focused field
+- **THEN** the original choice expires and no subsequent field receives the secret
+- **AND** if an unrelated application has focus when Pawl replies, Bark leaves that application in the foreground
+
 #### Scenario: A login changes while the vault is authorizing a fill
 - **GIVEN** the user picked an account for a password field
 - **WHEN** Pawl returns a different username for that entry

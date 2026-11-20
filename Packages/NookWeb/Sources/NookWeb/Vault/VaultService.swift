@@ -14,7 +14,13 @@ import AppKit
 
 protocol VaultRequests: Sendable {
     func send<C: VaultCall>(_ call: C) async throws -> C.Reply
+    func sendForFill<C: VaultCall>(_ call: C) async throws -> (C.Reply, VaultVerifiedPeer?)
     func disconnect() async
+}
+extension VaultRequests {
+    func sendForFill<C: VaultCall>(_ call: C) async throws -> (C.Reply, VaultVerifiedPeer?) {
+        (try await send(call), nil)
+    }
 }
 extension VaultClient: VaultRequests {}
 
@@ -99,6 +105,9 @@ public final class VaultService {
     @ObservationIgnored let client: any VaultRequests
     @ObservationIgnored private let openPawlApplication: @MainActor () -> Bool
     @ObservationIgnored fileprivate let passkeyKeyWindow: @MainActor () -> NSWindow?
+    @ObservationIgnored fileprivate let fillOwnerIsActive: @MainActor (NSWindow) -> Bool
+    @ObservationIgnored fileprivate let fillOwnerKeepsPageResponder: @MainActor (NSWindow, NSView) -> Bool
+    @ObservationIgnored fileprivate let returnFromPawl: @MainActor (VaultVerifiedPeer, NSWindow) -> Void
     @ObservationIgnored private let settings: NookSettingsService
     @ObservationIgnored private var lastNavigationRefresh: ContinuousClock.Instant?
     @ObservationIgnored private var settingObserver: NSObjectProtocol?
@@ -115,10 +124,21 @@ public final class VaultService {
 
     init(settings: NookSettingsService, client: any VaultRequests, pawlEnabledAtLaunch: Bool? = nil,
          passkeyKeyWindow: @escaping @MainActor () -> NSWindow? = { NSApp?.keyWindow },
-         openPawlApplication: @escaping @MainActor () -> Bool = { false }) {
+         fillOwnerIsActive: @escaping @MainActor (NSWindow) -> Bool = {
+             NSApp?.isActive == true && NSApp?.keyWindow === $0
+         },
+         fillOwnerKeepsPageResponder: @escaping @MainActor (NSWindow, NSView) -> Bool = { window, page in
+             guard let responder = window.firstResponder as? NSView else { return false }
+             return responder === page || responder.isDescendant(of: page)
+         },
+         openPawlApplication: @escaping @MainActor () -> Bool = { false },
+         returnFromPawl: @escaping @MainActor (VaultVerifiedPeer, NSWindow) -> Void = VaultClient.returnFromPawl) {
         self.settings = settings
         self.client = client
         self.passkeyKeyWindow = passkeyKeyWindow
+        self.fillOwnerIsActive = fillOwnerIsActive
+        self.fillOwnerKeepsPageResponder = fillOwnerKeepsPageResponder
+        self.returnFromPawl = returnFromPawl
         self.openPawlApplication = openPawlApplication
         self.pawlEnabledAtLaunch = pawlEnabledAtLaunch
         if pawlEnabledAtLaunch == nil {
@@ -174,6 +194,14 @@ public final class VaultService {
         }
     }
 
+    fileprivate func sendForFill<C: VaultCall>(_ call: C) async throws -> (C.Reply, VaultVerifiedPeer?) {
+        do { return try await client.sendForFill(call) }
+        catch {
+            recordRequestFailure(error)
+            throw error
+        }
+    }
+
     // The picker and Pawl's subsequent secret request must identify the same row.
     // Keep the provider's ordering for all entries it can address unambiguously.
     private func uniqueAddresses<Entry>(_ entries: [Entry], address: (Entry) -> String?) -> [(entry: Entry, id: String)] {
@@ -191,13 +219,14 @@ public final class VaultService {
         return uniqueAddresses(entries) { UUID(uuidString: $0.id)?.uuidString ?? $0.id }.map(\.entry)
     }
 
-    func password(for id: String, in offered: [VaultLogin], origin: String, profile: String?) async throws -> VaultPassword.Reply {
+    fileprivate func password(for id: String, in offered: [VaultLogin], origin: String,
+                              profile: String?) async throws -> (VaultPassword.Reply, VaultVerifiedPeer?) {
         let matches = offered.filter { $0.id == id }
         guard matches.count == 1, let login = matches.first else { throw VaultClientError.malformedResponse }
-        let reply = try await send(VaultPassword(id: login.id, origin: origin, profile: profile))
+        let (reply, peer) = try await sendForFill(VaultPassword(id: login.id, origin: origin, profile: profile))
         // Display text is shortened and sanitized. Consent belongs to the listed raw account.
         guard reply.username.utf8.elementsEqual(login.username.utf8) else { throw VaultClientError.malformedResponse }
-        return reply
+        return (reply, peer)
     }
 
     func matchingPasskeys(_ call: VaultPasskeys) async throws -> [VaultPasskey] {
@@ -264,12 +293,25 @@ private final class NativeVaultAttachment {
     private var observer: NSObjectProtocol?
     private var keyObserver: NSObjectProtocol?
     private var inactiveObserver: NSObjectProtocol?
+    private var activeObserver: NSObjectProtocol?
     private var focus: VaultNativeFocus?
     private var generation: UInt64 = 0
     private var pickerView: NSView?
     private var stopped = false
     private var focusObserving = false
     private var awaitingSecret = false
+    private var requestingSecret = false
+    private var waitingForAuthorizationReturn = false
+    private var rendererFocusTemporarilyUnavailable = false
+    private var requestedAuthorizationReturn = false
+    private struct AuthorizedFill {
+        let username: String
+        let secret: String
+        let peer: VaultVerifiedPeer?
+        let deadline: ContinuousClock.Instant
+    }
+    private var authorizedFill: AuthorizedFill?
+    private var fillExpiry: Task<Void, Never>?
     private var submission: VaultNativeSubmission?
     private var saveGeneration: UInt64 = 0
     private var saveTask: Task<Void, Never>?
@@ -290,6 +332,8 @@ private final class NativeVaultAttachment {
             if let observer { NotificationCenter.default.removeObserver(observer) }
             if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
             if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
+            if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+            fillExpiry?.cancel()
             page?.observeVault(nil)
             page?.observeVaultSave(nil)
             page?.observeVaultPasskeys(nil)
@@ -704,8 +748,16 @@ private final class NativeVaultAttachment {
         generation &+= 1
         if let keyObserver { NotificationCenter.default.removeObserver(keyObserver) }
         if let inactiveObserver { NotificationCenter.default.removeObserver(inactiveObserver) }
-        keyObserver = nil; inactiveObserver = nil
+        if let activeObserver { NotificationCenter.default.removeObserver(activeObserver) }
+        keyObserver = nil; inactiveObserver = nil; activeObserver = nil
         awaitingSecret = false
+        requestingSecret = false
+        waitingForAuthorizationReturn = false
+        rendererFocusTemporarilyUnavailable = false
+        requestedAuthorizationReturn = false
+        authorizedFill = nil
+        fillExpiry?.cancel()
+        fillExpiry = nil
         focus = nil
         if let old { page?.cancelVaultFocus(old.token) }
         let view = pickerView; pickerView = nil
@@ -726,33 +778,106 @@ private final class NativeVaultAttachment {
     private func trackFocusWindows(_ focus: VaultNativeFocus) {
         guard focus.window != nil else { return }
         let generation = generation
-        // These existing AppKit events invalidate this request, never focus or
-        // retry it. Own picker key transitions are the sole scoped exception.
-        keyObserver = NotificationCenter.default.addObserver(forName:NSWindow.didBecomeKeyNotification,
-            object:nil,queue:.main) { [weak self] notice in
+        let token = focus.token
+        let center = NotificationCenter.default
+        keyObserver = center.addObserver(forName: NSWindow.didBecomeKeyNotification,
+            object: nil, queue: .main) { [weak self] notice in
                 MainActor.assumeIsolated {
-                    guard let self, self.generation == generation, self.focus?.token == focus.token,
+                    guard let self, self.generation == generation, self.focus?.token == token,
                           let old = self.focus, let view = old.view,
                           let key = notice.object as? NSWindow else { return }
-                    if key !== old.window && self.service?.presenter?.ownsNativePicker(in:view) != true {
-                        self.cancel(showRetry:true)
+                    if key === old.window {
+                        self.retryAuthorizedFill(generation)
+                    } else if self.service?.presenter?.ownsNativePicker(in: view) != true {
+                        self.cancel(showRetry: true)
                     }
                 }
             }
-        inactiveObserver = NotificationCenter.default.addObserver(forName:NSApplication.didResignActiveNotification,
-            object:nil,queue:.main) { [weak self] _ in
+        inactiveObserver = center.addObserver(forName: NSApplication.didResignActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
                 MainActor.assumeIsolated {
-                    guard let self, self.generation == generation, self.focus?.token == focus.token else { return }
-                    self.cancel(showRetry:true)
+                    guard let self, self.generation == generation, let old = self.focus,
+                          old.token == token else { return }
+                    if self.requestingSecret && self.current(old, generation, foreground: false) {
+                        // The owner's authorization UI may temporarily take application focus.
+                        // The original field must remain current through the handoff.
+                        self.waitingForAuthorizationReturn = true
+                        self.retryAuthorizedFill(generation)
+                    } else {
+                        self.cancel(showRetry: true)
+                    }
                 }
             }
+        activeObserver = center.addObserver(forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.retryAuthorizedFill(generation) }
+            }
     }
+
+    private func retryAuthorizedFill(_ generation: UInt64) {
+        guard self.generation == generation, authorizedFill != nil else { return }
+        // Window and renderer focus notifications may arrive in either order.
+        Task { [weak self] in self?.deliverAuthorizedFill(generation) }
+    }
+
+    private func deliverAuthorizedFill(_ generation: UInt64) {
+        guard self.generation == generation, let reply = authorizedFill, let focus else { return }
+        guard ContinuousClock.now < reply.deadline, current(focus, generation, foreground: false),
+              let page, let window = focus.window, let service else { cancel(showRetry: true); return }
+        let temporarilyUnavailable = waitingForAuthorizationReturn || rendererFocusTemporarilyUnavailable
+        if temporarilyUnavailable && !service.fillOwnerIsActive(window) {
+            if waitingForAuthorizationReturn, !requestedAuthorizationReturn, let peer = reply.peer {
+                requestedAuthorizationReturn = true
+                service.returnFromPawl(peer, window)
+            }
+            return
+        }
+        guard current(focus, generation) else {
+            if !temporarilyUnavailable || !keepsPageResponder(focus) { cancel(showRetry: true) }
+            return
+        }
+        authorizedFill = nil
+        let admitted = page.fillVault(focus.token, username: reply.username, secret: reply.secret)
+        if self.generation == generation { cancel(showRetry: !admitted) }
+    }
+
+    private func receiveAuthorizedFill(username: String, secret: String, lifetime: Duration,
+                                       peer: VaultVerifiedPeer?, focus: VaultNativeFocus, generation: UInt64) {
+        guard current(focus, generation, foreground: false), lifetime > .zero else {
+            if self.generation == generation { cancel(showRetry: true) }
+            return
+        }
+        let deadline = ContinuousClock.now + min(lifetime, .seconds(5))
+        authorizedFill = AuthorizedFill(username: username, secret: secret, peer: peer, deadline: deadline)
+        deliverAuthorizedFill(generation)
+        guard self.generation == generation, authorizedFill != nil else { return }
+        fillExpiry = Task { [weak self] in
+            try? await Task.sleep(until: deadline, clock: .continuous)
+            if !Task.isCancelled, self?.generation == generation { self?.cancel(showRetry: true) }
+        }
+    }
+
+    private func keepsPageResponder(_ focus: VaultNativeFocus) -> Bool {
+        guard let window = focus.window, let view = focus.view else { return false }
+        return service?.fillOwnerKeepsPageResponder(window, view) == true
+    }
+
     private func focused(_ focus: VaultNativeFocus?) {
         guard passkey == nil else { return }
-        if let focus, self.focus?.token == focus.token { return }
+        if let focus, self.focus?.token == focus.token {
+            retryAuthorizedFill(generation)
+            return
+        }
         if focus == nil, let old = self.focus, let view = old.view,
-           service?.presenter?.ownsNativePicker(in: view) == true,
-           current(old, generation, foreground: false) { return }
+           current(old, generation, foreground: false) {
+            if waitingForAuthorizationReturn || service?.presenter?.ownsNativePicker(in: view) == true { return }
+            if requestingSecret && keepsPageResponder(old) {
+                // Chromium can lose foreground before AppKit reports deactivation.
+                // A native responder outside this page is a real focus change.
+                rendererFocusTemporarilyUnavailable = true
+                return
+            }
+        }
         cancel(showRetry: focus == nil)
         guard let focus, focus.token != 0, let url = URL(string: focus.origin),
               let scheme = url.scheme, let host = url.host(percentEncoded: false),
@@ -817,23 +942,19 @@ private final class NativeVaultAttachment {
                         if self.generation == generation { self.cancel(showRetry: true) }
                         return
                     }
+                    self.requestingSecret = true
                     do {
-                        let username: String, secret: String
                         switch item.kind {
                         case .login(let id) where !focus.isCode:
-                            let reply = try await service.password(for: id, in: logins, origin: focus.origin, profile: profile)
-                            username = reply.username; secret = reply.password
+                            let (reply, peer) = try await service.password(for: id, in: logins, origin: focus.origin, profile: profile)
+                            self.receiveAuthorizedFill(username: reply.username, secret: reply.password, lifetime: .seconds(5),
+                                                       peer: peer, focus: focus, generation: generation)
                         case .code(let id) where focus.isCode:
-                            let reply = try await service.send(VaultCode(id: id, origin: focus.origin, profile: profile))
-                            username = ""; secret = reply.code
-                        default: self.cancel(); return
+                            let (reply, peer) = try await service.sendForFill(VaultCode(id: id, origin: focus.origin, profile: profile))
+                            self.receiveAuthorizedFill(username: "", secret: reply.code, lifetime: .seconds(reply.remaining),
+                                                       peer: peer, focus: focus, generation: generation)
+                        default: self.cancel()
                         }
-                        guard self.current(focus, generation), let page = self.page else {
-                            if self.generation == generation { self.cancel(showRetry: true) }
-                            return
-                        }
-                        let admitted = page.fillVault(focus.token, username: username, secret: secret)
-                        if self.generation == generation { self.cancel(showRetry: !admitted) }
                     } catch { if self.generation == generation { self.cancel(showRetry: true) } }
                 }
             }
