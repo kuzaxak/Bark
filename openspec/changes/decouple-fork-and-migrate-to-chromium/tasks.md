@@ -153,7 +153,7 @@ The immediate milestone is one usable integrated Intel app. Use the paired signe
 
 ## 10. User-reported regressions, 2026-11-20
 
-Keep each item open until its stated acceptance check passes. The maintainer is testing on both desktops. Local reports and recordings are in `~/Downloads/`.
+Keep each item open until its stated acceptance check passes. The maintainer owns interactive testing on both desktops. The coordinator reviews diffs and signed installers. Local reports and recordings are in `~/Downloads/`.
 
 - [ ] 10.1 Open Gmail on ARM and exercise Google’s account chooser without a crash. Report `9q6GRF.txt`. Build 122 contains the native chooser-parent fix. Signed installers verified on disk, desktop retest pending.
 - [ ] 10.2 Toggle “Offer to save” at `chrome://password-manager/settings` on ARM. Report `gAnChO.txt` has the same chooser stack as 10.1. Confirm the preference persists and that a concurrent chooser can open and dismiss.
@@ -164,7 +164,18 @@ Keep each item open until its stated acceptance check passes. The maintainer is 
 - [ ] 10.7 Use the website favicon in tabs and bookmarks, including a closed bookmark after relaunch. Verify correct site and profile, redirects, and private isolation.
 - [ ] 10.8 Eliminate blank white or dark frames during warm tab switches and reduce time to the destination page. Compare actual presented frames on rapid sidebar and keyboard switches, including splits. The Bark clip `Screen Recording 2026-11-20 at 11.44.17.mov` shows three full-page white flashes. Arc reference `Screen Recording 2026-11-20 at 11.45.27.mov`.
 - [ ] 10.9 Open Manage Extensions as a selected tab inside the invoking space and window. Confirm the page manages that space’s profile, including when another profile also has a manager tab.
-- [ ] 10.10 Open the Chrome Web Store from that space, view an extension, add it through the normal consent prompt, and verify it appears in that profile’s manager. Record the failing stage until the installed flow passes.
+- [ ] 10.10 Open the Chrome Web Store from that space, view an extension, add it through the normal consent prompt, and verify it appears in that profile’s manager. The current engine cancels the install dialog when the requesting Bark window has no Chromium BrowserView. Verify approval, cancellation and profile isolation.
+- [ ] 10.11 Apply the same routing to every profile settings shortcut. If the invoking space uses the requested profile, select the settings tab there. Otherwise switch the same browser window to the first regular space of that profile in sidebar order, then select the tab. Verify another window, a superseding selection, and a profile with no available space.
+
+| Tasks | Assigned agent | Current handoff |
+| --- | --- | --- |
+| 10.1–10.2 | Coordinator and architecture builders | Crash reports share a FedCM chooser stack. Build 122 signed on both architectures. The maintainer owns live retests. |
+| 10.3–10.4 | `pawl_settings` | Provider and companion contract checked. Engine commit `a440a2ce` adds the GitHub and split-field regressions. Build 122 predates those changes. |
+| 10.5–10.6 | `tab_preview`, `folder_visibility` | Switcher preview and selected bookmark shipped for manual testing in 122. |
+| 10.7–10.8 | `tab_preview`, with independent review by `pawl_settings` | Favicon persistence and warm tab mounting have focused regressions. Check the next signed build against the recordings. |
+| 10.9, 10.11 | `folder_visibility` | Replace the normal utility-window route. Verify same-space and cross-profile ownership before packaging. |
+| 10.10 | `tab_preview` | Repair the native Web Store install prompt and test it against its owning tab. |
+| Integrated build | `pawl_settings` (Intel), `folder_visibility` (ARM) | Use one reviewed engine revision and the reviewed shell for both installers. Desktop use is reserved for the maintainer. |
 
 Related follow-ups already have their own records. Space switching and toolbar placement have archived changes. Folder disclosure and search paths, certificate inspection, hidden stock Chromium windows, checkout/build cleanup, signing and size, and cross-account bookmark sharing remain discoverable in the integration history and their respective migration/rebrand tasks.
 

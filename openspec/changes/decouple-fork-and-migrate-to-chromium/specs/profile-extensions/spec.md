@@ -71,10 +71,18 @@ The browser SHALL keep extensions installed by users or organizations disabled i
 ### Requirement: Profile settings shortcuts
 Each Chromium-backed profile's settings page SHALL offer quick links to Chromium Settings, Extensions, Privacy and Security, Site Settings, and Clear Browsing Data for that selected profile.
 
+Bark SHALL present these controls in a selected tab in the invoking browser window, keeping its current space when that space uses the requested profile and otherwise switching to the first regular space of that profile in sidebar order.
+
+#### Scenario: Stay in the current space
+- **GIVEN** two spaces use Work and the second one is active
+- **WHEN** the user invokes Manage Extensions
+- **THEN** the second space stays active and shows the Work extension manager as its selected tab
+- **AND** the number of windows stays the same
+
 #### Scenario: Settings selection differs from active window
 - **GIVEN** Settings has Work selected while the front browser window uses Personal
 - **WHEN** the user selects the Extensions quick link
-- **THEN** the extension manager opens in Work
+- **THEN** that window switches to the first Work space in sidebar order and selects the extension manager tab there
 - **AND** the destination visibly identifies Work and does not adopt Personal's runtime context
 
 #### Scenario: Clear only the selected profile
@@ -83,9 +91,10 @@ Each Chromium-backed profile's settings page SHALL offer quick links to Chromium
 - **THEN** Chromium applies the selected deletion to Work only
 - **AND** native profile settings reflect the resulting state on return
 
-#### Scenario: Profile has no open window
-- **WHEN** the user opens a settings shortcut for a valid profile with no open window
-- **THEN** a settings surface is created in that profile without changing its space assignments
+#### Scenario: Requested profile has no regular space
+- **GIVEN** the user requests settings for a profile with no regular space
+- **WHEN** the shortcut resolves its destination
+- **THEN** Bark reports that the profile controls cannot be opened and leaves the current selection intact
 
 ### Requirement: Consistent profile search preferences
 The browser SHALL use each Chromium profile's effective search provider consistently across native search controls, typed searches and supported search suggestions.
