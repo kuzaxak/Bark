@@ -1,5 +1,5 @@
 diff --git a/chrome/renderer/chrome_render_frame_observer.cc b/chrome/renderer/chrome_render_frame_observer.cc
-index 6f3034c426..2d77bb89fb 100644
+index 6f3034c426..86b3ab09a8 100644
 --- a/chrome/renderer/chrome_render_frame_observer.cc
 +++ b/chrome/renderer/chrome_render_frame_observer.cc
 @@ -3,6 +3,17 @@
@@ -112,7 +112,7 @@ index 6f3034c426..2d77bb89fb 100644
  }
  
  void ChromeRenderFrameObserver::SetWindowFeatures(
-@@ -959,3 +1011,1409 @@ bool ChromeRenderFrameObserver::IsAnimatedWebp(
+@@ -959,3 +1011,1413 @@ bool ChromeRenderFrameObserver::IsAnimatedWebp(
        WebPGetFeatures(image_data.data(), image_data.size(), &features);
    return status == VP8_STATUS_OK && features.has_animation;
  }
@@ -527,7 +527,11 @@ index 6f3034c426..2d77bb89fb 100644
 +void ChromeRenderFrameObserver::NookScriptThunk(
 +    const v8::FunctionCallbackInfo<v8::Value>& info) {
 +  auto context = info.GetIsolate()->GetCurrentContext();
-+  auto data = info.Data().As<v8::Array>();
++  const auto payload = info.DataV2();
++  if (payload.IsEmpty() || !payload->IsValue()) return;
++  const auto value = payload.As<v8::Value>();
++  if (!value->IsArray()) return;
++  const auto data = value.As<v8::Array>();
 +  v8::Local<v8::Value> sink, generation, phase;
 +  if (!data->Get(context, 0).ToLocal(&sink) || !sink->IsFunction() ||
 +      !data->Get(context, 1).ToLocal(&generation) ||
