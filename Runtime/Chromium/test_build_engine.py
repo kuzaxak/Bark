@@ -168,6 +168,7 @@ class BuildArchitectureTests(unittest.TestCase):
                     self.assertIn(f"update_pgo_profiles.py --target={pgo} update", output.getvalue())
                     self.assertIn("BarkCargo-official", output.getvalue())
                     self.assertIn(f"gn gen out/Barc-{arch}-official", output.getvalue())
+                    self.assertIn(f"autoninja -C out/Barc-{arch}-official -j 3 -k 8", output.getvalue())
                     self.assertIn("-load @config//official_pgo.star", output.getvalue())
                     gn = build_engine.engine_args(arch, True).decode().splitlines()
                     self.assertIn("is_official_build = true", gn)

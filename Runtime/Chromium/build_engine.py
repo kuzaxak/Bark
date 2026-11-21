@@ -446,6 +446,8 @@ def build(checkout, depot_tools, env, args):
     ninja = [depot_tools / "autoninja", "-C", out.relative_to(src), "-j", args.jobs]
     ninja_env = {**env, "NINJA_SUMMARIZE_BUILD": "1"}
     if args.official:
+        # Collect independent compile failures while retaining successful objects for the retry.
+        ninja.extend(["-k", "8"])
         # Delegate to Chromium's standard Siso config and add Bark's
         # official-only compiler handler in a private config directory.
         if args.dry_run:
