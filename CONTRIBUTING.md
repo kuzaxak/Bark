@@ -451,8 +451,9 @@ The runner retains the Chromium source, Ninja outputs and verified SDKs across
 attempts. GitHub Actions caches only the finished SDK pair and its metadata under
 the engine and toolchain fingerprint. Each restore verifies the manifests and
 official build receipts before using either engine. A shell-only change can
-reuse both SDKs. On a port or compile failure, fix the source and push a new
-candidate tag. The previous tag remains a record of the attempted build.
+reuse both SDKs. An official compile continues independent work until eight build
+steps fail or it runs out of work. Any failure blocks SDK packaging. Fix the
+reported errors and push a new candidate tag. The previous tag remains a record of the attempted build.
 
 The signing job packages two Bark DMGs and the universal Nook transition with
 the established Developer ID, notary and Sparkle credentials. Native hosted Mac
