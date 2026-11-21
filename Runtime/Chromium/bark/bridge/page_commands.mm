@@ -229,7 +229,8 @@ int CertificateCommand(BrowserWindowInterface* window,
     return 1;
   const auto document = frame->GetWeakDocumentPtr();
   auto* viewer = CertificateViewerDialog::ShowConstrained(
-      entry->GetSSL().certificate->CopyCertBuffers(), contents, parent);
+      entry->GetSSL().certificate->CopyCertBuffers(), contents, parent,
+      CertificateViewerEntrypoint::kPageInfo);
   if (viewer) {
     if (auto* widget = views::Widget::GetWidgetForNativeWindow(
             viewer->GetNativeWebContentsModalDialog())) {
