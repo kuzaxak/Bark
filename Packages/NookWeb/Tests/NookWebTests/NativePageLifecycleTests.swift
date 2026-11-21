@@ -4793,8 +4793,13 @@ struct NativeVaultFormTests {
         #expect(existing.password == "external-edit" && launches == 1 && !native.vaultSaveValid)
     }
 
-    @Test(arguments: ["approved", "ambiguous", "conflict", "lostReply", "invalidTicket", "unsupported", "stale"])
+    @Test(.timeLimit(.minutes(1)),
+          arguments: ["approved", "ambiguous", "conflict", "lostReply", "invalidTicket", "unsupported", "stale"])
     func checkedUpdateCommitsOnlyTheApprovedTicket(result: String) async throws {
+        enum SaveEvent: Sendable { case presented, retired }
+        let events = AsyncStream<SaveEvent>.makeStream()
+        defer { events.continuation.finish() }
+        var updates = events.stream.makeAsyncIterator()
         let f = try NativeModelFixture(); defer { f.cleanup() }
         let transport = SyntheticVaultRequests(), presenter = SyntheticVaultPresenter()
         await transport.checkedWriteScenario(result)
@@ -4803,16 +4808,25 @@ struct NativeVaultFormTests {
                                  openPawlApplication: { launches += 1; return true })
         vault.presenter = presenter; f.tabs.vault = vault; _ = await vault.refresh()
         let native = f.host.finishCreate(0)
-        native.submitVault(username: "synthetic-user"); await agentCallbacks()
+        presenter.onSaveOffered = { events.continuation.yield(.presented) }
+        native.onVaultSaveCancelled = { events.continuation.yield(.retired) }
+        native.submitVault(username: "synthetic-user")
+        let outcome = await updates.next()
         if result == "invalidTicket" || result == "unsupported" {
-            #expect(presenter.saveCompletion == nil)
+            try #require(outcome == .retired)
+            #expect(presenter.loginAction == nil && presenter.saveCompletion == nil)
         } else {
+            try #require(outcome == .presented)
             #expect(presenter.loginAction == (result == "ambiguous" ? .manageExisting : .update))
             let answer = try #require(presenter.saveCompletion)
             if result == "stale" { native.vaultSaveValid = false }
-            answer(true); answer(true); await agentCallbacks()
+            answer(true); answer(true)
+            let retired = await updates.next()
+            try #require(retired == .retired)
         }
+        #expect(!native.vaultSaveValid && presenter.saveCompletion == nil)
         let methods = await transport.methods
+        #expect(methods.filter { $0 == "prepareLoginWrite" }.count == 1)
         #expect(!methods.contains("save") && !methods.contains("password") && !methods.contains("logins"))
         let commits = methods.filter { $0 == "commitLoginWrite" }
         #expect(commits.count == (["approved", "conflict", "lostReply"].contains(result) ? 1 : 0))
@@ -5210,6 +5224,7 @@ private final class SyntheticVaultPresenter: VaultPresenter {
         let done = creationConsent; creationConsent = nil; creationView = nil; done?(false)
     }
     var saveCompletion: ((Bool)->Void)?
+    var onSaveOffered: (() -> Void)?
     var loginAction: VaultLoginOffer?
     weak var saveView: NSView?
     func offerNativeLogin(_ action: VaultLoginOffer, host: String, username: String, itemID: UUID,
@@ -5217,6 +5232,7 @@ private final class SyntheticVaultPresenter: VaultPresenter {
         let old = saveCompletion; saveCompletion = nil; old?(false)
         loginAction = action
         saveView = view; saveCompletion = completion
+        onSaveOffered?()
     }
     func dismissSave(in view:NSView) {
         guard saveView === view else { return }
@@ -5624,7 +5640,12 @@ final class NativeTestPage: PageNavigation, VaultNativePage {
         vaultSave = callback; vaultSaveValid = false
     }
     func vaultSaveIsCurrent(_ token: UInt64) -> Bool { vaultSaveValid && token == vaultSaveSerial }
-    func cancelVaultSave(_ token: UInt64) { if token == vaultSaveSerial { vaultSaveValid = false } }
+    var onVaultSaveCancelled: (() -> Void)?
+    func cancelVaultSave(_ token: UInt64) {
+        guard token == vaultSaveSerial else { return }
+        vaultSaveValid = false
+        onVaultSaveCancelled?()
+    }
     func submitVault(username: String = "new-synthetic-user") {
         mountVaultView()
         vaultSaveSerial += 1; vaultSaveValid = true
