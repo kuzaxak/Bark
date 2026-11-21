@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/frame/browser_widget.cc b/chrome/browser/ui/views/frame/browser_widget.cc
-index 6a221594b0..f6923db825 100644
+index 6a221594b0..8c22d5f770 100644
 --- a/chrome/browser/ui/views/frame/browser_widget.cc
 +++ b/chrome/browser/ui/views/frame/browser_widget.cc
 @@ -4,14 +4,47 @@
@@ -1364,7 +1364,7 @@ index 6a221594b0..f6923db825 100644
  }
  
  void BrowserWidget::InitBrowserWidget() {
-@@ -239,6 +1540,1102 @@ void BrowserWidget::InitBrowserWidget() {
+@@ -239,6 +1540,1094 @@ void BrowserWidget::InitBrowserWidget() {
    }
  }
  
@@ -2380,14 +2380,6 @@ index 6a221594b0..f6923db825 100644
 +      return false;
 +    }
 +  }
-+  glass_frame_subscription_ = {};
-+  if (auto* service = GlassFrameService::GetInstance()) {
-+    glass_frame_subscription_ =
-+        service->RegisterGlassFrameEligibilityChangedCallback(
-+            view->browser(),
-+            base::BindRepeating(&BrowserWidget::OnGlassFrameEligibilityChanged,
-+                                base::Unretained(this)));
-+  }
 +  SelectNativeTheme();
 +  ResetLastColorProviderKey();
 +  // Widget::ThemeChanged repaints/color-refreshes existing trees. It does not
@@ -2467,7 +2459,7 @@ index 6a221594b0..f6923db825 100644
  BrowserFrameView* BrowserWidget::GetFrameView() const {
    return browser_frame_view_;
  }
-@@ -324,6 +2721,7 @@ views::internal::RootView* BrowserWidget::CreateRootView() {
+@@ -324,6 +2713,7 @@ views::internal::RootView* BrowserWidget::CreateRootView() {
  std::unique_ptr<views::FrameView> BrowserWidget::CreateFrameView() {
    auto browser_frame_view = chrome::CreateBrowserFrameView(this, browser_view_);
    browser_frame_view_ = browser_frame_view.get();
@@ -2475,7 +2467,7 @@ index 6a221594b0..f6923db825 100644
    return browser_frame_view;
  }
  
-@@ -391,7 +2789,76 @@ void BrowserWidget::OnNativeWidgetWorkspaceChanged() {
+@@ -391,7 +2781,76 @@ void BrowserWidget::OnNativeWidgetWorkspaceChanged() {
    Widget::OnNativeWidgetWorkspaceChanged();
  }
  

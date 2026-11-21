@@ -1,5 +1,5 @@
 diff --git a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
-index fd4cc9a121..287552832a 100644
+index fd4cc9a121..bbaf96c835 100644
 --- a/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 +++ b/chrome/browser/ui/views/frame/browser_native_widget_mac.mm
 @@ -43,6 +43,7 @@
@@ -21,7 +21,7 @@ index fd4cc9a121..287552832a 100644
    if (features::IsGlassFrameEnabled()) {
      if (auto* vertical_tab_strip_state_controller =
              tabs::VerticalTabStripStateController::From(
-@@ -249,6 +254,53 @@ - (NSTouchBar*)makeTouchBar {
+@@ -249,6 +254,56 @@ - (NSTouchBar*)makeTouchBar {
                    base::Unretained(this)));
      }
    }
@@ -34,8 +34,11 @@ index fd4cc9a121..287552832a 100644
 +              base::BindRepeating(
 +                  &BrowserNativeWidgetMac::UpdateGlassEligibility,
 +                  base::Unretained(this)));
-+      UpdateGlassEligibility(glass_frame_service->IsBrowserWindowEligible(
-+          browser_view_->browser()));
++      const bool is_glass_eligible =
++          glass_frame_service->IsBrowserWindowEligible(browser_view_->browser());
++      if (last_is_glass_eligible_ != is_glass_eligible) {
++        UpdateGlassEligibility(is_glass_eligible);
++      }
 +    }
 +  }
 +}
@@ -75,7 +78,7 @@ index fd4cc9a121..287552832a 100644
  }
  
  BrowserNativeWidgetMac::~BrowserNativeWidgetMac() = default;
-@@ -413,7 +465,9 @@ - (NSTouchBar*)makeTouchBar {
+@@ -413,7 +468,9 @@ - (NSTouchBar*)makeTouchBar {
      remote_cocoa::mojom::ValidateUserInterfaceItemResult* result) {
    BrowserWindowInterface* const browser =
        browser_view_ ? browser_view_->browser() : nullptr;
@@ -86,7 +89,7 @@ index fd4cc9a121..287552832a 100644
      result->enable = false;
      return;
    }
-@@ -795,21 +849,12 @@ - (NSTouchBar*)makeTouchBar {
+@@ -795,21 +852,12 @@ - (NSTouchBar*)makeTouchBar {
        GetWidget()->RegisterPaintAsActiveChangedCallback(
            base::BindRepeating(&BrowserNativeWidgetMac::UpdateBackgroundColor,
                                base::Unretained(this)));
@@ -109,7 +112,7 @@ index fd4cc9a121..287552832a 100644
    }
  
    // The location bar takes focus inside Widget::Show(), and with an input
-@@ -932,7 +977,8 @@ - (NSTouchBar*)makeTouchBar {
+@@ -932,7 +980,8 @@ - (NSTouchBar*)makeTouchBar {
      if (command_id == -1) {
        command_id = DelayedWebContentsCommandForKeyEvent(ns_event);
      }
