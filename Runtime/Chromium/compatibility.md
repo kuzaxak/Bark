@@ -1,6 +1,6 @@
 # Chromium launch acceptance
 
-Pinned candidate: Chromium **156.0.8078.80**. Every mandatory row must pass in the installed, signed build on both native architectures. `U` = untested; `B` = blocked on native browser-layer integration. Neither is a waiver. CEF exploration does not qualify the full Chromium runtime. Site/service and independently authored extension versions must be frozen before a qualification run; none are qualified here.
+Pinned candidate: Chromium **158.0.8127.37**. Every mandatory row must pass in the installed, signed build on both native architectures. `U` = untested; `B` = blocked on native browser-layer integration. Neither is a waiver. CEF exploration does not qualify the full Chromium runtime. Site/service and independently authored extension versions must be frozen before a qualification run; none are qualified here.
 
 Implementation order is Intel first: complete the application replacement and its functional regressions before resuming ARM compilation. ARM, installed distribution and performance qualification remain end-stage release work. Untested rows stay unqualified while independent implementation proceeds; Intel results do not fill the ARM column.
 

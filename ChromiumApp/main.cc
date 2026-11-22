@@ -3,7 +3,7 @@
 // found in the LICENSE file.
 
 // The outer application's main, from chrome/app/chrome_exe_main_mac.cc at
-// Chromium 156.0.8078.80. Helpers keep Chromium's own main.
+// Chromium 158.0.8127.37. Helpers keep Chromium's own main.
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -38,7 +38,8 @@ void abort_report_np(const char* fmt, ...);
 
 namespace {
 
-[[noreturn]] void FatalError(const char* format, ...) {
+[[clang::not_tail_called]] [[noreturn]] void FatalError(const char* format,
+                                                        ...) {
   va_list valist;
   va_start(valist, format);
   char message[4096];
