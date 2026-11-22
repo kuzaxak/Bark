@@ -1,6 +1,8 @@
 # Licensed under GPL-3.0. See LICENSE.
 
+from hashlib import sha256
 from pathlib import Path
+import subprocess
 from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
@@ -72,6 +74,23 @@ class OfficialSDKCacheTests(unittest.TestCase):
         for engine in cache.engines(cached).values():
             self.assertEqual((engine / "fixture").read_bytes(), b"native")
         self.assertTrue((self.package / "compiler-output").is_file())
+        output.assert_called_once_with(cached, cacheable=True)
+
+    def test_cache_takes_sealed_engines_without_unsealing_them(self):
+        for engine in cache.engines(self.package).values():
+            (engine / "Headers").mkdir()
+            (engine / "Headers/barc_bridge_api.h").write_bytes(b"api")
+            (engine / "SHA256SUMS").write_text(f"{sha256(b'api').hexdigest()}  ./Headers/barc_bridge_api.h\n"
+                                               f"{sha256(b'native').hexdigest()}  ./fixture\n")
+            subprocess.run(["/bin/chmod", "-R", "a-w", engine], check=True)
+        sealed = {arch: cache.verified_digest(engine) for arch, engine in cache.engines(self.package).items()}
+        with patch.object(cache, "RECEIVER", self.receiver), \
+                patch.object(cache, "verify_pair", return_value=12), patch.object(cache, "outputs") as output:
+            cache.accept_build(self.package, self.cache_root)
+        cached = self.cache_root / "Package"
+        self.assertEqual({arch: cache.verified_digest(engine) for arch, engine in cache.engines(cached).items()},
+                         sealed)
+        self.assertEqual(cache.read_metadata(cached), self.metadata)
         output.assert_called_once_with(cached, cacheable=True)
 
     def test_oversized_or_rejected_cache_uses_runner_products(self):
