@@ -79,10 +79,17 @@ class Screen:
                 and row["kCGWindowLayer"] == 0 and row["kCGWindowBounds"]["Width"] >= 400
                 and row["kCGWindowBounds"]["Height"] >= 200]
 
+    def drawn(self, target):
+        # Chromium keeps a newly shown window at alpha 0 until its first compositor frame at the window's size,
+        # and the window server delivers no pointer events to a fully transparent window.
+        return wait_for("The candidate window stayed transparent", lambda: next(
+            (window for window in self.windows() if target(window) and window["kCGWindowAlpha"] > 0), None))
+
     def click(self, relative, flags=0):
         self.guard()
         q = self.quartz
-        window = self.windows()[0]
+        number = self.windows()[0]["kCGWindowNumber"]
+        window = self.drawn(lambda row: row["kCGWindowNumber"] == number)
         bounds = window["kCGWindowBounds"]
         x, y = relative
         if not 0 <= x < bounds["Width"] or not 0 <= y < bounds["Height"]:
@@ -120,10 +127,15 @@ class Screen:
 
     def hover(self, point):
         self.guard()
-        if not any(bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
-                   and bounds["Y"] <= point[1] < bounds["Y"] + bounds["Height"]
-                   for window in self.windows() if (bounds := window["kCGWindowBounds"])):
+
+        def under(window):
+            bounds = window["kCGWindowBounds"]
+            return (bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
+                    and bounds["Y"] <= point[1] < bounds["Y"] + bounds["Height"])
+
+        if not any(under(window) for window in self.windows()):
             raise RuntimeError("The hover target is outside the disposable candidate")
+        self.drawn(under)
         q = self.quartz
         event = q.CGEventCreateMouseEvent(self.source, q.kCGEventMouseMoved, point, 0)
         q.CGEventPost(q.kCGHIDEventTap, event)
@@ -195,9 +207,10 @@ class Screen:
     def describe(self, element):
         if element is None:
             return None
-        return {"pid": self.ax.AXUIElementGetPid(element, None)[1],
-                **{name: str(value) for name in ("AXRole", "AXSubrole", "AXTitle", "AXDescription")
-                   if (value := self.attribute(element, name)) is not None}}
+        pid = self.ax.AXUIElementGetPid(element, None)[1]
+        names = ("AXRole", "AXSubrole", "AXTitle", "AXDescription") if pid == self.pid else ("AXRole", "AXSubrole")
+        return {"pid": pid, **{name: str(value) for name in names
+                               if (value := self.attribute(element, name)) is not None}}
 
     def location(self):
         pointer = self.quartz.CGEventGetLocation(self.quartz.CGEventCreate(None))
@@ -217,10 +230,12 @@ class Screen:
         rows = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID)
 
         def entry(row):
-            return {"owner": row.get("kCGWindowOwnerName"), "pid": row["kCGWindowOwnerPID"],
-                    "layer": row["kCGWindowLayer"], "number": row["kCGWindowNumber"],
-                    "name": row.get("kCGWindowName"), "alpha": row.get("kCGWindowAlpha"),
-                    "bounds": dict(row["kCGWindowBounds"])}
+            facts = {"owner": row.get("kCGWindowOwnerName"), "pid": row["kCGWindowOwnerPID"],
+                     "layer": row["kCGWindowLayer"], "number": row["kCGWindowNumber"],
+                     "alpha": row.get("kCGWindowAlpha"), "bounds": dict(row["kCGWindowBounds"])}
+            if row["kCGWindowOwnerPID"] == self.pid:
+                facts["name"] = row.get("kCGWindowName")
+            return facts
 
         def under(bounds):
             return (bounds["X"] <= point[0] < bounds["X"] + bounds["Width"]
