@@ -109,3 +109,14 @@ jobs:
           path: ${{ runner.temp }}/bark-qualified
           if-no-files-found: error
           overwrite: true
+      - name: Upload the walk evidence of a failed qualification
+        if: failure() || cancelled()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: bark-qualification-evidence-${{ matrix.arch }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/bark-walk
+            ${{ runner.temp }}/bark-github-actions
+            !${{ runner.temp }}/bark-walk/install-check-*
+          if-no-files-found: ignore
+          retention-days: 14

@@ -457,7 +457,9 @@ reported errors and push a new candidate tag. The previous tag remains a record 
 
 The signing job packages two Bark DMGs and the universal Nook transition with
 the established Developer ID, notary and Sparkle credentials. Native hosted Mac
-jobs exercise the signed updates. After qualification, the release job commits
+jobs exercise the signed updates. A failed qualification prints the end of the
+failing walk's log and keeps that architecture's walk evidence for 14 days as
+`bark-qualification-evidence-<arch>-<attempt>`. After qualification, the release job commits
 the exact paired SDK pins, creates `bark-v2.0.0`, uploads a GitHub draft and
 promotes it to Latest after checking its asset digests. Latest must serve
 `appcast.xml`, `bark-macos-arm64.xml` and `bark-macos-x86_64.xml`.

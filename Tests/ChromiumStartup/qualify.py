@@ -35,9 +35,12 @@ def walk(script, arguments, output):
     with output.with_suffix(".log").open("x") as log:
         command = [sys.executable, "-B", script, "--require-official", *arguments, "--output", output]
         child = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT)
-        if child.returncode == SCREEN_UNAVAILABLE:
-            raise ScreenUnavailable(f"The desktop became unavailable during {output.name}.")
-        child.check_returncode()
+    if child.returncode:
+        tail = output.with_suffix(".log").read_text(errors="replace").splitlines()[-60:]
+        print(f"Last lines of {output.name}.log:", *tail, sep="\n", file=sys.stderr, flush=True)
+    if child.returncode == SCREEN_UNAVAILABLE:
+        raise ScreenUnavailable(f"The desktop became unavailable during {output.name}.")
+    child.check_returncode()
 
 
 def validate_machine(hardware, macos):
