@@ -121,12 +121,17 @@ class Screen:
 
     def covering(self, stack, number):
         q = self.quartz
-        # The Dock's transparent full-display window and the window server's pointer window let clicks through.
+        # The Dock's and Notification Center's transparent full-display windows and the window server's pointer window
+        # let clicks through.
         passthrough = {("Dock", q.kCGDockWindowLevel), ("Window Server", q.kCGCursorWindowLevel)}
         for row in stack:
             if row["number"] == number:
                 return None
-            if row["pid"] != self.pid and (row["owner"], row["layer"]) not in passthrough:
+            bounds = row["bounds"]
+            frame = [bounds["X"], bounds["Y"], bounds["Width"], bounds["Height"]]
+            overlay = row["owner"] == "Notification Center" and (
+                (display := self.display(frame[:2])) is not None and display["bounds"] == frame)
+            if row["pid"] != self.pid and (row["owner"], row["layer"]) not in passthrough and not overlay:
                 return row
         return None
 

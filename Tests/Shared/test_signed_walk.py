@@ -251,6 +251,33 @@ class ClickDiagnosticsTests(unittest.TestCase):
         self.assertEqual(evidence["element_at_point"], {"pid": 99, "AXRole": "AXGroup"})
 
 
+class ClickCoverTests(unittest.TestCase):
+    def covering(self, notification_bounds):
+        screen = Screen.__new__(Screen)
+        screen.pid = 4321
+        screen.quartz = Mock(kCGDockWindowLevel=20, kCGCursorWindowLevel=2147483630)
+        screen.quartz.CGGetDisplaysWithPoint.return_value = (0, (7,), 1)
+        screen.quartz.CGDisplayBounds.return_value = SimpleNamespace(
+            origin=SimpleNamespace(x=0, y=0), size=SimpleNamespace(width=1920, height=1080))
+        screen.quartz.CGDisplayModeGetPixelWidth.return_value = 1920
+        notification = {"owner": "Notification Center", "pid": 99, "layer": 23, "number": 12, "alpha": 1,
+                        "bounds": notification_bounds}
+        stack = [notification,
+                 {"owner": "Dock", "pid": 77, "layer": 20, "number": 3, "alpha": 1,
+                  "bounds": {"X": 0, "Y": 0, "Width": 1920, "Height": 1080}},
+                 {"owner": "Bark", "pid": 4321, "layer": 0, "number": 40, "alpha": 1,
+                  "bounds": {"X": 50, "Y": 320, "Width": 900, "Height": 660}}]
+        return screen.covering(stack, 40), notification
+
+    def test_notification_centers_full_display_overlay_does_not_cover_the_candidate(self):
+        cover, _ = self.covering({"X": 0, "Y": 0, "Width": 1920, "Height": 1080})
+        self.assertIsNone(cover)
+
+    def test_notification_center_panel_smaller_than_the_display_covers_the_candidate(self):
+        cover, panel = self.covering({"X": 600, "Y": 300, "Width": 360, "Height": 400})
+        self.assertIs(cover, panel)
+
+
 class TransparentHoverTests(unittest.TestCase):
     def hover(self, shown_after):
         clock = {"now": 0.0}
