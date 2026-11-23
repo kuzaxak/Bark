@@ -31,6 +31,15 @@ extern "C" {
 // leading size. Version 11 adds the window host's calls. Version 12 adds
 // explicit space switch outcomes. Version 13 requires Bark-owned browser windows on macOS.
 #define BARC_BRIDGE_VERSION 13
+#define BARC_HAS_PASSWORD_PROVIDER 1
+#define BARC_HAS_LOAD_PROGRESS 1
+#define BARC_HAS_RENDERER_STATE 1
+#define BARC_HAS_TAB_FAVICON 1
+#define BARC_HAS_PAWL_MANAGEMENT 1
+// The actual AppKit application delegate posts this notification on the main
+// thread. The sender is the delegate; userInfo[@"metadata"] is CKShareMetadata.
+#define BARC_HAS_CLOUD_SHARE_ACTIVATION 1
+#define BARC_CLOUD_SHARE_NOTIFICATION "ee.qdo.bark.EngineCloudShareAccepted"
 // Lowercase hex SHA-256 of the line "<SHA-256 of header>  barc_bridge_api.h\n"
 // for this header as the engine compiled it. The app's main compares it with
 // BARC_PUBLIC_HEADERS_SHA256 from the header it compiled.
@@ -176,7 +185,9 @@ enum BarcPageCommand {
   // Only the certificate viewer opened for this document and holding the
   // physical key window qualifies. The state query does not dismiss it.
   BARC_PAGE_CERTIFICATE_VIEWER_FOCUSED = 17,
-  BARC_PAGE_CLOSE_CERTIFICATE_VIEWER = 18
+  BARC_PAGE_CLOSE_CERTIFICATE_VIEWER = 18,
+  // Returns the active page zoom percent, or zero if unavailable.
+  BARC_PAGE_ZOOM_PERCENT = 19
 };
 enum BarcCertificateState {
   BARC_CERTIFICATE_UNAVAILABLE = 0,
@@ -300,7 +311,9 @@ enum BarcTabFlags {
   BARC_TAB_MUTED = 256, BARC_TAB_AUDIBLE = 512,
   BARC_TAB_VIDEO_PIP = 1024, BARC_TAB_DOCUMENT_PIP = 2048,
   // Without this bit the PiP fields are unavailable, not known-inactive.
-  BARC_TAB_PIP_STATE_KNOWN = 4096
+  BARC_TAB_PIP_STATE_KNOWN = 4096,
+  // Exact committed Pawl management document in a regular owner.
+  BARC_TAB_PAWL_MANAGEMENT = 8192
 };
 typedef void (*BarcTabCallback)(void* context, uint64_t observation,
                                int32_t event, int32_t window, int32_t tab,
@@ -341,6 +354,11 @@ enum BarcMediaFlags {
 typedef void (*BarcMediaCallback)(void* context, uint64_t observation,
     int32_t window, int32_t tab, uint32_t flags, const char* title,
     const char* artist, const char* album);
+typedef void (*BarcTabFaviconCallback)(void* context, uint64_t observation,
+                                      const uint8_t* _Nullable png,
+                                      size_t length);
+typedef void (*BarcLoadProgressCallback)(void* context, uint64_t observation,
+                                        double progress, int loading);
 enum BarcMediaAction {
   BARC_MEDIA_PLAY = 0, BARC_MEDIA_PAUSE = 1,
   BARC_MEDIA_PREVIOUS_TRACK = 2, BARC_MEDIA_NEXT_TRACK = 3
@@ -620,6 +638,11 @@ enum BarcExtensionActionFlags {
 // this callback returns. Copy any values that the sidebar will retain.
 typedef void (*BarcExtensionActionCallback)(void* context, const char* extension_id,
     const char* title, const char* badge, int flags);
+
+typedef enum BarcPasswordProvider : int {
+  BARC_PASSWORD_PROVIDER_CHROMIUM = 0,
+  BARC_PASSWORD_PROVIDER_PAWL = 1,
+} BarcPasswordProvider;
 
 struct BarcBridge {
   size_t size;
@@ -1229,6 +1252,33 @@ struct BarcBridge {
                                             const char* extension_id, int pinned);
   int (* _Nonnull tab_invoke_extension)(int32_t window, int32_t tab,
                                         const char* extension_id);
+
+  // Browser process main thread, once before entering ChromeMain. Chromium is
+  // the default. Returns 0 for invalid, repeated, or late registration.
+  int (* _Nonnull set_password_provider)(BarcPasswordProvider provider);
+
+  // Optional V13 tail, guarded by the table's byte size. Binds to an existing
+  // live tab observation and borrows its context. First and later snapshots
+  // are delivered on the UI thread after navigation callbacks. The fraction
+  // is finite and in [0, 1], including zero. Loading is 0 or 1. Both describe
+  // the tab's current contents when sampled. Null clears the callback and
+  // cancels pending snapshots. Returns 0 for a stale token or duplicate bind.
+  int (* _Nullable tab_observe_load_progress)(
+      uint64_t observation, BarcLoadProgressCallback _Nullable callback);
+
+  // Read the live primary document of an exact regular Bark tab on the UI
+  // thread. Returns 1 with the OS renderer PID and 0/1 Blink document
+  // visibility. A refusal returns 0 and leaves both outputs unchanged.
+  // This never starts, activates or selects a tab.
+  int (* _Nonnull tab_renderer_state)(int32_t window, int32_t tab,
+                                        int32_t* pid, int32_t* document_visible);
+
+  // Bind to a live tab observation on the UI thread. The initial snapshot
+  // and later changes borrow the observation context. PNG bytes are valid
+  // only during the callback, at most 32x32 pixels and 32768 bytes. Null
+  // bytes with length zero clear the icon. A null callback unbinds.
+  int (* _Nonnull tab_bind_favicon)(uint64_t observation,
+                                    BarcTabFaviconCallback _Nullable callback);
 };
 
 #ifdef __cplusplus
