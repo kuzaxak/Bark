@@ -1,11 +1,14 @@
 """Offline checks for the signed walk's native-architecture preflight."""
 
+from contextlib import contextmanager, nullcontext, redirect_stdout
+import io
 import json
 from pathlib import Path
 import runpy
 import subprocess
 import sys
 import tempfile
+from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
@@ -33,6 +36,121 @@ class InputOwnershipTests(unittest.TestCase):
             screen.key("q")
         with self.assertRaisesRegex(RuntimeError, "Posted pointer event missed"):
             screen.guard(target=(420, 450))
+
+
+class ClickDiagnosticsTests(unittest.TestCase):
+    def failed_click(self, *, lock_lost):
+        pid = 4321
+        rows = [
+            {"kCGWindowOwnerName": "NotificationCenter", "kCGWindowOwnerPID": 99, "kCGWindowLayer": 23,
+             "kCGWindowNumber": 12, "kCGWindowBounds": {"X": 380, "Y": 150, "Width": 360, "Height": 80}},
+            {"kCGWindowOwnerName": "Bark", "kCGWindowOwnerPID": pid, "kCGWindowLayer": 0, "kCGWindowNumber": 41,
+             "kCGWindowBounds": {"X": 600, "Y": 60, "Width": 320, "Height": 120}},
+            {"kCGWindowOwnerName": "Bark", "kCGWindowOwnerPID": pid, "kCGWindowLayer": 0, "kCGWindowNumber": 40,
+             "kCGWindowBounds": {"X": 50, "Y": 40, "Width": 900, "Height": 660}},
+            {"kCGWindowOwnerName": "Dock", "kCGWindowOwnerPID": 77, "kCGWindowLayer": 20, "kCGWindowNumber": 3,
+             "kCGWindowBounds": {"X": 0, "Y": 840, "Width": 1440, "Height": 60}},
+        ]
+        desktop = {"pointer": (5.0, 5.0), "owned": True}
+        quartz = Mock()
+        quartz.CGWindowListCopyWindowInfo.return_value = rows
+        quartz.CGEventCreateMouseEvent.side_effect = lambda source, kind, point, button: point
+        quartz.CGEventPost.side_effect = lambda tap, point: desktop.update(pointer=point)
+        quartz.CGEventGetLocation.side_effect = lambda event: SimpleNamespace(
+            x=desktop["pointer"][0], y=desktop["pointer"][1])
+        quartz.CGGetDisplaysWithPoint.return_value = (0, (7,), 1)
+        quartz.CGDisplayBounds.return_value = SimpleNamespace(
+            origin=SimpleNamespace(x=0, y=0), size=SimpleNamespace(width=1440, height=900))
+        quartz.CGDisplayModeGetPixelWidth.return_value = 2880
+        quartz.CGImageDestinationFinalize.return_value = True
+        elements = {
+            "bark": {"AXRole": "AXApplication", "AXTitle": "Bark", "AXFocusedWindow": "window"},
+            "window": {"AXRole": "AXWindow", "AXSubrole": "AXStandardWindow", "AXTitle": "Peek fixture source"},
+            "banner": {"AXRole": "AXGroup", "AXDescription": "Notification"},
+        }
+        owners = {"bark": pid, "window": pid, "banner": 99}
+        ax = Mock(AXIsProcessTrusted=lambda: True)
+        ax.AXUIElementCreateSystemWide.return_value = "system"
+        ax.AXUIElementCreateApplication.side_effect = lambda owner: {pid: "bark"}[owner]
+        ax.AXUIElementCopyAttributeValue.side_effect = lambda element, name, _: (
+            (0, elements[element][name]) if name in elements.get(element, {}) else (-25212, None))
+        ax.AXUIElementGetPid.side_effect = lambda element, _: (0, owners[element])
+        ax.AXUIElementCopyElementAtPosition.return_value = (0, "banner")
+        foundation = Mock()
+        console = Mock(pointer=lambda: desktop["pointer"], available=lambda: True, idle=lambda: 60)
+        contributor = {"native_architecture": lambda: "arm64", "verify_signed_shell": Mock(),
+                       "app_output_lock": lambda app: nullcontext(), "seed_profile": Mock(), "stop": Mock()}
+        process = Mock(pid=pid)
+
+        @contextmanager
+        def serve():
+            yield SimpleNamespace(server_port=8000, events=[])
+
+        def exercise(screen, _process, _events, _output):
+            screen.click((378, 133))
+            desktop["owned"] = not lock_lost
+            raise RuntimeError("Missing pointer event on /source")
+
+        def lsappinfo(command, text):
+            if command[1] == "front":
+                return "ASN:0x0-0x1:\n"
+            return f'"pid"={pid}\n' + ('"LSDisplayName"="Bark"\n' if "name" in command else "")
+
+        with tempfile.TemporaryDirectory() as folder:
+            app = Path(folder) / "Bark.app"
+            (app / "Contents/MacOS").mkdir(parents=True)
+            (app / "Contents/MacOS/Bark").touch()
+            output = Path(folder) / "evidence"
+            log = io.StringIO()
+            with patch.object(sys, "argv", ["walk", "--app", str(app), "--output", str(output)]), \
+                    patch.object(sys, "platform", "darwin"), patch.dict(sys.modules, {
+                        "ApplicationServices": ax, "Quartz": quartz, "Foundation": foundation}), \
+                    patch.object(signed_walk, "processes", return_value=[]), \
+                    patch.object(signed_walk, "crash_reports", return_value=set()), \
+                    patch.object(signed_walk.runpy, "run_path", return_value=contributor), \
+                    patch.object(signed_walk, "bundle_cdhash", return_value="cdhash"), \
+                    patch.object(signed_walk, "launch_verified", return_value=(process, 0)), \
+                    patch("bark_macos_console.QuartzConsole", return_value=console), \
+                    patch("bark_macos_console.screen_lock", lambda path, wait: nullcontext(lambda: desktop["owned"])), \
+                    patch("bark_macos_console.require_idle_console"), \
+                    patch("subprocess.check_output", side_effect=lsappinfo), patch("subprocess.run"), \
+                    patch("time.sleep"), redirect_stdout(log), \
+                    self.assertRaisesRegex(RuntimeError, "Missing pointer event on /source"):
+                signed_walk.run_walk("fixture", "fixture", serve, exercise)
+            evidence = json.loads((output / "click-diagnostics.json").read_text())
+        return evidence, log.getvalue(), quartz, ax, foundation, output
+
+    def test_missed_click_records_what_was_under_the_point(self):
+        evidence, log, quartz, ax, foundation, output = self.failed_click(lock_lost=False)
+        self.assertEqual(evidence["click"]["relative"], [378, 133])
+        self.assertEqual(evidence["click"]["point"], [428, 173])
+        self.assertEqual(evidence["click"]["before"]["frontmost"], {"pid": 4321, "name": "Bark"})
+        self.assertEqual(evidence["click"]["before"]["key_window"],
+                         {"pid": 4321, "AXRole": "AXWindow", "AXSubrole": "AXStandardWindow",
+                          "AXTitle": "Peek fixture source"})
+        self.assertEqual([row["number"] for row in evidence["click"]["before"]["candidate_windows"]], [41, 40])
+        stack = evidence["at_failure"]["windows_at_point"]
+        self.assertEqual([(row["owner"], row["pid"], row["layer"]) for row in stack],
+                         [("NotificationCenter", 99, 23), ("Bark", 4321, 0)])
+        self.assertEqual(stack[0]["bounds"], {"X": 380, "Y": 150, "Width": 360, "Height": 80})
+        self.assertEqual(evidence["at_failure"]["pointer"], [428, 173])
+        self.assertEqual(evidence["element_at_point"], {"pid": 99, "AXRole": "AXGroup", "AXDescription": "Notification"})
+        ax.AXUIElementCopyElementAtPosition.assert_called_once_with("system", 428, 173, None)
+        self.assertEqual(evidence["display"]["scale"], 2.0)
+        self.assertEqual(evidence["screenshot"], "display.png")
+        quartz.CGWindowListCreateImage.assert_called_once_with(
+            quartz.CGRectInfinite, quartz.kCGWindowListOptionOnScreenOnly, quartz.kCGNullWindowID,
+            quartz.kCGWindowImageDefault)
+        foundation.NSURL.fileURLWithPath_.assert_called_once_with(str(output.resolve() / "display.png"))
+        self.assertIn("click-diagnostics.json", log)
+        self.assertIn("NotificationCenter", log)
+        self.assertIn("AXGroup", log)
+
+    def test_display_is_not_captured_without_the_screen_lock(self):
+        evidence, _, quartz, _, _, _ = self.failed_click(lock_lost=True)
+        self.assertIsNone(evidence["screenshot"])
+        quartz.CGWindowListCreateImage.assert_not_called()
+        self.assertEqual(evidence["element_at_point"]["AXRole"], "AXGroup")
 
 
 class NativeArchitectureTests(unittest.TestCase):
