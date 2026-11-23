@@ -77,6 +77,11 @@ jobs:
         env:
           SDK_CACHE_KEY: ${{ steps.engines.outputs.cache-key }}
         run: echo "Verified both official Chromium engines with cache key \`$SDK_CACHE_KEY\`." >> "$GITHUB_STEP_SUMMARY"
+      # actions/checkout cannot clean the sealed, read-only SDK trees out of this shared workspace.
+      - name: Remove the sealed SDK pair from the workspace
+        if: always()
+        run: |
+          if [[ -d build/official-sdk-cache ]]; then chmod -R u+w build/official-sdk-cache && rm -rf build/official-sdk-cache; fi
 
   package:
     needs: build
@@ -168,6 +173,11 @@ jobs:
         run: |
           legacy="$RUNNER_TEMP/nook-transition-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           if [[ -d "$legacy" ]]; then git worktree remove --force "$legacy"; fi
+      # actions/checkout cannot clean the sealed, read-only SDK trees out of this shared workspace.
+      - name: Remove the sealed SDK pair from the workspace
+        if: always()
+        run: |
+          if [[ -d build/official-sdk-cache ]]; then chmod -R u+w build/official-sdk-cache && rm -rf build/official-sdk-cache; fi
 
   qualify:
     needs: [build, package]

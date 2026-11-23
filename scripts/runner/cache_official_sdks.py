@@ -5,7 +5,6 @@
 import argparse
 import os
 from pathlib import Path
-import shutil
 import stat
 import subprocess
 import sys
@@ -118,8 +117,9 @@ def accept_build(package, cache_root):
     for name, content in read_metadata(RECEIVER).items():
         (metadata / name).write_bytes(content)
     for arch, destination in engines(cached_package).items():
-        destination.parent.mkdir(parents=True)
-        shutil.move(str(artifact_directory(package, arch)), str(destination))
+        destination.parent.parent.mkdir(parents=True, exist_ok=True)
+        # Darwin refuses to move a directory its owner cannot write, so move the sealed Engine's container.
+        artifact_directory(package, arch).parent.rename(destination.parent)
     print(f"Verified {size} bytes of official SDKs for the default-branch cache.")
     outputs(cached_package, cacheable=True)
 
